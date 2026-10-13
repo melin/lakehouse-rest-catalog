@@ -1,10 +1,10 @@
 # 数据模型
 
-服务端把 catalog 元数据与 RBAC 授权关系全部放进关系库，共 **18 张表、18 个 JPA 仓储接口**。
+服务端把 catalog 元数据与 RBAC 授权关系全部放进关系库，共 **19 张表、19 个 JPA 仓储接口**。
 本文件说明表的划分，以及三个容易看错或踩坑的设计点：摘要列、审计列、JSON 文档列。
 
 - 实体与仓储：`paimon-rest-server/src/main/java/io/github/melin/paimonrest/domain/entity/`
-  （18 个实体，另含 `AuditedEntity` 基类与 `JsonConverters`）与同级的 `domain/repo/`（18 个仓储接口）
+  （19 个实体，另含 `AuditedEntity` 基类与 `JsonConverters`）与同级的 `domain/repo/`（19 个仓储接口）
 - 建表语句：[`../sql/schema-mysql.sql`](../sql/schema-mysql.sql)（由实体生成，改实体后必须重跑）
 - 库结构由 `ddl-auto: validate` 守住：实体与库不一致时应用**直接启动失败**，
   代价是实体变更后要自行迁移存量数据（见 [`../README.md`](../README.md) 第 6 节「实现说明与已知边界」第 14 条）
@@ -28,7 +28,7 @@
 | `paimon_consumer` | consumer | 流式消费位点 |
 | `paimon_semantic_view` | semantic view | 格式 + 全文定义 |
 
-## 2. 管理侧（6 张，RBAC）
+## 2. 管理侧（7 张，RBAC + Paimon 原生权限）
 
 | 表 | 对应资源 | 说明 |
 | --- | --- | --- |
@@ -38,9 +38,12 @@
 | `paimon_principal_role_grant` | 主体 ↔ principal role | 多对多关联 |
 | `paimon_catalog_role_grant` | principal role ↔ catalog role | 多对多关联 |
 | `paimon_resource_grant` | catalog role 的资源授权 | 权限取值 + 资源类型 + 命名空间 + 对象名 |
+| `paimon_permission_assignment` | Paimon 原生权限的 principal 直授 | 官方词表 access + 资源定位符 + principal 原文 + 过期时间；与 `paimon_resource_grant` 是并行的两套授权来源 |
 
 两级角色都是多对多，链路为「主体 → principal role → catalog role → 资源授权」。
-判定逻辑与失败关闭的取舍见 [`authorization.md`](authorization.md)。
+`paimon_permission_assignment` 是第二路授权来源：授权直接面向 principal 字符串
+（`user:alice` / `role:sales_writer`），判定时与 RBAC 链取并集，
+见 [`authorization.md`](authorization.md) §2.5。
 
 ---
 

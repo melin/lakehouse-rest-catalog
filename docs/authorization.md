@@ -122,6 +122,33 @@ principal ──(N:M)── principal role ──(N:M)── catalog role ──
 `credential-rotation-required` 的语义由客户端在首次登录后轮换凭据来配合，服务端只负责
 在创建时标记。
 
+### 2.5 第二路来源：Paimon 官方权限模型的 principal 直授
+
+除 RBAC 链外，本服务端还实现了 Paimon 官方 REST Management API 的权限端点
+（`GET /v1/{prefix}/permissions`、`POST .../grant`、`POST .../revoke`，见
+`PermissionController`）：授权直接面向 principal 不透明字符串（`user:alice`、
+`role:sales_writer`），资源用 `CATALOG / DATABASE / DATABASE_ALL / TABLE / COLUMN / VIEW /
+FUNCTION` 定位器表达，access 用官方词表（SELECT / UPDATE / ALTER / DROP / DESCRIBE /
+CREATETABLE / ...），落库为 `paimon_permission_assignment`。
+
+判定时（`AuthorizationService.effectivePrivileges`）两路来源取**并集**：
+
+- **principal 匹配约定**（官方把解析留给服务端）：认证主体名 `alice` 匹配 `alice`
+  与 `user:alice`；`role:<name>` 匹配主体在该 catalog 下持有的**同名 catalog role**——
+  这是两条链路唯一的交汇点；`group:*` 无成员关系可解析，明确不匹配（宁可不生效，不放大）。
+- **access → 内部权限的翻译**在 `PaimonPermissionModel`：例如 TABLE 的 SELECT →
+  `TABLE_READ_DATA`、UPDATE → `TABLE_WRITE_DATA`；DATABASE 的 CREATETABLE →
+  `TABLE_CREATE`（建表判定正落在 TABLE 层）、DESCRIBE → 命名空间与表的元数据读。
+  翻译后的条目走与 RBAC 完全相同的作用域覆盖判定与蕴含展开。
+- `*_ALL` 是显式作用域：`DATABASE_ALL` / `CATALOG_ALL` 翻译成 namespace / catalog 级授权，
+  天然覆盖此后新建的后代。
+- 过期（`expireTime`）的条目保留在列表里，但不再参与判定。
+- 词表校验有一处与官方对照表不同的**刻意放宽**：TABLE 层也接受 DESCRIBE
+  （映射 `TABLE_READ_PROPERTIES`），控制台的表级授权需要「Describe」这一项。
+
+管理权限端点本身要求 catalog 级 `CATALOG_MANAGE_ACCESS`——官方要求对相关资源具备 GRANT，
+但 grant/revoke 的目标资源在请求体里、路径映射表看不到，收敛到 catalog 级只会更严、不产生越权。
+
 ---
 
 ## 3. catalog API 的授权映射

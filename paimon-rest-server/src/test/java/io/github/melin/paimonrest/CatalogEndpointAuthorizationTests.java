@@ -190,9 +190,12 @@ class CatalogEndpointAuthorizationTests {
     void everyCatalogEndpointPassesWithSufficientPrivileges() throws Exception {
         createPrincipal(WRITER);
         // CATALOG_MANAGE_CONTENT 按文档展开后覆盖 catalog / namespace / table / view 四层，
-        // 但不含 SEMANTIC_MODEL_*，因此语义模型端点需要单独授予
+        // 但不含 SEMANTIC_MODEL_*，因此语义模型端点需要单独授予；
+        // 权限端点（/v1/{prefix}/permissions）按官方语义要求 GRANT，对应 CATALOG_MANAGE_ACCESS，
+        // 也需要单独授予——这是 /v1 下第一组要求该权限的端点
         wireRoleChain("authz_catalog_writer", List.of(
                 catalogGrant("CATALOG_MANAGE_CONTENT"),
+                catalogGrant("CATALOG_MANAGE_ACCESS"),
                 catalogGrant("SEMANTIC_MODEL_FULL_METADATA")),
                 "authz_writer_pr", WRITER);
 

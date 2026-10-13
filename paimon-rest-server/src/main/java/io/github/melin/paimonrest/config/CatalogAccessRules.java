@@ -101,6 +101,9 @@ public final class CatalogAccessRules {
         if ("tables".equals(head) || "views".equals(head) || "functions".equals(head)) {
             return global(catalog, path, method, read);
         }
+        if ("permissions".equals(head)) {
+            return permissions(catalog, path, read);
+        }
         if (!"databases".equals(head)) {
             return null;
         }
@@ -156,6 +159,27 @@ public final class CatalogAccessRules {
         if (path.size() == 3 && "tables".equals(head) && "id".equals(path.get(1)) && read) {
             // 按 id 查表跨命名空间，因此只认 catalog 级授权
             return at(catalog, GrantType.TABLE, List.of(), null, Privilege.TABLE_READ_PROPERTIES);
+        }
+        return null;
+    }
+
+    /**
+     * Paimon 官方权限端点：{@code /v1/{prefix}/permissions[/grant|/revoke]}。
+     *
+     * <p>官方要求调用者对相关资源具备 {@code GRANT}，但 grant/revoke 的目标资源在
+     * 请求体里、路径映射表看不到，因此这里收敛为 catalog 级的
+     * {@code CATALOG_MANAGE_ACCESS}（与 {@code PermissionController} 内的显式校验一致，
+     * 且只可能更严）。GET 落在 grant/revoke 路径上返回 {@code null} → 拒绝，
+     * 避免把写端点误当读端点探测。
+     */
+    private static Requirement permissions(String catalog, List<String> path, boolean read) {
+        if (path.size() == 1) {
+            return read
+                    ? at(catalog, GrantType.CATALOG, List.of(), null, Privilege.CATALOG_MANAGE_ACCESS)
+                    : null;
+        }
+        if (path.size() == 2 && ("grant".equals(path.get(1)) || "revoke".equals(path.get(1))) && !read) {
+            return at(catalog, GrantType.CATALOG, List.of(), null, Privilege.CATALOG_MANAGE_ACCESS);
         }
         return null;
     }

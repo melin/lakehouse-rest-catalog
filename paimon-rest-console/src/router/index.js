@@ -72,6 +72,14 @@ const routes = [
     meta: { title: 'Catalog 角色与授权', icon: 'Key', group: '治理（Management API）', nav: true },
   },
   {
+    // Paimon 官方权限模型的独立入口：授权直接面向 principal（user:/role:），
+    // 与上一条的 Polaris 模型并行生效，服务端判定取两路并集
+    path: '/permissions',
+    name: 'permissions',
+    component: () => import('@/views/PermissionsView.vue'),
+    meta: { title: '权限管理', icon: 'Lock', group: '治理（Management API）', nav: true },
+  },
+  {
     path: '/settings',
     name: 'settings',
     component: () => import('@/views/SettingsView.vue'),

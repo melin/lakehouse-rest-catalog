@@ -54,7 +54,7 @@ REST Management API**（RBAC 管理面）与一个 **Vue 3 管理控制台**；�
    继承 Boot 父 POM。理由：Boot 的 `dependencyManagement` 会把 Spark 侧的 Jackson 2.15.2
    抬到 2.21.x、替换 netty/jersey。**不要把 Boot 提为聚合 POM 的父。**
 5. **`sql/schema-mysql.sql` 是生成物，不要手改**（`scripts/gen-mysql-ddl.sh` 从 JPA 实体生成，
-   18 表 / 19 唯一约束 / 15 索引，下次生成会覆盖）。**改了实体就必须重跑生成**，
+   19 表 / 20 唯一约束 / 17 索引，下次生成会覆盖）。**改了实体就必须重跑生成**，
    否则启动时 `ddl-auto=validate` 直接失败。
 6. **构建服务端 jar（含控制台）用 `clean package`，不要裸 `package`。** 控制台产物按内容哈希命名，
    `maven-resources-plugin` 只覆写不删除 → `target/classes/static/console` 累积历次旧产物
@@ -158,7 +158,7 @@ docs/                   12 份设计文档
 | `catalog-api-endpoints.md` | Catalog API 的 60 个端点、基址、前缀、授权映射 |
 | `management-api-overview.md` | 33 个 operation 落在哪几个控制器、易读错的语义 |
 | `management-api-contract.md` | 管理 API 字段与权限枚举**逐字契约**（生成物，勿手改） |
-| `data-model.md` | 改实体 / 看 18 张表划分、摘要列与审计列的理由 |
+| `data-model.md` | 改实体 / 看 19 张表划分、摘要列与审计列的理由 |
 | `spark-sql-reference.md` | 语句级参考（第 11 节示例会被测试真跑） |
 | `spark-sql-extension.md` | 改 Spark 扩展：做法、两个约束、测试分层 |
 | `spark-paimon-rest-e2e.md` | Spark 经本服务端建表：连接配置、可执行 SQL、报错对照 |

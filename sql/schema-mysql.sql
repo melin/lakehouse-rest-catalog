@@ -145,6 +145,25 @@ USE `paimon_catalog`;
         primary key (id)
     ) engine=InnoDB;
 
+    create table paimon_permission_assignment (
+        created_at bigint,
+        expire_time bigint,
+        updated_at bigint,
+        access varchar(32) not null,
+        resource_type varchar(32) not null,
+        catalog_id varchar(64) not null,
+        id varchar(64) not null,
+        locator_hash varchar(64) not null,
+        principal varchar(128) not null,
+        columns_json varchar(4096),
+        created_by varchar(255),
+        database_name varchar(255) not null,
+        object_name varchar(255) not null,
+        owner varchar(255),
+        updated_by varchar(255),
+        primary key (id)
+    ) engine=InnoDB;
+
     create table paimon_principal (
         credential_rotation_required bit not null,
         entity_version integer not null,
@@ -342,6 +361,15 @@ USE `paimon_catalog`;
 
     alter table paimon_partition 
        add constraint uk_partition unique (table_id, spec_hash);
+
+    create index ix_permission_assignment_catalog 
+       on paimon_permission_assignment (catalog_id);
+
+    create index ix_permission_assignment_principal 
+       on paimon_permission_assignment (principal);
+
+    alter table paimon_permission_assignment 
+       add constraint uk_permission_assignment unique (catalog_id, resource_type, locator_hash, access, principal);
 
     alter table paimon_principal 
        add constraint uk_principal_name unique (name);

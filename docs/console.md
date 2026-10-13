@@ -67,7 +67,7 @@ paimon-rest-console/
 ├── vite.config.js                 base=/console/，outDir 指向服务端 resources/static/console
 └── src/
     ├── api/
-    │   ├── endpoints.js           ★ 全部 82 条端点的 method/path，唯一契约表
+    │   ├── endpoints.js           ★ 全部 85 条端点的 method/path，唯一契约表
     │   ├── client.js              fetch 封装：鉴权、路径拼装、错误归一化
     │   ├── catalog.js             Catalog API 的调用函数
     │   ├── management.js          Management API 的调用函数（含创建请求的包体约定）
@@ -83,7 +83,7 @@ paimon-rest-console/
     │                              credentials（令牌与基址）、theme
     ├── styles/index.css           设计变量 --pc-* 与布局类
     ├── utils/format.js            时间、字节、JSON 等展示格式化
-    └── views/                     11 个页面，见 §4
+    └── views/                     12 个页面，见 §4
 ```
 
 `src/api/endpoints.js` 与 `scripts/verify-console.py` 是这套结构里的两根钉子，
@@ -140,6 +140,7 @@ paimon-rest-console/
 | `/principals` | 主体 | 列出 / 创建 / 更新 / 删除 / rotate / reset；授予与撤销服务角色。创建、轮换、重置后的凭据弹窗可一键导出 JSON 文件（`{principal, clientId, clientSecret}`，文件名 `<主体>-credentials.json`），密钥仍只在弹窗期间可见 |
 | `/principal-roles` | 服务角色 | 列出 / 创建 / 更新 / 删除；查看成员；授予与撤销 catalog 角色 |
 | `/catalog-roles` | Catalog 角色与授权 | 角色 CRUD；查看授予了该角色的服务角色；**grants 的增删**（按资源类型分组渲染权限） |
+| `/permissions` | 权限管理 | Paimon 官方权限模型（principal 直授）：页头「添加授权」按钮开弹窗填表——多选用户/角色（`user:` / `role:`，可手输任意 principal）、database 级或表级授权（选了表才显示表权限）、简化的权限勾选（db：Create table/Alter/Drop/Describe；表：Select/Insert/Delete/Describe/Alter/Drop）；主界面只留赋权列表，按 Principal/资源/权限/过期时间展示，支持过滤与幂等撤销 |
 | `/settings` | 连接设置 | API 基址、访问令牌、登录状态、主题；`/api/console/v1/meta` 原始响应 |
 | `/:pathMatch(.*)*` | 未找到 | 兜底 |
 
@@ -202,7 +203,7 @@ meta 只暴露枚举取值与服务端自身的配置，不含任何主体、cat
 控制台是用字符串拼 URL 的，而服务端的路径属于**契约**（catalog API 见
 `paimon-rest-server/src/main/resources/static/rest-catalog-open-api.yaml`，
 管理 API 见 `spec/polaris-management-service.yml`）。路径写错时前端的表现是
-「404 空列表」，看不出是前端拼错了还是服务端改了——而这批路径有 82 条，
+「404 空列表」，看不出是前端拼错了还是服务端改了——而这批路径有 85 条，
 靠人工比对不现实。
 
 因此所有路径收在 `src/api/endpoints.js` 一张表里，视图层不手写 URL 字符串，
@@ -261,6 +262,11 @@ EXTENSION_ENDPOINTS = {
     ("GET", "/api/console/v1/auth"): "控制台登录引导（可用认证方式、令牌端点、当前令牌状态）",
     ("POST", "/api/console/v1/login"): "控制台用户名密码登录（默认方式，响应是驼峰字段而非 OAuth 形状）",
     ("POST", "/api/catalog/v1/oauth/tokens"): "OAuth 2.0 客户端凭据令牌端点（RFC 6749 第 4.4 节）",
+    # Paimon 官方 REST Management API 的权限端点（principal 直授）。
+    # wire 契约在官方 rest-management-open-api.yaml，不在本仓库的两份规格副本里
+    ("GET", "/v1/{prefix}/permissions"): "Paimon 官方权限端点：列出 principal 直授",
+    ("POST", "/v1/{prefix}/permissions/grant"): "Paimon 官方权限端点：授予 principal 直授",
+    ("POST", "/v1/{prefix}/permissions/revoke"): "Paimon 官方权限端点：撤销 principal 直授（幂等）",
 }
 ```
 

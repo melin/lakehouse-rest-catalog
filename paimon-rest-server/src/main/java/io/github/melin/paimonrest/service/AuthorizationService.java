@@ -4,6 +4,7 @@ import io.github.melin.paimonrest.config.RequestContext;
 import io.github.melin.paimonrest.config.RestServerProperties;
 import io.github.melin.paimonrest.domain.entity.CatalogRoleAssignmentEntity;
 import io.github.melin.paimonrest.domain.entity.CatalogRoleEntity;
+import io.github.melin.paimonrest.domain.entity.PermissionAssignmentEntity;
 import io.github.melin.paimonrest.domain.entity.PrincipalRoleAssignmentEntity;
 import io.github.melin.paimonrest.domain.entity.ResourceGrantEntity;
 import io.github.melin.paimonrest.domain.repo.CatalogRepository;
@@ -11,6 +12,7 @@ import io.github.melin.paimonrest.domain.repo.CatalogRoleAssignmentRepository;
 import io.github.melin.paimonrest.domain.repo.CatalogRoleRepository;
 import io.github.melin.paimonrest.domain.repo.PrincipalRepository;
 import io.github.melin.paimonrest.domain.repo.PrincipalRoleAssignmentRepository;
+import io.github.melin.paimonrest.domain.repo.PermissionAssignmentRepository;
 import io.github.melin.paimonrest.domain.repo.ResourceGrantRepository;
 import io.github.melin.paimonrest.dto.ManagementEnums.GrantType;
 import io.github.melin.paimonrest.dto.Privilege;
@@ -26,9 +28,12 @@ import org.springframework.transaction.annotation.Transactional;
 /**
  * 授权判定：回答「调用者能否在某个资源上执行某操作」。
  *
- * <p>判定链路严格对应 Polaris 的 RBAC 模型：
- * 主体 → principal role → catalog role → 资源授权（见 {@code docs/management-api-contract.md}）。
- * 有效权限是「主体持有的全部 catalog role 上、作用域覆盖目标资源」的授权的并集，
+ * <p>判定链路有两路来源，在「有效权限」处汇合：
+ * Polaris 的 RBAC 链（主体 → principal role → catalog role → 资源授权，
+ * 见 {@code docs/management-api-contract.md}），以及 Paimon 原生权限模型的
+ * principal 直授（{@code /v1/{prefix}/permissions} 端点，经
+ * {@link PaimonPermissionModel} 翻译成内部形状）。
+ * 有效权限是两路来源中「作用域覆盖目标资源」的授权的并集，
  * 再按 {@link PrivilegeModel} 展开蕴含关系。
  *
  * <p><b>作用域覆盖规则。</b>规格允许在 catalog、namespace、以及具体对象三个层级授予权限，
@@ -60,6 +65,7 @@ public class AuthorizationService {
     private final CatalogRoleRepository catalogRoleRepository;
     private final CatalogRoleAssignmentRepository catalogRoleAssignmentRepository;
     private final ResourceGrantRepository resourceGrantRepository;
+    private final PermissionAssignmentRepository permissionAssignmentRepository;
 
     /** 授权总开关。 */
     public boolean enabled() {
@@ -160,16 +166,56 @@ public class AuthorizationService {
             return result;
         }
         List<String> catalogRoleIds = catalogRoleIdsOf(principalName, catalogIds);
-        if (catalogRoleIds.isEmpty()) {
-            return result;
+        if (!catalogRoleIds.isEmpty()) {
+            for (ResourceGrantEntity grant : resourceGrantRepository.findByCatalogRoleIdIn(catalogRoleIds)) {
+                if (!covers(grant, resourceType, namespace, objectName)) {
+                    continue;
+                }
+                result.addAll(PrivilegeModel.expand(Privilege.valueOf(grant.getPrivilege())));
+            }
         }
-        for (ResourceGrantEntity grant : resourceGrantRepository.findByCatalogRoleIdIn(catalogRoleIds)) {
-            if (!covers(grant, resourceType, namespace, objectName)) {
+        // 第二条来源：Paimon 原生的 principal 直授。它不要求主体持有任何 catalog role
+        // （user:alice 直授对从未进过 RBAC 链的主体同样生效），所以放在 if 外单独合并
+        mergeDirectAssignments(result, principalName, catalogIds.get(0), catalogRoleIds,
+                resourceType, namespace, objectName);
+        return result;
+    }
+
+    /**
+     * 合并 Paimon 原生权限模型的直授（{@code /v1/{prefix}/permissions} 端点落库的条目）。
+     *
+     * <p>每条直授先经 {@link PaimonPermissionModel} 翻译成内部作用域与权限集合，
+     * 再走与 RBAC 相同的作用域覆盖判定与蕴含展开——判定层只有一个真相源，
+     * 两套授权模型在「有效权限」这一层汇合。
+     */
+    private void mergeDirectAssignments(Set<Privilege> result, String principalName, String catalogId,
+                                        List<String> catalogRoleIds, GrantType resourceType,
+                                        List<String> namespace, String objectName) {
+        // role: 前缀的 principal 候选来自主体持有的 catalog role 名，需要把 id 换回名字
+        List<String> roleNames = new ArrayList<>();
+        for (String roleId : catalogRoleIds) {
+            catalogRoleRepository.findById(roleId)
+                    .ifPresent(role -> roleNames.add(role.getName()));
+        }
+        List<String> candidates = PaimonPermissionModel.principalCandidates(principalName, roleNames);
+        if (candidates.isEmpty()) {
+            return;
+        }
+        long now = RequestContext.now();
+        for (PermissionAssignmentEntity assignment
+                : permissionAssignmentRepository.findByCatalogIdAndPrincipalIn(catalogId, candidates)) {
+            if (PaimonPermissionModel.isExpired(assignment, now)) {
                 continue;
             }
-            result.addAll(PrivilegeModel.expand(Privilege.valueOf(grant.getPrivilege())));
+            PaimonPermissionModel.MappedGrant mapped = PaimonPermissionModel.map(assignment);
+            if (!coversScope(mapped.scope(), mapped.namespace(), mapped.objectName(),
+                    resourceType, namespace, objectName)) {
+                continue;
+            }
+            for (Privilege privilege : mapped.privileges()) {
+                result.addAll(PrivilegeModel.expand(privilege));
+            }
         }
-        return result;
     }
 
     /**
@@ -228,18 +274,25 @@ public class AuthorizationService {
         if (scope == null) {
             return false;
         }
+        return coversScope(scope, grant.getNamespace(), grant.getObjectName(),
+                resourceType, namespace, objectName);
+    }
+
+    /** 作用域覆盖判定的一般形状，RBAC 授权与 Paimon 直授翻译后的条目共用。 */
+    private boolean coversScope(GrantType scope, List<String> grantNamespace, String grantObjectName,
+                                GrantType resourceType, List<String> namespace, String objectName) {
         if (scope == GrantType.CATALOG) {
             return true;
         }
         if (scope == GrantType.NAMESPACE) {
             // 目标资源的命名空间以授权命名空间为前缀即为覆盖
-            return isPrefix(grant.getNamespace(), namespace);
+            return isPrefix(grantNamespace, namespace);
         }
         // 对象级授权：类型、命名空间、对象名三者都要对上
         return scope == resourceType
-                && grant.getNamespace().equals(namespace)
+                && grantNamespace.equals(namespace)
                 && objectName != null
-                && objectName.equalsIgnoreCase(grant.getObjectName());
+                && objectName.equalsIgnoreCase(grantObjectName);
     }
 
     private boolean isPrefix(List<String> prefix, List<String> candidate) {

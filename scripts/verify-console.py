@@ -96,6 +96,12 @@ EXTENSION_ENDPOINTS = {
     # VITE_OAUTH_TOKEN_URL 就是这个地址），但它不是 catalog API 规格里的一节，
     # 因此在这里登记。同样必须在鉴权之外——它就是用来换令牌的。
     ("POST", "/api/catalog/v1/oauth/tokens"): "OAuth 2.0 客户端凭据令牌端点（RFC 6749 第 4.4 节）",
+    # Paimon 官方 REST Management API 的权限端点（principal 直授，user:/role:）。
+    # 官方 wire 契约在其 rest-management-open-api.yaml，不在本仓库的两份规格副本里，
+    # 因此按扩展端点登记；服务端实现见 PermissionController。
+    ("GET", "/v1/{prefix}/permissions"): "Paimon 官方权限端点：列出 principal 直授",
+    ("POST", "/v1/{prefix}/permissions/grant"): "Paimon 官方权限端点：授予 principal 直授",
+    ("POST", "/v1/{prefix}/permissions/revoke"): "Paimon 官方权限端点：撤销 principal 直授（幂等）",
 }
 
 problems = []

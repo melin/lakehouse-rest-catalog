@@ -74,6 +74,13 @@ export const ENDPOINTS = {
   forwardBranch: { method: 'POST', path: '/v1/{prefix}/databases/{database}/tables/{table}/branches/{branch}/forward' },
   listPartitions: { method: 'GET', path: '/v1/{prefix}/databases/{database}/tables/{table}/partitions' },
 
+  // ------------------------------------------------------------------ catalog API：权限（Paimon 官方 management API）
+  // 授权直接面向 principal（`user:alice` / `role:sales_writer`），与 Polaris 规格
+  // 的 catalog role 授权是两套并行模型。grant / revoke 的资源定位在请求体里。
+  listPermissions: { method: 'GET', path: '/v1/{prefix}/permissions' },
+  grantPermission: { method: 'POST', path: '/v1/{prefix}/permissions/grant' },
+  revokePermission: { method: 'POST', path: '/v1/{prefix}/permissions/revoke' },
+
   // ------------------------------------------------------------------ catalog API：view
   listViews: { method: 'GET', path: '/v1/{prefix}/databases/{database}/views' },
   createView: { method: 'POST', path: '/v1/{prefix}/databases/{database}/views' },

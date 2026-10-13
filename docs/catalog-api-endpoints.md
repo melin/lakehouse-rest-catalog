@@ -15,6 +15,15 @@ Paimon Rest Catalog API 在本服务端的全部 **60 个端点**，按资源分
 > （OAuth 2.0 客户端凭据换访问令牌，路径与 Polaris 对齐），见
 > [`console-auth.md`](console-auth.md)。
 
+> 还有三个 Paimon **官方 REST Management API** 的权限端点，同在 `/v1/{prefix}` 之下
+> （wire 契约来自官方 `rest-management-open-api.yaml`，不在本仓库规格副本里）：
+> `GET /v1/{prefix}/permissions`、`POST /v1/{prefix}/permissions/grant`、
+> `POST /v1/{prefix}/permissions/revoke`。授权直接面向 principal
+> （`user:alice` / `role:sales_writer`），与下方 Polaris 管理面 RBAC 并行生效，
+> 服务端判定取两路并集；实现见 `PermissionController` 与 `PaimonPermissionModel`，
+> 控制台入口是「权限管理」页。授权要求：三端点都要求 catalog 级
+> `CATALOG_MANAGE_ACCESS`（官方语义的 GRANT，收敛到 catalog 级只会更严）。
+
 ## 配置（1）
 
 | 方法 | 路径 |

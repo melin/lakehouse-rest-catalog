@@ -118,6 +118,14 @@
           />
         </el-form-item>
 
+        <!-- 能力关着时给出可操作的出路：字段被禁用只是一半，
+             不告诉用户「去开哪个配置项、密钥怎么生成」就会停在死路上 -->
+        <p v-if="!staticCredentialsEnabled" class="pc-static-disabled-hint">
+          本部署未开启静态凭据：服务端需要配置
+          <code>paimon.rest.storage.credential-secret-key</code>（用于加密落库），
+          生成命令：<code>openssl rand -base64 32</code>。
+        </p>
+
         <el-form-item v-if="storedAccessKeyId && !form.removeCredentials">
           <el-button size="small" text type="danger" @click="form.removeCredentials = true">
             <el-icon><Delete /></el-icon>
@@ -562,5 +570,19 @@ defineExpose({ validate, build })
   font-size: 12.5px;
   color: var(--pc-text-dim);
   line-height: 1.4;
+}
+
+.pc-static-disabled-hint {
+  margin: 0 0 12px;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--pc-text-dim);
+}
+
+.pc-static-disabled-hint code {
+  padding: 1px 4px;
+  background: var(--pc-surface-2);
+  border: 1px solid var(--pc-border);
+  border-radius: 4px;
 }
 </style>

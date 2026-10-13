@@ -99,7 +99,7 @@ class MysqlDdlGeneratorTests {
             .toAbsolutePath();
 
     /** 实体的表数量；新增实体时应同步上调，否则本测试会失败提醒。 */
-    private static final int EXPECTED_TABLES = 18;
+    private static final int EXPECTED_TABLES = 19;
 
     @Autowired
     private EntityManagerFactory entityManagerFactory;

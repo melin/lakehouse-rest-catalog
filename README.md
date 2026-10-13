@@ -18,7 +18,7 @@
   Management API **33 个 operation、17 条路径**
   （概览见 [`docs/management-api-overview.md`](docs/management-api-overview.md)）
 - 元数据存储：**MySQL 8.0**（建表语句由实体生成，见 `sql/schema-mysql.sql`；
-  18 张表的划分与设计取舍见 [`docs/data-model.md`](docs/data-model.md)），
+  19 张表的划分与设计取舍见 [`docs/data-model.md`](docs/data-model.md)），
   通过 JPA 访问；另有 H2 内存库与 PostgreSQL 两个 profile 可选
 - 模块：服务端（Spring Boot）+ Spark SQL 语法扩展（Scala）
 
@@ -64,7 +64,7 @@ Maven 坐标与包名：`groupId` 为 `io.github.melin`，三个 artifact 分别
 | [`catalog-api-endpoints.md`](docs/catalog-api-endpoints.md) | 要查 Catalog API 有哪些端点——60 个端点按资源分组，含基址、前缀与授权映射说明 |
 | [`management-api-overview.md`](docs/management-api-overview.md) | 要读 Management API——33 个 operation 落在哪几个控制器上、几处容易读错的语义 |
 | [`management-api-contract.md`](docs/management-api-contract.md) | 要查管理 API 的端点、字段、权限枚举——由规格生成，逐字对照 |
-| [`data-model.md`](docs/data-model.md) | 要改实体或看表结构——18 张表的划分、摘要列与审计列的设计理由 |
+| [`data-model.md`](docs/data-model.md) | 要改实体或看表结构——19 张表的划分、摘要列与审计列的设计理由 |
 | [`spark-sql-reference.md`](docs/spark-sql-reference.md) | 要用 SQL 管理主体与授权——语句级参考，含完整示例 |
 | [`spark-sql-extension.md`](docs/spark-sql-extension.md) | 要改这个 Spark 扩展——语法扩展的做法、两个必须知道的约束、测试分层 |
 | [`spark-paimon-rest-e2e.md`](docs/spark-paimon-rest-e2e.md) | 要让 Spark 通过本服务端建 Paimon 表——连接配置、可执行的 SQL、报错对照表 |
@@ -89,7 +89,7 @@ Maven 坐标与包名：`groupId` 为 `io.github.melin`，三个 artifact 分别
 mysql -h 127.0.0.1 -u root -p < sql/schema-mysql.sql
 ```
 
-`sql/schema-mysql.sql` 由 `scripts/gen-mysql-ddl.sh` 从 JPA 实体生成（18 张表、19 个唯一约束、
+`sql/schema-mysql.sql` 由 `scripts/gen-mysql-ddl.sh` 从 JPA 实体生成（19 张表、20 个唯一约束、
 15 个索引），**不要手工修改**——下次生成会覆盖。它会建出 `paimon_catalog` 库并切过去，
 库名与 `application.yml` 里的 `spring.datasource.url` 必须一致（用 `DB_NAME=... ` 重新生成可改）。
 
@@ -234,7 +234,7 @@ paimon-rest-spark/
 [60 个端点](docs/catalog-api-endpoints.md)、Management API 的
 [33 个 operation 概览](docs/management-api-overview.md)（逐字契约见
 [`management-api-contract.md`](docs/management-api-contract.md)）、以及
-[18 张表的数据模型与设计取舍](docs/data-model.md)。
+[19 张表的数据模型与设计取舍](docs/data-model.md)。
 
 ---
 
@@ -689,7 +689,7 @@ python3 -m pip install --user PyYAML
 ```
 
 `gen-mysql-ddl.sh` 内部跑 `MysqlDdlGeneratorTests`：DDL 由 Hibernate 依实体元数据生成，
-**不手工维护**——18 张表、19 个唯一约束、15 个索引，手工维护必然漂移。生成器连的是 H2
+**不手工维护**——19 张表、20 个唯一约束、17 个索引，手工维护必然漂移。生成器连的是 H2
 但方言被钉在 MySQL 8.0（`MySql8DialectResolver`），因此生成过程不需要 MySQL，
 产出则已用真实 MySQL 8.0.46 验证过可直接执行。`DB_NAME=...` 可改建库语句里的库名。
 
