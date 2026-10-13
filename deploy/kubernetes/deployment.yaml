@@ -1,6 +1,7 @@
 # Paimon Rest Catalog Server。
 #
-# 镜像来自仓库根目录的 Dockerfile（多阶段构建，运行时是 JRE 21 + 一个 jar）：
+# 镜像来自仓库根目录的 Dockerfile（单阶段：JRE 17 + 一个预构建的 jar）：
+#   mvn -o -pl paimon-rest-server -am clean package -DskipTests
 #   docker build -t paimon-rest-server:0.0.1 .
 #
 # imagePullPolicy 用 IfNotPresent 而不是 Always：本地构建出来的镜像没有仓库地址，

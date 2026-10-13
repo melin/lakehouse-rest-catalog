@@ -1,8 +1,11 @@
-# 构建上下文过滤。目的有两个：缩小上文体积，以及避免把宿主机的构建产物
-# 带进镜像（`COPY . .` 会把它们复制进去，然后被 mvn 的 clean 覆盖——
-# 表面无害，但会让层缓存失效的判断变得难以理解）。
+# 构建上下文过滤。目的只剩一个：缩小上下文体积——Dockerfile 不编译，
+# 也没有 `COPY . .`，它只从上下文里取两个文件。
 #
-# 注意：sql/schema-mysql.sql 必须保留在上下文里，Dockerfile 运行阶段要复制它。
+# 必须留在上下文里的两样东西：
+#   - paimon-rest-server/target/paimon-rest-server-0.0.1-SNAPSHOT.jar
+#     （镜像的主体，由使用者在宿主机上先构建出来）
+#   - sql/schema-mysql.sql
+#     （K8s 的 initContainer 用它初始化空库）
 
 # 版本控制与编辑器
 .git
@@ -16,16 +19,21 @@
 .DS_Store
 .DS_Store?
 
-# 构建产物（镜像内会重新构建）
-target/
-**/target/
+# 构建产物：只放行服务端 jar，其余（classes/、测试报告、其它模块的产物）都排除。
+#
+# 这里写 `**/target/*` 而不是 `**/target/`：前者只排除 target 目录里的**内容**，
+# 目录本身仍在遍历范围内，下一行的 `!` 才能把这个 jar 捞回来；
+# 后者连目录本身一起排除，再想从被排除的目录里放行单个文件，就要依赖构建工具
+# 对「父目录已排除」的处理方式——Docker 各版本之间、以及 podman / kaniko 这类
+# 其它构建器之间，这一点并不一致。
+**/target/*
+!paimon-rest-server/target/*.jar
 build/
 **/build/
 
-# 控制台前端的依赖目录。源码留在这里是有意的：镜像里不需要它（控制台的
-# 构建产物已经提交在 paimon-rest-server/src/main/resources/static/console，
-# 且 Dockerfile 只编译 Java），但保留源码让上下文与仓库状态一致、便于排查；
-# node_modules 则是纯粹的体积——几十万个文件进不了镜像构建上下文。
+# 控制台前端的依赖目录。node_modules 是纯粹的体积——几十万个文件进不了
+# 构建上下文；源码留着让上下文与仓库状态一致、便于对照排查（镜像不需要它，
+# 控制台的构建产物已经提交在 paimon-rest-server/src/main/resources/static/console）。
 paimon-rest-console/node_modules/
 paimon-rest-console/.vite/
 

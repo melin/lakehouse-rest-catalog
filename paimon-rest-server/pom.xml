@@ -132,8 +132,9 @@
 				实测一次增量构建就多出 20 个死文件（含上一版 1.1 MB 的 index chunk），
 				打进 jar 里就是白白胖胖的几 MB，而且看 jar 内容会误以为有两个入口 chunk。
 
-				Dockerfile 走的是 clean package，镜像不受影响；受影响的是本地
-				改完控制台后只跑 package 的场景，而那恰好是最常见的场景。
+				镜像里的 jar 直接来自本地构建（Dockerfile 只装、不编译），
+				因此这条守卫要兜住的正是最常发生的场景：改完控制台后只跑
+				package，而不是 clean package。
 
 				绑到 initialize：早于 process-resources，所以随后的复制是干净的一次。
 				excludeDefaultDirectories 置真，避免误删整个 target（clean 的默认行为）。

@@ -6,7 +6,7 @@ import vue from '@vitejs/plugin-vue'
 // 构建产物**直接写进服务端的静态资源目录**，而不是落到本地的 dist/。
 //
 // 这样做的原因：服务端 jar 要能在没有 Node 的环境里构建出来，
-// 也就是 `mvnw -o package` 与 Dockerfile 的 `mvn package` 都不该依赖 npm。
+// 也就是 `mvn -o package` 不该依赖 npm（Dockerfile 只装现成的 jar，更不涉及 Node）。
 // 把产物放在 src/main/resources/static/console 下，它随 resources 一起进 jar，
 // 两处构建都只用 Maven 就能拿到完整的服务端。
 // 代价是构建产物要进版本库——与 static/ 下已有的两个 OpenAPI 规格同一个处理方式。

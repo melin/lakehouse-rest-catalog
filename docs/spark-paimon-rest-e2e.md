@@ -345,7 +345,7 @@ provider 的**声明**放在插件根、**实现类**放在 `META-INF/versions/1
 `ServiceConfigurationError: ... DnsjavaInetAddressResolverProvider not found`，
 触发点是 Hadoop `MetricsSystemImpl.getHostname()`。后果是 `s3://` 上的
 `<table>/schema` 与 `<table>/snapshot` 一个文件都写不出去——而因为是插件隔离的异常类，
-现象与 S3 看着毫无关系。`Dockerfile` 两个阶段都钉 17 就是为了这条。
+现象与 S3 看着毫无关系。`Dockerfile` 的运行镜像钉 17 就是为了这条。
 
 ### 4.3 这两个边界用例为什么会翻转
 

@@ -430,7 +430,8 @@ build: {
 }
 ```
 
-这样 `mvnw package` 与 Dockerfile **不依赖 npm**，Java 侧构建路径上完全没有 Node。
+这样 `mvn package` 与 `Dockerfile` **都不依赖 npm**（`Dockerfile` 现在只装构建好的
+jar，连 Maven 都不跑，更不涉及 Node），Java 侧构建路径上完全没有 Node。
 代价是产物必须跟着源码一起提交。
 
 ### 8.2 产物要提交
@@ -453,8 +454,9 @@ build: {
 历次构建的旧文件——实测一次增量构建就多出 20 个死文件（含上一版 1.1 MB 的 index chunk），
 打进 jar 里就是白白胖胖的几 MB，而且看 jar 内容会误以为有两个入口 chunk。
 
-Dockerfile 走的是 `clean package`，镜像不受影响；受影响的是**本地改完控制台后
-只跑 `package`** 的场景，而那恰好是最常见的场景。因此在 `paimon-rest-server/pom.xml` 里
+这条守卫在 POM 里，因此与「谁」执行构建无关——`Dockerfile` 现在直接装你构建出的
+那个 jar，不再自己跑 Maven。受影响的是**本地改完控制台后只跑 `package`** 的场景，
+而那恰好是最常见的场景。因此在 `paimon-rest-server/pom.xml` 里
 把 `maven-clean-plugin` 的一个执行绑到了 `initialize`：
 
 ```xml

@@ -36,14 +36,15 @@ REST Management API**（RBAC 管理面）与一个 **Vue 3 管理控制台**；�
      撞上 `paimon-s3` 插件包的多版本 jar 布局 → `PluginFileIO` 切过类加载器后，那块作用域里
      **任何** `InetAddress` 解析都抛 `ServiceConfigurationError` → 对象存储的表写不出 schema /
      快照。症状：「S3 表建得出来、REST 读写也正常，桶里却没有 `schema/` 与 `snapshot/`」。
-     `Dockerfile` 两阶段都钉 17 就是为了这条，机理详见其顶部注释与 README 第 6 节第 21 条。
+     `Dockerfile`（运行镜像）钉 17 就是为了这条，机理详见其顶部注释与 README 第 6 节第 21 条。
    ```bash
    JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test   # 测试（macOS；通用写 /path/to/jdk-21）
    JAVA_HOME=/path/to/jdk-17 mvn -pl paimon-rest-server spring-boot:run   # 起服务端
    ```
 2. **仓库里没有 Maven Wrapper。** 没有 `mvnw`、没有 `.mvn/`。README 与 `docs/console.md`
-   里多处写的 `./mvnw` 在本仓库**跑不起来**，一律换成系统 `mvn`（3.9+）；
-   无 Maven 的机器走 Dockerfile（镜像自带 Maven）。
+   里多处写的 `./mvnw` 在本仓库**跑不起来**，一律换成系统 `mvn`（3.9+）。
+   **镜像里也没有 Maven**：`Dockerfile` 只装预先构建好的 jar，所以「没装 Maven 就用
+   Docker 构建」这条退路不存在——构件必须在宿主机或 CI 上先 `mvn package` 出来。
 3. **ANTLR 运行时版本必须精确等于目标 Spark 自带的版本**（现钉 `4.9.3`，对应 Spark 3.5.9）。
    写高了会把 Spark 的 `antlr4-runtime` 顶掉，症状是**整个会话连 `SELECT 1` 都解析不了**
    （`Could not deserialize ATN with version 3 (expected 4)`）。改 `spark.version` 时
@@ -82,6 +83,10 @@ REST Management API**（RBAC 管理面）与一个 **Vue 3 管理控制台**；�
 # ---- 构建 / 测试（JDK 17 或 21）----
 JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn -o -DskipTests clean package   # 打包两个 jar
 JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn -o test                        # 全量测试
+
+# ---- 容器镜像（Dockerfile 只装 jar、不编译，见第 8 节）----
+docker build -t paimon-rest-server:0.0.1 .                   # 当前架构
+./scripts/build-image.sh                                     # amd64 + arm64（多架构）
 
 # ---- 本地起服务（h2 profile 免 MySQL）----
 java -jar paimon-rest-server/target/paimon-rest-server-0.0.1-SNAPSHOT.jar \
@@ -142,7 +147,7 @@ deploy/kubernetes/      kustomize 清单（有独立 README）
 examples/spark-paimon-rest/  可运行示例
 spec/                   两份 OpenAPI 规格的仓库副本（运行时可从 /<name> 下载）
 sql/                    MySQL 建表语句（生成物）
-scripts/                验收 / 生成 / 校验脚本
+scripts/                验收 / 生成 / 校验 / 镜像构建脚本
 docs/                   12 份设计文档
 ```
 

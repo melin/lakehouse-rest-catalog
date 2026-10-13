@@ -1,0 +1,25 @@
+# buildkit 的镜像源配置——给 docker-container 驱动的 builder 用。
+#
+# 为什么需要它：
+#   `~/.docker/daemon.json` 里的 `registry-mirrors` 只对 docker daemon 生效。
+#   而 docker-container 驱动的 buildkit 是独立进程（跑在一个 buildkit 容器里），
+#   **不继承** daemon 的这份配置，它会直连 registry-1.docker.io 与 auth.docker.io。
+#   在出口受限的环境里，这个直连会拿到 502，于是 `docker buildx build` 在拉基础
+#   镜像的第一步就失败：
+#
+#     ERROR: failed to authorize: failed to fetch anonymous token:
+#       Get "https://auth.docker.io/token?...": Bad Gateway
+#
+#   同一时刻 `docker pull` 却是好的——因为 pull 走 daemon，daemon 会用镜像源。
+#   这个「一半能通、一半不通」的现象很容易把人引到错误的方向（去查认证、查网络），
+#   实际要补的就是本文件。
+#
+# 用法：
+#   docker buildx create --name mirrorb --driver docker-container \
+#     --config scripts/buildkitd.toml --bootstrap
+#   BUILDER=mirrorb scripts/build-image.sh
+#
+# 下面几个是公开加速站，可用性会变；内网有 harbor / nexus 之类的 docker 代理时
+# 换成那个更稳。多个地址按顺序尝试。
+[registry."docker.io"]
+  mirrors = ["docker.1ms.run", "docker.m.daocloud.io", "docker.xuanyuan.me"]

@@ -28,7 +28,7 @@
 
 ```
 paimon-rest/
-├── Dockerfile               服务端镜像（多阶段构建，见第 8 节）
+├── Dockerfile               服务端镜像（单阶段：装预构建的 jar，见第 8 节）
 ├── pom.xml                  聚合 POM（无父 POM，见「模块划分的取舍」）
 ├── paimon-rest-server/      Spring Boot 服务端：Catalog API + Management API
 ├── paimon-rest-console/     Web 管理控制台（Vue 3 + Vite，产物构建进服务端，见第 9 节）
@@ -38,7 +38,7 @@ paimon-rest/
 ├── spec/                    OpenAPI 规格副本
 ├── sql/                     MySQL 建表语句（由实体生成，见第 7 节「代码生成」）
 ├── docs/                    设计文档、契约基线与 SQL 语法参考
-└── scripts/                 验收脚本、代码生成脚本与文档校验脚本
+└── scripts/                 验收、代码生成、文档校验与镜像构建脚本
 ```
 
 模块划分的取舍：聚合 POM **不继承** `spring-boot-starter-parent`。因为
@@ -80,29 +80,6 @@ Maven 坐标与包名：`groupId` 为 `io.github.melin`，三个 artifact 分别
 
 前置条件：构建与测试用 **JDK 17 或 21**；**运行服务端必须用 JDK 17**（避开 18 及以上）；
 运行服务端需要一个 MySQL 8.0 实例。
-
-> **运行服务端不能用 18 及以上，只能用 17。** JDK 18 引入 JEP 418（`InetAddress` 的解析器
-> SPI），`InetAddress.loadResolver()` 会 `ServiceLoader` 找一个
-> `InetAddressResolverProvider`。而 Paimon 2.0.0 的 `paimon-s3` 插件包把 dnsjava 那个
-> provider 的**声明**放在插件根、**实现类**放在 `META-INF/versions/18/`（多版本 jar 布局，
-> 解成插件目录后不再生效）；`PluginFileIO` 每次 IO 都把线程上下文类加载器切成插件 loader，
-> 于是那块作用域里**任何** `InetAddress` 解析都抛
-> `ServiceConfigurationError: ... DnsjavaInetAddressResolverProvider not found`。
-> 触发点是 Hadoop `MetricsSystemImpl.getHostname()`，堆栈里全是 Hadoop 与 JDK 的类，
-> 与 S3 看着毫无关系；后果是**对象存储的表一个 schema / 快照文件都写不出去**
-> （表现为「用 REST catalog 读写都正常，但桶里没有 `schema/` 与 `snapshot/`」）。
-> JDK 17 没有这条 SPI，问题不存在。`Dockerfile` 两个阶段都钉在 17 就是为了这个。
-
-> **构建与测试必须用 17 或 21，不能用 24 及以上。** Spring Boot 4 只要求 17+，
-> 但 Spark 3.5 建测试会话时要经过 Hadoop 的 `UserGroupInformation.getCurrentUser()`，
-> 而它依赖的 `Subject.getSubject` 自 JDK 24 起被永久移除（JEP 486，永久关闭 Security
-> Manager）：每个建会话的用例都会各报一次
-> `UnsupportedOperationException: getSubject is not supported`，堆栈指向 Hadoop 内部，
-> 与本仓库代码无关。**这不是配置问题**——`-Djava.security.manager=allow` 在 JDK 24+
-> 会让 JVM 启动阶段直接失败，没有任何参数能绕过。
-> `-DskipTests` 打包不受影响；跑测试必须显式指定 JDK，例如
-> `JAVA_HOME=/path/to/jdk-21 mvn test`。测试侧由 `SparkJdkRequirement` 在建会话前
-> 拦下这一情况并直接给出结论，不再让它以十几条 Hadoop 堆栈的形式出现。
 
 ### 2.1 准备数据库
 
@@ -553,7 +530,7 @@ Azure 只下发定位元数据是个明确的缺口：Polaris 的 `polaris.stora
     （`fail-on-error=false`）只记一条 WARN、建表照样成功——但仓库里那份 schema / 快照
     就是写不出去。所以「S3 表建得出来、用 REST 读写也正常，桶里却没有 `schema/` 与
     `snapshot/`」这个现象，先查服务端跑在哪个 JDK 上。
-    `Dockerfile` 两个阶段都钉 17 就是为了这条；17 没有这条 SPI，问题不存在。
+    `Dockerfile` 的运行镜像钉 17 就是为了这条；17 没有这条 SPI，问题不存在。
     这是上游插件打包的问题，不是本仓库代码的问题。
 
 ---
@@ -728,25 +705,100 @@ python3 -m pip install --user PyYAML
 ### 8.1 镜像
 
 ```bash
+# 1. 先产出 jar —— 镜像里没有 JDK 与 Maven，构建镜像不编译
+mvn -o -pl paimon-rest-server -am clean package -DskipTests
+
+# 2. 再打镜像
 docker build -t paimon-rest-server:0.0.1 .
 ```
 
-多阶段构建：构建阶段用 `maven:3.9-eclipse-temurin-17`，运行阶段只留
-`eclipse-temurin:17-jre-noble` 加一个 jar，镜像里不含 Maven 仓库与源码。
-**两个阶段都钉 17，不要升到 18 及以上**——理由见第 2 节开头（S3 物化的 DNS 解析）。
+单阶段：基础镜像是 `eclipse-temurin:17-jre-noble`，`Dockerfile` 只做三件事——
+复制上面那份 jar、复制 `sql/schema-mysql.sql`、建一个非 root 用户。
+**运行镜像钉 17，不要升到 18 及以上**——理由见第 2 节开头（S3 物化的 DNS 解析）。
+jar 是 17 编的还是 21 编的都不影响：根 POM 钉了 `maven.compiler.release=17`，
+字节码始终是 17 的，构建期与运行期的 JDK 在这里是解耦的。
+
+**为什么不把编译放进镜像**：编译要 JDK、Maven 与约 300MB 依赖，而这些只在构建时
+用一次，运行一个都不需要。挪出去之后 `docker build` 只剩复制文件，构建机器也不必
+为镜像单独养一份 Maven 依赖缓存；更关键的一点是**镜像里跑的就是你本地跑过的那个
+jar**（同一份字节），而不是镜像内按同一份源码又编一遍的另一份产物——后者只要有一处
+环境差异，就变成「测过的」与「部署的」不是一回事。代价是工件必须先存在：忘了第 1 步，
+`docker build` 会在 `COPY` 处直接报找不到文件（`.dockerignore` 只放行
+`paimon-rest-server/target/*.jar`）。
+
 运行时以 uid 10001 非 root 运行；`ENTRYPOINT` 用 exec 形式，让 SIGTERM 直达 JVM，
 配合 Spring Boot 的优雅停机。
 
 镜像里放两样东西：jar，以及 `sql/schema-mysql.sql`。后者是给 K8s 的 initContainer
-用的——它把 DDL 投递给 MySQL 做首次初始化（见 8.2）。两样东西来自同一次构建，
+用的——它把 DDL 投递给 MySQL 做首次初始化（见 8.2）。两样东西取自同一个仓库状态，
 因此 DDL 与 jar 里的实体定义天然同版本。
 
-构建时踩到的两个坑已经落进 Dockerfile：
+构建时踩到的一个坑已经落进 Dockerfile：
 
 | 现象 | 原因 | 处理 |
 | --- | --- | --- |
-| 解析 `spring-boot-starter-parent` 时失败，报 `Requests from open proxy and relay services are blocked` | 某些网络环境下 Maven Central 对特定出口 IP 返回 403，而本机 mvn 正常 | 默认仓库改为 `repo1.maven.org`；换企业镜像用 `--build-arg MAVEN_MIRROR_URL=...` |
 | 容器内 `Permission denied`，报错指向 `/app/sql/schema-mysql.sql` | `COPY --chmod=0644` 会把权限也套到 Docker 自动创建的中间目录上，`/app/sql` 变成 `drw-r--r--`；目录没有 x 位就无法遍历，里面文件什么权限都读不到 | 先 `RUN mkdir -p /app/sql && chmod 0755`，再单独 `COPY` 文件 |
+
+另有一条同源的经验搬到了宿主机侧：某些网络环境下 Maven Central 会对特定出口 IP
+返回 403（`Requests from open proxy and relay services are blocked`），而本机 mvn
+正常——现在第 1 步在宿主机上跑，在 `~/.m2/settings.xml` 里配一个 mirror 即可
+（原先它是镜像构建的坑，靠 `--build-arg MAVEN_MIRROR_URL=...` 绕开，现已随构建阶段移除）。
+
+#### 多架构镜像
+
+`docker build` 只能产出**当前机器架构**的镜像。要同时提供 x86 与 ARM（两者都有真实
+部署场景：x86 服务器、Apple Silicon 开发机、ARM 云主机），走 `buildx`：
+
+```bash
+./scripts/build-image.sh                                    # 双平台，装进本机镜像存储
+OCI=/tmp/paimon-rest-server-multiarch.tar ./scripts/build-image.sh   # 导出 OCI 归档
+PLATFORMS=linux/amd64 ./scripts/build-image.sh              # 退回单平台
+# 要有别的机器能用，只能推仓库（IMAGE 需带仓库地址）
+PUSH=1 IMAGE=registry.example.com/paimon-rest/paimon-rest-server:0.0.1 ./scripts/build-image.sh
+```
+
+脚本只是把几条容易记错的约束固定下来，参数都是环境变量（`IMAGE` / `PLATFORMS` /
+`PUSH` / `OCI` / `BUILDER` / `EXTRA`，见脚本头部注释）。三条实际会踩的：
+
+1. **多平台不能用传统引擎的 `--load`。** 多平台产物的顶层是一个 manifest list，
+   传统 graph driver 的镜像存储放不下（报 `docker exporter does not currently
+   support exporting manifest lists`）。Docker Desktop 默认启用的 containerd 存储
+   可以，判据是 `docker info --format '{{.Driver}}'` 输出 `overlayfs`（传统驱动是
+   `overlay2`）。不支持时用 `OCI=` 导出 tar，或 `PUSH=1`。
+2. **只有 `PUSH=1` 才能让别的机器拿到多平台镜像。** 装进本机镜像存储的 tag 只在这台
+   机器上有效；异构集群的各节点要各自拉取自己架构的那一份，必须有一个能存 manifest
+   list 的 registry。
+3. **跨架构构建靠 QEMU，慢但不影响产物。** 本机（arm64）实测：amd64 那份从启动到
+   健康检查通过约 85 秒，arm64 原生约 20 秒，差距主要在 `RUN apt-get install curl`
+   这类步骤上。
+
+**多架构不需要跑两次 Maven。** jar 是架构无关的字节码，`Dockerfile` 又只装不编译，
+两个平台吃的是同一个 jar。这一点可以直接验证——把两个平台镜像里的 `/app/app.jar`
+解出来算 sha256，都与本地那份一致：
+
+| 平台 | `/app/app.jar` sha256（前 16 位） | 与本地 jar |
+| --- | --- | --- |
+| linux/amd64 | `1bcf5cdbb6cf324a` | 一致 |
+| linux/arm64 | `1bcf5cdbb6cf324a` | 一致 |
+
+两个平台镜像的 config 逐项相同（`User` 10001:10001、`Entrypoint`、`WorkingDir`、
+`ExposedPorts`、`HEALTHCHECK`、`JAVA_TOOL_OPTIONS`），运行时 JDK 都是 17.0.20.1。
+
+**体积成本**：多平台镜像在仓库里约等于两倍体积。两平台的基础镜像层天然不同；jar 层
+内容虽然相同却**无法去重**——层 tar 里新建目录条目的时间戳取的是各平台的打包时刻，
+两次打包跨秒时 digest 就不同（实测两层 tar 只差 4 个字节，全在 header 的时间戳字段）。
+只需一种架构时用 `PLATFORMS=` 指定，别无谓地翻倍。
+
+**若 buildx 报 `Bad Gateway` / `failed to authorize`**：daemon 的 `registry-mirrors`
+只对 daemon 生效，docker-container 驱动的 buildkit **不继承**它，会直连
+`registry-1.docker.io` 与 `auth.docker.io`；于是 `docker pull` 正常而 `buildx build`
+失败。给 builder 单独配一份镜像源即可（模板见 `scripts/buildkitd.toml`）：
+
+```bash
+docker buildx create --name mirrorb --driver docker-container \
+  --config scripts/buildkitd.toml --bootstrap
+BUILDER=mirrorb ./scripts/build-image.sh
+```
 
 ### 8.2 Kubernetes
 
@@ -819,7 +871,7 @@ http://localhost:8080/console/
 - **它是运维工具，不是写入入口。** 不提供 `commitTable`（控制台拼不出一个指向真实文件的快照）；
   对表的改动只有结构变更、回滚与授权。
 - **构建产物提交在仓库里。** 产物落在 `paimon-rest-server/src/main/resources/static/console`，
-  因此 `mvn package` 与 Dockerfile 都不需要 Node；代价是改了前端必须重建并提交产物，
+  因此构建服务端 jar 不需要 Node；代价是改了前端必须重建并提交产物，
   用 `./scripts/build-console.sh` 一条命令完成构建与校验。
 - **路径不靠人工比对。** 全部端点收在 `paimon-rest-console/src/api/endpoints.js` 一张表里，
   由 `scripts/verify-console.py` 与两份 OpenAPI 规格机械比对（11 组 28 项：端点存在性、

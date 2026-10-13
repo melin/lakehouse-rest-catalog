@@ -2,8 +2,8 @@
 # 构建 Web 管理控制台前端，并把产物落到服务端的 classpath 里。
 #
 # 为什么要有这个脚本：控制台的构建产物是**提交进仓库**的
-# （paimon-rest-server/src/main/resources/static/console），这样
-# `mvnw package` 与 Dockerfile 都不需要 node/npm。代价是源码改动后
+# （paimon-rest-server/src/main/resources/static/console），这样构建服务端 jar
+# 不需要 node/npm（Dockerfile 只装现成的 jar，也不涉及 Node）。代价是源码改动后
 # 产物会变旧，而旧的产物不会让任何东西报错——它只是安静地少一个按钮。
 # 本脚本把「装依赖 → 构建 → 校验产物与源码一致」串成一条命令，
 # 最后一步由 verify-console.py 机械完成。
@@ -34,7 +34,8 @@ if ! command -v npm >/dev/null 2>&1; then
   cat >&2 <<'MSG'
 找不到 npm。控制台前端需要 Node 20+：
   - 宿主机已装 Node 时，确认 npm 在 PATH 里；
-  - 或者改用 Docker 构建（Dockerfile 只编译 Java，产物已在仓库里，不需要 Node）。
+  - 或者跳过前端重建：产物已提交在仓库里，`mvn -o package` 直接就能打出完整的
+    服务端 jar。不需要 Node，也不需要 Docker——Dockerfile 只装现成的 jar。
 MSG
   exit 1
 fi

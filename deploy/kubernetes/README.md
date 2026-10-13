@@ -15,7 +15,8 @@ kubectl apply -k deploy/kubernetes
 | 条件 | 说明 |
 | --- | --- |
 | Kubernetes | 1.24 及以上。清单用了 `policy/v1` 的 PodDisruptionBudget（1.21 GA）与 `networking.k8s.io/v1` 的 Ingress |
-| 镜像 | 需要在能访问集群节点的机器上先构建，见第 2.2 节 |
+| 镜像 | 需要在能访问集群节点的机器上先构建，见第 2.2 节；节点架构不一致时要推多架构镜像 |
+| 构建产物 | 服务端 jar 必须先用 `mvn -o -pl paimon-rest-server -am clean package -DskipTests` 产出——镜像只装 jar、不编译，见第 2.2 节 |
 | 存储 | 集群要有默认 StorageClass，否则 `paimon-warehouse` 与 MySQL 的 PVC 会一直 Pending |
 | Ingress | 仅在需要从集群外访问时才要，没有的话把 ingress.yaml 从 kustomization.yaml 里去掉 |
 
@@ -43,6 +44,9 @@ kubectl -n paimon-rest create secret generic paimon-rest-credentials \
 ### 2.2 构建并让节点拿到镜像
 
 ```bash
+# 先产出 jar —— 镜像里没有 JDK 与 Maven，构建镜像不编译
+mvn -o -pl paimon-rest-server -am clean package -DskipTests
+
 docker build -t paimon-rest-server:0.0.1 .
 ```
 
@@ -58,6 +62,20 @@ minikube image load paimon-rest-server:0.0.1
 ```
 
 多节点集群请推到镜像仓库，并把清单里的 `image` 改成带仓库地址的完整引用。
+
+**节点架构不一致时要用多架构镜像。** 上面 `docker build` 产出的是**构建机自己**的
+架构（Apple Silicon 上是 arm64）。集群里若既有 x86 又有 ARM 节点，各节点会按自己的
+架构去拉，只有多架构镜像才都拉得到：
+
+```bash
+PLATFORMS=linux/amd64,linux/arm64 \
+PUSH=1 IMAGE=registry.example.com/paimon-rest/paimon-rest-server:0.0.1 \
+  ../../scripts/build-image.sh
+```
+
+多架构镜像**不能**走 `kind load` / `minikube image load`——那两条是把本机镜像塞进单
+节点，本来就与多架构无关。异构集群一定有 registry，清单里的 `image` 也要同步改成带
+仓库地址的完整引用。踩坑与验证细节见仓库根 README 第 8.1 节「多架构镜像」。
 
 ### 2.3 应用
 
@@ -231,6 +249,10 @@ Pod 启动验证**。已经做过的是：
 **ImagePullBackOff，但 `docker images` 里明明有这个镜像**
 镜像是本地构建的，节点拉的却不是同一个。单节点集群用第 2.2 节的
 `load` 命令；多节点集群推仓库。
+
+**`no match for platform in manifest` / `no matching manifest for linux/arm64`**
+节点架构与镜像不一致：镜像只构建了构建机的架构。混合架构集群要推多架构镜像
+（见 2.2），单平台镜像即便推上仓库也救不了——x86 节点就是找不到 amd64 那份。
 
 **改了 `sql/schema-mysql.sql` 但新集群建出的表还是旧的**
 DDL 只在镜像构建时进入镜像，改完要重新 `docker build`（见 4.3）。

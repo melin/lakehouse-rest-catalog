@@ -1,83 +1,3 @@
-# Paimon Rest Catalog Server 镜像。
-#
-# 构建（在仓库根目录执行，构建上下文必须是根目录：需要同时看到父 POM 与子模块）：
-#   docker build -t paimon-rest-server:0.0.1 .
-#   docker run --rm -p 8080:8080 \
-#     -e SPRING_DATASOURCE_URL='jdbc:mysql://host.docker.internal:3306/paimon_catalog?...' \
-#     paimon-rest-server:0.0.1
-#
-# 只想快速试一下、不接 MySQL 时用内存库：
-#   docker run --rm -p 8080:8080 -e SPRING_PROFILES_ACTIVE=h2 paimon-rest-server:0.0.1
-#
-# 为什么是多阶段：本仓库的构建需要 JDK、Maven 与约 300MB 的依赖，
-# 而运行只需要一个 JRE 加一个 jar。分阶段后镜像里不含 Maven 仓库与源码。
-
-# syntax=docker/dockerfile:1.7
-
-# ---------------------------------------------------------------------------
-# 构建阶段
-# ---------------------------------------------------------------------------
-# 用镜像自带的 mvn，不用 ./mvnw：wrapper 的 distributionType=only-script 需要联网
-# 下载 Maven 发行包，而这一步在镜像里没有必要——基础镜像已经是 Maven 3.9.x，
-# 与 .mvn/wrapper/maven-wrapper.properties 声明的 3.9.16 同一小版本线。
-FROM maven:3.9-eclipse-temurin-17 AS builder
-
-# 解析依赖用的仓库地址。默认值是 Maven Central 的原始域名，
-# 与 Maven 内置的 repo.maven.apache.org 是同一份内容。
-#
-# 为什么不让 Maven 用内置地址：某些网络环境里 Maven Central 会对特定出口 IP
-# 返回 403（提示 "Requests from open proxy and relay services are blocked"），
-# 于是镜像构建在解析 spring-boot-starter-parent 时就失败，而本机 mvn 却正常——
-# 排查起来很容易被误判成「版本号写错」。换成 repo1 域名可绕开这类节点级封锁。
-# 走企业内网镜像时覆盖它即可：
-#   docker build --build-arg MAVEN_MIRROR_URL=https://maven.aliyun.com/repository/public .
-ARG MAVEN_MIRROR_URL=https://repo1.maven.org/maven2
-
-RUN mkdir -p /root/.m2 \
-    && printf '%s\n' \
-        '<?xml version="1.0" encoding="UTF-8"?>' \
-        '<settings xmlns="http://maven.apache.org/SETTINGS/1.2.0"' \
-        '          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"' \
-        '          xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.2.0 https://maven.apache.org/xsd/settings-1.2.0.xsd">' \
-        '  <mirrors>' \
-        '    <mirror>' \
-        '      <id>build-mirror</id>' \
-        "      <url>${MAVEN_MIRROR_URL}</url>" \
-        '      <mirrorOf>central</mirrorOf>' \
-        '    </mirror>' \
-        '  </mirrors>' \
-        '</settings>' > /root/.m2/settings.xml
-
-WORKDIR /workspace
-
-# 整个仓库一起复制。上下文大小由 .dockerignore 控制：target/ 与 .git/ 都不进上下文。
-# 依赖下载挂在缓存挂载上，重复构建时不必重新下载（Requires BuildKit，默认已开启）。
-COPY . .
-
-# 只构建服务端模块。加 -am 是因为聚合 POM 下单独构建子模块需要父 POM 参与反应堆，
-# 而 paimon-rest-spark 与本次镜像无关，不构建以缩短时间。
-# 运行测试有意留给 CI：镜像构建只需产物本身。
-RUN --mount=type=cache,target=/root/.m2/repository \
-    mvn -B -ntp -pl paimon-rest-server -am clean package -DskipTests
-
-# ---------------------------------------------------------------------------
-# 运行阶段
-# ---------------------------------------------------------------------------
-# Boot 4 要求 JDK 17 起，这里**钉 17**，不要升到 18+。
-#
-# 为什么不能升：JDK 18 引入 JEP 418（InetAddress 的解析器 SPI），
-# InetAddress.loadResolver() 会 ServiceLoader 找 InetAddressResolverProvider。
-# 而 Paimon 2.0.0 的 paimon-s3 插件包把 dnsjava 那个 provider 的声明放在插件根、
-# 实现类放在 META-INF/versions/18/（多版本 jar 布局，解成插件目录后不再生效），
-# 于是 S3FileIO 一旦被使用，PluginFileIO 把线程上下文类加载器切成插件 loader，
-# 那块作用域里**任何** InetAddress 解析都抛 ServiceConfigurationError ——
-# 触发点是 Hadoop MetricsSystemImpl.getHostname()，堆栈里全是 Hadoop 与 JDK 的类，
-# 与 S3 看着毫无关系。后果是对象存储的表一个 schema / 快照文件都写不出去。
-# JDK 17 没有这条 SPI，问题不存在。
-#
-# 这与 AGENTS.md §1 第 1 条（只能用 17 或 21）不冲突：那里说的是**测试**必须 17/21
-# 才能跑 Spark 会话，这里说的是**服务端运行时**必须避开 18+。
-# 不选 alpine：musl 与 glibc 在少数依赖上行为不同，而本镜像并不缺那几 MB。
 FROM eclipse-temurin:17-jre-noble
 
 # curl 不是运行时依赖，只为两件事装：Docker 的 HEALTHCHECK，以及容器内排查
@@ -93,9 +13,15 @@ RUN groupadd --system --gid 10001 app \
 
 WORKDIR /app
 
-COPY --from=builder --chown=app:app /workspace/paimon-rest-server/target/paimon-rest-server-0.0.1-SNAPSHOT.jar /app/app.jar
+# 宿主机构建好的 jar。文件名是 POM 的约定产物名——改版本号时这里要跟着改，
+# `.dockerignore` 那条放行规则写的是通配符，不需要动。
+#
+# 落位时改名 app.jar：ENTRYPOINT 里的路径就不会随版本号漂移。
+COPY --chown=app:app paimon-rest-server/target/paimon-rest-server-0.0.1-SNAPSHOT.jar /app/app.jar
+
 # 建表语句一并放进镜像：部署时 initContainer 要拿它初始化空库，
 # 直接从镜像里取可以避免「镜像里的代码」与「集群里的 DDL」版本不一致。
+# （DDL 与 jar 都取自同一个仓库状态，因此仍然是同版本的一对。）
 #
 # 为什么先建目录、再单独复制文件，而不是一句 COPY 带 --chmod 搞定：
 #
