@@ -161,7 +161,7 @@ open http://localhost:8080/console/
 ```
 
 它覆盖 Catalog API（库表视图函数、快照标签分支、数据令牌与查询授权）与
-Management API（catalog、主体、服务角色、catalog 角色与 grants）两个 API 面，
+Management API（catalog、主体、角色、catalog 角色与 grants）两个 API 面，
 首页还有一个「连接自检」，逐个探测控制台依赖的端点——地址或令牌配错时，
 它会把失败的那一个连同 HTTP 状态一起列出来，而不是让你对着空列表猜。
 
@@ -863,7 +863,7 @@ http://localhost:8080/console/
 | `/` | 概览：统计块、服务端配置、**连接自检**、catalog 清单、`GET /v1/config` |
 | `/browse` | 目录浏览：库/表/视图/函数/语义视图；建库建表、注册表、按表 ID 定位、重命名、删除 |
 | `/tables/:prefix/:database/:table` | [表详情](docs/console-table-detail.md)：九个页签、快照与标签回滚、表级 grants |
-| `/catalogs`、`/principals`、`/principal-roles`、`/catalog-roles` | 治理：catalog、主体、服务角色、catalog 角色与 grants |
+| `/catalogs`、`/principals`、`/principal-roles`、`/catalog-roles` | 治理：catalog、主体、角色、catalog 角色与 grants |
 | `/settings` | 连接设置：API 基址、访问令牌、登录状态、主题 |
 
 三条约束值得先知道：

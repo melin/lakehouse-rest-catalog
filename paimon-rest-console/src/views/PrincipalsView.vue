@@ -27,7 +27,7 @@
         :loading="table.loading.value"
         :error="table.error.value"
         :empty="!rows.length"
-        empty-text="还没有主体。新建一个，再把服务角色授予它，它就能访问 catalog 了。"
+        empty-text="还没有主体。新建一个，再把角色授予它，它就能访问 catalog 了。"
       >
         <template #actions>
           <el-button size="small" type="primary" @click="openCreate">
@@ -55,7 +55,7 @@
           </el-table-column>
           <el-table-column label="操作" width="200" fixed="right">
             <template #default="{ row }">
-              <IconAction icon="Avatar" label="服务角色" type="primary" @click="openRoles(row)" />
+              <IconAction icon="Avatar" label="角色" type="primary" @click="openRoles(row)" />
               <IconAction icon="Refresh" label="轮换密钥" @click="rotate(row)" />
               <IconAction icon="Key" label="重置 clientId 与密钥" @click="openReset(row)" />
               <IconAction icon="Delete" label="删除" type="danger" @click="confirmDelete(row)" />
@@ -115,9 +115,9 @@
     </el-dialog>
 
     <!-- 角色抽屉 -->
-    <el-drawer v-model="rolesDrawer.open" :title="`服务角色：${rolesDrawer.principal}`" size="560px">
+    <el-drawer v-model="rolesDrawer.open" :title="`角色：${rolesDrawer.principal}`" size="560px">
       <div class="pc-role-add">
-        <el-select v-model="rolesDrawer.toGrant" size="small" placeholder="选择要授予的服务角色" filterable class="pc-role-select">
+        <el-select v-model="rolesDrawer.toGrant" size="small" placeholder="选择要授予的角色" filterable class="pc-role-select">
           <el-option
             v-for="role in grantableRoles"
             :key="role.name"
@@ -134,7 +134,7 @@
         :loading="rolesDrawer.loading"
         :error="rolesDrawer.error"
         :empty="!rolesDrawer.roles.length"
-        empty-text="这个主体还没有服务角色。用上面的选择器授予一个。"
+        empty-text="这个主体还没有角色。用上面的选择器授予一个。"
       >
         <el-table :data="rolesDrawer.roles" size="small">
           <el-table-column prop="name" label="角色" min-width="160" />
@@ -276,7 +276,7 @@ async function confirmDelete(row) {
   const ok = await confirmDanger({
     title: '删除主体',
     target: `确认删除主体「${row.name}」？`,
-    detail: '该主体持有的服务角色绑定会一并移除。已经用它的凭据签发的令牌在过期前仍然有效。',
+    detail: '该主体持有的角色绑定会一并移除。已经用它的凭据签发的令牌在过期前仍然有效。',
   })
   if (!ok) return
   try {
@@ -342,7 +342,7 @@ async function grantRole() {
 
 async function revokeRole(name) {
   const ok = await confirmDanger({
-    title: '移除服务角色',
+    title: '移除角色',
     target: `从主体「${rolesDrawer.principal}」移除角色「${name}」？`,
     detail: '该角色所带的 catalog 权限会立即失效。',
     confirmText: '移除',

@@ -1,8 +1,8 @@
 <template>
   <div class="pc-page">
     <PageHeader
-      title="服务角色（Principal Role）"
-      subtitle="服务角色串起主体与 catalog 角色：主体持有服务角色，服务角色在各 catalog 上持有 catalog 角色，权限挂在最后一级。因此改一个服务角色，会影响所有持有它的主体。"
+      title="Roles"
+      subtitle="角色串起主体与 catalog 角色：主体持有角色，角色在各 catalog 上持有 catalog 角色，权限挂在最后一级。因此改一个角色，会影响所有持有它的主体。"
     >
       <template #actions>
         <el-button size="small" :loading="table.loading.value" @click="table.load">
@@ -11,14 +11,14 @@
         </el-button>
         <el-button size="small" type="primary" @click="openCreate">
           <el-icon><Plus /></el-icon>
-          <span class="pc-btn-text">新建服务角色</span>
+          <span class="pc-btn-text">新建角色</span>
         </el-button>
       </template>
     </PageHeader>
 
     <PanelCard flush>
       <div class="pc-list-head">
-        <span class="pc-list-title">服务角色（{{ rows.length }}）</span>
+        <span class="pc-list-title">角色（{{ rows.length }}）</span>
         <span class="pc-list-tools">
           <span class="pc-mono pc-dim">管理 API /principal-roles</span>
         </span>
@@ -27,12 +27,12 @@
         :loading="table.loading.value"
         :error="table.error.value"
         :empty="!rows.length"
-        empty-text="还没有服务角色。新建一个，再把它授予主体。"
+        empty-text="还没有角色。新建一个，再把它授予主体。"
       >
         <template #actions>
           <el-button size="small" type="primary" @click="openCreate">
             <el-icon><Plus /></el-icon>
-            <span class="pc-btn-text">新建服务角色</span>
+            <span class="pc-btn-text">新建角色</span>
           </el-button>
         </template>
         <el-table v-loading="table.loading.value" :data="rows" size="small">
@@ -69,7 +69,7 @@
     <!-- 新建 / 编辑 -->
     <el-dialog
       v-model="dialog.open"
-      :title="dialog.mode === 'create' ? '新建服务角色' : `编辑服务角色：${dialog.name}`"
+      :title="dialog.mode === 'create' ? '新建角色' : `编辑角色：${dialog.name}`"
       width="520px"
       :close-on-click-modal="false"
       destroy-on-close
@@ -102,14 +102,14 @@
     </el-dialog>
 
     <!-- 成员与 catalog 角色 -->
-    <el-drawer v-model="detail.open" :title="`服务角色：${detail.name}`" size="620px">
+    <el-drawer v-model="detail.open" :title="`角色：${detail.name}`" size="620px">
       <el-tabs v-model="detail.tab">
         <el-tab-pane label="成员主体" name="principals">
           <ResourceState
             :loading="detail.loadingPrincipals"
             :error="detail.errorPrincipals"
             :empty="!detail.principals.length"
-            empty-text="还没有主体持有这个服务角色。授予要按主体操作，去「主体」页面。"
+            empty-text="还没有主体持有这个角色。授予要按主体操作，去「主体」页面。"
           >
             <template #actions>
               <el-button size="small" type="primary" @click="$router.push({ name: 'principals' })">
@@ -171,7 +171,7 @@
             v-loading="detail.loadingCatalogRoles"
             :data="detail.catalogRoles"
             size="small"
-            empty-text="这个服务角色在该 catalog 上还没有 catalog 角色"
+            empty-text="这个角色在该 catalog 上还没有 catalog 角色"
           >
             <el-table-column prop="name" label="Catalog 角色" min-width="180" />
             <el-table-column label="创建时间" width="170">
@@ -235,7 +235,7 @@ function openEdit(row) {
 
 async function save() {
   if (dialog.mode === 'create' && !dialog.name.trim()) {
-    notifyError(new Error('请填写服务角色名称'))
+    notifyError(new Error('请填写角色名称'))
     return
   }
   dialog.saving = true
@@ -246,13 +246,13 @@ async function save() {
         federated: dialog.federated,
         properties: dialog.properties,
       })
-      notifySuccess(`已创建服务角色 ${dialog.name.trim()}`)
+      notifySuccess(`已创建角色 ${dialog.name.trim()}`)
     } else {
       await managementApi.updatePrincipalRole(dialog.name, {
         currentEntityVersion: dialog.entityVersion,
         properties: dialog.properties,
       })
-      notifySuccess(`已更新服务角色 ${dialog.name}`)
+      notifySuccess(`已更新角色 ${dialog.name}`)
     }
     dialog.open = false
     table.load()
@@ -265,14 +265,14 @@ async function save() {
 
 async function confirmDelete(row) {
   const ok = await confirmDanger({
-    title: '删除服务角色',
-    target: `确认删除服务角色「${row.name}」？`,
+    title: '删除角色',
+    target: `确认删除角色「${row.name}」？`,
     detail: '与该角色相关的绑定会一并移除：主体的角色授予、以及它在各 catalog 上持有的 catalog 角色。',
   })
   if (!ok) return
   try {
     await managementApi.deletePrincipalRole(row.name)
-    notifySuccess(`已删除服务角色 ${row.name}`)
+    notifySuccess(`已删除角色 ${row.name}`)
     table.load()
   } catch (error) {
     notifyError(error)
@@ -364,7 +364,7 @@ async function revokeCatalogRole(name) {
   const ok = await confirmDanger({
     title: '移除 Catalog 角色',
     target: `在 catalog「${detail.catalogName}」上移除角色「${name}」？`,
-    detail: '持有这个服务角色的所有主体都会失去该 catalog 角色带来的权限。',
+    detail: '持有这个角色的所有主体都会失去该 catalog 角色带来的权限。',
     confirmText: '移除',
   })
   if (!ok) return
