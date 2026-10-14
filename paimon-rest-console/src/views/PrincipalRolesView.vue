@@ -2,7 +2,7 @@
   <div class="pc-page">
     <PageHeader
       title="服务角色（Principal Role）"
-      subtitle="服务角色是主体与 catalog 角色之间的中间层：主体 —(持有)→ 服务角色 —(在某 catalog 上持有)→ catalog 角色 —(携带)→ 授权。角色本身的管理需要服务管理员身份。"
+      subtitle="服务角色串起主体与 catalog 角色：主体持有服务角色，服务角色在各 catalog 上持有 catalog 角色，权限挂在最后一级。因此改一个服务角色，会影响所有持有它的主体。"
     >
       <template #actions>
         <el-button size="small" :loading="table.loading.value" @click="table.load">
@@ -17,15 +17,27 @@
     </PageHeader>
 
     <PanelCard flush>
+      <div class="pc-list-head">
+        <span class="pc-list-title">服务角色（{{ rows.length }}）</span>
+        <span class="pc-list-tools">
+          <span class="pc-mono pc-dim">管理 API /principal-roles</span>
+        </span>
+      </div>
       <ResourceState
         :loading="table.loading.value"
         :error="table.error.value"
         :empty="!rows.length"
-        empty-text="还没有服务角色"
+        empty-text="还没有服务角色。新建一个，再把它授予主体。"
       >
+        <template #actions>
+          <el-button size="small" type="primary" @click="openCreate">
+            <el-icon><Plus /></el-icon>
+            <span class="pc-btn-text">新建服务角色</span>
+          </el-button>
+        </template>
         <el-table v-loading="table.loading.value" :data="rows" size="small">
           <el-table-column prop="name" label="名称" min-width="160" />
-          <el-table-column label="联邦（federated）" width="120">
+          <el-table-column label="联邦（federated）" width="150">
             <template #default="{ row }">
               <el-tag size="small" effect="plain" :type="row.federated ? 'warning' : 'info'">
                 {{ row.federated ? '是' : '否' }}
@@ -45,7 +57,7 @@
           </el-table-column>
           <el-table-column label="操作" width="160" fixed="right">
             <template #default="{ row }">
-              <IconAction icon="User" label="成员与角色" type="primary" @click="openDetail(row)" />
+              <IconAction icon="User" label="成员与 Catalog 角色" type="primary" @click="openDetail(row)" />
               <IconAction icon="Edit" label="编辑" @click="openEdit(row)" />
               <IconAction icon="Delete" label="删除" type="danger" @click="confirmDelete(row)" />
             </template>
@@ -62,7 +74,7 @@
       :close-on-click-modal="false"
       destroy-on-close
     >
-      <el-form label-position="top" size="small">
+      <el-form label-position="top" size="small" class="pc-form">
         <el-form-item v-if="dialog.mode === 'create'" label="名称" required>
           <el-input v-model="dialog.name" placeholder="例如 service_admin、data_reader" />
         </el-form-item>
@@ -97,8 +109,13 @@
             :loading="detail.loadingPrincipals"
             :error="detail.errorPrincipals"
             :empty="!detail.principals.length"
-            empty-text="还没有主体持有这个服务角色"
+            empty-text="还没有主体持有这个服务角色。授予要按主体操作，去「主体」页面。"
           >
+            <template #actions>
+              <el-button size="small" type="primary" @click="$router.push({ name: 'principals' })">
+                去「主体」页面授予
+              </el-button>
+            </template>
             <el-table :data="detail.principals" size="small">
               <el-table-column prop="name" label="主体" min-width="160" />
               <el-table-column label="Client ID" min-width="180">
@@ -106,14 +123,21 @@
               </el-table-column>
             </el-table>
           </ResourceState>
-          <p class="pc-dim pc-drawer-note">
-            授予主体需要到「主体」页面操作：那条接口按主体定位，这里只做展示。
+          <p v-if="detail.principals.length" class="pc-drawer-note">
+            授予主体要在「主体」页面操作：那条接口按主体定位，这里只做展示。
           </p>
         </el-tab-pane>
 
         <el-tab-pane label="Catalog 角色" name="catalogRoles">
           <div class="pc-role-add">
-            <el-select v-model="detail.catalogName" size="small" placeholder="选择 catalog" filterable class="pc-role-select">
+            <el-select
+              v-model="detail.catalogName"
+              size="small"
+              placeholder="选择 catalog"
+              filterable
+              class="pc-role-select"
+              @change="loadCatalogRoles"
+            >
               <el-option
                 v-for="catalog in session.state.catalogs"
                 :key="catalog.name"
@@ -121,9 +145,6 @@
                 :value="catalog.name"
               />
             </el-select>
-            <el-button size="small" :loading="detail.loadingCatalogRoles" :disabled="!detail.catalogName" @click="loadCatalogRoles">
-              加载
-            </el-button>
           </div>
 
           <div v-if="detail.catalogName" class="pc-role-add">
@@ -145,7 +166,13 @@
             <div>授予 catalog 角色需要在目标 catalog 上具备 CATALOG_MANAGE_ACCESS。</div>
           </el-alert>
 
-          <el-table v-else :data="detail.catalogRoles" size="small" empty-text="这个服务角色在该 catalog 上还没有 catalog 角色">
+          <el-table
+            v-else
+            v-loading="detail.loadingCatalogRoles"
+            :data="detail.catalogRoles"
+            size="small"
+            empty-text="这个服务角色在该 catalog 上还没有 catalog 角色"
+          >
             <el-table-column prop="name" label="Catalog 角色" min-width="180" />
             <el-table-column label="创建时间" width="170">
               <template #default="{ row }"><TimeText :millis="row.createTimestamp" /></template>
@@ -352,29 +379,3 @@ async function revokeCatalogRole(name) {
 
 onConsoleRefresh(() => table.load())
 </script>
-
-<style scoped>
-
-.pc-role-add {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 12px;
-}
-
-.pc-role-select {
-  flex: 1;
-}
-
-.pc-drawer-note {
-  margin-top: 14px;
-  font-size: 13px;
-  line-height: 1.7;
-}
-
-:deep(.el-divider__text) {
-  font-size: 13px;
-  color: var(--pc-text-dim);
-  background: var(--pc-surface);
-}
-</style>

@@ -2,7 +2,7 @@
   <div class="pc-page">
     <PageHeader
       title="Catalog 角色与授权"
-      subtitle="catalog 角色是权限的载体，授权把「某项权限」绑定到「某类资源」上。增删授权的动词与服务端一致：新增用 PUT，撤销用 POST。整组操作需要在目标 catalog 上具备 CATALOG_MANAGE_ACCESS。"
+      subtitle="在某个 catalog 下创建角色，再逐条把权限绑到资源上。持有该角色的服务角色（以及它们背后的主体）随之获得这些权限。整组操作需要在目标 catalog 上具备 CATALOG_MANAGE_ACCESS。"
     >
       <template #actions>
         <el-select v-model="catalogName" size="small" placeholder="选择 catalog" class="pc-catalog" @change="onCatalogChange">
@@ -31,12 +31,24 @@
 
     <template v-else>
       <PanelCard flush>
+        <div class="pc-list-head">
+          <span class="pc-list-title">{{ catalogName }} 下的 catalog 角色（{{ rows.length }}）</span>
+          <span class="pc-list-tools">
+            <span class="pc-mono pc-dim">管理 API /catalogs/{{ catalogName }}/catalog-roles</span>
+          </span>
+        </div>
         <ResourceState
           :loading="table.loading.value"
           :error="table.error.value"
           :empty="!rows.length"
-          empty-text="这个 catalog 下还没有 catalog 角色"
+          empty-text="这个 catalog 下还没有角色。角色是权限的载体——建一个，再把权限绑上去。"
         >
+          <template #actions>
+            <el-button size="small" type="primary" @click="openCreate">
+              <el-icon><Plus /></el-icon>
+              <span class="pc-btn-text">新建 Catalog 角色</span>
+            </el-button>
+          </template>
           <el-table v-loading="table.loading.value" :data="rows" size="small">
             <el-table-column prop="name" label="角色名" min-width="160" />
             <el-table-column label="属性" min-width="170">
@@ -71,7 +83,7 @@
       :close-on-click-modal="false"
       destroy-on-close
     >
-      <el-form label-position="top" size="small">
+      <el-form label-position="top" size="small" class="pc-form">
         <el-form-item v-if="dialog.mode === 'create'" label="角色名" required>
           <el-input v-model="dialog.name" placeholder="例如 catalog_admin、analyst" />
         </el-form-item>
@@ -90,62 +102,61 @@
     </el-dialog>
 
     <!-- 授权 -->
-    <el-drawer v-model="grantDrawer.open" :title="`授权：${grantDrawer.role} @ ${catalogName}`" size="720px">
-      <el-alert type="info" :closable="false" show-icon class="pc-hint">
-        <template #title>资源类型决定可授予的权限</template>
-        <div>
-          权限取值按资源层级分组（对应管理规格里的 6 个权限 enum），
-          提交不属于该层级的权限会被服务端拒绝。
-        </div>
-      </el-alert>
-
-      <div class="pc-grant-form">
-        <el-select v-model="grantForm.type" size="small" class="pc-grant-type" @change="onGrantTypeChange">
-          <el-option v-for="type in grantTypes" :key="type" :label="type" :value="type" />
-        </el-select>
+    <el-drawer v-model="grantDrawer.open" :title="`授权：${grantDrawer.role}（${catalogName}）`" size="720px">
+      <!-- 这是一张表单，控件与其它弹窗一样带标签：之前四个控件挤成一行、只靠
+           占位符提示，其中「资源类型」连占位符都没有——下拉框直接显示枚举值
+           `catalog`，看不出那是在选什么。 -->
+      <el-form label-position="top" size="small" class="pc-form pc-form-grid">
+        <el-form-item label="资源类型">
+          <el-select v-model="grantForm.type" class="pc-full" @change="onGrantTypeChange">
+            <el-option v-for="type in grantTypes" :key="type" :label="type" :value="type" />
+          </el-select>
+        </el-form-item>
 
         <!-- el-select-free-input：namespace 是可以逐级填写的任意路径，没有候选列表可给，
              这里靠 allow-create 直接输入。属于有意的自由输入，不是漏写 el-option -->
-        <el-select
-          v-if="grantForm.type !== 'catalog'"
-          v-model="grantForm.namespace"
-          size="small"
-          multiple
-          filterable
-          allow-create
-          default-first-option
-          class="pc-grant-ns"
-          placeholder="命名空间路径（逐级填写，如 default）"
-        />
+        <el-form-item v-if="grantForm.type !== 'catalog'" label="命名空间">
+          <el-select
+            v-model="grantForm.namespace"
+            multiple
+            filterable
+            allow-create
+            default-first-option
+            class="pc-full"
+            placeholder="逐级填写，如 default"
+          />
+        </el-form-item>
 
-        <el-input
-          v-if="objectField"
-          v-model="grantForm.objectName"
-          size="small"
-          class="pc-grant-obj"
-          :placeholder="`${objectField}（对象名）`"
-        />
+        <el-form-item v-if="objectField" :label="objectFieldLabel">
+          <el-input v-model="grantForm.objectName" placeholder="对象名" />
+        </el-form-item>
 
-        <el-select v-model="grantForm.privilege" size="small" filterable class="pc-grant-priv" placeholder="权限">
-          <el-option v-for="privilege in privileges" :key="privilege" :label="privilege" :value="privilege" />
-        </el-select>
+        <el-form-item label="权限">
+          <el-select v-model="grantForm.privilege" filterable placeholder="选择权限">
+            <el-option v-for="privilege in privileges" :key="privilege" :label="privilege" :value="privilege" />
+          </el-select>
+        </el-form-item>
+      </el-form>
 
+      <div class="pc-form-actions">
         <el-button size="small" type="primary" :loading="grantDrawer.saving" @click="addGrant">
           <el-icon><Plus /></el-icon>
           <span class="pc-btn-text">新增授权</span>
         </el-button>
+        <!-- 把接口将要收到的形状摆出来：这一页既是操作界面也是接口的参照，
+             读者能当场看到 catalog 级授权确实不带 namespace 字段 -->
+        <span class="pc-dim pc-grant-preview">接口将收到 {{ JSON.stringify(previewGrant) }}</span>
       </div>
 
-      <div class="pc-grant-preview">
-        <span class="pc-dim">将提交的 grant：</span>
-        <code class="pc-mono">{{ JSON.stringify(previewGrant) }}</code>
+      <div class="pc-list-head is-plain">
+        <span class="pc-list-title">已授予的权限（{{ grantDrawer.grants.length }}）</span>
       </div>
 
       <ResourceState
         :loading="grantDrawer.loading"
         :error="grantDrawer.error"
         :empty="!grantDrawer.grants.length"
-        empty-text="这个角色还没有任何授权"
+        empty-text="这个角色还没有权限。用上面的表单加一条，持有它的主体就获得这项权限。"
       >
         <el-table :data="grantDrawer.grants" size="small">
           <el-table-column label="资源" min-width="240">
@@ -171,12 +182,15 @@
     </el-drawer>
 
     <!-- 持有者 -->
-    <el-drawer v-model="holderDrawer.open" :title="`持有者：${holderDrawer.role} @ ${catalogName}`" size="520px">
+    <el-drawer v-model="holderDrawer.open" :title="`持有者：${holderDrawer.role}（${catalogName}）`" size="520px">
+      <div class="pc-list-head is-plain">
+        <span class="pc-list-title">持有这个角色的服务角色（{{ holderDrawer.roles.length }}）</span>
+      </div>
       <ResourceState
         :loading="holderDrawer.loading"
         :error="holderDrawer.error"
         :empty="!holderDrawer.roles.length"
-        empty-text="没有服务角色持有这个 catalog 角色"
+        empty-text="没有服务角色持有这个角色，它携带的权限目前对任何人都没生效。"
       >
         <el-table :data="holderDrawer.roles" size="small">
           <el-table-column prop="name" label="服务角色" min-width="180" />
@@ -189,8 +203,8 @@
           </el-table-column>
         </el-table>
       </ResourceState>
-      <p class="pc-dim pc-drawer-note">
-        授予与撤销在「服务角色」页面操作：那条接口按 principal role 定位。
+      <p v-if="holderDrawer.roles.length" class="pc-drawer-note">
+        授予与撤销在「服务角色」页面操作：那条接口按服务角色定位，这里只做展示。
       </p>
     </el-drawer>
   </div>
@@ -234,7 +248,21 @@ const OBJECT_FIELDS = {
   'semantic-model': 'semanticModelName',
 }
 
+/**
+ * 字段名 → 界面上说给用户听的名字。
+ *
+ * <p>`tableName` / `semanticModelName` 是接口层的写法，出现在表单标签上是把
+ * 实现细节当界面语言；用户选的是「表」和「语义视图」。接口字段名仍然照旧提交。
+ */
+const OBJECT_LABELS = {
+  table: '表名',
+  view: '视图名',
+  policy: '策略名',
+  'semantic-model': '语义视图名',
+}
+
 const objectField = computed(() => OBJECT_FIELDS[grantForm.type] || '')
+const objectFieldLabel = computed(() => OBJECT_LABELS[grantForm.type] || objectField.value)
 
 const privileges = computed(() => {
   const map = meta.value?.enums?.privilegesByGrantType || {}
@@ -290,13 +318,13 @@ async function save() {
         name: dialog.name.trim(),
         properties: dialog.properties,
       })
-      notifySuccess(`已创建角色 ${dialog.name.trim()}`)
+      notifySuccess(`已创建 Catalog 角色 ${dialog.name.trim()}`)
     } else {
       await managementApi.updateCatalogRole(catalogName.value, dialog.name, {
         currentEntityVersion: dialog.entityVersion,
         properties: dialog.properties,
       })
-      notifySuccess(`已更新角色 ${dialog.name}`)
+      notifySuccess(`已更新 Catalog 角色 ${dialog.name}`)
     }
     dialog.open = false
     table.load()
@@ -317,7 +345,7 @@ async function confirmDelete(row) {
   if (!ok) return
   try {
     await managementApi.deleteCatalogRole(catalogName.value, row.name)
-    notifySuccess(`已删除角色 ${row.name}`)
+    notifySuccess(`已删除 Catalog 角色 ${row.name}`)
     table.load()
   } catch (error) {
     notifyError(error)
@@ -396,7 +424,7 @@ async function addGrant() {
     return
   }
   if (objectField.value && !grantForm.objectName.trim()) {
-    notifyError(new Error(`请填写 ${objectField.value}`))
+    notifyError(new Error(`请填写${objectFieldLabel.value}`))
     return
   }
   if (!grantForm.privilege) {
@@ -472,62 +500,18 @@ onConsoleRefresh(() => {
   width: 170px;
 }
 
-.pc-grant-form {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin-bottom: 8px;
-}
-
-.pc-grant-type {
-  width: 150px;
-}
-
-.pc-grant-ns {
-  flex: 1;
-  min-width: 180px;
-}
-
-.pc-grant-obj {
-  width: 170px;
-}
-
-.pc-grant-priv {
-  width: 250px;
-}
+/* 授权表单用全局的 .pc-form / .pc-form-grid，提交行用全局的 .pc-form-actions
+   （表详情的权限页签用同一套，见 styles/index.css） */
 
 .pc-grant-preview {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 14px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12.5px;
-  flex-wrap: wrap;
-}
-
-.pc-grant-preview code {
-  padding: 2px 6px;
-  background: var(--pc-surface-2);
-  border: 1px solid var(--pc-border);
-  border-radius: 4px;
+  word-break: break-all;
 }
 
 .pc-grant-cell {
   display: flex;
   align-items: center;
   gap: 8px;
-}
-
-.pc-drawer-note {
-  margin-top: 14px;
-  font-size: 13px;
-  line-height: 1.7;
-}
-
-:deep(.el-divider__text) {
-  font-size: 13px;
-  color: var(--pc-text-dim);
-  background: var(--pc-surface);
 }
 </style>

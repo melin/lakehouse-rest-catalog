@@ -249,6 +249,200 @@ body {
   text-decoration: underline;
 }
 
+/* --- flush 卡片里的列表头 -----------------------------------------------
+ * 表格类内容用 flush 卡片（去掉内边距让表格铺满），于是列表就没有了标题行。
+ * 这一行承担三件事：列表叫什么、有多少条、右侧的过滤或接口路径。
+ *
+ * 计数紧跟标题（同一句话），机制放最右：读者先要知道「有几条」，
+ * 只有排障时才需要往右看——把路径摆在标题旁边会让每个人每次都读到它。
+ * ---------------------------------------------------------------------- */
+
+.pc-list-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px 4px;
+}
+
+/* 标题占掉左侧余量，把后面的控件（过滤框、刷新）统统推到右边 */
+.pc-list-head > .pc-list-title {
+  margin-right: auto;
+}
+
+.pc-list-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+/* 抽屉里用同一个标题行，但抽屉本身已有内边距，这里不能再缩进一层 */
+.pc-list-head.is-plain {
+  padding: 0 0 4px;
+}
+
+.pc-list-tools {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* --- flush 卡片里的页签 -------------------------------------------------
+ * 不在这里统一：BrowseView 是「左库右对象」的双栏，页签所在的面板用的是
+ * 14px 栅格；TableView 是全宽页签，用 16px。两者是不同布局下的不同栅格，
+ * 不是同一处写了两个值，因此各自留在视图里。
+ * ---------------------------------------------------------------------- */
+
+/* 页签内容区里、表格之上的一行控件（过滤框 + 计数 + 新建按钮）。
+ * BrowseView 与 TableView 各写过一份且完全相同。 */
+.pc-tools-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+  font-size: 13px;
+}
+
+/* --- 表单 ---------------------------------------------------------------
+ * 全站只有一种表单形态：标签在控件上方（`label-position="top"`），字段纵向排列；
+ * 字段数多、语义并列时用 `.pc-form-grid` 自动折行。
+ *
+ * 为什么收敛到一处：这三条基准（标签字号与颜色、字段间距、提交行）原先在每个
+ * 视图/组件的 scoped 样式里各写一份，值互不相同——标签有 12.5 / 13 / 14px 三种，
+ * 字段间距有 10 / 16 / 18px 三种，于是同一个控制台里「新建 Catalog」与「新建表」
+ * 的表单密度看着不像一套东西；每加一个弹窗就多一份要同步的副本。
+ *
+ * 选择器带 `.pc-form` 前缀是有意的：特异性 (0,2,0) 高于 Element Plus 自己的
+ * 单类选择器，能压掉它的默认值（标签 14px + 正文色、字段间距 18px），
+ * 也顺带压掉视图里残留的 scoped 覆盖——所以各处的 el-form 都要带上这个类。
+ *
+ * 唯一的例外是登录页（LoginView）：它是独立版面、控件用 large，
+ * 需要比控制台表单更松的节奏，不跟随这里的栅格。
+ * ---------------------------------------------------------------------- */
+
+.pc-form .el-form-item {
+  margin-bottom: 14px;
+}
+
+/* 表单最后一项不再自带下边距：弹窗页脚 / 分隔线 / 提交行自己负责上方留白，
+   否则表单底部会多出一段说不出理由的空白 */
+.pc-form .el-form-item:last-child {
+  margin-bottom: 0;
+}
+
+.pc-form .el-form-item__label {
+  padding: 0 0 4px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--pc-text-dim);
+}
+
+/* 横向栅格：用在「字段数随所选类型变化」的表单上（授权表单：catalog 级只有
+ * 一个「权限」，表级还会多出命名空间与表名）。钉死列数时字段变少会留一片
+ * 空白，按最小列宽自动折行则始终填满。
+ *
+ * 行距交给 row-gap 而不是每项的下边距：栅格按行对齐，某个字段的标签更长时
+ * 才不会把同一行的控件挤成高低不一。 */
+.pc-form.pc-form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+  column-gap: 14px;
+  row-gap: 14px;
+}
+
+.pc-form.pc-form-grid .el-form-item {
+  margin-bottom: 0;
+}
+
+/* 表单下方的提交行：按钮在左，一句说明或将要提交的形状紧随其后。
+ * 三处共用（catalog 角色授权抽屉、表详情的权限页签、连接设置）。
+ *
+ * 按钮之间的间距统一交给 gap，并压掉 Element Plus 的
+ * `.el-button + .el-button { margin-left: 12px }`：两者叠加时同排按钮的间距
+ * 会变成 22px，与 gap 想表达的不是一回事。 */
+.pc-form-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+
+.pc-form-actions .el-button + .el-button {
+  margin-left: 0;
+}
+
+/* 可重复的字段行（表字段 + 类型 + 注释、允许位置、目录属性键值对）。
+ * 三处原先各写一份 flex 行：行距都是 6px，列间距却 6 / 8px 不一，
+ * 「添加一项」按钮内文字的缩进也各写一遍。列宽留在各处——键值对是两列、
+ * 表字段是三列，那是语义差异；行距与按钮文字的间距收敛到这里。 */
+.pc-repeat {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+}
+
+.pc-repeat-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+/* 「添加一项 / 添加字段」挂在列尾：flex 列的默认 stretch 会把它拉成通栏、
+   文字看起来居中，而它是 行为按钮不是内容，靠左跟行首对齐 */
+.pc-repeat > .el-button {
+  align-self: flex-start;
+}
+
+.pc-repeat-add {
+  margin-left: 4px;
+}
+
+/* --- 抽屉 / 弹窗里的一行式操作 ------------------------------------------ */
+
+/* 「选一个目标，然后点按钮」：授予服务角色、授予 catalog 角色。
+ * 原先在 2 个视图里各定义一份，下边距一处 12px 一处 14px——同一类控件
+ * 在两个页面里不一样高，属于会漂移的那种重复。 */
+.pc-role-add {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.pc-role-select {
+  flex: 1;
+}
+
+/* 抽屉底部的跨页说明（「授予要去另一个页面操作」这类）。
+ * 它说的是「为什么这里只有展示」，不能省；但要弱化，否则会被当成正文读。 */
+.pc-drawer-note {
+  margin-top: 14px;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+/* 弹窗内的提示条与下方内容的间距（el-alert 自身没有下边距） */
+.pc-dialog-alert {
+  margin-bottom: 14px;
+}
+
+/* --- 分隔线文字 ---------------------------------------------------------
+ * 表单弹窗用 el-divider 分组（存储配置 / 目录属性）。Element Plus 默认给它
+ * 正文色与 14px，比字段标签还重，把「分组标题」渲染成了「另一段内容」。
+ * 这条原先在 5 个视图里各写一遍且完全相同，收敛到这里。
+ * ---------------------------------------------------------------------- */
+
+.el-divider__text {
+  font-size: 13px;
+  color: var(--pc-text-dim);
+  /* 分隔线文字靠自己的背景色「挖断」那条线，所以背景必须与所在容器一致。
+     它只出现在 Element 的表面里（弹窗 / 抽屉 / 卡片），用 Element 的背景变量
+     而不是本工程的 --pc-surface：深色模式下 Element 的弹窗底色（#141414）
+     与卡片的 #111a2b 不同，用错了会看到一块色差。 */
+  background: var(--el-bg-color);
+}
+
 /* --- 页面骨架 --------------------------------------------------------- */
 
 .pc-page {

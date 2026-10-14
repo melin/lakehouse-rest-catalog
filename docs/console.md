@@ -81,7 +81,9 @@ paimon-rest-console/
     ├── router/index.js            路由表；侧边菜单由它聚合生成；登录守卫
     ├── store/                     auth（登录态）、session（catalog 与 meta）、
     │                              credentials（令牌与基址）、theme
-    ├── styles/index.css           设计变量 --pc-* 与布局类
+    ├── styles/index.css           设计变量 --pc-* 与布局类；视图间复用的基元
+    │                              （列表头 .pc-list-head、工具行 .pc-tools-row、
+    │                              授权表单栅格 .pc-form-grid 等）也收敛在这里
     ├── utils/format.js            时间、字节、JSON 等展示格式化
     └── views/                     12 个页面，见 §4
 ```
@@ -133,16 +135,43 @@ paimon-rest-console/
 | --- | --- | --- |
 | `/login` | 登录 | 按服务端下发的登录方式渲染页签：用户名密码（默认）/ 主体凭据（OAuth 2.0 客户端凭据）/ SSO（OIDC）/ 静态令牌（需配 `auth.tokens`）。**未开启的方式不渲染**；一个可用方式都没有时说明该开哪个配置项。门禁单开时先显示一句「只挡住界面」。不套管理布局 |
 | `/auth/callback` | SSO 回调 | 校验 `state` → 用授权码换令牌 → 让服务端确认 → 回跳原页面。不套管理布局 |
-| `/` | 控制台概览 | 统计块、服务端配置摘要、**连接自检**、catalog 清单、`GET /v1/config` 展示 |
-| `/browse` | 目录浏览 | 左库右对象；四页签（表/视图/函数/语义视图）；建库、建表、注册表、按表 ID 定位、重命名、删除、详情抽屉 |
-| `/tables/:prefix/:database/:table` | [表详情](console-table-detail.md) | 九页签：详细信息 / Schema / 变更 / 快照 / 标签 / 分支 / 分区 / 权限 / 数据访问；含**变更构造器**、快照与标签的**回滚**、表级 grants 的增删 |
+| `/` | 控制台概览 | 统计块（三个数量）、服务端配置摘要、**连接自检**、catalog 清单、`GET /v1/config` 展示 |
+| `/browse` | 目录浏览 | 左库右对象；四页签（表/视图/函数/语义视图）；建库、建表、注册表、按表 ID 定位、重命名、删除、详情抽屉。表页签的过滤为空时说明「没有匹配 ×××」，与「库里没有表」区分开 |
+| `/tables/:prefix/:database/:table` | [表详情](console-table-detail.md) | 九页签：详细信息 / Schema / 变更 / 快照 / 标签 / 分支 / 分区 / 权限 / 数据访问；含**变更构造器**、快照与标签的**回滚**、表级 grants 的增删。权限页签只列 catalog 角色携带的授权，并在提示里指明「权限管理」页的直接授权不在此列 |
 | `/catalogs` | Catalog 管理 | 列出 / 创建 / 详情 / 更新（带版本）/ 删除 |
 | `/principals` | 主体 | 列出 / 创建 / 更新 / 删除 / rotate / reset；授予与撤销服务角色。创建、轮换、重置后的凭据弹窗可一键导出 JSON 文件（`{principal, clientId, clientSecret}`，文件名 `<主体>-credentials.json`），密钥仍只在弹窗期间可见 |
-| `/principal-roles` | 服务角色 | 列出 / 创建 / 更新 / 删除；查看成员；授予与撤销 catalog 角色 |
-| `/catalog-roles` | Catalog 角色与授权 | 角色 CRUD；查看授予了该角色的服务角色；**grants 的增删**（按资源类型分组渲染权限） |
-| `/permissions` | 权限管理 | Paimon 官方权限模型（principal 直授）：页头「添加授权」按钮开弹窗填表——多选用户/角色（`user:` / `role:`，可手输任意 principal）、database 级或表级授权（选了表才显示表权限）、简化的权限勾选（db：Create table/Alter/Drop/Describe；表：Select/Insert/Delete/Describe/Alter/Drop）；主界面只留赋权列表，按 Principal/资源/权限/过期时间展示，支持过滤与幂等撤销 |
+| `/principal-roles` | 服务角色 | 列出 / 创建 / 更新 / 删除；查看成员；授予与撤销 catalog 角色（选 catalog 后自动加载，无需点「加载」） |
+| `/catalog-roles` | Catalog 角色与授权 | 角色 CRUD；查看授予了该角色的服务角色；**grants 的增删**（抽屉里是有标签的表单，字段名按资源类型切换；提交行展示接口将收到的形状） |
+| `/permissions` | 权限管理 | Paimon 官方权限模型（principal 直授）：页头「添加授权」按钮开弹窗填表——多选用户/角色（`user:` / `role:`，可手输任意 principal）、database 级或表级授权（选了表才显示表权限）、简化的权限勾选（db：Create table/Alter/Drop/Describe；表：Select/Insert/Delete/Describe/Alter/Drop）；主界面是授权清单——Principal 按主体合并单元格（清单按主体排序），资源合成「作用范围」一列（`库` / `库.表`），权限用与表单一致的词（UPDATE 显示为 Insert / Delete），空态给「添加授权」入口；支持过滤与幂等撤销 |
 | `/settings` | 连接设置 | API 基址、访问令牌、登录状态、主题；`/api/console/v1/meta` 原始响应 |
 | `/:pathMatch(.*)*` | 未找到 | 兜底 |
+
+### 4.0 文案与信息结构的约定
+
+这套约定在给「权限管理」页做设计走查时成型，随后推广到全部页面。它决定了
+同一个事实出现在哪里、用什么词：
+
+- **一个事实只在一处说。** 页头副标题讲「这页干什么、改了会影响到谁」（人话）；
+  接口路径出现在列表头右侧或卡片的 `hint` 里（机制）；字段含义进 `FieldLabel`
+  的问号气泡。三者不互相重复——副标题里写 HTTP 动词与端点路径，等于让每个
+  使用者每次都为排障者付一次阅读成本。
+- **空态是行动邀请。** 列表为空时给出下一步的按钮（`ResourceState` 的
+  `#actions` 插槽）；过滤到空时说清是「没有匹配 ×××」，与「本来就没有」区分。
+- **一个动作一个名字。** 页头按钮 → 弹窗标题 → 提交按钮 → toast 用同一组词：
+  「添加授权」打开弹窗，提交按钮是「授予（N）」，toast 是「已授予 N 条授权」。
+- **同一概念两个模型，用同一套词。** 「Catalog 角色与授权」（Polaris 模型）与
+  「权限管理」（Paimon 官方直授模型）是并行的两条授权路径，两边的清单标题、
+  空态措辞、表单栅格保持一致，并在页签/提示里互相指路。
+- **表单只有一种形态。** 全站表单统一走全局基元 `.pc-form`（标签在控件上方、
+  13px 弱化色、字段间距 14px），字段多且语义并列时加 `.pc-form-grid` 自动折行，
+  表单下的提交行是 `.pc-form-actions`，「可重复字段行」（表字段、允许位置、
+  属性键值对）是 `.pc-repeat` / `.pc-repeat-row`。唯一例外是登录页——独立版面、
+  控件用 large，需要更松的节奏，不跟随控制台栅格。此前这些值散在 9 个
+  视图/组件的 scoped 样式里（标签 12.5/13/14px、字段间距 10/16/18px 各三种），
+  新加一个弹窗就要同步一份副本；现在改一处，全站生效。
+- **密度即美学。** 这是运维界面：不做渐变统计卡、不做入场动画、不做全大写小标签。
+  统计块只放真正的数量（能力类信息进「服务端配置」列表），摘要页的表格只保留
+  「有什么、数据在哪」，详情留给对应的管理页。
 
 ### 4.1 变更构造器
 

@@ -1,6 +1,6 @@
 <template>
   <div class="pc-storage">
-    <el-form label-position="top" size="small" class="pc-storage-form">
+    <el-form label-position="top" size="small" class="pc-form">
       <el-form-item required>
         <template #label>
           <FieldLabel label="存储类型（storageType）">
@@ -35,8 +35,8 @@
             tip="首项同时作为仓库根（warehouse）；白名单之外的位置服务端会拒绝写入。"
           />
         </template>
-        <div class="pc-list">
-          <div v-for="(_, index) in form.allowedLocations" :key="index" class="pc-list-row">
+        <div class="pc-repeat">
+          <div v-for="(_, index) in form.allowedLocations" :key="index" class="pc-repeat-row">
             <el-input
               v-model="form.allowedLocations[index]"
               size="small"
@@ -48,7 +48,7 @@
           </div>
           <el-button size="small" text type="primary" @click="form.allowedLocations.push('')">
             <el-icon><Plus /></el-icon>
-            <span class="pc-list-add">添加位置</span>
+            <span class="pc-repeat-add">添加位置</span>
           </el-button>
         </div>
       </el-form-item>
@@ -69,8 +69,8 @@
             <FieldLabel :label="field.label" :tip="field.hint" />
           </template>
           <el-switch v-if="field.type === 'bool'" v-model="form.extras[field.key]" />
-          <div v-else-if="field.type === 'list'" class="pc-list">
-            <div v-for="(_, index) in form.extras[field.key]" :key="index" class="pc-list-row">
+          <div v-else-if="field.type === 'list'" class="pc-repeat">
+            <div v-for="(_, index) in form.extras[field.key]" :key="index" class="pc-repeat-row">
               <el-input v-model="form.extras[field.key][index]" size="small" :placeholder="field.placeholder || ''" />
               <el-button size="small" text type="danger" @click="form.extras[field.key].splice(index, 1)">
                 <el-icon><Delete /></el-icon>
@@ -78,7 +78,7 @@
             </div>
             <el-button size="small" text type="primary" @click="form.extras[field.key].push('')">
               <el-icon><Plus /></el-icon>
-              <span class="pc-list-add">添加一项</span>
+              <span class="pc-repeat-add">添加一项</span>
             </el-button>
           </div>
           <el-input v-else v-model="form.extras[field.key]" :placeholder="field.placeholder || ''" />
@@ -129,7 +129,7 @@
         <el-form-item v-if="storedAccessKeyId && !form.removeCredentials">
           <el-button size="small" text type="danger" @click="form.removeCredentials = true">
             <el-icon><Delete /></el-icon>
-            <span class="pc-list-add">移除已保存的静态凭据</span>
+            <span class="pc-repeat-add">移除已保存的静态凭据</span>
           </el-button>
         </el-form-item>
 
@@ -544,32 +544,11 @@ defineExpose({ validate, build })
 </script>
 
 <style scoped>
-
-.pc-list-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 6px;
-  width: 100%;
-}
-
-.pc-list-add {
-  margin-left: 4px;
-}
+/* 可重复行的容器、行、按钮文字都走全局基元（.pc-repeat / .pc-repeat-row /
+ * .pc-repeat-add），表单栅格走全局 .pc-form。这里只剩本组件自己的东西。 */
 
 .pc-storage-carry {
   margin-top: 4px;
-}
-
-.pc-storage-form :deep(.el-form-item) {
-  margin-bottom: 16px;
-}
-
-.pc-storage-form :deep(.el-form-item__label) {
-  padding-bottom: 2px;
-  font-size: 12.5px;
-  color: var(--pc-text-dim);
-  line-height: 1.4;
 }
 
 .pc-static-disabled-hint {

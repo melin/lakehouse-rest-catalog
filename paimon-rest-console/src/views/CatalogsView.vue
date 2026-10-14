@@ -2,7 +2,7 @@
   <div class="pc-page">
     <PageHeader
       title="Catalog 管理"
-      subtitle="管理 API 的 /catalogs 端点：登记仓库位置与存储配置。catalog 的 name 同时是 catalog API 的 prefix，改名前请确认没有客户端在用它。"
+      subtitle="catalog 是元数据与数据的命名空间，每个 catalog 指向一处存储位置。名称同时是客户端连接时用的 prefix，创建后不能改名。"
     >
       <template #actions>
         <el-button size="small" :loading="table.loading.value" @click="table.load">
@@ -17,12 +17,24 @@
     </PageHeader>
 
     <PanelCard flush>
+      <div class="pc-list-head">
+        <span class="pc-list-title">已登记的 catalog（{{ rows.length }}）</span>
+        <span class="pc-list-tools">
+          <span class="pc-mono pc-dim">管理 API /catalogs</span>
+        </span>
+      </div>
       <ResourceState
         :loading="table.loading.value"
         :error="table.error.value"
         :empty="!rows.length"
-        empty-text="服务端还没有登记任何 catalog"
+        empty-text="还没有登记任何 catalog。新建一个，引擎客户端就能用它连接了。"
       >
+        <template #actions>
+          <el-button size="small" type="primary" @click="openCreate">
+            <el-icon><Plus /></el-icon>
+            <span class="pc-btn-text">新建 Catalog</span>
+          </el-button>
+        </template>
         <el-table v-loading="table.loading.value" :data="rows" size="small">
           <el-table-column label="名称" min-width="150">
             <template #default="{ row }">
@@ -64,7 +76,7 @@
               <IconAction icon="Edit" label="编辑" type="primary" @click="openEdit(row)" />
               <IconAction
                 icon="Avatar"
-                label="角色"
+                label="Catalog 角色"
                 @click="$router.push({ name: 'catalogRoles', query: { catalog: row.name } })"
               />
               <IconAction icon="Delete" label="删除" type="danger" @click="confirmDelete(row)" />
@@ -83,7 +95,7 @@
       top="6vh"
       destroy-on-close
     >
-      <el-form label-position="top" size="small">
+      <el-form label-position="top" size="small" class="pc-form">
         <el-form-item v-if="dialog.mode === 'create'" required>
           <template #label>
             <FieldLabel label="名称（name / prefix）" tip="创建后不可改名，改名等同于删除重建。" />
@@ -306,15 +318,3 @@ async function confirmDelete(row) {
 
 onConsoleRefresh(() => table.load())
 </script>
-
-<style scoped>
-.pc-dialog-alert {
-  margin-bottom: 14px;
-}
-
-:deep(.el-divider__text) {
-  font-size: 13px;
-  color: var(--pc-text-dim);
-  background: var(--pc-surface);
-}
-</style>

@@ -2,7 +2,7 @@
   <div class="pc-page">
     <PageHeader
       :title="`表：${table}`"
-      :subtitle="`${prefix} / ${database} / ${table}　路径与元数据来自 catalog API，与引擎客户端读到的完全一致。`"
+      :subtitle="`${prefix} / ${database} / ${table}　这里看到的结构与提交历史就是引擎客户端读写的那一份；删除表不可撤销。`"
     >
       <template #actions>
         <el-button size="small" @click="$router.push({ name: 'browse', query: { catalog: prefix, database } })">
@@ -191,7 +191,7 @@
                 数据文件不会被回收，它们会变成不再被引用的孤儿文件。
               </div>
             </el-alert>
-            <div class="pc-obj-tools">
+            <div class="pc-tools-row">
               <span class="pc-dim">按版本号查询指定快照：</span>
               <el-input v-model="snapshotVersion" size="small" placeholder="版本号，如 3" class="pc-version-input" />
               <el-button size="small" :loading="versionLoading" @click="fetchVersion">查询</el-button>
@@ -228,7 +228,7 @@
 
           <!-------------------------------- 标签 ---------------------------------->
           <template v-else-if="tab === 'tags'">
-            <div class="pc-obj-tools">
+            <div class="pc-tools-row">
               <span class="pc-dim">标签把某个快照固定下来，使其不受快照过期清理影响。</span>
               <span class="pc-spacer" />
               <el-button size="small" @click="openCreateTag">
@@ -265,7 +265,7 @@
 
           <!-------------------------------- 分支 ---------------------------------->
           <template v-else-if="tab === 'branches'">
-            <div class="pc-obj-tools">
+            <div class="pc-tools-row">
               <span class="pc-dim">分支是一条可写的历史线，常用于隔离试验或并发写入。</span>
               <span class="pc-spacer" />
               <el-button size="small" @click="openCreateBranch">
@@ -334,29 +334,34 @@
           <!-------------------------------- 权限 ---------------------------------->
           <template v-else-if="tab === 'grants'">
             <el-alert type="info" :closable="false" show-icon class="pc-hint">
-              <template #title>授权挂在 catalog 角色上，增删需要 CATALOG_MANAGE_ACCESS</template>
+              <template #title>这里列的是 catalog 角色携带的授权，增删需要 CATALOG_MANAGE_ACCESS</template>
               <div>
-                管理规格没有「按资源反查授权」的端点，这里的列表是把每个 catalog 角色的授权
-                取回后过滤出作用到这张表的条目。新增授权逐项提交，服务端幂等，重复授予不报错。
+                直接授予用户或角色的权限不在这一页——那类授权到「权限管理」页面查看与撤销。
+                本页的新增是逐项提交的，服务端幂等，重复授予不会报错。
               </div>
             </el-alert>
 
-            <div class="pc-tg-form">
-              <el-select v-model="grantForm.role" size="small" filterable placeholder="Catalog 角色" class="pc-tg-role">
-                <el-option v-for="role in grantRoles" :key="role" :label="role" :value="role" />
-              </el-select>
-              <el-select
-                v-model="grantForm.privileges"
-                size="small"
-                multiple
-                filterable
-                collapse-tags
-                collapse-tags-tooltip
-                placeholder="选择权限（可多选）"
-                class="pc-tg-priv"
-              >
-                <el-option v-for="privilege in tablePrivileges" :key="privilege" :label="privilege" :value="privilege" />
-              </el-select>
+            <el-form label-position="top" size="small" class="pc-form pc-form-grid">
+              <el-form-item label="Catalog 角色">
+                <el-select v-model="grantForm.role" filterable placeholder="选择角色">
+                  <el-option v-for="role in grantRoles" :key="role" :label="role" :value="role" />
+                </el-select>
+              </el-form-item>
+              <el-form-item label="权限">
+                <el-select
+                  v-model="grantForm.privileges"
+                  multiple
+                  filterable
+                  collapse-tags
+                  collapse-tags-tooltip
+                  placeholder="可多选"
+                >
+                  <el-option v-for="privilege in tablePrivileges" :key="privilege" :label="privilege" :value="privilege" />
+                </el-select>
+              </el-form-item>
+            </el-form>
+
+            <div class="pc-form-actions">
               <el-button
                 size="small"
                 type="primary"
@@ -366,7 +371,7 @@
               >
                 授予{{ grantForm.privileges.length ? `（${grantForm.privileges.length}）` : '' }}
               </el-button>
-              <el-button size="small" :loading="grantsState.loading" @click="loadGrants">刷新</el-button>
+              <span class="pc-dim">在这张表上给所选角色加权限</span>
             </div>
 
             <el-alert v-if="grantsState.error" type="error" :closable="false" show-icon class="pc-hint">
@@ -374,11 +379,16 @@
               <div>{{ grantsState.error }}</div>
             </el-alert>
 
+            <div class="pc-list-head is-plain">
+              <span class="pc-list-title">作用到这张表的权限（{{ grantsState.rows.length }}）</span>
+              <el-button size="small" :loading="grantsState.loading" @click="loadGrants">刷新</el-button>
+            </div>
+
             <el-table
               v-loading="grantsState.loading"
               :data="grantsState.rows"
               size="small"
-              empty-text="还没有 catalog 角色的授权作用到这张表"
+              empty-text="还没有 catalog 角色的授权作用到这张表。用上面的表单加一条。"
             >
               <el-table-column prop="roleName" label="Catalog 角色" min-width="180" />
               <el-table-column label="权限" min-width="280">
@@ -441,7 +451,7 @@
     <!-- 新建标签 -->
     <el-dialog v-model="tagDialog.open" title="新建标签" width="480px" :close-on-click-modal="false"
       destroy-on-close>
-      <el-form label-position="top" size="small">
+      <el-form label-position="top" size="small" class="pc-form">
         <el-form-item label="标签名" required>
           <el-input v-model="tagDialog.tagName" />
         </el-form-item>
@@ -464,7 +474,7 @@
     <!-- 新建分支 -->
     <el-dialog v-model="branchDialog.open" title="新建分支" width="460px" :close-on-click-modal="false"
       destroy-on-close>
-      <el-form label-position="top" size="small">
+      <el-form label-position="top" size="small" class="pc-form">
         <el-form-item label="分支名" required>
           <el-input v-model="branchDialog.branch" />
         </el-form-item>
@@ -1092,22 +1102,6 @@ async function confirmDrop() {
   margin-top: 16px;
 }
 
-.pc-tg-form {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin-bottom: 12px;
-}
-
-.pc-tg-role {
-  width: 220px;
-}
-
-.pc-tg-priv {
-  width: 380px;
-}
-
 .pc-change-form {
   display: flex;
   align-items: center;
@@ -1134,14 +1128,6 @@ async function confirmDrop() {
 
 .pc-version-input {
   width: 150px;
-}
-
-.pc-obj-tools {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 10px;
-  font-size: 13px;
 }
 
 .pc-access {

@@ -1,6 +1,6 @@
 <template>
-  <div class="pc-props">
-    <div v-for="(row, index) in rows" :key="index" class="pc-prop-row">
+  <div class="pc-repeat">
+    <div v-for="(row, index) in rows" :key="index" class="pc-repeat-row">
       <el-input
         v-model="row.key"
         size="small"
@@ -22,7 +22,7 @@
     <div class="pc-prop-foot">
       <el-button size="small" text type="primary" @click="addRow">
         <el-icon><Plus /></el-icon>
-        <span class="pc-prop-add">添加一项</span>
+        <span class="pc-repeat-add">添加一项</span>
       </el-button>
       <span v-if="hint" class="pc-dim pc-prop-hint">{{ hint }}</span>
     </div>
@@ -80,13 +80,8 @@ function removeRow(index) {
 </script>
 
 <style scoped>
-.pc-prop-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 6px;
-}
-
+/* 行的容器与行本身走全局基元（.pc-repeat / .pc-repeat-row）；
+ * 本组件只决定两列各占多宽——键值对是两列，与表字段的三列不同。 */
 .pc-prop-key {
   flex: 0 0 38%;
 }
@@ -99,10 +94,6 @@ function removeRow(index) {
   display: flex;
   align-items: center;
   gap: 10px;
-}
-
-.pc-prop-add {
-  margin-left: 4px;
 }
 
 .pc-prop-hint {

@@ -2,7 +2,7 @@
   <div class="pc-page">
     <PageHeader
       title="控制台概览"
-      subtitle="服务端能力、目录清单与连接自检。所有数据都来自服务端接口，未在本地缓存。"
+      subtitle="服务端当前的能力与目录清单。数据都实时取自服务端，未在本机缓存。"
     >
       <template #actions>
         <el-button size="small" :loading="loading" @click="reloadAll">
@@ -51,7 +51,7 @@
       </PanelCard>
     </div>
 
-    <PanelCard title="目录清单" :hint="`共 ${session.state.catalogs.length} 个`" flush>
+    <PanelCard title="目录清单" :hint="`共 ${session.state.catalogs.length} 个，详情见「Catalog 管理」`" flush>
       <template #actions>
         <el-button size="small" text type="primary" @click="$router.push({ name: 'catalogs' })">
           管理
@@ -61,8 +61,13 @@
         :loading="session.state.loadingCatalogs"
         :error="session.state.catalogsError"
         :empty="!session.state.catalogs.length"
-        empty-text="服务端还没有登记任何 catalog"
+        empty-text="还没有登记任何 catalog。新建一个，引擎客户端就能用它连接了。"
       >
+        <template #actions>
+          <el-button size="small" type="primary" @click="$router.push({ name: 'catalogs' })">
+            去创建
+          </el-button>
+        </template>
         <el-table :data="session.state.catalogs" size="small">
           <el-table-column label="名称" min-width="150">
             <template #default="{ row }">
@@ -71,24 +76,14 @@
               </RouterLink>
             </template>
           </el-table-column>
-          <el-table-column prop="type" label="类型" width="100" />
-          <el-table-column label="存储类型" width="110">
-            <template #default="{ row }">
-              <el-tag size="small" effect="plain">
-                {{ row.storageConfigInfo?.storageType || '—' }}
-              </el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column label="仓库位置" min-width="220">
+          <el-table-column prop="type" label="类型" width="110" />
+          <!-- 摘要页只回答「有什么、数据在哪」；存储类型与更新时间属于
+               「Catalog 管理」页的详情，那个页面就在右边的「管理」 -->
+          <el-table-column label="仓库位置" min-width="260">
             <template #default="{ row }">
               <span class="pc-mono pc-break">
                 {{ row.storageConfigInfo?.allowedLocations?.[0] || row.properties?.warehouse || '—' }}
               </span>
-            </template>
-          </el-table-column>
-          <el-table-column label="更新时间" width="170">
-            <template #default="{ row }">
-              <TimeText :millis="row.lastUpdateTimestamp" mode="relative" />
             </template>
           </el-table-column>
         </el-table>
@@ -98,7 +93,7 @@
     <PanelCard
       v-if="configData"
       title="目录发现结果"
-      hint="GET /v1/config"
+      hint="服务端下发给客户端连接的默认参数与覆盖项：GET /v1/config"
       flush
     >
       <div class="pc-config">
@@ -122,7 +117,6 @@ import { RouterLink } from 'vue-router'
 import PageHeader from '@/components/PageHeader.vue'
 import PanelCard from '@/components/PanelCard.vue'
 import ResourceState from '@/components/ResourceState.vue'
-import TimeText from '@/components/TimeText.vue'
 import JsonBlock from '@/components/JsonBlock.vue'
 import { getBaseUrl } from '@/api/client.js'
 import { catalogApi } from '@/api/catalog.js'
@@ -171,17 +165,12 @@ const stats = computed(() => {
     {
       label: '主体（Principal）',
       value: directory.data.value ? formatNumber(directory.data.value.principals.length) : '—',
-      foot: '管理 API /principals',
+      foot: '持有凭据、连接本服务的身份',
     },
     {
       label: '服务角色（Principal Role）',
       value: directory.data.value ? formatNumber(directory.data.value.principalRoles.length) : '—',
-      foot: '管理 API /principal-roles',
-    },
-    {
-      label: '接入的存储',
-      value: meta?.enums?.supportedStorageTypes?.length ?? '—',
-      foot: `file-io.type = ${meta?.service?.fileIoType || '—'}`,
+      foot: '主体与 catalog 角色之间的中间层',
     },
   ]
 })
@@ -212,6 +201,12 @@ const serviceRows = computed(() => {
     },
     { label: '凭据下发（credential-manager.type）', value: service.credentialManagerType || '—' },
     { label: '存储实现（file-io.type）', value: service.fileIoType || '—' },
+    // 能选哪几种存储属于「服务端能力」，是列表项而不是计数——原先它被做成了
+    // 一个统计块，与三个数量块并排，让那一排失去了可比性
+    {
+      label: '可用存储（supported-storage-types）',
+      value: (meta.enums?.supportedStorageTypes || []).join(' / ') || '—',
+    },
     { label: '自动登记 catalog（auto-create-catalog）', value: String(service.autoCreateCatalog ?? '—') },
     { label: '默认仓库（default-warehouse）', value: service.defaultWarehouse || '—' },
     { label: '路径模板（path-template）', value: service.pathTemplate || '—' },

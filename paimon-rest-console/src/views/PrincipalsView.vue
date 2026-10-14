@@ -2,7 +2,7 @@
   <div class="pc-page">
     <PageHeader
       title="主体（Principal）"
-      subtitle="主体是访问凭证的持有者。管理 API 把整组主体操作归给服务管理员——规格的权限枚举里没有覆盖「管理主体」的层级，因此这里不看 catalog 角色的授权。"
+      subtitle="主体是访问凭证的持有者，引擎客户端用它连接本服务。这一页的操作只有服务管理员能做，不受任何 catalog 的授权限制。"
     >
       <template #actions>
         <el-button size="small" :loading="table.loading.value" @click="table.load">
@@ -17,12 +17,24 @@
     </PageHeader>
 
     <PanelCard flush>
+      <div class="pc-list-head">
+        <span class="pc-list-title">主体（{{ rows.length }}）</span>
+        <span class="pc-list-tools">
+          <span class="pc-mono pc-dim">管理 API /principals</span>
+        </span>
+      </div>
       <ResourceState
         :loading="table.loading.value"
         :error="table.error.value"
         :empty="!rows.length"
-        empty-text="还没有主体"
+        empty-text="还没有主体。新建一个，再把服务角色授予它，它就能访问 catalog 了。"
       >
+        <template #actions>
+          <el-button size="small" type="primary" @click="openCreate">
+            <el-icon><Plus /></el-icon>
+            <span class="pc-btn-text">新建主体</span>
+          </el-button>
+        </template>
         <el-table v-loading="table.loading.value" :data="rows" size="small">
           <el-table-column prop="name" label="名称" min-width="150" />
           <el-table-column label="Client ID" min-width="190">
@@ -43,9 +55,9 @@
           </el-table-column>
           <el-table-column label="操作" width="200" fixed="right">
             <template #default="{ row }">
-              <IconAction icon="Avatar" label="角色" type="primary" @click="openRoles(row)" />
+              <IconAction icon="Avatar" label="服务角色" type="primary" @click="openRoles(row)" />
               <IconAction icon="Refresh" label="轮换密钥" @click="rotate(row)" />
-              <IconAction icon="Key" label="重置密钥" @click="openReset(row)" />
+              <IconAction icon="Key" label="重置 clientId 与密钥" @click="openReset(row)" />
               <IconAction icon="Delete" label="删除" type="danger" @click="confirmDelete(row)" />
             </template>
           </el-table-column>
@@ -60,7 +72,7 @@
         <template #title>服务端只保存密钥摘要</template>
         <div>创建成功后，明文密钥只返回一次，请当场保存。</div>
       </el-alert>
-      <el-form label-position="top" size="small">
+      <el-form label-position="top" size="small" class="pc-form">
         <el-form-item label="名称" required>
           <el-input v-model="createDialog.name" placeholder="例如 spark-job、flink-prod" />
         </el-form-item>
@@ -83,10 +95,12 @@
     </el-dialog>
 
     <!-- 重置密钥 -->
-    <el-dialog v-model="resetDialog.open" :title="`重置密钥：${resetDialog.name}`" width="520px" :close-on-click-modal="false"
+    <el-dialog v-model="resetDialog.open" :title="`重置 clientId 与密钥：${resetDialog.name}`" width="520px" :close-on-click-modal="false"
       destroy-on-close>
-      <p class="pc-dim">两个字段都留空时，由服务端生成一套新的 clientId 与 clientSecret。</p>
-      <el-form label-position="top" size="small">
+      <p class="pc-dim">
+        重置后旧凭据立即失效。两个字段都留空时，由服务端生成一套新的 clientId 与 clientSecret。
+      </p>
+      <el-form label-position="top" size="small" class="pc-form">
         <el-form-item label="Client ID（可选）">
           <el-input v-model="resetDialog.clientId" />
         </el-form-item>
@@ -120,11 +134,11 @@
         :loading="rolesDrawer.loading"
         :error="rolesDrawer.error"
         :empty="!rolesDrawer.roles.length"
-        empty-text="这个主体还没有被授予任何服务角色"
+        empty-text="这个主体还没有服务角色。用上面的选择器授予一个。"
       >
         <el-table :data="rolesDrawer.roles" size="small">
           <el-table-column prop="name" label="角色" min-width="160" />
-          <el-table-column label="联邦（federated）" width="120">
+          <el-table-column label="联邦（federated）" width="150">
             <template #default="{ row }">
               <el-tag size="small" effect="plain" :type="row.federated ? 'warning' : 'info'">
                 {{ row.federated ? '是' : '否' }}
@@ -345,23 +359,3 @@ async function revokeRole(name) {
 
 onConsoleRefresh(() => table.load())
 </script>
-
-<style scoped>
-
-.pc-role-add {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 14px;
-}
-
-.pc-role-select {
-  flex: 1;
-}
-
-:deep(.el-divider__text) {
-  font-size: 13px;
-  color: var(--pc-text-dim);
-  background: var(--pc-surface);
-}
-</style>

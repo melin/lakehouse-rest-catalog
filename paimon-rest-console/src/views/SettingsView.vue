@@ -6,7 +6,7 @@
     />
 
     <PanelCard title="服务端地址与访问令牌">
-      <el-form label-position="top" size="small" class="pc-form">
+      <el-form label-position="top" size="small" class="pc-form pc-form-narrow">
         <el-form-item>
           <template #label>
             <FieldLabel label="API 基址（baseUrl）">
@@ -326,15 +326,11 @@ function clear() {
 </script>
 
 <style scoped>
-.pc-form {
+/* 页面级的字段宽度约束：连接设置只有两个很长的输入框，
+ * 铺满整屏时一行要横跨一米多，读起来要扭头——这不是表单基元的属性，
+ * 所以留在本页，且不与全局的 .pc-form 同名。 */
+.pc-form-narrow {
   max-width: 620px;
-}
-
-.pc-form-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 4px;
 }
 
 .pc-probes {

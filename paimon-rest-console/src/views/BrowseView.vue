@@ -2,7 +2,7 @@
   <div class="pc-page pc-browse">
     <PageHeader
       title="Catalog"
-      :subtitle="`浏览 catalog「${prefix || '未选择'}」下的库与对象。列表与操作走 catalog API（/v1/{prefix}/...），与引擎客户端看到的是同一份元数据。`"
+      :subtitle="`浏览 catalog「${prefix || '未选择'}」下的库与对象。这里看到的元数据与引擎客户端读到的是同一份，改动会立刻反映到它们的查询上。`"
     >
       <template #actions>
         <el-button size="small" @click="reloadDatabases">
@@ -43,7 +43,12 @@
         <div class="pc-db-list pc-scroll">
           <el-skeleton v-if="dbLoading" :rows="4" animated class="pc-db-skeleton" />
           <el-alert v-else-if="dbError" type="error" :closable="false" show-icon :title="dbError" />
-          <el-empty v-else-if="!filteredDatabases.length" :image-size="54" description="没有匹配的数据库" />
+          <!-- 空态要说清是「本来就没有」还是「过滤掉了」：两种情况的下一步不同 -->
+          <el-empty
+            v-else-if="!filteredDatabases.length"
+            :image-size="54"
+            :description="dbFilter.trim() ? `没有匹配「${dbFilter.trim()}」的数据库` : '这个 catalog 下还没有数据库'"
+          />
           <template v-else>
             <div
               v-for="name in filteredDatabases"
@@ -91,15 +96,17 @@
           <ResourceState
             :loading="currentList.loading.value"
             :error="currentList.error.value"
-            :empty="!currentList.items.value.length"
+            :empty="!visibleRows.length"
             :empty-text="emptyText"
           >
             <!-- 表 -->
             <template v-if="tab === 'tables'">
-              <div class="pc-obj-tools">
+              <div class="pc-tools-row">
                 <el-input v-model="tableFilter" size="small" placeholder="过滤表名" clearable class="pc-filter">
                   <template #prefix><el-icon><Search /></el-icon></template>
                 </el-input>
+                <!-- 与其余页签一样把动作推到右边：那一行左边是「看什么」，右边是「做什么」 -->
+                <span class="pc-spacer" />
                 <el-button size="small" @click="openLocateTable">按表 ID 定位</el-button>
                 <el-button size="small" @click="openRegisterTable">注册已有表</el-button>
               </div>
@@ -125,7 +132,7 @@
 
             <!-- 视图 -->
             <template v-else-if="tab === 'views'">
-              <div class="pc-obj-tools">
+              <div class="pc-tools-row">
                 <span class="pc-dim">SQL 视图，定义由服务端整篇保存。</span>
                 <span class="pc-spacer" />
                 <el-button size="small" @click="openCreateView">
@@ -147,7 +154,7 @@
 
             <!-- 函数 -->
             <template v-else-if="tab === 'functions'">
-              <div class="pc-obj-tools">
+              <div class="pc-tools-row">
                 <span class="pc-dim">函数定义支持 file / sql / lambda 三种，控制台按 JSON 原样提交。</span>
                 <span class="pc-spacer" />
                 <el-button size="small" @click="openCreateFunction">
@@ -168,7 +175,7 @@
 
             <!-- 语义视图 -->
             <template v-else>
-              <div class="pc-obj-tools">
+              <div class="pc-tools-row">
                 <span class="pc-dim">语义视图按格式整篇保存（上限 1 MiB）。</span>
               </div>
               <el-table v-loading="semanticViewsList.loading.value" :data="semanticViewsList.items.value" size="small">
@@ -197,7 +204,7 @@
     <!-- 新建数据库 -->
     <el-dialog v-model="dbDialog.open" title="新建数据库" width="480px" :close-on-click-modal="false"
       destroy-on-close>
-      <el-form label-position="top" size="small">
+      <el-form label-position="top" size="small" class="pc-form">
         <el-form-item label="名称" required>
           <el-input v-model="dbDialog.name" placeholder="例如 ods、dwd" />
         </el-form-item>
@@ -219,15 +226,15 @@
       top="6vh"
       destroy-on-close
     >
-      <el-form label-position="top" size="small">
+      <el-form label-position="top" size="small" class="pc-form">
         <el-form-item label="表名" required>
           <el-input v-model="tableDialog.name" placeholder="例如 orders" />
         </el-form-item>
       </el-form>
 
       <el-divider content-position="left">字段（fields）</el-divider>
-      <div class="pc-fields">
-        <div v-for="(field, index) in tableDialog.fields" :key="index" class="pc-field-row">
+      <div class="pc-repeat">
+        <div v-for="(field, index) in tableDialog.fields" :key="index" class="pc-repeat-row">
           <el-input v-model="field.name" size="small" placeholder="字段名" class="pc-field-name" />
           <!-- 不用原生 datalist：Chrome 会给带 list 的 input 自带一个下拉指示器，
                嵌在 Element 的 wrapper 里位置错乱；el-select 的 allow-create 同样支持手工输入。 -->
@@ -249,13 +256,13 @@
         </div>
         <el-button size="small" text type="primary" @click="tableDialog.fields.push({ name: '', type: '', description: '' })">
           <el-icon><Plus /></el-icon>
-          <span class="pc-field-add">添加字段</span>
+          <span class="pc-repeat-add">添加字段</span>
         </el-button>
         <div class="pc-tip">字段 id 由服务端按顺序补齐，这里不需要填。</div>
       </div>
 
       <el-divider content-position="left">分区与主键（可选）</el-divider>
-      <el-form label-position="top" size="small">
+      <el-form label-position="top" size="small" class="pc-form">
         <el-form-item>
           <template #label>
             <FieldLabel label="分区键（partitionKeys）">
@@ -312,7 +319,7 @@
     <!-- 按表 ID 定位 -->
     <el-dialog v-model="locateDialog.open" title="按表 ID 定位" width="520px" :close-on-click-modal="false"
       destroy-on-close>
-      <el-form label-position="top" size="small">
+      <el-form label-position="top" size="small" class="pc-form">
         <el-form-item required>
           <template #label>
             <FieldLabel label="表 ID">
@@ -336,7 +343,7 @@
         <template #title>注册只写元数据，不搬动数据</template>
         <div>路径下必须已存在一张完整的 Paimon 表（含 schema 与快照目录），否则读取时会失败。</div>
       </el-alert>
-      <el-form label-position="top" size="small">
+      <el-form label-position="top" size="small" class="pc-form">
         <el-form-item label="表名" required>
           <el-input v-model="registerDialog.name" />
         </el-form-item>
@@ -353,7 +360,7 @@
     <!-- 重命名 -->
     <el-dialog v-model="renameDialog.open" :title="renameDialog.title" width="440px" :close-on-click-modal="false"
       destroy-on-close>
-      <el-form label-position="top" size="small">
+      <el-form label-position="top" size="small" class="pc-form">
         <el-form-item label="新名称" required>
           <el-input v-model="renameDialog.value" />
         </el-form-item>
@@ -367,7 +374,7 @@
     <!-- 新建视图 -->
     <el-dialog v-model="viewDialog.open" title="新建视图" width="640px" :close-on-click-modal="false"
       destroy-on-close>
-      <el-form label-position="top" size="small">
+      <el-form label-position="top" size="small" class="pc-form">
         <el-form-item label="视图名" required>
           <el-input v-model="viewDialog.name" />
         </el-form-item>
@@ -387,13 +394,13 @@
     <!-- 新建函数 -->
     <el-dialog v-model="functionDialog.open" title="新建函数" width="680px" :close-on-click-modal="false" top="6vh"
       destroy-on-close>
-      <el-form label-position="top" size="small">
+      <el-form label-position="top" size="small" class="pc-form">
         <el-form-item label="函数名" required>
           <el-input v-model="functionDialog.name" />
         </el-form-item>
         <el-form-item label="入参（inputParams）">
-          <div class="pc-fields">
-            <div v-for="(param, index) in functionDialog.inputParams" :key="index" class="pc-field-row">
+          <div class="pc-repeat">
+            <div v-for="(param, index) in functionDialog.inputParams" :key="index" class="pc-repeat-row">
               <el-input v-model="param.name" size="small" placeholder="参数名" class="pc-field-name" />
               <el-input v-model="param.type" size="small" placeholder="类型" class="pc-field-type" />
               <el-button size="small" text type="danger" @click="functionDialog.inputParams.splice(index, 1)">
@@ -402,13 +409,13 @@
             </div>
             <el-button size="small" text type="primary" @click="functionDialog.inputParams.push({ name: '', type: '' })">
               <el-icon><Plus /></el-icon>
-              <span class="pc-field-add">添加参数</span>
+              <span class="pc-repeat-add">添加参数</span>
             </el-button>
           </div>
         </el-form-item>
         <el-form-item label="返回参数（returnParams）">
-          <div class="pc-fields">
-            <div v-for="(param, index) in functionDialog.returnParams" :key="index" class="pc-field-row">
+          <div class="pc-repeat">
+            <div v-for="(param, index) in functionDialog.returnParams" :key="index" class="pc-repeat-row">
               <el-input v-model="param.name" size="small" placeholder="参数名" class="pc-field-name" />
               <el-input v-model="param.type" size="small" placeholder="类型" class="pc-field-type" />
               <el-button size="small" text type="danger" @click="functionDialog.returnParams.splice(index, 1)">
@@ -417,7 +424,7 @@
             </div>
             <el-button size="small" text type="primary" @click="functionDialog.returnParams.push({ name: '', type: '' })">
               <el-icon><Plus /></el-icon>
-              <span class="pc-field-add">添加参数</span>
+              <span class="pc-repeat-add">添加参数</span>
             </el-button>
           </div>
         </el-form-item>
@@ -594,12 +601,24 @@ const lists = {
 
 const currentList = computed(() => lists[tab.value] || tablesList)
 
-const emptyText = computed(() => ({
-  tables: '这个数据库里还没有表',
-  views: '这个数据库里还没有视图',
-  functions: '这个数据库里还没有函数',
-  semanticViews: '这个数据库里还没有语义视图',
-}[tab.value] || '暂无数据'))
+const emptyText = computed(() => {
+  // 表页签带过滤框，其余页签没有：过滤到空时要说明是过滤的结果，
+  // 否则「这个数据库里还没有表」会让人以为真的没建表
+  if (tab.value === 'tables' && tableFilter.value.trim() && currentList.value.items.value.length) {
+    return `没有匹配「${tableFilter.value.trim()}」的表`
+  }
+  return {
+    tables: '这个数据库里还没有表',
+    views: '这个数据库里还没有视图',
+    functions: '这个数据库里还没有函数',
+    semanticViews: '这个数据库里还没有语义视图',
+  }[tab.value] || '暂无数据'
+})
+
+/** 当前页签真正要展示的行；表页签走过滤后的结果。 */
+const visibleRows = computed(() => (
+  tab.value === 'tables' ? filteredTables.value : currentList.value.items.value
+))
 
 const filteredTables = computed(() => {
   const keyword = tableFilter.value.trim().toLowerCase()
@@ -1267,14 +1286,6 @@ defineExpose({ loadCurrentList })
   padding: 6px 14px 14px;
 }
 
-.pc-obj-tools {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 10px;
-  font-size: 13px;
-}
-
 .pc-filter {
   width: 200px;
 }
@@ -1287,19 +1298,8 @@ defineExpose({ loadCurrentList })
   font-size: 13px;
 }
 
-/* 字段编辑器 */
-
-.pc-fields {
-  width: 100%;
-}
-
-.pc-field-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 6px;
-}
-
+/* 字段编辑器：容器与行走全局基元（.pc-repeat / .pc-repeat-row），
+   这里只决定三列各占多宽 */
 .pc-field-name {
   flex: 0 0 26%;
 }
@@ -1312,18 +1312,8 @@ defineExpose({ loadCurrentList })
   flex: 1;
 }
 
-.pc-field-add {
-  margin-left: 4px;
-}
-
 .pc-pre :deep(textarea) {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 13px;
-}
-
-:deep(.el-divider__text) {
-  font-size: 13px;
-  color: var(--pc-text-dim);
-  background: var(--pc-surface);
 }
 </style>
