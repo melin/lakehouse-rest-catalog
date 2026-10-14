@@ -14,6 +14,17 @@ export function formatTime(millis) {
     + `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
 }
 
+/** epoch 毫秒 → `YYYY-MM-DD`（本机时区）。用于「到哪一天到期」这类只关心日期的字段。 */
+export function formatDate(millis) {
+  if (millis === null || millis === undefined || millis === '') return PLACEHOLDER
+  const value = Number(millis)
+  if (!Number.isFinite(value)) return String(millis)
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return String(millis)
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+}
+
 /** 相对时间，用于「多久之前」这类概览信息。 */
 export function relativeTime(millis) {
   if (!millis) return PLACEHOLDER

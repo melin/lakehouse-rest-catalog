@@ -80,12 +80,23 @@
                 </div>
               </template>
             </el-table-column>
-            <el-table-column label="过期时间" width="180">
+            <el-table-column label="过期时间" width="200">
               <template #default="{ row }">
-                <TimeText v-if="row.expireMillis" :millis="row.expireMillis" />
+                <!-- 授权按「到哪一天」授予，清单也就按日期读：完整时刻放进 tooltip -->
+                <template v-if="row.expireMillis">
+                  <el-tooltip :content="formatTime(row.expireMillis)" placement="top">
+                    <span class="pc-mono">{{ formatDate(row.expireMillis) }}</span>
+                  </el-tooltip>
+                  <el-tag v-if="isExpired(row.expireMillis)" size="small" type="danger" effect="plain" class="pc-kind">
+                    已过期
+                  </el-tag>
+                  <span v-else-if="daysUntil(row.expireMillis) <= 7" class="pc-scope-kind">
+                    （{{ daysUntil(row.expireMillis) }} 天后）
+                  </span>
+                  <span v-if="row.expireMixed" class="pc-scope-kind">（取最早）</span>
+                </template>
                 <span v-else-if="row.expireRaw" class="pc-mono">{{ row.expireRaw }}</span>
                 <span v-else class="pc-dim">长期有效</span>
-                <span v-if="row.expireMixed" class="pc-scope-kind">（取最早）</span>
               </template>
             </el-table-column>
             <!-- 首次加载时列表还没数据、ResourceState 走 loading 分支照常渲染表格，
@@ -208,6 +219,28 @@
               </template>
             </div>
           </el-form-item>
+
+          <!-- 有效期：默认长期有效。「指定日期」按当天 23:59:59（本地时区）换算成
+               官方要求的 UTC instant——选「到 10 月 20 日」就该在 20 日整日有效，
+               而不是 20 日 00:00 就失效。 -->
+          <el-form-item label="有效期">
+            <div class="pc-perms">
+              <el-radio-group v-model="form.expireMode">
+                <el-radio-button value="permanent">长期有效</el-radio-button>
+                <el-radio-button value="date">指定日期</el-radio-button>
+              </el-radio-group>
+              <el-date-picker
+                v-if="form.expireMode === 'date'"
+                v-model="form.expireDate"
+                type="date"
+                size="small"
+                value-format="YYYY-MM-DD"
+                placeholder="授权到哪一天"
+                :disabled-date="isPastDate"
+                class="pc-expire-date"
+              />
+            </div>
+          </el-form-item>
         </el-form>
 
         <template #footer>
@@ -239,13 +272,13 @@ import { useRoute, useRouter } from 'vue-router'
 import PageHeader from '@/components/PageHeader.vue'
 import PanelCard from '@/components/PanelCard.vue'
 import ResourceState from '@/components/ResourceState.vue'
-import TimeText from '@/components/TimeText.vue'
 import { catalogApi } from '@/api/catalog.js'
 import { managementApi } from '@/api/management.js'
 import { permissionApi } from '@/api/permission.js'
 import { describeError } from '@/api/client.js'
 import { confirmDanger, notifyError, notifySuccess, onConsoleRefresh } from '@/composables/index.js'
 import { session } from '@/store/session.js'
+import { formatDate, formatTime } from '@/utils/format.js'
 
 /**
  * 权限管理页（Paimon 官方权限模型）。
@@ -261,6 +294,11 @@ import { session } from '@/store/session.js'
  *
  * <p>表单收在弹窗里（页头「添加授权」按钮打开）：页面主体只留授权清单，
  * 授权是低频离散动作，不需要长期占据首屏。
+ *
+ * <p>有效期默认「长期有效」，也可选「指定日期」——按所选当天 23:59:59（本地时区）
+ * 换算成官方要求的 UTC instant 提交；「到 10 月 20 日」就是 20 日整日有效。
+ * 清单里的过期条目不会被隐藏（那里反映落库内容），但标注「已过期」——判定层按
+ * 过期时间排除它，不标注会让人以为权限还在。
  *
  * <p>清单只回答一个问题——「谁，被允许对什么做什么」。一行 = 一个主体 × 一个作用范围：
  * 主体名 + 类型合成一列，资源定位符（库、库.表）合成一列，同一范围的权限并列成标签、
@@ -284,12 +322,14 @@ function resetForCatalog() {
   listState.error = ''
 }
 
-/** 清空表单：授权对象、作用范围、已勾选权限三者一起复位。 */
+/** 清空表单：授权对象、作用范围、有效期、已勾选权限一起复位。 */
 function resetForm() {
   form.grantees = []
   form.scope = 'table'
   form.database = ''
   form.objects = []
+  form.expireMode = 'permanent'
+  form.expireDate = ''
   objectOptions.value = []
   clearPerms()
 }
@@ -402,7 +442,7 @@ async function loadObjects() {
 
 // ------------------------------------------------------------------ 权限表单
 
-const form = reactive({ grantees: [], scope: 'table', database: '', objects: [] })
+const form = reactive({ grantees: [], scope: 'table', database: '', objects: [], expireMode: 'permanent', expireDate: '' })
 
 /** 只有表 / 视图两级要选具体对象；catalog 与 database 两级直接落在整层上。 */
 const isObjectScope = computed(() => form.scope === 'table' || form.scope === 'view')
@@ -459,6 +499,27 @@ const selectedAccesses = computed(() => {
 
 const submitting = ref(false)
 
+/**
+ * 有效期 → 官方要求的 UTC instant。选中「到 2027-01-01」表示这一整天有效，
+ * 因此取当天 23:59:59.999（本地时区）再转 UTC；长期有效返回空串，
+ * 提交时不带 expireTime 字段（官方语义：省略即永不过期）。
+ */
+const expireInstant = computed(() => {
+  if (form.expireMode !== 'date' || !form.expireDate) return ''
+  const end = new Date(`${form.expireDate}T23:59:59.999`)
+  return Number.isFinite(end.getTime()) ? end.toISOString() : ''
+})
+
+/** 日期选择器禁掉今天之前的日期：补授一个已经过期的权限没有意义。 */
+function isPastDate(date) {
+  const start = new Date()
+  start.setHours(0, 0, 0, 0)
+  return date.getTime() < start.getTime()
+}
+
+/** 有效期的显示词，页脚预览与空态提示共用一处说法。 */
+const expireLabel = computed(() => (form.expireMode === 'permanent' ? '长期有效' : `至 ${form.expireDate || '未选择'}`))
+
 const pendingCount = computed(() => form.grantees.length * selectedAccesses.value.length
   * Math.max(1, form.objects.length))
 
@@ -484,7 +545,7 @@ const targetLabel = computed(() => {
 
 /** 弹窗页脚左侧的提交预览：没填完时退化为放置提示，不让页脚空着。 */
 const footerHint = computed(() => (pendingCount.value > 0
-  ? `将授予 ${pendingCount.value} 条授权${previewScope.value}`
+  ? `将授予 ${pendingCount.value} 条授权${previewScope.value}（${expireLabel.value}）`
   : '选择授权对象与作用范围后再授予'))
 
 function buildResource(object) {
@@ -513,6 +574,15 @@ async function submit() {
     notifyError(new Error('请至少勾选一项权限'))
     return
   }
+  if (form.expireMode === 'date' && !form.expireDate) {
+    notifyError(new Error('请选择授权到期的日期，或把有效期改回「长期有效」'))
+    return
+  }
+  // disabled-date 只管日历面板，手输的日期要在这里挡一次
+  if (form.expireMode === 'date' && Date.parse(expireInstant.value) <= Date.now()) {
+    notifyError(new Error('到期日期需要晚于当前时间'))
+    return
+  }
   submitting.value = true
   const targets = isObjectScope.value ? form.objects : [null]
   let done = 0
@@ -524,12 +594,14 @@ async function submit() {
             resource: buildResource(object),
             access,
             principal,
+            // 长期有效不带该字段（省略即永不过期）；重复授予同一身份会覆盖过期时间
+            expireTime: expireInstant.value || undefined,
           })
           done++
         }
       }
     }
-    notifySuccess(`已授予 ${done} 条授权`)
+    notifySuccess(`已授予 ${done} 条授权（${expireLabel.value}）`)
     // 成功后关窗并整体复位：表单在弹窗里，关窗就是这次授予的结束，
     // 不保留资源范围（下次授予多半换对象，留着反而容易提交到错的库上）
     dialogOpen.value = false
@@ -569,6 +641,19 @@ const ACCESS_LABELS = {
 
 function accessLabel(access) {
   return ACCESS_LABELS[access] || access
+}
+
+/**
+ * 过期条目的两个注解。列表反映落库内容——过期条目不会被隐藏，
+ * 但必须一眼看出它已经不生效了（判定层按过期时间排除它）。
+ */
+function isExpired(millis) {
+  return Number(millis) < Date.now()
+}
+
+/** 距到期还有几天（不足一天算 0）。 */
+function daysUntil(millis) {
+  return Math.max(0, Math.ceil((Number(millis) - Date.now()) / 86_400_000))
 }
 
 /** 对象级资源类型的注解词。定位符里只写了名字，类型靠这一处补上。 */
@@ -644,7 +729,7 @@ function toRow(item) {
       : (object ? (OBJECT_KINDS[resourceType] || '（单个对象）') : '（整库）'),
     access: item.access || '',
     expireRaw,
-    // 只有能解析成时间的才交给 TimeText；解析不出来的原样显示，不假装是永久
+    // 只有能解析成时间的才按日期显示；解析不出来的原样显示，不假装是永久
     expireMillis: Number.isFinite(expireMillis) ? expireMillis : null,
     identity: item,
   }
@@ -804,5 +889,10 @@ watch(catalogName, (name, previous) => {
   align-items: center;
   gap: 4px 6px;
   flex-wrap: wrap;
+}
+
+/* 有效期那一行：模式按钮在左、日期选择器紧随其后，两者同宽线对齐 */
+.pc-expire-date {
+  width: 180px;
 }
 </style>
