@@ -67,7 +67,7 @@ paimon-rest-console/
 ├── vite.config.js                 base=/console/，outDir 指向服务端 resources/static/console
 └── src/
     ├── api/
-    │   ├── endpoints.js           ★ 全部 85 条端点的 method/path，唯一契约表
+    │   ├── endpoints.js           ★ 全部 77 条端点的 method/path，唯一契约表
     │   ├── client.js              fetch 封装：鉴权、路径拼装、错误归一化
     │   ├── catalog.js             Catalog API 的调用函数
     │   ├── management.js          Management API 的调用函数（含创建请求的包体约定）
@@ -85,7 +85,7 @@ paimon-rest-console/
     │                              （列表头 .pc-list-head、工具行 .pc-tools-row、
     │                              授权表单栅格 .pc-form-grid 等）也收敛在这里
     ├── utils/format.js            时间、字节、JSON 等展示格式化
-    └── views/                     12 个页面，见 §4
+    └── views/                     11 个页面，见 §4
 ```
 
 `src/api/endpoints.js` 与 `scripts/verify-console.py` 是这套结构里的两根钉子，
@@ -137,12 +137,11 @@ paimon-rest-console/
 | `/auth/callback` | SSO 回调 | 校验 `state` → 用授权码换令牌 → 让服务端确认 → 回跳原页面。不套管理布局 |
 | `/` | 控制台概览 | 统计块（三个数量）、服务端配置摘要、**连接自检**、catalog 清单、`GET /v1/config` 展示 |
 | `/browse` | 目录浏览 | 左库右对象；四页签（表/视图/函数/语义视图）；建库、建表、注册表、按表 ID 定位、重命名、删除、详情抽屉。表页签的过滤为空时说明「没有匹配 ×××」，与「库里没有表」区分开 |
-| `/tables/:prefix/:database/:table` | [表详情](console-table-detail.md) | 九页签：详细信息 / Schema / 变更 / 快照 / 标签 / 分支 / 分区 / 权限 / 数据访问；含**变更构造器**、快照与标签的**回滚**、表级 grants 的增删。权限页签只列 catalog 角色携带的授权，并在提示里指明「权限管理」页的直接授权不在此列 |
+| `/tables/:prefix/:database/:table` | [表详情](console-table-detail.md) | 八页签：详细信息 / Schema / 变更 / 快照 / 标签 / 分支 / 分区 / 数据访问；含**变更构造器**、快照与标签的**回滚**。授权不在这张表上做——表级权限统一到「权限管理」页 |
 | `/catalogs` | Catalogs | 列出 / 创建 / 详情 / 更新（带版本）/ 删除 |
-| `/principals` | 主体 | 列出 / 创建 / 更新 / 删除 / rotate / reset；授予与撤销服务角色。创建、轮换、重置后的凭据弹窗可一键导出 JSON 文件（`{principal, clientId, clientSecret}`，文件名 `<主体>-credentials.json`），密钥仍只在弹窗期间可见 |
-| `/principal-roles` | 服务角色 | 列出 / 创建 / 更新 / 删除；查看成员；授予与撤销 catalog 角色（选 catalog 后自动加载，无需点「加载」） |
-| `/catalog-roles` | Catalog 角色与授权 | 角色 CRUD；查看授予了该角色的服务角色；**grants 的增删**（抽屉里是有标签的表单，字段名按资源类型切换；提交行展示接口将收到的形状） |
-| `/permissions` | 权限管理 | Paimon 官方权限模型（principal 直授）：页头「添加授权」按钮开弹窗填表——多选用户/角色（`user:` / `role:`，可手输任意 principal）、database 级或表级授权（选了表才显示表权限）、简化的权限勾选（db：Create table/Alter/Drop/Describe；表：Select/Insert/Delete/Describe/Alter/Drop）；主界面是授权清单——Principal 按主体合并单元格（清单按主体排序），资源合成「作用范围」一列（`库` / `库.表`），权限用与表单一致的词（UPDATE 显示为 Insert / Delete），空态给「添加授权」入口；支持过滤与幂等撤销 |
+| `/principals` | 主体 | 列出 / 创建 / 更新 / 删除 / rotate / reset；授予与撤销角色。创建、轮换、重置后的凭据弹窗可一键导出 JSON 文件（`{principal, clientId, clientSecret}`，文件名 `<主体>-credentials.json`），密钥仍只在弹窗期间可见 |
+| `/principal-roles` | 角色 | 列出 / 创建 / 更新 / 删除；查看成员；授予与撤销 catalog 角色（选 catalog 后自动加载，无需点「加载」） |
+| `/permissions` | 权限管理 | 控制台**唯一**的授权入口（Paimon 官方权限模型，principal 直授）：页头「添加授权」按钮开弹窗填表——多选授权对象（`user:` / `role:`，可手输任意 principal）、选**作用范围**（Catalog / Database / Table / View，四级就是官方的四种资源类型：catalog 不需要选库，表 / 视图还要选具体对象）、权限项按范围给（catalog：Create database/Alter/Drop/Grant；db：Create table/Alter/Drop/Describe；表：Select/Insert/Delete/Describe/Alter/Drop；视图：Select/Describe/Alter/Drop）；主界面是授权清单——一行 = 一个主体 × 一个作用范围，同范围的权限并列成标签、点标签上的 × 逐项撤销（ 过期时间不一致时取最早并标注），资源合成「作用范围」一列（`整个 catalog` / `库` / `库.对象`，标注整 catalog/整库/单表），权限用与表单一致的词（UPDATE 显示为 Insert / Delete），空态给「添加授权」入口；支持过滤与幂等撤销 |
 | `/settings` | 连接设置 | API 基址、访问令牌、登录状态、主题；`/api/console/v1/meta` 原始响应 |
 | `/:pathMatch(.*)*` | 未找到 | 兜底 |
 
@@ -159,9 +158,11 @@ paimon-rest-console/
   `#actions` 插槽）；过滤到空时说清是「没有匹配 ×××」，与「本来就没有」区分。
 - **一个动作一个名字。** 页头按钮 → 弹窗标题 → 提交按钮 → toast 用同一组词：
   「添加授权」打开弹窗，提交按钮是「授予（N）」，toast 是「已授予 N 条授权」。
-- **同一概念两个模型，用同一套词。** 「Catalog 角色与授权」（Polaris 模型）与
-  「权限管理」（Paimon 官方直授模型）是并行的两条授权路径，两边的清单标题、
-  空态措辞、表单栅格保持一致，并在页签/提示里互相指路。
+- **授权只有一个入口。** 「权限管理」是控制台唯一的授权页面：四级资源（catalog /
+  database / table / view）各有自己的一组权限词，全部在这一页里授与撤。Polaris 的
+  RBAC（主体 → 角色 → catalog 角色 → 资源授权）不再有页面——它的三件套在
+  控制台里只留下被引用的一小部分（授权对象的 `role:` 候选、角色页的装配），
+  管理面留在管理 API 与 Spark SQL 上。服务端判定不变：两路取并集。
 - **表单只有一种形态。** 全站表单统一走全局基元 `.pc-form`（标签在控件上方、
   13px 弱化色、字段间距 14px），字段多且语义并列时加 `.pc-form-grid` 自动折行，
   表单下的提交行是 `.pc-form-actions`，「可重复字段行」（表字段、允许位置、
@@ -201,6 +202,9 @@ paimon-rest-console/
 - `grantTypes` 与 `privilegesByGrantType`：资源类型 → 该层级可授予的权限。
   这份对应关系由服务端的 `Privilege.allowedFor(String)` 从管理规格还原。
   前端若复制一份必然漂移，而漂移的表现是「提交后才被服务端拒绝」，排查成本高。
+  **权限表单不据此渲染**：它要的是四级各一组、去掉歧义的简化词（见 §4 的
+  `/permissions`），照抄官方词表反而把 `ALL`、`COLUMN` 这类选项摊到用户面前；
+  这两个字段保留在响应里，由规格一致性断言（`metaPrivilegesFollowManagementSpec`）盯着。
 
 meta 只暴露枚举取值与服务端自身的配置，不含任何主体、catalog 或凭据信息，
 因此与 `/api/management/v1/**` 一样只过认证拦截器，不做细粒度授权判定。

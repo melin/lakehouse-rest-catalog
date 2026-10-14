@@ -2,7 +2,7 @@
   <div class="pc-page">
     <PageHeader
       title="权限管理"
-      subtitle="当前 catalog 的授权清单：谁被允许对哪个库或表做什么，逐条可撤销。这里授予的权限与「Catalog 角色与授权」页的角色授权并行生效，实际权限取两者并集。"
+      subtitle="当前 catalog 的授权清单：谁被允许对哪个 catalog、库、表或视图做什么，逐条可撤销。这里把权限直接授给用户、用户组或角色；服务端另有一条「主体 → 角色 → catalog 角色」的授权链（由 Spark SQL 与管理 API 维护），实际权限取两者并集。"
     >
       <template #actions>
         <el-button type="primary" size="small" :disabled="!catalogName" @click="openDialog">
@@ -46,7 +46,6 @@
             v-loading="listState.loading"
             :data="filteredRows"
             size="small"
-            :span-method="spanPrincipal"
           >
             <el-table-column label="Principal" min-width="210">
               <template #default="{ row }">
@@ -62,9 +61,23 @@
                 <span class="pc-scope-kind">{{ row.scopeKind }}</span>
               </template>
             </el-table-column>
-            <el-table-column label="权限" min-width="170">
+            <!-- 一行 = 一个主体 × 一个作用范围，权限并列成标签；
+                 撤销跟着标签走（× 号），一次只撤一项权限 -->
+            <el-table-column label="权限" min-width="260">
               <template #default="{ row }">
-                <el-tag size="small" effect="plain" type="info">{{ accessLabel(row.access) }}</el-tag>
+                <div class="pc-access-tags">
+                  <el-tag
+                    v-for="item in row.items"
+                    :key="item.access"
+                    size="small"
+                    effect="plain"
+                    type="info"
+                    closable
+                    @close="revokeAccess(row, item)"
+                  >
+                    {{ item.label }}
+                  </el-tag>
+                </div>
               </template>
             </el-table-column>
             <el-table-column label="过期时间" width="180">
@@ -72,11 +85,7 @@
                 <TimeText v-if="row.expireMillis" :millis="row.expireMillis" />
                 <span v-else-if="row.expireRaw" class="pc-mono">{{ row.expireRaw }}</span>
                 <span v-else class="pc-dim">长期有效</span>
-              </template>
-            </el-table-column>
-            <el-table-column label="" width="70" align="right" fixed="right">
-              <template #default="{ row }">
-                <IconAction icon="Remove" label="撤销" type="danger" @click="revokeRow(row)" />
+                <span v-if="row.expireMixed" class="pc-scope-kind">（取最早）</span>
               </template>
             </el-table-column>
             <!-- 首次加载时列表还没数据、ResourceState 走 loading 分支照常渲染表格，
@@ -104,7 +113,7 @@
         destroy-on-close
       >
         <el-form label-position="top" size="small" class="pc-form pc-form-grid pc-grant-form">
-          <el-form-item label="授权对象" required class="pc-span">
+          <el-form-item label="授权对象" required>
             <el-select
               v-model="form.grantees"
               multiple
@@ -120,9 +129,20 @@
             </el-select>
           </el-form-item>
 
-          <!-- Database 与 Tables 并排且等宽：两者是「库」与「库下的表」两层，
-               等宽并排比一宽一窄更像同一组字段。 -->
-          <el-form-item label="Database" required>
+          <!-- 「作用范围」就是提交时的资源定位器：四级对应官方的
+               CATALOG / DATABASE / TABLE / VIEW 四种资源类型，各自的权限词表不同，
+               因此先定层级、再选对象、最后勾权限。 -->
+          <el-form-item label="作用范围" required>
+            <el-radio-group v-model="form.scope" @change="onScopeChange">
+              <el-radio-button value="catalog">Catalog</el-radio-button>
+              <el-radio-button value="database">Database</el-radio-button>
+              <el-radio-button value="table">Table</el-radio-button>
+              <el-radio-button value="view">View</el-radio-button>
+            </el-radio-group>
+          </el-form-item>
+
+          <!-- catalog 级授权不需要再选库：定位符就是 catalog 自己 -->
+          <el-form-item v-if="form.scope !== 'catalog'" label="Database" required>
             <el-select
               v-model="form.database"
               filterable
@@ -135,32 +155,48 @@
             </el-select>
           </el-form-item>
 
-          <el-form-item label="Tables（可选）">
+          <el-form-item
+            v-if="isObjectScope"
+            :label="form.scope === 'view' ? 'View' : 'Table'"
+            required
+          >
             <el-select
-              v-model="form.tables"
+              v-model="form.objects"
               multiple
               filterable
               clearable
               collapse-tags
               collapse-tags-tooltip
               class="pc-full"
-              :placeholder="form.database ? '不选 = database 级授权' : '先选择 database'"
+              :placeholder="form.database ? '选择要授权的对象（可多选）' : '先选择 database'"
               :disabled="!form.database"
-              :loading="tablesLoading"
+              :loading="objectsLoading"
             >
-              <el-option v-for="name in tableOptions" :key="name" :label="name" :value="name" />
+              <el-option v-for="name in objectOptions" :key="name" :label="name" :value="name" />
             </el-select>
           </el-form-item>
 
-          <!-- 权限项跟着资源范围走：选了表就是表级那六项，只选库就是库级那四项。
-               标签随选择变化，因此不需要再写一段「选了表就只能授表权限」的说明。 -->
-          <el-form-item :label="form.tables.length ? 'Table 权限' : 'Database 权限'" class="pc-span">
+          <!-- 权限项跟着作用范围走：四级各一组（标签也随范围变），
+               因此不需要再写一段「选了表就只能授表权限」的说明。 -->
+          <el-form-item :label="permLabel">
             <div class="pc-perms">
-              <template v-if="!form.tables.length">
+              <template v-if="form.scope === 'catalog'">
+                <el-checkbox v-model="catalogPerms.CREATEDATABASE" size="small">Create database</el-checkbox>
+                <el-checkbox v-model="catalogPerms.ALTER" size="small">Alter</el-checkbox>
+                <el-checkbox v-model="catalogPerms.DROP" size="small">Drop</el-checkbox>
+                <el-checkbox v-model="catalogPerms.GRANT" size="small">Grant</el-checkbox>
+              </template>
+              <template v-else-if="form.scope === 'database'">
                 <el-checkbox v-model="dbPerms.CREATETABLE" size="small">Create table</el-checkbox>
                 <el-checkbox v-model="dbPerms.ALTER" size="small">Alter</el-checkbox>
                 <el-checkbox v-model="dbPerms.DROP" size="small">Drop</el-checkbox>
                 <el-checkbox v-model="dbPerms.DESCRIBE" size="small">Describe</el-checkbox>
+              </template>
+              <template v-else-if="form.scope === 'view'">
+                <el-checkbox v-model="viewPerms.SELECT" size="small">Select</el-checkbox>
+                <el-checkbox v-model="viewPerms.DESCRIBE" size="small">Describe</el-checkbox>
+                <el-checkbox v-model="viewPerms.ALTER" size="small">Alter</el-checkbox>
+                <el-checkbox v-model="viewPerms.DROP" size="small">Drop</el-checkbox>
               </template>
               <template v-else>
                 <el-checkbox v-model="tablePerms.SELECT" size="small">Select</el-checkbox>
@@ -200,7 +236,6 @@
 import { computed, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
-import IconAction from '@/components/IconAction.vue'
 import PageHeader from '@/components/PageHeader.vue'
 import PanelCard from '@/components/PanelCard.vue'
 import ResourceState from '@/components/ResourceState.vue'
@@ -215,17 +250,22 @@ import { session } from '@/store/session.js'
 /**
  * 权限管理页（Paimon 官方权限模型）。
  *
- * <p>与「Catalog 角色与授权」页（Polaris 模型）的区别：那里把授权挂在 catalog role 上，
- * 这里直接面向 principal 字符串。表单按用户要求做了简化——权限只暴露
- * database 四项 / table 六项，Insert 与 Delete 在官方词表里同为 UPDATE，提交前去重。
+ * <p>控制台唯一的授权入口。授权直接面向 principal（`user:alice` / `group:eng` /
+ * `role:sales_writer`），覆盖 catalog / database / table / view 四级资源；
+ * 服务端另有一条 Polaris 的 RBAC 链路（主体 → 角色 → catalog 角色 → 资源授权），
+ * 由管理 API 与 Spark SQL 维护，没有控制台页面——判定时两路取并集。
+ *
+ * <p>表单按用户要求做了简化——权限只暴露
+ * database 四项 / table 六项 / view 四项，Insert 与 Delete 在官方词表里同为 UPDATE，
+ * 提交前去重；视图没有写数据权限，所以视图那一组没有 Insert / Delete。
  *
  * <p>表单收在弹窗里（页头「添加授权」按钮打开）：页面主体只留授权清单，
  * 授权是低频离散动作，不需要长期占据首屏。
  *
- * <p>清单只回答一个问题——「谁，被允许对什么做什么」。因此：主体名 + 类型合成一列并按主体
- * 合并单元格；资源定位符（库、库.表）合成一列，不再拆成资源类型 / Database / Table 三列；
- * 权限用表单里的同一套词（Insert / Delete 而不是服务端的 UPDATE）。catalog 是全页常量
- * （右上角选的那一个），不进表格。
+ * <p>清单只回答一个问题——「谁，被允许对什么做什么」。一行 = 一个主体 × 一个作用范围：
+ * 主体名 + 类型合成一列，资源定位符（库、库.表）合成一列，同一范围的权限并列成标签、
+ * 逐个可撤销；权限用表单里的同一套词（Insert / Delete 而不是服务端的 UPDATE）。
+ * catalog 是全页常量（右上角选的那一个），不进表格。
  */
 
 const route = useRoute()
@@ -244,14 +284,22 @@ function resetForCatalog() {
   listState.error = ''
 }
 
-/** 清空表单：授权对象、资源范围、已勾选权限三者一起复位。 */
+/** 清空表单：授权对象、作用范围、已勾选权限三者一起复位。 */
 function resetForm() {
   form.grantees = []
+  form.scope = 'table'
   form.database = ''
-  form.tables = []
-  tableOptions.value = []
+  form.objects = []
+  objectOptions.value = []
+  clearPerms()
+}
+
+/** 勾选项复位。切作用范围时也要调——四级的勾选项不是同一组，留着会串味。 */
+function clearPerms() {
+  Object.keys(catalogPerms).forEach((key) => { catalogPerms[key] = false })
   Object.keys(dbPerms).forEach((key) => { dbPerms[key] = false })
   Object.keys(tablePerms).forEach((key) => { tablePerms[key] = false })
+  Object.keys(viewPerms).forEach((key) => { viewPerms[key] = false })
 }
 
 /** 打开弹窗时才拉候选：授权对象与 database 都可能在这期间被新建，进弹窗即取一次最新的。 */
@@ -302,8 +350,9 @@ async function loadGranteeOptions() {
 
 const databases = ref([])
 const databasesLoading = ref(false)
-const tableOptions = ref([])
-const tablesLoading = ref(false)
+/** 对象候选：按当前选中的对象类型，是表列表或视图列表。 */
+const objectOptions = ref([])
+const objectsLoading = ref(false)
 
 async function loadDatabases() {
   if (!catalogName.value) return
@@ -319,31 +368,63 @@ async function loadDatabases() {
   }
 }
 
+/** 换库：对象候选整批作废，重新拉一次。 */
 async function onDatabaseChange() {
-  form.tables = []
-  tableOptions.value = []
-  if (!form.database) return
-  tablesLoading.value = true
+  form.objects = []
+  await loadObjects()
+}
+
+/** 换作用范围：已选对象与已勾权限都失去意义，一起清掉再拉新候选。 */
+async function onScopeChange() {
+  form.objects = []
+  clearPerms()
+  await loadObjects()
+}
+
+async function loadObjects() {
+  objectOptions.value = []
+  if (!isObjectScope.value || !catalogName.value || !form.database) return
+  objectsLoading.value = true
   try {
-    const payload = await catalogApi.listTables(catalogName.value, form.database, { maxResults: 1000 })
-    tableOptions.value = payload.tables || []
+    // 两个端点的列表字段名不同：表是 tables、视图是 views（与 catalog API 一致）
+    const isView = form.scope === 'view'
+    const payload = isView
+      ? await catalogApi.listViews(catalogName.value, form.database, { maxResults: 1000 })
+      : await catalogApi.listTables(catalogName.value, form.database, { maxResults: 1000 })
+    objectOptions.value = (isView ? payload.views : payload.tables) || []
   } catch (error) {
-    tableOptions.value = []
+    objectOptions.value = []
     notifyError(error)
   } finally {
-    tablesLoading.value = false
+    objectsLoading.value = false
   }
 }
 
 // ------------------------------------------------------------------ 权限表单
 
-const form = reactive({ grantees: [], database: '', tables: [] })
+const form = reactive({ grantees: [], scope: 'table', database: '', objects: [] })
+
+/** 只有表 / 视图两级要选具体对象；catalog 与 database 两级直接落在整层上。 */
+const isObjectScope = computed(() => form.scope === 'table' || form.scope === 'view')
 
 /** 新增授权表单放在弹窗里（页面上只留「添加授权」按钮），避免列表被长表单挤到首屏之外。 */
 const dialogOpen = ref(false)
 
+/** catalog 级的四项：官方词表里 CATALOG 只接受 ALTER / DROP / GRANT / CREATEDATABASE。 */
+const catalogPerms = reactive({ CREATEDATABASE: false, ALTER: false, DROP: false, GRANT: false })
 const dbPerms = reactive({ CREATETABLE: false, ALTER: false, DROP: false, DESCRIBE: false })
 const tablePerms = reactive({ SELECT: false, INSERT: false, DELETE: false, DESCRIBE: false, ALTER: false, DROP: false })
+/** 视图没有 Insert / Delete：官方词表里 VIEW 只接受 SELECT/ALTER/DROP/GRANT/DESCRIBE。 */
+const viewPerms = reactive({ SELECT: false, DESCRIBE: false, ALTER: false, DROP: false })
+
+const PERM_LABELS = {
+  catalog: 'Catalog 权限',
+  database: 'Database 权限',
+  table: 'Table 权限',
+  view: 'View 权限',
+}
+
+const permLabel = computed(() => PERM_LABELS[form.scope])
 
 /**
  * 勾选 → 官方 access 集合。Insert 与 Delete 同为 UPDATE：勾选任一或两者都只产生一条
@@ -351,17 +432,27 @@ const tablePerms = reactive({ SELECT: false, INSERT: false, DELETE: false, DESCR
  */
 const selectedAccesses = computed(() => {
   const accesses = new Set()
-  if (form.tables.length) {
+  if (form.scope === 'catalog') {
+    if (catalogPerms.CREATEDATABASE) accesses.add('CREATEDATABASE')
+    if (catalogPerms.ALTER) accesses.add('ALTER')
+    if (catalogPerms.DROP) accesses.add('DROP')
+    if (catalogPerms.GRANT) accesses.add('GRANT')
+  } else if (form.scope === 'database') {
+    if (dbPerms.CREATETABLE) accesses.add('CREATETABLE')
+    if (dbPerms.ALTER) accesses.add('ALTER')
+    if (dbPerms.DROP) accesses.add('DROP')
+    if (dbPerms.DESCRIBE) accesses.add('DESCRIBE')
+  } else if (form.scope === 'view') {
+    if (viewPerms.SELECT) accesses.add('SELECT')
+    if (viewPerms.DESCRIBE) accesses.add('DESCRIBE')
+    if (viewPerms.ALTER) accesses.add('ALTER')
+    if (viewPerms.DROP) accesses.add('DROP')
+  } else {
     if (tablePerms.SELECT) accesses.add('SELECT')
     if (tablePerms.INSERT || tablePerms.DELETE) accesses.add('UPDATE')
     if (tablePerms.DESCRIBE) accesses.add('DESCRIBE')
     if (tablePerms.ALTER) accesses.add('ALTER')
     if (tablePerms.DROP) accesses.add('DROP')
-  } else {
-    if (dbPerms.CREATETABLE) accesses.add('CREATETABLE')
-    if (dbPerms.ALTER) accesses.add('ALTER')
-    if (dbPerms.DROP) accesses.add('DROP')
-    if (dbPerms.DESCRIBE) accesses.add('DESCRIBE')
   }
   return [...accesses]
 })
@@ -369,26 +460,40 @@ const selectedAccesses = computed(() => {
 const submitting = ref(false)
 
 const pendingCount = computed(() => form.grantees.length * selectedAccesses.value.length
-  * Math.max(1, form.tables.length))
+  * Math.max(1, form.objects.length))
 
 const previewScope = computed(() => {
-  if (!form.database) return ''
-  const target = form.tables.length ? `表 ${form.tables.join('、')}` : `database ${form.database}`
+  if (!scopeReady.value) return ''
+  const target = targetLabel.value
   return `：${form.grantees.length} 个 principal × ${selectedAccesses.value.length} 项权限 × ${target}`
+})
+
+/** 作用范围是否已选全：catalog 级不需要 database，表 / 视图级还需要至少一个对象。 */
+const scopeReady = computed(() => {
+  if (form.scope === 'catalog') return true
+  if (!form.database) return false
+  return !isObjectScope.value || form.objects.length > 0
+})
+
+const targetLabel = computed(() => {
+  // catalog 的全限定名就是右上角选中的那个 catalog（页面常量），这里不再重复写出来
+  if (form.scope === 'catalog') return '整个 catalog'
+  if (form.scope === 'database') return `database ${form.database}`
+  return `${form.scope === 'view' ? '视图' : '表'} ${form.objects.join('、')}`
 })
 
 /** 弹窗页脚左侧的提交预览：没填完时退化为放置提示，不让页脚空着。 */
 const footerHint = computed(() => (pendingCount.value > 0
   ? `将授予 ${pendingCount.value} 条授权${previewScope.value}`
-  : '选择授权对象与资源范围后再授予'))
+  : '选择授权对象与作用范围后再授予'))
 
-function buildResource(table) {
-  // database 级与表级都走 TABLE 定位器族：database 级用 DATABASE，
-  // 表级按选中表逐条 TABLE——官方对照表里 CREATE TABLE 等库级操作正是 DATABASE 资源
-  if (table) {
-    return { type: 'TABLE', database: form.database, table }
-  }
-  return { type: 'DATABASE', database: form.database }
+function buildResource(object) {
+  // 四级各对应官方的资源类型：catalog 不带限定、database 带库名、
+  // 表 / 视图再逐条加对象名——对象名放在各自的字段里（table / view）
+  if (form.scope === 'catalog') return { type: 'CATALOG' }
+  if (form.scope === 'database') return { type: 'DATABASE', database: form.database }
+  if (form.scope === 'view') return { type: 'VIEW', database: form.database, view: object }
+  return { type: 'TABLE', database: form.database, table: object }
 }
 
 async function submit() {
@@ -396,8 +501,12 @@ async function submit() {
     notifyError(new Error('请选择或输入授权对象'))
     return
   }
-  if (!form.database) {
+  if (form.scope !== 'catalog' && !form.database) {
     notifyError(new Error('请选择 database'))
+    return
+  }
+  if (isObjectScope.value && !form.objects.length) {
+    notifyError(new Error(`请选择要授权的${form.scope === 'view' ? '视图' : '表'}，或把作用范围改成 Database`))
     return
   }
   if (!selectedAccesses.value.length) {
@@ -405,14 +514,14 @@ async function submit() {
     return
   }
   submitting.value = true
-  const targets = form.tables.length ? form.tables : [null]
+  const targets = isObjectScope.value ? form.objects : [null]
   let done = 0
   try {
     for (const principal of form.grantees) {
-      for (const table of targets) {
+      for (const object of targets) {
         for (const access of selectedAccesses.value) {
           await permissionApi.grant(catalogName.value, {
-            resource: buildResource(table),
+            resource: buildResource(object),
             access,
             principal,
           })
@@ -462,6 +571,14 @@ function accessLabel(access) {
   return ACCESS_LABELS[access] || access
 }
 
+/** 对象级资源类型的注解词。定位符里只写了名字，类型靠这一处补上。 */
+const OBJECT_KINDS = {
+  TABLE: '（单表）',
+  VIEW: '（单视图）',
+  FUNCTION: '（单函数）',
+  COLUMN: '（表内列）',
+}
+
 /**
  * 拉全量授权：端点按页返回，这里循环翻页取完（授权是「人 × 资源」量级，
  * 全量拉回在控制台侧过滤，与服务端不做下推的口径一致）。
@@ -503,21 +620,28 @@ function toRow(item) {
       : principal.startsWith('group:')
         ? { label: '组', tag: 'success' }
         : { label: '主体', tag: 'info' }
+  const resourceType = resource.type || ''
   const database = resource.database || ''
-  // 对象定位符按类型放在不同字段，展示时拼成「库」或「库.表」一个字符串
+  // 对象定位符按类型放在不同字段，展示时拼成「库」或「库.对象」一个字符串
   const object = resource.table || resource.view || resource.function || ''
+  // catalog 级授权没有库与对象：它的作用范围整个 catalog（服务端存的定位符只有 type）
+  const catalogWide = resourceType === 'CATALOG' || resourceType === 'CATALOG_ALL'
   const expireRaw = item.expireTime || ''
   const expireMillis = expireRaw ? Date.parse(expireRaw) : NaN
   return {
     principal,
     typeLabel: type.label,
     typeTag: type.tag,
-    resourceType: resource.type || '',
+    resourceType,
     database,
     object,
-    // 作用范围：库级给库名，对象级给「库.对象」（与 Flink/Spark 里写全限定名的习惯一致）
-    scope: object ? `${database}.${object}` : database,
-    scopeKind: object ? '（单表）' : '（整库）',
+    // 作用范围：catalog 级给一句说明，库级给库名，对象级给「库.对象」
+    // （与 Flink/Spark 里写全限定名的习惯一致）
+    scope: catalogWide ? '整个 catalog' : (object ? `${database}.${object}` : database),
+    // 「库.对象」本身看不出是表还是视图，补一个类型注解把这句话说完整
+    scopeKind: catalogWide
+      ? '（整 catalog）'
+      : (object ? (OBJECT_KINDS[resourceType] || '（单个对象）') : '（整库）'),
     access: item.access || '',
     expireRaw,
     // 只有能解析成时间的才交给 TimeText；解析不出来的原样显示，不假装是永久
@@ -527,47 +651,62 @@ function toRow(item) {
 }
 
 /**
- * 清单按主体分组：先按 principal 排序，再在渲染时合并相邻的 Principal 单元格。
- * 顺序不再沿用服务端的返回序——那里是建表顺序，对看权限的人没有意义；
- * 而「谁有什么」必须连续成组，否则同一主体会被拆成互不相邻的几段。
+ * 清单一行 = 一个主体 × 一个作用范围：同一范围的若干项权限合并进同一行的
+ * 「权限」单元格，并列成标签、逐个可撤销——读「谁对什么有什么」只需扫一列，
+ * 不用把同一范围的五六行拼回一行。先按 principal / scope 排序保证同组相邻，
+ * 再顺序折叠成组（服务端返回序是建表顺序，对看权限的人没有意义）。
  */
 const filteredRows = computed(() => {
   const keyword = filterText.value.trim().toLowerCase()
   const rows = keyword
     ? listState.rows.filter((row) => `${row.principal} ${row.scope}`.toLowerCase().includes(keyword))
     : [...listState.rows]
-  return rows.sort((a, b) => a.principal.localeCompare(b.principal)
+  rows.sort((a, b) => a.principal.localeCompare(b.principal)
     || a.scope.localeCompare(b.scope)
     || a.access.localeCompare(b.access))
+  const groups = []
+  const indexOf = new Map()
+  for (const row of rows) {
+    const key = `${row.principal}\n${row.scope}`
+    let group = indexOf.get(key)
+    if (!group) {
+      group = { ...row, items: [] }
+      indexOf.set(key, group)
+      groups.push(group)
+    }
+    group.items.push({
+      access: row.access,
+      label: accessLabel(row.access),
+      expireRaw: row.expireRaw,
+      expireMillis: row.expireMillis,
+    })
+  }
+  for (const group of groups) {
+    // 过期时间按权限项各自维护（官方语义里重复授予会覆盖单项的 expireTime），
+    // 合并后显示规则：全部相同显示原值；不一致取最早一个并标注，不假装统一
+    const stamps = [...new Set(group.items
+      .map((item) => item.expireMillis)
+      .filter((millis) => millis != null))]
+    group.expireMillis = stamps.length ? Math.min(...stamps) : null
+    group.expireRaw = group.items.every((item) => item.expireRaw === group.items[0].expireRaw)
+      ? group.items[0].expireRaw
+      : ''
+    group.expireMixed = stamps.length > 1
+      || (stamps.length > 0 && group.items.some((item) => item.expireMillis == null))
+  }
+  return groups
 })
-
-/**
- * 合并相邻同主体的 Principal 单元格。不做排序之外的隐藏排序，
- * 因此「相邻即同组」始终成立，不会把不同主体的行并到一起。
- */
-function spanPrincipal({ rowIndex, columnIndex }) {
-  if (columnIndex !== 0) return
-  const rows = filteredRows.value
-  const samePrincipal = (a, b) => Boolean(a) && Boolean(b) && a.principal === b.principal
-  if (rowIndex > 0 && samePrincipal(rows[rowIndex - 1], rows[rowIndex])) {
-    return [0, 0]
-  }
-  let span = 1
-  while (rowIndex + span < rows.length && samePrincipal(rows[rowIndex], rows[rowIndex + span])) {
-    span++
-  }
-  return [span, 1]
-}
 
 /** 空态的两种含义要分开说：筛掉了 / 一条都还没有，后者给出下一步动作。 */
 const emptyText = computed(() => (filterText.value.trim()
   ? `没有匹配「${filterText.value.trim()}」的授权`
   : '这个 catalog 上还没有任何授权'))
 
-async function revokeRow(row) {
+/** 撤销行内的单项权限：标签上的 × 触发，一次只撤一个（资源 + access + principal）。 */
+async function revokeAccess(row, item) {
   const ok = await confirmDanger({
     title: '撤销授权',
-    target: `撤销 ${row.principal} 的 ${accessLabel(row.access)}？`,
+    target: `撤销 ${row.principal} 的 ${item.label}？`,
     detail: `资源：${row.resourceType} ${row.database || ''}${row.object ? ' / ' + row.object : ''}\n`
       + '撤销按赋权身份（资源 + access + principal）整条移除，幂等。',
     confirmText: '撤销',
@@ -584,10 +723,10 @@ async function revokeRow(row) {
     }
     await permissionApi.revoke(catalogName.value, {
       resource,
-      access: row.access,
+      access: item.access,
       principal: row.principal,
     })
-    notifySuccess(`已撤销 ${row.principal} 的授权`)
+    notifySuccess(`已撤销 ${row.principal} 的 ${item.label}`)
     await loadList()
   } catch (error) {
     notifyError(error)
@@ -614,16 +753,13 @@ watch(catalogName, (name, previous) => {
 <style scoped>
 /*
  * 弹窗表单走全局基元（.pc-form 的标签与字段间距、.pc-form-grid 的自动折行），
- * 这里只钉列数：授权表单固定四行，用两列——Database 与 Tables 并排，
- * 「授权对象」「权限」各跨两列。写成 `.pc-form.pc-grant-form` 而不是单类，
- * 是为了特异性高于全局的 .pc-form.pc-form-grid，不依赖样式文件的先后顺序。
+ * 这里只钉列数：授权表单固定单列——作用范围是四个「层级」按钮，跟谁并排都挤，
+ * 而其余字段（授权对象、Database、表 / 视图、权限）都与它同级，全宽下来左边缘
+ * 与右边缘天然对齐。写成 `.pc-form.pc-grant-form` 而不是单类，是为了特异性
+ * 高于全局的 .pc-form.pc-form-grid，不依赖样式文件的先后顺序。
  */
 .pc-form.pc-grant-form {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.pc-span {
-  grid-column: 1 / -1;
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .pc-perms {
@@ -660,5 +796,13 @@ watch(catalogName, (name, previous) => {
   margin-left: 6px;
   font-size: 12px;
   color: var(--pc-text-dim);
+}
+
+/* 合并后的权限标签：一行放不下时折行，行距收紧贴住标签间距 */
+.pc-access-tags {
+  display: flex;
+  align-items: center;
+  gap: 4px 6px;
+  flex-wrap: wrap;
 }
 </style>

@@ -168,7 +168,7 @@ const stats = computed(() => {
       foot: '持有凭据、连接本服务的身份',
     },
     {
-      label: '服务角色（Principal Role）',
+      label: '角色（Principal Role）',
       value: directory.data.value ? formatNumber(directory.data.value.principalRoles.length) : '—',
       foot: '主体与 catalog 角色之间的中间层',
     },

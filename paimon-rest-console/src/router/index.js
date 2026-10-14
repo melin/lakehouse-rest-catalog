@@ -63,17 +63,15 @@ const routes = [
     path: '/principal-roles',
     name: 'principalRoles',
     component: () => import('@/views/PrincipalRolesView.vue'),
-    meta: { title: '服务角色', icon: 'UserFilled', group: '治理（Management API）', nav: true },
+    meta: { title: '角色', icon: 'UserFilled', group: '治理（Management API）', nav: true },
   },
   {
-    path: '/catalog-roles',
-    name: 'catalogRoles',
-    component: () => import('@/views/CatalogRolesView.vue'),
-    meta: { title: 'Catalog 角色与授权', icon: 'Key', group: '治理（Management API）', nav: true },
-  },
-  {
-    // Paimon 官方权限模型的独立入口：授权直接面向 principal（user:/role:），
-    // 与上一条的 Polaris 模型并行生效，服务端判定取两路并集
+    // 控制台唯一的授权入口：Paimon 官方权限模型，授权直接面向 principal
+    // （user:/group:/role:），覆盖 catalog / database / table / view 四级资源。
+    //
+    // <p>Polaris 的 RBAC（主体 → 角色 → catalog 角色 → 资源授权）没有控制台页面：
+    // 它的管理面留在管理 API 与 Spark SQL 上（`paimon-rest-spark` 的 CREATE ROLE /
+    // GRANT 等语句），控制台只暴露「谁对哪个对象有什么权限」这一件事。
     path: '/permissions',
     name: 'permissions',
     component: () => import('@/views/PermissionsView.vue'),

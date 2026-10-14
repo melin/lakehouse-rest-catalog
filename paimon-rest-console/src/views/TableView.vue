@@ -29,7 +29,6 @@
           <el-tab-pane label="标签" name="tags" />
           <el-tab-pane label="分支" name="branches" />
           <el-tab-pane label="分区" name="partitions" />
-          <el-tab-pane label="权限" name="grants" />
           <el-tab-pane label="数据访问" name="access" />
         </el-tabs>
 
@@ -331,77 +330,6 @@
             </el-table>
           </template>
 
-          <!-------------------------------- 权限 ---------------------------------->
-          <template v-else-if="tab === 'grants'">
-            <el-alert type="info" :closable="false" show-icon class="pc-hint">
-              <template #title>这里列的是 catalog 角色携带的授权，增删需要 CATALOG_MANAGE_ACCESS</template>
-              <div>
-                直接授予用户或角色的权限不在这一页——那类授权到「权限管理」页面查看与撤销。
-                本页的新增是逐项提交的，服务端幂等，重复授予不会报错。
-              </div>
-            </el-alert>
-
-            <el-form label-position="top" size="small" class="pc-form pc-form-grid">
-              <el-form-item label="Catalog 角色">
-                <el-select v-model="grantForm.role" filterable placeholder="选择角色">
-                  <el-option v-for="role in grantRoles" :key="role" :label="role" :value="role" />
-                </el-select>
-              </el-form-item>
-              <el-form-item label="权限">
-                <el-select
-                  v-model="grantForm.privileges"
-                  multiple
-                  filterable
-                  collapse-tags
-                  collapse-tags-tooltip
-                  placeholder="可多选"
-                >
-                  <el-option v-for="privilege in tablePrivileges" :key="privilege" :label="privilege" :value="privilege" />
-                </el-select>
-              </el-form-item>
-            </el-form>
-
-            <div class="pc-form-actions">
-              <el-button
-                size="small"
-                type="primary"
-                :loading="grantSaving"
-                :disabled="!grantForm.role || !grantForm.privileges.length"
-                @click="submitGrants"
-              >
-                授予{{ grantForm.privileges.length ? `（${grantForm.privileges.length}）` : '' }}
-              </el-button>
-              <span class="pc-dim">在这张表上给所选角色加权限</span>
-            </div>
-
-            <el-alert v-if="grantsState.error" type="error" :closable="false" show-icon class="pc-hint">
-              <template #title>加载授权失败</template>
-              <div>{{ grantsState.error }}</div>
-            </el-alert>
-
-            <div class="pc-list-head is-plain">
-              <span class="pc-list-title">作用到这张表的权限（{{ grantsState.rows.length }}）</span>
-              <el-button size="small" :loading="grantsState.loading" @click="loadGrants">刷新</el-button>
-            </div>
-
-            <el-table
-              v-loading="grantsState.loading"
-              :data="grantsState.rows"
-              size="small"
-              empty-text="还没有 catalog 角色的授权作用到这张表。用上面的表单加一条。"
-            >
-              <el-table-column prop="roleName" label="Catalog 角色" min-width="180" />
-              <el-table-column label="权限" min-width="280">
-                <template #default="{ row }"><span class="pc-mono">{{ row.privilege }}</span></template>
-              </el-table-column>
-              <el-table-column label="" width="70" align="right">
-                <template #default="{ row }">
-                  <IconAction icon="Remove" label="撤销" type="danger" @click="revokeTableGrant(row)" />
-                </template>
-              </el-table-column>
-            </el-table>
-          </template>
-
           <!------------------------------- 数据访问 -------------------------------->
           <template v-else>
             <div class="pc-access">
@@ -502,10 +430,8 @@ import PanelCard from '@/components/PanelCard.vue'
 import ResourceState from '@/components/ResourceState.vue'
 import TimeText from '@/components/TimeText.vue'
 import { catalogApi } from '@/api/catalog.js'
-import { managementApi } from '@/api/management.js'
 import { describeError } from '@/api/client.js'
 import { confirmDanger, notifyError, notifySuccess, useResource } from '@/composables/index.js'
-import { session } from '@/store/session.js'
 import {
   formatBytes,
   formatNumber,
@@ -515,9 +441,11 @@ import {
 } from '@/utils/format.js'
 
 /**
- * 表详情。九个页签：八个对应 catalog API 里以单张表为作用域的端点，
- * 另有一个组合页签——「详细信息」汇总单表元数据（基本信息 + 快照统计 + options），
- * 「权限」组合管理 API 的授权端点。
+ * 表详情。八个页签：七个对应 catalog API 里以单张表为作用域的端点，
+ * 另有一个组合页签——「详细信息」汇总单表元数据（基本信息 + 快照统计 + options）。
+ *
+ * <p>授权不在这张表上做：表级权限统一到「权限管理」页（按 database + table 定位，
+ * 一级资源一个表单），这里不再重复一份 catalog 角色的授权界面。
  *
  * <p>「详细信息」「Schema」「变更」「数据访问」只用 overview 已有数据，
  * 其余页签按需加载：切到某个页签才发它的请求。
@@ -572,7 +500,6 @@ function onTabChange(name) {
   if (name === 'tags') tags.load()
   if (name === 'branches') branches.load()
   if (name === 'partitions') partitions.load()
-  if (name === 'grants') loadGrants()
 }
 
 function reloadAll() {
@@ -951,101 +878,6 @@ async function fetchAuth() {
     authError.value = describeError(error)
   } finally {
     authLoading.value = false
-  }
-}
-
-// ------------------------------------------------------------------ 权限
-
-/**
- * 表级授权。管理规格把授权挂在 catalog role 上，没有「按资源反查授权」的端点，
- * 所以列表是把全部角色的授权拉回来后在控制台侧过滤——角色数量通常不大，这个 N+1 可以接受。
- */
-const grantsState = reactive({ loading: false, loaded: false, roles: [], rows: [], error: '' })
-
-const grantRoles = computed(() => grantsState.roles)
-
-/** meta 接口按资源层级下发可授予的权限；meta 不可用时退化到常用集合。 */
-const FALLBACK_TABLE_PRIVILEGES = [
-  'CATALOG_MANAGE_ACCESS',
-  'TABLE_DROP',
-  'TABLE_LIST',
-  'TABLE_READ_PROPERTIES',
-  'TABLE_WRITE_PROPERTIES',
-  'TABLE_READ_DATA',
-  'TABLE_WRITE_DATA',
-  'TABLE_FULL_METADATA',
-]
-
-const tablePrivileges = computed(() => {
-  const map = session.state.meta?.enums?.privilegesByGrantType || {}
-  return map.table || FALLBACK_TABLE_PRIVILEGES
-})
-
-async function loadGrants() {
-  grantsState.loading = true
-  grantsState.error = ''
-  try {
-    const { roles } = await managementApi.listCatalogRoles(prefix.value)
-    const names = (roles || []).map((role) => role.name)
-    grantsState.roles = names
-    const rows = []
-    for (const name of names) {
-      const payload = await managementApi.listGrants(prefix.value, name)
-      for (const grant of payload?.grants || []) {
-        if (grant.type !== 'table') continue
-        if ((grant.namespace || []).join('.') !== database.value) continue
-        if (grant.tableName !== table.value) continue
-        rows.push({ roleName: name, privilege: grant.privilege, grant })
-      }
-    }
-    rows.sort((a, b) => a.roleName.localeCompare(b.roleName) || a.privilege.localeCompare(b.privilege))
-    grantsState.rows = rows
-    grantsState.loaded = true
-  } catch (error) {
-    grantsState.error = describeError(error)
-  } finally {
-    grantsState.loading = false
-  }
-}
-
-const grantForm = reactive({ role: '', privileges: [] })
-const grantSaving = ref(false)
-
-async function submitGrants() {
-  grantSaving.value = true
-  try {
-    for (const privilege of grantForm.privileges) {
-      await managementApi.addGrant(prefix.value, grantForm.role, {
-        type: 'table',
-        namespace: [database.value],
-        tableName: table.value,
-        privilege,
-      })
-    }
-    notifySuccess(`已授予 ${grantForm.role} ${grantForm.privileges.length} 项权限`)
-    grantForm.privileges = []
-    await loadGrants()
-  } catch (error) {
-    notifyError(error)
-  } finally {
-    grantSaving.value = false
-  }
-}
-
-async function revokeTableGrant(row) {
-  const ok = await confirmDanger({
-    title: '撤销授权',
-    target: `撤销 ${row.roleName} 在这张表上的 ${row.privilege}？`,
-    detail: '撤销后，持有该角色的主体将立即失去对应权限。撤销不存在的授权会返回 404。',
-    confirmText: '撤销',
-  })
-  if (!ok) return
-  try {
-    await managementApi.revokeGrant(prefix.value, row.roleName, row.grant)
-    notifySuccess(`已撤销 ${row.roleName} 的 ${row.privilege}`)
-    await loadGrants()
-  } catch (error) {
-    notifyError(error)
   }
 }
 

@@ -70,7 +70,7 @@ Maven 坐标与包名：`groupId` 为 `io.github.melin`，三个 artifact 分别
 | [`spark-paimon-rest-e2e.md`](docs/spark-paimon-rest-e2e.md) | 要让 Spark 通过本服务端建 Paimon 表——连接配置、可执行的 SQL、报错对照表 |
 | [`authorization.md`](docs/authorization.md) | 要理解权限怎么判——实体链、授权映射、失败关闭的取舍 |
 | [`console.md`](docs/console.md) | 要改 Web 控制台或排查「页面空列表」——前端分层、端点契约表、机械校验 |
-| [`console-table-detail.md`](docs/console-table-detail.md) | 要改表详情页——九个页签的数据来源、权限页签的授权模型、破坏性操作与边界 |
+| [`console-table-detail.md`](docs/console-table-detail.md) | 要改表详情页——八个页签的数据来源、为什么授权不在这页、破坏性操作与边界 |
 | [`console-auth.md`](docs/console-auth.md) | 要给浏览器访问控制台配登录——三种登录方式、两个开关的边界、令牌与认证链、安全考量 |
 | [`polaris-capabilities-and-design.md`](docs/polaris-capabilities-and-design.md) | 要对比 Polaris 或看整体设计——核心能力提取、映射关系、已知缺口 |
 
@@ -161,7 +161,7 @@ open http://localhost:8080/console/
 ```
 
 它覆盖 Catalog API（库表视图函数、快照标签分支、数据令牌与查询授权）与
-Management API（catalog、主体、服务角色、catalog 角色与 grants）两个 API 面，
+Management API（catalog、主体、角色、catalog 角色与 grants）两个 API 面，
 首页还有一个「连接自检」，逐个探测控制台依赖的端点——地址或令牌配错时，
 它会把失败的那一个连同 HTTP 状态一起列出来，而不是让你对着空列表猜。
 
@@ -862,8 +862,9 @@ http://localhost:8080/console/
 | `/login`、`/auth/callback` | 登录与 SSO 回调 |
 | `/` | 概览：统计块、服务端配置、**连接自检**、catalog 清单、`GET /v1/config` |
 | `/browse` | 目录浏览：库/表/视图/函数/语义视图；建库建表、注册表、按表 ID 定位、重命名、删除 |
-| `/tables/:prefix/:database/:table` | [表详情](docs/console-table-detail.md)：九个页签、快照与标签回滚、表级 grants |
-| `/catalogs`、`/principals`、`/principal-roles`、`/catalog-roles` | 治理：catalog、主体、服务角色、catalog 角色与 grants |
+| `/tables/:prefix/:database/:table` | [表详情](docs/console-table-detail.md)：八个页签、快照与标签回滚 |
+| `/catalogs`、`/principals`、`/principal-roles` | 治理：catalog、主体、角色（Polaris RBAC 的三件套，授权不在其中） |
+| `/permissions` | 权限管理：catalog / database / table / view 四级资源的授权清单与增删 |
 | `/settings` | 连接设置：API 基址、访问令牌、登录状态、主题 |
 
 三条约束值得先知道：
@@ -896,5 +897,5 @@ OIDC 授权码 + PKCE 三种方式；令牌是自包含 JWT，多实例互认但
 | 文档 | 内容 |
 | --- | --- |
 | [`docs/console.md`](docs/console.md) | 控制台总览：目录结构、服务端如何托管、页面清单、端点契约表与机械校验、构建与提交约定、测试分层 |
-| [`docs/console-table-detail.md`](docs/console-table-detail.md) | 表详情页：九个页签逐个说明、权限页签的授权模型与 N+1 取舍、破坏性操作、已知边界 |
+| [`docs/console-table-detail.md`](docs/console-table-detail.md) | 表详情页：八个页签逐个说明、为什么授权不在这页、破坏性操作、已知边界 |
 | [`docs/console-auth.md`](docs/console-auth.md) | 登录与鉴权：两个开关的边界、三种登录方式与令牌端点、错误码、安全考量、已知边界 |

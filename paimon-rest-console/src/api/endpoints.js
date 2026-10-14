@@ -130,16 +130,11 @@ export const ENDPOINTS = {
   grantCatalogRole: { method: 'PUT', path: '/api/management/v1/principal-roles/{principalRoleName}/catalog-roles/{catalogName}' },
   revokeCatalogRole: { method: 'DELETE', path: '/api/management/v1/principal-roles/{principalRoleName}/catalog-roles/{catalogName}/{catalogRoleName}' },
 
-  // ------------------------------------------------------------------ 管理 API：catalog role 与授权
+  // ------------------------------------------------------------------ 管理 API：catalog role
+  // 控制台只读角色清单（授权表单的 `role:` 候选、角色装配时的角色下拉）。
+  // 角色的建档、改名、删除与「角色携带的授权」没有控制台入口：那部分属于 Polaris 的
+  // RBAC 面，交给管理 API 与 Spark SQL（`paimon-rest-spark` 的 CREATE ROLE / GRANT）。
   listCatalogRoles: { method: 'GET', path: '/api/management/v1/catalogs/{catalogName}/catalog-roles' },
-  createCatalogRole: { method: 'POST', path: '/api/management/v1/catalogs/{catalogName}/catalog-roles' },
-  getCatalogRole: { method: 'GET', path: '/api/management/v1/catalogs/{catalogName}/catalog-roles/{catalogRoleName}' },
-  updateCatalogRole: { method: 'PUT', path: '/api/management/v1/catalogs/{catalogName}/catalog-roles/{catalogRoleName}' },
-  deleteCatalogRole: { method: 'DELETE', path: '/api/management/v1/catalogs/{catalogName}/catalog-roles/{catalogRoleName}' },
-  listPrincipalRolesOfCatalogRole: { method: 'GET', path: '/api/management/v1/catalogs/{catalogName}/catalog-roles/{catalogRoleName}/principal-roles' },
-  listGrants: { method: 'GET', path: '/api/management/v1/catalogs/{catalogName}/catalog-roles/{catalogRoleName}/grants' },
-  addGrant: { method: 'PUT', path: '/api/management/v1/catalogs/{catalogName}/catalog-roles/{catalogRoleName}/grants' },
-  revokeGrant: { method: 'POST', path: '/api/management/v1/catalogs/{catalogName}/catalog-roles/{catalogRoleName}/grants' },
 }
 
 /** 端点名 → `METHOD path`，供校验脚本与调试输出复用。 */

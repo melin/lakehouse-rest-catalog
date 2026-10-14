@@ -75,9 +75,9 @@
             <template #default="{ row }">
               <IconAction icon="Edit" label="编辑" type="primary" @click="openEdit(row)" />
               <IconAction
-                icon="Avatar"
-                label="Catalog 角色"
-                @click="$router.push({ name: 'catalogRoles', query: { catalog: row.name } })"
+                icon="Lock"
+                label="权限管理"
+                @click="openPermissions(row)"
               />
               <IconAction icon="Delete" label="删除" type="danger" @click="confirmDelete(row)" />
             </template>
@@ -172,7 +172,7 @@
 
 <script setup>
 import { computed, reactive, ref } from 'vue'
-import { RouterLink } from 'vue-router'
+import { RouterLink, useRouter } from 'vue-router'
 
 import FieldLabel from '@/components/FieldLabel.vue'
 import IconAction from '@/components/IconAction.vue'
@@ -188,6 +188,8 @@ import { session } from '@/store/session.js'
 import { inlineMap } from '@/utils/format.js'
 
 const table = useResource(() => managementApi.listCatalogs())
+
+const router = useRouter()
 
 const rows = computed(() => table.data.value?.catalogs || [])
 
@@ -228,6 +230,17 @@ function openCreate() {
   dialog.properties = {}
   dialog.storageConfigInfo = { storageType: supportedTypes.value[0] || 'FILE', allowedLocations: [] }
   dialog.open = true
+}
+
+/**
+ * 跳到「权限管理」并把这个 catalog 设为工作目录。
+ *
+ * <p>权限管理页读的是 `session.selectedCatalog`（它自己也是一个全局选择器的目标），
+ * 所以这里先切目录再跳转，否则落地后会停在另一个 catalog 上。
+ */
+function openPermissions(row) {
+  session.selectCatalog(row.name)
+  router.push({ name: 'permissions' })
 }
 
 function openEdit(row) {

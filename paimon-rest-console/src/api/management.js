@@ -65,33 +65,11 @@ export const managementApi = {
     params: { principalRoleName, catalogName, catalogRoleName },
   }),
 
-  // ------------------------------------------------------------------ catalog role 与授权
+  // ------------------------------------------------------------------ catalog role
+  //
+  // 只读。控制台不再提供 catalog 角色的管理与授权（那部分留给管理 API 与 Spark SQL）：
+  // 这一条被授权表单的 `role:` 候选、以及角色页的「授予 catalog 角色」共用。
   listCatalogRoles: (catalogName) => get('listCatalogRoles', { params: { catalogName } }),
-  createCatalogRole: (catalogName, catalogRole) => post('createCatalogRole', {
-    params: { catalogName },
-    body: { catalogRole },
-  }),
-  getCatalogRole: (catalogName, catalogRoleName) => get('getCatalogRole', { params: { catalogName, catalogRoleName } }),
-  updateCatalogRole: (catalogName, catalogRoleName, body) => put('updateCatalogRole', {
-    params: { catalogName, catalogRoleName },
-    body,
-  }),
-  deleteCatalogRole: (catalogName, catalogRoleName) => del('deleteCatalogRole', {
-    params: { catalogName, catalogRoleName },
-  }),
-  listPrincipalRolesOfCatalogRole: (catalogName, catalogRoleName) => get('listPrincipalRolesOfCatalogRole', {
-    params: { catalogName, catalogRoleName },
-  }),
-  listGrants: (catalogName, catalogRoleName) => get('listGrants', { params: { catalogName, catalogRoleName } }),
-  /** `grant` 形如 `{type, namespace, tableName|viewName|..., privilege}`。 */
-  addGrant: (catalogName, catalogRoleName, grant) => put('addGrant', {
-    params: { catalogName, catalogRoleName },
-    body: { grant },
-  }),
-  revokeGrant: (catalogName, catalogRoleName, grant) => post('revokeGrant', {
-    params: { catalogName, catalogRoleName },
-    body: { grant },
-  }),
 }
 
 /** 控制台元数据端点。非 Polaris 规格，见服务端 `ConsoleMetaController`。 */
