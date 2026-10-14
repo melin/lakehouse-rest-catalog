@@ -1,7 +1,7 @@
 <template>
   <div class="pc-page">
     <PageHeader
-      title="Catalog 管理"
+      title="Catalogs"
       subtitle="catalog 是元数据与数据的命名空间，每个 catalog 指向一处存储位置。名称同时是客户端连接时用的 prefix，创建后不能改名。"
     >
       <template #actions>

@@ -23,7 +23,7 @@
     <el-alert v-if="!prefix" type="warning" :closable="false" show-icon class="pc-hint">
       <template #title>还没有可浏览的 catalog</template>
       <div>
-        服务端没有登记任何 catalog。先在「Catalog 管理」里创建一个，
+        服务端没有登记任何 catalog。先在「Catalogs」里创建一个，
         或确认 <code class="pc-mono">paimon.rest.auto-create-catalog</code> 是否开启。
       </div>
     </el-alert>

@@ -51,7 +51,7 @@
       </PanelCard>
     </div>
 
-    <PanelCard title="目录清单" :hint="`共 ${session.state.catalogs.length} 个，详情见「Catalog 管理」`" flush>
+    <PanelCard title="目录清单" :hint="`共 ${session.state.catalogs.length} 个，详情见「Catalogs」`" flush>
       <template #actions>
         <el-button size="small" text type="primary" @click="$router.push({ name: 'catalogs' })">
           管理
@@ -78,7 +78,7 @@
           </el-table-column>
           <el-table-column prop="type" label="类型" width="110" />
           <!-- 摘要页只回答「有什么、数据在哪」；存储类型与更新时间属于
-               「Catalog 管理」页的详情，那个页面就在右边的「管理」 -->
+               「Catalogs」页的详情，那个页面就在右边的「管理」 -->
           <el-table-column label="仓库位置" min-width="260">
             <template #default="{ row }">
               <span class="pc-mono pc-break">

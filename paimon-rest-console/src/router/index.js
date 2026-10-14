@@ -51,7 +51,7 @@ const routes = [
     path: '/catalogs',
     name: 'catalogs',
     component: () => import('@/views/CatalogsView.vue'),
-    meta: { title: 'Catalog 管理', icon: 'Coin', group: '治理（Management API）', nav: true },
+    meta: { title: 'Catalogs', icon: 'Coin', group: '治理（Management API）', nav: true },
   },
   {
     path: '/principals',
