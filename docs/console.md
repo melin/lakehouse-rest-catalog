@@ -139,9 +139,9 @@ paimon-rest-console/
 | `/browse` | 目录浏览 | 左库右对象；四页签（表/视图/函数/语义视图）；建库、建表、注册表、按表 ID 定位、重命名、删除、详情抽屉。表页签的过滤为空时说明「没有匹配 ×××」，与「库里没有表」区分开 |
 | `/tables/:prefix/:database/:table` | [表详情](console-table-detail.md) | 九页签：详细信息 / Schema / 变更 / 快照 / 标签 / 分支 / 分区 / 权限 / 数据访问；含**变更构造器**、快照与标签的**回滚**、表级 grants 的增删。权限页签只列 catalog 角色携带的授权，并在提示里指明「权限管理」页的直接授权不在此列 |
 | `/catalogs` | Catalogs | 列出 / 创建 / 详情 / 更新（带版本）/ 删除 |
-| `/principals` | 主体 | 列出 / 创建 / 更新 / 删除 / rotate / reset；授予与撤销角色。创建、轮换、重置后的凭据弹窗可一键导出 JSON 文件（`{principal, clientId, clientSecret}`，文件名 `<主体>-credentials.json`），密钥仍只在弹窗期间可见 |
-| `/principal-roles` | 角色 | 列出 / 创建 / 更新 / 删除；查看成员；授予与撤销 catalog 角色（选 catalog 后自动加载，无需点「加载」） |
-| `/catalog-roles` | Catalog 角色与授权 | 角色 CRUD；查看授予了该角色的角色；**grants 的增删**（抽屉里是有标签的表单，字段名按资源类型切换；提交行展示接口将收到的形状） |
+| `/principals` | 主体 | 列出 / 创建 / 更新 / 删除 / rotate / reset；授予与撤销服务角色。创建、轮换、重置后的凭据弹窗可一键导出 JSON 文件（`{principal, clientId, clientSecret}`，文件名 `<主体>-credentials.json`），密钥仍只在弹窗期间可见 |
+| `/principal-roles` | 服务角色 | 列出 / 创建 / 更新 / 删除；查看成员；授予与撤销 catalog 角色（选 catalog 后自动加载，无需点「加载」） |
+| `/catalog-roles` | Catalog 角色与授权 | 角色 CRUD；查看授予了该角色的服务角色；**grants 的增删**（抽屉里是有标签的表单，字段名按资源类型切换；提交行展示接口将收到的形状） |
 | `/permissions` | 权限管理 | Paimon 官方权限模型（principal 直授）：页头「添加授权」按钮开弹窗填表——多选用户/角色（`user:` / `role:`，可手输任意 principal）、database 级或表级授权（选了表才显示表权限）、简化的权限勾选（db：Create table/Alter/Drop/Describe；表：Select/Insert/Delete/Describe/Alter/Drop）；主界面是授权清单——Principal 按主体合并单元格（清单按主体排序），资源合成「作用范围」一列（`库` / `库.表`），权限用与表单一致的词（UPDATE 显示为 Insert / Delete），空态给「添加授权」入口；支持过滤与幂等撤销 |
 | `/settings` | 连接设置 | API 基址、访问令牌、登录状态、主题；`/api/console/v1/meta` 原始响应 |
 | `/:pathMatch(.*)*` | 未找到 | 兜底 |

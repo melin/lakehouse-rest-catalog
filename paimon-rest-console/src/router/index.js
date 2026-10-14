@@ -63,7 +63,7 @@ const routes = [
     path: '/principal-roles',
     name: 'principalRoles',
     component: () => import('@/views/PrincipalRolesView.vue'),
-    meta: { title: '角色', icon: 'UserFilled', group: '治理（Management API）', nav: true },
+    meta: { title: '服务角色', icon: 'UserFilled', group: '治理（Management API）', nav: true },
   },
   {
     path: '/catalog-roles',

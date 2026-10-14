@@ -197,7 +197,7 @@ paimon:
       # 管理规格的权限枚举没有覆盖「管理主体」的层级，故用名单表达
       service-admins:
         - root
-      # 启动时预置的引导主体与引导角色链（主体 → 角色 → 各 catalog 的 catalog_admin）
+      # 启动时预置的引导主体与引导角色链（主体 → 服务角色 → 各 catalog 的 catalog_admin）
       bootstrap-principal: root
       bootstrap-principal-role: service_admin
     credential:

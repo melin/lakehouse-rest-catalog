@@ -116,7 +116,7 @@ principal ──(N:M)── principal role ──(N:M)── catalog role ──
   principal role，并可在任意 catalog 上操作角色与授权；
 - `paimon.rest.authorization.bootstrap-principal`（默认 `root`）与
   `bootstrap-principal-role`（默认 `service_admin`）：启动时预置的引导链
-  「主体 → 角色 → 各 catalog 的 `catalog_admin`」。
+  「主体 → 服务角色 → 各 catalog 的 `catalog_admin`」。
 
 没有这条引导链，全新部署里没有任何主体能创建第一个主体，授权体系无法自举。
 `credential-rotation-required` 的语义由客户端在首次登录后轮换凭据来配合，服务端只负责

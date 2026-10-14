@@ -2,7 +2,7 @@
   <div class="pc-page">
     <PageHeader
       title="Catalog 角色与授权"
-      subtitle="在某个 catalog 下创建角色，再逐条把权限绑到资源上。持有该角色的角色（以及它们背后的主体）随之获得这些权限。整组操作需要在目标 catalog 上具备 CATALOG_MANAGE_ACCESS。"
+      subtitle="在某个 catalog 下创建角色，再逐条把权限绑到资源上。持有该角色的服务角色（以及它们背后的主体）随之获得这些权限。整组操作需要在目标 catalog 上具备 CATALOG_MANAGE_ACCESS。"
     >
       <template #actions>
         <el-select v-model="catalogName" size="small" placeholder="选择 catalog" class="pc-catalog" @change="onCatalogChange">
@@ -184,16 +184,16 @@
     <!-- 持有者 -->
     <el-drawer v-model="holderDrawer.open" :title="`持有者：${holderDrawer.role}（${catalogName}）`" size="520px">
       <div class="pc-list-head is-plain">
-        <span class="pc-list-title">持有这个角色的角色（{{ holderDrawer.roles.length }}）</span>
+        <span class="pc-list-title">持有这个角色的服务角色（{{ holderDrawer.roles.length }}）</span>
       </div>
       <ResourceState
         :loading="holderDrawer.loading"
         :error="holderDrawer.error"
         :empty="!holderDrawer.roles.length"
-        empty-text="没有角色持有这个角色，它携带的权限目前对任何人都没生效。"
+        empty-text="没有服务角色持有这个角色，它携带的权限目前对任何人都没生效。"
       >
         <el-table :data="holderDrawer.roles" size="small">
-          <el-table-column prop="name" label="角色" min-width="180" />
+          <el-table-column prop="name" label="服务角色" min-width="180" />
           <el-table-column label="联邦" width="90">
             <template #default="{ row }">
               <el-tag size="small" effect="plain" :type="row.federated ? 'warning' : 'info'">
@@ -204,7 +204,7 @@
         </el-table>
       </ResourceState>
       <p v-if="holderDrawer.roles.length" class="pc-drawer-note">
-        授予与撤销在「角色」页面操作：那条接口按角色定位，这里只做展示。
+        授予与撤销在「服务角色」页面操作：那条接口按服务角色定位，这里只做展示。
       </p>
     </el-drawer>
   </div>
@@ -339,8 +339,8 @@ async function confirmDelete(row) {
   const ok = await confirmDanger({
     title: '删除 Catalog 角色',
     target: `确认删除角色「${row.name}」？`,
-    detail: '角色携带的全部授权会一并失效，持有它的角色将立即失去这些权限。'
-      + '服务端会拒绝删除仍被引用的角色——若失败，请先在所有角色上移除它。',
+    detail: '角色携带的全部授权会一并失效，持有它的服务角色将立即失去这些权限。'
+      + '服务端会拒绝删除仍被引用的角色——若失败，请先在所有服务角色上移除它。',
   })
   if (!ok) return
   try {
@@ -479,7 +479,7 @@ async function openHolders(row) {
   holderDrawer.error = ''
   try {
     const payload = await managementApi.listPrincipalRolesOfCatalogRole(catalogName.value, row.name)
-    // 响应是 PrincipalRoles 形状：这里展示的是「哪些角色持有它」
+    // 响应是 PrincipalRoles 形状：这里展示的是「哪些服务角色持有它」
     holderDrawer.roles = payload.roles || payload.principalRoles || []
   } catch (error) {
     holderDrawer.error = describeError(error)
