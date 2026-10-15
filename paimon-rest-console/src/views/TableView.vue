@@ -249,13 +249,6 @@
 
           <!-------------------------------- 快照 ---------------------------------->
           <template v-else-if="tab === 'snapshots'">
-            <el-alert type="warning" :closable="false" show-icon class="pc-hint">
-              <template #title>回滚会删除目标之后的提交记录</template>
-              <div>
-                回滚把最新快照指针退回到选定的快照，其后的提交记录随即被删除，无法恢复。
-                数据文件不会被回收，它们会变成不再被引用的孤儿文件。
-              </div>
-            </el-alert>
             <div class="pc-tools-row">
               <span class="pc-dim">按版本号查询指定快照：</span>
               <el-input v-model="snapshotVersion" size="small" placeholder="版本号，如 3" class="pc-version-input" />
