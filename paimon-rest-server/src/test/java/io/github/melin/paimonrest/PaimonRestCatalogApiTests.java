@@ -14,6 +14,7 @@ import io.github.melin.paimonrest.dto.CommonDtos;
 import io.github.melin.paimonrest.dto.ConsumerDtos;
 import io.github.melin.paimonrest.dto.DatabaseDtos;
 import io.github.melin.paimonrest.dto.FunctionDtos;
+import io.github.melin.paimonrest.dto.ManagementDtos;
 import io.github.melin.paimonrest.dto.PartitionDtos;
 import io.github.melin.paimonrest.dto.SemanticViewDtos;
 import io.github.melin.paimonrest.dto.TableDtos;
@@ -26,6 +27,7 @@ import io.github.melin.paimonrest.service.ConsumerService;
 import io.github.melin.paimonrest.service.CredentialService;
 import io.github.melin.paimonrest.service.DatabaseService;
 import io.github.melin.paimonrest.service.FunctionService;
+import io.github.melin.paimonrest.service.ManagementCatalogService;
 import io.github.melin.paimonrest.service.PartitionService;
 import io.github.melin.paimonrest.service.SemanticViewService;
 import io.github.melin.paimonrest.service.TableService;
@@ -33,6 +35,7 @@ import io.github.melin.paimonrest.service.TagService;
 import io.github.melin.paimonrest.service.ViewService;
 import io.github.melin.paimonrest.support.ApiException;
 import io.github.melin.paimonrest.support.ResourceType;
+import io.github.melin.paimonrest.support.TableDefaults;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -82,6 +85,9 @@ class PaimonRestCatalogApiTests {
     /** 只有「模拟升级前写下的快照行」这一个用例需要直接改库，用它是为了不新开一条服务端入口。 */
     @Autowired
     private TableSnapshotRepository snapshotRepository;
+    /** 「catalog 默认表属性」用例要改 catalog 的属性，走的就是控制台配置页那条写入路径。 */
+    @Autowired
+    private ManagementCatalogService catalogManagementService;
 
     @Test
     void configExposesPrefixForClientBootstrap() {
@@ -764,6 +770,64 @@ class PaimonRestCatalogApiTests {
                 .map(TableDtos.GetTableResponse::name).toList());
     }
 
+    /**
+     * catalog 级的表属性默认值（{@code table-default.*}）。
+     *
+     * <p>语义照 Paimon 自己的 {@code Catalog.TABLE_DEFAULT_OPTION_PREFIX}：建表时去掉前缀
+     * 写进表属性，表级同名参数优先。四条边界逐条断言——它们都是「不写明就会被人改错」的约定：
+     * 只对 Paimon 表生效、只在建表时合并（已建成的表不受影响）、{@code type} 不接受默认、
+     * 前缀不会原样留在表属性里。
+     */
+    @Test
+    void catalogTableDefaultsApplyToNewPaimonTables() {
+        String database = "it_table_defaults";
+        createDatabase(database);
+
+        // 配置之前建的表：后来的默认值不该动它
+        tableService.create(PREFIX, database, new TableDtos.CreateTableRequest(
+                new CommonDtos.Identifier(database, "before_defaults"), plainSchema(Map.of())));
+
+        Map<String, String> catalogProperties = new LinkedHashMap<>();
+        catalogProperties.put("owner", "paimon");
+        catalogProperties.put("table-default.deletion-vectors.enabled", "true");
+        catalogProperties.put("table-default.bucket", "4");
+        catalogProperties.put("table-default.", "没有属性名的项，忽略");
+        catalogProperties.put("table-default.type", "object-table");
+        catalogManagementService.update(PREFIX,
+                new ManagementDtos.UpdateCatalogRequest(null, catalogProperties, null));
+        try {
+            // Paimon 表：默认参数剥掉前缀进表属性；表级 bucket=8 覆盖默认的 4
+            tableService.create(PREFIX, database, new TableDtos.CreateTableRequest(
+                    new CommonDtos.Identifier(database, "with_defaults"), plainSchema(Map.of("bucket", "8"))));
+            Map<String, String> options = tableService.get(PREFIX, database, "with_defaults").schema().getOptions();
+            assertEquals("true", options.get("deletion-vectors.enabled"), "默认参数去掉前缀写进表属性");
+            assertEquals("8", options.get("bucket"), "表级参数优先于 catalog 默认值");
+            assertFalse(options.containsKey(TableDefaults.PREFIX + "deletion-vectors.enabled"),
+                    "带前缀的键不该留在表属性里——表自己不认识它");
+            assertFalse(options.containsKey("type"), "type 由建表请求决定，不接受 table-default.type");
+
+            // 之前建的表不受影响：默认值只在建表时合并，改一张已存在的表属于 alter 的范畴
+            Map<String, String> before =
+                    tableService.get(PREFIX, database, "before_defaults").schema().getOptions();
+            assertFalse(before.containsKey("deletion-vectors.enabled"));
+
+            // 非 Paimon 表不合并：这些键描述的是 Paimon 表的属性，Format 表的 options 不读它们
+            tableService.create(PREFIX, database, new TableDtos.CreateTableRequest(
+                    new CommonDtos.Identifier(database, "csv_with_defaults"),
+                    tableSchema("format-table", "csv", List.of(field(0, "id", "BIGINT")))));
+            Map<String, String> formatOptions =
+                    tableService.get(PREFIX, database, "csv_with_defaults").schema().getOptions();
+            assertEquals("format-table", formatOptions.get("type"));
+            assertEquals("csv", formatOptions.get("file.format"));
+            assertFalse(formatOptions.containsKey("deletion-vectors.enabled"));
+            assertFalse(formatOptions.containsKey("bucket"));
+        } finally {
+            // 默认参数是 catalog 的属性，留着会影响同类里的其它用例
+            catalogManagementService.update(PREFIX,
+                    new ManagementDtos.UpdateCatalogRequest(null, Map.of(), null));
+        }
+    }
+
     // ------------------------------------------------------------------ 辅助
 
     private void createDatabase(String name) {
@@ -800,8 +864,16 @@ class PaimonRestCatalogApiTests {
         return change;
     }
 
-    private static TypeDtos.Schema ordersSchema() {
+    /** 一张最简 Paimon 表（只有一列主键），可带若干表属性；用于「默认参数」这类只关心 options 的用例。 */
+    private static TypeDtos.Schema plainSchema(Map<String, String> options) {
         TypeDtos.Schema schema = new TypeDtos.Schema();
+        schema.getFields().add(field(0, "id", "BIGINT NOT NULL"));
+        schema.getPrimaryKeys().add("id");
+        schema.getOptions().putAll(options);
+        return schema;
+    }
+
+    private static TypeDtos.Schema ordersSchema() {        TypeDtos.Schema schema = new TypeDtos.Schema();
         schema.getFields().add(field(0, "id", "BIGINT NOT NULL"));
         schema.getFields().add(field(1, "name", "VARCHAR(20)"));
         schema.getFields().add(field(2, "dt", "VARCHAR(10)"));

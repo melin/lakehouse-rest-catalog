@@ -190,6 +190,35 @@ SQL 侧同样是 `WITH ('type' = 'format-table')`。本服务端认四种取值�
 格式过滤（Paimon 表的历史值是 `PAIMON`）；控制台据此伸缩页签，见
 [`console-table-detail.md` §1.1](console-table-detail.md#11-页签随表格式伸缩)。
 
+### catalog 级默认表属性：`table-default.*`
+
+catalog 的 `properties` 里以 `table-default.` 开头的项，是这个 catalog 下
+**新建 Paimon 表**默认带上的表属性（前缀在写入时去掉）。名字与语义都照 Paimon 自己来
+（`Catalog.TABLE_DEFAULT_OPTION_PREFIX`），所以客户端不必知道本服务端的实现：
+
+```
+PUT /api/management/v1/catalogs/paimon
+{"properties": {"table-default.deletion-vectors.enabled": "true"}}
+
+POST /v1/paimon/databases/ods/tables
+{"identifier": {...}, "schema": {"fields": [...], "options": {"bucket": "4"}}}
+→ 落库的 options：{"bucket": "4", "deletion-vectors.enabled": "true"}
+```
+
+四条边界（实现见 `support/TableDefaults`，逐条有用例）：
+
+| 规则 | 为什么 |
+| --- | --- |
+| 表级参数优先 | 默认值是「省事的缺省」而不是约束；要强制取值应该用 catalog 的 `overrides` |
+| 只对 Paimon 表生效 | Format / Object / Lance 的 `options` 描述各自的表格式，不读 Paimon 表属性；写进去只会在仓库的 `schema-0` 里留下噪音 |
+| `type` 不接受默认 | 表格式由建表请求决定；否则一次 catalog 配置会让此后所有新表换格式 |
+| 只在建表时合并 | 已建成的表不受影响——改它的属性是 `alter` 的范畴 |
+
+默认值放在 `properties` 而不是 `defaults` / `overrides`：后两者是随 `GET /v1/config`
+下发给引擎的**连接参数**（合并顺序 defaults → 客户端属性 → overrides），改它影响的是
+客户端能否连上；`properties` 才是 catalog 的通用属性面，也是管理 API 与控制台「配置」页
+读写的那一份。Spark SQL 建表走的同样是这个 `POST .../tables`，因此引擎侧不需要各做一遍。
+
 ## 列举表：两个端点怎么选
 
 | 端点 | 返回 | 适用 |

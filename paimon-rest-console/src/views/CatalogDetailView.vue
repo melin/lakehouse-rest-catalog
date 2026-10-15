@@ -29,8 +29,10 @@
             <template #label>
               概览
               <TipNote>
-                属性与存储配置的修改走管理 API（<code>PUT /api/management/v1/catalogs/{{ catalogName }}</code>），
-                控制台目前只读展示；编辑界面见「配置」页签的预留说明。
+                这一页只读。属性与存储配置的修改走管理 API
+                （<code>PUT /api/management/v1/catalogs/{{ catalogName }}</code>）：
+                「配置」页签能改其中的 <code>table-default.*</code>（新建 Paimon 表的默认参数），
+                其余属性与控制台的编辑弹窗在「Catalogs」页。
               </TipNote>
             </template>
           </el-tab-pane>
@@ -217,27 +219,83 @@
             />
           </template>
 
-          <!------------------------------ 配置（预留） ---------------------------->
+          <!-------------------------------- 配置 ---------------------------------->
           <template v-else-if="tab === 'config'">
-            <el-alert type="info" :closable="false" show-icon class="pc-hint">
-              <template #title>预留设计，暂未实现</template>
-              <div>
-                这一页规划为 catalog 的可编辑配置，当前只展示计划承载的能力与依赖。
-                改动配置的接口已经存在（管理 API 的 <span class="pc-mono">PUT /catalogs/{{ catalogName }}</span>），
-                缺的是这一层的界面与它的并发、脱敏处理，取舍见
-                <span class="pc-mono">docs/console-catalog-detail.md</span>。
-              </div>
-            </el-alert>
+            <SectionTitle title="Paimon 表默认参数（table-default.*）">
+              <template #tip>
+                <TipNote>
+                  这里配的属性会在这个 catalog 下<strong>新建 Paimon 表</strong>时自动带上，前缀在写入表属性时去掉：
+                  例如配 <code>deletion-vectors.enabled=true</code>，新表就自带
+                  <code>deletion-vectors.enabled=true</code>，不必每次建表都声明一遍。
+                  <br /><br />
+                  三条边界：<br />
+                  1. <strong>表级参数优先</strong>——建表请求里显式给了同名属性时以表的为准；<br />
+                  2. <strong>只对 Paimon 表生效</strong>——Format / Object / Lance 表的选项由各自的表格式定义，
+                  不接受这些 Paimon 表属性；<br />
+                  3. <strong>只在建表时合并</strong>——已建成的表不受影响，改它的属性是 alter 的事。
+                  <br /><br />
+                  表格式（<code>type</code>）不接受默认：它由建表请求决定，配在这里会被忽略。
+                </TipNote>
+              </template>
+            </SectionTitle>
 
-            <el-table :data="PLANNED_SECTIONS" size="small">
-              <el-table-column prop="section" label="分区" width="170" />
-              <el-table-column prop="content" label="计划承载" min-width="320" />
-              <el-table-column label="现状" width="150">
+            <div class="pc-defaults">
+              <div class="pc-defaults-row pc-defaults-head">
+                <span>属性名</span>
+                <span>取值</span>
+                <span class="pc-defaults-op">操作</span>
+              </div>
+              <div v-for="(row, index) in defaultRows" :key="index" class="pc-defaults-row">
+                <el-input v-model="row.name" size="small" placeholder="如 deletion-vectors.enabled">
+                  <template #prepend>table-default.</template>
+                </el-input>
+                <el-input v-model="row.value" size="small" placeholder="如 true" />
+                <el-button size="small" text type="danger" @click="removeDefaultRow(index)">删除</el-button>
+              </div>
+              <div v-if="!defaultRows.length" class="pc-defaults-empty pc-dim">
+                没有默认参数：新表只会带上建表请求里自己声明的属性。
+              </div>
+
+              <div class="pc-defaults-foot">
+                <el-button size="small" text type="primary" @click="addDefaultRow">
+                  <el-icon><Plus /></el-icon>
+                  <span class="pc-btn-text">添加一项</span>
+                </el-button>
+                <span class="pc-spacer" />
+                <span class="pc-dim pc-defaults-state">
+                  {{ defaultsDirty ? '有未保存的改动' : '与服务端一致' }}
+                </span>
+                <el-button
+                  size="small"
+                  type="primary"
+                  :loading="defaultsSaving"
+                  :disabled="!defaultsDirty"
+                  @click="saveDefaults"
+                >
+                  保存
+                </el-button>
+              </div>
+            </div>
+
+            <SectionTitle title="其它属性（properties）">
+              <template #tip>
+                <TipNote>
+                  本页只编辑 <code>table-default.*</code>。其余属性在这里只读展示，
+                  保存时会<strong>原样回填</strong>（管理 API 的更新是全量替换），
+                  因此不会因为这一页而丢失别的键；若保存期间有人改过它们，
+                  服务端会以版本冲突（409）拒绝——宁可不写，也不静默覆盖。
+                </TipNote>
+              </template>
+            </SectionTitle>
+
+            <el-table :data="otherProperties" size="small">
+              <el-table-column prop="key" label="属性名" min-width="240" />
+              <el-table-column prop="value" label="取值" min-width="240">
                 <template #default="{ row }">
-                  <el-tag size="small" type="info" effect="plain">{{ row.status }}</el-tag>
+                  <span class="pc-mono pc-break">{{ row.value || '—' }}</span>
                 </template>
               </el-table-column>
-              <el-table-column prop="blocker" label="未做的前置依赖" min-width="300" />
+              <template #empty>这个 catalog 没有其它属性</template>
             </el-table>
           </template>
         </div>
@@ -259,10 +317,13 @@ import JsonBlock from '@/components/JsonBlock.vue'
 import PageHeader from '@/components/PageHeader.vue'
 import PanelCard from '@/components/PanelCard.vue'
 import ResourceState from '@/components/ResourceState.vue'
+import SectionTitle from '@/components/SectionTitle.vue'
 import TimeText from '@/components/TimeText.vue'
 import TipNote from '@/components/TipNote.vue'
-import { notifyError, onConsoleRefresh, useLocalPaging, useResource } from '@/composables/index.js'
+import { notifyError, notifySuccess, onConsoleRefresh, useLocalPaging, useResource } from '@/composables/index.js'
+import { session } from '@/store/session.js'
 import { formatBytes, inlineMap } from '@/utils/format.js'
+import { composeProperties, isTableDefaultKey, otherPropertiesOf, tableDefaultsOf } from '@/utils/tableDefaults.js'
 
 const route = useRoute()
 
@@ -381,38 +442,104 @@ function reloadAll() {
 
 onConsoleRefresh(reloadAll)
 
+// ------------------------------------------------------------ 配置：默认表属性
+
 /**
- * 「配置」页签里列出的计划能力。
+ * 「Paimon 表默认参数」的编辑副本。
  *
- * <p>写成数据而不是散文：这四项将来会被逐一实现或砍掉，一张表能直接当作验收清单，
- * 而且**未做的前置依赖**这一列会跟着一起改——那正是最容易在实现时忘掉的部分。
+ * <p>编辑的是**本地副本**：直接绑服务端返回的 `properties` 会让「没保存」和「已保存」
+ * 分不开，而这一页的保存是整体替换，误触的代价是整个 catalog 的属性。
+ * 副本在概览数据到达时重建（见下面的 watch），保存成功后也靠它回到干净状态。
  */
-const PLANNED_SECTIONS = [
-  {
-    section: '通用属性',
-    content: 'properties 的键值编辑（服务端与运维自己用的标记）',
-    status: '只读',
-    blocker: '无；接口已支持全量替换',
-  },
-  {
-    section: '客户端配置',
-    content: 'defaults / overrides：下发给引擎的默认与强制配置（合并顺序 defaults → 客户端属性 → overrides）',
-    status: '只读',
-    blocker: '差异确认：改错会让客户端连不上或读错仓库',
-  },
-  {
-    section: '存储配置',
-    content: 'storageConfigInfo 的查看与修改（含允许位置、静态凭据）',
-    status: '只读',
-    blocker: '凭据脱敏与回填：读路径已脱敏，编辑时要做到「留空即保持」',
-  },
-  {
-    section: '并发保护',
-    content: '写入带 entityVersion，版本不匹配时提示「有人先改过」并给出差异',
-    status: '未实现',
-    blocker: '版本冲突的交互设计（服务端已返回 409）',
-  },
-]
+const defaultRows = ref([]);
+const defaultsSaving = ref(false);
+/** 上一次「与服务端一致」的形态，用于判断有没有未保存的改动。 */
+const defaultsBaseline = ref('');
+
+/** 行的键序即保存时的写入顺序，用 JSON 比较天然带上顺序，不需要另存一份快照列表。 */
+function rowsToDefaults() {
+  const result = {};
+  for (const row of defaultRows.value) {
+    const name = (row.name || '').trim();
+    if (!name) continue;
+    result[name] = row.value == null ? '' : String(row.value);
+  }
+  return result;
+}
+
+const defaultsDirty = computed(() => JSON.stringify(rowsToDefaults()) !== defaultsBaseline.value);
+
+/** 只读展示的其它属性；表格不接受对象，转成数组。 */
+const otherProperties = computed(() =>
+  Object.entries(otherPropertiesOf(catalog0.value?.properties)).map(([key, value]) => ({ key, value })));
+
+function resetDefaultRows() {
+  defaultRows.value = Object.entries(tableDefaultsOf(catalog0.value?.properties))
+    .map(([name, value]) => ({ name, value }));
+  defaultsBaseline.value = JSON.stringify(rowsToDefaults());
+}
+
+// 概览数据（重）加载后重建编辑副本：保存成功会触发 overview.load()，
+// 于是这里也顺手把 baseline 推到新值，按钮回到「与服务端一致」。
+// 编辑期间的刷新同理——保留过期的副本比覆盖它更危险。
+watch(catalog0, resetDefaultRows, { immediate: true });
+
+function addDefaultRow() {
+  defaultRows.value.push({ name: '', value: '' });
+}
+
+function removeDefaultRow(index) {
+  defaultRows.value.splice(index, 1);
+}
+
+/**
+ * 保存默认参数。
+ *
+ * <p>三处先拦下来再发请求，因为服务端不会替我们报这些错：
+ * 属性名重复（后者会静默覆盖前者）、属性名里再带一次前缀（粘贴整键时常见）、
+ * 以及 `type`（表格式由建表请求决定，服务端会忽略它，写进去只会让人以为生效了）。
+ */
+async function saveDefaults() {
+  const defaults = rowsToDefaults();
+  const names = Object.keys(defaults);
+  const duplicated = names.find((name, index) => names.indexOf(name) !== index);
+  if (duplicated) {
+    notifyError(`属性名重复：${duplicated}`);
+    return;
+  }
+  const prefixed = names.find((name) => isTableDefaultKey(name));
+  if (prefixed) {
+    notifyError(`属性名不要带前缀：${prefixed} —— 前缀由这一页统一添加`);
+    return;
+  }
+  if (names.includes('type')) {
+    notifyError('type 不能作为默认值：表格式由建表请求决定，服务端会忽略它');
+    return;
+  }
+
+  defaultsSaving.value = true;
+  try {
+    const current = catalog0.value;
+    await managementApi.updateCatalog(catalogName.value, {
+      currentEntityVersion: current.entityVersion,
+      properties: composeProperties(current.properties, names.length ? defaults : null),
+    });
+    notifySuccess(`已保存 ${names.length} 项默认参数`);
+    // 顶栏与「新建表」表单读的是 catalog 列表里的 properties，保存后要一起刷新
+    await session.loadCatalogs();
+    await overview.load();
+  } catch (error) {
+    if (error?.status === 409) {
+      // 别人先改过：刷新到最新版本再看，避免拿着旧值重试把对方的改动覆盖掉
+      notifyError(`${describeError(error)} —— 已被他人改动，页面已刷新为最新配置`);
+      await overview.load();
+    } else {
+      notifyError(describeError(error));
+    }
+  } finally {
+    defaultsSaving.value = false;
+  }
+}
 </script>
 
 <style scoped>
@@ -448,6 +575,45 @@ const PLANNED_SECTIONS = [
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+/* 默认表属性的编辑区：表头与数据行共用同一套栅格（属性名 / 取值 / 操作）。
+   属性名那一列宽一点——它带着「table-default.」这个固定前缀，留给真正的属性名 */
+.pc-defaults-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr) 56px;
+  gap: 10px;
+  align-items: center;
+}
+
+.pc-defaults-head {
+  padding-bottom: 6px;
+  font-size: 12.5px;
+  color: var(--pc-text-dim);
+}
+
+.pc-defaults-head .pc-defaults-op {
+  text-align: right;
+}
+
+.pc-defaults-row + .pc-defaults-row {
+  margin-top: 8px;
+}
+
+.pc-defaults-empty {
+  padding: 12px 0 4px;
+  font-size: 13px;
+}
+
+.pc-defaults-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.pc-defaults-state {
+  font-size: 12.5px;
 }
 
 /* 文件名与目录名前的图标；目录与文件用同一个宽度，名称才对得齐 */

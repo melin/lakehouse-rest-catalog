@@ -72,14 +72,19 @@ public final class TableKinds {
     }
 
     /**
-     * 解析并归一化一次建表请求的 schema，返回它的表格式。
+     * 归一化一次建表请求的 schema，返回它的表格式。
+     *
+     * <p>{@code kind} 由调用方先用 {@link #parse} 拿到再传进来（而不是在这里解析）：
+     * 建表前还有一步要按表格式决定做不做——catalog 级的 {@code table-default.*}
+     * 只合并到 Paimon 表（见 {@link TableDefaults}）——两边各自解析一遍同一份 options
+     * 是没必要的重复。
      *
      * @param schema    已被 {@link SchemaSupport#normalize} 归一化过的 schema，就地修改
      * @param tablePath 服务端为这张表分配的仓库路径，用于补 {@code path}
-     * @throws ApiException 类型取值不认识，或该类型不允许的入参（如 Format 表带主键）
+     * @param kind      这次要建的表格式
+     * @throws ApiException 该类型不允许的入参（如 Format 表带主键）
      */
-    public static Kind prepareCreate(TypeDtos.Schema schema, String tablePath) {
-        Kind kind = parse(schema.getOptions());
+    public static Kind prepareCreate(TypeDtos.Schema schema, String tablePath, Kind kind) {
         switch (kind) {
             case PAIMON -> {
                 // Paimon 表不需要 path：它的位置由目录决定，options 里多一个 path 反而是噪音。

@@ -398,7 +398,24 @@
         </el-form-item>
       </el-form>
 
-      <SectionTitle title="表属性（options）" />
+      <SectionTitle title="表属性（options）">
+        <template #tip>
+          <TipNote>
+            表级属性。Paimon 表的属性会跟着 schema 写进仓库；Format 表的文件格式由上面那个下拉决定
+            （<code>file.format</code>），非 Paimon 表的 <code>path</code> 留空时由服务端按表位置补齐。
+            <br /><br />
+            <template v-if="defaultOptionNames.length">
+              当前 catalog 配了 {{ defaultOptionNames.length }} 项默认参数（<code>table-default.*</code>），
+              已按<strong>去掉前缀</strong>的形式预填在下面：{{ defaultOptionNames.join('、') }}。
+              可以直接改或删；服务端建表时只补「表里没写的」那些，<strong>表级参数优先</strong>。
+            </template>
+            <template v-else>
+              当前 catalog 没有配默认参数（<code>table-default.*</code>）。要配的话，
+              去「Catalogs」页里这个 catalog 的「配置」页签。
+            </template>
+          </TipNote>
+        </template>
+      </SectionTitle>
       <PropertiesEditor
         v-model="tableDialog.options"
         hint="例如 bucket = 4、merge-engine = deduplicate；type 由上面的表格式决定，非 Paimon 表的 path 留空时由服务端按表位置补齐"
@@ -576,6 +593,7 @@ import { confirmDanger, notifyError, notifySuccess, useResource } from '@/compos
 import { session } from '@/store/session.js'
 import { formatTime, orPlaceholder, prettyJson } from '@/utils/format.js'
 import { tableKindLabel } from '@/utils/tableKind.js'
+import { tableDefaultsOf } from '@/utils/tableDefaults.js'
 
 /**
  * 目录浏览器：左侧数据库，右侧对象。
@@ -868,6 +886,49 @@ const isObjectTable = computed(() => tableDialog.kind === 'object-table')
  */
 const supportsKeys = computed(() => tableDialog.kind !== 'format-table')
 
+// ------------------------------------------------- catalog 默认表属性（table-default.*）
+
+/**
+ * 当前 catalog 的默认表属性（键已去前缀），打开建表对话框时预填进表属性。
+ *
+ * <p>读的是 catalog 列表里的 `properties`（保存默认参数后
+ * `CatalogDetailView` 会 `session.loadCatalogs()`，这里跟着就更新了），
+ * 因此不需要为它多发一个请求。
+ */
+const catalogDefaults = computed(() => tableDefaultsOf(session.currentCatalog()?.properties))
+
+/** 预填进表单的那一份快照；切表格式时用它区分「默认值」与「用户自己填的」。 */
+const prefilledDefaults = ref({})
+
+/** 预填的默认参数名，供说明文案列出——只对 Paimon 表成立。 */
+const defaultOptionNames = computed(() => Object.keys(prefilledDefaults.value))
+
+/**
+ * 表格式变了，默认参数跟着进出表单。
+ *
+ * <p>为什么要动它：服务端**只对 Paimon 表**合并默认参数（见服务端 `TableDefaults`），
+ * 而表单里的表属性是原样发送的。切到 Format / Object / Lance 表后若把预填值留在原地，
+ * 它们就成了表级参数被真的写进去——与服务端的规则对不上，看起来还会像「默认值也进了 Format 表」。
+ *
+ * <p>只删「取值仍等于默认值」的那些：用户改过的说明他想显式写进这张表，保留。
+ */
+watch(() => tableDialog.kind, (kind) => {
+  const defaults = prefilledDefaults.value
+  if (kind === 'table') {
+    for (const [name, value] of Object.entries(defaults)) {
+      if (!(name in tableDialog.options)) {
+        tableDialog.options[name] = value
+      }
+    }
+    return
+  }
+  for (const [name, value] of Object.entries(defaults)) {
+    if (tableDialog.options[name] === value) {
+      delete tableDialog.options[name]
+    }
+  }
+})
+
 /** 一行新字段的初始形状：三个勾选默认全不选，由用户按需勾。 */
 function emptyField() {
   return { name: '', type: '', description: '', primary: false, nonNull: false, partition: false }
@@ -919,7 +980,11 @@ function openCreateTable() {
     { ...emptyField(), name: 'data', type: 'STRING' },
   ]
   tableDialog.comment = ''
-  tableDialog.options = {}
+  // Paimon 表预填当前 catalog 的默认参数（table-default.*，去前缀）：表单里看得见，
+  // 才不会有「我的表怎么凭空多了个属性」的疑问；服务端同样会合并它们，
+  // 表级参数优先，所以预填的值与最终结果一致。切到非 Paimon 表格式时会被移出，见上面的 watch。
+  prefilledDefaults.value = { ...catalogDefaults.value }
+  tableDialog.options = { ...prefilledDefaults.value }
   tableDialog.open = true
 }
 

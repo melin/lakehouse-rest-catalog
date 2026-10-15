@@ -27,6 +27,7 @@ import io.github.melin.paimonrest.support.Paths;
 import io.github.melin.paimonrest.support.Patterns;
 import io.github.melin.paimonrest.support.ResourceType;
 import io.github.melin.paimonrest.support.SchemaSupport;
+import io.github.melin.paimonrest.support.TableDefaults;
 import io.github.melin.paimonrest.support.TableKinds;
 import io.github.melin.paimonrest.support.Values;
 import java.util.ArrayList;
@@ -34,6 +35,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.databind.JsonNode;
@@ -54,6 +56,7 @@ import tools.jackson.databind.JsonNode;
  */
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class TableService {
 
     private static final String OPTION_TABLE_TYPE = "type";
@@ -168,9 +171,17 @@ public class TableService {
         CatalogEntity catalog = catalogService.resolve(prefix);
         String tablePath = Paths.tableLocation(properties.getPathTemplate(),
                 catalog.getWarehouse(), databaseName, tableName);
-        // 表格式在落库之前定稿：Format / Object / Lance 三种表要在这里补 path、归一化列
-        // （见 TableKinds）。schemaDoc 与仓库里的 schema-0 都取自这一份，因此必须在写库之前。
-        TableKinds.prepareCreate(schema, tablePath);
+        // 表格式先定下来：catalog 级的默认表属性只合并到 Paimon 表（见 TableDefaults），
+        // 下面的归一化也按它分派（见 TableKinds）。schemaDoc 与仓库里的 schema-0
+        // 都取自这一份 schema，因此两步都必须在写库之前完成。
+        TableKinds.Kind kind = TableKinds.parse(schema.getOptions());
+        Map<String, String> defaults = TableDefaults.apply(schema, kind, catalog.getProperties());
+        TableKinds.prepareCreate(schema, tablePath, kind);
+        if (!defaults.isEmpty()) {
+            // 表属性里多出来的键会跟着 schema 进仓库，记一条便于回答「这个参数哪来的」
+            log.debug("applied catalog table-default options to {}.{}: {}",
+                    databaseName, tableName, defaults);
+        }
 
         TableEntity table = new TableEntity();
         table.setId(Paging.newId());
