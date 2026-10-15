@@ -67,11 +67,11 @@ paimon-rest-console/
 ├── vite.config.js                 base=/console/，outDir 指向服务端 resources/static/console
 └── src/
     ├── api/
-    │   ├── endpoints.js           ★ 全部 78 条端点的 method/path，唯一契约表
+    │   ├── endpoints.js           ★ 全部 81 条端点的 method/path，唯一契约表
     │   ├── client.js              fetch 封装：鉴权、路径拼装、错误归一化
     │   ├── catalog.js             Catalog API 的调用函数
     │   ├── management.js          Management API 的调用函数（含创建请求的包体约定）
-    │   ├── console.js             控制台扩展端点（除登录之外的那些，目前只有仓库文件浏览）
+    │   ├── console.js             控制台扩展端点（除登录之外的那些：仓库与表目录的文件浏览）
     │   ├── console-auth.js        登录引导、用户名密码换令牌、客户端凭据换令牌（这三条不需要令牌）
     │   └── oidc.js                OIDC 授权码 + PKCE：授权 URL、state、换令牌
     ├── components/                ResourceState（三态）、PropertiesEditor、StorageConfigFields、
@@ -138,7 +138,7 @@ paimon-rest-console/
 | `/auth/callback` | SSO 回调 | 校验 `state` → 用授权码换令牌 → 让服务端确认 → 回跳原页面。不套管理布局 |
 | `/` | 控制台概览 | 统计块（三个数量）、服务端配置摘要、**连接自检**、catalog 清单、`GET /v1/config` 展示 |
 | `/browse` | 目录浏览 | 左库右对象；四页签（表/视图/函数/语义视图）；建库、建表、注册表、按表 ID 定位、重命名、删除、详情抽屉。表页签的过滤为空时说明「没有匹配 ×××」，与「库里没有表」区分开 |
-| `/tables/:prefix/:database/:table` | [表详情](console-table-detail.md) | 八页签：详细信息 / Schema / 变更 / 快照 / 标签 / 分支 / 分区 / 数据访问；含**变更构造器**、快照与标签的**回滚**。授权不在这张表上做——表级权限统一到「权限管理」页 |
+| `/tables/:prefix/:database/:table` | [表详情](console-table-detail.md) | 九页签：详细信息 / Schema / 变更 / 快照 / 标签 / 分支 / 分区 / **文件列表** / 数据访问；含**变更构造器**、快照与标签的**回滚**。文件列表按表目录物理内容列一层（根是表目录，出不了表外），目录名可点下钻、文件可下载、支持文件名前缀过滤与本地分页。授权不在这张表上做——表级权限统一到「权限管理」页 |
 | `/catalogs` | Catalogs | 列出 / 创建 / 详情 / 更新（带版本）/ 删除。名称链到详情页；操作列另有「浏览库与对象」直达 `/browse` |
 | `/catalogs/:catalogName` | [Catalog 详情](console-catalog-detail.md) | 三页签：概览 / 文件列表 / 配置（**预留设计**）。文件列表按仓库物理目录列一层，目录名可点下钻、带面包屑与「返回上级」；只读，不提供删除与建目录 |
 | `/principals` | 主体 | 列出 / 创建 / 更新 / 删除 / rotate / reset；授予与撤销角色。创建、轮换、重置后的凭据弹窗可一键导出 JSON 文件（`{principal, clientId, clientSecret}`，文件名 `<主体>-credentials.json`），密钥仍只在弹窗期间可见 |
@@ -173,9 +173,22 @@ paimon-rest-console/
   控件用 large，需要更松的节奏，不跟随控制台栅格。此前这些值散在 9 个
   视图/组件的 scoped 样式里（标签 12.5/13/14px、字段间距 10/16/18px 各三种），
   新加一个弹窗就要同步一份副本；现在改一处，全站生效。
+- **长列表：服务端截断 + 本地分页。** 只有文件列表属于这一类（元数据列表都短）。
+  服务端一次返回一批（`max-entries`，默认 1000）并带 `truncated` 标记，
+  翻页在浏览器里切片做；缩范围靠**名称前缀过滤**——它是唯一走服务端的事，
+  因为过滤后的结果还要按同一个上限截断（两边各过滤一次，界面上
+  「只显示了前 N 条（共 M 条）」就对不上了）。前缀框**回车/点查询才发请求**，
+  不做逐字符过滤：那是把每一次按键变成一次存储列举。
 - **密度即美学。** 这是运维界面：不做渐变统计卡、不做入场动画、不做全大写小标签。
   统计块只放真正的数量（能力类信息进「服务端配置」列表），摘要页的表格只保留
   「有什么、数据在哪」，详情留给对应的管理页。
+- **列表不放版本号。** 管理资源（catalog / principal / principal-role）的列表曾经
+  各有一列「版本」，表详情的快照列表也有一列，现在都不显示。两类版本号都**不该由
+  列表承担**：前者（`entityVersion`）是写入做乐观并发的令牌（`PUT` 要带
+  `currentEntityVersion`），对「这页有哪些资源、最后谁改的」没有信息量；后者
+  （快照的 `version`）定位一个快照用它的 ID 与提交时间就够了。它们的正确位置分别是
+  编辑弹窗里那个禁用的「当前版本」字段、以及「按版本号查询」输入框 / 详情抽屉标题 /
+  回滚确认框——真正用得着它们的地方。
 
 ### 4.1 变更构造器
 
@@ -563,8 +576,8 @@ ls paimon-rest-server/target/classes/static/console/assets | wc -l   # 应与源
 
 | 测试类 | 用例 | 管什么 |
 | --- | --- | --- |
-| `CatalogFileBrowserTests` | 10 | 服务语义：下钻、目录优先排序、路径归一化与 `..` 拒绝、404/400/501 的判据、截断标记、关开关 |
-| `CatalogFileEndpointTests` | 3 | 接口形状：URL、`path` 查询参数、状态码、响应字段名 |
+| `CatalogFileBrowserTests` | 21 | 服务语义：下钻、目录优先排序、路径归一化与 `..` 拒绝、404/400/501 的判据、截断标记、关开关；表目录为根（表级下钻、出不了表目录、未知表 404）；名称前缀过滤（过滤与回显、过滤先于截断、只比本层名、含 `/` 拒 400）；下载（流里字节数与元数据一致、目录与仓库根 400、关开关 501） |
+| `CatalogFileEndpointTests` | 6 | 接口形状：URL、`path` / `prefix` 查询参数、状态码、响应字段名（列举与下载四条端点；下载钉 `Content-Disposition` 与 `Content-Length`，过滤钉回显与 `total` 口径） |
 
 两者分开是因为这些错误各自独立：服务能把目录列对，不代表端点拼对了
 （URL 错一位照样 404）；反之端点形状对了，服务也可能把「文件」当成目录列。
@@ -607,12 +620,16 @@ ls paimon-rest-server/target/classes/static/console/assets | wc -l   # 应与源
   控制台登出后，IdP 那边的会话仍然存在。
 - **无审计视图。** 服务端记录了操作日志，但控制台目前没有对应的展示页；
   需要时按 §5.3 的清单加。
-- **文件浏览只读，且可关。** `/api/console/v1/catalogs/{catalogName}/files`
-  只做列目录：不提供删除、上传、建目录。关掉用
-  `paimon.rest.file-browser.enabled=false`（端点返回 501，消息里带这个键）。
-  它走的授权面与其余 console 端点相同——只过认证拦截器，不做资源级判定；
-  这与 `/api/console/v1/meta` 一致，而它暴露的是**存储布局**（表目录下有哪些文件），
-  比 meta 敏感，因此关掉它的开关是给「只想开控制台看元数据」的部署准备的。
-  详见 [`console-catalog-detail.md`](console-catalog-detail.md)。
+- **文件浏览只读，且可关。** `/api/console/v1/catalogs/{catalogName}/files` 与
+  `/api/console/v1/tables/{tableId}/files` 只做列目录：不提供删除、上传、建目录。
+  另有对应的**单文件下载**（`.../files/download?path=<文件路径>`，流式响应、不缓冲），
+  下载同样是只读——把已有的字节搬出去，不产生任何写入；对目录是 400（列它去）。
+  全部关掉用 `paimon.rest.file-browser.enabled=false`（端点返回 501，消息里带这个键）。
+  它们走的授权面与其余 console 端点相同——只过认证拦截器，不做资源级判定；
+  这与 `/api/console/v1/meta` 一致，而它们暴露的是**存储布局**（表目录下有哪些文件），
+  比 meta 敏感，因此关掉它们的开关是给「只想开控制台看元数据」的部署准备的。
+  前者的根是仓库、后者以表目录为根（出不了表外），取舍见
+  [`console-catalog-detail.md`](console-catalog-detail.md) 与
+  [`console-table-detail.md`](console-table-detail.md)。
 - **无 i18n。** 界面为中文单语，文案直接写在组件里。
 - **产物需手工同步。** 没有 CI 钩子强制 `verify-console.py`（见 §8.2）。

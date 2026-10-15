@@ -29,6 +29,7 @@
           <el-tab-pane label="标签" name="tags" />
           <el-tab-pane label="分支" name="branches" />
           <el-tab-pane label="分区" name="partitions" />
+          <el-tab-pane label="文件列表" name="files" />
           <el-tab-pane label="数据访问" name="access" />
         </el-tabs>
 
@@ -201,7 +202,6 @@
               size="small"
               empty-text="这张表还没有快照（还没有写入过数据）"
             >
-              <el-table-column prop="version" label="版本" width="72" align="right" />
               <el-table-column label="快照 ID" min-width="170">
                 <template #default="{ row }"><span class="pc-mono">{{ row.id }}</span></template>
               </el-table-column>
@@ -330,6 +330,132 @@
             </el-table>
           </template>
 
+          <!------------------------------ 文件列表 -------------------------------->
+          <template v-else-if="tab === 'files' && table0">
+            <div class="pc-tools-row">
+              <el-breadcrumb separator="/" class="pc-file-crumbs">
+                <el-breadcrumb-item>
+                  <a class="pc-link" @click.prevent="openTableDirectory('')">表目录</a>
+                </el-breadcrumb-item>
+                <el-breadcrumb-item v-for="crumb in tableCrumbs" :key="crumb.path">
+                  <a class="pc-link" @click.prevent="openTableDirectory(crumb.path)">{{ crumb.name }}</a>
+                </el-breadcrumb-item>
+              </el-breadcrumb>
+              <span class="pc-spacer" />
+              <el-button size="small" :disabled="!tableParentPath" @click="openTableDirectory(tableParentPath)">
+                <el-icon><Top /></el-icon>
+                <span class="pc-btn-text">返回上级</span>
+              </el-button>
+            </div>
+
+            <el-alert
+              v-if="tableFiles.data.value?.truncated"
+              type="warning"
+              :closable="false"
+              show-icon
+              class="pc-hint"
+            >
+              <template #title>只显示了前 {{ tableFiles.data.value.maxEntries }} 条（共 {{ tableFiles.data.value.total }} 条）</template>
+              <div>
+                排序是目录优先、名称升序，因此被截掉的是尾部的文件。下钻到更具体的子目录，
+                或调大 <span class="pc-mono">paimon.rest.file-browser.max-entries</span>。
+              </div>
+            </el-alert>
+
+            <ResourceState
+              :loading="tableFiles.loading.value"
+              :error="tableFiles.error.value"
+              :empty="!tableEntries.length"
+              :empty-text="tableFilePrefix ? `没有以「${tableFilePrefix}」开头的条目` : '这个目录里没有文件'"
+            />
+
+            <div class="pc-filter-row">
+              <el-input
+                v-model="tableFilePrefixInput"
+                size="small"
+                class="pc-prefix-input"
+                placeholder="文件名前缀（回车过滤）"
+                clearable
+                @keyup.enter="applyTablePrefix"
+                @clear="applyTablePrefix"
+              />
+              <el-button size="small" @click="applyTablePrefix">查询</el-button>
+              <span class="pc-spacer" />
+              <span class="pc-dim">
+                共 {{ tableEntries.length }} 条<span v-if="tableFiles.data.value?.truncated">（已达上限
+                {{ tableFiles.data.value.maxEntries }}，用前缀过滤缩小范围）</span>
+              </span>
+            </div>
+
+            <el-table v-if="tableEntries.length || tableFiles.loading.value" :data="pagedTableEntries" size="small">
+              <el-table-column label="名称" min-width="280">
+                <template #default="{ row }">
+                  <!-- 目录名可点，点进去看下一层；文件没有可点的动作（这一页只读） -->
+                  <a v-if="row.directory" class="pc-link pc-file-name" @click.prevent="openTableDirectory(row.path)">
+                    <el-icon class="pc-file-icon"><Folder /></el-icon>
+                    {{ row.name }}
+                  </a>
+                  <span v-else class="pc-file-name pc-dim">
+                    <el-icon class="pc-file-icon"><Document /></el-icon>
+                    {{ row.name }}
+                  </span>
+                </template>
+              </el-table-column>
+              <el-table-column label="类型" width="90">
+                <template #default="{ row }">
+                  {{ row.directory ? '目录' : '文件' }}
+                </template>
+              </el-table-column>
+              <el-table-column label="大小" width="110" align="right">
+                <template #default="{ row }">
+                  <!-- 目录没有长度语义：显示占位符而不是 0，免得被读成「空目录」 -->
+                  <span class="pc-mono">{{ row.directory ? '—' : formatBytes(row.size) }}</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="修改时间" width="180">
+                <template #default="{ row }">
+                  <TimeText :millis="row.modificationTime" mode="relative" />
+                </template>
+              </el-table-column>
+              <el-table-column label="相对表目录的路径" min-width="260">
+                <template #default="{ row }">
+                  <span class="pc-mono pc-dim pc-break">{{ row.path }}</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="操作" width="90" align="center">
+                <template #default="{ row }">
+                  <!-- 只有文件可下载：目录用列表下钻；表目录里没有「下载整个目录」 -->
+                  <IconAction
+                    v-if="!row.directory"
+                    icon="Download"
+                    label="下载"
+                    type="primary"
+                    @click="downloadEntry(row)"
+                  />
+                  <span v-else class="pc-dim">—</span>
+                </template>
+              </el-table-column>
+            </el-table>
+
+            <el-pagination
+              v-if="tableEntries.length > tableFilePageSize"
+              v-model:current-page="tableFilePage"
+              v-model:page-size="tableFilePageSize"
+              :page-sizes="[10, 50, 100, 200, 500]"
+              :total="totalTableEntries"
+              layout="total, sizes, prev, pager, next"
+              size="small"
+              class="pc-pager"
+            />
+
+            <p class="pc-tip">
+              这里只看这张表自己目录下的文件，出不了表目录（服务端按表目录为根拦住了
+              <span class="pc-mono">..</span> 与绝对路径）。要浏览整个仓库（包括库里其它表与残留目录），
+              去目录（Catalog）详情页的「文件列表」。当前目录相对表目录为
+              <span class="pc-mono">{{ tableFilePath || '（表目录）' }}</span>。
+            </p>
+          </template>
+
           <!------------------------------- 数据访问 -------------------------------->
           <template v-else>
             <div class="pc-access">
@@ -430,8 +556,9 @@ import PanelCard from '@/components/PanelCard.vue'
 import ResourceState from '@/components/ResourceState.vue'
 import TimeText from '@/components/TimeText.vue'
 import { catalogApi } from '@/api/catalog.js'
+import { consoleApi } from '@/api/console.js'
 import { describeError } from '@/api/client.js'
-import { confirmDanger, notifyError, notifySuccess, useResource } from '@/composables/index.js'
+import { confirmDanger, notifyError, notifySuccess, useLocalPaging, useResource } from '@/composables/index.js'
 import {
   formatBytes,
   formatNumber,
@@ -441,8 +568,9 @@ import {
 } from '@/utils/format.js'
 
 /**
- * 表详情。八个页签：七个对应 catalog API 里以单张表为作用域的端点，
- * 另有一个组合页签——「详细信息」汇总单表元数据（基本信息 + 快照统计 + options）。
+ * 表详情。九个页签：七个对应 catalog API 里以单张表为作用域的端点，
+ * 另有两个组合页签——「详细信息」汇总单表元数据（基本信息 + 快照统计 + options），
+ * 「文件列表」看表目录在存储上的物理内容（根是表目录，出不了表外）。
  *
  * <p>授权不在这张表上做：表级权限统一到「权限管理」页（按 database + table 定位，
  * 一级资源一个表单），这里不再重复一份 catalog 角色的授权界面。
@@ -491,6 +619,65 @@ const partitions = useResource(
   { immediate: false },
 )
 
+// ------------------------------------------------------------------ 文件列表
+
+/**
+ * 表目录的文件列表：路径与前缀是页面状态，不是路由参数（与 CatalogDetailView 同一取舍）。
+ *
+ * <p>根是表目录而不是仓库——端点（`GET /api/console/v1/tables/{tableId}/files`）
+ * 天生列不出表外的东西，下钻出界由服务端挡下；要看整个仓库去 Catalog 详情页。
+ * 加载器里判一次 table0：概览还在加载时不会发出 id 为 undefined 的请求。
+ *
+ * <p>前缀过滤走服务端（回车触发一次请求）：过滤后的结果还要按同一个
+ * `max-entries` 上限截断；翻页在本地做（服务端一次给一批，默认上限 1000 条）。
+ */
+const tableFilePath = ref('')
+const tableFilePrefixInput = ref('')
+const tableFilePrefix = ref('')
+const tableFiles = useResource(() => {
+  if (!table0.value) return Promise.resolve(null)
+  return consoleApi.listTableFiles(table0.value.id, tableFilePath.value, tableFilePrefix.value)
+}, { immediate: false })
+const tableEntries = computed(() => tableFiles.data.value?.entries || [])
+const {
+  page: tableFilePage,
+  pageSize: tableFilePageSize,
+  paged: pagedTableEntries,
+  total: totalTableEntries,
+} = useLocalPaging(tableEntries)
+
+const tableCrumbs = computed(() => {
+  const segments = tableFilePath.value.split('/').filter(Boolean)
+  return segments.map((name, index) => ({ name, path: segments.slice(0, index + 1).join('/') }))
+})
+
+const tableParentPath = computed(
+  () => tableCrumbs.value.slice(0, -1).map((crumb) => crumb.name).join('/'),
+)
+
+function openTableDirectory(path) {
+  tableFilePath.value = path
+  tableFiles.load()
+}
+
+/** 回车或点「查询」才发请求：逐字符过滤会把每次按键都变成一次存储列举。 */
+function applyTablePrefix() {
+  tableFilePrefix.value = tableFilePrefixInput.value.trim()
+  tableFiles.load()
+}
+
+/**
+ * 下载表目录下的一个文件。路径原样回传（响应里已经是相对表目录的形状），
+ * 文件名由服务端的 `Content-Disposition` 给出；失败走同一套错误提示。
+ */
+async function downloadEntry(row) {
+  try {
+    await consoleApi.downloadTableFile(table0.value.id, row.path)
+  } catch (error) {
+    notifyError(describeError(error))
+  }
+}
+
 const loadedTabs = new Set()
 
 function onTabChange(name) {
@@ -500,16 +687,31 @@ function onTabChange(name) {
   if (name === 'tags') tags.load()
   if (name === 'branches') branches.load()
   if (name === 'partitions') partitions.load()
+  // 文件列表要等概览回来才有 tableId：概览没到时先不请求（加载器会返回 null），
+  // 等下次切到这个页签、或概览加载完成后的 reloadAll 再拉
+  if (name === 'files' && table0.value && !tableFiles.data.value && !tableFiles.loading.value) {
+    tableFiles.load()
+  }
 }
 
 function reloadAll() {
   overview.load()
   loadedTabs.clear()
   onTabChange(tab.value)
+  // 文件列表不在 onTabChange 的首次加载判定里：刷新要真的重新拉一次，
+  // 否则刷新按钮在文件页签上什么也不做（数据还在，被判定成「已加载」）
+  if (tab.value === 'files') tableFiles.load()
 }
 
 watch([prefix, database, table], () => {
   loadedTabs.clear()
+  // 换了表，文件列表的浏览位置与过滤条件一并打回初始：旧路径在新表目录里通常不存在，
+  // 沿用只会换来一个 404；data 显式置空，否则页签会因为 data 非空而跳过首次加载
+  tableFilePath.value = ''
+  tableFilePrefix.value = ''
+  tableFilePrefixInput.value = ''
+  tableFiles.data.value = null
+  tableFiles.error.value = ''
   overview.load()
   if (!SELF_CONTAINED_TABS.has(tab.value)) {
     loadedTabs.add(tab.value)
@@ -1001,5 +1203,44 @@ async function confirmDrop() {
   .pc-detail-grid {
     grid-template-columns: 1fr;
   }
+}
+
+/* --- 文件列表页签 -------------------------------------------------------
+ * 与 CatalogDetailView 的文件列表同名同形：同一套浏览交互在两个页面各出现一次，
+ * 但各自留在自己的视图里（styles/index.css 对页签内边距就是这么约定的）。 */
+.pc-file-crumbs {
+  font-size: 13.5px;
+}
+
+/* 文件名与目录名前的图标；目录与文件用同一个宽度，名称才对得齐 */
+.pc-file-icon {
+  font-size: 13px;
+  vertical-align: -2px;
+  margin-right: 2px;
+}
+
+.pc-file-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  overflow-wrap: anywhere;
+}
+
+/* 过滤行：前缀输入 + 查询按钮，右侧显示这一批的条数 */
+.pc-filter-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.pc-prefix-input {
+  width: 240px;
+}
+
+/* 分页条靠右；只在条目多于一页时才渲染（见模板里的 v-if） */
+.pc-pager {
+  margin-top: 12px;
+  justify-content: flex-end;
 }
 </style>

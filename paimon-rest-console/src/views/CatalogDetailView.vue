@@ -109,10 +109,28 @@
               :loading="files.loading.value"
               :error="files.error.value"
               :empty="!entries.length"
-              empty-text="这个目录里没有文件"
+              :empty-text="filePrefix ? `没有以「${filePrefix}」开头的条目` : '这个目录里没有文件'"
             />
 
-            <el-table v-if="entries.length || files.loading.value" :data="entries" size="small">
+            <div class="pc-filter-row">
+              <el-input
+                v-model="filePrefixInput"
+                size="small"
+                class="pc-prefix-input"
+                placeholder="文件名前缀（回车过滤）"
+                clearable
+                @keyup.enter="applyPrefix"
+                @clear="applyPrefix"
+              />
+              <el-button size="small" @click="applyPrefix">查询</el-button>
+              <span class="pc-spacer" />
+              <span class="pc-dim">
+                共 {{ entries.length }} 条<span v-if="files.data.value?.truncated">（已达上限
+                {{ files.data.value.maxEntries }}，用前缀过滤缩小范围）</span>
+              </span>
+            </div>
+
+            <el-table v-if="entries.length || files.loading.value" :data="pagedEntries" size="small">
               <el-table-column label="名称" min-width="280">
                 <template #default="{ row }">
                   <!-- 目录名可点，点进去看下一层；文件没有可点的动作（这一页只读） -->
@@ -147,7 +165,31 @@
                   <span class="pc-mono pc-dim pc-break">{{ row.path }}</span>
                 </template>
               </el-table-column>
+              <el-table-column label="操作" width="90" align="center">
+                <template #default="{ row }">
+                  <!-- 只有文件可下载：目录用列表下钻，仓库根/子目录没有「下载整个目录」 -->
+                  <IconAction
+                    v-if="!row.directory"
+                    icon="Download"
+                    label="下载"
+                    type="primary"
+                    @click="downloadEntry(row)"
+                  />
+                  <span v-else class="pc-dim">—</span>
+                </template>
+              </el-table-column>
             </el-table>
+
+            <el-pagination
+              v-if="entries.length > filePageSize"
+              v-model:current-page="filePage"
+              v-model:page-size="filePageSize"
+              :page-sizes="[10, 50, 100, 200, 500]"
+              :total="totalEntries"
+              layout="total, sizes, prev, pager, next"
+              size="small"
+              class="pc-pager"
+            />
 
             <p class="pc-tip">
               这一页只读：仓库里的对象由引擎与服务端自己管（服务端写 schema 与快照，
@@ -199,14 +241,16 @@ import { computed, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
 import { consoleApi } from '@/api/console.js'
+import { describeError } from '@/api/client.js'
 import { managementApi } from '@/api/management.js'
 import CopyText from '@/components/CopyText.vue'
+import IconAction from '@/components/IconAction.vue'
 import JsonBlock from '@/components/JsonBlock.vue'
 import PageHeader from '@/components/PageHeader.vue'
 import PanelCard from '@/components/PanelCard.vue'
 import ResourceState from '@/components/ResourceState.vue'
 import TimeText from '@/components/TimeText.vue'
-import { onConsoleRefresh, useResource } from '@/composables/index.js'
+import { notifyError, onConsoleRefresh, useLocalPaging, useResource } from '@/composables/index.js'
 import { formatBytes, inlineMap } from '@/utils/format.js'
 
 const route = useRoute()
@@ -233,17 +277,25 @@ const warehouse = computed(() => {
 })
 
 /**
- * 文件列表：路径是页面状态，不是路由参数。
+ * 文件列表：路径与前缀都是页面状态，不是路由参数。
  *
  * <p>下钻到第几层不那么值得进 URL（刷新回到仓库根是合理的），但**必须**在会话内保留，
  * 否则每次切页签回来都要重新钻一遍。切换 catalog 时重置，见下面的 watch。
+ *
+ * <p><b>前缀过滤走服务端</b>（回车触发一次请求），因为过滤后的结果还要按同一个
+ * `max-entries` 上限截断；**翻页在本地做**——服务端一次给一批（默认上限 1000 条），
+ * 在浏览器里切片足够，且列目录本来就要把这一层读完才知道总数与排序。
  */
 const filePath = ref('')
+const filePrefixInput = ref('')
+const filePrefix = ref('')
 const files = useResource(
-  () => consoleApi.listCatalogFiles(catalogName.value, filePath.value),
+  () => consoleApi.listCatalogFiles(catalogName.value, filePath.value, filePrefix.value),
   { immediate: false },
 )
 const entries = computed(() => files.data.value?.entries || [])
+const { page: filePage, pageSize: filePageSize, paged: pagedEntries, total: totalEntries } =
+  useLocalPaging(entries)
 
 const crumbs = computed(() => {
   const segments = filePath.value.split('/').filter(Boolean)
@@ -255,6 +307,25 @@ const parentPath = computed(() => crumbs.value.slice(0, -1).map((crumb) => crumb
 function openDirectory(path) {
   filePath.value = path
   files.load()
+}
+
+/** 回车或点「查询」才发请求：逐字符过滤会把每次按键都变成一次存储列举。 */
+function applyPrefix() {
+  filePrefix.value = filePrefixInput.value.trim()
+  files.load()
+}
+
+/**
+ * 下载一个文件。路径原样回传（响应里已经是相对仓库根的形状），
+ * 文件名由服务端的 `Content-Disposition` 给出；失败（404 / 关开关的 501 等）
+ * 走与列表加载同一套错误提示。
+ */
+async function downloadEntry(row) {
+  try {
+    await consoleApi.downloadCatalogFile(catalogName.value, row.path)
+  } catch (error) {
+    notifyError(describeError(error))
+  }
 }
 
 /**
@@ -269,6 +340,8 @@ function openDirectory(path) {
  */
 watch(catalogName, () => {
   filePath.value = ''
+  filePrefix.value = ''
+  filePrefixInput.value = ''
   // data 显式置空，否则「文件列表」页签会因为 data 非空而跳过首次加载
   files.data.value = null
   files.error.value = ''
@@ -378,6 +451,24 @@ const PLANNED_SECTIONS = [
   align-items: center;
   gap: 2px;
   overflow-wrap: anywhere;
+}
+
+/* 过滤行：前缀输入 + 查询按钮，右侧显示这一批的条数 */
+.pc-filter-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.pc-prefix-input {
+  width: 240px;
+}
+
+/* 分页条靠右；只在条目多于一页时才渲染（见模板里的 v-if） */
+.pc-pager {
+  margin-top: 12px;
+  justify-content: flex-end;
 }
 
 @media (max-width: 1100px) {

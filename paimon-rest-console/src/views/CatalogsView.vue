@@ -66,11 +66,6 @@
               <TimeText :millis="row.lastUpdateTimestamp" mode="relative" />
             </template>
           </el-table-column>
-          <el-table-column label="版本" width="70" align="right">
-            <template #default="{ row }">
-              <span class="pc-mono">{{ row.entityVersion ?? '—' }}</span>
-            </template>
-          </el-table-column>
           <el-table-column label="操作" width="200" fixed="right">
             <template #default="{ row }">
               <IconAction icon="Edit" label="编辑" type="primary" @click="openEdit(row)" />

@@ -1,4 +1,4 @@
-import { onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 import { describeError } from '@/api/client.js'
@@ -51,6 +51,37 @@ export function useResource(loader, { immediate = true } = {}) {
 export function onConsoleRefresh(handler) {
   onMounted(() => window.addEventListener(REFRESH_EVENT, handler))
   onUnmounted(() => window.removeEventListener(REFRESH_EVENT, handler))
+}
+
+/**
+ * 本地分页：服务端一次给一批，翻页在浏览器里做。
+ *
+ * <p><b>为什么不服务端分页。</b>列目录的端点按目录列举，本来就要把这一层读完才知道
+ * 总数与排序，再切一次页等于让服务端对同一次列举多走一遍。这批数据有上限
+ * （`max-entries`，默认 1000），在浏览器里切片足够了；真正用来缩范围的是
+ * **名称前缀过滤**，而那是唯一需要走服务端的东西（见 `?prefix=`）。
+ *
+ * @param {import('vue').Ref<Array>} entries 当前这批条目
+ * @returns `page` / `pageSize`（双向绑定给 el-pagination）、`paged`（当前页的切片）、
+ *          `total`（这批的条数，即分页总数）
+ */
+export function useLocalPaging(entries) {
+  const page = ref(1)
+  const pageSize = ref(10)
+  const total = computed(() => entries.value.length)
+  const paged = computed(() => {
+    const start = (page.value - 1) * pageSize.value
+    return entries.value.slice(start, start + pageSize.value)
+  })
+
+  // 换目录或换过滤条件后回到第一页。判据是「这批数据被整体替换」而不是「条数变了」：
+  // 后者会漏掉「新的这一批恰好也是 20 条」的情形，那时页码留在第 2 页，
+  // 界面表现是「明明有数据却停在空页上」。
+  watch(entries, () => {
+    page.value = 1
+  })
+
+  return { page, pageSize, paged, total }
 }
 
 /** 请求顶栏刷新当前页面。 */

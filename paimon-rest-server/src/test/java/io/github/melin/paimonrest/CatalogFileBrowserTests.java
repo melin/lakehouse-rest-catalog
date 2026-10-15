@@ -7,6 +7,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.github.melin.paimonrest.config.RestServerProperties;
 import io.github.melin.paimonrest.domain.repo.CatalogRepository;
+import io.github.melin.paimonrest.domain.repo.DatabaseRepository;
+import io.github.melin.paimonrest.domain.repo.TableRepository;
 import io.github.melin.paimonrest.dto.CommonDtos;
 import io.github.melin.paimonrest.dto.ConsoleDtos;
 import io.github.melin.paimonrest.dto.DatabaseDtos;
@@ -19,6 +21,7 @@ import io.github.melin.paimonrest.service.StorageFileIoFactory;
 import io.github.melin.paimonrest.service.TableService;
 import io.github.melin.paimonrest.support.ApiException;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -77,6 +80,10 @@ class CatalogFileBrowserTests {
     private TableService tableService;
     @Autowired
     private CatalogRepository catalogRepository;
+    @Autowired
+    private TableRepository tableRepository;
+    @Autowired
+    private DatabaseRepository databaseRepository;
     @Autowired
     private StorageFileIoFactory fileIoFactory;
 
@@ -232,6 +239,138 @@ class CatalogFileBrowserTests {
         assertEquals(404, error.getStatus());
     }
 
+    // ------------------------------------------------------------------ 表目录为根
+
+    @Test
+    void tableListingIsRootedAtTheTableDirectory() {
+        tableService.create(PREFIX, database,
+                new TableDtos.CreateTableRequest(new CommonDtos.Identifier(database, "orders"), ordersSchema()));
+        TableDtos.GetTableResponse detail = tableService.get(PREFIX, database, "orders");
+
+        ConsoleDtos.TableFileListing root = catalogFileService.listTable(detail.id(), null);
+        assertEquals(PREFIX, root.catalog());
+        assertEquals(database, root.database(), "库名随响应带回去，界面才不用自己查");
+        assertEquals("orders", root.table());
+        assertEquals(detail.path(), root.root(), "根是表元数据里的 path，界面显示「这是哪儿」");
+        assertEquals("", root.path(), "表目录本身的相对路径是空串");
+        // 建表即物化 schema，表目录里因此有 schema/——这正好是这页要核对的东西
+        assertTrue(root.entries().stream()
+                        .anyMatch(item -> item.name().equals("schema") && item.directory()),
+                "表目录里必须能看到 schema/，看不到说明物化没生效");
+
+        // 下钻一层：条目路径相对**表目录**，不带库名前缀——控制台原样回传就能继续下钻
+        ConsoleDtos.TableFileListing inSchema = catalogFileService.listTable(detail.id(), "schema");
+        assertEquals("schema", inSchema.path());
+        ConsoleDtos.CatalogFileEntry schemaFile = entry(inSchema.entries(), "schema-0");
+        assertEquals("schema/schema-0", schemaFile.path(),
+                "条目路径相对表目录而不是仓库根：与 catalog 端点的约定一致，只是换了根");
+        assertFalse(schemaFile.directory());
+        assertTrue(schemaFile.size() > 0, "schema 文件有内容，大小应该读得出来");
+    }
+
+    @Test
+    void tableListingCannotEscapeTheTableDirectory() {
+        tableService.create(PREFIX, database,
+                new TableDtos.CreateTableRequest(new CommonDtos.Identifier(database, "orders"), ordersSchema()));
+        String tableId = tableService.get(PREFIX, database, "orders").id();
+
+        // `..` 被拒：以表目录为根时这个端点天生够不到库目录与仓库根，这是它的安全边界
+        ApiException up = assertThrows(ApiException.class,
+                () -> catalogFileService.listTable(tableId, "../" + database + ".db"));
+        assertEquals(400, up.getStatus());
+        assertTrue(up.getMessage().contains("parent reference"), up.getMessage());
+
+        // 绝对路径与带 scheme 的地址同样被拒：位置由表元数据决定，不由请求决定
+        assertThrows(ApiException.class, () -> catalogFileService.listTable(tableId, "file:///etc"));
+
+        // 表目录下不存在的子目录是 404
+        ApiException missing = assertThrows(ApiException.class,
+                () -> catalogFileService.listTable(tableId, "not-there"));
+        assertEquals(404, missing.getStatus());
+    }
+
+    @Test
+    void unknownTableIsNotFound() {
+        ApiException error = assertThrows(ApiException.class,
+                () -> catalogFileService.listTable("no-such-table-" + database, null));
+        assertEquals(404, error.getStatus(), "未知表与未知 catalog 一样是 404，不是 500");
+    }
+
+    // ------------------------------------------------------------------ 下载
+
+    @Test
+    void downloadOpensTheFileBytesAndRejectsDirectories() throws IOException {
+        tableService.create(PREFIX, database,
+                new TableDtos.CreateTableRequest(new CommonDtos.Identifier(database, "orders"), ordersSchema()));
+        String schemaFile = database + ".db/orders/schema/schema-0";
+
+        CatalogFileService.FileDownload download = catalogFileService.openFile(PREFIX, schemaFile);
+        assertEquals("schema-0", download.name(), "文件名取路径最后一段，进 Content-Disposition");
+        assertTrue(download.size() > 0);
+        // 流里的字节数必须与元数据长度一致：Content-Length 就是按它填的，差了会截断或挂起
+        assertEquals(download.size(), download.stream().transferTo(OutputStream.nullOutputStream()),
+                "流读完的字节数要与元数据长度一致");
+
+        // 对目录下载是 400：目录用列表去看
+        ApiException directory = assertThrows(ApiException.class,
+                () -> catalogFileService.openFile(PREFIX, database + ".db/orders/schema"));
+        assertEquals(400, directory.getStatus());
+
+        // 不存在是 404，与列举同一说法
+        ApiException missing = assertThrows(ApiException.class,
+                () -> catalogFileService.openFile(PREFIX, database + ".db/orders/schema/not-there"));
+        assertEquals(404, missing.getStatus());
+
+        // 仓库根本身是目录：下载必须给到文件
+        ApiException root = assertThrows(ApiException.class, () -> catalogFileService.openFile(PREFIX, ""));
+        assertEquals(400, root.getStatus());
+    }
+
+    @Test
+    void tableListingFiltersByPrefixToo() {
+        tableService.create(PREFIX, database,
+                new TableDtos.CreateTableRequest(new CommonDtos.Identifier(database, "orders"), ordersSchema()));
+        String tableId = tableService.get(PREFIX, database, "orders").id();
+
+        ConsoleDtos.TableFileListing filtered = catalogFileService.listTable(tableId, null, "sch");
+        assertEquals("sch", filtered.prefix(), "表目录这条端点的过滤语义与仓库那条一致");
+        assertEquals(List.of("schema"),
+                filtered.entries().stream().map(ConsoleDtos.CatalogFileEntry::name).toList());
+
+        // 匹配不到就是空列表（不是 404）：过滤是「当前这层里没有符合的」，不是「目录不在」
+        ConsoleDtos.TableFileListing empty = catalogFileService.listTable(tableId, null, "no-such-prefix");
+        assertTrue(empty.entries().isEmpty());
+        assertEquals(0, empty.total());
+    }
+
+    @Test
+    void tableDownloadIsRootedAtTheTableDirectory() throws IOException {        tableService.create(PREFIX, database,
+                new TableDtos.CreateTableRequest(new CommonDtos.Identifier(database, "orders"), ordersSchema()));
+        String tableId = tableService.get(PREFIX, database, "orders").id();
+
+        CatalogFileService.FileDownload download = catalogFileService.openTableFile(tableId, "schema/schema-0");
+        assertEquals("schema-0", download.name());
+        assertTrue(download.size() > 0);
+        download.stream().close();
+
+        ApiException directory = assertThrows(ApiException.class,
+                () -> catalogFileService.openTableFile(tableId, "schema"));
+        assertEquals(400, directory.getStatus());
+
+        ApiException missing = assertThrows(ApiException.class,
+                () -> catalogFileService.openTableFile(tableId, "not-there"));
+        assertEquals(404, missing.getStatus());
+    }
+
+    @Test
+    void disabledBrowserAlsoDisablesDownload() {
+        CatalogFileService disabled = serviceWith(browser -> browser.setEnabled(false));
+
+        ApiException error = assertThrows(ApiException.class,
+                () -> disabled.openFile(PREFIX, "some-file.txt"));
+        assertEquals(501, error.getStatus(), "下载与列举共用同一个开关，关掉是一起关");
+    }
+
     @Test
     void catalogWithoutWarehouseExplainsWhatToSet() {
         catalogRepository.findByPrefix(PREFIX).ifPresent(catalog -> {
@@ -268,6 +407,74 @@ class CatalogFileBrowserTests {
         assertEquals(2, listing.maxEntries());
     }
 
+    // ------------------------------------------------------------------ 名称前缀过滤
+
+    @Test
+    void namePrefixFiltersEntriesAndEchoesBack() throws IOException {
+        Path databaseDirectory = databaseDirectory();
+        Files.createDirectories(databaseDirectory);
+        for (String name : List.of("part-0001.parquet", "part-0002.parquet", "bucket-0", "manifest-avro")) {
+            Files.writeString(databaseDirectory.resolve(name), "x");
+        }
+
+        ConsoleDtos.CatalogFileListing filtered = catalogFileService.list(PREFIX, database + ".db", "part-");
+        assertEquals("part-", filtered.prefix(), "过滤条件回显，界面据此确认「看的是过滤后的结果」");
+        assertEquals(List.of("part-0001.parquet", "part-0002.parquet"),
+                filtered.entries().stream().map(ConsoleDtos.CatalogFileEntry::name).toList());
+        assertEquals(2, filtered.total(), "total 是过滤后的条数，不是目录里的总条数");
+        assertFalse(filtered.truncated());
+
+        // 不过滤时回显空串而不是 null：界面统一按字符串比较
+        assertEquals("", catalogFileService.list(PREFIX, database + ".db", null).prefix(),
+                "没传 prefix 时回显空串");
+        assertEquals("", catalogFileService.list(PREFIX, database + ".db", "  ").prefix(),
+                "只有空白也当没过滤");
+        assertEquals(4, catalogFileService.list(PREFIX, database + ".db", null).total());
+    }
+
+    @Test
+    void namePrefixAppliesBeforeTheLimit() throws IOException {
+        Path databaseDirectory = databaseDirectory();
+        Files.createDirectories(databaseDirectory);
+        for (int index = 0; index < 5; index++) {
+            Files.writeString(databaseDirectory.resolve("keep-" + index + ".txt"), "x");
+        }
+        for (int index = 0; index < 5; index++) {
+            Files.writeString(databaseDirectory.resolve("drop-" + index + ".txt"), "x");
+        }
+        CatalogFileService limited = serviceWith(browser -> browser.setMaxEntries(3));
+
+        // 上限是对**过滤后**的结果截断：先过滤，剩下的 5 条里取前 3 条
+        ConsoleDtos.CatalogFileListing listing = limited.list(PREFIX, database + ".db", "keep-");
+        assertEquals(3, listing.entries().size());
+        assertEquals(5, listing.total(), "total 是过滤后的总数：界面据此说明「只显示了前 3 条（共 5 条）」");
+        assertTrue(listing.truncated());
+    }
+
+    @Test
+    void namePrefixIsRootedInTheCurrentDirectoryOnly() throws IOException {
+        Path databaseDirectory = databaseDirectory();
+        Files.createDirectories(databaseDirectory.resolve("part-sub"));
+        Files.writeString(databaseDirectory.resolve("part-sub").resolve("inner.txt"), "x");
+        Files.writeString(databaseDirectory.resolve("part-top.txt"), "x");
+
+        // 前缀只与**本层**条目名比较，不下钻：与「按路径前缀跨层过滤」是两件事
+        ConsoleDtos.CatalogFileListing listing = catalogFileService.list(PREFIX, database + ".db", "part-");
+        assertEquals(List.of("part-sub", "part-top.txt"),
+                listing.entries().stream().map(ConsoleDtos.CatalogFileEntry::name).toList(),
+                "目录也参与名称前缀过滤，且仍排在文件前面");
+        assertTrue(entry(listing.entries(), "part-sub").directory());
+    }
+
+    @Test
+    void namePrefixWithASeparatorIsRejected() {
+        ApiException error = assertThrows(ApiException.class,
+                () -> catalogFileService.list(PREFIX, database + ".db", "part-0/"));
+        assertEquals(400, error.getStatus(),
+                "含分隔符的前缀永远匹配不到条目（条目名不含 /）：直说比给个静默空结果好");
+        assertTrue(error.getMessage().contains("path"), error.getMessage());
+    }
+
     @Test
     void disabledBrowserSaysWhichPropertyTurnsItBackOn() {
         CatalogFileService disabled = serviceWith(browser -> browser.setEnabled(false));
@@ -284,15 +491,20 @@ class CatalogFileBrowserTests {
     private CatalogFileService serviceWith(java.util.function.Consumer<RestServerProperties.FileBrowser> customise) {
         RestServerProperties custom = new RestServerProperties();
         customise.accept(custom.getFileBrowser());
-        return new CatalogFileService(catalogRepository, fileIoFactory, custom);
+        return new CatalogFileService(catalogRepository, tableRepository, databaseRepository,
+                fileIoFactory, custom);
     }
 
     private static ConsoleDtos.CatalogFileEntry entry(ConsoleDtos.CatalogFileListing listing, String name) {
-        return listing.entries().stream()
+        return entry(listing.entries(), name);
+    }
+
+    private static ConsoleDtos.CatalogFileEntry entry(List<ConsoleDtos.CatalogFileEntry> entries, String name) {
+        return entries.stream()
                 .filter(item -> item.name().equals(name))
                 .findFirst()
                 .orElseThrow(() -> new AssertionError("目录里没有 " + name + "，实际是 "
-                        + listing.entries().stream().map(ConsoleDtos.CatalogFileEntry::name).toList()));
+                        + entries.stream().map(ConsoleDtos.CatalogFileEntry::name).toList()));
     }
 
     private String catalogWarehouse() {

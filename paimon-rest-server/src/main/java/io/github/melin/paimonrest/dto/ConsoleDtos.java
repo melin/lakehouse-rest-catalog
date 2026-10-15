@@ -280,8 +280,9 @@ public final class ConsoleDtos {
      * @param catalog    catalog 的 prefix
      * @param warehouse  catalog 登记的仓库位置（绝对路径，含 scheme）
      * @param path       本次列出的目录，相对仓库根；仓库根为空串
+     * @param prefix     本次应用的名称前缀过滤；没过滤时为空串
      * @param entries    条目，目录在前、同类按名称排序
-     * @param total      该目录下的条目总数；超过 {@code maxEntries} 时大于 {@code entries.size()}
+     * @param total      过滤后该目录下的条目总数；超过 {@code maxEntries} 时大于 {@code entries.size()}
      * @param truncated  条目是否被上限截断（截断了就要在界面上说出来，否则「少了一些文件」
      *                   会被误读成「文件不存在」）
      * @param maxEntries 本部署的条目上限（{@code paimon.rest.file-browser.max-entries}）
@@ -290,6 +291,7 @@ public final class ConsoleDtos {
             String catalog,
             String warehouse,
             String path,
+            String prefix,
             List<CatalogFileEntry> entries,
             int total,
             boolean truncated,
@@ -315,5 +317,41 @@ public final class ConsoleDtos {
             boolean directory,
             long size,
             long modificationTime) {
+    }
+
+    /**
+     * 表目录的文件列表（{@code GET /api/console/v1/tables/{tableId}/files}）。
+     *
+     * <p>与 {@link CatalogFileListing} 的关系：同一套浏览能力，换一个根——那里以
+     * catalog 的 {@code warehouse} 为根看整个仓库，这里以某张表的目录为根，只看
+     * 它自己的文件。表详情页因此不需要先算「表路径相对仓库根是哪一段」再调
+     * catalog 端点（那要把 warehouse 前缀剥离的活儿摊给浏览器，scheme 大小写、
+     * 尾斜杠都是坑）；也不需要开着整个仓库的浏览权限才能看一张表。
+     *
+     * <p>安全边界随之收紧了一档：{@code path} 相对<b>表目录</b>而不是仓库根，
+     * {@code ..} 与绝对路径照样被拒，于是这个端点天生够不到表目录之外的任何位置。
+     *
+     * @param catalog    表所属 catalog 的 prefix
+     * @param database   表所属库的名称
+     * @param table      表名
+     * @param root       表目录的绝对位置（表元数据里的 {@code path}），供界面显示「这是哪儿」
+     * @param path       本次列出的目录，相对表目录；表目录本身为空串
+     * @param prefix     本次应用的名称前缀过滤；没过滤时为空串
+     * @param entries    条目，形状与 {@link CatalogFileEntry} 完全一致（目录在前、同类按名称排序）
+     * @param total      过滤后该目录下的条目总数；超过 {@code maxEntries} 时大于 {@code entries.size()}
+     * @param truncated  条目是否被上限截断
+     * @param maxEntries 本部署的条目上限（{@code paimon.rest.file-browser.max-entries}）
+     */
+    public record TableFileListing(
+            String catalog,
+            String database,
+            String table,
+            String root,
+            String path,
+            String prefix,
+            List<CatalogFileEntry> entries,
+            int total,
+            boolean truncated,
+            int maxEntries) {
     }
 }

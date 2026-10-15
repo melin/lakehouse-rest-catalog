@@ -196,6 +196,76 @@ export const put = send('PUT')
 export const post = send('POST')
 export const del = send('DELETE')
 
+/**
+ * 下载一个文件：与 {@link request} 同一套鉴权与错误归一化，但响应按二进制处理，
+ * 读成 Blob 后触发浏览器保存。
+ *
+ * <p>单独一个函数而不是让 `request` 兼容两种响应：JSON 端点要 `response.text()`
+ * 再解析，下载要 `response.blob()`——响应体只能读一次，按形状分开两条路径
+ * 比一个函数里分支判断可读得多。文件名优先取服务端的
+ * `Content-Disposition`（RFC 5987 的 `filename*=UTF-8''` 形式），取不到退回 URL 里的名字。
+ */
+export async function download(name, { params = {} } = {}) {
+  const endpoint = ENDPOINTS[name]
+  if (!endpoint) {
+    throw new Error(`unknown endpoint: ${name}`)
+  }
+  const url = `${getBaseUrl()}${buildPath(name, params)}`
+  const headers = {}
+  const token = getToken()
+  if (token) {
+    headers.Authorization = `Bearer ${token}`
+  }
+
+  let response
+  try {
+    response = await fetch(url, { method: endpoint.method, headers })
+  } catch (cause) {
+    throw new ApiError(`无法连接服务端：${cause.message}`, 0, null, name)
+  }
+
+  if (!response.ok) {
+    // 错误体是 JSON（与 request 同一形状），要把它读出来才知道失败原因
+    const text = await response.text()
+    let payload = null
+    if (text) {
+      try {
+        payload = JSON.parse(text)
+      } catch {
+        payload = null
+      }
+    }
+    throw new ApiError(messageOf(payload, response.status), response.status, payload, name)
+  }
+
+  const blob = await response.blob()
+  const filename = filenameFromDisposition(response.headers.get('Content-Disposition'))
+    || decodeURIComponent((url.split('?')[0].split('/').pop() || '')) || 'download'
+  const objectUrl = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = objectUrl
+  anchor.download = filename
+  document.body.appendChild(anchor)
+  anchor.click()
+  anchor.remove()
+  URL.revokeObjectURL(objectUrl)
+}
+
+/** 从 `Content-Disposition` 里取文件名：先认 RFC 5987 的 `filename*`，再退回普通 `filename`。 */
+function filenameFromDisposition(disposition) {
+  if (!disposition) return ''
+  const extended = disposition.match(/filename\*=(?:UTF-8|utf-8)''([^;]+)/i)
+  if (extended) {
+    try {
+      return decodeURIComponent(extended[1].trim().replace(/^"|"$/g, ''))
+    } catch {
+      return extended[1].trim().replace(/^"|"$/g, '')
+    }
+  }
+  const plain = disposition.match(/filename="?([^";]+)"?/i)
+  return plain ? plain[1] : ''
+}
+
 /** 把服务端错误压成一行可展示的文本，并尽量带上资源定位信息。 */
 export function describeError(error) {
   if (!(error instanceof ApiError)) {

@@ -23,6 +23,12 @@ export const ENDPOINTS = {
   // 与 meta 一样是本工程的扩展端点，服务端实现见 ConsoleFileController；
   // 它读的是物理目录（表目录里有哪些文件、有没有残留），不是元数据。
   listCatalogFiles: { method: 'GET', path: '/api/console/v1/catalogs/{catalogName}/files' },
+  // 同一套浏览能力、根换成表目录（`?path=` 相对表目录）：表详情页的「文件列表」。
+  // tableId 是表详情响应里的 id；以表目录为根，天生列不出表外的东西。
+  listTableFiles: { method: 'GET', path: '/api/console/v1/tables/{tableId}/files' },
+  // 单文件下载（`?path=` 必填，必须指到文件）：流式回给浏览器，仍走同一开关与路径防护。
+  downloadCatalogFile: { method: 'GET', path: '/api/console/v1/catalogs/{catalogName}/files/download' },
+  downloadTableFile: { method: 'GET', path: '/api/console/v1/tables/{tableId}/files/download' },
   // 登录引导：服务端支持哪些认证方式、令牌端点在哪儿、手上这个令牌算不算数。
   auth: { method: 'GET', path: '/api/console/v1/auth' },
   // 用户名 + 密码换令牌：控制台的默认方式，账号在服务端配置里（默认 admin/admin）。

@@ -90,6 +90,14 @@ EXTENSION_ENDPOINTS = {
     # 它读的是物理目录（表目录下有哪些文件、有没有残留），两份规格都不涉及文件系统，
     # 因此按扩展端点登记。只读，且可以用 file-browser.enabled=false 关掉。
     ("GET", "/api/console/v1/catalogs/{catalogName}/files"): "控制台仓库文件浏览（列一层目录，只读，可配置关闭）",
+    # 同一套浏览能力、根换成表目录：表详情页的「文件列表」。
+    # 以表元数据的 path 为根，path 参数相对表目录，`..` 与绝对路径被服务端拒掉，
+    # 因此这个端点列不出表外的东西。只读，同样受 file-browser.enabled 管辖。
+    ("GET", "/api/console/v1/tables/{tableId}/files"): "控制台表目录文件浏览（表详情页，根为表目录，只读）",
+    # 单文件下载：与列举同一开关、同一路径防护（必须指到文件，目录 400），仍是只读——
+    # 把已有的字节流出去，不产生任何写入。没有它，「看一眼盘上的 Parquet 头」要登机器。
+    ("GET", "/api/console/v1/catalogs/{catalogName}/files/download"): "控制台仓库单文件下载（流式，只读，可配置关闭）",
+    ("GET", "/api/console/v1/tables/{tableId}/files/download"): "控制台表目录单文件下载（流式，根为表目录，只读）",
     # 登录引导。在服务端鉴权范围之外（WebConfig 用精确路径排除），
     # 因为登录页要先知道服务端支持哪些认证方式，才谈得上发起登录。
     ("GET", "/api/console/v1/auth"): "控制台登录引导（可用认证方式、令牌端点、当前令牌状态）",
@@ -188,7 +196,9 @@ for base, _, files in os.walk(os.path.join(CONSOLE_DIR, "src")):
             source_files.append(os.path.join(base, name))
 all_source = "\n".join(read(path) for path in source_files)
 
-called = set(re.findall(r"\b(?:get|post|put|del|request)\(\s*'(\w+)'", all_source))
+# `download` 也算引用：它是下载端点的调用入口（响应按二进制处理，见 client.js），
+# 与 get/post 等动词一样按端点名调用，不认就会把下载端点误判成死条目
+called = set(re.findall(r"\b(?:get|post|put|del|request|download)\(\s*'(\w+)'", all_source))
 unknown = sorted(called - set(endpoints))
 check(f"src/ 中按名字调用的 {len(called)} 个端点都已声明",
       not unknown,

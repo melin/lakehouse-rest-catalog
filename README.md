@@ -70,7 +70,7 @@ Maven 坐标与包名：`groupId` 为 `io.github.melin`，三个 artifact 分别
 | [`spark-paimon-rest-e2e.md`](docs/spark-paimon-rest-e2e.md) | 要让 Spark 通过本服务端建 Paimon 表——连接配置、可执行的 SQL、报错对照表 |
 | [`authorization.md`](docs/authorization.md) | 要理解权限怎么判——实体链、授权映射、失败关闭的取舍 |
 | [`console.md`](docs/console.md) | 要改 Web 控制台或排查「页面空列表」——前端分层、端点契约表、机械校验 |
-| [`console-table-detail.md`](docs/console-table-detail.md) | 要改表详情页——八个页签的数据来源、为什么授权不在这页、破坏性操作与边界 |
+| [`console-table-detail.md`](docs/console-table-detail.md) | 要改表详情页——九个页签的数据来源、为什么授权不在这页、破坏性操作与边界 |
 | [`console-catalog-detail.md`](docs/console-catalog-detail.md) | 要改 Catalog 详情页或仓库文件浏览——三个页签、下钻与路径防护、只读的取舍、「配置」页为何暂不实现 |
 | [`console-auth.md`](docs/console-auth.md) | 要给浏览器访问控制台配登录——三种登录方式、两个开关的边界、令牌与认证链、安全考量 |
 | [`polaris-capabilities-and-design.md`](docs/polaris-capabilities-and-design.md) | 要对比 Polaris 或看整体设计——核心能力提取、映射关系、已知缺口 |
@@ -107,7 +107,7 @@ mysql -h 127.0.0.1 -u root -p < sql/schema-mysql.sql
 # 全量构建
 JAVA_HOME=/path/to/jdk-21 mvn -DskipTests install
 
-# 运行全部测试（服务端 289 + Spark 90，共 379 个用例；Spark 侧有 1 个示例用例
+# 运行全部测试（服务端 303 + Spark 90，共 393 个用例；Spark 侧有 1 个示例用例
 # 在本地缺 spark.sql.extensions 时会失败，见第 7 节）
 JAVA_HOME=/path/to/jdk-21 mvn test
 
@@ -544,7 +544,7 @@ Azure 只下发定位元数据是个明确的缺口：Polaris 的 `polaris.stora
 
 ## 7. 测试
 
-### 单元与集成测试（379 个用例）
+### 单元与集成测试（393 个用例）
 
 ```bash
 JAVA_HOME=/path/to/jdk-21 mvn test
@@ -553,7 +553,7 @@ JAVA_HOME=/path/to/jdk-21 mvn test
 测试连的是内存 H2（`test` profile，见 `src/test/resources/application-test.yml`），
 **不依赖本机是否有 MySQL**。
 
-服务端（289 个）：
+服务端（303 个）：
 
 | 测试类 | 覆盖 |
 | --- | --- |
@@ -573,8 +573,8 @@ JAVA_HOME=/path/to/jdk-21 mvn test
 | `CatalogEndpointAuthorizationTests` | 从运行时请求映射枚举全部 `/v1/{prefix}/**` 端点，逐一核对授权映射是否已登记——新增端点若忘记登记映射会让构建失败 |
 | `ConsoleApiTests` | 控制台的托管与元数据：`/console` 重定向、目录式路径转发入口页、深链回退、缺失 assets 仍 404、已提交入口页引用的产物都存在、meta 的枚举与权限分组跟着规格走、登录引导同时如实返回 `authEnabled` 与 `consoleRequired`、门禁开着时控制台端点拒匿名而数据面仍开放（见第 9 节） |
 | `ConsoleAuthEndpointTests` | 控制台登录在 HTTP 层的端到端：豁免端点可达而受保护端点拒绝匿名、**用户名密码登录成功/失败/缺参/限速与默认 `admin/admin`**、令牌签发与使用、错误密钥 401 与 `WWW-Authenticate`、**clientId 与用户名两种「不存在」的报文都与「密码不对」一字不差**、`invalid_scope` / `unsupported_grant_type`、Basic 与 JSON 体、失败限速、静态令牌映射、伪造 JWT 与畸形头。这一层才会暴露接线错误——排除列表写错、响应字段名写成驼峰、令牌端点自己反被鉴权挡住 |
-| `CatalogFileBrowserTests` | 仓库文件浏览的服务语义：下钻一层、目录优先排序、冗余分隔符与 `.` 归一化、`..` 与绝对路径 / 带 scheme 拒绝、目录不存在 404、指向文件 400、未知 catalog 404、无 warehouse 400、超出上限标 `truncated`、关开关 501 |
-| `CatalogFileEndpointTests` | 同一条端点的**接口形状**：URL、`path` 查询参数、状态码、响应字段名。与服务语义分开是因为这些错误各自独立——服务能把目录列对不代表端点拼对了，反过来同理 |
+| `CatalogFileBrowserTests` | 仓库文件浏览的服务语义：下钻一层、目录优先排序、冗余分隔符与 `.` 归一化、`..` 与绝对路径 / 带 scheme 拒绝、目录不存在 404、指向文件 400、未知 catalog 404、无 warehouse 400、超出上限标 `truncated`、关开关 501；表目录为根的三条（表级下钻、出不了表目录、未知表 404）；名称前缀过滤的四条（过滤与回显、过滤先于截断、只比本层条目名、含 `/` 拒 400，含表级过滤）；下载的三条（流里字节数与元数据一致、目录与仓库根 400、关开关 501） |
+| `CatalogFileEndpointTests` | 四条端点的**接口形状**：URL、`path` / `prefix` 查询参数、状态码、响应字段名；下载钉 `Content-Disposition` 与 `Content-Length` 与实际字节一致；前缀过滤钉回显与 `total` 口径。与服务语义分开是因为这些错误各自独立——服务能把目录列对不代表端点拼对了，反过来同理 |
 | `ConsoleAuthMethodVisibilityTests` | 登录方式的可见性：**没开启的方式不出现在登录引导里**——关掉 `console.client-credentials.enabled` 就不下发 `client-credentials`，`auth.tokens` 为空就不下发 `static-token`，而默认开启的用户名密码照旧（对照组，防「无脑返回空列表」） |
 | `AccessTokenServiceTests` | 访问令牌的签发与验证：claims、TTL 边界、换钥、篡改、换 issuer、无 `exp`、`alg:none`、签名密钥格式错必须启动失败、随机钥不共享 |
 | `JwtTests` | 纯 JDK 的 JWT 编解码与验签：HS256 / RS256 / ES256 往返、**ES256 的原始签名转 DER**、`alg:none` 与未知算法、结构拒绝、`aud` 单值与数组 |
@@ -591,7 +591,7 @@ Spark 子模块（90 个，其中 19 个需要显式指向服务端）：
 > `example/` 下的 `PaimonS3Test` **当前跑不过**，与 S3 环境无关：它在加载 Spark
 > catalog 时被 Paimon 的 `requiredSparkConfsCheck` 挡下（会话里没有
 > `spark.sql.extensions`），报错发生在任何 REST 调用之前。因此 `mvn test` 会停在
-> Spark 模块的 BUILD FAILURE，而服务端模块（289 个）是绿的。
+> Spark 模块的 BUILD FAILURE，而服务端模块（303 个）是绿的。
 
 | 测试类 | 覆盖 |
 | --- | --- |
@@ -878,9 +878,9 @@ http://localhost:8080/console/
 | `/login`、`/auth/callback` | 登录与 SSO 回调 |
 | `/` | 概览：统计块、服务端配置、**连接自检**、catalog 清单、`GET /v1/config` |
 | `/browse` | 目录浏览：库/表/视图/函数/语义视图；建库建表、注册表、按表 ID 定位、重命名、删除 |
-| `/tables/:prefix/:database/:table` | [表详情](docs/console-table-detail.md)：八个页签、快照与标签回滚 |
+| `/tables/:prefix/:database/:table` | [表详情](docs/console-table-detail.md)：九个页签（含**文件列表**——表目录物理内容，出不了表外）、快照与标签回滚 |
 | `/catalogs` | Catalog 列表：创建、编辑（带版本）、删除；名称进详情页 |
-| `/catalogs/:catalogName` | [Catalog 详情](docs/console-catalog-detail.md)：概览 / **文件列表**（仓库物理目录，目录名可点下钻）/ 配置（预留设计，暂未实现） |
+| `/catalogs/:catalogName` | [Catalog 详情](docs/console-catalog-detail.md)：概览 / **文件列表**（仓库物理目录，目录名可点下钻、文件可下载、文件名前缀过滤 + 本地分页）/ 配置（预留设计，暂未实现） |
 | `/principals`、`/principal-roles` | 治理：主体、角色；角色页含「授予 / 撤销 catalog 角色」。**catalog 角色与它的资源授权没有页面**——这两件事的入口是管理 API 与 Spark SQL |
 | `/permissions` | 权限管理：控制台**唯一**的授权页（Paimon 官方权限模型、授权直接挂在主体上），覆盖官方八种资源定位器里的四级——catalog / database / table / view |
 | `/settings` | 连接设置：API 基址、访问令牌、登录状态、主题 |
@@ -915,6 +915,6 @@ OIDC 授权码 + PKCE 三种方式；令牌是自包含 JWT，多实例互认但
 | 文档 | 内容 |
 | --- | --- |
 | [`docs/console.md`](docs/console.md) | 控制台总览：目录结构、服务端如何托管、页面清单、端点契约表与机械校验、构建与提交约定、测试分层 |
-| [`docs/console-table-detail.md`](docs/console-table-detail.md) | 表详情页：八个页签逐个说明、为什么授权不在这页、破坏性操作、已知边界 |
+| [`docs/console-table-detail.md`](docs/console-table-detail.md) | 表详情页：九个页签逐个说明（含表目录文件列表）、为什么授权不在这页、破坏性操作、已知边界 |
 | [`docs/console-catalog-detail.md`](docs/console-catalog-detail.md) | Catalog 详情页：概览与文件列表两个已实现页签、下钻与路径防护、为什么只读、「配置」页的预留设计 |
 | [`docs/console-auth.md`](docs/console-auth.md) | 登录与鉴权：两个开关的边界、三种登录方式与令牌端点、错误码、安全考量、已知边界 |

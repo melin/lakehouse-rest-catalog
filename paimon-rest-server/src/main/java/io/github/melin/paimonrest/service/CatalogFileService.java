@@ -2,12 +2,18 @@ package io.github.melin.paimonrest.service;
 
 import io.github.melin.paimonrest.config.RestServerProperties;
 import io.github.melin.paimonrest.domain.entity.CatalogEntity;
+import io.github.melin.paimonrest.domain.entity.DatabaseEntity;
+import io.github.melin.paimonrest.domain.entity.TableEntity;
 import io.github.melin.paimonrest.domain.repo.CatalogRepository;
+import io.github.melin.paimonrest.domain.repo.DatabaseRepository;
+import io.github.melin.paimonrest.domain.repo.TableRepository;
 import io.github.melin.paimonrest.dto.ConsoleDtos.CatalogFileEntry;
 import io.github.melin.paimonrest.dto.ConsoleDtos.CatalogFileListing;
+import io.github.melin.paimonrest.dto.ConsoleDtos.TableFileListing;
 import io.github.melin.paimonrest.support.ApiException;
 import io.github.melin.paimonrest.support.ResourceType;
 import java.io.IOException;
+import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -20,7 +26,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 /**
- * 浏览 catalog 仓库的物理目录。
+ * 浏览 catalog 仓库的物理目录——两种根：仓库根（catalog 视角）与表目录（单表视角）。
  *
  * <p><b>为什么要有这个能力。</b>REST 协议的读路径全部经过本服务端（元数据在库里），
  * 于是「用 REST catalog 一切正常、绕开服务端看仓库却不对」这类问题在接口上完全看不见。
@@ -35,10 +41,11 @@ import org.springframework.stereotype.Service;
  * （{@code purge-on-drop=false}）留下的旧表目录。这些正是排查时想看的东西，
  * 所以不做过滤；界面上也不把它们说成「表」。
  *
- * <p><b>路径一律相对仓库根。</b>请求给的是相对路径，服务端拼在 catalog 的
- * {@code warehouse} 上。绝对路径不接受——那等于让调用方用控制台去读这台服务器
- * 能访问的任何位置（{@code file:///etc}、别的桶），而本端点的授权面只到
- * 「认证过的控制台用户」，不足以承担这种范围。拦截点见 {@link #resolve}。
+ * <p><b>路径一律相对各自的根。</b>仓库浏览（{@link #list}）相对 catalog 的
+ * {@code warehouse}；表目录浏览（{@link #listTable}）相对表元数据里的 {@code path}。
+ * 绝对路径不接受——那等于让调用方用控制台去读这台服务器能访问的任何位置
+ * （{@code file:///etc}、别的桶），而本端点的授权面只到「认证过的控制台用户」，
+ * 不足以承担这种范围。拦截点见 {@link #resolve}。
  *
  * <p><b>每次调用都新构造 FileIO。</b>与 {@link TableMetadataService} 同一理由：
  * 缓存凭据的代价是「管理 API 换过 catalog 凭据之后，这里还在用旧钥匙」。
@@ -55,23 +62,34 @@ public class CatalogFileService {
 
     private final CatalogRepository catalogRepository;
 
+    private final TableRepository tableRepository;
+
+    private final DatabaseRepository databaseRepository;
+
     private final StorageFileIoFactory fileIoFactory;
 
     private final RestServerProperties properties;
 
     /**
-     * 列出某个目录的一层内容。
+     * 列出仓库里某个目录的一层内容（根 = catalog 的 {@code warehouse}）。
      *
      * @param catalogName catalog 的 prefix
      * @param path        相对仓库根的目录路径；{@code null} 或空串表示仓库根
      */
     public CatalogFileListing list(String catalogName, String path) {
-        int maxEntries = properties.getFileBrowser().getMaxEntries();
-        if (!properties.getFileBrowser().isEnabled()) {
-            throw ApiException.notImplemented("the catalog file browser is disabled in this deployment"
-                    + " (paimon.rest.file-browser.enabled=false); the warehouse itself is untouched,"
-                    + " only this view is off");
-        }
+        return list(catalogName, path, null);
+    }
+
+    /**
+     * 同上，外加按名称前缀过滤。
+     *
+     * @param prefix 只返回名称以它开头的条目；{@code null} 或空串表示不过滤。
+     *               过滤在服务端做——界面上「输入前缀 + 回车」就是重新发一次这个请求，
+     *               于是它天然与 {@code max-entries} 上限一起生效：
+     *               过滤后的结果同样按目录优先、名称升序排，再截到上限。
+     */
+    public CatalogFileListing list(String catalogName, String path, String prefix) {
+        int maxEntries = requireEnabled();
         CatalogEntity catalog = catalogRepository.findByPrefix(catalogName)
                 .orElseThrow(() -> ApiException.managementNotExist(ResourceType.CATALOG, catalogName));
         String warehouse = catalog.getWarehouse();
@@ -80,35 +98,110 @@ public class CatalogFileService {
                     + " no directory to browse; set it with"
                     + " PUT /api/management/v1/catalogs/" + catalogName);
         }
-        Path root = new Path(trimTrailingSlash(warehouse));
-        String relative = resolve(path);
+        String relative = resolve(path, "the catalog warehouse");
+        String namePrefix = resolvePrefix(prefix);
+        DirPage page = listDirectory(catalog, new Path(trimTrailingSlash(warehouse)), relative,
+                "the warehouse " + warehouse, namePrefix);
+        return new CatalogFileListing(catalogName, warehouse, relative, namePrefix, page.entries(),
+                page.total(), page.truncated(), maxEntries);
+    }
+
+    /**
+     * 列出某张表的目录里的一层内容（根 = 表元数据里的 {@code path}）。
+     *
+     * <p>表详情页的「文件列表」用这个而不是拿表路径去调 {@link #list}：
+     * 以表目录为根，一是下钻天生出不了表目录（{@code ..} 已被 {@link #resolve} 拒掉，
+     * 相对路径也拼不出根之外的位置），二是控制台不用自己剥 warehouse 前缀——
+     * scheme 大小写、尾斜杠那些归一化差异留在服务端一处处理。
+     *
+     * @param tableId 表的内部 id（表详情响应里的 {@code id} 字段）
+     * @param path    相对表目录的路径；{@code null} 或空串表示表目录本身
+     */
+    public TableFileListing listTable(String tableId, String path) {
+        return listTable(tableId, path, null);
+    }
+
+    /**
+     * 同上，外加按名称前缀过滤（语义与 {@link #list} 的那条完全一致）。
+     *
+     * @param prefix 只返回名称以它开头的条目；{@code null} 或空串表示不过滤
+     */
+    public TableFileListing listTable(String tableId, String path, String prefix) {
+        int maxEntries = requireEnabled();
+        TableEntity table = tableRepository.findById(tableId)
+                .orElseThrow(() -> ApiException.managementNotExist(ResourceType.TABLE, tableId));
+        String tablePath = table.getPath();
+        if (tablePath == null || tablePath.isBlank()) {
+            throw ApiException.badRequest("table " + tableId + " has no path recorded,"
+                    + " so there is no directory to browse; the path is written when the table"
+                    + " is created and cannot be browsed without it");
+        }
+        CatalogEntity catalog = catalogRepository.findById(table.getCatalogId())
+                .orElseThrow(() -> ApiException.managementNotExist(ResourceType.CATALOG, table.getCatalogId()));
+        // 库名只为让响应自描述（界面上「paimon_catalog / demo / orders 的文件」）；
+        // 元数据里挂着的 id 找不到实体说明数据不一致，如实回传 id 比编一个名字诚实
+        String databaseName = databaseRepository.findById(table.getDatabaseId())
+                .map(DatabaseEntity::getName)
+                .orElse(table.getDatabaseId());
+        String relative = resolve(path, "the table directory");
+        String namePrefix = resolvePrefix(prefix);
+        DirPage page = listDirectory(catalog, new Path(trimTrailingSlash(tablePath)), relative,
+                "the table directory " + tablePath, namePrefix);
+        return new TableFileListing(catalog.getPrefix(), databaseName, table.getName(), tablePath,
+                relative, namePrefix, page.entries(), page.total(), page.truncated(), maxEntries);
+    }
+
+    // ------------------------------------------------------------------ 列举核心
+
+    /** 一次目录列举的产物：截断后的一页与发现的总数。 */
+    private record DirPage(List<CatalogFileEntry> entries, int total, boolean truncated) {}
+
+    /**
+     * 列出 {@code root} 下 {@code relative} 那一层，过滤、排序、截断都在这里收口。
+     *
+     * <p>两种根（仓库、表目录）共用这一段：不存在 404、对着文件列目录 400、
+     * 目录条目如实填 0、名称前缀过滤、目录优先排序、超上限截断——语义只有一份，
+     * 两个端点才不会漂移。
+     *
+     * @param namePrefix 名称前缀过滤；空串表示不过滤
+     * @param rootLabel  人读的根位置描述（进错误消息与日志），如
+     *                   {@code the warehouse s3://bucket/paimon} 或
+     *                   {@code the table directory s3://bucket/paimon/demo.db/orders}
+     */
+    private DirPage listDirectory(CatalogEntity catalog, Path root, String relative,
+                                  String rootLabel, String namePrefix) {
         Path target = relative.isEmpty() ? root : new Path(root, relative);
         FileIO fileIO = open(catalog, target);
 
         FileStatus status;
         try {
             if (!fileIO.exists(target)) {
-                throw new ApiException(404, ResourceType.CATALOG, catalogName,
-                        describe(relative) + " does not exist under the warehouse " + warehouse);
+                throw new ApiException(404, ResourceType.CATALOG, catalog.getPrefix(),
+                        missingMessage(relative, rootLabel));
             }
             status = fileIO.getFileStatus(target);
         } catch (IOException e) {
-            throw listFailure(catalogName, relative, e);
+            throw listFailure(catalog.getPrefix(), relative, e);
         }
         if (!status.isDir()) {
-            throw ApiException.badRequest(describe(relative) + " is a file, not a directory;"
-                    + " only directories can be listed");
+            throw ApiException.badRequest(describe(relative, rootLabel)
+                    + " is a file, not a directory; only directories can be listed");
         }
 
         FileStatus[] statuses;
         try {
             statuses = fileIO.listStatus(target);
         } catch (IOException e) {
-            throw listFailure(catalogName, relative, e);
+            throw listFailure(catalog.getPrefix(), relative, e);
         }
         List<CatalogFileEntry> entries = new ArrayList<>(statuses.length);
         for (FileStatus child : statuses) {
             String name = child.getPath().getName();
+            // 前缀过滤在这里而不是在客户端：过滤后的结果还要按同一个上限截断，
+            // 两边各做一次会让「只显示了前 N 条」这句话对不上
+            if (!namePrefix.isEmpty() && !name.startsWith(namePrefix)) {
+                continue;
+            }
             entries.add(new CatalogFileEntry(
                     name,
                     relative.isEmpty() ? name : relative + SEPARATOR + name,
@@ -122,42 +215,141 @@ public class CatalogFileService {
                 .comparing(CatalogFileEntry::directory).reversed()
                 .thenComparing(CatalogFileEntry::name, String.CASE_INSENSITIVE_ORDER));
 
+        int maxEntries = properties.getFileBrowser().getMaxEntries();
         boolean truncated = entries.size() > maxEntries;
         List<CatalogFileEntry> page = truncated ? List.copyOf(entries.subList(0, maxEntries)) : entries;
-        log.debug("listed {} entries (of {}, truncated={}) at {} under catalog {}",
-                page.size(), entries.size(), truncated, describe(relative), catalogName);
-        return new CatalogFileListing(catalogName, warehouse, relative, page,
-                entries.size(), truncated, maxEntries);
+        log.debug("listed {} entries (of {}, truncated={}, prefix='{}') at {} under catalog {}",
+                page.size(), entries.size(), truncated, namePrefix,
+                describe(relative, rootLabel), catalog.getPrefix());
+        return new DirPage(page, entries.size(), truncated);
+    }
+
+    // ------------------------------------------------------------------ 下载
+
+    /**
+     * 打开的文件：流与元数据一起交给控制器包成响应。
+     *
+     * <p>流由调用方（控制器 / Spring 的消息转换器）负责读完与关闭——
+     * 下载是一次性的流式读，服务端不做缓冲：数据文件动辄上百 MB，
+     * 读进内存再回给浏览器既慢又容易把堆打爆。
+     *
+     * @param name             文件名（路径最后一段），进 {@code Content-Disposition}
+     * @param size             文件长度（字节），来自 {@link FileStatus}，直接做 {@code Content-Length}
+     * @param modificationTime 最后修改时间（epoch 毫秒）
+     * @param stream           文件内容流；读完为止
+     */
+    public record FileDownload(String name, long size, long modificationTime, InputStream stream) {}
+
+    /**
+     * 打开仓库里某个文件供下载（根 = catalog 的 {@code warehouse}）。
+     *
+     * <p>下载与 {@link #list} 同一条路径防护（相对路径、拒 {@code ..} 与绝对路径）、
+     * 同一个开关（{@code paimon.rest.file-browser.enabled}）、同一个授权面。
+     * 只读不变：下载是「把已有的字节搬出去」，不是写。
+     */
+    public FileDownload openFile(String catalogName, String path) {
+        requireEnabled();
+        CatalogEntity catalog = catalogRepository.findByPrefix(catalogName)
+                .orElseThrow(() -> ApiException.managementNotExist(ResourceType.CATALOG, catalogName));
+        String warehouse = catalog.getWarehouse();
+        if (warehouse == null || warehouse.isBlank()) {
+            throw ApiException.badRequest("catalog " + catalogName + " has no warehouse, so there is"
+                    + " nothing to download; set it with"
+                    + " PUT /api/management/v1/catalogs/" + catalogName);
+        }
+        String relative = resolve(path, "the catalog warehouse");
+        if (relative.isEmpty()) {
+            throw ApiException.badRequest("download needs a file path, but got the warehouse root,"
+                    + " which is a directory; pick a file from the listing instead");
+        }
+        return openForDownload(catalog, new Path(trimTrailingSlash(warehouse)), relative,
+                "the warehouse " + warehouse);
+    }
+
+    /**
+     * 打开某张表目录下的文件供下载（根 = 表元数据里的 {@code path}）。
+     *
+     * <p>与 {@link #listTable} 同一条防护：{@code path} 相对表目录，
+     * {@code ..} 与绝对路径被拒，出不了表目录。空路径（表目录本身）是目录，
+     * 直接 400。
+     */
+    public FileDownload openTableFile(String tableId, String path) {
+        requireEnabled();
+        TableEntity table = tableRepository.findById(tableId)
+                .orElseThrow(() -> ApiException.managementNotExist(ResourceType.TABLE, tableId));
+        String tablePath = table.getPath();
+        if (tablePath == null || tablePath.isBlank()) {
+            throw ApiException.badRequest("table " + tableId + " has no path recorded,"
+                    + " so there is nothing to download");
+        }
+        CatalogEntity catalog = catalogRepository.findById(table.getCatalogId())
+                .orElseThrow(() -> ApiException.managementNotExist(ResourceType.CATALOG, table.getCatalogId()));
+        String relative = resolve(path, "the table directory");
+        if (relative.isEmpty()) {
+            throw ApiException.badRequest("download needs a file path, but got the table directory,"
+                    + " which is a directory; pick a file from the listing instead");
+        }
+        return openForDownload(catalog, new Path(trimTrailingSlash(tablePath)), relative,
+                "the table directory " + tablePath);
+    }
+
+    /** 下载与列举共用的「找到那个文件并打开流」；错误语义与列举一致（404 / 400 / 500）。 */
+    private FileDownload openForDownload(CatalogEntity catalog, Path root, String relative, String rootLabel) {
+        Path target = new Path(root, relative);
+        FileIO fileIO = open(catalog, target);
+        FileStatus status;
+        try {
+            if (!fileIO.exists(target)) {
+                throw new ApiException(404, ResourceType.CATALOG, catalog.getPrefix(),
+                        missingMessage(relative, rootLabel));
+            }
+            status = fileIO.getFileStatus(target);
+        } catch (IOException e) {
+            throw listFailure(catalog.getPrefix(), relative, e);
+        }
+        if (status.isDir()) {
+            throw ApiException.badRequest(describe(relative, rootLabel)
+                    + " is a directory; only files can be downloaded, list it instead");
+        }
+        try {
+            return new FileDownload(target.getName(), status.getLen(), status.getModificationTime(),
+                    fileIO.newInputStream(target));
+        } catch (IOException e) {
+            throw listFailure(catalog.getPrefix(), relative, e);
+        }
     }
 
     // ------------------------------------------------------------------ 路径与 FileIO
 
     /**
-     * 把调用方给的相对路径归一化，顺手挡掉逃出仓库根的写法。
+     * 把调用方给的相对路径归一化，顺手挡掉逃出根的写法。
      *
-     * <p>接受的是 {@code a/b} 这种仓库内相对路径；空串表示仓库根（界面的「仓库根」面包屑）。
+     * <p>接受的是 {@code a/b} 这种相对路径；空串表示根本身（界面的第一层面包屑）。
      * 拒绝三类：带 scheme 的绝对路径（{@code s3://bucket/x}，那是另一个位置，
-     * 由 catalog 的 warehouse 决定而不是由请求决定）、以 {@code /} 开头或形如
+     * 由 catalog 的 warehouse 或表元数据决定而不是由请求决定）、以 {@code /} 开头或形如
      * {@code C:\} 的绝对路径、以及含 {@code ..} 的路径。
      *
      * <p>{@code ..} 是这里唯一真正的安全点。{@link Path} 自己不做越界检查
-     * （{@code new Path(root, "../../etc")} 会照拼），而本端点的用途只是「在仓库里下钻」，
+     * （{@code new Path(root, "../../etc")} 会照拼），而本端点的用途只是「在根里下钻」，
      * 因此不去做「拼完再判断前缀」的事后校验——那种写法要处理大小写、符号链接与
      * 分隔符重复等一堆归一化差异，容易漏。直接拒掉 {@code ..} 段更简单也更难写错。
+     *
+     * @param rootNoun 人读的根描述，进错误消息：{@code the catalog warehouse} /
+     *                 {@code the table directory}
      */
-    private static String resolve(String path) {
+    private static String resolve(String path, String rootNoun) {
         String raw = path == null ? "" : path.trim();
         if (raw.isEmpty() || raw.equals(SEPARATOR)) {
             return "";
         }
         if (raw.contains("://")) {
-            throw ApiException.badRequest("path must be relative to the catalog warehouse,"
-                    + " but got an absolute location: " + raw
-                    + "; the warehouse is fixed by the catalog, not by the request");
+            throw ApiException.badRequest("path must be relative to " + rootNoun
+                    + ", but got an absolute location: " + raw
+                    + "; the browsed root is fixed by the resource, not by the request");
         }
         if (raw.startsWith(SEPARATOR)) {
-            throw ApiException.badRequest("path must be relative to the catalog warehouse,"
-                    + " but got an absolute path: " + raw);
+            throw ApiException.badRequest("path must be relative to " + rootNoun
+                    + ", but got an absolute path: " + raw);
         }
         List<String> segments = new ArrayList<>();
         for (String segment : raw.split(SEPARATOR)) {
@@ -167,35 +359,74 @@ public class CatalogFileService {
                 continue;
             }
             if (segment.equals("..")) {
-                throw ApiException.badRequest("path must stay inside the catalog warehouse,"
-                        + " but got a parent reference: " + raw);
+                throw ApiException.badRequest("path must stay inside " + rootNoun
+                        + ", but got a parent reference: " + raw);
             }
             segments.add(segment);
         }
         return String.join(SEPARATOR, segments);
     }
 
-    private FileIO open(CatalogEntity catalog, Path target) {
-        try {
+    /**
+     * 归一化名称前缀过滤条件。
+     *
+     * <p>它**不是路径**：只与条目名（目录项的最后一段）做前缀比较，因此不涉及越界、
+     * 不需要 {@link #resolve} 那套防护。唯一要拦的是含分隔符的写法——
+     * 「按路径前缀过滤」是一个合理但不同的需求（要跨层，本质是递归列举），
+     * 而在这里它永远匹配不到任何条目（条目名不含 {@code /}），与其给一个静默的空结果
+     * 让人以为「目录是空的」，不如直说该改用 {@code path} 下钻。
+     */
+    private static String resolvePrefix(String prefix) {
+        String raw = prefix == null ? "" : prefix.trim();
+        if (raw.contains(SEPARATOR)) {
+            throw ApiException.badRequest("prefix filters entry names, which never contain '"
+                    + SEPARATOR + "', but got: " + raw
+                    + "; use path to walk into a sub-directory and filter inside it");
+        }
+        return raw;
+    }
+
+    private FileIO open(CatalogEntity catalog, Path target) {        try {
             // 作用域标识用 catalog id：凭据管理器按它记账与缓存，与表元数据那条链路
             // 传 table id 是同一个约定（见 StorageCredentialManager#vend）
             return fileIoFactory.open(target, fileIoFactory.optionsFor(catalog, catalog.getId(), target.toString()));
         } catch (IOException e) {
-            throw listFailure(catalog.getPrefix(), describe(""), e);
+            throw listFailure(catalog.getPrefix(), "", e);
         }
     }
 
     /** 把 IO 失败归成 500 并带上一句人话；路径与 catalog 都写进去，否则没法定位是哪台存储。 */
     private static ApiException listFailure(String catalogName, String relative, IOException cause) {
-        String message = "failed to list " + describe(relative) + ": " + rootMessage(cause);
+        String message = "failed to list " + describe(relative, "the browsed root")
+                + ": " + rootMessage(cause);
         // 原始异常在这里落日志而不是塞进 ApiException：后者的第五个参数是协议错误码
         // （OAuth 用），不是 cause。带完整堆栈的排查信息归日志，响应体里给人读的一句话。
         log.warn("catalog file listing failed under catalog {}: {}", catalogName, message, cause);
         return new ApiException(500, ResourceType.CATALOG, catalogName, message);
     }
 
-    private static String describe(String relative) {
-        return relative.isEmpty() ? "the warehouse root" : "directory '" + relative + "'";
+    /**
+     * 「列不到」的两种说法：根本身不存在是一种（直接说根），根下的子目录是另一种
+     * （说它在哪个根之下），拼出来的句子两种根下都读得通。
+     */
+    private static String missingMessage(String relative, String rootLabel) {
+        return relative.isEmpty()
+                ? rootLabel + " does not exist"
+                : "directory '" + relative + "' does not exist under " + rootLabel;
+    }
+
+    /** 条目的说法：根就用给定的说法（可为空串），子路径带引号。 */
+    private static String describe(String relative, String fallbackLabel) {
+        return relative.isEmpty() ? fallbackLabel : "directory '" + relative + "'";
+    }
+
+    private int requireEnabled() {
+        if (!properties.getFileBrowser().isEnabled()) {
+            throw ApiException.notImplemented("the catalog file browser is disabled in this deployment"
+                    + " (paimon.rest.file-browser.enabled=false); the warehouse itself is untouched,"
+                    + " only this view is off");
+        }
+        return properties.getFileBrowser().getMaxEntries();
     }
 
     private static String trimTrailingSlash(String warehouse) {

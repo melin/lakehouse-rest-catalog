@@ -137,16 +137,17 @@ schema 物化没生效：客户端建表成功、写入时报
 `EXTENSION_ENDPOINTS` 白名单里并写明了理由：
 
 ```
-GET /api/console/v1/catalogs/{catalogName}/files?path=<相对仓库根>
+GET /api/console/v1/catalogs/{catalogName}/files?path=<相对仓库根>&prefix=<名称前缀>
 ```
 
-`path` 省略或为空时列仓库根。响应：
+`path` 省略或为空时列仓库根；`prefix` 省略或为空时不过滤。响应：
 
 ```json
 {
   "catalog": "paimon",
   "warehouse": "s3://bucket/warehouse",
   "path": "fe_x.db/orders",
+  "prefix": "",
   "entries": [{ "name": "schema", "path": "fe_x.db/orders/schema",
                 "directory": true, "size": 0, "modificationTime": 1740000000000 }],
   "total": 12,
@@ -155,8 +156,18 @@ GET /api/console/v1/catalogs/{catalogName}/files?path=<相对仓库根>
 }
 ```
 
-`catalog` 与 `warehouse` 回显服务端实际用的值，`path` 是**归一化之后**的相对路径
-（界面的面包屑按它算，可点的路径段与这里一致）。
+`catalog` 与 `warehouse` 回显服务端实际用的值，`path` 与 `prefix` 是**归一化之后**
+的过滤条件（界面的面包屑与过滤框按它们算，可点的路径段与这里一致）。
+
+**前缀过滤在服务端做**（`prefix` 只与条目名比较，条目名不含 `/`）。理由不是性能
+而是正确性：过滤后的结果还要按同一个 `max-entries` 上限截断，两边各过滤一次会让
+「只显示了前 N 条（共 M 条）」这句话对不上。因此界面上「输入前缀 + 回车」就是
+**重新发一次这个请求**（逐字符过滤会把每次按键都变成一次存储列举）。
+`total` 是**过滤后**的条数。
+
+**翻页在浏览器里做。** 服务端一次给一批（上限 `max-entries`，默认 1000），
+前端切片分页。列目录本来就要把这一层读完才知道总数与排序，再切一次页不省任何事；
+真正用来缩范围的是前缀过滤，那是唯一需要走服务端的。
 
 | 情形 | 状态码 | 说明 |
 | --- | --- | --- |
@@ -165,8 +176,35 @@ GET /api/console/v1/catalogs/{catalogName}/files?path=<相对仓库根>
 | catalog 没有 warehouse | 400 | 消息里带 `warehouse` 与那条 `PUT` 的路径 |
 | 路径是绝对的（`/x`、`s3://…`） | 400 | 分开两条消息：带 scheme 的是「另一个位置」，前导 `/` 的是「绝对路径」 |
 | 路径含 `..` | 400 | 「必须留在仓库内」 |
+| `prefix` 含 `/` | 400 | 条目名不含分隔符，那种写法永远匹配不到东西；消息里指明改用 `path` 下钻 |
 | 目录不存在 | 404 | 消息里含相对于仓库根的路径 |
 | 路径指向的是文件 | 400 | 「是文件不是目录」 |
+
+同一套列举核心还有第二个出口：表详情页的
+`GET /api/console/v1/tables/{tableId}/files?path=<相对表目录>`——根换成表元数据里的
+`path`，响应形状见 `ConsoleDtos.TableFileListing`（`root` 即表路径，`..` 与绝对路径
+同样被拒，因此出不了表目录）。取舍见
+[`console-table-detail.md` §2.8](console-table-detail.md#28-文件列表)。
+
+### 4.1 单文件下载
+
+列举端点旁边各有一条下载端点（`.../files/download?path=<文件路径>`，两个根同上）：
+
+- **`path` 必填且必须指到文件。** 给目录或仓库根是 400（「列它去」——没有
+  「下载整个目录」这种操作，打包遍历既慢又容易变成变相的全仓库导出）。
+- **流式、不缓冲。** 响应体直接从 `FileIO` 的输入流写到 socket，
+  `Content-Length` 取自 `FileStatus`（浏览器能显示进度），文件名进
+  `Content-Disposition`（RFC 5987 的 UTF-8 形式，中文不乱码）。
+  数据文件动辄上百 MB，读进内存再回既慢又容易打爆堆。
+- **仍是只读。** 下载是把已有的字节搬出去，不产生任何写入；开关与授权面与
+  列举端点完全一致（`file-browser.enabled=false` 时一起 501）。
+
+| 情形 | 状态码 |
+| --- | --- |
+| 部署关掉了文件浏览 | 501 |
+| 文件不存在 | 404 |
+| `path` 是目录 / 空路径（根本身） | 400 |
+| `path` 含 `..` 或是绝对路径 | 400（与列举同一拦截） |
 | 存储 IO 失败 | 500 | 消息里带异常链最里面那条的消息；堆栈落日志 |
 
 **为什么放在 `/api/console/` 而不是 `/api/management/`。** 管理 API 那个命名空间
@@ -258,8 +296,8 @@ GET /api/console/v1/catalogs/{catalogName}/files?path=<相对仓库根>
 
 | 测试类 | 用例 | 管什么 |
 | --- | --- | --- |
-| `CatalogFileBrowserTests` | 10 | 服务语义：下钻、目录优先排序、冗余分隔符与 `.` 归一化、`..` 与绝对路径拒绝、不存在 404、文件非目录 400、未知 catalog 404、无 warehouse 400、截断标记、关开关 501 |
-| `CatalogFileEndpointTests` | 3 | 接口形状：URL、`path` 查询参数、状态码、响应字段名 |
+| `CatalogFileBrowserTests` | 21 | 服务语义：下钻、目录优先排序、冗余分隔符与 `.` 归一化、`..` 与绝对路径拒绝、不存在 404、文件非目录 400、未知 catalog 404、无 warehouse 400、截断标记、关开关 501；表目录为根与名称前缀过滤的用例见 `console-table-detail.md` |
+| `CatalogFileEndpointTests` | 6 | 接口形状：URL、`path` / `prefix` 查询参数、状态码、响应字段名（列举与下载共四条端点；下载钉 `Content-Disposition` 与 `Content-Length`，过滤钉回显与 `total` 口径） |
 
 两者分开是因为这些错误各自独立：服务能把目录列对，不代表端点拼对了
 （URL 错一位照样 404）；反之端点形状对了，服务也可能把「文件」当成目录列。
