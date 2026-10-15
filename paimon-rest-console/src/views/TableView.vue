@@ -23,17 +23,29 @@
       <PanelCard flush>
         <el-tabs v-model="tab" class="pc-tabs" @tab-change="onTabChange">
           <el-tab-pane label="详细信息" name="details" />
-          <el-tab-pane label="快照" name="snapshots" />
-          <el-tab-pane label="标签" name="tags" />
-          <el-tab-pane label="分支" name="branches" />
+          <!-- 快照 / 标签 / 分支 / 数据访问都是快照托管表的产物：非 Paimon 表不出现这几个页签 -->
+          <el-tab-pane v-if="isPaimonTable" label="快照" name="snapshots" />
+          <el-tab-pane v-if="isPaimonTable" label="标签" name="tags" />
+          <el-tab-pane v-if="isPaimonTable" label="分支" name="branches" />
           <el-tab-pane label="文件列表" name="files" />
-          <el-tab-pane label="数据访问" name="access" />
+          <el-tab-pane v-if="isPaimonTable" label="数据访问" name="access" />
         </el-tabs>
 
         <div class="pc-tab-body">
           <!------------------------------ 详细信息 -------------------------------->
           <template v-if="tab === 'details'">
-            <div class="pc-stats pc-stats-tight" v-if="latest">
+            <el-alert
+              v-if="!isPaimonTable"
+              type="info"
+              :closable="false"
+              show-icon
+              class="pc-hint"
+            >
+              {{ kindNote }}
+            </el-alert>
+
+            <!-- 四张卡片全部来自最新快照：非 Paimon 表没有快照，整块不出现 -->
+            <div class="pc-stats pc-stats-tight" v-if="latest && isPaimonTable">
               <div class="pc-stat">
                 <div class="pc-stat-label">记录数（最新快照）</div>
                 <div class="pc-stat-value">{{ formatNumber(latest.recordCount) }}</div>
@@ -68,6 +80,8 @@
                 <dd><CopyText :text="table0.id" /></dd>
                 <dt>是否外部表</dt>
                 <dd>{{ table0.isExternal ? '是（注册进来的表）' : '否（由本服务管理）' }}</dd>
+                <dt>表格式</dt>
+                <dd>{{ kindLabel }}</dd>
                 <dt>Schema 版本</dt>
                 <dd class="pc-mono">{{ table0.schemaId ?? '—' }}</dd>
                 <dt>路径</dt>
@@ -90,10 +104,25 @@
             </div>
 
             <!-- 字段列表 / 分区列表：合并进详细信息页（原先是两个独立页签）。
-                 二级页签按需加载：字段来自 overview 里的 schema，分区切过去才请求。 -->
-            <el-tabs v-model="detailsSection" class="pc-subtabs" @tab-change="onDetailsSectionChange">
+                 二级页签按需加载：字段来自 overview 里的 schema，分区切过去才请求。
+                 分区列表只有 Paimon 表有（分区状态来自快照提交）；其余表格式只留下字段列表，
+                 此时二级页签栏整个不出现——一行只有一个页签时它只是一道多余的分隔线。 -->
+            <el-tabs
+              v-if="isPaimonTable"
+              v-model="detailsSection"
+              class="pc-subtabs"
+              @tab-change="onDetailsSectionChange"
+            >
               <el-tab-pane label="字段列表" name="fields" />
-              <el-tab-pane label="分区列表" name="partitions" />
+              <el-tab-pane name="partitions">
+                <template #label>
+                  分区列表
+                  <TipNote>
+                    分区的统计口径是最新快照的活跃数据：只计算被最新快照引用的文件，
+                    因此各分区之和可能小于仓库实际占用。
+                  </TipNote>
+                </template>
+              </el-tab-pane>
             </el-tabs>
 
             <template v-if="detailsSection === 'fields'">
@@ -123,10 +152,12 @@
                 <el-table-column label="非空" width="70" align="center">
                   <template #default="{ row }">{{ isNotNull(row) ? '是' : '否' }}</template>
                 </el-table-column>
-                <el-table-column label="主键" width="70" align="center">
+                <!-- Object 表的列由 Paimon 固定（path / name / length / mtime / atime / owner），
+                     没有主键也不分区，这两列对它恒为「否」——留着只是两栏噪音 -->
+                <el-table-column v-if="!isObjectTable" label="主键" width="70" align="center">
                   <template #default="{ row }">{{ isPrimaryKey(row) ? '是' : '否' }}</template>
                 </el-table-column>
-                <el-table-column label="分区字段" width="80" align="center">
+                <el-table-column v-if="!isObjectTable" label="分区字段" width="80" align="center">
                   <template #default="{ row }">{{ isPartitionKey(row) ? '是' : '否' }}</template>
                 </el-table-column>
                 <el-table-column prop="description" label="描述" min-width="130">
@@ -150,7 +181,7 @@
 
             </template>
 
-            <template v-else>
+            <template v-else-if="isPaimonTable">
               <div class="pc-filter-row">
                 <el-input
                   v-model="partitionFilterInput"
@@ -213,9 +244,6 @@
                 size="small"
                 class="pc-pager"
               />
-
-              <p class="pc-tip">分区的统计口径是最新快照的活跃数据：只计算被最新快照引用的文件，
-                因此各分区之和可能小于仓库实际占用。</p>
             </template>
           </template>
 
@@ -378,6 +406,12 @@
                 @clear="applyTablePrefix"
               />
               <el-button size="small" @click="applyTablePrefix">查询</el-button>
+              <TipNote>
+                这里只看这张表自己目录下的文件，出不了表目录（服务端按表目录为根拦住了
+                <code>..</code> 与绝对路径）。要浏览整个仓库（包括库里其它表与残留目录），
+                去目录（Catalog）详情页的「文件列表」。当前目录相对表目录为
+                <code>{{ tableFilePath || '（表目录）' }}</code>。
+              </TipNote>
               <span class="pc-spacer" />
               <span class="pc-dim">
                 共 {{ tableEntries.length }} 条<span v-if="tableFiles.data.value?.truncated">（已达上限
@@ -445,13 +479,6 @@
               size="small"
               class="pc-pager"
             />
-
-            <p class="pc-tip">
-              这里只看这张表自己目录下的文件，出不了表目录（服务端按表目录为根拦住了
-              <span class="pc-mono">..</span> 与绝对路径）。要浏览整个仓库（包括库里其它表与残留目录），
-              去目录（Catalog）详情页的「文件列表」。当前目录相对表目录为
-              <span class="pc-mono">{{ tableFilePath || '（表目录）' }}</span>。
-            </p>
           </template>
 
           <!------------------------------- 数据访问 -------------------------------->
@@ -553,6 +580,7 @@ import PageHeader from '@/components/PageHeader.vue'
 import PanelCard from '@/components/PanelCard.vue'
 import ResourceState from '@/components/ResourceState.vue'
 import TimeText from '@/components/TimeText.vue'
+import TipNote from '@/components/TipNote.vue'
 import { catalogApi } from '@/api/catalog.js'
 import { consoleApi } from '@/api/console.js'
 import { describeError } from '@/api/client.js'
@@ -564,11 +592,13 @@ import {
   orPlaceholder,
   relativeTime,
 } from '@/utils/format.js'
+import { isSnapshotManaged, tableKindLabel, tableKindOf } from '@/utils/tableKind.js'
 
 /**
- * 表详情。六个页签：五个对应 catalog API 里以单张表为作用域的端点，
- * 另有一个组合页签——「详细信息」汇总单表元数据（基本信息 + 快照统计 + options +
- * 字段列表 / 分区列表两个二级页签）。
+ * 表详情。页签随表格式伸缩：Paimon 表有六个——五个对应 catalog API 里以单张表为作用域的端点，
+ * 另有一个组合页签「详细信息」（基本信息 + 快照统计 + options + 字段列表 / 分区列表两个二级页签）；
+ * Format 表 / Object 表 / Lance 表只留「详细信息」与「文件列表」，因为快照、标签、分支、
+ * 数据访问四项都是快照托管表的产物（理由与表格见下方 `tableKind`）。
  *
  * <p>授权不在这张表上做：表级权限统一到「权限管理」页（按 database + table 定位，
  * 一级资源一个表单），这里不再重复一份 catalog 角色的授权界面。
@@ -579,7 +609,8 @@ import {
  *
  * <p>「详细信息」（字段）/「数据访问」只用 overview 已有数据，
  * 其余按需加载：切到某个页签才发它的请求；详细信息里的「分区列表」二级页签同理。
- * 打开一张表就发两个请求，在远端仓库上会让页面明显变慢。
+ * 打开一张表就发两个请求（非 Paimon 表只有一个，见 `overview`），
+ * 在远端仓库上会让页面明显变慢，所以页签之外的请求一个都不多发。
  */
 
 const route = useRoute()
@@ -593,16 +624,52 @@ const tab = ref('details')
 /** 不需要额外请求的页签：切过去不触发 load。 */
 const SELF_CONTAINED_TABS = new Set(['details', 'access'])
 
+/**
+ * 概览：表详情 +（仅 Paimon 表）最新快照。
+ *
+ * <p>两个请求**串行**，因为要不要问快照得先知道表格式，而表格式就在表详情里
+ * （规格的 `GetTableResponse` 没有独立类型字段，只能从 `schema.options.type` 读）。
+ * 代价是 Paimon 表首屏多一个往返；换来的是 Format / Object / Lance 表不去打
+ * 注定查不到东西的快照端点——那既不产生数据，又会在服务端日志里留下
+ * 一串看着像故障的记录。原先这里是把两个请求 `Promise.all` 并发发出去再吞掉错误。
+ *
+ * <p>`immediate: false`：下面的路由 watch 已经带着 `immediate: true` 在装载时调一次
+ * `overview.load()`，这里再由 `onMounted` 触发一次就是每个表详情页都重复发一遍请求——
+ * 表详情是控制台里最常打开、也最重的读路径，重复的代价不该由它付。
+ */
 const overview = useResource(async () => {
-  const [detail, snapshot] = await Promise.all([
-    catalogApi.getTable(prefix.value, database.value, table.value),
-    catalogApi.tableSnapshot(prefix.value, database.value, table.value).catch(() => null),
-  ])
+  const detail = await catalogApi.getTable(prefix.value, database.value, table.value)
+  const snapshot = isSnapshotManaged(detail)
+    ? await catalogApi.tableSnapshot(prefix.value, database.value, table.value).catch(() => null)
+    : null
   return { detail, snapshot }
-})
+}, { immediate: false })
 
 const table0 = computed(() => overview.data.value?.detail || null)
 const latest = computed(() => overview.data.value?.snapshot?.snapshot || null)
+
+/**
+ * 表格式：Paimon 表在 options 里没有这个键，另外三种是 Paimon `CoreOptions.TYPE`
+ * 的取值（format-table / object-table / lance-table），由建表对话框写入
+ * （读取与显示名在 `@/utils/tableKind.js`，目录浏览的列表用同一份）。
+ *
+ * <p>页签随它收敛。三种非 Paimon 表都不受快照管理——没有快照、标签、分支，
+ * 分区状态与文件统计也就无从谈起——所以只保留「详细信息」与「文件列表」，
+ * 也不用去问快照端点（见 `overview`）。
+ *
+ * <p>Object 表的列由 Paimon 固定（建表时不接受用户声明，服务端把
+ * `ObjectTable.SCHEMA` 那六列写进 schema），详情页照 schema 展示即可——
+ * 展示的是「这张表实际有哪些列」，与当初有没有手填无关。
+ */
+const tableKind = computed(() => tableKindOf(table0.value))
+const kindLabel = computed(() => tableKindLabel(table0.value))
+const isPaimonTable = computed(() => isSnapshotManaged(table0.value))
+const isObjectTable = computed(() => tableKind.value === 'object-table')
+
+/** 少了几个页签的原因写在页面上，免得看起来像加载失败。 */
+const kindNote = computed(() => (isPaimonTable.value
+  ? ''
+  : `${kindLabel.value}（type=${tableKind.value}）不受快照管理：没有快照、标签与分支，也没有提交累计出来的文件统计，因此这里只保留「详细信息」与「文件列表」。`))
 
 /**
  * 快照缺文件统计：那不是「0 个文件」，而是服务端没收到过统计——

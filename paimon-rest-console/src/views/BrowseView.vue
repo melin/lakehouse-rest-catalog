@@ -111,20 +111,59 @@
                 <el-button size="small" @click="openRegisterTable">注册已有表</el-button>
               </div>
               <el-table v-loading="tablesList.loading.value" :data="filteredTables" size="small">
-                <el-table-column label="表名" min-width="200">
+                <el-table-column label="表名" min-width="160">
                   <template #default="{ row }">
                     <RouterLink
                       class="pc-link"
-                      :to="{ name: 'table', params: { prefix, database, table: row } }"
+                      :to="{ name: 'table', params: { prefix, database, table: row.name } }"
                     >
-                      {{ row }}
+                      {{ row.name }}
                     </RouterLink>
                   </template>
                 </el-table-column>
-                <el-table-column label="操作" width="110" align="right">
+                <el-table-column label="表格式" width="100">
                   <template #default="{ row }">
-                    <IconAction icon="EditPen" label="重命名" @click="openRenameTable(row)" />
-                    <IconAction icon="Delete" label="删除" type="danger" @click="confirmDropTable(row)" />
+                    <el-tag size="small" effect="plain">{{ tableKindLabel(row) }}</el-tag>
+                  </template>
+                </el-table-column>
+                <el-table-column label="表类型" width="96">
+                  <template #default="{ row }">
+                    <!-- Managed：本服务管它的元数据（schema-0 也由服务端写）；
+                         外部表：register 进来的，服务端只登记位置，不碰它的目录 -->
+                    <span :title="row.isExternal
+                      ? '外部表：由 register 登记，服务端只记录位置，不写它的元数据'
+                      : 'Managed：元数据由本服务管理，建表时服务端还会写出 schema-0'">
+                      {{ row.isExternal ? '外部表' : 'Managed' }}
+                    </span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="创建时间" width="170">
+                  <template #default="{ row }">
+                    <!-- 操作人（createdBy / updatedBy）不进单元格：形如 sha256:… 的主体名
+                         截断后只剩一两个字母，看不出信息还挤占时间；完整的时间与操作人
+                         一起放在悬停提示里 -->
+                    <span :title="`创建于 ${formatTime(row.createdAt)} · ${orPlaceholder(row.createdBy)}`">
+                      <TimeText :millis="row.createdAt" />
+                    </span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="元数据更新时间" width="170">
+                  <template #default="{ row }">
+                    <!-- updatedAt 是服务端这条表记录的最后改动时间：建表、改 schema、
+                         重命名、快照提交与回滚都会推动它 -->
+                    <span
+                      title="服务端这条表记录的最后改动时间：建表 / 改 schema / 重命名 / 快照提交与回滚都会更新。悬停可看操作人"
+                    >
+                      <TimeText :millis="row.updatedAt" />
+                    </span>
+                  </template>
+                </el-table-column>
+                <!-- 列数变多后右面板在窄屏上会横向滚动，操作固定在右侧，
+                     否则「重命名 / 删除」要滚到最右边才够得着 -->
+                <el-table-column label="操作" width="104" align="right" fixed="right">
+                  <template #default="{ row }">
+                    <IconAction icon="EditPen" label="重命名" @click="openRenameTable(row.name)" />
+                    <IconAction icon="Delete" label="删除" type="danger" @click="confirmDropTable(row.name)" />
                   </template>
                 </el-table-column>
               </el-table>
@@ -230,74 +269,125 @@
         <el-form-item label="表名" required>
           <el-input v-model="tableDialog.name" placeholder="例如 orders" />
         </el-form-item>
+        <!-- 表格式决定这个对话框剩下的形状：字段要不要声明、能不能带主键与分区，
+             以及提交时写进 options.type 的取值（Paimon 表不写，与服务端缺省一致）。
+             每种格式的说明收进标签旁的问号图标，不在表单里铺开一段文字。 -->
+        <el-form-item>
+          <template #label>
+            <FieldLabel label="表格式（type）" :tip="currentKind.hint" />
+          </template>
+          <el-radio-group v-model="tableDialog.kind">
+            <el-radio-button v-for="kind in TABLE_KINDS" :key="kind.value" :value="kind.value">
+              {{ kind.label }}
+            </el-radio-button>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item v-if="isFormatTable" label="文件格式（file.format）">
+          <el-select v-model="tableDialog.fileFormat">
+            <el-option v-for="format in FILE_FORMATS" :key="format" :label="format" :value="format" />
+          </el-select>
+        </el-form-item>
       </el-form>
 
-      <!-- 字段列表把主键 / 非空 / 分区收进同一张表：对齐参考设计（列名称、主键、
-           非空、分区字段、数据类型、描述、操作一排），勾选即声明，不再单独设下拉。 -->
-      <el-divider content-position="left">字段信息（fields）</el-divider>
-      <div class="pc-field-table">
-        <div class="pc-field-grid pc-field-head">
-          <span>列名称</span>
-          <span class="pc-field-check" title="勾选后该字段进入 primaryKeys，表即为主键表；主键字段自动非空且不可取消">主键</span>
-          <span class="pc-field-check" title="非空约束只能通过主键隐式成立：勾选非主键字段的非空，创建时会被拦下">非空</span>
-          <span class="pc-field-check" title="勾选后该字段进入 partitionKeys；填了主键时，分区字段必须是主键的子集">分区字段</span>
-          <span>数据类型</span>
-          <span>描述</span>
-          <span class="pc-field-op">操作</span>
-        </div>
-        <div v-for="(field, index) in tableDialog.fields" :key="index" class="pc-field-grid">
-          <el-input v-model="field.name" size="small" placeholder="请输入名称" />
-          <el-checkbox
-            v-model="field.primary"
-            size="small"
-            class="pc-field-check"
-            @change="onPrimaryChange(field)"
-          />
-          <!-- 主键字段的非空是 Paimon 的隐式约束：勾主键时代替用户勾上并锁住，
-               不能取消；取消主键后恢复可编辑，是否保留非空由用户决定 -->
-          <el-checkbox v-model="field.nonNull" size="small" class="pc-field-check" :disabled="field.primary" />
-          <el-checkbox v-model="field.partition" size="small" class="pc-field-check" />
-          <!-- 不用原生 datalist：Chrome 会给带 list 的 input 自带一个下拉指示器，
-               嵌在 Element 的 wrapper 里位置错乱；el-select 的 allow-create 同样支持手工输入。 -->
-          <el-select
-            v-model="field.type"
-            filterable
-            allow-create
-            default-first-option
-            size="small"
-            placeholder="如 BIGINT / VARCHAR(64)"
+      <!-- Object 表的列由 Paimon 固定（path / name / length / mtime / atime / owner），
+           建表时不接受用户声明，所以这里不出现字段表格；提交时 fields 送空数组，
+           服务端按表格式把固定列补上。详情页会把这六列展示出来。 -->
+      <template v-if="isObjectTable">
+        <el-divider content-position="left">
+          字段信息（fields）
+          <TipNote>
+            Object 表建表时不需要填写字段：它对外暴露的是目录里对象的元数据，
+            列由 Paimon 固定为 path / name / length / mtime / atime / owner。
+            这六列在表详情页的「字段列表」里可以看到。
+          </TipNote>
+        </el-divider>
+      </template>
+
+      <template v-else>
+        <!-- 字段列表把主键 / 非空 / 分区收进同一张表：对齐参考设计（列名称、主键、
+             非空、分区字段、数据类型、描述、操作一排），勾选即声明，不再单独设下拉。
+             Format 表没有这三列——Paimon 不允许 format 表带主键，分区也不由 catalog 管，
+             因此表头与行一起收起这三列，栅格另走四列版。 -->
+        <el-divider content-position="left">
+          字段信息（fields）
+          <TipNote v-if="supportsKeys">
+            主键字段自动非空且不可取消；非主键字段勾「非空」会在创建时被拦下——Paimon 的字段没有
+            独立的非空属性，该约束只能通过主键隐式成立。字段 id 由服务端按顺序补齐，这里不需要填。
+          </TipNote>
+          <TipNote v-else>
+            Format 表只描述列：它的数据是目录里按 {{ tableDialog.fileFormat }} 格式存好的文件，
+            没有主键，分区也不由 catalog 管理。字段 id 由服务端按顺序补齐，这里不需要填。
+          </TipNote>
+        </el-divider>
+        <div class="pc-field-table">
+          <div class="pc-field-grid pc-field-head" :class="{ 'pc-field-grid-plain': !supportsKeys }">
+            <span>列名称</span>
+            <template v-if="supportsKeys">
+              <span class="pc-field-check" title="勾选后该字段进入 primaryKeys，表即为主键表；主键字段自动非空且不可取消">主键</span>
+              <span class="pc-field-check" title="非空约束只能通过主键隐式成立：勾选非主键字段的非空，创建时会被拦下">非空</span>
+              <span class="pc-field-check" title="勾选后该字段进入 partitionKeys；填了主键时，分区字段必须是主键的子集">分区字段</span>
+            </template>
+            <span>数据类型</span>
+            <span>描述</span>
+            <span class="pc-field-op">操作</span>
+          </div>
+          <div
+            v-for="(field, index) in tableDialog.fields"
+            :key="index"
+            class="pc-field-grid"
+            :class="{ 'pc-field-grid-plain': !supportsKeys }"
           >
-            <el-option v-for="type in PAIMON_TYPES" :key="type" :label="type" :value="type" />
-          </el-select>
-          <el-input v-model="field.description" size="small" placeholder="请输入描述信息" />
-          <span class="pc-field-op">
-            <el-button size="small" text type="danger" @click="removeField(index)">删除</el-button>
-            <!-- 上移 / 下移只在自己合法的行出现（首行没有上移、末行没有下移），
-                 与参考设计一致；字段顺序决定字段 id 的分配顺序，也是分区键列表的排列。 -->
-            <template v-if="index > 0">
-              <span class="pc-field-sep">|</span>
-              <el-button size="small" text type="primary" @click="moveField(index, -1)">上移</el-button>
+            <el-input v-model="field.name" size="small" placeholder="请输入名称" />
+            <template v-if="supportsKeys">
+              <el-checkbox
+                v-model="field.primary"
+                size="small"
+                class="pc-field-check"
+                @change="onPrimaryChange(field)"
+              />
+              <!-- 主键字段的非空是 Paimon 的隐式约束：勾主键时代替用户勾上并锁住，
+                   不能取消；取消主键后恢复可编辑，是否保留非空由用户决定 -->
+              <el-checkbox v-model="field.nonNull" size="small" class="pc-field-check" :disabled="field.primary" />
+              <el-checkbox v-model="field.partition" size="small" class="pc-field-check" />
             </template>
-            <template v-if="index < tableDialog.fields.length - 1">
-              <span class="pc-field-sep">|</span>
-              <el-button size="small" text type="primary" @click="moveField(index, 1)">下移</el-button>
-            </template>
-          </span>
+            <!-- 不用原生 datalist：Chrome 会给带 list 的 input 自带一个下拉指示器，
+                 嵌在 Element 的 wrapper 里位置错乱；el-select 的 allow-create 同样支持手工输入。 -->
+            <el-select
+              v-model="field.type"
+              filterable
+              allow-create
+              default-first-option
+              size="small"
+              placeholder="如 BIGINT / VARCHAR(64)"
+            >
+              <el-option v-for="type in PAIMON_TYPES" :key="type" :label="type" :value="type" />
+            </el-select>
+            <el-input v-model="field.description" size="small" placeholder="请输入描述信息" />
+            <span class="pc-field-op">
+              <el-button size="small" text type="danger" @click="removeField(index)">删除</el-button>
+              <!-- 上移 / 下移只在自己合法的行出现（首行没有上移、末行没有下移），
+                   与参考设计一致；字段顺序决定字段 id 的分配顺序，也是分区键列表的排列。 -->
+              <template v-if="index > 0">
+                <span class="pc-field-sep">|</span>
+                <el-button size="small" text type="primary" @click="moveField(index, -1)">上移</el-button>
+              </template>
+              <template v-if="index < tableDialog.fields.length - 1">
+                <span class="pc-field-sep">|</span>
+                <el-button size="small" text type="primary" @click="moveField(index, 1)">下移</el-button>
+              </template>
+            </span>
+          </div>
+          <el-button
+            size="small"
+            text
+            type="primary"
+            @click="tableDialog.fields.push(emptyField())"
+          >
+            <el-icon><Plus /></el-icon>
+            <span class="pc-repeat-add">添加一项</span>
+          </el-button>
         </div>
-        <el-button
-          size="small"
-          text
-          type="primary"
-          @click="tableDialog.fields.push(emptyField())"
-        >
-          <el-icon><Plus /></el-icon>
-          <span class="pc-repeat-add">添加一项</span>
-        </el-button>
-        <div class="pc-tip">
-          主键字段自动非空且不可取消；非主键字段勾「非空」会在创建时被拦下——Paimon 的字段没有
-          独立的非空属性，该约束只能通过主键隐式成立。字段 id 由服务端按顺序补齐，这里不需要填。
-        </div>
-      </div>
+      </template>
 
       <el-divider content-position="left">表注释（可选）</el-divider>
       <el-form label-position="top" size="small" class="pc-form">
@@ -309,7 +399,7 @@
       <el-divider content-position="left">表属性（options）</el-divider>
       <PropertiesEditor
         v-model="tableDialog.options"
-        hint="例如 bucket = 4、merge-engine = deduplicate"
+        hint="例如 bucket = 4、merge-engine = deduplicate；type 由上面的表格式决定，非 Paimon 表的 path 留空时由服务端按表位置补齐"
       />
 
       <template #footer>
@@ -475,11 +565,14 @@ import JsonBlock from '@/components/JsonBlock.vue'
 import PageHeader from '@/components/PageHeader.vue'
 import PropertiesEditor from '@/components/PropertiesEditor.vue'
 import ResourceState from '@/components/ResourceState.vue'
+import TimeText from '@/components/TimeText.vue'
+import TipNote from '@/components/TipNote.vue'
 import { catalogApi } from '@/api/catalog.js'
 import { describeError } from '@/api/client.js'
 import { confirmDanger, notifyError, notifySuccess, useResource } from '@/composables/index.js'
 import { session } from '@/store/session.js'
-import { prettyJson } from '@/utils/format.js'
+import { formatTime, orPlaceholder, prettyJson } from '@/utils/format.js'
+import { tableKindLabel } from '@/utils/tableKind.js'
 
 /**
  * 目录浏览器：左侧数据库，右侧对象。
@@ -495,6 +588,39 @@ const PAIMON_TYPES = [
   'DATE', 'TIME', 'TIMESTAMP', 'TIMESTAMP_LTZ',
   'ARRAY<STRING>', 'MAP<STRING, STRING>', 'ROW<a STRING, b INT>',
 ]
+
+/**
+ * 表格式。取值就是 Paimon `CoreOptions.TYPE` 的取值，服务端的 `TableKinds` 按同一组字符串识别，
+ * 提交时写进 `schema.options.type`。
+ *
+ * <p>Paimon 表（`table`）刻意不写这个键：服务端把「没有 type」当作 Paimon 表，
+ * 少一个可以写错的地方，也与既有表一致（它们都没有这个选项）。
+ */
+const TABLE_KINDS = [
+  {
+    value: 'table',
+    label: 'Paimon 表',
+    hint: '快照托管的数据表：支持主键、非空与分区字段，写入与更新都走 Paimon 的提交协议。',
+  },
+  {
+    value: 'format-table',
+    label: 'Format 表',
+    hint: '目录里已经存在的同一格式文件（CSV / Parquet / ORC / JSON / text），不经过快照管理：字段只描述列，没有主键、非空与分区设置。',
+  },
+  {
+    value: 'object-table',
+    label: 'Object 表',
+    hint: '目录里非结构化对象的元数据表：列由 Paimon 固定，不需要填写字段。',
+  },
+  {
+    value: 'lance-table',
+    label: 'Lance 表',
+    hint: 'Lance 数据集表：字段、非空与主键的用法与 Paimon 表相同。',
+  },
+]
+
+/** Format 表的文件格式（file.format）。默认值跟着 Paimon 走（parquet）。 */
+const FILE_FORMATS = ['parquet', 'orc', 'csv', 'json', 'text']
 
 const route = useRoute()
 const router = useRouter()
@@ -589,7 +715,12 @@ function createPagedList(field, call) {
   return { items, token, loading, error, load }
 }
 
-const tablesList = createPagedList('tables', (p, d, q) => catalogApi.listTables(p, d, q))
+/**
+ * 表列表走 `table-details` 而不是只回表名的 `/tables`：列表要显示表格式、表类型
+ * （Managed / 外部表）与创建、更新时间，这些都在 `GetTableResponse` 里。
+ * 两者分页约定一致（`maxResults` + `nextPageToken`），换成它不改变翻页行为。
+ */
+const tablesList = createPagedList('tableDetails', (p, d, q) => catalogApi.listTableDetails(p, d, q))
 const viewsList = createPagedList('views', (p, d, q) => catalogApi.listViews(p, d, q))
 const functionsList = createPagedList('functions', (p, d, q) => catalogApi.listFunctions(p, d, q))
 const semanticViewsList = createPagedList('semanticViews', (p, d, q) => catalogApi.listSemanticViews(p, d, q))
@@ -625,7 +756,7 @@ const visibleRows = computed(() => (
 const filteredTables = computed(() => {
   const keyword = tableFilter.value.trim().toLowerCase()
   if (!keyword) return tablesList.items.value
-  return tablesList.items.value.filter((name) => name.toLowerCase().includes(keyword))
+  return tablesList.items.value.filter((row) => row.name.toLowerCase().includes(keyword))
 })
 
 function loadCurrentList() {
@@ -711,11 +842,28 @@ async function confirmDropDatabase(name) {
 const tableDialog = reactive({
   open: false,
   name: '',
+  kind: 'table',
+  fileFormat: 'parquet',
   fields: [],
   comment: '',
   options: {},
   saving: false,
 })
+
+/** 当前表格式的说明文案，显示在选择器下方。 */
+const currentKind = computed(
+  () => TABLE_KINDS.find((item) => item.value === tableDialog.kind) || TABLE_KINDS[0],
+)
+const isFormatTable = computed(() => tableDialog.kind === 'format-table')
+const isObjectTable = computed(() => tableDialog.kind === 'object-table')
+
+/**
+ * 主键 / 非空 / 分区三列只在 Paimon 表与 Lance 表出现。
+ *
+ * <p>Format 表没有主键语义（Paimon 的 `CatalogUtils.validateFormatTableOptions`
+ * 明确禁止），分区也不由 catalog 管理（分区来自目录结构），所以这三列连同表头一起收起。
+ */
+const supportsKeys = computed(() => tableDialog.kind !== 'format-table')
 
 /** 一行新字段的初始形状：三个勾选默认全不选，由用户按需勾。 */
 function emptyField() {
@@ -761,6 +909,8 @@ function onPrimaryChange(field) {
 
 function openCreateTable() {
   tableDialog.name = ''
+  tableDialog.kind = 'table'
+  tableDialog.fileFormat = 'parquet'
   tableDialog.fields = [
     { ...emptyField(), name: 'id', type: 'BIGINT' },
     { ...emptyField(), name: 'data', type: 'STRING' },
@@ -776,68 +926,86 @@ async function saveTable() {
     notifyError(new Error('请填写表名'))
     return
   }
-  const rows = tableDialog.fields
-  // 勾了任一开关的字段必须填写完整：勾选是「这个字段要进 primaryKeys /
-  // partitionKeys」的声明，协议里这些键是纯字段名列表，指向一行残缺数据
-  // 只能由 Paimon 报错，在这里提前拦下能指出具体是哪个字段。
-  const flaggedIncomplete = rows.filter(
-    (row) => (row.primary || row.partition || row.nonNull) && !(row.name.trim() && row.type.trim()),
-  )
-  if (flaggedIncomplete.length) {
-    notifyError(
-      new Error(`勾选了主键 / 非空 / 分区的字段，字段名与类型都必须填写完整，请修正：${flaggedIncomplete.map((row) => row.name.trim() || `第 ${rows.indexOf(row) + 1} 行`).join(', ')}`),
+  // Object 表不声明字段：它的列由 Paimon 固定（TableKinds 在服务端补上），
+  // 因此下面的字段校验与主键 / 分区收集整段跳过，请求里的 fields 是空数组。
+  let fields = []
+  let primaryKeys = []
+  let partitionKeys = []
+  if (!isObjectTable.value) {
+    const rows = tableDialog.fields
+    // 勾了任一开关的字段必须填写完整：勾选是「这个字段要进 primaryKeys /
+    // partitionKeys」的声明，协议里这些键是纯字段名列表，指向一行残缺数据
+    // 只能由 Paimon 报错，在这里提前拦下能指出具体是哪个字段。
+    const flaggedIncomplete = rows.filter(
+      (row) => (row.primary || row.partition || row.nonNull) && !(row.name.trim() && row.type.trim()),
     )
-    return
+    if (flaggedIncomplete.length) {
+      notifyError(
+        new Error(`勾选了主键 / 非空 / 分区的字段，字段名与类型都必须填写完整，请修正：${flaggedIncomplete.map((row) => row.name.trim() || `第 ${rows.indexOf(row) + 1} 行`).join(', ')}`),
+      )
+      return
+    }
+    const valid = rows.filter((row) => row.name.trim() && row.type.trim())
+    if (!valid.length) {
+      notifyError(new Error('至少填写一个字段（字段名与类型都不能为空）'))
+      return
+    }
+    // 重名检查只针对被勾选的字段：主键 / 分区在协议里是字段名列表，两个同名行
+    // 都勾了主键时，同一个名字会出现两次，语义不明。没勾选的暂时重名仍允许
+    // （用户可能还没改完），真正的唯一性由 Paimon 在提交时把关。
+    const flaggedNames = valid
+      .filter((row) => row.primary || row.partition)
+      .map((row) => row.name.trim())
+    const duplicated = flaggedNames.filter((key, index) => flaggedNames.indexOf(key) !== index)
+    if (duplicated.length) {
+      notifyError(
+        new Error(`主键与分区字段不能指向重名字段，请修正：${[...new Set(duplicated)].join(', ')}`),
+      )
+      return
+    }
+    // 勾选即声明：主键 / 分区从行内勾选状态收集，按行序排列。
+    primaryKeys = valid.filter((row) => row.primary).map((row) => row.name.trim())
+    partitionKeys = valid.filter((row) => row.partition).map((row) => row.name.trim())
+    // 非空的唯一落点是主键：REST 的 DataField 没有非空属性，勾了非空又不在
+    // 主键里的字段没有任何地方可存，静默丢弃等于骗人，在这里明确拦下。
+    const nonPrimaryNonNull = valid
+      .filter((row) => row.nonNull && !row.primary)
+      .map((row) => row.name.trim())
+    if (nonPrimaryNonNull.length) {
+      notifyError(
+        new Error(`Paimon 只支持主键隐式非空，这些字段的「非空」无法保存，请去掉勾选或加入主键：${nonPrimaryNonNull.join(', ')}`),
+      )
+      return
+    }
+    // Paimon 的约束：主键非空时，分区键必须是主键的子集。提前拦下，
+    // 用户看到的是「哪几个字段不对」，而不是 Paimon 抛出的一行英文。
+    const outsidePrimary = primaryKeys.length
+      ? partitionKeys.filter((key) => !primaryKeys.includes(key))
+      : []
+    if (outsidePrimary.length) {
+      notifyError(
+        new Error(`Paimon 要求分区键是主键的一部分，请把这些字段也加进主键：${outsidePrimary.join(', ')}`),
+      )
+      return
+    }
+    fields = valid.map((row, index) => ({
+      id: index + 1,
+      name: row.name.trim(),
+      type: row.type.trim(),
+      description: row.description?.trim() || null,
+    }))
   }
-  const valid = rows.filter((row) => row.name.trim() && row.type.trim())
-  if (!valid.length) {
-    notifyError(new Error('至少填写一个字段（字段名与类型都不能为空）'))
-    return
+  // 表格式由选择器决定，表属性里手填的 type 一律让位——否则会出现
+  // 「表单选 Paimon 表、实际建出 Format 表」这种自相矛盾的结果。
+  // Paimon 表不写这个键：服务端把「没有 type」当作 Paimon 表。
+  const options = { ...tableDialog.options }
+  delete options.type
+  if (tableDialog.kind !== 'table') {
+    options.type = tableDialog.kind
   }
-  // 重名检查只针对被勾选的字段：主键 / 分区在协议里是字段名列表，两个同名行
-  // 都勾了主键时，同一个名字会出现两次，语义不明。没勾选的暂时重名仍允许
-  // （用户可能还没改完），真正的唯一性由 Paimon 在提交时把关。
-  const flaggedNames = valid
-    .filter((row) => row.primary || row.partition)
-    .map((row) => row.name.trim())
-  const duplicated = flaggedNames.filter((key, index) => flaggedNames.indexOf(key) !== index)
-  if (duplicated.length) {
-    notifyError(
-      new Error(`主键与分区字段不能指向重名字段，请修正：${[...new Set(duplicated)].join(', ')}`),
-    )
-    return
+  if (isFormatTable.value) {
+    options['file.format'] = tableDialog.fileFormat
   }
-  // 勾选即声明：主键 / 分区从行内勾选状态收集，按行序排列。
-  const primaryKeys = valid.filter((row) => row.primary).map((row) => row.name.trim())
-  const partitionKeys = valid.filter((row) => row.partition).map((row) => row.name.trim())
-  // 非空的唯一落点是主键：REST 的 DataField 没有非空属性，勾了非空又不在
-  // 主键里的字段没有任何地方可存，静默丢弃等于骗人，在这里明确拦下。
-  const nonPrimaryNonNull = valid
-    .filter((row) => row.nonNull && !row.primary)
-    .map((row) => row.name.trim())
-  if (nonPrimaryNonNull.length) {
-    notifyError(
-      new Error(`Paimon 只支持主键隐式非空，这些字段的「非空」无法保存，请去掉勾选或加入主键：${nonPrimaryNonNull.join(', ')}`),
-    )
-    return
-  }
-  // Paimon 的约束：主键非空时，分区键必须是主键的子集。提前拦下，
-  // 用户看到的是「哪几个字段不对」，而不是 Paimon 抛出的一行英文。
-  const outsidePrimary = primaryKeys.length
-    ? partitionKeys.filter((key) => !primaryKeys.includes(key))
-    : []
-  if (outsidePrimary.length) {
-    notifyError(
-      new Error(`Paimon 要求分区键是主键的一部分，请把这些字段也加进主键：${outsidePrimary.join(', ')}`),
-    )
-    return
-  }
-  const fields = valid.map((row, index) => ({
-    id: index + 1,
-    name: row.name.trim(),
-    type: row.type.trim(),
-    description: row.description?.trim() || null,
-  }))
   tableDialog.saving = true
   try {
     await catalogApi.createTable(prefix.value, database.value, {
@@ -846,7 +1014,7 @@ async function saveTable() {
         fields,
         partitionKeys,
         primaryKeys,
-        options: tableDialog.options,
+        options,
         comment: tableDialog.comment || null,
       },
     })
@@ -1349,6 +1517,12 @@ defineExpose({ loadCurrentList })
   align-items: center;
   padding: 6px 4px;
   border-bottom: 1px solid var(--pc-border);
+}
+
+/* Format 表没有主键 / 非空 / 分区三列，栅格只换列定义——
+   间距、对齐、悬停与分隔线仍与七列版共用同一套规则。 */
+.pc-field-grid-plain {
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1.05fr) minmax(0, 1fr) 108px;
 }
 
 /* 悬停淡染一行，帮用户在宽表里对准正在编辑的那行 */

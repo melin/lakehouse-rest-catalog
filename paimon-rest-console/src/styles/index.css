@@ -111,20 +111,12 @@ body {
  * 撑满宽度、链接、区块间距），因此放在一处。
  * ---------------------------------------------------------------------- */
 
-/* 区块级的补充说明（卡片底部成段的注意事项）。
- * 表单字段旁的备注不用它——那类备注收进 FieldLabel 的问号图标，见上。 */
-.pc-tip {
-  margin-top: 5px;
-  color: var(--pc-text-dim);
-  font-size: 12.5px;
-  line-height: 1.7;
-}
-
-.pc-tip code {
-  padding: 1px 5px;
-  background: var(--pc-surface-2);
-  border: 1px solid var(--pc-border);
-  border-radius: 4px;
+/* 区块级的补充说明不再直接铺开：收进 TipNote 的问号图标（见上）。
+ * 这里只留图标在正文流里的对齐——它常紧跟在标题、工具行或表格后面，
+ * 需要一个不撑行高、不抢注意力的落点。 */
+.pc-tip-icon {
+  vertical-align: middle;
+  margin-left: 2px;
 }
 
 /* 字段备注收进问号图标后的样式（FieldLabel.vue，气泡挂在 body 下，须全局定义） */

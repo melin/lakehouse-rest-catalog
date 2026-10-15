@@ -27,6 +27,7 @@ import io.github.melin.paimonrest.support.Paths;
 import io.github.melin.paimonrest.support.Patterns;
 import io.github.melin.paimonrest.support.ResourceType;
 import io.github.melin.paimonrest.support.SchemaSupport;
+import io.github.melin.paimonrest.support.TableKinds;
 import io.github.melin.paimonrest.support.Values;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -165,13 +166,18 @@ public class TableService {
         SchemaSupport.normalize(schema);
 
         CatalogEntity catalog = catalogService.resolve(prefix);
+        String tablePath = Paths.tableLocation(properties.getPathTemplate(),
+                catalog.getWarehouse(), databaseName, tableName);
+        // 表格式在落库之前定稿：Format / Object / Lance 三种表要在这里补 path、归一化列
+        // （见 TableKinds）。schemaDoc 与仓库里的 schema-0 都取自这一份，因此必须在写库之前。
+        TableKinds.prepareCreate(schema, tablePath);
+
         TableEntity table = new TableEntity();
         table.setId(Paging.newId());
         table.setCatalogId(database.getCatalogId());
         table.setDatabaseId(database.getId());
         table.setName(tableName);
-        table.setPath(Paths.tableLocation(properties.getPathTemplate(),
-                catalog.getWarehouse(), databaseName, tableName));
+        table.setPath(tablePath);
         table.setExternal(false);
         table.setSchemaId(0);
         table.setSchemaDoc(Codecs.write(schema));

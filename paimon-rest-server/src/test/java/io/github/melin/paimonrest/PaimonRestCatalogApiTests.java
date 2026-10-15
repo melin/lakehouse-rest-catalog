@@ -677,6 +677,93 @@ class PaimonRestCatalogApiTests {
         assertEquals(before.path(), moved.path(), "跨库重命名同样不搬数据");
     }
 
+    /**
+     * 建表支持四种表格式：Paimon 表（{@code type} 缺席）、{@code format-table}、
+     * {@code object-table}、{@code lance-table}。
+     *
+     * <p>类型由 {@code schema.options.type} 承载（与 Paimon 的 {@code CoreOptions.TYPE} 同一个键），
+     * 三种非 Paimon 表在建表时都要补 {@code path}——引擎侧构造它们时只读 options 里的位置，
+     * 而客户端不会带这个选项。规则集中在 {@code TableKinds}，这里钉住它对外的表现：
+     * 位置补齐、Format 表禁主键、Object 表用固定六列覆盖用户字段、Lance 表保留字段与主键、
+     * 以及不认识的类型直接 400（而不是写进库等引擎来炸）。
+     */
+    @Test
+    void createTableWithNonPaimonFormats() {
+        String database = "it_table_kinds";
+        createDatabase(database);
+
+        // Format 表：位置补齐，字段与 file.format 原样保留，无主键
+        tableService.create(PREFIX, database, new TableDtos.CreateTableRequest(
+                new CommonDtos.Identifier(database, "csv_files"),
+                tableSchema("format-table", "csv",
+                        List.of(field(0, "id", "BIGINT"), field(1, "name", "VARCHAR(20)")))));
+        TableDtos.GetTableResponse format = tableService.get(PREFIX, database, "csv_files");
+        assertEquals("format-table", format.schema().getOptions().get("type"));
+        assertEquals("csv", format.schema().getOptions().get("file.format"));
+        assertEquals(format.path(), format.schema().getOptions().get("path"),
+                "内部 format 表的位置由目录补，客户端不带 path");
+        assertTrue(format.schema().getPrimaryKeys().isEmpty());
+        assertEquals(List.of("id", "name"), format.schema().getFields().stream()
+                .map(TypeDtos.DataField::getName).toList());
+
+        // 不认识的类型：400。写进库的话，引擎读表时报的是「枚举不认识」，出错现场离原因太远
+        ApiException unknown = assertThrows(ApiException.class, () -> tableService.create(PREFIX, database,
+                new TableDtos.CreateTableRequest(new CommonDtos.Identifier(database, "weird"),
+                        tableSchema("no-such-table", "parquet", List.of(field(0, "id", "BIGINT"))))));
+        assertEquals(400, unknown.getStatus());
+        assertTrue(unknown.getMessage().contains("no-such-table"));
+
+        // Format 表带主键：400（上游 CatalogUtils 同样禁止，本服务端不经由 AbstractCatalog 建表，得自己拦）
+        TypeDtos.Schema withPrimaryKey =
+                tableSchema("format-table", "parquet", List.of(field(0, "id", "BIGINT NOT NULL")));
+        withPrimaryKey.getPrimaryKeys().add("id");
+        assertEquals(400, assertThrows(ApiException.class, () -> tableService.create(PREFIX, database,
+                new TableDtos.CreateTableRequest(new CommonDtos.Identifier(database, "csv_pk"), withPrimaryKey)))
+                .getStatus());
+
+        // Object 表：不声明列，落库的是固定六列（Paimon 的 ObjectTable.SCHEMA）
+        tableService.create(PREFIX, database, new TableDtos.CreateTableRequest(
+                new CommonDtos.Identifier(database, "objects"),
+                tableSchema("object-table", null, List.of())));
+        TableDtos.GetTableResponse object = tableService.get(PREFIX, database, "objects");
+        assertEquals("object-table", object.schema().getOptions().get("type"));
+        assertEquals(object.path(), object.schema().getOptions().get("path"));
+        assertEquals(List.of("path", "name", "length", "mtime", "atime", "owner"),
+                object.schema().getFields().stream().map(TypeDtos.DataField::getName).toList(),
+                "Object 表的列是固定的，用户声明的字段被忽略");
+        assertTrue(object.schema().getPrimaryKeys().isEmpty());
+        assertTrue(object.schema().getPartitionKeys().isEmpty());
+
+        // Lance 表：字段、非空、主键都保留（与 Paimon 表一致），位置同样补齐
+        TypeDtos.Schema lance = tableSchema("lance-table", null,
+                List.of(field(0, "id", "BIGINT NOT NULL"), field(1, "name", "VARCHAR(20)")));
+        lance.getPrimaryKeys().add("id");
+        tableService.create(PREFIX, database, new TableDtos.CreateTableRequest(
+                new CommonDtos.Identifier(database, "vectors"), lance));
+        TableDtos.GetTableResponse lanceTable = tableService.get(PREFIX, database, "vectors");
+        assertEquals("lance-table", lanceTable.schema().getOptions().get("type"));
+        assertEquals(lanceTable.path(), lanceTable.schema().getOptions().get("path"));
+        assertEquals(List.of("id"), lanceTable.schema().getPrimaryKeys());
+        assertEquals("BIGINT NOT NULL", typeOf(lanceTable.schema(), "id"));
+
+        // Paimon 表不受影响：options 里不会被塞进 path
+        tableService.create(PREFIX, database, new TableDtos.CreateTableRequest(
+                new CommonDtos.Identifier(database, "plain"), ordersSchema()));
+        TableDtos.GetTableResponse plain = tableService.get(PREFIX, database, "plain");
+        assertFalse(plain.schema().getOptions().containsKey("path"), "Paimon 表的位置由目录决定，不写进 options");
+
+        // 表类型落到 table_type 列上，listTableDetails 的过滤因此可用
+        assertEquals(List.of("csv_files"), tableService
+                .listDetails(PREFIX, database, null, null, null, "format-table").tableDetails().stream()
+                .map(TableDtos.GetTableResponse::name).toList());
+        assertEquals(List.of("objects"), tableService
+                .listDetails(PREFIX, database, null, null, null, "object-table").tableDetails().stream()
+                .map(TableDtos.GetTableResponse::name).toList());
+        assertEquals(List.of("vectors"), tableService
+                .listDetails(PREFIX, database, null, null, null, "lance-table").tableDetails().stream()
+                .map(TableDtos.GetTableResponse::name).toList());
+    }
+
     // ------------------------------------------------------------------ 辅助
 
     private void createDatabase(String name) {
@@ -731,5 +818,21 @@ class PaimonRestCatalogApiTests {
         field.setName(name);
         field.setType(type);
         return field;
+    }
+
+    /**
+     * 非 Paimon 表格式的 schema：{@code options.type} 指明格式，{@code file.format} 只有 Format 表要。
+     *
+     * <p>刻意不给 {@code path}——建表请求里客户端本就不带它，由服务端按表位置补上。
+     */
+    private static TypeDtos.Schema tableSchema(String type, String fileFormat,
+                                              List<TypeDtos.DataField> fields) {
+        TypeDtos.Schema schema = new TypeDtos.Schema();
+        schema.getFields().addAll(fields);
+        schema.getOptions().put("type", type);
+        if (fileFormat != null) {
+            schema.getOptions().put("file.format", fileFormat);
+        }
+        return schema;
     }
 }

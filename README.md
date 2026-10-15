@@ -21,6 +21,9 @@
   19 张表的划分与设计取舍见 [`docs/data-model.md`](docs/data-model.md)），
   通过 JPA 访问；另有 H2 内存库与 PostgreSQL 两个 profile 可选
 - 模块：服务端（Spring Boot）+ Spark SQL 语法扩展（Scala）
+- 表格式：**Paimon 表**与三种不受快照管理的表——**Format 表**（目录里的既有文件）、
+  **Object 表**（对象元数据，列由 Paimon 固定）、**Lance 表**；类型写在
+  `schema.options.type` 里，建表时的归一化与边界见第 6 节第 23 条
 
 ---
 
@@ -70,7 +73,7 @@ Maven 坐标与包名：`groupId` 为 `io.github.melin`，三个 artifact 分别
 | [`spark-paimon-rest-e2e.md`](docs/spark-paimon-rest-e2e.md) | 要让 Spark 通过本服务端建 Paimon 表——连接配置、可执行的 SQL、报错对照表 |
 | [`authorization.md`](docs/authorization.md) | 要理解权限怎么判——实体链、授权映射、失败关闭的取舍 |
 | [`console.md`](docs/console.md) | 要改 Web 控制台或排查「页面空列表」——前端分层、端点契约表、机械校验 |
-| [`console-table-detail.md`](docs/console-table-detail.md) | 要改表详情页——六个页签的数据来源、为什么授权不在这页、破坏性操作与边界 |
+| [`console-table-detail.md`](docs/console-table-detail.md) | 要改表详情页——页签随表格式（Paimon / Format / Object / Lance）伸缩的数据来源、为什么授权不在这页、破坏性操作与边界 |
 | [`console-catalog-detail.md`](docs/console-catalog-detail.md) | 要改 Catalog 详情页或仓库文件浏览——三个页签、下钻与路径防护、只读的取舍、「配置」页为何暂不实现 |
 | [`console-auth.md`](docs/console-auth.md) | 要给浏览器访问控制台配登录——三种登录方式、两个开关的边界、令牌与认证链、安全考量 |
 | [`polaris-capabilities-and-design.md`](docs/polaris-capabilities-and-design.md) | 要对比 Polaris 或看整体设计——核心能力提取、映射关系、已知缺口 |
@@ -107,7 +110,7 @@ mysql -h 127.0.0.1 -u root -p < sql/schema-mysql.sql
 # 全量构建
 JAVA_HOME=/path/to/jdk-21 mvn -DskipTests install
 
-# 运行全部测试（服务端 304 + Spark 90，共 394 个用例；Spark 侧有 1 个示例用例
+# 运行全部测试（服务端 305 + Spark 90，共 395 个用例；Spark 侧有 1 个示例用例
 # 在本地缺 spark.sql.extensions 时会失败，见第 7 节）
 JAVA_HOME=/path/to/jdk-21 mvn test
 
@@ -550,12 +553,22 @@ Azure 只下发定位元数据是个明确的缺口：Polaris 的 `polaris.stora
     在那次提交到来之前，**最新快照**的读路径也会按分区合计现算兜底——分区统计从更早的版本就在
     维护，老表升级后立即有值，不必等新提交。历史快照不做这个兜底：分区合计只对应当前状态，
     套在旧快照上是错的数。
+23. **非 Paimon 表（Format / Object / Lance）的位置由目录补，列不按用户声明的写**。
+    表格式写在 `schema.options.type` 里（规格的 `Schema` 没有类型字段，Paimon 自己也是这么
+    表达的，SQL 侧同样是 `WITH ('type' = 'format-table')`）。建表时 `support/TableKinds`
+    做三件事：**补 `path`**（引擎构造这三种表时只读 `options.path`，客户端不会送）、
+    **Object 表换成固定六列** `path` / `name` / `length` / `mtime` / `atime` / `owner`
+    （用户声明的字段被忽略，镜像上游 `buildObjectTableSchema`）、**Format 表带主键直接 400**。
+    其余类型取值一律 400——写进库的话，引擎读表时才在 `CoreOptions.TYPE` 的枚举上炸，
+    出错现场离原因太远。服务端对这三种表只登记元数据并写 `schema-0`，数据由引擎直接读写
+    那个目录，因此快照、标签、分支、分区状态与提交累计的文件统计都不适用：控制台只给它们
+    「详细信息」与「文件列表」两个页签，详细信息页里也不画那四张统计卡片。
 
 ---
 
 ## 7. 测试
 
-### 单元与集成测试（394 个用例）
+### 单元与集成测试（395 个用例）
 
 ```bash
 JAVA_HOME=/path/to/jdk-21 mvn test
@@ -564,11 +577,11 @@ JAVA_HOME=/path/to/jdk-21 mvn test
 测试连的是内存 H2（`test` profile，见 `src/test/resources/application-test.yml`），
 **不依赖本机是否有 MySQL**。
 
-服务端（304 个）：
+服务端（305 个）：
 
 | 测试类 | 覆盖 |
 | --- | --- |
-| `PaimonRestCatalogApiTests` | 配置发现、建表与 schema 变更（加列 / 列改名 / 改类型 / 改可空性 / 改属性）/ 回滚、快照提交与乐观并发、快照文件统计（由提交携带的 `statistics` 增量累计：跨提交叠加、未测量字段不进合计、没带统计的提交沿用上一个快照、缺基线时退回分区合计）、分区统计、表重命名（改名不动数据位置、跨库重命名、目标名被占用 409）、视图与函数、语义视图 1 MiB 上限、消费者位点、凭证下发与 403、各类 404 的 `resourceType` |
+| `PaimonRestCatalogApiTests` | 配置发现、建表与 schema 变更（加列 / 列改名 / 改类型 / 改可空性 / 改属性）/ 回滚、四种表格式建表（Paimon / Format / Object / Lance：非 Paimon 表补 `path`、Format 表禁主键、Object 表用固定六列覆盖用户字段、Lance 表保留主键、未知类型 400、`listTableDetails` 按 `tableType` 过滤）、快照提交与乐观并发、快照文件统计（由提交携带的 `statistics` 增量累计：跨提交叠加、未测量字段不进合计、没带统计的提交沿用上一个快照、缺基线时退回分区合计、最新快照缺统计时读路径兜底）、分区统计、表重命名（改名不动数据位置、跨库重命名、目标名被占用 409）、视图与函数、语义视图 1 MiB 上限、消费者位点、凭证下发与 403、各类 404 的 `resourceType` |
 | `TableMetadataMaterializationTests` | 把 schema 与快照物化到 Paimon 表目录：建表写 `schema-0`、改表写下一个号、回滚把旧内容写到**新号**（回滚也是向前一步）、`register` 进来的外部表一个文件都不碰、缺 FileIO 实现时默认只记日志不打断请求（并断言打开 `fail-on-error` 后确实变成 500）；快照侧写 `snapshot/snapshot-<id>` 与 `LATEST`、落盘的是客户端**原文**（`properties` 这类规格没建模的字段不能丢）、`VERSION AS OF <数字>` 按**快照 id** 而不是 `Snapshot.version` 取值（含 `LATEST` / `EARLIEST` / 标签名）、快照回滚会删掉目标之后的快照文件；钉住「数据库 `schemaId` ↔ 仓库 `schema-<n>`」与「数据库 `snapshotId` ↔ 仓库 `snapshot-<n>`」逐号对应 |
 | `ManagementApiTests` | 管理 API 的主体、角色、装配与授权链路 |
 | `PermissionManagementTests` | Paimon 原生权限端点（`/v1/{prefix}/permissions`）与直授判定：赋权三元组的增删查、官方词表的入参校验、撤销幂等、重复授予覆盖过期时间，以及直授真的能打通 catalog API 的权限判定（`user:` 与 `role:` 两种 principal 形式各一条链路）；与 `AuthorizationTests`（Polaris RBAC 链）互补 |
@@ -602,7 +615,7 @@ Spark 子模块（90 个，其中 19 个需要显式指向服务端）：
 > `example/` 下的 `PaimonS3Test` **当前跑不过**，与 S3 环境无关：它在加载 Spark
 > catalog 时被 Paimon 的 `requiredSparkConfsCheck` 挡下（会话里没有
 > `spark.sql.extensions`），报错发生在任何 REST 调用之前。因此 `mvn test` 会停在
-> Spark 模块的 BUILD FAILURE，而服务端模块（304 个）是绿的。
+> Spark 模块的 BUILD FAILURE，而服务端模块（305 个）是绿的。
 
 | 测试类 | 覆盖 |
 | --- | --- |
@@ -888,8 +901,8 @@ http://localhost:8080/console/
 | --- | --- |
 | `/login`、`/auth/callback` | 登录与 SSO 回调 |
 | `/` | 概览：统计块、服务端配置、**连接自检**、catalog 清单、`GET /v1/config` |
-| `/browse` | 目录浏览：库/表/视图/函数/语义视图；建库建表、注册表、按表 ID 定位、重命名、删除 |
-| `/tables/:prefix/:database/:table` | [表详情](docs/console-table-detail.md)：六个页签——详细信息（含字段列表 / 分区列表）、**文件列表**（表目录物理内容，出不了表外）、快照与标签回滚。**改表结构不在控制台做**：`alter` 端点仍在，走 HTTP 或 Spark SQL |
+| `/browse` | 目录浏览：库/表/视图/函数/语义视图；建库建表、注册表、按表 ID 定位、重命名、删除。表列表六列——表名 / 表格式 / 表类型（Managed 或外部表）/ 创建时间 / 元数据更新时间 / 操作，数据取自 `table-details`（只回表名的 `/tables` 给不出这几列） |
+| `/tables/:prefix/:database/:table` | [表详情](docs/console-table-detail.md)：页签随表格式伸缩——Paimon 表六个（详细信息含字段列表 / 分区列表、**文件列表**、快照、标签、分支、数据访问），Format / Object / Lance 表只有详细信息与**文件列表**，且不向快照端点发请求；三种表都展示字段列表（Object 表是 Paimon 固定的六列，主键 / 分区字段两列不渲染）。**改表结构不在控制台做**：`alter` 端点仍在，走 HTTP 或 Spark SQL |
 | `/catalogs` | Catalog 列表：创建、编辑（带版本）、删除；名称进详情页 |
 | `/catalogs/:catalogName` | [Catalog 详情](docs/console-catalog-detail.md)：概览 / **文件列表**（仓库物理目录，目录名可点下钻、文件可下载、文件名前缀过滤 + 本地分页）/ 配置（预留设计，暂未实现） |
 | `/principals`、`/principal-roles` | 治理：主体、角色；角色页含「授予 / 撤销 catalog 角色」。**catalog 角色与它的资源授权没有页面**——这两件事的入口是管理 API 与 Spark SQL |
@@ -927,6 +940,6 @@ OIDC 授权码 + PKCE 三种方式；令牌是自包含 JWT，多实例互认但
 | 文档 | 内容 |
 | --- | --- |
 | [`docs/console.md`](docs/console.md) | 控制台总览：目录结构、服务端如何托管、页面清单、端点契约表与机械校验、构建与提交约定、测试分层 |
-| [`docs/console-table-detail.md`](docs/console-table-detail.md) | 表详情页：六个页签逐个说明（详细信息含字段/分区列表、表目录文件列表）、为什么授权不在这页、破坏性操作、已知边界 |
+| [`docs/console-table-detail.md`](docs/console-table-detail.md) | 表详情页：页签随表格式（Paimon / Format / Object / Lance）伸缩、详细信息含字段/分区列表、表目录文件列表、为什么授权不在这页、破坏性操作、已知边界 |
 | [`docs/console-catalog-detail.md`](docs/console-catalog-detail.md) | Catalog 详情页：概览与文件列表两个已实现页签、下钻与路径防护、为什么只读、「配置」页的预留设计 |
 | [`docs/console-auth.md`](docs/console-auth.md) | 登录与鉴权：两个开关的边界、三种登录方式与令牌端点、错误码、安全考量、已知边界 |

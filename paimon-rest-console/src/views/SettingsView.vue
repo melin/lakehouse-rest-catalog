@@ -115,44 +115,49 @@
           <el-icon><Refresh /></el-icon>
           <span class="pc-btn-text">重新检查</span>
         </el-button>
-      </div>
-
-      <div class="pc-tip">
-        <strong>退出登录只是忘掉本机保存的令牌。</strong>
-        服务端不保存登录状态——令牌是自包含的 JWT，签出去之后在有效期
-        （<code class="pc-mono">paimon.rest.auth.access-token.ttl</code>）内一直有效，
-        没有可以作废它的接口；要立刻让某人的令牌失效只能轮换
-        <code class="pc-mono">access-token.signing-key</code>，而那会作废所有人的令牌。
-      </div>
-      <div class="pc-tip">
-        <strong>控制台门禁不是安全边界。</strong>
-        <code class="pc-mono">paimon.rest.auth.console.required</code>
-        （默认 <code class="pc-mono">true</code>）只让浏览器必须先登录；
-        <code class="pc-mono">/v1/**</code> 与管理 API 是否要求令牌，仍由
-        <code class="pc-mono">paimon.rest.auth.enabled</code>
-        （默认 <code class="pc-mono">false</code>）决定。要保护数据请开启后者——
-        光靠门禁挡不住 <code class="pc-mono">curl</code>。
-      </div>
-      <div class="pc-tip">
-        登录方式由服务端下发，顺序即登录页的页签顺序。
-        <code class="pc-mono">paimon.rest.auth.console.password</code>
-        （用户名 + 密码，默认开启，账号 <code class="pc-mono">admin/admin</code>）
-        排在第一位——它不需要先建主体，装好就能进。
-        接下来是对标 Polaris Console 的
-        <code class="pc-mono">…console.client-credentials</code>
-        （主体凭据换令牌，默认开启）与
-        <code class="pc-mono">paimon.rest.auth.console.oidc</code>
-        （外部 IdP 授权码 + PKCE）。这三条都只产出一个 Bearer 令牌，
-        之后走同一条通道，服务端也不记录它来自哪条。
-        <code class="pc-mono">paimon.rest.auth.tokens</code>
-        里的静态令牌排最后，是给脚本用的降级入口。
-      </div>
-      <div class="pc-tip">
-        OIDC 登录时，服务端按 <code class="pc-mono">oidc.principal-claim</code>
-        （默认 <code class="pc-mono">sub</code>）取主体名。取到的值要能与
-        <code class="pc-mono">paimon_principal.name</code> 或
-        <code class="pc-mono">authorization.service-admins</code> 里的名字对上，
-        否则登录成功但什么也看不到。
+        <span class="pc-spacer" />
+        <!-- 原先这是四段铺开的说明（退出登录的语义、门禁与鉴权的区别、登录方式、OIDC 主体名），
+             加起来近三十行，把表单挤出了视野。收进一个图标：不确定的人会去点它，
+             已经清楚的人不必每来一次都重读一遍。 -->
+        <TipNote>
+          <p>
+            <strong>退出登录只是忘掉本机保存的令牌。</strong>
+            服务端不保存登录状态——令牌是自包含的 JWT，签出去之后在有效期
+            （<code>paimon.rest.auth.access-token.ttl</code>）内一直有效，
+            没有可以作废它的接口；要立刻让某人的令牌失效只能轮换
+            <code>access-token.signing-key</code>，而那会作废所有人的令牌。
+          </p>
+          <p>
+            <strong>控制台门禁不是安全边界。</strong>
+            <code>paimon.rest.auth.console.required</code>
+            （默认 <code>true</code>）只让浏览器必须先登录；
+            <code>/v1/**</code> 与管理 API 是否要求令牌，仍由
+            <code>paimon.rest.auth.enabled</code>
+            （默认 <code>false</code>）决定。要保护数据请开启后者——
+            光靠门禁挡不住 <code>curl</code>。
+          </p>
+          <p>
+            <strong>登录方式由服务端下发</strong>，顺序即登录页的页签顺序。
+            <code>paimon.rest.auth.console.password</code>
+            （用户名 + 密码，默认开启，账号 <code>admin/admin</code>）
+            排在第一位——它不需要先建主体，装好就能进。
+            接下来是对标 Polaris Console 的
+            <code>…console.client-credentials</code>
+            （主体凭据换令牌，默认开启）与
+            <code>paimon.rest.auth.console.oidc</code>
+            （外部 IdP 授权码 + PKCE）。这三条都只产出一个 Bearer 令牌，
+            之后走同一条通道，服务端也不记录它来自哪条。
+            <code>paimon.rest.auth.tokens</code>
+            里的静态令牌排最后，是给脚本用的降级入口。
+          </p>
+          <p>
+            <strong>OIDC 登录时</strong>，服务端按 <code>oidc.principal-claim</code>
+            （默认 <code>sub</code>）取主体名。取到的值要能与
+            <code>paimon_principal.name</code> 或
+            <code>authorization.service-admins</code> 里的名字对上，
+            否则登录成功但什么也看不到。
+          </p>
+        </TipNote>
       </div>
     </PanelCard>
 
@@ -221,6 +226,7 @@ import PageHeader from '@/components/PageHeader.vue'
 import PanelCard from '@/components/PanelCard.vue'
 import ResourceState from '@/components/ResourceState.vue'
 import FieldLabel from '@/components/FieldLabel.vue'
+import TipNote from '@/components/TipNote.vue'
 import { catalogApi } from '@/api/catalog.js'
 import { describeError } from '@/api/client.js'
 import { managementApi, metaApi } from '@/api/management.js'

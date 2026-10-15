@@ -25,9 +25,38 @@
     <template v-if="catalog0">
       <PanelCard flush>
         <el-tabs v-model="tab" class="pc-tabs" @tab-change="onTabChange">
-          <el-tab-pane label="概览" name="overview" />
-          <el-tab-pane label="文件列表" name="files" />
-          <el-tab-pane label="配置" name="config" />
+          <el-tab-pane name="overview">
+            <template #label>
+              概览
+              <TipNote>
+                属性与存储配置的修改走管理 API（<code>PUT /api/management/v1/catalogs/{{ catalogName }}</code>），
+                控制台目前只读展示；编辑界面见「配置」页签的预留说明。
+              </TipNote>
+            </template>
+          </el-tab-pane>
+          <el-tab-pane name="files">
+            <template #label>
+              文件列表
+              <TipNote>
+                这一页只读：仓库里的对象由引擎与服务端自己管（服务端写 schema 与快照，
+                <code>purge-on-drop</code> 决定删表时清不清目录），
+                从这里手工改文件会让「库里说的」与「盘上写的」对不上。
+                当前目录相对仓库根为 <code>{{ filePath || '（仓库根）' }}</code>。
+              </TipNote>
+            </template>
+          </el-tab-pane>
+          <el-tab-pane name="config">
+            <template #label>
+              配置
+              <TipNote>
+                为什么还不做：这几项改下去都会被引擎直接读到（<code>defaults</code> /
+                <code>overrides</code> 参与客户端配置合并），写错的表现是「客户端连不上」或
+                「连上了但读到别的仓库」；而写入必须带 <code>entityVersion</code> 做乐观并发，
+                否则两个人同时改会静默覆盖。要先有这三件事：版本冲突的交互、凭据字段的脱敏与回填、
+                以及改动前后的差异确认。
+              </TipNote>
+            </template>
+          </el-tab-pane>
         </el-tabs>
 
         <div class="pc-tab-body">
@@ -67,10 +96,6 @@
                 />
               </div>
             </div>
-            <p class="pc-tip">
-              属性与存储配置的修改走管理 API（<span class="pc-mono">PUT /api/management/v1/catalogs/{{ catalogName }}</span>），
-              控制台目前只读展示；编辑界面见「配置」页签的预留说明。
-            </p>
           </template>
 
           <!------------------------------ 文件列表 -------------------------------->
@@ -190,13 +215,6 @@
               size="small"
               class="pc-pager"
             />
-
-            <p class="pc-tip">
-              这一页只读：仓库里的对象由引擎与服务端自己管（服务端写 schema 与快照，
-              <span class="pc-mono">purge-on-drop</span> 决定删表时清不清目录），
-              从这里手工改文件会让「库里说的」与「盘上写的」对不上。
-              当前目录相对仓库根为 <span class="pc-mono">{{ filePath || '（仓库根）' }}</span>。
-            </p>
           </template>
 
           <!------------------------------ 配置（预留） ---------------------------->
@@ -221,14 +239,6 @@
               </el-table-column>
               <el-table-column prop="blocker" label="未做的前置依赖" min-width="300" />
             </el-table>
-
-            <p class="pc-tip">
-              为什么不现在做：这几项改下去都会被引擎直接读到（<span class="pc-mono">defaults</span> /
-              <span class="pc-mono">overrides</span> 参与客户端配置合并），写错的表现是「客户端连不上」或
-              「连上了但读到别的仓库」；而写入必须带 <span class="pc-mono">entityVersion</span> 做乐观并发，
-              否则两个人同时改会静默覆盖。要先有这三件事：版本冲突的交互、凭据字段的脱敏与回填、
-              以及改动前后的差异确认。
-            </p>
           </template>
         </div>
       </PanelCard>
@@ -250,6 +260,7 @@ import PageHeader from '@/components/PageHeader.vue'
 import PanelCard from '@/components/PanelCard.vue'
 import ResourceState from '@/components/ResourceState.vue'
 import TimeText from '@/components/TimeText.vue'
+import TipNote from '@/components/TipNote.vue'
 import { notifyError, onConsoleRefresh, useLocalPaging, useResource } from '@/composables/index.js'
 import { formatBytes, inlineMap } from '@/utils/format.js'
 

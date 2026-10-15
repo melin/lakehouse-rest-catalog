@@ -152,3 +152,55 @@ Paimon 客户端一致（见 `RESTApi.loadSnapshot(identifier, version)` 的契�
 [`console-table-detail.md` §2.1](console-table-detail.md#21-详细信息)）。
 统计落库之前写的快照行三项也是 `null`——该端点只回**最新**快照，此时分区合计与它引用的
 文件一致，所以读路径按分区合计现算兜底，老表升级后立即有值；历史快照没有这个兜底。
+
+## 建表
+
+`POST /v1/{prefix}/databases/{database}/tables` 的请求体是
+`{identifier, schema{fields, partitionKeys, primaryKeys, options, comment}}`。
+表格式写在 `schema.options.type` 里——规格的 `Schema` 没有独立的类型字段，
+Paimon 自己就是这么表达的（`CoreOptions.TYPE`，键 `type`，默认 `table`），
+SQL 侧同样是 `WITH ('type' = 'format-table')`。本服务端认四种取值：
+
+| `options.type` | 表格式 | 建表时的处理 |
+| --- | --- | --- |
+| 缺席（或 `table`） | Paimon 表 | 原样落库；**不写** `path`，位置由目录决定 |
+| `format-table` | Format 表 | 补 `path` = 表位置；**禁止主键**（400） |
+| `object-table` | Object 表 | 补 `path` = 表位置；用户声明的字段被**忽略**，落库的是固定六列 |
+| `lance-table` | Lance 表 | 补 `path` = 表位置；字段、非空、主键与 Paimon 表一致 |
+
+其余取值一律 400。写进库的话，引擎读表时才在 `CoreOptions.TYPE` 的枚举上炸，
+出错现场离原因太远，所以宁可在这里回一句「不认识的类型」。
+
+三条规则都来自上游，这里只是把它们放到本服务端的建表路径上（实现见 `support/TableKinds`）：
+
+- **补 `path`**：引擎构造这三种表时只读 `options.path`
+  （`CatalogUtils.toFormatTable` / `toObjectTable` / `toLanceTable`），而客户端不会送它——
+  替内部表决定位置本就是 catalog 的职责，与 `JdbcCatalog.createObjectTable` 的
+  `options.putIfAbsent(PATH, tablePath)` 一致。客户端若要指向别处的目录，
+  自己在 `options.path` 里给，服务端只在缺席时补。
+- **Object 表固定六列**：`path` / `name` / `length` / `mtime` / `atime` / `owner`
+  （取 `ObjectTable.SCHEMA`，不手抄）。上游 `AbstractCatalog.buildObjectTableSchema`
+  同样忽略用户字段，好处是落库的 schema、仓库里的 `schema-0`、引擎读到的列三者一致；
+  只顾着写用户字段的话，仓库里会留下一张没有列的 Paimon 表文件。
+- **Format 表禁主键**：上游 `CatalogUtils.validateFormatTableOptions` 里的硬约束
+  （`Cannot define primaryKey for format table.`）。本服务端不经由 `AbstractCatalog` 建表，
+  因此得自己拦下，否则 schema 文件要等引擎读的时候才报错。
+
+`paimon_table.table_type` 列存的就是这个取值，`GET .../table-details?tableType=` 因此能按
+格式过滤（Paimon 表的历史值是 `PAIMON`）；控制台据此伸缩页签，见
+[`console-table-detail.md` §1.1](console-table-detail.md#11-页签随表格式伸缩)。
+
+## 列举表：两个端点怎么选
+
+| 端点 | 返回 | 适用 |
+| --- | --- | --- |
+| `GET .../databases/{database}/tables` | 表名数组（`ListTablesResponse.tables`） | 只要名字，例如做存在性判断 |
+| `GET .../databases/{database}/table-details` | 完整 `GetTableResponse`（`tableDetails`）：`name` / `isExternal` / `createdAt` / `createdBy` / `updatedAt` / `updatedBy` / `schema` | 要展示或判断表格式、表类型与时间 |
+
+两者分页约定一致（`maxResults` + `nextPageToken`，服务端按 `max-page-size` 截断），
+`table-details` 多出的只是每行的字段。`GetTableResponse` **没有单独的类型字段**：
+表格式从 `schema.options.type` 推（缺席即 Paimon 表），表类型从 `isExternal` 推。
+`updatedAt` / `updatedBy` 是 `table.touch(principal, now)` 的结果，`create` / `alter` /
+`rollbackSchema` / `rename` / `commit` / `rollback` 都会推动它——所以「元数据最新更新时间」
+包含快照提交与回滚，不只是 schema 改动。控制台的表列表走的是 `table-details`，
+见 [`console.md`](console.md) 的 `/browse` 行。

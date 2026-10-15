@@ -76,6 +76,7 @@ paimon-rest-console/
     │   └── oidc.js                OIDC 授权码 + PKCE：授权 URL、state、换令牌
     ├── components/                ResourceState（三态）、PropertiesEditor、StorageConfigFields、
     │                              CredentialDialog、FieldLabel（字段备注收进问号图标）、
+    │                              TipNote（区块说明收进问号图标）、
     │                              JsonBlock、CopyText、TimeText、PageHeader、PanelCard
     ├── composables/index.js       useResource（竞态丢弃）、刷新事件、通知与危险确认
     ├── layouts/ConsoleLayout.vue  侧边导航 + catalog 选择器 + 主题切换 + 刷新
@@ -137,7 +138,7 @@ paimon-rest-console/
 | `/login` | 登录 | 按服务端下发的登录方式渲染页签：用户名密码（默认）/ 主体凭据（OAuth 2.0 客户端凭据）/ SSO（OIDC）/ 静态令牌（需配 `auth.tokens`）。**未开启的方式不渲染**；一个可用方式都没有时说明该开哪个配置项。门禁单开时先显示一句「只挡住界面」。不套管理布局 |
 | `/auth/callback` | SSO 回调 | 校验 `state` → 用授权码换令牌 → 让服务端确认 → 回跳原页面。不套管理布局 |
 | `/` | 控制台概览 | 统计块（三个数量）、服务端配置摘要、**连接自检**、catalog 清单、`GET /v1/config` 展示 |
-| `/browse` | 目录浏览 | 左库右对象；四页签（表/视图/函数/语义视图）；建库、建表、注册表、按表 ID 定位、重命名、删除、详情抽屉。表页签的过滤为空时说明「没有匹配 ×××」，与「库里没有表」区分开 |
+| `/browse` | 目录浏览 | 左库右对象；四页签（表/视图/函数/语义视图）；建库、建表（Paimon 表 / Format 表 / Object 表 / Lance 表四种表格式）、注册表、按表 ID 定位、重命名、删除、详情抽屉。表页签列出表名 / 表格式 / 表类型（Managed 或外部表）/ 创建时间 / 元数据更新时间 / 操作六列，数据取自 `table-details`（只回表名的 `/tables` 给不出这几列）；「元数据更新时间」是服务端这条表记录的最后改动时间，快照提交与回滚也会推动它。表页签的过滤为空时说明「没有匹配 ×××」，与「库里没有表」区分开 |
 | `/tables/:prefix/:database/:table` | [表详情](console-table-detail.md) | 六页签：详细信息 / 快照 / 标签 / 分支 / **文件列表** / 数据访问；含快照与标签的**回滚**。**没有「变更」页签**：改表结构走 HTTP 或 Spark SQL，理由见该文档 §2。详细信息首屏的四张统计卡片取自 `getTableSnapshot`（三个文件统计的来路与「什么时候会空」见该文档 §2.1），内含**字段列表 / 分区列表**二级页签（名称过滤 + 本地分页，分区按需加载）。文件列表按表目录物理内容列一层（根是表目录，出不了表外），目录名可点下钻、文件可下载、支持文件名前缀过滤与本地分页。授权不在这张表上做——表级权限统一到「权限管理」页 |
 | `/catalogs` | Catalogs | 列出 / 创建 / 详情 / 更新（带版本）/ 删除。名称链到详情页；操作列另有「浏览库与对象」直达 `/browse` |
 | `/catalogs/:catalogName` | [Catalog 详情](console-catalog-detail.md) | 三页签：概览 / 文件列表 / 配置（**预留设计**）。文件列表按仓库物理目录列一层，目录名可点下钻、带面包屑与「返回上级」；只读，不提供删除与建目录 |
@@ -189,6 +190,10 @@ paimon-rest-console/
   （快照的 `version`）定位一个快照用它的 ID 与提交时间就够了。它们的正确位置分别是
   编辑弹窗里那个禁用的「当前版本」字段、以及「按版本号查询」输入框 / 详情抽屉标题 /
   回滚确认框——真正用得着它们的地方。
+- **说明收进图标，不铺在页面上。** 区块级的补充说明（口径、边界、「为什么不做」）
+  用 `TipNote` 收进一个问号图标，悬停才展开——原先它们是两三行一段直接铺开的
+  `.pc-tip`，一页几处就把数据挤出视野。字段级的备注仍走 `FieldLabel`
+  （图标跟在字段名后），两者共用同一套图标与气泡样式。
 
 ### 4.1 连接自检
 
@@ -336,9 +341,10 @@ BASE=http://127.0.0.1:8080 CLIENT_ID=<clientId> CLIENT_SECRET=<secret> \
 1. `src/api/endpoints.js`：加端点条目（路径必须能在规格里查到，否则进白名单并写理由）。
 2. `src/api/catalog.js` 或 `management.js`：加调用函数。
 3. `src/views/`：加视图；删改功能要接 `confirmDanger()`，错误走 `notifyError()`。
-   字段备注**不要**铺成输入框下面的一段文字（表单页会被说明文字占满），
-   用 `FieldLabel` 收进字段名后的问号图标，悬停显示——短备注传 `tip` 属性，
-   带 `code` / 分段的富文本用默认插槽（见 `components/FieldLabel.vue` 的文档注释）。
+   说明文字**不要**直接铺在页面上（表单页会被说明文字占满）：字段备注用
+   `FieldLabel` 收进字段名后的问号图标，区块级的口径与边界用 `TipNote` 收进
+   问号图标——两者悬停显示，短文本传 `text` 属性，带 `code` / 分段的富文本用
+   默认插槽（见两个组件的文档注释）。
 4. `src/router/index.js`：加路由；想出现在侧边栏就写 `meta: { nav: true, icon, group }`。
    不需要令牌就能看的页面（登录页、SSO 回调）写 `meta: { public: true }`——
    它同时决定「不套管理布局」（`App.vue`）与「守卫不拦」（见 §6.2）。
