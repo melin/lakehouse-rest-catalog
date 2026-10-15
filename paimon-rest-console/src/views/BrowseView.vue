@@ -221,7 +221,7 @@
     <el-dialog
       v-model="tableDialog.open"
       title="新建表"
-      width="760px"
+      width="880px"
       :close-on-click-modal="false"
       top="6vh"
       destroy-on-close
@@ -232,10 +232,31 @@
         </el-form-item>
       </el-form>
 
-      <el-divider content-position="left">字段（fields）</el-divider>
-      <div class="pc-repeat">
-        <div v-for="(field, index) in tableDialog.fields" :key="index" class="pc-repeat-row">
-          <el-input v-model="field.name" size="small" placeholder="字段名" class="pc-field-name" />
+      <!-- 字段列表把主键 / 非空 / 分区收进同一张表：对齐参考设计（列名称、主键、
+           非空、分区字段、数据类型、描述、操作一排），勾选即声明，不再单独设下拉。 -->
+      <el-divider content-position="left">字段信息（fields）</el-divider>
+      <div class="pc-field-table">
+        <div class="pc-field-grid pc-field-head">
+          <span>列名称</span>
+          <span class="pc-field-check" title="勾选后该字段进入 primaryKeys，表即为主键表；主键字段自动非空且不可取消">主键</span>
+          <span class="pc-field-check" title="非空约束只能通过主键隐式成立：勾选非主键字段的非空，创建时会被拦下">非空</span>
+          <span class="pc-field-check" title="勾选后该字段进入 partitionKeys；填了主键时，分区字段必须是主键的子集">分区字段</span>
+          <span>数据类型</span>
+          <span>描述</span>
+          <span class="pc-field-op">操作</span>
+        </div>
+        <div v-for="(field, index) in tableDialog.fields" :key="index" class="pc-field-grid">
+          <el-input v-model="field.name" size="small" placeholder="请输入名称" />
+          <el-checkbox
+            v-model="field.primary"
+            size="small"
+            class="pc-field-check"
+            @change="onPrimaryChange(field)"
+          />
+          <!-- 主键字段的非空是 Paimon 的隐式约束：勾主键时代替用户勾上并锁住，
+               不能取消；取消主键后恢复可编辑，是否保留非空由用户决定 -->
+          <el-checkbox v-model="field.nonNull" size="small" class="pc-field-check" :disabled="field.primary" />
+          <el-checkbox v-model="field.partition" size="small" class="pc-field-check" />
           <!-- 不用原生 datalist：Chrome 会给带 list 的 input 自带一个下拉指示器，
                嵌在 Element 的 wrapper 里位置错乱；el-select 的 allow-create 同样支持手工输入。 -->
           <el-select
@@ -244,61 +265,42 @@
             allow-create
             default-first-option
             size="small"
-            placeholder="类型，如 BIGINT / VARCHAR(64)"
-            class="pc-field-type"
+            placeholder="如 BIGINT / VARCHAR(64)"
           >
             <el-option v-for="type in PAIMON_TYPES" :key="type" :label="type" :value="type" />
           </el-select>
-          <el-input v-model="field.description" size="small" placeholder="注释（可选）" class="pc-field-desc" />
-          <el-button size="small" text type="danger" @click="removeField(index)">
-            <el-icon><Delete /></el-icon>
-          </el-button>
+          <el-input v-model="field.description" size="small" placeholder="请输入描述信息" />
+          <span class="pc-field-op">
+            <el-button size="small" text type="danger" @click="removeField(index)">删除</el-button>
+            <!-- 上移 / 下移只在自己合法的行出现（首行没有上移、末行没有下移），
+                 与参考设计一致；字段顺序决定字段 id 的分配顺序，也是分区键列表的排列。 -->
+            <template v-if="index > 0">
+              <span class="pc-field-sep">|</span>
+              <el-button size="small" text type="primary" @click="moveField(index, -1)">上移</el-button>
+            </template>
+            <template v-if="index < tableDialog.fields.length - 1">
+              <span class="pc-field-sep">|</span>
+              <el-button size="small" text type="primary" @click="moveField(index, 1)">下移</el-button>
+            </template>
+          </span>
         </div>
-        <el-button size="small" text type="primary" @click="tableDialog.fields.push({ name: '', type: '', description: '' })">
+        <el-button
+          size="small"
+          text
+          type="primary"
+          @click="tableDialog.fields.push(emptyField())"
+        >
           <el-icon><Plus /></el-icon>
-          <span class="pc-repeat-add">添加字段</span>
+          <span class="pc-repeat-add">添加一项</span>
         </el-button>
-        <div class="pc-tip">字段 id 由服务端按顺序补齐，这里不需要填。</div>
+        <div class="pc-tip">
+          主键字段自动非空且不可取消；非主键字段勾「非空」会在创建时被拦下——Paimon 的字段没有
+          独立的非空属性，该约束只能通过主键隐式成立。字段 id 由服务端按顺序补齐，这里不需要填。
+        </div>
       </div>
 
-      <el-divider content-position="left">分区与主键（可选）</el-divider>
+      <el-divider content-position="left">表注释（可选）</el-divider>
       <el-form label-position="top" size="small" class="pc-form">
-        <el-form-item>
-          <template #label>
-            <FieldLabel label="分区键（partitionKeys）">
-              选项来自上面已填好的字段名，从中多选即可。分区键不能脱离主键：填了主键之后，
-              这里只能选主键里已有的字段。改了字段名，这里的选项与已选值会跟着变。
-            </FieldLabel>
-          </template>
-          <el-select
-            v-model="tableDialog.partitionKeys"
-            multiple
-            filterable
-            class="pc-full"
-            :disabled="!fieldNames.length"
-            :placeholder="fieldNames.length ? '从上面填好的字段名中选择（可多选）' : '先在上方填写字段名与类型'"
-          >
-            <el-option v-for="name in fieldNames" :key="name" :label="name" :value="name" />
-          </el-select>
-        </el-form-item>
-        <el-form-item>
-          <template #label>
-            <FieldLabel label="主键（primaryKeys）">
-              选项同样来自上面已填好的字段名。选了主键，这张表就是 Paimon 主键表
-              （同主键的行按 merge-engine 归并）；一个都不选则是 append 表。
-            </FieldLabel>
-          </template>
-          <el-select
-            v-model="tableDialog.primaryKeys"
-            multiple
-            filterable
-            class="pc-full"
-            :disabled="!fieldNames.length"
-            :placeholder="fieldNames.length ? '从上面填好的字段名中选择（可多选）' : '先在上方填写字段名与类型'"
-          >
-            <el-option v-for="name in fieldNames" :key="name" :label="name" :value="name" />
-          </el-select>
-        </el-form-item>
         <el-form-item label="表注释（comment）">
           <el-input v-model="tableDialog.comment" />
         </el-form-item>
@@ -710,61 +712,59 @@ const tableDialog = reactive({
   open: false,
   name: '',
   fields: [],
-  partitionKeys: [],
-  primaryKeys: [],
   comment: '',
   options: {},
   saving: false,
 })
 
-/**
- * 新建表表单里「分区键」与「主键」两个下拉的可选值。
- *
- * <p>两者都只能取**已填写的字段名**——Paimon 不允许分区键或主键指向不存在的字段，
- * 而这两个数组在协议里是纯字符串列表，服务端无法替前端猜出候选。所以候选只能是
- * 当前这份字段表，随用户增删改字段实时重算。
- *
- * <p>去重是必要的：字段列表在编辑过程中允许暂时重名（用户还没改完），
- * 而重名的 option 会让 `filterable` 的匹配结果出现重复条目。
- */
-const fieldNames = computed(() => {
-  const seen = new Set()
-  const names = []
-  for (const field of tableDialog.fields) {
-    const name = field.name?.trim()
-    if (name && !seen.has(name)) {
-      seen.add(name)
-      names.push(name)
-    }
-  }
-  return names
-})
+/** 一行新字段的初始形状：三个勾选默认全不选，由用户按需勾。 */
+function emptyField() {
+  return { name: '', type: '', description: '', primary: false, nonNull: false, partition: false }
+}
 
 /**
- * 删除一个字段行，并把已选的分区键/主键里指向该字段的值一并去掉。
- *
- * <p>不清理的话，删掉字段后下拉里会留下一个选项列表中已不存在的标签：界面上看着
- * 像是还有这个分区键，提交时却只能由 Paimon 报错，或者更糟——静默发出一个引用
- * 不存在字段的 schema。在这里同步，界面与将要提交的内容才自洽。
+ * 删除一个字段行。主键 / 非空 / 分区都是行内的勾选状态，随行一起消失，
+ * 不再像旧的下拉方案那样要回头清理「指向已删字段的残留值」。
  */
 function removeField(index) {
-  const removed = tableDialog.fields[index]?.name?.trim()
   tableDialog.fields.splice(index, 1)
-  if (!removed || fieldNames.value.includes(removed)) {
-    return
+}
+
+/**
+ * 上移 / 下移：与相邻行整体对调，勾选状态跟着字段走。
+ *
+ * <p>字段顺序是有语义的：字段 id 由服务端按行序分配，分区键列表的排列
+ * 也来自行序，所以这个操作不是纯外观，调完即生效、无需额外提交。
+ * 按钮的可见性在模板里按行号裁剪（首行无上移、末行无下移），
+ * 这里不做越界防御——非法调用本来就不该发生。
+ */
+function moveField(index, direction) {
+  const target = index + direction
+  const fields = tableDialog.fields
+  ;[fields[index], fields[target]] = [fields[target], fields[index]]
+}
+
+/**
+ * 勾上主键时把非空一并勾上并锁住。
+ *
+ * <p>Paimon 的字段没有独立的非空属性（REST 的 DataField 只有
+ * id / name / type / description / defaultValue），主键字段的非空是引擎隐式强制的，
+ * 不存在「主键但可空」的表。所以这一步不是便利，而是如实表达约束：
+ * 模板里同时把非空勾选框设为 `:disabled="field.primary"`，锁住不让取消。
+ * 取消主键后恢复可编辑，是否保留非空由用户决定。
+ */
+function onPrimaryChange(field) {
+  if (field.primary) {
+    field.nonNull = true
   }
-  tableDialog.partitionKeys = tableDialog.partitionKeys.filter((key) => key !== removed)
-  tableDialog.primaryKeys = tableDialog.primaryKeys.filter((key) => key !== removed)
 }
 
 function openCreateTable() {
   tableDialog.name = ''
   tableDialog.fields = [
-    { name: 'id', type: 'BIGINT', description: '' },
-    { name: 'data', type: 'STRING', description: '' },
+    { ...emptyField(), name: 'id', type: 'BIGINT' },
+    { ...emptyField(), name: 'data', type: 'STRING' },
   ]
-  tableDialog.partitionKeys = []
-  tableDialog.primaryKeys = []
   tableDialog.comment = ''
   tableDialog.options = {}
   tableDialog.open = true
@@ -776,36 +776,55 @@ async function saveTable() {
     notifyError(new Error('请填写表名'))
     return
   }
-  const fields = tableDialog.fields
-    .filter((field) => field.name.trim() && field.type.trim())
-    .map((field, index) => ({
-      id: index + 1,
-      name: field.name.trim(),
-      type: field.type.trim(),
-      description: field.description?.trim() || null,
-    }))
-  if (!fields.length) {
-    notifyError(new Error('至少填写一个字段（字段名与类型都不能为空）'))
-    return
-  }
-  // 分区键与主键都是字段名的字符串列表，服务端只做透传，真正的约束由 Paimon 施加：
-  // ① 两者都必须指向已声明的字段；② 主键非空时，分区键必须是主键的子集。
-  // 在这里提前拦下，用户看到的是「哪几个字段不对」，而不是 Paimon 抛出的一行英文。
-  const declared = new Set(fields.map((field) => field.name))
-  const strayKeys = [
-    ...new Set(
-      [...tableDialog.partitionKeys, ...tableDialog.primaryKeys]
-        .filter((key) => !declared.has(key)),
-    ),
-  ]
-  if (strayKeys.length) {
+  const rows = tableDialog.fields
+  // 勾了任一开关的字段必须填写完整：勾选是「这个字段要进 primaryKeys /
+  // partitionKeys」的声明，协议里这些键是纯字段名列表，指向一行残缺数据
+  // 只能由 Paimon 报错，在这里提前拦下能指出具体是哪个字段。
+  const flaggedIncomplete = rows.filter(
+    (row) => (row.primary || row.partition || row.nonNull) && !(row.name.trim() && row.type.trim()),
+  )
+  if (flaggedIncomplete.length) {
     notifyError(
-      new Error(`分区键与主键只能取已填写完整的字段（字段名与类型都不能为空），请修正：${strayKeys.join(', ')}`),
+      new Error(`勾选了主键 / 非空 / 分区的字段，字段名与类型都必须填写完整，请修正：${flaggedIncomplete.map((row) => row.name.trim() || `第 ${rows.indexOf(row) + 1} 行`).join(', ')}`),
     )
     return
   }
-  const outsidePrimary = tableDialog.primaryKeys.length
-    ? tableDialog.partitionKeys.filter((key) => !tableDialog.primaryKeys.includes(key))
+  const valid = rows.filter((row) => row.name.trim() && row.type.trim())
+  if (!valid.length) {
+    notifyError(new Error('至少填写一个字段（字段名与类型都不能为空）'))
+    return
+  }
+  // 重名检查只针对被勾选的字段：主键 / 分区在协议里是字段名列表，两个同名行
+  // 都勾了主键时，同一个名字会出现两次，语义不明。没勾选的暂时重名仍允许
+  // （用户可能还没改完），真正的唯一性由 Paimon 在提交时把关。
+  const flaggedNames = valid
+    .filter((row) => row.primary || row.partition)
+    .map((row) => row.name.trim())
+  const duplicated = flaggedNames.filter((key, index) => flaggedNames.indexOf(key) !== index)
+  if (duplicated.length) {
+    notifyError(
+      new Error(`主键与分区字段不能指向重名字段，请修正：${[...new Set(duplicated)].join(', ')}`),
+    )
+    return
+  }
+  // 勾选即声明：主键 / 分区从行内勾选状态收集，按行序排列。
+  const primaryKeys = valid.filter((row) => row.primary).map((row) => row.name.trim())
+  const partitionKeys = valid.filter((row) => row.partition).map((row) => row.name.trim())
+  // 非空的唯一落点是主键：REST 的 DataField 没有非空属性，勾了非空又不在
+  // 主键里的字段没有任何地方可存，静默丢弃等于骗人，在这里明确拦下。
+  const nonPrimaryNonNull = valid
+    .filter((row) => row.nonNull && !row.primary)
+    .map((row) => row.name.trim())
+  if (nonPrimaryNonNull.length) {
+    notifyError(
+      new Error(`Paimon 只支持主键隐式非空，这些字段的「非空」无法保存，请去掉勾选或加入主键：${nonPrimaryNonNull.join(', ')}`),
+    )
+    return
+  }
+  // Paimon 的约束：主键非空时，分区键必须是主键的子集。提前拦下，
+  // 用户看到的是「哪几个字段不对」，而不是 Paimon 抛出的一行英文。
+  const outsidePrimary = primaryKeys.length
+    ? partitionKeys.filter((key) => !primaryKeys.includes(key))
     : []
   if (outsidePrimary.length) {
     notifyError(
@@ -813,14 +832,20 @@ async function saveTable() {
     )
     return
   }
+  const fields = valid.map((row, index) => ({
+    id: index + 1,
+    name: row.name.trim(),
+    type: row.type.trim(),
+    description: row.description?.trim() || null,
+  }))
   tableDialog.saving = true
   try {
     await catalogApi.createTable(prefix.value, database.value, {
       identifier: { database: database.value, object: name },
       schema: {
         fields,
-        partitionKeys: tableDialog.partitionKeys,
-        primaryKeys: tableDialog.primaryKeys,
+        partitionKeys,
+        primaryKeys,
         options: tableDialog.options,
         comment: tableDialog.comment || null,
       },
@@ -1308,8 +1333,74 @@ defineExpose({ loadCurrentList })
   flex: 0 0 32%;
 }
 
-.pc-field-desc {
-  flex: 1;
+/* 新建表的字段列表：表头 + 数据行共用同一套栅格，勾选列窄、
+   输入列宽，列对齐关系与参考设计一致（列名称 / 主键 / 非空 / 分区字段 /
+   数据类型 / 描述 / 操作）。 */
+.pc-field-table {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.pc-field-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) 44px 44px 64px minmax(0, 1.05fr) minmax(0, 1fr) 108px;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 4px;
+  border-bottom: 1px solid var(--pc-border);
+}
+
+/* 悬停淡染一行，帮用户在宽表里对准正在编辑的那行 */
+.pc-field-grid:not(.pc-field-head):hover {
+  background: var(--pc-surface-2);
+}
+
+.pc-field-head {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--pc-text-dim);
+  padding-top: 0;
+  padding-bottom: 7px;
+  border-bottom-color: color-mix(in srgb, var(--pc-border) 60%, transparent);
+}
+
+/* 三个勾选列与其表头都居中：栅格列是定宽的，内容默认拉伸到起点 */
+.pc-field-head .pc-field-check,
+.pc-field-head .pc-field-op {
+  text-align: center;
+}
+
+.pc-field-grid :deep(.el-checkbox) {
+  justify-content: center;
+  margin-right: 0;
+  height: auto;
+}
+
+/* 操作列：删除 | 上移 | 下移 三个文本链接，竖线分隔与参考设计一致 */
+.pc-field-op {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  white-space: nowrap;
+}
+
+.pc-field-op :deep(.el-button) {
+  margin: 0;
+  padding: 0 2px;
+  height: auto;
+}
+
+.pc-field-sep {
+  color: var(--pc-border);
+  font-size: 12px;
+  user-select: none;
+}
+
+/* 行间不再留 gap（分隔靠横线），「添加一项」补回与表格的间距 */
+.pc-field-table > .el-button {
+  margin-top: 8px;
+  align-self: flex-start;
 }
 
 .pc-pre :deep(textarea) {
