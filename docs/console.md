@@ -76,7 +76,8 @@ paimon-rest-console/
     │   └── oidc.js                OIDC 授权码 + PKCE：授权 URL、state、换令牌
     ├── components/                ResourceState（三态）、PropertiesEditor、StorageConfigFields、
     │                              CredentialDialog、FieldLabel（字段备注收进问号图标）、
-    │                              TipNote（区块说明收进问号图标）、
+    │                              TipNote（区块说明收进问号图标）、SectionTitle（表单小节头，
+    │                              替代 el-divider 的分组标题）、
     │                              JsonBlock、CopyText、TimeText、PageHeader、PanelCard
     ├── composables/index.js       useResource（竞态丢弃）、刷新事件、通知与危险确认
     ├── layouts/ConsoleLayout.vue  侧边导航 + catalog 选择器 + 主题切换 + 刷新
@@ -344,7 +345,9 @@ BASE=http://127.0.0.1:8080 CLIENT_ID=<clientId> CLIENT_SECRET=<secret> \
    说明文字**不要**直接铺在页面上（表单页会被说明文字占满）：字段备注用
    `FieldLabel` 收进字段名后的问号图标，区块级的口径与边界用 `TipNote` 收进
    问号图标——两者悬停显示，短文本传 `text` 属性，带 `code` / 分段的富文本用
-   默认插槽（见两个组件的文档注释）。
+   默认插槽（见两个组件的文档注释）。表单分组标题用 `SectionTitle`
+   （强调条 + 渐隐细线），不要用 `el-divider content-position="left"`——
+   它的分组标题又淡又小，看上去不像分组倒像掉了一半的字。
 4. `src/router/index.js`：加路由；想出现在侧边栏就写 `meta: { nav: true, icon, group }`。
    不需要令牌就能看的页面（登录页、SSO 回调）写 `meta: { public: true }`——
    它同时决定「不套管理布局」（`App.vue`）与「守卫不拦」（见 §6.2）。

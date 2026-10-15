@@ -88,7 +88,7 @@
           <el-input :model-value="String(dialog.entityVersion)" disabled />
         </el-form-item>
       </el-form>
-      <el-divider content-position="left">属性（properties）</el-divider>
+      <SectionTitle title="属性（properties）" />
       <PropertiesEditor v-model="dialog.properties" hint="自由扩展字段，留空即可" />
       <template #footer>
         <el-button @click="dialog.open = false">取消</el-button>
@@ -191,6 +191,7 @@ import { computed, reactive } from 'vue'
 
 import CopyText from '@/components/CopyText.vue'
 import FieldLabel from '@/components/FieldLabel.vue'
+import SectionTitle from '@/components/SectionTitle.vue'
 import IconAction from '@/components/IconAction.vue'
 import PageHeader from '@/components/PageHeader.vue'
 import PanelCard from '@/components/PanelCard.vue'

@@ -86,7 +86,7 @@
       </template>
 
       <template v-if="supportsStaticCredentials">
-        <el-divider content-position="left">静态凭据（可选）</el-divider>
+        <SectionTitle title="静态凭据（可选）" />
 
         <el-form-item>
           <template #label>
@@ -160,6 +160,7 @@
 import { computed, reactive, ref, watch } from 'vue'
 
 import FieldLabel from '@/components/FieldLabel.vue'
+import SectionTitle from '@/components/SectionTitle.vue'
 
 /**
  * `StorageConfigInfo` 的表单。

@@ -248,7 +248,7 @@
           <el-input v-model="dbDialog.name" placeholder="例如 ods、dwd" />
         </el-form-item>
       </el-form>
-      <el-divider content-position="left">选项（options）</el-divider>
+      <SectionTitle title="选项（options）" />
       <PropertiesEditor v-model="dbDialog.options" hint="例如 owner；留空即可" />
       <template #footer>
         <el-button @click="dbDialog.open = false">取消</el-button>
@@ -293,14 +293,15 @@
            建表时不接受用户声明，所以这里不出现字段表格；提交时 fields 送空数组，
            服务端按表格式把固定列补上。详情页会把这六列展示出来。 -->
       <template v-if="isObjectTable">
-        <el-divider content-position="left">
-          字段信息（fields）
-          <TipNote>
-            Object 表建表时不需要填写字段：它对外暴露的是目录里对象的元数据，
-            列由 Paimon 固定为 path / name / length / mtime / atime / owner。
-            这六列在表详情页的「字段列表」里可以看到。
-          </TipNote>
-        </el-divider>
+        <SectionTitle title="字段信息（fields）">
+          <template #tip>
+            <TipNote>
+              Object 表建表时不需要填写字段：它对外暴露的是目录里对象的元数据，
+              列由 Paimon 固定为 path / name / length / mtime / atime / owner。
+              这六列在表详情页的「字段列表」里可以看到。
+            </TipNote>
+          </template>
+        </SectionTitle>
       </template>
 
       <template v-else>
@@ -308,17 +309,18 @@
              非空、分区字段、数据类型、描述、操作一排），勾选即声明，不再单独设下拉。
              Format 表没有这三列——Paimon 不允许 format 表带主键，分区也不由 catalog 管，
              因此表头与行一起收起这三列，栅格另走四列版。 -->
-        <el-divider content-position="left">
-          字段信息（fields）
-          <TipNote v-if="supportsKeys">
-            主键字段自动非空且不可取消；非主键字段勾「非空」会在创建时被拦下——Paimon 的字段没有
-            独立的非空属性，该约束只能通过主键隐式成立。字段 id 由服务端按顺序补齐，这里不需要填。
-          </TipNote>
-          <TipNote v-else>
-            Format 表只描述列：它的数据是目录里按 {{ tableDialog.fileFormat }} 格式存好的文件，
-            没有主键，分区也不由 catalog 管理。字段 id 由服务端按顺序补齐，这里不需要填。
-          </TipNote>
-        </el-divider>
+        <SectionTitle title="字段信息（fields）">
+          <template #tip>
+            <TipNote v-if="supportsKeys">
+              主键字段自动非空且不可取消；非主键字段勾「非空」会在创建时被拦下——Paimon 的字段没有
+              独立的非空属性，该约束只能通过主键隐式成立。字段 id 由服务端按顺序补齐，这里不需要填。
+            </TipNote>
+            <TipNote v-else>
+              Format 表只描述列：它的数据是目录里按 {{ tableDialog.fileFormat }} 格式存好的文件，
+              没有主键，分区也不由 catalog 管理。字段 id 由服务端按顺序补齐，这里不需要填。
+            </TipNote>
+          </template>
+        </SectionTitle>
         <div class="pc-field-table">
           <div class="pc-field-grid pc-field-head" :class="{ 'pc-field-grid-plain': !supportsKeys }">
             <span>列名称</span>
@@ -389,14 +391,14 @@
         </div>
       </template>
 
-      <el-divider content-position="left">表注释（可选）</el-divider>
+      <SectionTitle title="表注释（可选）" />
       <el-form label-position="top" size="small" class="pc-form">
         <el-form-item label="表注释（comment）">
           <el-input v-model="tableDialog.comment" />
         </el-form-item>
       </el-form>
 
-      <el-divider content-position="left">表属性（options）</el-divider>
+      <SectionTitle title="表属性（options）" />
       <PropertiesEditor
         v-model="tableDialog.options"
         hint="例如 bucket = 4、merge-engine = deduplicate；type 由上面的表格式决定，非 Paimon 表的 path 留空时由服务端按表位置补齐"
@@ -565,6 +567,7 @@ import JsonBlock from '@/components/JsonBlock.vue'
 import PageHeader from '@/components/PageHeader.vue'
 import PropertiesEditor from '@/components/PropertiesEditor.vue'
 import ResourceState from '@/components/ResourceState.vue'
+import SectionTitle from '@/components/SectionTitle.vue'
 import TimeText from '@/components/TimeText.vue'
 import TipNote from '@/components/TipNote.vue'
 import { catalogApi } from '@/api/catalog.js'

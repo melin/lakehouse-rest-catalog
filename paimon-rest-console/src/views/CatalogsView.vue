@@ -141,7 +141,7 @@
         </div>
       </el-alert>
 
-      <el-divider content-position="left">存储配置（storageConfigInfo）</el-divider>
+      <SectionTitle title="存储配置（storageConfigInfo）" />
       <!--
         key 让每次打开都拿到一个新实例：本组件的表单是内部副本，
         靠 props 同步（见组件内的说明），这里是第三层保险——极端情况下
@@ -157,7 +157,7 @@
         :static-credentials-enabled="staticCredentialsEnabled"
       />
 
-      <el-divider content-position="left">目录属性（properties）</el-divider>
+      <SectionTitle title="目录属性（properties）" />
       <PropertiesEditor v-model="dialog.properties" hint="例如 owner、warehouse；留空即可" />
 
       <template #footer>
@@ -175,6 +175,7 @@ import { computed, reactive, ref } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
 
 import FieldLabel from '@/components/FieldLabel.vue'
+import SectionTitle from '@/components/SectionTitle.vue'
 import IconAction from '@/components/IconAction.vue'
 import PageHeader from '@/components/PageHeader.vue'
 import PanelCard from '@/components/PanelCard.vue'

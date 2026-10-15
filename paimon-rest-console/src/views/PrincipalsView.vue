@@ -83,7 +83,7 @@
           <el-switch v-model="createDialog.rotationRequired" />
         </el-form-item>
       </el-form>
-      <el-divider content-position="left">属性（properties）</el-divider>
+      <SectionTitle title="属性（properties）" />
       <PropertiesEditor v-model="createDialog.properties" hint="自由扩展字段，留空即可" />
       <template #footer>
         <el-button @click="createDialog.open = false">取消</el-button>
@@ -164,6 +164,7 @@ import { computed, reactive, ref } from 'vue'
 
 import CopyText from '@/components/CopyText.vue'
 import FieldLabel from '@/components/FieldLabel.vue'
+import SectionTitle from '@/components/SectionTitle.vue'
 import IconAction from '@/components/IconAction.vue'
 import CredentialDialog from '@/components/CredentialDialog.vue'
 import PageHeader from '@/components/PageHeader.vue'

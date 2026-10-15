@@ -421,20 +421,40 @@ body {
   margin-bottom: 14px;
 }
 
-/* --- 分隔线文字 ---------------------------------------------------------
- * 表单弹窗用 el-divider 分组（存储配置 / 目录属性）。Element Plus 默认给它
- * 正文色与 14px，比字段标签还重，把「分组标题」渲染成了「另一段内容」。
- * 这条原先在 5 个视图里各写一遍且完全相同，收敛到这里。
+/* --- 小节标题（SectionTitle.vue） ---------------------------------------
+ * 表单弹窗的小节分组原先用 el-divider（存储配置 / 目录属性 / 字段信息…），
+ * 但它的观感单薄：通栏细线在文字两侧断开，文字又淡又小，看上去不像
+ * 「分组标题」倒像「掉了一半的字」。收敛到 SectionTitle 组件后，样式
+ * 只在这里定义一份。竖向强调条用主色，与主按钮 / 活跃页签同一族；
+ * 右侧细线渐隐收尾，不再与文字「抢断开」。
  * ---------------------------------------------------------------------- */
 
-.el-divider__text {
+.pc-section {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 16px 0 12px;
+}
+
+.pc-section-bar {
+  flex: none;
+  width: 3px;
+  height: 13px;
+  border-radius: 2px;
+  background: var(--pc-accent);
+}
+
+.pc-section-title {
   font-size: 13px;
-  color: var(--pc-text-dim);
-  /* 分隔线文字靠自己的背景色「挖断」那条线，所以背景必须与所在容器一致。
-     它只出现在 Element 的表面里（弹窗 / 抽屉 / 卡片），用 Element 的背景变量
-     而不是本工程的 --pc-surface：深色模式下 Element 的弹窗底色（#141414）
-     与卡片的 #111a2b 不同，用错了会看到一块色差。 */
-  background: var(--el-bg-color);
+  font-weight: 600;
+  color: var(--pc-text);
+  letter-spacing: 0.2px;
+}
+
+.pc-section-line {
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(to right, var(--pc-border), transparent);
 }
 
 /* --- 页面骨架 --------------------------------------------------------- */
