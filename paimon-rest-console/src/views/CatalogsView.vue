@@ -38,7 +38,7 @@
         <el-table v-loading="table.loading.value" :data="rows" size="small">
           <el-table-column label="名称" min-width="150">
             <template #default="{ row }">
-              <RouterLink class="pc-link" :to="{ name: 'browse', query: { catalog: row.name } }">
+              <RouterLink class="pc-link" :to="{ name: 'catalogDetail', params: { catalogName: row.name } }">
                 {{ row.name }}
               </RouterLink>
             </template>
@@ -71,9 +71,14 @@
               <span class="pc-mono">{{ row.entityVersion ?? '—' }}</span>
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="160" fixed="right">
+          <el-table-column label="操作" width="200" fixed="right">
             <template #default="{ row }">
               <IconAction icon="Edit" label="编辑" type="primary" @click="openEdit(row)" />
+              <IconAction
+                icon="Files"
+                label="浏览库与对象"
+                @click="openBrowse(row)"
+              />
               <IconAction
                 icon="Lock"
                 label="权限管理"
@@ -230,6 +235,18 @@ function openCreate() {
   dialog.properties = {}
   dialog.storageConfigInfo = { storageType: supportedTypes.value[0] || 'FILE', allowedLocations: [] }
   dialog.open = true
+}
+
+/**
+ * 跳到「目录浏览」并把这个 catalog 设为工作目录。
+ *
+ * <p>浏览页的当前 catalog 读的是 `route.query.catalog`，缺省回落到
+ * `session.selectedCatalog`。两处都写：只写 query 的话，顶栏的目录选择器
+ * 会停在旧值上；只写 session 的话，深链接与刷新拿不到这个 catalog。
+ */
+function openBrowse(row) {
+  session.selectCatalog(row.name)
+  router.push({ name: 'browse', query: { catalog: row.name } })
 }
 
 /**

@@ -239,10 +239,12 @@ body {
   width: 100%;
 }
 
-/* 表格里的可点名称 */
+/* 表格里的可点名称。多数用法是没有 href 的 <a>（点击走 JS，不做页面跳转），
+ * 浏览器只给带 href 的链接默认手型，这里要自己补。 */
 .pc-link {
   color: var(--el-color-primary);
   text-decoration: none;
+  cursor: pointer;
 }
 
 .pc-link:hover {

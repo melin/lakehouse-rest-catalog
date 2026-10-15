@@ -144,10 +144,15 @@ const trail = computed(() => {
 
 function onSelectCatalog(name) {
   session.selectCatalog(name)
-  // 切了目录，当前页面展示的资源多半不在新目录里，回到浏览页更符合预期；
+  // 切了目录，当前页面展示的资源多半不在新目录里：两个「详情」页各自带目录名，
+  // 跟过去比原地刷新有意义——刷新出来的还是旧目录的数据，看起来像没生效。
   // 其余页面各自重新加载即可（刷新广播）。
   if (route.meta?.parent === 'browse') {
     router.push({ name: 'browse', query: { catalog: name } })
+    return
+  }
+  if (route.meta?.parent === 'catalogs') {
+    router.push({ name: 'catalogDetail', params: { catalogName: name } })
     return
   }
   refresh()

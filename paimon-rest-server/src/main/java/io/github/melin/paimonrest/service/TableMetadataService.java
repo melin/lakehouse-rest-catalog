@@ -4,29 +4,15 @@ import io.github.melin.paimonrest.config.RestServerProperties;
 import io.github.melin.paimonrest.domain.entity.CatalogEntity;
 import io.github.melin.paimonrest.domain.entity.TableEntity;
 import io.github.melin.paimonrest.domain.repo.CatalogRepository;
-import io.github.melin.paimonrest.dto.StorageDtos.StorageConfigInfo;
 import io.github.melin.paimonrest.support.ApiException;
 import io.github.melin.paimonrest.support.ResourceType;
-import io.github.melin.paimonrest.support.StorageConfigs;
-import io.github.melin.paimonrest.support.VendedStorageCredential;
 import java.io.IOException;
-import java.util.Iterator;
-import java.util.LinkedHashMap;
-import java.util.Locale;
-import java.util.Map;
 import java.util.ServiceConfigurationError;
-import java.util.ServiceLoader;
-import java.util.concurrent.ConcurrentHashMap;
 import lombok.RequiredArgsConstructor;
 import org.apache.paimon.Snapshot;
-import org.apache.paimon.catalog.CatalogContext;
 import org.apache.paimon.fs.FileIO;
-import org.apache.paimon.fs.FileIOLoader;
 import org.apache.paimon.fs.FileStatus;
 import org.apache.paimon.fs.Path;
-import org.apache.paimon.fs.local.LocalFileIO;
-import org.apache.paimon.options.CatalogOptions;
-import org.apache.paimon.options.Options;
 import org.apache.paimon.schema.Schema;
 import org.apache.paimon.schema.SchemaManager;
 import org.apache.paimon.schema.TableSchema;
@@ -81,7 +67,8 @@ import org.springframework.stereotype.Service;
  * <p><b>为什么每次操作都新建 FileIO。</b>本类不缓存 FileIO，也不缓存凭证：写路径是
  * 低频操作（建表 / 改表 / 回滚 / 删表），而为缓存付出的代价是「管理 API 换过 catalog
  * 凭据之后，服务端还在用旧钥匙写」——那种问题会在下次建表时才炸，且报错只说是
- * 认证失败。真要优化也该先量出来，而不是先猜。
+ * 认证失败。真要优化也该先量出来，而不是先猜。装配这层本身在
+ * {@link StorageFileIoFactory}，与「浏览 catalog 仓库文件」共用。
  *
  * <p>三档行为（默认值及其代价）见 {@link RestServerProperties.TableMetadata}。
  */
@@ -91,26 +78,18 @@ public class TableMetadataService {
 
     private static final Logger log = LoggerFactory.getLogger(TableMetadataService.class);
 
-    /** 本地文件系统的 scheme，与 {@code LocalFileIOLoader.SCHEME} 一致。 */
-    private static final String SCHEME_FILE = "file";
-
     private final CatalogRepository catalogRepository;
-
-    private final StorageRuntimePolicy storagePolicy;
 
     private final RestServerProperties properties;
 
     /**
-     * scheme → FileIO 实现，来自 {@code META-INF/services/org.apache.paimon.fs.FileIOLoader}。
+     * 服务端自己访问仓库用的 FileIO 装配（按 scheme 找实现 + 配凭据）。
      *
-     * <p>自己做这层发现而不用 {@code FileIO.get(path, context)}：后者对本部署会
-     * 直接失败——它构造 {@code ResolvingFileIO}，而 {@code ResolvingFileIO.configure}
-     * 要拿 Hadoop {@code Configuration}，服务端不带 Hadoop。逐条列举的写法同时
-     * 让「这个 scheme 有没有实现」变成一个可以自己给出错误信息的问题。
+     * <p>与「浏览 catalog 仓库文件」共用同一份装配，理由见
+     * {@link StorageFileIoFactory} 的类注释：两份分别实现时漂移的是凭据来源，
+     * 而那种分歧的表现是「引擎能写、服务端写不进去」，两边报错都只说认证失败。
      */
-    private final Map<String, FileIOLoader> loaders = new ConcurrentHashMap<>();
-
-    private volatile boolean loadersDiscovered;
+    private final StorageFileIoFactory fileIoFactory;
 
     // ------------------------------------------------------------------ 对外动作
 
@@ -327,7 +306,7 @@ public class TableMetadataService {
      *
      * <p><b>这里也接住 {@link ApiException}，是刻意的。</b>它看起来像「把业务错误
      * 一起吞了」，实际接住的都是同一类事实：<b>这份部署算不出访问仓库所需的凭据</b>。
-     * 典型来源是 {@link #fileIOOptions} 里的凭据下发——
+     * 典型来源是 {@link StorageFileIoFactory#optionsFor} 里的凭据下发——
      * {@code credential-manager.type=noop}（部署不代发凭据）、
      * catalog 指向一个没配过的 {@code storageName}（具名存储缺失）、
      * 或 catalog 已在解析中途被删。
@@ -359,91 +338,19 @@ public class TableMetadataService {
 
     // ------------------------------------------------------------------ FileIO 构造
 
-    /** 服务端自己用的 FileIO。每次调用都重新按当前配置构造，理由见类注释。 */
-    private FileIO fileIO(TableEntity table) throws IOException {
-        Path path = new Path(table.getPath());
-        String scheme = schemeOf(path);
-        CatalogContext context = CatalogContext.create(new Options(fileIOOptions(table)));
-        if (scheme == null) {
-            // 没有 scheme 的路径按本地文件处理，与 FileIO.get 的判定保持一致
-            return new LocalFileIO();
-        }
-        FileIOLoader loader = loaders().get(scheme);
-        if (loader == null) {
-            throw new IOException("no FileIO implementation for scheme '" + scheme
-                    + "' is available on the classpath; paimon.rest.file-io.type="
-                    + storagePolicy.fileIo().wireName()
-                    + " declares which storages this deployment accepts, but the actual"
-                    + " implementation has to be deployed as a Paimon plugin"
-                    + " (file:// is built in; s3://, obs:// and oss:// are not)");
-        }
-        FileIO fileIO = loader.load(path);
-        fileIO.configure(context);
-        return fileIO;
-    }
-
     /**
-     * 交给 FileIO 的选项：catalog 的存储种类与位置，加上本服务端为它算出的凭据。
+     * 服务端自己用的 FileIO。每次调用都重新按当前配置构造，理由见类注释。
      *
-     * <p>密钥来源与引擎完全一致（含「catalog 自带静态凭据」这一级），因此
-     * 「服务端能不能写」这个问题与「引擎能不能写」是同一个答案，不需要分别排查。
-     *
-     * <p>仓库位置（{@code warehouse}）也要给：对象存储的 FileIO 在缺少
-     * 定位信息时会退回默认凭据链与默认区域，报出来的错与真正的原因隔着一层。
+     * <p>「按 scheme 找实现、配上凭据」这两步在 {@link StorageFileIoFactory} 里，
+     * 它同时被「浏览 catalog 仓库文件」那条链路使用——两处共用一份装配，
+     * 才不会出现「引擎能写、控制台列不出目录」这种凭据来源漂移。
      */
-    private Map<String, String> fileIOOptions(TableEntity table) {
+    private FileIO fileIO(TableEntity table) throws IOException {
         CatalogEntity catalog = catalogRepository.findById(table.getCatalogId())
                 .orElseThrow(() -> ApiException.managementNotExist(ResourceType.CATALOG, table.getCatalogId()));
-        Map<String, String> options = new LinkedHashMap<>();
-        StorageConfigInfo storage = StorageConfigs.of(catalog);
-        if (storage != null) {
-            VendedStorageCredential vended =
-                    storagePolicy.credentialManager().vend(storage, table.getId(), table.getPath());
-            options.putAll(vended.token());
-        }
-        if (catalog.getWarehouse() != null && !catalog.getWarehouse().isBlank()) {
-            options.put(CatalogOptions.WAREHOUSE.key(), catalog.getWarehouse());
-        }
-        return options;
-    }
-
-    /** 路径的 scheme；无 scheme（本地相对/绝对路径）时返回 {@code null}。 */
-    private static String schemeOf(Path path) {
-        String scheme = path.toUri().getScheme();
-        return scheme == null || scheme.isBlank() ? null : scheme.toLowerCase(Locale.ROOT);
-    }
-
-    /**
-     * 发现一次 FileIOLoader 并按 scheme 建索引。
-     *
-     * <p>逐个接住加载失败：插件 jar 损坏或依赖缺失时，{@code ServiceLoader} 会在
-     * 「取下一个」这一步抛 {@link ServiceConfigurationError}。一个坏插件不该让
-     * 整个 scheme 索引都建不起来——那会把问题放大成「连本地表也建不了」。
-     */
-    private Map<String, FileIOLoader> loaders() {
-        if (!loadersDiscovered) {
-            synchronized (this) {
-                if (!loadersDiscovered) {
-                    discoverLoaders();
-                    loadersDiscovered = true;
-                }
-            }
-        }
-        return loaders;
-    }
-
-    private void discoverLoaders() {
-        Iterator<FileIOLoader> iterator =
-                ServiceLoader.load(FileIOLoader.class, FileIOLoader.class.getClassLoader()).iterator();
-        while (iterator.hasNext()) {
-            try {
-                FileIOLoader loader = iterator.next();
-                loaders.putIfAbsent(loader.getScheme().toLowerCase(Locale.ROOT), loader);
-            } catch (ServiceConfigurationError | LinkageError e) {
-                log.warn("skipping an unusable Paimon FileIOLoader on the classpath: {}", rootMessage(e));
-            }
-        }
-        log.info("discovered Paimon FileIO implementations for schemes {}", loaders.keySet());
+        return fileIoFactory.open(
+                new Path(table.getPath()),
+                fileIoFactory.optionsFor(catalog, table.getId(), table.getPath()));
     }
 
     // ------------------------------------------------------------------ 辅助

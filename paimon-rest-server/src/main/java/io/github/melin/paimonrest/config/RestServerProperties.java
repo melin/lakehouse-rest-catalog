@@ -63,6 +63,9 @@ public class RestServerProperties {
 
     private final TableMetadata tableMetadata = new TableMetadata();
 
+    /** {@code paimon.rest.file-browser.*}：控制台的文件浏览器（见 {@link FileBrowser}）。 */
+    private final FileBrowser fileBrowser = new FileBrowser();
+
     /** Bearer 鉴权开关。关闭时所有请求以 {@code principal} 身份通过。 */
     @Getter
     @Setter
@@ -731,5 +734,43 @@ public class RestServerProperties {
          * 这一点与 Paimon 自己的 {@code HiveCatalog.dropTable} 一致。
          */
         private boolean purgeOnDrop = false;
+    }
+
+    /**
+     * {@code paimon.rest.file-browser.*}：控制台「Catalog 详情 → 文件列表」能看多深。
+     *
+     * <p><b>为什么这件事需要一组配置。</b>这个页面列出的是 catalog 仓库里的物理目录，
+     * 而不是契约里那层「库 / 表」抽象——它比其余只读端点更靠近数据：
+     * 能看到某个表目录里有哪些文件、什么时候写的、有没有临时文件残留。
+     * 排查「表建出来了却写不进去」这类问题时正是要看这些，所以默认开着；
+     * 但它属于运维面而不是数据面的能力（本工程其余端点读的都是元数据），
+     * 因此留一个开关和一条上限，让不想要它的部署能整体关掉，也不至于
+     * 被一个几十万文件的目录拖住。
+     */
+    @Getter
+    @Setter
+    public static class FileBrowser {
+
+        /**
+         * 是否开放 {@code GET /api/console/v1/catalogs/{catalogName}/files}。
+         *
+         * <p>默认开启。关掉时该端点回 501，并把这一项配置名写在错误里——
+         * 否则现象是「页面上那个页签永远是错误」，看不出是部署刻意关的。
+         *
+         * <p>它只能挡「控制台看目录」这一件事：仓库本身仍由引擎与服务端读写，
+         * 关掉它不改变任何数据面行为。
+         */
+        private boolean enabled = true;
+
+        /**
+         * 单次列出的条目上限。
+         *
+         * <p>一个仓库根下可能有成千上万个库目录，分层看还好，但对象存储的
+         * {@code listStatus} 是一次前缀列举，全量拉回来再截断的代价落在服务端。
+         * 超过上限时**返回前 N 条并标记 {@code truncated}**，而不是报错：
+         * 列表页的价值在「能下钻」，为了完整性把它整个拒掉反而让人看不到任何东西。
+         * 排序是目录优先、名称升序，因此被截掉的总是尾部——用户至少能看到所有目录。
+         */
+        private int maxEntries = 1000;
     }
 }

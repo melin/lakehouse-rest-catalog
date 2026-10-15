@@ -67,10 +67,11 @@ paimon-rest-console/
 ├── vite.config.js                 base=/console/，outDir 指向服务端 resources/static/console
 └── src/
     ├── api/
-    │   ├── endpoints.js           ★ 全部 77 条端点的 method/path，唯一契约表
+    │   ├── endpoints.js           ★ 全部 78 条端点的 method/path，唯一契约表
     │   ├── client.js              fetch 封装：鉴权、路径拼装、错误归一化
     │   ├── catalog.js             Catalog API 的调用函数
     │   ├── management.js          Management API 的调用函数（含创建请求的包体约定）
+    │   ├── console.js             控制台扩展端点（除登录之外的那些，目前只有仓库文件浏览）
     │   ├── console-auth.js        登录引导、用户名密码换令牌、客户端凭据换令牌（这三条不需要令牌）
     │   └── oidc.js                OIDC 授权码 + PKCE：授权 URL、state、换令牌
     ├── components/                ResourceState（三态）、PropertiesEditor、StorageConfigFields、
@@ -85,7 +86,7 @@ paimon-rest-console/
     │                              （列表头 .pc-list-head、工具行 .pc-tools-row、
     │                              授权表单栅格 .pc-form-grid 等）也收敛在这里
     ├── utils/format.js            时间、字节、JSON 等展示格式化
-    └── views/                     11 个页面，见 §4
+    └── views/                     12 个页面，见 §4
 ```
 
 `src/api/endpoints.js` 与 `scripts/verify-console.py` 是这套结构里的两根钉子，
@@ -138,7 +139,8 @@ paimon-rest-console/
 | `/` | 控制台概览 | 统计块（三个数量）、服务端配置摘要、**连接自检**、catalog 清单、`GET /v1/config` 展示 |
 | `/browse` | 目录浏览 | 左库右对象；四页签（表/视图/函数/语义视图）；建库、建表、注册表、按表 ID 定位、重命名、删除、详情抽屉。表页签的过滤为空时说明「没有匹配 ×××」，与「库里没有表」区分开 |
 | `/tables/:prefix/:database/:table` | [表详情](console-table-detail.md) | 八页签：详细信息 / Schema / 变更 / 快照 / 标签 / 分支 / 分区 / 数据访问；含**变更构造器**、快照与标签的**回滚**。授权不在这张表上做——表级权限统一到「权限管理」页 |
-| `/catalogs` | Catalogs | 列出 / 创建 / 详情 / 更新（带版本）/ 删除 |
+| `/catalogs` | Catalogs | 列出 / 创建 / 详情 / 更新（带版本）/ 删除。名称链到详情页；操作列另有「浏览库与对象」直达 `/browse` |
+| `/catalogs/:catalogName` | [Catalog 详情](console-catalog-detail.md) | 三页签：概览 / 文件列表 / 配置（**预留设计**）。文件列表按仓库物理目录列一层，目录名可点下钻、带面包屑与「返回上级」；只读，不提供删除与建目录 |
 | `/principals` | 主体 | 列出 / 创建 / 更新 / 删除 / rotate / reset；授予与撤销角色。创建、轮换、重置后的凭据弹窗可一键导出 JSON 文件（`{principal, clientId, clientSecret}`，文件名 `<主体>-credentials.json`），密钥仍只在弹窗期间可见 |
 | `/principal-roles` | 角色 | 列出 / 创建 / 更新 / 删除；查看成员；授予与撤销 catalog 角色（选 catalog 后自动加载，无需点「加载」） |
 | `/permissions` | 权限管理 | 控制台**唯一**的授权入口（Paimon 官方权限模型，principal 直授）：页头「添加授权」按钮开弹窗填表——多选授权对象（`user:` / `role:`，可手输任意 principal）、选**作用范围**（Catalog / Database / Table / View，四级就是官方的四种资源类型：catalog 不需要选库，表 / 视图还要选具体对象）、权限项按范围给（catalog：Create database/Alter/Drop/Grant；db：Create table/Alter/Drop/Describe；表：Select/Insert/Delete/Describe/Alter/Drop；视图：Select/Describe/Alter/Drop）、**有效期**默认长期有效，可选「指定日期」（按所选当天 23:59:59 本地时区换算成官方的 UTC instant；日历与手输都挡掉过去的时间）；主界面是授权清单——一行 = 一个主体 × 一个作用范围，同范围的权限并列成标签、点标签上的 × 逐项撤销，过期时间按日期显示（完整时刻在悬浮提示，7 天内到期标「N 天后」，过期条目不隐藏但标注「已过期」，多项不一致取最早并标注），资源合成「作用范围」一列（`整个 catalog` / `库` / `库.对象`，标注整 catalog/整库/单表），权限用与表单一致的词（UPDATE 显示为 Insert / Delete），空态给「添加授权」入口；支持过滤与幂等撤销 |
@@ -293,6 +295,9 @@ PYTHON=/path/to/python3 scripts/verify-console.py   # 多解释器时指定装�
 ```python
 EXTENSION_ENDPOINTS = {
     ("GET", "/api/console/v1/meta"): "控制台元数据（枚举取值与服务配置摘要），非 Polaris 规格",
+    # 仓库文件浏览：列 catalog 仓库里某个目录的一层内容（`?path=` 相对仓库根）。
+    # 它读的是物理目录（表目录下有哪些文件、有没有残留），两份规格都不涉及文件系统
+    ("GET", "/api/console/v1/catalogs/{catalogName}/files"): "控制台仓库文件浏览（列一层目录，只读，可配置关闭）",
     ("GET", "/api/console/v1/auth"): "控制台登录引导（可用认证方式、令牌端点、当前令牌状态）",
     ("POST", "/api/console/v1/login"): "控制台用户名密码登录（默认方式，响应是驼峰字段而非 OAuth 形状）",
     ("POST", "/api/catalog/v1/oauth/tokens"): "OAuth 2.0 客户端凭据令牌端点（RFC 6749 第 4.4 节）",
@@ -554,6 +559,16 @@ ls paimon-rest-server/target/classes/static/console/assets | wc -l   # 应与源
 登录链路本身另有 `ConsoleAuthEndpointTests`（31 个用例，错误码、接线、门禁范围、
 默认口令与限速）与两个运行期验收脚本，见 §5.2。
 
+仓库文件浏览（`/api/console/v1/catalogs/{catalogName}/files`）另有两类，**分开写**：
+
+| 测试类 | 用例 | 管什么 |
+| --- | --- | --- |
+| `CatalogFileBrowserTests` | 10 | 服务语义：下钻、目录优先排序、路径归一化与 `..` 拒绝、404/400/501 的判据、截断标记、关开关 |
+| `CatalogFileEndpointTests` | 3 | 接口形状：URL、`path` 查询参数、状态码、响应字段名 |
+
+两者分开是因为这些错误各自独立：服务能把目录列对，不代表端点拼对了
+（URL 错一位照样 404）；反之端点形状对了，服务也可能把「文件」当成目录列。
+
 最后一条把「产物不同步」变成了服务端测试能抓到的问题，
 与 `verify-console.py` 第 6 组是同一件事的两个入口（前者在 `mvnw test` 里跑，
 后者在提交前跑）。
@@ -592,5 +607,12 @@ ls paimon-rest-server/target/classes/static/console/assets | wc -l   # 应与源
   控制台登出后，IdP 那边的会话仍然存在。
 - **无审计视图。** 服务端记录了操作日志，但控制台目前没有对应的展示页；
   需要时按 §5.3 的清单加。
+- **文件浏览只读，且可关。** `/api/console/v1/catalogs/{catalogName}/files`
+  只做列目录：不提供删除、上传、建目录。关掉用
+  `paimon.rest.file-browser.enabled=false`（端点返回 501，消息里带这个键）。
+  它走的授权面与其余 console 端点相同——只过认证拦截器，不做资源级判定；
+  这与 `/api/console/v1/meta` 一致，而它暴露的是**存储布局**（表目录下有哪些文件），
+  比 meta 敏感，因此关掉它的开关是给「只想开控制台看元数据」的部署准备的。
+  详见 [`console-catalog-detail.md`](console-catalog-detail.md)。
 - **无 i18n。** 界面为中文单语，文案直接写在组件里。
 - **产物需手工同步。** 没有 CI 钩子强制 `verify-console.py`（见 §8.2）。

@@ -5,20 +5,24 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 控制台元数据端点（{@code GET /api/console/v1/meta}）的响应模型。
+ * 控制台扩展端点（{@code /api/console/v1/**}）的响应与请求模型。
  *
- * <p><b>本端点不是 Polaris 规格的一部分</b>，是本工程为 Web 控制台加的一个只读扩展，
+ * <p><b>这些端点不是 Polaris 规格的一部分</b>，是本工程为 Web 控制台加的扩展，
  * 与 {@code OBS} / {@code OSS} 两个扩展存储类型同属一类取舍（见
- * {@code docs/management-api-contract.md}）。它只做一件事：把服务端已经在用的枚举与服务配置
- * 导出给前端。
+ * {@code docs/management-api-contract.md}）。目前三类：元数据导出
+ * （{@code /meta}，把服务端已经在用的枚举与服务配置导出给前端）、登录
+ * （{@code /auth}、{@code /login}、令牌端点）、仓库文件浏览
+ * （{@code /catalogs/{name}/files}，见 {@link CatalogFileListing}）。
  *
  * <p>为什么不把这些取值直接写死在控制台里：控制台的表单要靠它们渲染下拉框
  * （存储类型、资源类型、可授予的权限），而权限与资源类型的对应关系由
  * {@link Privilege#allowedFor(String)} 从管理规格还原出来——前端复制一份必然漂移，
  * 而且漂移的表现是「提交后才被服务端拒绝」，排查成本高。这里做成一处的导出。
  *
- * <p>端点只暴露枚举取值与服务端自身的配置，不暴露任何主体、catalog 或凭据信息，
+ * <p>元数据端点只暴露枚举取值与服务端自身的配置，不暴露任何主体、catalog 或凭据信息，
  * 因此不做细粒度授权判定（与 {@code /api/management/v1/**} 一样只过认证拦截器）。
+ * 文件浏览器读的是 catalog 的仓库目录，比元数据敏感一层，取舍见
+ * {@code RestServerProperties.FileBrowser}。
  */
 public final class ConsoleDtos {
 
@@ -256,5 +260,60 @@ public final class ConsoleDtos {
     public record TokenError(
             @JsonProperty("error") String error,
             @JsonProperty("error_description") String errorDescription) {
+    }
+
+    /**
+     * {@code GET /api/console/v1/catalogs/{catalogName}/files} 的响应：仓库目录的一层内容。
+     *
+     * <p><b>这是控制台专属的只读扩展，不是 catalog API 的一部分。</b>Paimon 的 REST
+     * 协议只描述「库 / 表 / 视图」这层抽象，没有任何端点是看物理目录的；而排查问题
+     * 时的第一个问题偏偏是「表目录里到底有什么」——schema 写没写出去、快照文件在不在、
+     * 有没有残留的临时文件。这些信息此前只能登机器或配一套对象存储的控制台才能看到。
+     * 归在 {@code /api/console/} 下的理由与 {@code /meta} 相同：管理 API 那个命名空间
+     * 要和 Polaris 规格一一对应，往里塞规格外端点会让这条不变量需要额外解释。
+     *
+     * <p><b>响应里带的是相对仓库根的路径</b>（{@code path} 与每个条目的 {@code path}），
+     * 而不是绝对路径：绝对路径由服务端按 catalog 的 {@code warehouse} 拼出来，
+     * 控制台只需要把它原样回传就能下钻，不需要知道 scheme 与桶名。仓库根本身不在
+     * 这些相对路径里，但会以 {@code warehouse} 字段返回一次，供界面显示「这是哪儿」。
+     *
+     * @param catalog    catalog 的 prefix
+     * @param warehouse  catalog 登记的仓库位置（绝对路径，含 scheme）
+     * @param path       本次列出的目录，相对仓库根；仓库根为空串
+     * @param entries    条目，目录在前、同类按名称排序
+     * @param total      该目录下的条目总数；超过 {@code maxEntries} 时大于 {@code entries.size()}
+     * @param truncated  条目是否被上限截断（截断了就要在界面上说出来，否则「少了一些文件」
+     *                   会被误读成「文件不存在」）
+     * @param maxEntries 本部署的条目上限（{@code paimon.rest.file-browser.max-entries}）
+     */
+    public record CatalogFileListing(
+            String catalog,
+            String warehouse,
+            String path,
+            List<CatalogFileEntry> entries,
+            int total,
+            boolean truncated,
+            int maxEntries) {
+    }
+
+    /**
+     * 一个目录条目。
+     *
+     * <p>{@code size} 对目录是 0（不是「不知道」）：本地与对象存储的目录项本来就没有
+     * 长度语义，而把它算成递归大小会需要遍历整棵子树——那是另一个操作，不该藏在列表里。
+     * 界面据此对目录显示 {@code -}。
+     *
+     * @param name             条目名（不含父路径）
+     * @param path             相对仓库根的完整路径，可作为下一次请求的 {@code path}
+     * @param directory        是否目录；目录可下钻
+     * @param size             文件长度（字节）；目录为 0
+     * @param modificationTime 最后修改时间（epoch 毫秒）；取不到时为 0
+     */
+    public record CatalogFileEntry(
+            String name,
+            String path,
+            boolean directory,
+            long size,
+            long modificationTime) {
     }
 }

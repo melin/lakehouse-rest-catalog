@@ -85,6 +85,11 @@ CONSOLE_BASE = "/console/"
 # 规格之外的扩展端点。每一条都要有理由，且必须在控制台里真的被调用——否则就是过期条目。
 EXTENSION_ENDPOINTS = {
     ("GET", "/api/console/v1/meta"): "控制台元数据（枚举取值与服务配置摘要），非 Polaris 规格",
+    # 仓库文件浏览：列 catalog 仓库里某个目录的一层内容（`?path=` 相对仓库根）。
+    # 与 meta 一样是控制台扩展端点，服务端实现见 ConsoleFileController；
+    # 它读的是物理目录（表目录下有哪些文件、有没有残留），两份规格都不涉及文件系统，
+    # 因此按扩展端点登记。只读，且可以用 file-browser.enabled=false 关掉。
+    ("GET", "/api/console/v1/catalogs/{catalogName}/files"): "控制台仓库文件浏览（列一层目录，只读，可配置关闭）",
     # 登录引导。在服务端鉴权范围之外（WebConfig 用精确路径排除），
     # 因为登录页要先知道服务端支持哪些认证方式，才谈得上发起登录。
     ("GET", "/api/console/v1/auth"): "控制台登录引导（可用认证方式、令牌端点、当前令牌状态）",

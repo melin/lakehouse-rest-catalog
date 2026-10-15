@@ -54,6 +54,17 @@ const routes = [
     meta: { title: 'Catalogs', icon: 'Coin', group: '治理（Management API）', nav: true },
   },
   {
+    // catalog 详情。`catalogName` 就是 catalog 的 prefix（创建后不可改名），
+    // 因此它既在路径里也在查询参数里被别的页面引用，是同一件事的两种写法。
+    //
+    // 不进侧边菜单（没有 `nav`）：它是一个列表的下钻目标，和 `/tables/...` 一样，
+    // 单独列在菜单里会变成一个「打开就是空态」的入口。
+    path: '/catalogs/:catalogName',
+    name: 'catalogDetail',
+    component: () => import('@/views/CatalogDetailView.vue'),
+    meta: { title: 'Catalog 详情', group: '治理（Management API）', parent: 'catalogs' },
+  },
+  {
     path: '/principals',
     name: 'principals',
     component: () => import('@/views/PrincipalsView.vue'),

@@ -19,6 +19,10 @@ export const ENDPOINTS = {
   // 代价是它们能被匿名调用，因此暴露的内容按「对匿名访问者是否敏感」筛过一遍，
   // 且两条换令牌的端点自带失败限速。
   meta: { method: 'GET', path: '/api/console/v1/meta' },
+  // 仓库文件浏览：列出 catalog 仓库里某个目录的一层内容（`?path=` 给相对仓库根的路径）。
+  // 与 meta 一样是本工程的扩展端点，服务端实现见 ConsoleFileController；
+  // 它读的是物理目录（表目录里有哪些文件、有没有残留），不是元数据。
+  listCatalogFiles: { method: 'GET', path: '/api/console/v1/catalogs/{catalogName}/files' },
   // 登录引导：服务端支持哪些认证方式、令牌端点在哪儿、手上这个令牌算不算数。
   auth: { method: 'GET', path: '/api/console/v1/auth' },
   // 用户名 + 密码换令牌：控制台的默认方式，账号在服务端配置里（默认 admin/admin）。
