@@ -17,6 +17,9 @@ import java.util.Locale
  * spark.sql.extensions=io.github.melin.paimonrest.spark.ManagementSparkExtensions
  * spark.paimon.rest.management.url=http://catalog-host:8080/api/management/v1
  * spark.paimon.rest.token=&lt;调用者主体的令牌&gt;
+ * # 权限语句（GRANT ... TO USER ...）需要 catalog API 基址；默认由上面那个推导，
+ * # 服务部署在非标准路径下时才需要显式指定：
+ * # spark.paimon.rest.catalog.url=http://catalog-host:8080/v1
  *
  * # 2) 编程方式
  * val spark = PaimonRestManagement.install(SparkSession.builder())
@@ -40,6 +43,17 @@ object PaimonRestManagement {
   /** 管理 API 基址，须包含 {@code /api/management/v1} 前缀。 */
   val MANAGEMENT_URL = "spark.paimon.rest.management.url"
 
+  /**
+   * catalog API 基址，须包含 {@code /v1} 前缀。
+   *
+   * <p>只有权限语句（`GRANT ... TO USER ...` / `SHOW PERMISSIONS`）需要它：官方把权限端点
+   * 挂在 catalog API 下（`/v1/{prefix}/permissions`），而主体与角色的端点在管理 API 下。
+   * 默认留空表示「从管理基址推导」——把 {@code /api/management/v1} 换成 {@code /v1}，
+   * 常规部署下不需要配它。服务被部署在非标准路径下时推导不出来，此时必须显式配这一个，
+   * 否则权限语句会报一条指向本配置项的错。
+   */
+  val CATALOG_URL = "spark.paimon.rest.catalog.url"
+
   /** 调用者令牌，会作为 {@code Authorization: Bearer <token>} 发出。 */
   val TOKEN = "spark.paimon.rest.token"
 
@@ -50,6 +64,7 @@ object PaimonRestManagement {
   val EXTENSION_CLASS = classOf[ManagementSparkExtensions].getName
 
   private val DEFAULT_URL = "http://127.0.0.1:8080/api/management/v1"
+  private val DEFAULT_CATALOG_URL = ""
   private val DEFAULT_TIMEOUT_SECONDS = 30
 
   /**
@@ -74,9 +89,10 @@ object PaimonRestManagement {
    */
   def clientFor(session: SparkSession): ManagementApiClient = {
     val url = setting(session, MANAGEMENT_URL, DEFAULT_URL)
+    val catalogUrl = setting(session, CATALOG_URL, DEFAULT_CATALOG_URL)
     val token = setting(session, TOKEN, "")
     val timeout = setting(session, TIMEOUT_SECONDS, DEFAULT_TIMEOUT_SECONDS.toString)
-    new ManagementApiClient(url, token, Duration.ofSeconds(parseTimeout(timeout)))
+    new ManagementApiClient(url, token, catalogUrl, Duration.ofSeconds(parseTimeout(timeout)))
   }
 
   /**

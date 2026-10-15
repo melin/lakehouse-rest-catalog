@@ -8,6 +8,8 @@ import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 import org.apache.spark.sql.execution.command.RunnableCommand
 import org.apache.spark.sql.types.StringType
 
+import java.time.format.DateTimeParseException
+import java.time.{Instant, LocalDate, LocalTime, ZoneId}
 import java.util.LinkedHashMap
 import scala.collection.JavaConverters._
 
@@ -24,7 +26,7 @@ import scala.collection.JavaConverters._
  * 带在身上。这里的实现直接返回自身：即使 Spark 在优化阶段用「新旧子节点」的
  * 方式重建节点（`TreeNode` 的通用遍历机制），也不会有子节点被替换掉。
  *
- * <p>之所以不在每个命令里重复这段代码，是因为 18 个命令的行为完全一致，
+ * <p>之所以不在每个命令里重复这段代码，是因为 13 个命令的行为完全一致，
  * 分散实现只会给后续新增语句留下漏写的口子。
  */
 private[spark] trait ManagementCommand extends RunnableCommand {
@@ -43,7 +45,7 @@ private[spark] trait ManagementCommand extends RunnableCommand {
  *   - 读类语句（SHOW）与 `CREATE PRINCIPAL` 返回数据行，其中 `CREATE PRINCIPAL` 的
  *     明文密钥只在这一次结果里出现，必须用 `show()` / `collect()` 取走，否则只能靠
  *     `ROTATE PRINCIPAL` 重新签发——这一点与服务端「不保存明文」的约定一致；
- *   - 写类语句（CREATE 角色 / DROP / ALTER / GRANT / REVOKE）返回 0 行，
+ *   - 写类语句（CREATE / DROP / ALTER / GRANT / REVOKE）返回 0 行，
  *     与 Spark 原生 `CREATE TABLE` 这类命令的行为保持一致，便于脚本编排。
  *
  * <p>命令不持有 SparkSession 状态，客户端在构造时注入，因此同一个解析器实例可以
@@ -62,9 +64,47 @@ private[spark] object ManagementCommands {
     result
   }
 
-  /** 对象名在结果集中统一用点号连接的多级名表示。 */
-  def qualified(namespace: Seq[String], objectName: String): String =
-    (namespace :+ objectName).mkString(".")
+  /**
+   * 授权有效期的最后一个瞬间：`23:59:59.999`。
+   *
+   * <p>用毫秒而不是 `LocalTime.MAX`（纳秒级）：权限管理页写的就是毫秒，
+   * 两侧落库的值应当逐字相同，否则同一条授权经页面授与经 SQL 授在清单里看起来是两个值。
+   */
+  private val LAST_MOMENT_OF_DAY: LocalTime = LocalTime.of(23, 59, 59, 999000000)
+
+  /**
+   * 把脚本里的有效期写成服务端要的 ISO-8601 instant。
+   *
+   * <p>两种写法都收：`'2026-11-30'` 按**当天 23:59:59.999 本地时区**换算——
+   * 「到 11 月 30 日」应当是 30 日整日有效，而不是 30 日零点失效；完整 instant
+   * （`'2026-11-30T15:59:59.999Z'`）原样使用。
+   *
+   * <p>换算放在解析期：写错日期格式的语句在发出任何请求之前就失败，
+   * 与「形状非法不发请求」的既有约定一致。
+   */
+  def expireInstant(raw: String): String = {
+    val text = if (raw == null) "" else raw.trim
+    parseInstant(text)
+      .orElse(parseDate(text))
+      .getOrElse(throw new ManagementSqlException(
+        s"expire time must be a date (2026-11-30) or an ISO-8601 instant " +
+          s"(2026-11-30T15:59:59.999Z), got '$text'"))
+  }
+
+  private def parseInstant(text: String): Option[String] =
+    try {
+      Some(Instant.parse(text).toString)
+    } catch {
+      case _: DateTimeParseException => None
+    }
+
+  private def parseDate(text: String): Option[String] =
+    try {
+      Some(LocalDate.parse(text).atTime(LAST_MOMENT_OF_DAY)
+        .atZone(ZoneId.systemDefault()).toInstant.toString)
+    } catch {
+      case _: DateTimeParseException => None
+    }
 }
 
 // ---------------------------------------------------------------------- DDL：主体
@@ -190,59 +230,6 @@ private[spark] case class AlterPrincipalRoleCommand(
   }
 }
 
-private[spark] case class CreateCatalogRoleCommand(
-    catalog: String,
-    name: String,
-    properties: Map[String, String],
-    ifNotExists: Boolean,
-    client: ManagementApiClient) extends ManagementCommand {
-
-  override val output: Seq[AttributeReference] = Seq.empty
-
-  override def run(sparkSession: SparkSession): Seq[Row] = {
-    try {
-      client.createCatalogRole(catalog, name, ManagementCommands.toJavaMap(properties))
-      Seq.empty
-    } catch {
-      case e: ManagementApiException if ifNotExists && e.alreadyExists() => Seq.empty
-    }
-  }
-}
-
-private[spark] case class DropCatalogRoleCommand(
-    catalog: String,
-    name: String,
-    ifExists: Boolean,
-    client: ManagementApiClient) extends ManagementCommand {
-
-  override val output: Seq[AttributeReference] = Seq.empty
-
-  override def run(sparkSession: SparkSession): Seq[Row] = {
-    try {
-      client.dropCatalogRole(catalog, name)
-      Seq.empty
-    } catch {
-      case e: ManagementApiException if ifExists && e.notFound() => Seq.empty
-    }
-  }
-}
-
-private[spark] case class AlterCatalogRoleCommand(
-    catalog: String,
-    name: String,
-    toSet: Map[String, String],
-    toUnset: Set[String],
-    client: ManagementApiClient) extends ManagementCommand {
-
-  override val output: Seq[AttributeReference] = Seq.empty
-
-  override def run(sparkSession: SparkSession): Seq[Row] = {
-    client.alterCatalogRoleProperties(
-      catalog, name, ManagementCommands.toJavaMap(toSet), toUnset.toSet.asJava)
-    Seq.empty
-  }
-}
-
 // ---------------------------------------------------------------------- DCL
 
 private[spark] case class GrantPrincipalRoleCommand(
@@ -263,47 +250,32 @@ private[spark] case class GrantPrincipalRoleCommand(
   }
 }
 
-private[spark] case class GrantCatalogRoleCommand(
-    principalRole: String,
-    catalog: String,
-    catalogRole: String,
-    revoke: Boolean,
-    client: ManagementApiClient) extends ManagementCommand {
-
-  override val output: Seq[AttributeReference] = Seq.empty
-
-  override def run(sparkSession: SparkSession): Seq[Row] = {
-    if (revoke) {
-      client.revokeCatalogRole(principalRole, catalog, catalogRole)
-    } else {
-      client.grantCatalogRole(principalRole, catalog, catalogRole)
-    }
-    Seq.empty
-  }
-}
-
 /**
- * 资源授权：一次语句可以带多项权限，展开成多条授权请求。
+ * 资源授权：一次语句可以带多项 access，展开成多条授权请求。
  *
- * <p>多条权限时按顺序逐条调用；如果中途失败，前面的已经生效。服务端没有为
- * 「批量授权」提供原子端点（规格里每条 grant 是一个请求），因此这里不做伪原子化，
+ * <p>多条 access 时按顺序逐条调用；如果中途失败，前面的已经生效。服务端没有为
+ * 「批量授权」提供原子端点（官方规格里每条授权是一个请求），因此这里不做伪原子化，
  * 而是让失败直接抛出，由调用方按需回滚——SQL 层面保持与规格一致的行为。
+ *
+ * <p>目标与「权限管理」页同一套语义：授权直接面向 principal，不经过 catalog role。
  */
-private[spark] case class GrantPrivilegesCommand(
+private[spark] case class GrantPermissionsCommand(
     catalog: String,
-    catalogRole: String,
-    grants: Seq[ManagementApiClient.GrantInfo],
+    accesses: Seq[String],
+    resource: ManagementApiClient.PermissionResource,
+    principal: String,
+    expireTime: Option[String],
     revoke: Boolean,
     client: ManagementApiClient) extends ManagementCommand {
 
   override val output: Seq[AttributeReference] = Seq.empty
 
   override def run(sparkSession: SparkSession): Seq[Row] = {
-    grants.foreach { grant =>
+    accesses.foreach { access =>
       if (revoke) {
-        client.revokeGrant(catalog, catalogRole, grant)
+        client.revokePermission(catalog, resource, access, principal)
       } else {
-        client.addGrant(catalog, catalogRole, grant)
+        client.grantPermission(catalog, resource, access, principal, expireTime.orNull)
       }
     }
     Seq.empty
@@ -368,62 +340,56 @@ private[spark] case class ShowPrincipalRolesCommand(
   }
 }
 
-private[spark] case class ShowCatalogRolesCommand(
-    catalog: String,
-    forPrincipalRole: Option[String],
-    client: ManagementApiClient) extends ManagementCommand {
-
-  override val output: Seq[AttributeReference] = forPrincipalRole match {
-    case Some(_) => Seq(ManagementCommands.attr("catalog_role", nullable = false))
-    case None => Seq(
-      ManagementCommands.attr("name", nullable = false),
-      ManagementCommands.attr("catalog", nullable = false))
-  }
-
-  override def run(sparkSession: SparkSession): Seq[Row] = forPrincipalRole match {
-    case Some(principalRole) =>
-      client.listCatalogRolesOf(principalRole, catalog).asScala.map(name => Row(name)).toSeq
-    case None =>
-      client.listCatalogRoles(catalog).asScala.map { role =>
-        Row(role.name(), catalog)
-      }.toSeq
-  }
-}
-
 /**
- * 列出某个 catalog role 持有的资源授权。
+ * 列出当前 catalog 的直授（官方权限模型）——与「权限管理」页同一份数据。
  *
- * <p>行与规格的 grant 一一对应；{@code resource} 列把多级命名空间与对象名拼成
- * 可读的完整名，同时保留 {@code namespace} / {@code object_name} 两列以便筛选。
+ * <p>行承载「谁，被允许对什么做什么」：主体、资源定位器、access、有效期。
+ * catalog 是全语句常量（写在 `IN CATALOG` 里），因此每行都回显它而不是留空——
+ * 与 {@link ShowPrincipalRolesCommand} 每行回显主体名同一个约定。
+ *
+ * <p>{@code resource} 列把定位符拼成人能读的名字（`catalog` / `lib` / `lib.orders`），
+ * 同时保留 {@code database} 与 {@code object_name} 两列以便筛选；
+ * {@code columns} 列只对 COLUMN 授权有值，白名单写成 `amount, id`、
+ * 黑名单写成 `EXCEPT card_no`，与本模块的语句写法一致。
  */
-private[spark] case class ShowGrantsCommand(
+private[spark] case class ShowPermissionsCommand(
     catalog: String,
-    catalogRole: String,
+    principal: Option[String],
     client: ManagementApiClient) extends ManagementCommand {
 
   override val output: Seq[AttributeReference] = Seq(
     ManagementCommands.attr("catalog", nullable = false),
-    ManagementCommands.attr("catalog_role", nullable = false),
+    ManagementCommands.attr("principal", nullable = false),
     ManagementCommands.attr("type", nullable = false),
     ManagementCommands.attr("resource"),
-    ManagementCommands.attr("namespace"),
+    ManagementCommands.attr("database"),
     ManagementCommands.attr("object_name"),
-    ManagementCommands.attr("privilege", nullable = false))
+    ManagementCommands.attr("columns"),
+    ManagementCommands.attr("access", nullable = false),
+    ManagementCommands.attr("expire_time"))
 
   override def run(sparkSession: SparkSession): Seq[Row] = {
-    client.listGrants(catalog, catalogRole).asScala.map { grant =>
-      val namespace = grant.namespace().asScala.toSeq
-      val objectName = Option(grant.objectName())
-      val resource = (namespace, objectName) match {
-        case (Seq(), None) => catalog
-        case (ns, None) => ns.mkString(".")
-        case (Seq(), Some(name)) => name
-        case (ns, Some(name)) => ManagementCommands.qualified(ns, name)
+    client.listPermissions(catalog, principal.orNull).asScala.map { entry =>
+      val resource = entry.resource()
+      val database = resource.database()
+      val objectName = resource.objectName()
+      val label = (Option(database), Option(objectName)) match {
+        // CATALOG / CATALOG_ALL 不定位（catalog 由请求路径的 prefix 决定）：写 catalog 名
+        case (None, _) => catalog
+        case (Some(db), None) => db
+        case (Some(db), Some(name)) => db + "." + name
       }
-      Row(catalog, catalogRole, grant.`type`(), resource,
-        if (namespace.isEmpty) null else namespace.mkString("."),
-        objectName.orNull,
-        grant.privilege())
+      Row(catalog, entry.principal(), resource.`type`(), label, database, objectName,
+        columnScope(resource), entry.access(), entry.expireTime())
     }.toSeq
+  }
+
+  /** 列范围的可读写法；不是列级授权时为 null（结果集里显示成 null 而不是空串）。 */
+  private def columnScope(resource: ManagementApiClient.PermissionResource): String = {
+    val allowed = resource.columns().asScala
+    val excluded = resource.excludedColumns().asScala
+    if (allowed.nonEmpty) allowed.mkString(", ")
+    else if (excluded.nonEmpty) "EXCEPT " + excluded.mkString(", ")
+    else null
   }
 }

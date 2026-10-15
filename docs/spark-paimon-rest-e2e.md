@@ -396,7 +396,7 @@ schema 物化补上之后它们已经翻转成断言写入成功。这个类保�
 | `ManagementSqlLiveServerTests` | 逐条管理语句对真实服务端验管理 API 契约 |
 | `PaimonTableDdlTests` | 建表、写入、读回，并核对落到服务端的 schema / 分区 / 表选项 / 路径 |
 | `SparkSqlAuthorizationTests` | 同一个 catalog、两种身份下的权限边界（见 6.1） |
-| `SparkSqlDocExamplesTests` | 执行 `spark-sql-reference.md` 第 11 节的示例 |
+| `SparkSqlDocExamplesTests` | 执行 `spark-sql-reference.md` 第 10 节的示例 |
 
 只跑建表用例：
 

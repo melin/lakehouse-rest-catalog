@@ -32,19 +32,13 @@ statement
     | createPrincipalRole
     | dropPrincipalRole
     | alterPrincipalRole
-    | createCatalogRole
-    | dropCatalogRole
-    | alterCatalogRole
     | grantPrincipalRole
     | revokePrincipalRole
-    | grantCatalogRole
-    | revokeCatalogRole
-    | grantPrivileges
-    | revokePrivileges
+    | grantPermissions
+    | revokePermissions
     | showPrincipals
     | showPrincipalRoles
-    | showCatalogRoles
-    | showGrants
+    | showPermissions
     | showCatalogs
     ;
 
@@ -79,21 +73,15 @@ alterPrincipalRole
     : ALTER PRINCIPAL ROLE name=identifier (setPropertyList | unsetPropertyList)
     ;
 
-// ---------------------------------------------------------------------- DDL：catalog role
-createCatalogRole
-    : CREATE CATALOG ROLE (IF NOT EXISTS)? name=identifier IN CATALOG catalog=identifier propertyList?
-    ;
-
-dropCatalogRole
-    : DROP CATALOG ROLE (IF EXISTS)? name=identifier IN CATALOG catalog=identifier
-    ;
-
-alterCatalogRole
-    : ALTER CATALOG ROLE name=identifier IN CATALOG catalog=identifier
-      (setPropertyList | unsetPropertyList)
-    ;
-
 // ---------------------------------------------------------------------- DCL：角色装配
+/*
+ * 只保留 principal role 的装配（主体 ↔ principal role）。
+ * catalog role 相关的语法已全部移除——建档（CREATE / DROP / ALTER CATALOG ROLE）、
+ * 装配（GRANT / REVOKE CATALOG ROLE）、清点（SHOW CATALOG ROLES / SHOW GRANTS）
+ * 共 7 条规则。控制台既没有它的页面，SQL 也不留入口，它只剩管理 API
+ * （`/catalogs/{c}/catalog-roles/**`）一条路。判定层不受影响——存量角色、
+ * 装配关系与资源授权都还在库里照常生效。
+ */
 grantPrincipalRole
     : GRANT PRINCIPAL ROLE role=identifier TO PRINCIPAL principal=identifier
     ;
@@ -102,53 +90,90 @@ revokePrincipalRole
     : REVOKE PRINCIPAL ROLE role=identifier FROM PRINCIPAL principal=identifier
     ;
 
-grantCatalogRole
-    : GRANT CATALOG ROLE role=identifier TO PRINCIPAL ROLE principalRole=identifier
-      IN CATALOG catalog=identifier
-    ;
-
-revokeCatalogRole
-    : REVOKE CATALOG ROLE role=identifier FROM PRINCIPAL ROLE principalRole=identifier
-      IN CATALOG catalog=identifier
-    ;
-
 // ---------------------------------------------------------------------- DCL：资源授权
 /*
- * 目标 catalog role 所属的 catalog 不单独书写，而是从资源描述中取得：
- * `ON TABLE ns.t IN CATALOG paimon` 已明确指出 catalog 是 paimon。
- * `ON CATALOG paimon` 同理。这样避免同一语句里重复两次 catalog 名。
+ * 与「权限管理」页同一套语义（Paimon 官方权限模型）：赋权身份是
+ * (资源, access, principal) 三元组，授权直接面向 principal **不透明字符串**
+ * （`user:alice` / `role:sales_writer` / `group:eng`），不经过 catalog role ——
+ * 页面能表达的授权，SQL 就能表达，反之亦然。
+ *
+ * 目标 catalog 不单独书写，而是从资源描述中取得：`ON TABLE ns.t IN CATALOG paimon`
+ * 已明确指出 catalog 是 paimon，`ON CATALOG paimon` 同理。
+ *
+ * ROUTE 到 `/v1/{prefix}/permissions/{grant,revoke}`，与页面同一条链路。
  */
-grantPrivileges
-    : GRANT privilegeList ON grantResource TO CATALOG ROLE role=identifier
+grantPermissions
+    : GRANT accessList ON permissionResource TO grantee (UNTIL expire=STRING)?
     ;
 
-revokePrivileges
-    : REVOKE privilegeList ON grantResource FROM CATALOG ROLE role=identifier
+revokePermissions
+    : REVOKE accessList ON permissionResource FROM grantee
     ;
 
-privilegeList
-    : privilege (COMMA privilege)*
+/*
+ * access 的取值是否合法由服务端判定（官方 12 项词表，各资源类型允许的取值不同），
+ * 语法层只认形状，不复制一份词表。
+ *
+ * `GRANT` / `ALTER` / `DROP` 既是官方词表里的 access 取值，也是本语法的关键字，
+ * 因此显式列出——否则 `GRANT ALTER ON DATABASE ...` 会卡在词法阶段。
+ */
+accessList
+    : access (COMMA access)*
     ;
 
-privilege
+access
     : identifier
+    | GRANT
+    | ALTER
+    | DROP
     ;
 
-grantResource
+/*
+ * 授权对象。前三种是官方约定的 principal 写法（`user:` / `role:` / `group:` 前缀，
+ * 与页面下拉里的候选同源），第四种原样透传，给不在约定里的主体留口子。
+ *
+ * 四个分支的名称各用一个标签名（而不是共用一个 `name`）：它们分别是规则上下文与
+ * 词法记号，共用标签会让 ANTLR 把字段类型退化成 `Object`，取值处就得再做一次转换。
+ */
+grantee
+    : USER userName=identifier
+    | ROLE roleName=identifier
+    | GROUP groupName=identifier
+    | PRINCIPAL principalName=STRING
+    ;
+
+/*
+ * 八种资源定位器，与官方 ResourceType 一一对应（`_ALL` 后缀表示
+ * 「该资源及其此后新建的后代」这一显式作用域）。
+ *
+ * 拆成八个具名子规则而不是写成八个内联备选：父规则只要 `|` 串起来，
+ * 访问器就能像读旧语法那样按 `ctx.tableResource()` 取用，不必对运行时类型做匹配。
+ */
+permissionResource
     : catalogResource
-    | namespaceResource
+    | catalogAllResource
+    | databaseResource
+    | databaseAllResource
     | tableResource
     | viewResource
-    | policyResource
-    | semanticModelResource
+    | functionResource
+    | columnResource
     ;
 
 catalogResource
     : CATALOG catalog=identifier
     ;
 
-namespaceResource
-    : NAMESPACE namespace=multipartIdentifier IN CATALOG catalog=identifier
+catalogAllResource
+    : CATALOG_ALL catalog=identifier
+    ;
+
+databaseResource
+    : DATABASE database=identifier IN CATALOG catalog=identifier
+    ;
+
+databaseAllResource
+    : DATABASE_ALL database=identifier IN CATALOG catalog=identifier
     ;
 
 tableResource
@@ -159,12 +184,22 @@ viewResource
     : VIEW objectName=multipartIdentifier IN CATALOG catalog=identifier
     ;
 
-policyResource
-    : POLICY objectName=multipartIdentifier IN CATALOG catalog=identifier
+functionResource
+    : FUNCTION objectName=multipartIdentifier IN CATALOG catalog=identifier
     ;
 
-semanticModelResource
-    : SEMANTIC MODEL objectName=multipartIdentifier IN CATALOG catalog=identifier
+columnResource
+    : COLUMN objectName=multipartIdentifier columnScope IN CATALOG catalog=identifier
+    ;
+
+/** 列范围：默认白名单，`EXCEPT` 转成黑名单。两者互斥（官方要求恰好一个非空）。 */
+columnScope
+    : LPAREN columnName (COMMA columnName)* RPAREN
+    | EXCEPT LPAREN columnName (COMMA columnName)* RPAREN
+    ;
+
+columnName
+    : identifier
     ;
 
 // ---------------------------------------------------------------------- SHOW
@@ -176,13 +211,8 @@ showPrincipalRoles
     : SHOW PRINCIPAL ROLES (FOR PRINCIPAL principal=identifier)?
     ;
 
-showCatalogRoles
-    : SHOW CATALOG ROLES IN CATALOG catalog=identifier
-    | SHOW CATALOG ROLES FOR PRINCIPAL ROLE principalRole=identifier IN CATALOG catalog=identifier
-    ;
-
-showGrants
-    : SHOW GRANTS FOR CATALOG ROLE role=identifier IN CATALOG catalog=identifier
+showPermissions
+    : SHOW PERMISSIONS IN CATALOG catalog=identifier (FOR grantee)?
     ;
 
 showCatalogs
@@ -239,38 +269,43 @@ EQ         : '=' ;
 DOT        : '.' ;
 MINUS      : '-' ;
 
-ALTER      : A L T E R ;
-CATALOG    : C A T A L O G ;
-CATALOGS   : C A T A L O G S ;
-CREATE     : C R E A T E ;
-DROP       : D R O P ;
-EXISTS     : E X I S T S ;
-FOR        : F O R ;
-FROM       : F R O M ;
-GRANT      : G R A N T ;
-GRANTS     : G R A N T S ;
-IF         : I F ;
-IN         : I N ;
-MODEL      : M O D E L ;
-NAMESPACE  : N A M E S P A C E ;
-NOT        : N O T ;
-ON         : O N ;
-POLICY     : P O L I C Y ;
-PRINCIPAL  : P R I N C I P A L ;
-PRINCIPALS : P R I N C I P A L S ;
-PROPERTIES : P R O P E R T I E S ;
-RESET      : R E S E T ;
-REVOKE     : R E V O K E ;
-ROLE       : R O L E ;
-ROLES      : R O L E S ;
-ROTATE     : R O T A T E ;
-SEMANTIC   : S E M A N T I C ;
-SET        : S E T ;
-SHOW       : S H O W ;
-TABLE      : T A B L E ;
-TO         : T O ;
-UNSET      : U N S E T ;
-VIEW       : V I E W ;
+ALTER       : A L T E R ;
+CATALOG     : C A T A L O G ;
+CATALOG_ALL : C A T A L O G UNDERSCORE A L L ;
+CATALOGS    : C A T A L O G S ;
+COLUMN      : C O L U M N ;
+CREATE      : C R E A T E ;
+DATABASE    : D A T A B A S E ;
+DATABASE_ALL: D A T A B A S E UNDERSCORE A L L ;
+DROP        : D R O P ;
+EXCEPT      : E X C E P T ;
+EXISTS      : E X I S T S ;
+FOR         : F O R ;
+FROM        : F R O M ;
+FUNCTION    : F U N C T I O N ;
+GRANT       : G R A N T ;
+GROUP       : G R O U P ;
+IF          : I F ;
+IN          : I N ;
+NOT         : N O T ;
+ON          : O N ;
+PERMISSIONS : P E R M I S S I O N S ;
+PRINCIPAL   : P R I N C I P A L ;
+PRINCIPALS  : P R I N C I P A L S ;
+PROPERTIES  : P R O P E R T I E S ;
+RESET       : R E S E T ;
+REVOKE      : R E V O K E ;
+ROLE        : R O L E ;
+ROLES       : R O L E S ;
+ROTATE      : R O T A T E ;
+SET         : S E T ;
+SHOW        : S H O W ;
+TABLE       : T A B L E ;
+TO          : T O ;
+UNSET       : U N S E T ;
+UNTIL       : U N T I L ;
+USER        : U S E R ;
+VIEW        : V I E W ;
 
 BACKQUOTED_IDENTIFIER
     : '`' ( '``' | ~'`' )* '`'
@@ -291,6 +326,13 @@ IDENTIFIER
 
 fragment DIGIT  : [0-9] ;
 fragment LETTER : [A-Za-z_] ;
+
+/*
+ * 下划线单独抽成片段：`DATABASE_ALL` / `CATALOG_ALL` 是官方 ResourceType 的
+ * 逐字写法（词表里就叫这个名字），但关键字的其余部分都要用「字母片段」拼写，
+ * 这里保持一致，免得读者以为这两个词有另一套命名规则。
+ */
+fragment UNDERSCORE : '_' ;
 
 fragment A : [aA] ;
 fragment B : [bB] ;

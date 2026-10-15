@@ -17,7 +17,7 @@ class PaimonS3Test {
    */
   val token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJwYWltb24tcmVzdCIsInN1YiI6InJlZ3Jlc3MtcHJpbmNpcGFsIiwiaWF0IjoxNzkxNTk1ODI2LCJleHAiOjE3OTE1OTk0MjYsImp0aSI6Ijg3MmVlYWUwLTQxYzctNDE2Ni04OGI3LTAzNDgwMWMxNjcyMCIsInNjb3BlIjoiUFJJTkNJUEFMX1JPTEU6QUxMIn0.OonQtdHvb-scEg2zk2ijGKiZDFEyXAdauDXM06FsXG8"
 
-  // @org.junit.jupiter.api.Test
+  @org.junit.jupiter.api.Test
   def test(): Unit = {
     val warehouse = java.nio.file.Files.createTempDirectory("paimon-rest-warehouse")
     val spark = SparkSession.builder()
@@ -51,9 +51,11 @@ class PaimonS3Test {
       .getOrCreate()
 
     spark.catalog.setCurrentCatalog(catalog)
-    spark.sql("SELECT current_catalog()").show()
-    spark.sql("CREATE DATABASE IF NOT EXISTS demo")
+    //spark.sql("SELECT current_catalog()").show()
+    //spark.sql("CREATE DATABASE IF NOT EXISTS demo")
     spark.sql("SHOW TABLES IN demo").show()
+
+    spark.sql("show PRINCIPAL ROLES").show(false)
 
     // spark.sql("DROP TABLE if exists demo.paimon_sample2")
     val paimonCreateTableDdl =

@@ -6,7 +6,7 @@
 | API 面 | 基址 | 控制台覆盖 |
 | --- | --- | --- |
 | Catalog API | `/v1/{prefix}/**` | database / table / view / function / semantic view / tag / branch / partition / snapshot / 数据令牌与查询授权 |
-| Management API | `/api/management/v1/**` | catalog / principal / principal-role / catalog-role / grants |
+| Management API | `/api/management/v1/**` | catalog / principal / principal-role；catalog-role 与 grants 既没有页面、也没有 Spark SQL 语句，只剩管理 API 本身（见 [§4](#4-页面清单)） |
 | 控制台扩展 | `/api/console/v1/meta` | 只读：导出枚举取值与服务端配置摘要，**非 Polaris 规格** |
 
 它是**运维与排查工具**，不是数据写入入口：不提供 `commitTable`（`.../tables/{table}/commit`），
@@ -162,7 +162,8 @@ paimon-rest-console/
   database / table / view）各有自己的一组权限词，全部在这一页里授与撤。Polaris 的
   RBAC（主体 → 角色 → catalog 角色 → 资源授权）不再有页面——它的三件套在
   控制台里只留下被引用的一小部分（授权对象的 `role:` 候选、角色页的装配），
-  管理面留在管理 API 与 Spark SQL 上。服务端判定不变：两路取并集。
+  管理面只剩管理 API 一个入口（catalog role 的建档与装配在 Spark SQL 侧也已经
+  没有语句了）。服务端判定不变：两路取并集。
 - **表单只有一种形态。** 全站表单统一走全局基元 `.pc-form`（标签在控件上方、
   13px 弱化色、字段间距 14px），字段多且语义并列时加 `.pc-form-grid` 自动折行，
   表单下的提交行是 `.pc-form-actions`，「可重复字段行」（表字段、允许位置、

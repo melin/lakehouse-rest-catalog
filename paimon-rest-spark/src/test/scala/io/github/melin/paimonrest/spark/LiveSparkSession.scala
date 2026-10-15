@@ -1,8 +1,10 @@
 package io.github.melin.paimonrest.spark
 
+import io.github.melin.paimonrest.spark.client.{ManagementApiClient, ManagementApiException}
 import org.apache.spark.sql.SparkSession
 
 import java.nio.file.Files
+import java.time.Duration
 
 /**
  * 需要真实服务端的测试类共用的 SparkSession。
@@ -32,7 +34,7 @@ import java.nio.file.Files
 object LiveSparkSession {
 
     /** 管理 API 基址，例如 {@code http://127.0.0.1:18080/api/management/v1}。 */
-    private val managementUrl = System.getProperty("e2e.management.url", "")
+    private[spark] val managementUrl = System.getProperty("e2e.management.url", "")
 
     /** 管理 API 在服务端上的固定前缀，用来反推 catalog API 的基址。 */
     private val managementPath = "/api/management/v1"
@@ -60,6 +62,34 @@ object LiveSparkSession {
 
     /** 是否给了目标地址。没给就说明没打算跑端到端用例。 */
     def isAvailable: Boolean = managementUrl.nonEmpty
+
+    /**
+     * 用 root 令牌直连管理 API 的客户端。
+     *
+     * <p>测试在两种场合需要绕过 SQL：一是拿服务端原始响应做核对，
+     * 二是装配那些**已经没有 SQL 语句**的东西——catalog role 的建档与装配
+     * （控制台没有页面，SQL 里也只删得只剩管理 API）。
+     *
+     * <p>用客户端而不是裸 HTTP：它与服务端同一份规格，路径与请求体形状不用在测试里重写一遍；
+     * 需要看原始报文的地方仍然走各自的 `rawSend`。
+     */
+    def managementClient: ManagementApiClient =
+        new ManagementApiClient(managementUrl, token, Duration.ofSeconds(30))
+
+    /**
+     * 删掉一个 catalog role，不存在就当已经干净。
+     *
+     * <p>规格的 `DELETE` 缺了就是 404，没有「IF EXISTS」这种写法——那条语义原先由
+     * `DROP CATALOG ROLE IF EXISTS` 语句在命令层补，语句移除后只能在这里补。
+     * 两个装配用例（{@code SparkSqlAuthorizationTests} / {@code ManagementSqlLiveServerTests}）
+     * 都要「先清干净再建」，所以放在共用入口上。
+     */
+    def dropCatalogRoleIfPresent(catalog: String, role: String): Unit =
+        try {
+            managementClient.dropCatalogRole(catalog, role)
+        } catch {
+            case e: ManagementApiException if e.notFound() => ()
+        }
 
     /** Paimon 自己的扩展类名。 */
     private val PaimonExtensionClass = "org.apache.paimon.spark.extensions.PaimonSparkSessionExtensions"

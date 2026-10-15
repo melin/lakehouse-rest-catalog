@@ -1,5 +1,6 @@
 package io.github.melin.paimonrest.spark
 
+import io.github.melin.paimonrest.spark.client.ManagementApiClient
 import org.apache.spark.sql.{Row, SparkSession}
 import org.junit.jupiter.api.Assertions._
 import org.junit.jupiter.api.{Assumptions, BeforeEach, Test}
@@ -28,11 +29,23 @@ import java.util.UUID
  *       而 `INSERT` / `CREATE TABLE` / `CREATE DATABASE` 一律被服务端拒绝。
  * </ul>
  *
- * <p><b>只读身份也必须有 `NAMESPACE_READ_PROPERTIES`。</b>这是实测出来的约束，不是顺手多给：
+ * <p><b>只读身份也必须有读元数据的能力。</b>这是实测出来的约束，不是顺手多给：
  * `SparkCatalog.initialize` 在 Spark **首次**解析到该 catalog 的限定名时懒加载它，
  * 而加载过程会去读默认命名空间 `default` 的属性（`GET /v1/{prefix}/databases/default`）。
- * 缺了这一项，连第一句 `SELECT` 都到不了表——它与「读不读数据」无关，
+ * 缺了它，连第一句 `SELECT` 都到不了表——它与「读不读数据」无关，
  * 属于「用得了这个 catalog」的门槛。只读角色因此是「读元数据 + 读数据」而不是「只有读数据」。
+ *
+ * <p><b>装配走的是「权限管理」页那条链路。</b>授权语句是
+ * {@code GRANT <access> ON <资源> TO ROLE <catalog role>}——官方权限模型，与页面同一套
+ * 语义与同一个端点（{@code /v1/{prefix}/permissions}）。`ROLE <名称>` 折成 principal
+ * 字符串 {@code role:<名称>}，判定层再把它解析为「主体在该 catalog 下持有的同名
+ * catalog role」（见 `PaimonPermissionModel.principalCandidates`）。因此角色脚手架
+ * （主体 → principal role → catalog role）仍然要建，但资源授权不再挂在角色上——
+ * 它只是**给 `role:` 这个名字一个实体**。
+ *
+ * <p><b>角色脚手架走管理 API，不走 SQL。</b>catalog role 的语句已经全部从语法里移除
+ * （控制台也没有它的页面），装配只能调 {@link io.github.melin.paimonrest.spark.client.ManagementApiClient}。
+ * 这恰好也让本类顺带守住一件事：管理 API 那条路在自己不受 SQL 支持之后仍然可用。
  *
  * <p><b>身份是怎么来的。</b>两个身份共用 {@link LiveSparkSession#instance} 这一个会话的
  * 两份 SQLConf（见 {@link LiveSparkSession#sessionAs}），差别只有发给服务端的令牌。
@@ -77,12 +90,24 @@ object SparkSqlAuthorizationTests {
   private val readWriteCatalogRole = "e2e_authz_rw"
   private val readOnlyCatalogRole = "e2e_authz_ro"
 
-  /** 两个角色的授权集合，装配完照此自查。 */
-  private val readWriteGrants = Set("NAMESPACE_CREATE", "NAMESPACE_LIST",
-    "NAMESPACE_READ_PROPERTIES", "TABLE_CREATE", "TABLE_LIST", "TABLE_READ_PROPERTIES",
-    "TABLE_READ_DATA", "TABLE_WRITE_DATA")
-  private val readOnlyGrants = Set("NAMESPACE_LIST", "NAMESPACE_READ_PROPERTIES",
-    "TABLE_LIST", "TABLE_READ_PROPERTIES", "TABLE_READ_DATA")
+  /**
+   * 两个角色的授权集合，装配完照此自查。
+   *
+   * <p>断言用 `(资源类型, access)` 而不是 access 一项：`CATALOG_ALL` 与 `CATALOG`
+   * 是同一份清单里仅凭 access 无法区分的两条记录，而两者的语义差别很大
+   * （前者覆盖后代、后者只覆盖 catalog 自身，`CREATEDATABASE` 只在后者可用）。
+   */
+  private val readWritePermissions = Set(
+    ("CATALOG", "CREATEDATABASE"),
+    ("CATALOG_ALL", "LIST"),
+    ("CATALOG_ALL", "DESCRIBE"),
+    ("CATALOG_ALL", "SELECT"),
+    ("CATALOG_ALL", "UPDATE"),
+    ("CATALOG_ALL", "CREATETABLE"))
+  private val readOnlyPermissions = Set(
+    ("CATALOG_ALL", "LIST"),
+    ("CATALOG_ALL", "DESCRIBE"),
+    ("CATALOG_ALL", "SELECT"))
 
   /**
    * 装配只跑一次。
@@ -128,10 +153,12 @@ object SparkSqlAuthorizationTests {
   }
 
   /**
-   * 用 root 的管理语句把两个用户装配好：主体 → principal role → catalog role → 资源授权。
+   * 用 root 的语句把两个用户装配好：主体 → principal role → catalog role，再按
+   * 官方权限模型给两个 catalog role 授资源权限。
    *
-   * <p>授权都挂在 **catalog 级**：两个用户要能看到彼此建出来的库与表，而库名是每次随机
-   * 生成的，授权不可能事先写死在某个 namespace 上。
+   * <p>资源授权都落在 **`CATALOG_ALL`**（catalog 及其后代）而不是某个 namespace 上：
+   * 两个用户要能看到彼此建出来的库与表，而库名是每次随机生成的，授权不可能事先
+   * 写死在某个库上。
    *
    * <p>两个角色的权限故意拉开：读写那边是「建库 + 建表 + 读写数据」，只读那边只有
    * 「看得见 + 读得到」。少给一项，就会有一条用例如实报出缺什么权限。
@@ -143,11 +170,15 @@ object SparkSqlAuthorizationTests {
       ()
     }
 
+    // catalog role 的建档与装配在 SQL 里已经没有语句了（控制台也没有页面），
+    // 只能走管理 API——用客户端，免得在测试里再写一遍路径与请求体形状。
+    val admin = LiveSparkSession.managementClient
+
     // 幂等：正常不会残留（内存库），但对着同一个实例重跑时要能再装配一遍
     root(s"DROP PRINCIPAL IF EXISTS $readWriteUser")
     root(s"DROP PRINCIPAL IF EXISTS $readOnlyUser")
-    root(s"DROP CATALOG ROLE IF EXISTS $readWriteCatalogRole IN CATALOG $c")
-    root(s"DROP CATALOG ROLE IF EXISTS $readOnlyCatalogRole IN CATALOG $c")
+    LiveSparkSession.dropCatalogRoleIfPresent(c, readWriteCatalogRole)
+    LiveSparkSession.dropCatalogRoleIfPresent(c, readOnlyCatalogRole)
     root(s"DROP PRINCIPAL ROLE IF EXISTS $readWritePrincipalRole")
     root(s"DROP PRINCIPAL ROLE IF EXISTS $readOnlyPrincipalRole")
 
@@ -155,50 +186,57 @@ object SparkSqlAuthorizationTests {
     root(s"CREATE PRINCIPAL $readOnlyUser")
     root(s"CREATE PRINCIPAL ROLE $readWritePrincipalRole PROPERTIES ('purpose' = 'e2e-authz')")
     root(s"CREATE PRINCIPAL ROLE $readOnlyPrincipalRole PROPERTIES ('purpose' = 'e2e-authz')")
-    root(s"CREATE CATALOG ROLE $readWriteCatalogRole IN CATALOG $c")
-    root(s"CREATE CATALOG ROLE $readOnlyCatalogRole IN CATALOG $c")
+    admin.createCatalogRole(c, readWriteCatalogRole, null)
+    admin.createCatalogRole(c, readOnlyCatalogRole, null)
 
     // 主体 → principal role；principal role → catalog role（两段都是多对多，要显式装配）
     root(s"GRANT PRINCIPAL ROLE $readWritePrincipalRole TO PRINCIPAL $readWriteUser")
     root(s"GRANT PRINCIPAL ROLE $readOnlyPrincipalRole TO PRINCIPAL $readOnlyUser")
-    root(s"GRANT CATALOG ROLE $readWriteCatalogRole TO PRINCIPAL ROLE $readWritePrincipalRole IN CATALOG $c")
-    root(s"GRANT CATALOG ROLE $readOnlyCatalogRole TO PRINCIPAL ROLE $readOnlyPrincipalRole IN CATALOG $c")
+    admin.grantCatalogRole(readWritePrincipalRole, c, readWriteCatalogRole)
+    admin.grantCatalogRole(readOnlyPrincipalRole, c, readOnlyCatalogRole)
 
     // 读写用户：建库、建表、读写数据。
     //
-    // 三个读元数据的权限（LIST / READ_PROPERTIES）看着与「读写数据」无关，其实都是必须的：
-    // 客户端每次 loadTable 都要读表属性（TABLE_READ_PROPERTIES），而
-    // **`SparkCatalog.initialize` 一开始就会去读默认命名空间 `default` 的属性**
-    // （`GET /v1/{prefix}/databases/default`）——Spark 首次解析到该 catalog 的限定名时懒加载它。
-    // 因此任何能用这个 catalog 跑 SQL 的身份都躲不过 NAMESPACE_READ_PROPERTIES，
-    // 与它读不读数据无关；少了它连第一句 SELECT 都到不了表。
+    // 拆成两条语句，起因是官方的 Access/Resource 对照表：`CREATEDATABASE` 只在
+    // `CATALOG` 上可用，而 `LIST` / `SELECT` / `UPDATE` / `CREATETABLE` 要覆盖
+    // 每次随机生成的库，只能写在 `CATALOG_ALL` 上（`_ALL` = 该资源及其后代，
+    // 含此后新建的）。`CATALOG` 上恰好不能授予 LIST/SELECT——写在一起会被服务端按
+    // 「该资源类型不允许这个 access」拒掉。
     //
-    // 刻意**不给** DROP 系权限：能建、能写不等于能删，删除是单独授予的权限。
-    // 这也意味着下面的清理是尽力而为，删不掉是预期行为。
-    root("GRANT NAMESPACE_CREATE, NAMESPACE_LIST, NAMESPACE_READ_PROPERTIES, "
-      + "TABLE_CREATE, TABLE_LIST, TABLE_READ_PROPERTIES, "
-      + s"TABLE_READ_DATA, TABLE_WRITE_DATA ON CATALOG $c TO CATALOG ROLE $readWriteCatalogRole")
+    // 官方的 access 词表比内部权限粗：一条 DESCRIBE 同时给出 catalog / namespace /
+    // table / view 四层的读属性，一条 LIST 同时给出 namespace / table / view 的列举权。
+    // 因此这里写 6 条 access，落到内部判定上是 10 项权限。
+    //
+    // 刻意**不给** ALTER / DROP：能建、能写不等于能删，删除在官方词表里是单独的
+    // `DROP`。这也意味着下面的清理是尽力而为，删不掉是预期行为。
+    root(s"GRANT CREATEDATABASE ON CATALOG $c TO ROLE $readWriteCatalogRole")
+    root(s"GRANT LIST, DESCRIBE, SELECT, UPDATE, CREATETABLE "
+      + s"ON CATALOG_ALL $c TO ROLE $readWriteCatalogRole")
 
     // 只读用户：看得见 + 读得到，别的都不给。
-    // NAMESPACE_READ_PROPERTIES 不是「顺手给的」——见上面的说明，它和读数据是绑在一起的。
-    root("GRANT NAMESPACE_LIST, NAMESPACE_READ_PROPERTIES, TABLE_LIST, "
-      + s"TABLE_READ_PROPERTIES, TABLE_READ_DATA ON CATALOG $c TO CATALOG ROLE $readOnlyCatalogRole")
+    // 读元数据的能力与读数据绑在一起，见类注释——少了它连第一句 SELECT 都到不了表。
+    root(s"GRANT LIST, DESCRIBE, SELECT ON CATALOG_ALL $c TO ROLE $readOnlyCatalogRole")
 
     // 自查：装配没生效时（例如两个令牌没配上、或 catalog 名字对不上），后面每个用例都会
     // 以「谁缺什么权限」的报文失败——读起来像权限判定错了。这里先把装配结果读回来，
     // 让环境问题在装配阶段就露出原貌。
-    assertEquals(readWriteGrants, grantsOf(readWriteCatalogRole),
+    assertEquals(readWritePermissions, permissionsOf(readWriteCatalogRole),
       "读写角色的授权集合与预期不符")
-    assertEquals(readOnlyGrants, grantsOf(readOnlyCatalogRole),
+    assertEquals(readOnlyPermissions, permissionsOf(readOnlyCatalogRole),
       "只读角色的授权集合与预期不符")
   }
 
-  /** `SHOW GRANTS` 的第七列是权限；这里只取权限做集合比较。 */
-  private def grantsOf(catalogRole: String): Set[String] =
+  /**
+   * 用 `SHOW PERMISSIONS` 读回某个 catalog role 的直授，取 `(资源类型, access)` 集合。
+   *
+   * <p>`FOR ROLE <名称>` —— 与装配时同一个写法，因此这条断言同时钉住了
+   * 「`ROLE x` 折成 `role:x`」这一步：折错名字这里会读到空集。
+   */
+  private def permissionsOf(catalogRole: String): Set[(String, String)] =
     LiveSparkSession.instance
-      .sql(s"SHOW GRANTS FOR CATALOG ROLE $catalogRole IN CATALOG ${catalog}")
+      .sql(s"SHOW PERMISSIONS IN CATALOG ${catalog} FOR ROLE $catalogRole")
       .collect()
-      .map(_.getString(6))
+      .map(row => (row.getString(2), row.getString(7)))
       .toSet
 }
 

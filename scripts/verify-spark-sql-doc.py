@@ -1,23 +1,23 @@
 #!/usr/bin/env python3
-"""校验 docs/spark-sql-reference.md 与实现、规格三者一致。
+"""校验 docs/spark-sql-reference.md 与实现三者一致。
 
 为什么需要它：SQL 参考文档里最贵的一类错误是「写得很像但不成立」——
-漏掉一条语句、权限名少一个字母、结果列多一列。这些靠人工读稿看不出来，
+漏掉一条语句、access 名少一个字母、结果列多一列。这些靠人工读稿看不出来，
 但可以机械比对。本脚本不生成文档，只做校验，与生成器分开实现
 （共用代码时推导错误会互相掩盖）。
 
 校验项：
-  1. 语句覆盖    文档第 2 节的语句数 == 语法文件 statement 规则的备选数
-  2. 示例完整    文档第 11 节的示例块覆盖全部 21 条语句
-  3. 权限清单    第 8.3 节列出的权限名 == 规格六个 enum 的并集，且分组归属一致
-  4. 资源写法    第 8.2 节的六种资源写法在语法与规格判别字段中都能对上
-  5. 结果列      第 9 节与实现声明的列名一致
+  1. 语句覆盖    文档第 2 节的编号从 1 起连续，且与其声明的「共 N 条语句」一致
+  2. 语句清单    第 2 节总览与第 10 节示例块覆盖全部语法备选
+  3. access 词表 第 7.4 节的 12 项 access 与 8 种资源类型的可用集合 == PermissionDtos
+  4. 资源写法    第 7.3 节的八种资源写法在语法与 PermissionDtos.ResourceType 中都能对上
+  5. 结果列      第 8 节与实现声明的列名一致
   6. 配置项      第 1.3 节的配置键 == 实现里的配置常量
   7. 端点映射    第 2 节给出的 REST 路径在客户端代码里存在
   8. 保留字      第 3.3 节列出的关键字 == 语法文件的词法关键字，且声明的数量正确
 
 用法：
-    python3 scripts/verify-spark-sql-doc.py [规格] [文档]
+    python3 scripts/verify-spark-sql-doc.py
 
 退出码非 0 表示存在不一致。
 """
@@ -25,25 +25,15 @@ import os
 import re
 import sys
 
-try:
-    import yaml
-except ImportError:  # 只在环境缺依赖时触发；脚本要读规格，yaml 是硬依赖
-    sys.stderr.write(
-        "缺少 PyYAML：本脚本需要解析 OpenAPI 规格。\n"
-        "安装方式（任选其一）：\n"
-        "  python3 -m pip install --user PyYAML\n"
-        "  或者指向一个已经装了 PyYAML 的解释器：\n"
-        "    PYTHON=/path/to/python3 scripts/e2e-spark-sql.sh\n")
-    sys.exit(2)
-
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SPEC = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "spec/polaris-management-service.yml")
-DOC = sys.argv[2] if len(sys.argv) > 2 else os.path.join(ROOT, "docs/spark-sql-reference.md")
+DOC = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "docs/spark-sql-reference.md")
 
 GRAMMAR = os.path.join(ROOT, "paimon-rest-spark/src/main/antlr4/io/github/melin/paimonrest/spark/parser/ManagementSql.g4")
 COMMANDS = os.path.join(ROOT, "paimon-rest-spark/src/main/scala/io/github/melin/paimonrest/spark/ManagementCommands.scala")
 EXTENSIONS = os.path.join(ROOT, "paimon-rest-spark/src/main/scala/io/github/melin/paimonrest/spark/ManagementSparkExtensions.scala")
 CLIENT = os.path.join(ROOT, "paimon-rest-spark/src/main/java/io/github/melin/paimonrest/spark/client/ManagementApiClient.java")
+# 参考文档里的资源定位器与 access 词表来自服务端的官方权限模型，实现就是这份 DTO
+PERMISSIONS = os.path.join(ROOT, "paimon-rest-server/src/main/java/io/github/melin/paimonrest/dto/PermissionDtos.java")
 
 problems = []
 checks = 0
@@ -67,6 +57,14 @@ def read(path):
         return handle.read()
 
 
+def section(doc, heading, end):
+    """截取 `### heading` 到下一个 `end` 之间的正文；找不到时返回空串并抛出可读错误。"""
+    match = re.search(re.escape(heading) + r"(.*?)" + re.escape(end), doc, re.S)
+    if not match:
+        raise SystemExit(f"文档结构不符：找不到从「{heading}」到「{end}」的章节")
+    return match.group(1)
+
+
 doc = read(DOC)
 grammar = read(GRAMMAR)
 
@@ -76,14 +74,7 @@ statement_rule = re.search(r"^statement\s*\n\s*:\s*(.*?)\s*;", grammar, re.S | r
 branches = [b.strip() for b in statement_rule.group(1).split("|")] if statement_rule else []
 print(f"语法 statement 规则的备选数：{len(branches)}")
 
-overview = re.search(r"## 2\. 语句总览(.*?)\n---\n", doc, re.S)
-overview = overview.group(1) if overview else ""
-overview_rows = re.findall(r"^\|\s*(\d+)\s*\|", overview, re.M)
-check("语句覆盖：文档第 2 节的行数与语法备选数一致",
-      len(branches) == len(overview_rows) == 21,
-      f"语法 {len(branches)} / 文档 {len(overview_rows)}，两者都应为 21")
-
-# ------------------------------------------------------------------ 2. 示例覆盖
+# ------------------------------------------------------------------ 2. 语句清单
 
 # 每条语句 → 能唯一识别它的正则。顺序与 §2 总览表一致。
 SIGNATURES = [
@@ -94,19 +85,15 @@ SIGNATURES = [
     ("createPrincipalRole",  r"CREATE\s+PRINCIPAL\s+ROLE\b"),
     ("dropPrincipalRole",    r"DROP\s+PRINCIPAL\s+ROLE\b"),
     ("alterPrincipalRole",   r"ALTER\s+PRINCIPAL\s+ROLE\b"),
-    ("createCatalogRole",    r"CREATE\s+CATALOG\s+ROLE\b"),
-    ("dropCatalogRole",      r"DROP\s+CATALOG\s+ROLE\b"),
-    ("alterCatalogRole",     r"ALTER\s+CATALOG\s+ROLE\b"),
     ("grantPrincipalRole",   r"GRANT\s+PRINCIPAL\s+ROLE\b"),
     ("revokePrincipalRole",  r"REVOKE\s+PRINCIPAL\s+ROLE\b"),
-    ("grantCatalogRole",     r"GRANT\s+CATALOG\s+ROLE\b"),
-    ("revokeCatalogRole",    r"REVOKE\s+CATALOG\s+ROLE\b"),
-    ("grantPrivileges",      r"GRANT\s+[A-Z_]+\s*(?:,\s*[A-Z_]+\s*)*ON\b"),
-    ("revokePrivileges",     r"REVOKE\s+[A-Z_]+\s*(?:,\s*[A-Z_]+\s*)*ON\b"),
+    # 资源授权：access 是普通标识符或 GRANT/ALTER/DROP 三个关键字之一，
+    # 后半段用 `ON <资源> ... TO|FROM <授权对象>` 定形状，避免和角色装配语句混淆
+    ("grantPermissions",     r"GRANT\s+[A-Z_`]+\s*(?:,\s*[A-Z_`]+\s*)*ON\s+[A-Z_]+.*?\bTO\b"),
+    ("revokePermissions",    r"REVOKE\s+[A-Z_`]+\s*(?:,\s*[A-Z_`]+\s*)*ON\s+[A-Z_]+.*?\bFROM\b"),
     ("showPrincipals",       r"SHOW\s+PRINCIPALS\b"),
     ("showPrincipalRoles",   r"SHOW\s+PRINCIPAL\s+ROLES\b"),
-    ("showCatalogRoles",     r"SHOW\s+CATALOG\s+ROLES\b"),
-    ("showGrants",           r"SHOW\s+GRANTS\b"),
+    ("showPermissions",      r"SHOW\s+PERMISSIONS\b"),
     ("showCatalogs",         r"SHOW\s+CATALOGS\b"),
 ]
 check("语句标识表覆盖全部语法备选",
@@ -114,90 +101,111 @@ check("语句标识表覆盖全部语法备选",
       "语法侧独有：" + ", ".join(sorted(set(branches) - {b for b, _ in SIGNATURES})) + "\n"
       "文档侧独有：" + ", ".join(sorted({b for b, _ in SIGNATURES} - set(branches))))
 
+# §2 总览表是「给人看的语句清单」，与语法规则不是一一对应——`ALTER ... SET|UNSET`
+# 与 `RESET|ROTATE` 各占两行（一条规则两种写法），`SHOW` 那一行反过来并了三种形态。
+# 因此这里不比行数与备选数（那只是历史巧合），只钉两件会真出问题的事：
+# 编号连续（漏行后编号会跳），以及行数与正文声明的条数一致（删了语句忘改声明）。
+overview = re.search(r"## 2\. 语句总览(.*?)\n### 结果集形态", doc, re.S)
+overview = overview.group(1) if overview else ""
+overview_rows = [int(number) for number in re.findall(r"^\|\s*(\d+)\s*\|", overview, re.M)]
+check("第 2 节的编号从 1 起连续",
+      overview_rows == list(range(1, len(overview_rows) + 1)),
+      f"实际编号：{overview_rows}")
+declared = re.search(r"共\s*(\d+)\s*条语句", overview)
+check(f"第 2 节声明的条数与表格行数一致（{len(overview_rows)} 行）",
+      declared is not None and int(declared.group(1)) == len(overview_rows),
+      f"声明 {declared.group(1) if declared else '未找到'} 条 / 表格 {len(overview_rows)} 行")
+
 example = re.search(r"<!-- doc-example:begin -->(.*?)<!-- doc-example:end -->", doc, re.S)
 if not example:
-    check("存在第 11 节示例块（doc-example 标记）", False, "未找到 doc-example:begin / end 标记")
+    check("存在第 10 节示例块（doc-example 标记）", False, "未找到 doc-example:begin / end 标记")
     example_body = ""
 else:
     example_body = example.group(1)
 missing = [name for name, pattern in SIGNATURES
            if not re.search(pattern, example_body, re.I)]
-check("示例块覆盖全部 21 条语句", not missing,
+check("示例块覆盖全部 16 条语句", not missing,
       "示例中缺少：" + ", ".join(missing))
 
-# ------------------------------------------------------------------ 3. 权限清单
+# ------------------------------------------------------------------ 3. access 词表
 
-spec = yaml.safe_load(read(SPEC))
-schemas = spec["components"]["schemas"]
-TIERS = [("catalog", "CatalogPrivilege"), ("namespace", "NamespacePrivilege"),
-         ("table", "TablePrivilege"), ("view", "ViewPrivilege"),
-         ("policy", "PolicyPrivilege"), ("semantic model", "SemanticModelPrivilege")]
-per_tier = {name: schemas[schema]["enum"] for name, schema in TIERS}
-union = {value for values in per_tier.values() for value in values}
-tiers_of = {value: frozenset(t for t, _ in TIERS if value in per_tier[t]) for value in union}
+permissions_source = read(PERMISSIONS)
 
-section = re.search(r"### 8\.3 权限清单(.*?)\n### 8\.4", doc, re.S)
-check("存在第 8.3 节权限清单", section is not None)
-section = section.group(1) if section else ""
 
-# 权限名统一写成 `XXX_YYY`，且一定含下划线；这样能排除正文里出现的 `ON` 等反向引用
-listed = set(re.findall(r"`([A-Z][A-Z0-9]*_[A-Z0-9_]+)`", section))
-check(f"权限名与规格并集一致（{len(union)} 项）",
-      listed == union,
-      "文档多出：" + ", ".join(sorted(listed - union)) + "\n"
-      "文档缺少：" + ", ".join(sorted(union - listed)))
+def enum_constants(source, name):
+    """取 `public enum X {` 与它自己的闭合大括号之间的常量名（每行一个）。"""
+    body = re.search(r"public enum " + name + r" \{(.*?)\n    \}", source, re.S)
+    if not body:
+        raise SystemExit(f"PermissionDtos 里找不到 enum {name}")
+    return re.findall(r"^ {8}([A-Z][A-Z0-9_]*)[,;]", body.group(1), re.M)
 
-# 分组归属：解析「**……可用**（N 项）：」后面的权限列表
-groups = re.findall(r"\*\*([^*]+?)\*\*（(\d+) 项）\s*[:：]\s*\n+\s*([^\n]+(?:\n[^\n]+)*?)\n\s*\n", section, re.S)
-observed = {}
-for heading, count, body in groups:
-    names = re.findall(r"`([A-Z][A-Z0-9]*_[A-Z0-9_]+)`", body)
-    if "六个层级" in heading:
-        where = frozenset(t for t, _ in TIERS)
-    else:
-        where = frozenset(t for t, _ in TIERS if t in heading)
-    observed[where] = (int(count), names)
 
-expected_groups = {}
-for value, where in tiers_of.items():
-    expected_groups.setdefault(where, []).append(value)
+def allowed_accesses(source):
+    """`allowedFor` 的 switch：资源类型 → 允许的 access 集合。"""
+    body = re.search(r"public static Set<Access> allowedFor\(ResourceType type\) \{(.*?)\n        \}",
+                     source, re.S)
+    if not body:
+        raise SystemExit("PermissionDtos 里找不到 allowedFor")
+    result = {}
+    for type_name, items in re.findall(r"case (\w+) -> set\(([^;]*?)\);", body.group(1), re.S):
+        result[type_name] = [item.strip() for item in items.replace("\n", " ").split(",")
+                             if item.strip()]
+    return result
 
-check("权限分组数与规格分组数一致",
-      len(observed) == len(expected_groups),
-      f"文档 {len(observed)} 组 / 规格 {len(expected_groups)} 组，"
-      f"文档分组：{sorted(len(k) for k in observed)}，规格分组：{sorted(len(k) for k in expected_groups)}")
 
-for where, expected in sorted(expected_groups.items(), key=lambda kv: -len(kv[0])):
-    counted, names = observed.get(where, (None, []))
-    label = "、".join(sorted(where))
-    check(f"分组「{label}」的归属与计数（{len(expected)} 项）",
-          sorted(names) == sorted(expected) and counted == len(expected),
-          f"规格 {len(expected)} 项 / 文档声明 {counted} 项 / 文档列出 {len(names)} 项\n"
-          f"文档多出：{sorted(set(names) - set(expected))}\n"
-          f"文档缺少：{sorted(set(expected) - set(names))}")
+access_enum = enum_constants(permissions_source, "Access")
+resource_enum = enum_constants(permissions_source, "ResourceType")
+allowed = allowed_accesses(permissions_source)
+print(f"PermissionDtos：{len(access_enum)} 项 access / {len(resource_enum)} 种资源类型")
+
+body_84 = section(doc, "### 7.4 access 词表", "\n### 7.5")
+rows_84 = re.findall(r"^\|\s*`([A-Z_]+)`\s*\|\s*([^|]+)\|", body_84, re.M)
+doc_allowed = {row_type: re.findall(r"`([A-Z][A-Z0-9_]*)`", cells) for row_type, cells in rows_84}
+
+check(f"第 7.4 节列出的资源类型与 PermissionDtos 一致（{len(resource_enum)} 种）",
+      sorted(doc_allowed) == sorted(resource_enum),
+      "实现独有：" + ", ".join(sorted(set(resource_enum) - set(doc_allowed))) + "\n"
+      "文档独有：" + ", ".join(sorted(set(doc_allowed) - set(resource_enum))))
+
+for type_name in sorted(allowed):
+    expected, listed = allowed[type_name], doc_allowed.get(type_name, [])
+    check(f"「{type_name}」允许的 access 与实现一致（{len(expected)} 项）",
+          sorted(listed) == sorted(expected),
+          f"实现 {sorted(expected)}\n文档 {sorted(listed)}")
+
+declared = re.search(r"### 7\.4 access 词表（(\d+) 项）", doc)
+check(f"第 7.4 节声明的 access 数量正确（{len(access_enum)} 项）",
+      declared is not None and int(declared.group(1)) == len(access_enum),
+      f"声明 {declared.group(1) if declared else '未找到'} 项 / 实现 {len(access_enum)} 项")
 
 # ------------------------------------------------------------------ 4. 资源写法
 
-# grantResource 规则体里每行一个备选（首行是 `: x`，其余是 `| y`）
-grant_rule = re.search(r"^grantResource\s*\n(.*?)\s*;", grammar, re.S | re.M).group(1)
-grant_resources = re.findall(r"\b(\w+Resource)\b", grant_rule)
-discriminator = schemas["GrantResource"]["discriminator"]["mapping"]
-check("六种资源写法在语法与规格判别字段中一一对应",
-      len(grant_resources) == len(discriminator) == 6,
-      f"语法 {len(grant_resources)} 种 / 规格 {len(discriminator)} 种")
+# permissionResource 规则体里每行一个备选（首行是 `: x`，其余是 `| y`）
+resource_rule = re.search(r"^permissionResource\s*\n(.*?)\s*;", grammar, re.S | re.M).group(1)
+grammar_rules = re.findall(r"\b(\w+Resource)\b", resource_rule)
 
-section_82 = re.search(r"### 8\.2 六种资源写法(.*?)\n### 8\.3", doc, re.S)
-body_82 = section_82.group(1) if section_82 else ""
-# 表格每一行的第 1 列是资源写法、第 2 列是判别字段取值
-resource_rows = re.findall(r"^\|\s*`([^`]+)`\s*\|\s*`([^`]+)`", body_82, re.M)
-type_values = set(discriminator.keys())
+
+def expected_rule(type_value):
+    """CATALOG_ALL → catalogAllResource：枚举值到下划线驼峰规则的命名。"""
+    head, _, tail = type_value.partition("_")
+    return head.lower() + (tail.capitalize() if tail else "") + "Resource"
+
+
+expected_rules = [expected_rule(value) for value in resource_enum]
+check("八种资源定位器在语法中一一对应",
+      sorted(grammar_rules) == sorted(expected_rules),
+      "语法 " + ", ".join(sorted(grammar_rules)) + "\n"
+      "期望 " + ", ".join(sorted(expected_rules)))
+
+body_83 = section(doc, "### 7.3 八种资源写法", "\n### 7.4")
+resource_rows = re.findall(r"^\|\s*`([^`]+)`\s*\|\s*`([A-Z_]+)`\s*\|", body_83, re.M)
 doc_types = {row[1] for row in resource_rows}
-check("第 8.2 节的资源 type 取值与规格判别字段一致",
-      doc_types == type_values,
-      f"规格 {sorted(type_values)}\n文档 {sorted(doc_types)}\n"
-      f"文档少写：{sorted(type_values - doc_types)}；文档多写：{sorted(doc_types - type_values)}")
-check("第 8.2 节列出了六种资源写法",
-      len(resource_rows) == len(grant_resources) == 6,
+check("第 7.3 节的 ResourceType 取值与 PermissionDtos 一致",
+      doc_types == set(resource_enum),
+      f"实现 {sorted(resource_enum)}\n文档 {sorted(doc_types)}\n"
+      f"文档少写：{sorted(set(resource_enum) - doc_types)}；文档多写：{sorted(doc_types - set(resource_enum))}")
+check("第 7.3 节列出了八种资源写法",
+      len(resource_rows) == len(grammar_rules) == 8,
       f"文档列出 {len(resource_rows)} 种：{[row[0] for row in resource_rows]}")
 
 # ------------------------------------------------------------------ 5. 结果列
@@ -213,12 +221,12 @@ SHOW_COLUMNS = {
     "SHOW CATALOGS": ["name", "type"],
     "SHOW PRINCIPALS": ["name", "client_id"],
     "SHOW PRINCIPAL ROLES": ["name", "federated"],
-    "SHOW GRANTS": ["catalog", "catalog_role", "type", "resource", "namespace",
-                    "object_name", "privilege"],
+    "SHOW PERMISSIONS": ["catalog", "principal", "type", "resource", "database",
+                         "object_name", "columns", "access", "expire_time"],
 }
-section_9 = re.search(r"## 9\. SHOW(.*?)\n## 10\.", doc, re.S).group(1)
+section_show = re.search(r"## 8\. SHOW(.*?)\n## 9\.", doc, re.S).group(1)
 for label, columns in SHOW_COLUMNS.items():
-    block = re.search(r"### 9\.\d+ `" + re.escape(label) + r"`(.*?)(?=\n### |\Z)", section_9, re.S)
+    block = re.search(r"### 8\.\d+ `" + re.escape(label) + r"`(.*?)(?=\n### |\Z)", section_show, re.S)
     body = block.group(1) if block else ""
     absent = [c for c in columns if f"`{c}`" not in body]
     check(f"{label} 的结果列在文档中写全", not absent,
@@ -254,21 +262,29 @@ check("第 2 节给出的端点路径都能在客户端代码中找到出处",
 # ------------------------------------------------------------------ 8. 保留字
 
 # 词法里的关键字定义形如 `ALTER : A L T E R ;`——用字母片段写成，因此大小写不敏感。
-# 取反字符集（如 `[aA]`）不是关键字，故正则要求右侧全为单个字母加空格。
-lexer_keywords = set(re.findall(r"^([A-Z]+)\s*:\s*(?:[A-Z]\s+)+[A-Z]\s*;", grammar, re.M))
+# 右侧只允许「单个大写字母」或 `UNDERSCORE` 片段：这样既能覆盖 CATALOG_ALL 这类带下划线的
+# 关键字，又不会把 `SEMICOLON : ';' ;` 之类当成关键字。
+lexer_keywords = set()
+for match in re.finditer(r"^([A-Z][A-Z_]*)\s*:\s*([^;]+);", grammar, re.M):
+    tokens = match.group(2).split()
+    if tokens and all(t == "UNDERSCORE" or (len(t) == 1 and t.isupper()) for t in tokens):
+        lexer_keywords.add(match.group(1))
 
-section_33 = re.search(r"### 3\.3 关键字是保留字(.*?)\n### 3\.4", doc, re.S)
-body_33 = section_33.group(1) if section_33 else ""
-doc_keywords = set(re.findall(r"`([A-Z]+)`", body_33))
+body_33 = section(doc, "### 3.3 关键字是保留字", "\n### 3.4")
+# 只取「清单句」——它止于「这 N 个词出现在名称位置时必须加反引号」。
+# 后面的正文会用反引号引用 access 取值与已删除的旧关键字，那些不是保留字。
+listing = re.search(r"^(.*?)这\s*(\d+)\s*个词", body_33, re.S)
+check("第 3.3 节有保留字清单与数量声明", listing is not None,
+      "找不到「这 N 个词」句式")
+listing, declared_count = (listing.group(1), int(listing.group(2))) if listing else ("", None)
+doc_keywords = set(re.findall(r"`([A-Z][A-Z0-9_]*)`", listing))
 check(f"第 3.3 节的保留字清单与语法文件一致（{len(lexer_keywords)} 个）",
       doc_keywords == lexer_keywords,
       "文档多出：" + ", ".join(sorted(doc_keywords - lexer_keywords)) + "\n"
       "文档缺少：" + ", ".join(sorted(lexer_keywords - doc_keywords)))
-
-declared = re.search(r"这\s*(\d+)\s*个词", body_33)
 check("第 3.3 节声明的保留字数量正确",
-      declared is not None and int(declared.group(1)) == len(lexer_keywords),
-      f"声明 {declared.group(1) if declared else '未找到'} 个 / 实际 {len(lexer_keywords)} 个")
+      declared_count == len(lexer_keywords),
+      f"声明 {declared_count} 个 / 实际 {len(lexer_keywords)} 个")
 
 # ------------------------------------------------------------------ 汇总
 

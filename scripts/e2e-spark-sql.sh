@@ -89,22 +89,21 @@ echo "就绪。"
 
 cd "$ROOT" || exit 1
 
-echo "== 校验 docs/spark-sql-reference.md 与实现、规格一致 =="
+echo "== 校验 docs/spark-sql-reference.md 与实现一致 =="
 # 静态检查，不需要服务端；放在这里是为了让一个命令覆盖 SQL 层的全部验收。
-# 脚本要解析 OpenAPI 规格，因此需要一个装了 PyYAML 的解释器：
-# 依次尝试 $PYTHON、python3，取第一个能 import yaml 的。
+# 校验脚本只读本仓的语法文件、PermissionDtos 与客户端源码，没有第三方依赖。
+# 依次尝试 $PYTHON、python3。
 DOC_VERIFIER=$ROOT/scripts/verify-spark-sql-doc.py
 for candidate in "${PYTHON:-}" python3; do
   [ -n "$candidate" ] || continue
-  if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c "import yaml" >/dev/null 2>&1; then
+  if command -v "$candidate" >/dev/null 2>&1; then
     "$candidate" "$DOC_VERIFIER" || exit 1
     DOC_VERIFIED=1
     break
   fi
 done
 if [ -z "${DOC_VERIFIED:-}" ]; then
-  echo "跳过文档校验：没有找到带 PyYAML 的解释器"
-  echo "  安装：python3 -m pip install --user PyYAML"
+  echo "跳过文档校验：没有找到可用的 python3"
   echo "  或指定：PYTHON=/path/to/python3 scripts/e2e-spark-sql.sh"
 fi
 
@@ -118,7 +117,7 @@ echo "== 跑 Spark SQL 端到端验收 =="
 #                                     并核对落到服务端的 schema / 分区 / 表选项 / 路径
 #   SparkSqlAuthorizationTests      : 同一个 catalog、两种身份（令牌 alice / bob），
 #                                     验建库建表读写放行、只读身份的关键操作被 403 拒绝
-#   SparkSqlDocExamplesTests        : 执行参考文档第 11 节的示例，防止示例被改坏
+#   SparkSqlDocExamplesTests        : 执行参考文档第 10 节的示例，防止示例被改坏
 "$MVN" -o -pl paimon-rest-spark test \
   -Dtest=ManagementSqlLiveServerTests,PaimonTableDdlTests,SparkSqlAuthorizationTests,SparkSqlDocExamplesTests \
   -DfailIfNoTests=false \

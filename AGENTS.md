@@ -105,7 +105,7 @@ PYTHON=/path/to/python3 ./scripts/build-console.sh        # 装依赖→构建�
 python3 scripts/verify-console.py                         # 只校验不构建（多解释器时用 PYTHON=...）
 python3 scripts/gen-management-contract.py                # 重生成 docs/management-api-contract.md
 python3 scripts/verify-management-contract.py             # 反解文档与规格逐行比对
-python3 scripts/verify-spark-sql-doc.py                   # Spark SQL 文档 ↔ 语法文件/规格/客户端
+python3 scripts/verify-spark-sql-doc.py                   # Spark SQL 文档 ↔ 语法文件/PermissionDtos/客户端
 python3 scripts/verify-k8s-manifests.py                   # K8s 清单
 ./scripts/gen-mysql-ddl.sh                                # 重生成 sql/schema-mysql.sql
 ```
@@ -138,10 +138,10 @@ paimon-rest-server/     Spring Boot 服务端
                         console/（前端构建产物，见第 8 节陷阱 1）
 
 paimon-rest-console/    Vue 3 + Vite（Element Plus），构建产物直接落进服务端 classpath
-paimon-rest-spark/      Scala 2.12 + Spark 3.5 + ANTLR 的语法扩展（21 条管理语句）：
+paimon-rest-spark/      Scala 2.12 + Spark 3.5 + ANTLR 的语法扩展（16 条管理语句）：
                         ManagementSql.g4（语法）→ PaimonRestSqlParser.scala（注入
                         ParserInterface）→ ManagementAstBuilder.scala（语法树 → 命令）→
-                        ManagementCommands.scala（21 个 RunnableCommand → HTTP）；
+                        ManagementCommands.scala（13 个 RunnableCommand → HTTP）；
                         client/ 为 JDK HttpClient + Jackson 2 的 REST 客户端
 deploy/kubernetes/      kustomize 清单（有独立 README）
 examples/spark-paimon-rest/  可运行示例
@@ -159,12 +159,12 @@ docs/                   12 份设计文档
 | `management-api-overview.md` | 33 个 operation 落在哪几个控制器、易读错的语义 |
 | `management-api-contract.md` | 管理 API 字段与权限枚举**逐字契约**（生成物，勿手改） |
 | `data-model.md` | 改实体 / 看 19 张表划分、摘要列与审计列的理由 |
-| `spark-sql-reference.md` | 语句级参考（第 11 节示例会被测试真跑） |
+| `spark-sql-reference.md` | 语句级参考（第 10 节示例会被测试真跑） |
 | `spark-sql-extension.md` | 改 Spark 扩展：做法、两个约束、测试分层 |
 | `spark-paimon-rest-e2e.md` | Spark 经本服务端建表：连接配置、可执行 SQL、报错对照 |
 | `authorization.md` | 权限实体链、授权映射、失败关闭的取舍 |
 | `console.md` | 改控制台 / 排查「页面空列表」：分层、端点契约表、机械校验、加页面清单 |
-| `console-table-detail.md` | 改表详情页：九个页签的数据来源、权限页签模型、破坏性操作 |
+| `console-table-detail.md` | 改表详情页：八个页签的数据来源（含「为什么没有权限页签」）、按需加载、破坏性操作 |
 | `console-auth.md` | 配控制台登录：三种登录方式、两个开关的边界、令牌链、安全考量 |
 | `polaris-capabilities-and-design.md` | 对比 Polaris、看整体设计与已知缺口 |
 
@@ -210,7 +210,7 @@ docs/                   12 份设计文档
 | --- | --- |
 | **加 Catalog API 端点** | ① 控制器（`web/`）+ DTO（`dto/`），字段名与规格逐字一致；② `config/CatalogAccessRules.java` 登记路径 → 权限（漏了构建红）；③ 测试 `PaimonRestCatalogApiTests` 之类 + `CatalogEndpointAuthorizationTests`；④ 更新 `docs/catalog-api-endpoints.md` |
 | **改 JPA 实体 / 加表** | ① 改 `domain/entity`（继承 `AuditedEntity` 才有审计列）；② `./scripts/gen-mysql-ddl.sh` 重生成 `sql/schema-mysql.sql`（**必须**）；③ 摘要列（SHA-256）或唯一约束变化时同步 `docs/data-model.md` |
-| **改管理 API / 权限** | ① 改规格副本与实现 → `python3 scripts/gen-management-contract.py`；② 权限枚举变了 → `scripts/gen-management-privileges.py` 重生成 `dto/Privilege.java`，再跑 `verify-spark-sql-doc.py`（比对语法/规格/客户端三方）；③ 管理语句跟随改动时进 `paimon-rest-spark`（语法 + AstBuilder + Command 三处） |
+| **改管理 API / 权限** | ① 改规格副本与实现 → `python3 scripts/gen-management-contract.py`；② 权限枚举变了 → `scripts/gen-management-privileges.py` 重生成 `dto/Privilege.java`；官方权限词表（access / ResourceType）变了 → 跑 `verify-spark-sql-doc.py`（比对语法/PermissionDtos/客户端三方）；③ 管理语句跟随改动时进 `paimon-rest-spark`（语法 + AstBuilder + Command 三处） |
 | **改控制台** | ① 按 `docs/console.md` §5.3 清单做（endpoints.js → api/*.js → views/ → router → 构建）；② `./scripts/build-console.sh` 重新构建（**产物必须一起提交**，见第 8 节陷阱 1）；③ 页面渲染不写进服务端测试，服务端侧只覆盖托管机制（`ConsoleApiTests`） |
 | **改配置项** | ① `config/RestServerProperties.java` 加字段 + javadoc（默认值、留空含义、非法取值行为）；② `application.yml` 加注释示例；③ `README.md` §5 配置表加一行。涉及存储凭据时，`docs/polaris-capabilities-and-design.md` 的「下发优先级」表也加一级 |
 
@@ -220,8 +220,8 @@ docs/                   12 份设计文档
 
 | 层 | 命令 | 抓什么 |
 | --- | --- | --- |
-| 单元/集成 | `mvn -o test`（服务端 267 + Spark 81，共 348） | 行为回归 |
-| 端点多面 | `verify-console.py`、`verify-management-contract.py`、`verify-spark-sql-doc.py`、`verify-k8s-manifests.py` | **跨文件的机械一致性**：前端字段名 vs 服务端 record、文档表格 vs 规格、语法文件 vs 规格 vs 客户端 |
+| 单元/集成 | `mvn -o test`（服务端 276 + Spark 89，共 365） | 行为回归 |
+| 端点多面 | `verify-console.py`、`verify-management-contract.py`、`verify-spark-sql-doc.py`、`verify-k8s-manifests.py` | **跨文件的机械一致性**：前端字段名 vs 服务端 record、文档表格 vs 规格、语法文件 vs PermissionDtos vs 客户端 |
 | 契约（桩） | `ManagementSqlExecutionTests`（真实 SparkSession + 桩服务端） | 扩展真被加载、真执行 |
 | 契约（真服务端） | `./scripts/e2e-spark-sql.sh` | 客户端与服务端的**实际**契约（桩只能证明客户端与自己的假设自洽） |
 | HTTP 冒烟 | `api-sweep.sh` / `management-sweep.sh` / `sweep-console-auth.sh` | 规格端点全覆盖、真实报文与错误码 |
@@ -247,7 +247,7 @@ docs/                   12 份设计文档
 - **错误走 `ApiException`**，由 `GlobalExceptionHandler` 统一成规格要的报错形状；
   不要在控制器里手写响应体。
 - **文档里的代码块要与代码同步**——`SparkSqlDocExamplesTests` 会真跑
-  `docs/spark-sql-reference.md` 第 11 节示例，**改坏示例会让构建失败**。
+  `docs/spark-sql-reference.md` 第 10 节示例，**改坏示例会让构建失败**。
 - **生成物一律不要手改**：`sql/schema-mysql.sql`、`docs/management-api-contract.md`、
   `dto/Privilege.java`。要改就改生成器或规格再重跑。
 - **没有 CI**：上面所有校验都是手工/脚本触发的，「我没跑」＝「没人跑」。

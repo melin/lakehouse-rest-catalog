@@ -1,13 +1,15 @@
 # Spark SQL 管理语法扩展
 
-`paimon-rest-spark` 子模块把管理 API 的能力接进 Spark SQL：主体、角色与授权可以用 SQL 语句
-管理，而不必手写 HTTP 请求。
+`paimon-rest-spark` 子模块把管理 API 的能力接进 Spark SQL：主体、principal role 与资源授权
+可以用 SQL 语句管理，而不必手写 HTTP 请求。**catalog role 不在其中**——它的建档、装配与清点
+共 7 条语法都已移除，只能用管理 API。
 
 ```sql
 CREATE PRINCIPAL svc_etl PROPERTIES ('owner' = 'data-platform');
-GRANT CATALOG ROLE reader TO PRINCIPAL ROLE etl_reader IN CATALOG paimon;
-GRANT TABLE_READ_DATA ON TABLE default.orders IN CATALOG paimon TO CATALOG ROLE reader;
-SHOW GRANTS FOR CATALOG ROLE reader IN CATALOG paimon;
+CREATE PRINCIPAL ROLE etl_engineer;
+GRANT PRINCIPAL ROLE etl_engineer TO PRINCIPAL svc_etl;
+GRANT LIST, DESCRIBE, SELECT ON CATALOG_ALL paimon TO USER svc_etl;
+SHOW PERMISSIONS IN CATALOG paimon FOR USER svc_etl;
 ```
 
 ---
@@ -35,6 +37,7 @@ val spark = PaimonRestManagement.install(SparkSession.builder())
 | 配置 | 默认值 | 说明 |
 | --- | --- | --- |
 | `spark.paimon.rest.management.url` | `http://127.0.0.1:8080/api/management/v1` | 管理 API 基址，须含 `/api/management/v1` 前缀 |
+| `spark.paimon.rest.catalog.url` | 空（从管理 API 基址推导） | catalog API 基址，资源授权语句用它；空值时按「去掉 `/api/management/v1`」推导 |
 | `spark.paimon.rest.token` | 空 | 作为 `Authorization: Bearer <token>` 发出；为空时不发送该头 |
 | `spark.paimon.rest.management.timeoutSeconds` | `30` | 单次请求超时；非数字或非正数时退化为默认值 |
 
@@ -49,7 +52,7 @@ val spark = PaimonRestManagement.install(SparkSession.builder())
 
 ## 2. 语句清单
 
-共 21 条语句，分四类。`[]` 表示可选，`|` 表示二选一。
+共 16 条语句，分四类。`[]` 表示可选，`|` 表示二选一。
 
 本节只做索引；每条语句的完整语法、参数、结果列、错误与注意事项见
 [`spark-sql-reference.md`](spark-sql-reference.md)。
@@ -72,9 +75,8 @@ val spark = PaimonRestManagement.install(SparkSession.builder())
 | `CREATE PRINCIPAL ROLE [IF NOT EXISTS] <name> [PROPERTIES (...)]` | |
 | `DROP PRINCIPAL ROLE [IF EXISTS] <name>` | |
 | `ALTER PRINCIPAL ROLE <name> SET PROPERTIES (...)` / `UNSET PROPERTIES (...)` | |
-| `CREATE CATALOG ROLE [IF NOT EXISTS] <name> IN CATALOG <catalog> [PROPERTIES (...)]` | catalog role 归属于具体 catalog |
-| `DROP CATALOG ROLE [IF EXISTS] <name> IN CATALOG <catalog>` | |
-| `ALTER CATALOG ROLE <name> IN CATALOG <catalog> SET\|UNSET PROPERTIES (...)` | |
+
+catalog role 的三条 DDL（`CREATE` / `DROP` / `ALTER CATALOG ROLE`）没有 SQL 语句，只能用管理 API。
 
 ### DCL：装配与授权
 
@@ -82,27 +84,37 @@ val spark = PaimonRestManagement.install(SparkSession.builder())
 | --- | --- |
 | `GRANT PRINCIPAL ROLE <role> TO PRINCIPAL <principal>` | |
 | `REVOKE PRINCIPAL ROLE <role> FROM PRINCIPAL <principal>` | |
-| `GRANT CATALOG ROLE <role> TO PRINCIPAL ROLE <principalRole> IN CATALOG <catalog>` | |
-| `REVOKE CATALOG ROLE <role> FROM PRINCIPAL ROLE <principalRole> IN CATALOG <catalog>` | |
-| `GRANT <priv>[, <priv>...] ON <resource> TO CATALOG ROLE <role>` | 一项权限展开成一次授权请求 |
-| `REVOKE <priv>[, <priv>...] ON <resource> FROM CATALOG ROLE <role>` | |
+| `GRANT <access>[, <access>...] ON <resource> TO <grantee> [UNTIL '<有效期>']` | 一项 access 展开成一次授权请求 |
+| `REVOKE <access>[, <access>...] ON <resource> FROM <grantee>` | 撤销幂等 |
 
-`<resource>` 的六种写法：
+资源授权走的是**官方权限模型**（与「权限管理」页同一条链路、同一个端点），
+赋权身份是 `(资源, access, principal)` 三元组。授权对象四种写法折成 principal 不透明字符串：
+
+```sql
+USER alice            -- user:alice
+ROLE sales_writer     -- role:sales_writer（判定层解析为主体持有的同名 catalog role）
+GROUP eng             -- group:eng（没有成员关系可解析，不生效）
+PRINCIPAL 'svc:etl'   -- 原样透传
+```
+
+`<resource>` 的八种写法：
 
 ```sql
 CATALOG paimon
-NAMESPACE default IN CATALOG paimon
+CATALOG_ALL paimon
+DATABASE sales IN CATALOG paimon
+DATABASE_ALL sales IN CATALOG paimon
 TABLE default.orders IN CATALOG paimon
 VIEW default.v1 IN CATALOG paimon
-POLICY default.mask_pii IN CATALOG paimon
-SEMANTIC MODEL default.revenue IN CATALOG paimon
+FUNCTION default.f_clean IN CATALOG paimon
+COLUMN default.orders (id, amount) IN CATALOG paimon
 ```
 
-对象级资源（`TABLE` / `VIEW` / `POLICY` / `SEMANTIC MODEL`）必须写成
-`<namespace>.<对象名>`。命名空间是授权作用域的一部分，单段名字无法确定作用域，
-因此解析期直接报错，不做「猜默认命名空间」的处理。
+`_ALL` 后缀表示「该资源及其全部后代，含此后新建的」，不带后缀的写法只覆盖资源自身。
+对象级资源（`TABLE` / `VIEW` / `FUNCTION` / `COLUMN`）必须写成 `<库>.<对象名>`：
+库是授权作用域的一部分，单段名字无法确定作用域，因此解析期直接报错，不做「猜默认库」的处理。
 
-目标 catalog role 所属的 catalog 不单独书写，而是从资源描述中取得——`ON TABLE ns.t IN CATALOG paimon`
+目标 catalog 不单独书写，而是从资源描述中取得——`ON TABLE ns.t IN CATALOG paimon`
 已经写明 catalog 是 `paimon`，避免同一语句里重复两次。
 
 ### SHOW
@@ -112,17 +124,16 @@ SEMANTIC MODEL default.revenue IN CATALOG paimon
 | `SHOW CATALOGS` | `name`、`type` |
 | `SHOW PRINCIPALS [FOR PRINCIPAL ROLE <role>]` | `name`、`client_id`；带 `FOR` 时为 `principal` |
 | `SHOW PRINCIPAL ROLES [FOR PRINCIPAL <principal>]` | `name`、`federated`；带 `FOR` 时为 `principal_role` |
-| `SHOW CATALOG ROLES IN CATALOG <catalog> [FOR PRINCIPAL ROLE <role>]` | `name`、`catalog`；带 `FOR` 时为 `catalog_role` |
-| `SHOW GRANTS FOR CATALOG ROLE <role> IN CATALOG <catalog>` | `catalog`、`catalog_role`、`type`、`resource`、`namespace`、`object_name`、`privilege` |
+| `SHOW PERMISSIONS IN CATALOG <catalog> [FOR <grantee>]` | `catalog`、`principal`、`type`、`resource`、`database`、`object_name`、`columns`、`access`、`expire_time` |
 
-`SHOW GRANTS` 的 `resource` 列把多级命名空间与对象名拼成可读的完整名，同时保留
-`namespace` 与 `object_name` 两列以便筛选：
+`SHOW PERMISSIONS` 的 `resource` 列把库与对象名拼成可读的完整名，同时保留 `database` 与
+`object_name` 两列以便筛选：
 
-| 授权类型 | `type` | `resource` | `namespace` | `object_name` |
+| 作用范围 | `type` | `resource` | `database` | `object_name` |
 | --- | --- | --- | --- | --- |
-| catalog 级 | `catalog` | `paimon` | `null` | `null` |
-| namespace 级 | `namespace` | `default` | `default` | `null` |
-| 表级 | `table` | `default.orders` | `default` | `orders` |
+| catalog 级 | `CATALOG` / `CATALOG_ALL` | `paimon` | `null` | `null` |
+| 库级 | `DATABASE` / `DATABASE_ALL` | `default` | `default` | `null` |
+| 对象级 | `TABLE` / `VIEW` / `FUNCTION` / `COLUMN` | `default.orders` | `default` | `orders` |
 
 ### 写入语句不返回结果行
 
@@ -192,7 +203,8 @@ Spark 3.5.9 的 `spark-sql-api` 依赖 `antlr4-runtime` **4.9.3**，其自带的
 | `GET` / `PUT /principals/{n}` | 裸 `Principal` |
 | `POST` / `GET` / `PUT /principal-roles/{n}` | 裸 `PrincipalRole` |
 | `POST` / `GET` / `PUT /catalogs/{c}/catalog-roles/{n}` | 裸 `CatalogRole` |
-| 列表类接口 | 具名数组：`{"catalogs":[…]} `、`{"principals":[…]} `、`{"roles":[…]} `、`{"grants":[…]} ` |
+| `POST /v1/{prefix}/permissions/{grant,revoke}` | 成功返回 **201**，无响应体 |
+| 列表类接口 | 具名数组：`{"catalogs":[…]} `、`{"principals":[…]} `、`{"roles":[…]} `、`{"grants":[…]} `；权限列表多一层分页信封：`{"assignments":[…],"nextPageToken":"…"}` |
 
 状态码同样以规格为准，其中两条容易写错：
 
@@ -212,13 +224,13 @@ Spark 3.5.9 的 `spark-sql-api` 依赖 `antlr4-runtime` **4.9.3**，其自带的
 
 | 层 | 测试类 | 覆盖 |
 | --- | --- | --- |
-| 1 解析 | `ManagementSqlParsingTests`（21 个用例） | 21 条语句的解析结果、GRANT 的资源层级拆分、多权限展开、反引号与注释、**非管理语句必须交回原生解析器** |
-| 2 客户端 | `ManagementApiClientTests`（25 个用例） | 请求方法与路径、请求体字段形状、路径段编码、`ALTER` 的读-合并-回写、**单资源裸对象与状态码**、错误映射（403/404/409） |
+| 1 解析 | `ManagementSqlParsingTests`（23 个用例） | 16 条语句的解析结果、八种资源定位器的字段拆分、多 access 展开、列范围的白 / 黑名单、`UNTIL` 的日期换算、反引号与注释、**非管理语句必须交回原生解析器** |
+| 2 客户端 | `ManagementApiClientTests`（31 个用例） | 请求方法与路径、请求体字段形状、路径段编码、`ALTER` 的读-合并-回写、**单资源裸对象与状态码**、权限端点的基址推导与分页跟随、错误映射（403/404/409） |
 | 3 桩端到端 | `ManagementSqlExecutionTests`（12 个用例） | 真实 `SparkSession` + 进程内桩：扩展是否真被加载、`spark.sql` 是否真执行命令、结果行列名、原生 SQL 不受影响 |
-| 4 真实服务端 | `ManagementSqlLiveServerTests`（4 个用例） | 对真实 Paimon Rest Catalog Server 跑完整 SQL 链路，验证两侧实现的契约一致性 |
+| 4 真实服务端 | `ManagementSqlLiveServerTests`（4 个用例） | 对真实 Paimon Rest Catalog Server 跑完整 SQL 链路：管理 API 的契约（裸对象、`entityVersion`、状态码）、官方权限端点的 grant / list / revoke 与分页过滤。**catalog role 的建档与装配已没有 SQL 语句**，这一类用例里那半截脚手架改走 `ManagementApiClient`，顺带守住「管理 API 在 SQL 撤出后仍然可用」 |
 | 4 真实服务端 | `PaimonTableDdlTests`（10 个用例） | 用 Spark SQL 经 Paimon Rest Catalog 建表再写入（分区 / 主键 / `LIKE` / 幂等 / 冲突 / CTAS / `INSERT`），并直接读服务端元数据核对 schema、注释、分区键、主键与表选项——建表与写入路径的契约一致性，详见 [`spark-paimon-rest-e2e.md`](spark-paimon-rest-e2e.md) |
 | 4 真实服务端 | `SparkSqlAuthorizationTests`（2 个用例） | 同一个 catalog、同一张表跑两个身份：有写权限的能建库建表读写，只读的读得到数据但建库 / 建表 / 写数据一律被拒，并断言拒绝报文点名了缺失的那项权限、被拒之后数据没变。服务端自己那两层授权测试走 MockMvc 直接打 REST，这一层验的是**引擎发出的请求**——403 会不会被 Paimon 客户端改写、拒绝后到底有没有落数据，跑法见 [`spark-paimon-rest-e2e.md`](spark-paimon-rest-e2e.md) §6.1 |
-| 4 真实服务端 | `SparkSqlDocExamplesTests`（1 个用例） | 抽出参考文档第 11 节的示例逐条执行，断言撤销语义与清理结果——**让文档里的 SQL 与代码同生共死** |
+| 4 真实服务端 | `SparkSqlDocExamplesTests`（1 个用例） | 抽出参考文档第 10 节的示例逐条执行，断言撤销语义与清理结果——**让文档里的 SQL 与代码同生共死** |
 
 第 1、2 层不建 `SparkSession`（解析只依赖客户端实例，不依赖会话），第 3 层起本地会话，
 第 4 层默认跳过、需要显式指向服务端：
@@ -228,27 +240,36 @@ Spark 3.5.9 的 `spark-sql-api` 依赖 `antlr4-runtime` **4.9.3**，其自带的
 ```
 
 参考文档另有一层不需要服务端的静态校验（`scripts/verify-spark-sql-doc.py`）：
-比对文档与语法文件的语句数、规格的 64 项权限枚举与分组归属、实现声明的结果列与配置键。
-它刻意不复用任何生成逻辑，因此能发现「文档写得很像但不成立」这类人工读稿看不出的问题。
+比对第 2 节总览与第 10 节示例块是否覆盖语法的全部备选、第 7.4 节的 12 项 access 与 8 种
+资源类型的可用集合（对照 `PermissionDtos`）、第 7.3 节的资源定位器、实现声明的结果列与配置键、
+第 2 节的端点路径、以及第 3.3 节的保留字清单。
+它刻意不复用任何生成逻辑，因此能发现「文档写得很像但不成立」这类人工读稿看不出的问题；
+只读本仓源码，没有第三方依赖。
 
 ---
 
 ## 5. 已知边界
 
-1. **管理关键字是保留字。** `CATALOG`、`TABLE`、`VIEW`、`POLICY`、`NAMESPACE`、`ROLE`、`SHOW`、
-   `SET`、`ON`、`IN`、`FOR`、`TO`、`IF`、`NOT`、`EXISTS`、`MODEL`、`SEMANTIC`、`ALTER`、`CREATE`、
-   `DROP`、`RESET`、`ROTATE`、`GRANT`、`REVOKE`、`PROPERTIES`、`UNSET`、`FROM` 等词在
-   命名空间与对象名位置必须加反引号，例如 ``ON TABLE `catalog`.orders``。
-   这与 Spark 原生 SQL 的保留字行为一致，但需要在使用时留意。
-2. **多权限授权不是原子的。** 规格没有批量授权端点，每条授权是一个独立请求。
+1. **管理关键字是保留字。** `CATALOG`、`TABLE`、`VIEW`、`COLUMN`、`DATABASE`、`FUNCTION`、`ROLE`、
+   `SHOW`、`SET`、`ON`、`IN`、`FOR`、`TO`、`IF`、`NOT`、`EXISTS`、`ALTER`、`CREATE`、`DROP`、
+   `RESET`、`ROTATE`、`GRANT`、`REVOKE`、`PROPERTIES`、`UNSET`、`FROM`、`USER`、`GROUP`、
+   `UNTIL`、`EXCEPT`、`PERMISSIONS` 等词在名称位置必须加反引号，例如 ``ON TABLE `catalog`.orders``。
+   access 取值（`SELECT`、`LIST`、`DESCRIBE` 等）不是保留字，只有 `GRANT` / `ALTER` / `DROP`
+   三项既是取值也是关键字。这与 Spark 原生 SQL 的保留字行为一致，但需要在使用时留意。
+2. **多 access 授权不是原子的。** 每条 access 是一个独立请求。
    `GRANT a, b, c ON ...` 会顺序发出三次调用，中途失败时前面的已经生效；
    SQL 层不做伪原子化，失败直接抛出，由调用方按需补偿。
 3. **`ALTER ... SET PROPERTIES` 是「读-合并-回写」。** 规格的 `PUT` 是整体替换 `properties`，
    而 SQL 的语义是增量，因此客户端先读当前值与 `entityVersion`、合并后再回写。
    并发修改下会有一次请求拿到 409，需要重试——这是乐观并发的正常表现，不是缺陷。
 4. **每个会话一个 REST 客户端。** 见第 1 节的说明。
-5. **权限取值的合法性由服务端判定。** SQL 层只做形状校验（例如对象级授权必须是
-   `<namespace>.<对象名>`），不复制一份 64 项权限表——那只会多一处会漂移的副本。
-   写错权限名会得到服务端的错误响应，而不是在解析期被拦下。
-6. **令牌映射是服务端的静态配置。** 用 SQL 新建的主体不能立即取到可用的调用令牌，
+5. **access 取值的合法性由服务端判定。** SQL 层只做形状校验（例如对象级授权必须是
+   `<库>.<对象名>`），不复制一份 12 项 access 词表——那只会多一处会漂移的副本。
+   写错取值会得到服务端的 400，而不是在解析期被拦下。
+6. **catalog role 在 SQL 侧没有任何语句。** 建档（`CREATE` / `DROP` / `ALTER CATALOG ROLE`）、
+   装配（`GRANT` / `REVOKE CATALOG ROLE`）、清点（`SHOW CATALOG ROLES` / `SHOW GRANTS`）共 7 条
+   语法已全部移除，只能用管理 API。旧权限名（`TABLE_READ_DATA` 一类）与旧的整句写法
+   （`... TO CATALOG ROLE r`）同样不再支持：前者写在合法形状里会被服务端按「未知 access」
+   拒掉，后者在语法阶段就失败。挂在那条链上的存量授权仍然生效，只是再没有界面能清点它。
+7. **令牌映射是服务端的静态配置。** 用 SQL 新建的主体不能立即取到可用的调用令牌，
    详见 `docs/authorization.md` 的「已知边界」。

@@ -59,7 +59,12 @@ import java.util.Set;
  * 两者不一致，因此在 {@link #alterPrincipalProperties} 等方法里做一次
  * 「读取 → 合并 → 回写」，把替换语义包装成 SQL 用户预期的增量语义。
  *
- * <p>刻意不实现 {@link AutoCloseable}：{@code HttpClient#close} 到 Java 21 才出现，
+ * <p><b>两个基址。</b>绝大多数端点挂在管理 API 下（{@code /api/management/v1}），
+ * 但官方权限端点（{@code /v1/{prefix}/permissions}）挂在 catalog API 下。因此本类持有
+ * 两个基址：管理基址由构造参数给出，catalog 基址由它推导（默认部署下成立），
+ * 推不出来时要求显式配置——理由见 {@link #deriveCatalogBase}。
+ *
+ * <p><b>刻意不实现 {@link AutoCloseable}：</b>{@code HttpClient#close} 到 Java 21 才出现，
  * 而本模块按 Java 17 编译；{@code HttpClient} 自身持有守护线程，无需显式关闭。
  */
 public final class ManagementApiClient {
@@ -70,18 +75,78 @@ public final class ManagementApiClient {
     private static final String CATALOG_ROLES = "/catalog-roles";
     private static final String GRANTS = "/grants";
 
+    /** 管理 API 基址的后缀，用来反推 catalog API 基址（见 {@link #deriveCatalogBase}）。 */
+    private static final String MANAGEMENT_SUFFIX = "/api/management/v1";
+
+    /**
+     * 权限端点的最大分页数。
+     *
+     * <p>本类没法直接读状态码或区分「服务端卡住了」，因此给一个够大但有界的上限，
+     * 把「下一页令牌永远不为空」这种服务端缺陷变成一条明确的异常，而不是死循环。
+     * 100 页按每页 1000 条算是 10 万条直授，远超单 catalog 的合理规模。
+     */
+    private static final int MAX_PERMISSION_PAGES = 100;
+
+    /** 权限端点一次请求的页大小（服务端上限即 1000）。 */
+    private static final int PERMISSION_PAGE_SIZE = 1000;
+
     private final String baseUrl;
     private final String token;
     private final Duration timeout;
     private final HttpClient http;
     private final ObjectMapper mapper;
 
+    /**
+     * 官方权限端点的基址：catalog API 的 {@code /v1}，与 {@code baseUrl}（管理 API）
+     * 是**两个不同的前缀**——权限端点在官方规格里挂在 catalog API 下
+     * （{@code /v1/{prefix}/permissions}），不在 {@code /api/management/v1} 下。
+     */
+    private final String permissionBaseUrl;
+
+    /**
+     * 只配管理 API 基址的构造：catalog API 基址由它推导（见 {@link #deriveCatalogBase}）。
+     *
+     * <p>两种情况推不出来，此时权限语句（{@code GRANT ... TO USER ...}）会在此构造下
+     * 报一条指向配置项的错——原样保留这个重载，是因为既有调用点与测试都用它。
+     */
     public ManagementApiClient(String baseUrl, String token, Duration timeout) {
+        this(baseUrl, token, null, timeout);
+    }
+
+    /**
+     * @param catalogBaseUrl catalog API 基址，须含 {@code /v1} 前缀（如
+     *                       {@code http://host:8080/v1}）；留空则从 {@code baseUrl} 推导
+     */
+    public ManagementApiClient(String baseUrl, String token, String catalogBaseUrl, Duration timeout) {
         this.baseUrl = stripTrailingSlash(baseUrl);
         this.token = token == null || token.isBlank() ? null : token;
         this.timeout = timeout == null ? Duration.ofSeconds(30) : timeout;
         this.http = HttpClient.newBuilder().connectTimeout(this.timeout).build();
         this.mapper = new ObjectMapper();
+        String configured = catalogBaseUrl == null || catalogBaseUrl.isBlank()
+                ? null : stripTrailingSlash(catalogBaseUrl);
+        this.permissionBaseUrl = configured != null ? configured : deriveCatalogBase(this.baseUrl);
+    }
+
+    /**
+     * 从管理 API 基址反推 catalog API 基址。
+     *
+     * <p>两者在同一台服务的固定路径上：管理面是 {@code /api/management/v1}，数据面是
+     * {@code /v1}。因此把前者换成后者即可——默认配置（{@code http://127.0.0.1:8080}）
+     * 下不需要用户配第二个地址。
+     *
+     * <p>基址被部署在非标准路径下时推不出来（后缀对不上），此时返回 {@code null}，
+     * 由使用者显式配 {@code spark.paimon.rest.catalog.url}；报错比猜一个错的地址好。
+     */
+    private static String deriveCatalogBase(String managementBaseUrl) {
+        if (managementBaseUrl == null || managementBaseUrl.isEmpty()) {
+            return null;
+        }
+        if (!managementBaseUrl.endsWith(MANAGEMENT_SUFFIX)) {
+            return null;
+        }
+        String root = managementBaseUrl.substring(0, managementBaseUrl.length() - MANAGEMENT_SUFFIX.length());
+        return root + "/v1";
     }
 
     // ------------------------------------------------------------------ catalog
@@ -245,6 +310,13 @@ public final class ManagementApiClient {
     }
 
     // ------------------------------------------------------------------ catalog role
+    /*
+     * 这一组方法保留完整的管理 API 覆盖面，但**SQL 层已不再暴露它们**：
+     * catalog role 的建档 / 装配 / 清点语句已从 ManagementSql.g4 中移除（控制台也没有页面），
+     * 它只剩管理 API 一条路。留在这里有两个用处：一是本类按规格实现，缺一组方法会让
+     * 「客户端 == 管理 API」这个前提不成立；二是权限端点的装配测试需要一个类型化的入口
+     * 去建角色脚手架（`role:<名称>` 这种授权对象要生效，主体必须持有同名 catalog role）。
+     */
 
     /** {@code GET /catalogs/{catalog}/catalog-roles}。 */
     public List<RoleInfo> listCatalogRoles(String catalog) {
@@ -321,9 +393,16 @@ public final class ManagementApiClient {
         return result;
     }
 
-    // ------------------------------------------------------------------ 资源授权
+    // ------------------------------------------------------------------ Polaris 授权（只读）
 
-    /** {@code GET /catalogs/{catalog}/catalog-roles/{name}/grants}。 */
+    /**
+     * {@code GET /catalogs/{catalog}/catalog-roles/{name}/grants}。
+     *
+     * <p>这条 RBAC 链的**写侧从来没有进入 SQL 与控制台**，读侧唯一的 SQL 入口
+     * （`SHOW GRANTS FOR CATALOG ROLE`）也随 catalog role 语句一并移除，因此本方法
+     * 眼下只由测试使用——清点那些仍在判定里生效、却没有任何界面能看到的存量授权。
+     * 要写授权，请用 {@link #grantPermission}。
+     */
     public List<GrantInfo> listGrants(String catalog, String catalogRole) {
         JsonNode root = get(catalogRolePath(catalog, catalogRole) + GRANTS);
         List<GrantInfo> result = new ArrayList<>();
@@ -333,18 +412,135 @@ public final class ManagementApiClient {
         return result;
     }
 
-    /** {@code PUT /catalogs/{catalog}/catalog-roles/{name}/grants}：新增一条授权。 */
-    public void addGrant(String catalog, String catalogRole, GrantInfo grant) {
-        ObjectNode body = mapper.createObjectNode();
-        body.set("grant", grantNode(grant));
-        put(catalogRolePath(catalog, catalogRole) + GRANTS, body, 201);
+
+    // ------------------------------------------------------------------ 直授（官方权限模型）
+
+    /*
+     * 下面是 Paimon 官方 REST Management API 的权限端点，与上面的 Polaris 授权是
+     * **两套并行模型**：Polaris 把授权挂在 catalog role 上，官方模型把授权直接挂在
+     * principal 不透明字符串（`user:alice`）上。路径也不同——权限端点在 catalog API 下
+     * （`/v1/{prefix}/permissions`），因此走 permissionBaseUrl。
+     *
+     * 三条官方语义由服务端落实，客户端不做任何补偿：赋权身份是 (resource, access,
+     * principal) 三元组；重复授予覆盖过期时间；撤销幂等。
+     */
+
+    /** {@code POST /v1/{prefix}/permissions/grant}：授予一项权限。 */
+    public void grantPermission(String catalog, PermissionResource resource, String access,
+                                String principal, String expireTime) {
+        postAt(permissionPath(catalog) + "/grant",
+                permissionBody(resource, access, principal, expireTime), 201);
     }
 
-    /** {@code POST /catalogs/{catalog}/catalog-roles/{name}/grants}：撤销一条授权。 */
-    public void revokeGrant(String catalog, String catalogRole, GrantInfo grant) {
+    /**
+     * {@code POST /v1/{prefix}/permissions/revoke}：撤销一项权限。
+     *
+     * <p>不带 {@code expireTime} 与列范围：两者都不属于赋权身份，服务端按身份删整条。
+     */
+    public void revokePermission(String catalog, PermissionResource resource, String access,
+                                 String principal) {
+        postAt(permissionPath(catalog) + "/revoke",
+                permissionBody(resource, access, principal, null), 201);
+    }
+
+    /**
+     * {@code GET /v1/{prefix}/permissions}。
+     *
+     * <p>服务端分页（默认 100、上限 1000），这里跟随 {@code nextPageToken} 取完为止——
+     * 一条 {@code SHOW PERMISSIONS} 的语义是「列出全部」，静默截断比多几次请求糟糕得多。
+     *
+     * @param principal 按主体过滤；{@code null} 表示不过滤
+     */
+    public List<PermissionEntry> listPermissions(String catalog, String principal) {
+        List<PermissionEntry> result = new ArrayList<>();
+        String pageToken = null;
+        for (int page = 0; page < MAX_PERMISSION_PAGES; page++) {
+            StringBuilder path = new StringBuilder(permissionPath(catalog))
+                    .append("?maxResults=").append(PERMISSION_PAGE_SIZE);
+            if (principal != null && !principal.isBlank()) {
+                path.append("&principal=").append(encode(principal));
+            }
+            if (pageToken != null) {
+                path.append("&pageToken=").append(encode(pageToken));
+            }
+            JsonNode root = getAt(path.toString());
+            for (JsonNode node : root.path("assignments")) {
+                result.add(permissionEntry(node));
+            }
+            pageToken = text(root, "nextPageToken");
+            if (pageToken == null || pageToken.isBlank()) {
+                return result;
+            }
+        }
+        throw new ManagementApiException(0, "GET", "/permissions",
+                "the permissions endpoint kept returning a page token for " + MAX_PERMISSION_PAGES
+                        + " pages; aborting to avoid an endless loop", null, null);
+    }
+
+    /** 权限端点的路径：{@code /{prefix}/permissions}。 */
+    private String permissionPath(String catalog) {
+        return "/" + encode(catalog) + "/permissions";
+    }
+
+    private ObjectNode permissionBody(PermissionResource resource, String access, String principal,
+                                      String expireTime) {
         ObjectNode body = mapper.createObjectNode();
-        body.set("grant", grantNode(grant));
-        post(catalogRolePath(catalog, catalogRole) + GRANTS, body, 201);
+        ObjectNode node = mapper.createObjectNode();
+        node.put("type", resource.type());
+        if (resource.database() != null) {
+            node.put("database", resource.database());
+        }
+        String field = switch (resource.type()) {
+            case "TABLE", "COLUMN" -> "table";
+            case "VIEW" -> "view";
+            case "FUNCTION" -> "function";
+            default -> null;
+        };
+        if (field != null) {
+            node.put(field, resource.objectName());
+        }
+        body.set("resource", node);
+        body.put("access", access);
+        body.put("principal", principal);
+        if (expireTime != null && !expireTime.isBlank()) {
+            body.put("expireTime", expireTime);
+        }
+        if (resource.hasColumnScope()) {
+            // 官方要求白名单与黑名单恰好一个非空，不做本地校验：写错了由服务端返回 400
+            ObjectNode columns = mapper.createObjectNode();
+            String listField = resource.columns().isEmpty() ? "excludedColumnNames" : "columnNames";
+            ArrayNode array = columns.putArray(listField);
+            List<String> names = resource.columns().isEmpty() ? resource.excludedColumns()
+                    : resource.columns();
+            names.forEach(array::add);
+            body.set("columns", columns);
+        }
+        return body;
+    }
+
+    private PermissionEntry permissionEntry(JsonNode node) {
+        JsonNode resource = node.path("resource");
+        String type = text(resource, "type");
+        String database = text(resource, "database");
+        String objectName = switch (type == null ? "" : type) {
+            case "TABLE", "COLUMN" -> text(resource, "table");
+            case "VIEW" -> text(resource, "view");
+            case "FUNCTION" -> text(resource, "function");
+            default -> null;
+        };
+        List<String> columns = strings(node.path("columns").path("columnNames"));
+        List<String> excluded = strings(node.path("columns").path("excludedColumnNames"));
+        return new PermissionEntry(
+                new PermissionResource(type, database, objectName, columns, excluded),
+                text(node, "access"), text(node, "principal"), text(node, "expireTime"));
+    }
+
+    private static List<String> strings(JsonNode array) {
+        List<String> result = new ArrayList<>();
+        for (JsonNode element : array) {
+            result.add(element.asText());
+        }
+        return result;
     }
 
     // ------------------------------------------------------------------ 内部：HTTP
@@ -373,6 +569,19 @@ public final class ManagementApiClient {
 
     private JsonNode delete(String path) {
         return send(HttpRequest.newBuilder(uri(path)).DELETE(), path, 204);
+    }
+
+    /** 与 {@link #get} 相同，只是打到 catalog API 的权限端点。 */
+    private JsonNode getAt(String path) {
+        return send(HttpRequest.newBuilder(permissionUri(path)).GET(), path, 200);
+    }
+
+    /** 与 {@link #post} 相同，只是打到 catalog API 的权限端点。 */
+    private JsonNode postAt(String path, JsonNode body, int expected) {
+        return send(HttpRequest.newBuilder(permissionUri(path))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(body.toString(), StandardCharsets.UTF_8)),
+                path, expected);
     }
 
     private JsonNode send(HttpRequest.Builder builder, String path, int expected) {
@@ -443,7 +652,7 @@ public final class ManagementApiClient {
     // ------------------------------------------------------------------ 内部：形状转换
 
     /*
-     * 下面五个摘要类型刻意写成普通静态嵌套类，而不是 {@code record}。
+     * 下面的摘要类型刻意写成普通静态嵌套类，而不是 {@code record}。
      *
      * 它们会被 Scala 侧引用——{@code ManagementAstBuilder} / {@code ManagementCommands}
      * 按名字引用 {@code GrantInfo}，其余几个靠方法返回值推断后调用访问器。IDE 的
@@ -661,7 +870,7 @@ public final class ManagementApiClient {
     }
 
     /**
-     * 一条资源授权。
+     * 一条 Polaris 资源授权（挂在 catalog role 上），只在读路径上用到。
      *
      * @param type      资源类型判别值：{@code catalog} / {@code namespace} / {@code table} /
      *                  {@code view} / {@code policy} / {@code semantic-model}
@@ -700,33 +909,6 @@ public final class ManagementApiClient {
             return privilege;
         }
 
-        /** catalog 级授权。 */
-        public static GrantInfo onCatalog(String privilege) {
-            return new GrantInfo("catalog", List.of(), null, privilege);
-        }
-
-        /** namespace 级授权。 */
-        public static GrantInfo onNamespace(List<String> namespace, String privilege) {
-            return new GrantInfo("namespace", List.copyOf(namespace), null, privilege);
-        }
-
-        /** 对象级授权：table / view / policy / semantic-model。 */
-        public static GrantInfo onObject(String type, List<String> namespace, String objectName,
-                                         String privilege) {
-            return new GrantInfo(type, List.copyOf(namespace), objectName, privilege);
-        }
-
-        /** 规格中各资源类型对应的对象名字段名。 */
-        private String objectFieldName() {
-            return switch (type) {
-                case "table" -> "tableName";
-                case "view" -> "viewName";
-                case "policy" -> "policyName";
-                case "semantic-model" -> "semanticModelName";
-                default -> null;
-            };
-        }
-
         @Override
         public boolean equals(Object o) {
             return o instanceof GrantInfo other
@@ -748,19 +930,187 @@ public final class ManagementApiClient {
         }
     }
 
-    private ObjectNode grantNode(GrantInfo grant) {
-        ObjectNode node = mapper.createObjectNode();
-        node.put("type", grant.type());
-        if (!grant.namespace().isEmpty()) {
-            ArrayNode array = node.putArray("namespace");
-            grant.namespace().forEach(array::add);
+    /**
+     * 官方权限模型的资源定位器。
+     *
+     * <p>{@code type} 是判别字段，与官方 {@code ResourceType} 逐字一致：
+     * {@code CATALOG} / {@code CATALOG_ALL} / {@code DATABASE} / {@code DATABASE_ALL} /
+     * {@code TABLE} / {@code COLUMN} / {@code VIEW} / {@code FUNCTION}。
+     * {@code _ALL} 后缀是显式作用域——覆盖该资源**及其此后新建的后代**，
+     * 与「只在被引用的资源本身生效」的精确类型相对。
+     *
+     * <p>其余字段按类型取用：{@code CATALOG} / {@code CATALOG_ALL} 不定位（catalog 由
+     * 请求路径里的 prefix 决定，因此两者都是 {@code null}）；{@code DATABASE} /
+     * {@code DATABASE_ALL} 只用 {@code database}；{@code TABLE} / {@code COLUMN} /
+     * {@code VIEW} / {@code FUNCTION} 用 {@code database} + {@code objectName}。
+     * 列范围只对 {@code COLUMN} 有意义，且白名单 {@code columns} 与黑名单
+     * {@code excludedColumns} 恰好一个非空。
+     *
+     * <p>写成普通静态嵌套类而不是 {@code record}，理由见下面的类型注释（Scala 2.12
+     * 的 Java 源码解析器不认识 {@code record}，而本类型会被 Scala 侧构造）。
+     */
+    public static final class PermissionResource {
+
+        private final String type;
+        private final String database;
+        private final String objectName;
+        private final List<String> columns;
+        private final List<String> excludedColumns;
+
+        public PermissionResource(String type, String database, String objectName,
+                                  List<String> columns, List<String> excludedColumns) {
+            this.type = type;
+            this.database = database;
+            this.objectName = objectName;
+            this.columns = columns == null ? List.of() : List.copyOf(columns);
+            this.excludedColumns = excludedColumns == null ? List.of() : List.copyOf(excludedColumns);
         }
-        String field = grant.objectFieldName();
-        if (field != null) {
-            node.put(field, grant.objectName());
+
+        /** 整个 catalog。 */
+        public static PermissionResource catalog() {
+            return new PermissionResource("CATALOG", null, null, null, null);
         }
-        node.put("privilege", grant.privilege());
-        return node;
+
+        /** catalog 及其全部后代（含此后新建的）。 */
+        public static PermissionResource catalogAll() {
+            return new PermissionResource("CATALOG_ALL", null, null, null, null);
+        }
+
+        public static PermissionResource database(String database) {
+            return new PermissionResource("DATABASE", database, null, null, null);
+        }
+
+        /** 库及其全部后代（含此后新建的表 / 视图 / 函数）。 */
+        public static PermissionResource databaseAll(String database) {
+            return new PermissionResource("DATABASE_ALL", database, null, null, null);
+        }
+
+        public static PermissionResource table(String database, String table) {
+            return new PermissionResource("TABLE", database, table, null, null);
+        }
+
+        public static PermissionResource view(String database, String view) {
+            return new PermissionResource("VIEW", database, view, null, null);
+        }
+
+        public static PermissionResource function(String database, String function) {
+            return new PermissionResource("FUNCTION", database, function, null, null);
+        }
+
+        /**
+         * 表上的列范围：{@code columns} 是白名单、{@code excludedColumns} 是黑名单，
+         * 恰好一个非空（两者都给或都不给由服务端判成 400）。
+         */
+        public static PermissionResource column(String database, String table,
+                                                List<String> columns, List<String> excludedColumns) {
+            return new PermissionResource("COLUMN", database, table, columns, excludedColumns);
+        }
+
+        public String type() {
+            return type;
+        }
+
+        public String database() {
+            return database;
+        }
+
+        public String objectName() {
+            return objectName;
+        }
+
+        /** 列白名单；非 COLUMN 或黑名单形式时为空。 */
+        public List<String> columns() {
+            return columns;
+        }
+
+        /** 列黑名单；非 COLUMN 或白名单形式时为空。 */
+        public List<String> excludedColumns() {
+            return excludedColumns;
+        }
+
+        /** 是否带列范围——决定请求体里要不要出现 {@code columns}。 */
+        public boolean hasColumnScope() {
+            return !columns.isEmpty() || !excludedColumns.isEmpty();
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            return o instanceof PermissionResource other
+                    && Objects.equals(type, other.type)
+                    && Objects.equals(database, other.database)
+                    && Objects.equals(objectName, other.objectName)
+                    && Objects.equals(columns, other.columns)
+                    && Objects.equals(excludedColumns, other.excludedColumns);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(type, database, objectName, columns, excludedColumns);
+        }
+
+        @Override
+        public String toString() {
+            return "PermissionResource[type=" + type + ", database=" + database
+                    + ", objectName=" + objectName + ", columns=" + columns
+                    + ", excludedColumns=" + excludedColumns + "]";
+        }
+    }
+
+    /**
+     * 一条直授：赋权身份是 {@code (resource, access, principal)} 三元组，
+     * {@code expireTime} 不属于身份（重复授予覆盖它）。
+     */
+    public static final class PermissionEntry {
+
+        private final PermissionResource resource;
+        private final String access;
+        private final String principal;
+        private final String expireTime;
+
+        public PermissionEntry(PermissionResource resource, String access, String principal,
+                               String expireTime) {
+            this.resource = resource;
+            this.access = access;
+            this.principal = principal;
+            this.expireTime = expireTime;
+        }
+
+        public PermissionResource resource() {
+            return resource;
+        }
+
+        public String access() {
+            return access;
+        }
+
+        public String principal() {
+            return principal;
+        }
+
+        /** ISO-8601 instant；长期有效时为 {@code null}。 */
+        public String expireTime() {
+            return expireTime;
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            return o instanceof PermissionEntry other
+                    && Objects.equals(resource, other.resource)
+                    && Objects.equals(access, other.access)
+                    && Objects.equals(principal, other.principal)
+                    && Objects.equals(expireTime, other.expireTime);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(resource, access, principal, expireTime);
+        }
+
+        @Override
+        public String toString() {
+            return "PermissionEntry[resource=" + resource + ", access=" + access
+                    + ", principal=" + principal + ", expireTime=" + expireTime + "]";
+        }
     }
 
     private GrantInfo grantInfo(JsonNode node) {
@@ -864,6 +1214,24 @@ public final class ManagementApiClient {
     }
 
     /**
+     * 权限端点的 URI。
+     *
+     * <p>基址推不出来时（管理 URL 不在默认路径下、又没显式配 catalog 基址）报一条
+     * 指向配置项的错——比发一个一定 404 的请求好，也比静默猜一个地址好。
+     */
+    private URI permissionUri(String path) {
+        if (permissionBaseUrl == null) {
+            throw new ManagementApiException(0, "GET", path,
+                    "cannot locate the permissions endpoint: the management API base URL '"
+                            + baseUrl + "' does not end with " + MANAGEMENT_SUFFIX
+                            + ", so the catalog API base URL cannot be derived; set"
+                            + " spark.paimon.rest.catalog.url to the catalog API base"
+                            + " (for example http://host:8080/v1)", null, null);
+        }
+        return URI.create(permissionBaseUrl + path);
+    }
+
+    /**
      * 路径段编码。
      *
      * <p>{@link URLEncoder} 是 form 编码，空格会变成 {@code +}，在路径里是错的；
@@ -884,6 +1252,11 @@ public final class ManagementApiClient {
     /** 供诊断输出：客户端指向的基址。 */
     public String baseUrl() {
         return baseUrl;
+    }
+
+    /** 供诊断输出：推不出来时为 {@code null}。 */
+    public Optional<String> permissionBaseUrlOptional() {
+        return Optional.ofNullable(permissionBaseUrl);
     }
 
     /** 便于测试断言：是否配置了令牌。 */

@@ -11,9 +11,12 @@ import scala.collection.JavaConverters._
 /**
  * 一条被桩服务端记录下来的请求。
  *
+ * @param path          原始路径，**不含**查询串
+ * @param query         原始查询串；没有查询串时为 `null`
  * @param authorization 原样记录的 `Authorization` 头；未发送时为 `null`
  */
-final case class RecordedRequest(method: String, path: String, body: String, authorization: String)
+final case class RecordedRequest(method: String, path: String, query: String, body: String,
+                                 authorization: String)
 
 /**
  * 进程内的管理 API 桩服务端。
@@ -68,6 +71,8 @@ final class StubManagementServer private (server: HttpServer) {
     val current = RecordedRequest(
       exchange.getRequestMethod,
       exchange.getRequestURI.getRawPath,
+      // 查询串单独记一列：`getRawPath` 不含它，而权限列表的过滤与分页都写在查询串里
+      exchange.getRequestURI.getRawQuery,
       body,
       exchange.getRequestHeaders.getFirst("Authorization"))
     recorded.add(current)

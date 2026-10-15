@@ -105,7 +105,7 @@ mysql -h 127.0.0.1 -u root -p < sql/schema-mysql.sql
 # 全量构建
 JAVA_HOME=/path/to/jdk-21 mvn -DskipTests install
 
-# 运行全部测试（服务端 267 + Spark 81，共 348 个用例）
+# 运行全部测试（服务端 276 + Spark 89，共 365 个用例）
 JAVA_HOME=/path/to/jdk-21 mvn test
 
 # 启动服务端（默认 8080 端口，连 MySQL，预置 catalog prefix=paimon 与 database=default）
@@ -206,9 +206,9 @@ paimon-rest-server/
   config/       服务端配置、Bearer 鉴权、授权拦截器、启动初始化
 
 paimon-rest-spark/
-  antlr4/…/ManagementSql.g4   管理语句语法（21 条语句）
+  antlr4/…/ManagementSql.g4   管理语句语法（16 条语句、15 条规则）
   client/                     REST 客户端（JDK HttpClient + Jackson 2）
-  …/ManagementCommands.scala  21 个 RunnableCommand：语句 → HTTP 调用
+  …/ManagementCommands.scala  13 个 RunnableCommand：语句 → HTTP 调用
   …/ManagementAstBuilder.scala 语法树 → 命令
   …/PaimonRestSqlParser.scala  注入 Spark 的解析器：先试管理语法，失败即交回
 ```
@@ -240,15 +240,19 @@ paimon-rest-spark/
 
 ## 4. Spark SQL 扩展
 
-`paimon-rest-spark` 把管理 API 接进 Spark SQL，21 条语句覆盖主体、角色、授权与查询：
+`paimon-rest-spark` 把管理 API 接进 Spark SQL，16 条语句覆盖主体、principal role、装配、授权与查询：
 
 ```sql
 CREATE PRINCIPAL svc_etl PROPERTIES ('owner' = 'data-platform');
-CREATE CATALOG ROLE reader IN CATALOG paimon;
-GRANT CATALOG ROLE reader TO PRINCIPAL ROLE etl_reader IN CATALOG paimon;
-GRANT TABLE_READ_DATA ON TABLE default.orders IN CATALOG paimon TO CATALOG ROLE reader;
-SHOW GRANTS FOR CATALOG ROLE reader IN CATALOG paimon;
+CREATE PRINCIPAL ROLE etl_engineer;
+GRANT PRINCIPAL ROLE etl_engineer TO PRINCIPAL svc_etl;
+GRANT LIST, DESCRIBE, SELECT ON CATALOG_ALL paimon TO USER svc_etl;
+SHOW PERMISSIONS IN CATALOG paimon FOR USER svc_etl;
 ```
+
+资源授权用的是**官方权限模型**（`GRANT <access> ON <资源> TO <授权对象>`，
+与「权限管理」页同一条链路）；挂在 catalog role 上的 Polaris 授权与 catalog role 本身
+都没有 SQL 语句，只剩管理 API。
 
 启用方式、逐条语句的语法 / 参数 / 结果列 / 错误处理见
 [`docs/spark-sql-reference.md`](docs/spark-sql-reference.md)（语句级参考）；
@@ -256,7 +260,7 @@ SHOW GRANTS FOR CATALOG ROLE reader IN CATALOG paimon;
 [`docs/spark-sql-extension.md`](docs/spark-sql-extension.md)。
 
 参考文档里的内容不是手写断言，而是有机械校验兜底：`scripts/verify-spark-sql-doc.py`
-比对文档与语法文件、规格、客户端代码，参考文档第 11 节的示例还会被 `SparkSqlDocExamplesTests`
+比对文档的语句清单、`PermissionDtos`、客户端代码，参考文档第 10 节的示例还会被 `SparkSqlDocExamplesTests`
 对着真实服务端执行一遍——**改坏示例会让构建失败**。
 
 两个必须知道的约束：
@@ -537,7 +541,7 @@ Azure 只下发定位元数据是个明确的缺口：Polaris 的 `polaris.stora
 
 ## 7. 测试
 
-### 单元与集成测试（348 个用例）
+### 单元与集成测试（365 个用例）
 
 ```bash
 JAVA_HOME=/path/to/jdk-21 mvn test
@@ -546,13 +550,14 @@ JAVA_HOME=/path/to/jdk-21 mvn test
 测试连的是内存 H2（`test` profile，见 `src/test/resources/application-test.yml`），
 **不依赖本机是否有 MySQL**。
 
-服务端（267 个）：
+服务端（276 个）：
 
 | 测试类 | 覆盖 |
 | --- | --- |
 | `PaimonRestCatalogApiTests` | 配置发现、建表与 schema 变更（加列 / 列改名 / 改类型 / 改可空性 / 改属性）/ 回滚、快照提交与乐观并发、分区统计、表重命名（改名不动数据位置、跨库重命名、目标名被占用 409）、视图与函数、语义视图 1 MiB 上限、消费者位点、凭证下发与 403、各类 404 的 `resourceType` |
 | `TableMetadataMaterializationTests` | 把 schema 与快照物化到 Paimon 表目录：建表写 `schema-0`、改表写下一个号、回滚把旧内容写到**新号**（回滚也是向前一步）、`register` 进来的外部表一个文件都不碰、缺 FileIO 实现时默认只记日志不打断请求（并断言打开 `fail-on-error` 后确实变成 500）；快照侧写 `snapshot/snapshot-<id>` 与 `LATEST`、落盘的是客户端**原文**（`properties` 这类规格没建模的字段不能丢）、`VERSION AS OF <数字>` 按**快照 id** 而不是 `Snapshot.version` 取值（含 `LATEST` / `EARLIEST` / 标签名）、快照回滚会删掉目标之后的快照文件；钉住「数据库 `schemaId` ↔ 仓库 `schema-<n>`」与「数据库 `snapshotId` ↔ 仓库 `snapshot-<n>`」逐号对应 |
 | `ManagementApiTests` | 管理 API 的主体、角色、装配与授权链路 |
+| `PermissionManagementTests` | Paimon 原生权限端点（`/v1/{prefix}/permissions`）与直授判定：赋权三元组的增删查、官方词表的入参校验、撤销幂等、重复授予覆盖过期时间，以及直授真的能打通 catalog API 的权限判定（`user:` 与 `role:` 两种 principal 形式各一条链路）；与 `AuthorizationTests`（Polaris RBAC 链）互补 |
 | `StorageConfigApiTests` | `storageConfigInfo` 六种存储类型的建 / 读 / 改往返、`AZURE` 缺 `tenantId` 与空位置的 400、换存储后新库位置随之改变、OBS↔OSS 换类型时端点一起替换 |
 | `StorageConfigDtosTests` | 判别联合的绑定位形：子类型注册名与枚举一致、判别字段只出现一次、跨类型字段不串、落库路径（`Json`）往返、静态凭据字段随实体往返 |
 | `StorageCredentialApiTests` | 按存储类型下发凭据的 HTTP 链路：S3 的密钥来源（默认配置与具名存储）与不下发 `endpointInternal` / `stsEndpoint`、`stsUnavailable` 时不给密钥、Azure 只给定位元数据、GCS 的 `lifespan` 收窄 `expiresAt`、OBS / OSS 各自走对键族且不串族、FILE 保留自包含令牌、未过期凭据被复用（比对 `expiresAt` 而非密钥） |
@@ -576,17 +581,17 @@ JAVA_HOME=/path/to/jdk-21 mvn test
 | `MysqlDdlGeneratorTests` | 由实体元数据生成 MySQL DDL，并断言方言被钉在 MySQL 8.0（见「代码生成」） |
 | `PaimonRestServerApplicationTests` | 上下文加载 |
 
-Spark 子模块（81 个，其中 19 个需要显式指向服务端）：
+Spark 子模块（89 个，其中 19 个需要显式指向服务端）：
 
 | 测试类 | 覆盖 |
 | --- | --- |
-| `ManagementSqlParsingTests` | 21 条语句的解析结果、GRANT 资源层级拆分、多权限展开、反引号与注释、非管理语句必须交回原生解析器 |
-| `ManagementApiClientTests` | 请求方法与路径、请求体字段形状、路径段编码、`ALTER` 的读-合并-回写、单资源裸对象与状态码、错误映射 |
+| `ManagementSqlParsingTests` | 16 条语句的解析结果、八种资源定位器的字段拆分、多 access 展开、列范围白 / 黑名单、`UNTIL` 日期换算、反引号与注释、非管理语句必须交回原生解析器，以及 catalog role 的 7 条语句**必须交回原生解析器**（删掉的东西不许悄悄回来） |
+| `ManagementApiClientTests` | 请求方法与路径、请求体字段形状、路径段编码、`ALTER` 的读-合并-回写、单资源裸对象与状态码、权限端点的基址推导与分页跟随、错误映射 |
 | `ManagementSqlExecutionTests` | 真实 `SparkSession` + 桩服务端：扩展是否真被加载、`spark.sql` 是否真执行命令、结果行列名、原生 SQL 不受影响 |
-| `ManagementSqlLiveServerTests` | 对真实服务端跑完整 SQL 链路（默认跳过，见下） |
+| `ManagementSqlLiveServerTests` | 对真实服务端跑完整 SQL 链路：管理 API 契约、官方权限端点的 grant / list / revoke 与分页过滤（默认跳过，见下）。catalog role 的建档与装配已从语法移除，这一类用例里那半截脚手架改调 `ManagementApiClient`，于是顺带守住「管理 API 在 SQL 撤出之后仍然整条可用」 |
 | `PaimonTableDdlTests` | 用 Spark SQL 经 Paimon Rest Catalog 建表再写入：分区 append 表与主键表（含分区主键）、`LIKE`、`IF NOT EXISTS` 幂等与裸建冲突、内联主键约束与保留表属性被 Spark 拒绝、库不存在时报错，以及 `CTAS` 与分区主键表 `INSERT` 写完后读回数据；两种断言并重——`DESCRIBE` / `SHOW CREATE TABLE` 的输出，以及直接读服务端元数据核对注释、分区键、主键与选项（默认跳过，见下） |
-| `SparkSqlAuthorizationTests` | 同一个 catalog、同一张表，两个身份各跑一遍真 SQL：有写权限的那个能建库、建表、写入、读回；只读的那个读得到数据、也看得见表列表，但建库 / 建表 / 写数据一律被服务端授权判定拒绝，且断言拒绝报文点名了主体与**缺失的那一项权限**（`TABLE_CREATE` / `TABLE_WRITE_DATA` / `NAMESPACE_CREATE`）、被拒之后数据没变（默认跳过，见下）。服务端已有的两层授权测试都走 MockMvc 直接打 REST，这一层验的是**引擎发出的请求**——403 会不会被 Paimon 客户端改写、拒绝后到底有没有落数据，只有真 SQL 才知道 |
-| `SparkSqlDocExamplesTests` | 抽出 `docs/spark-sql-reference.md` 第 11 节的示例并逐条执行，断言撤销语义与清理结果（默认跳过，见下） |
+| `SparkSqlAuthorizationTests` | 同一个 catalog、同一张表，两个身份各跑一遍真 SQL：有写权限的那个能建库、建表、写入、读回；只读的那个读得到数据、也看得见表列表，但建库 / 建表 / 写数据一律被服务端授权判定拒绝，且断言拒绝报文点名了主体与**缺失的那一项权限**（`TABLE_CREATE` / `TABLE_WRITE_DATA` / `NAMESPACE_CREATE`）、被拒之后数据没变。两个角色的授权用官方权限语句装配（`ON CATALOG_ALL ... TO ROLE ...`，而 `role:` 要生效得先有同名 catalog role——这一层用 `ManagementApiClient` 建，顺带验证「管理 API 建角色 + SQL 授 `role:`」这条跨接口的组合），于是也顺带验证「`ROLE x` 折成 `role:x`」这一步（默认跳过，见下）。服务端已有的两层授权测试都走 MockMvc 直接打 REST，这一层验的是**引擎发出的请求**——403 会不会被 Paimon 客户端改写、拒绝后到底有没有落数据，只有真 SQL 才知道 |
+| `SparkSqlDocExamplesTests` | 抽出 `docs/spark-sql-reference.md` 第 10 节的示例并逐条执行，断言作用范围落到哪几列、列范围与有效期的回读、撤销一项 access 不影响同资源其它 access（默认跳过，见下） |
 | `PaimonRestCatalogTest` | 对象存储仓库的凭据链路：建表后服务端返回的 `path` 由 warehouse 模板展开、`INSERT` 写入分区主键表并逐列读回（默认跳过，见下）。它同时压住「类路径缺 `s3://` FileIO 实现」与「凭据没按引擎认的键名下发」这两种失败 |
 | `PaimonRestManagementTests` | 配置解析的容错 |
 
@@ -634,11 +639,11 @@ CLIENT_ID=<引导主体 clientId> CLIENT_SECRET=<明文密钥> \
 存在失败时以非 0 退出；请求体形状与规格字段名一致，可直接作为接口调用示例。
 
 `e2e-spark-sql.sh` 是唯一会启动服务端的脚本，也是验证「客户端与服务端契约一致」的那一层：
-前几层测试用的是桩，只能证明客户端与自己的假设自洽。它一次跑三个类——
+前几层测试用的是桩，只能证明客户端与自己的假设自洽。它一次跑四个类——
 `ManagementSqlLiveServerTests`（管理 API 契约）、`PaimonTableDdlTests`（用 Spark SQL 建 Paimon 表）、
-`SparkSqlDocExamplesTests`（参考文档示例）。三者**必须同批运行**：一个 JVM 只能有一个
-SparkContext，而 `spark.sql.extensions` 只在建会话时生效，因此它们共用同一个会话；
-把用桩的 `ManagementSqlExecutionTests` 拉进同一批会让端点与扩展错位，
+`SparkSqlAuthorizationTests`（两种身份跑真 SQL）、`SparkSqlDocExamplesTests`（参考文档示例）。
+四者**必须同批运行**：一个 JVM 只能有一个 SparkContext，而 `spark.sql.extensions` 只在建会话时生效，
+因此它们共用同一个会话；把用桩的 `ManagementSqlExecutionTests` 拉进同一批会让端点与扩展错位，
 `LiveSparkSession` 会就此直接报错，而不是静默跑错。
 
 `sweep-console-auth.sh` 与 `npm run check:login` 是登录链路的另外两层，都对着运行中的实例跑：
@@ -863,14 +868,14 @@ http://localhost:8080/console/
 | `/` | 概览：统计块、服务端配置、**连接自检**、catalog 清单、`GET /v1/config` |
 | `/browse` | 目录浏览：库/表/视图/函数/语义视图；建库建表、注册表、按表 ID 定位、重命名、删除 |
 | `/tables/:prefix/:database/:table` | [表详情](docs/console-table-detail.md)：八个页签、快照与标签回滚 |
-| `/catalogs`、`/principals`、`/principal-roles` | 治理：catalog、主体、角色（Polaris RBAC 的三件套，授权不在其中） |
-| `/permissions` | 权限管理：catalog / database / table / view 四级资源的授权清单与增删 |
+| `/catalogs`、`/principals`、`/principal-roles` | 治理：catalog、主体、角色；角色页含「授予 / 撤销 catalog 角色」。**catalog 角色与它的资源授权没有页面**——这两件事的入口是管理 API 与 Spark SQL |
+| `/permissions` | 权限管理：控制台**唯一**的授权页（Paimon 官方权限模型、授权直接挂在主体上），覆盖官方八种资源定位器里的四级——catalog / database / table / view |
 | `/settings` | 连接设置：API 基址、访问令牌、登录状态、主题 |
 
 三条约束值得先知道：
 
 - **它是运维工具，不是写入入口。** 不提供 `commitTable`（控制台拼不出一个指向真实文件的快照）；
-  对表的改动只有结构变更、回滚与授权。
+  对表的改动只有结构变更与回滚——表级授权不在表详情页做，统一到「权限管理」页。
 - **构建产物提交在仓库里。** 产物落在 `paimon-rest-server/src/main/resources/static/console`，
   因此构建服务端 jar 不需要 Node；代价是改了前端必须重建并提交产物，
   用 `./scripts/build-console.sh` 一条命令完成构建与校验。

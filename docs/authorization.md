@@ -127,15 +127,24 @@ principal ──(N:M)── principal role ──(N:M)── catalog role ──
 除 RBAC 链外，本服务端还实现了 Paimon 官方 REST Management API 的权限端点
 （`GET /v1/{prefix}/permissions`、`POST .../grant`、`POST .../revoke`，见
 `PermissionController`）：授权直接面向 principal 不透明字符串（`user:alice`、
-`role:sales_writer`），资源用 `CATALOG / DATABASE / DATABASE_ALL / TABLE / COLUMN / VIEW /
-FUNCTION` 定位器表达，access 用官方词表（SELECT / UPDATE / ALTER / DROP / DESCRIBE /
-CREATETABLE / ...），落库为 `paimon_permission_assignment`。
+`role:sales_writer`），资源用 8 种官方定位器表达（`CATALOG / CATALOG_ALL / DATABASE /
+DATABASE_ALL / TABLE / COLUMN / VIEW / FUNCTION`），access 用官方 12 项词表
+（SELECT / UPDATE / ALTER / DROP / DESCRIBE / CREATETABLE / ...），
+落库为 `paimon_permission_assignment`。
+
+**这一路也是控制台与服务端的 SQL 层共用的那一套**：控制台「权限管理」页、
+Spark SQL 的资源授权语句（`GRANT <access> ON <资源> TO <授权对象>`，
+见 [`spark-sql-reference.md`](spark-sql-reference.md) 第 7 节）都打这几个端点，
+因此页面与 SQL 的语义一致，不存在「两条表达方式」的翻译层。
 
 判定时（`AuthorizationService.effectivePrivileges`）两路来源取**并集**：
 
 - **principal 匹配约定**（官方把解析留给服务端）：认证主体名 `alice` 匹配 `alice`
   与 `user:alice`；`role:<name>` 匹配主体在该 catalog 下持有的**同名 catalog role**——
   这是两条链路唯一的交汇点；`group:*` 无成员关系可解析，明确不匹配（宁可不生效，不放大）。
+  注意这里的先后关系：`role:` 授权写不写是**这一路**的事，能不能生效取决于**另一路**有没有
+  同名 catalog role；而 catalog role 既没有控制台页面、也没有 SQL 语句，只能由管理 API 建
+  （见 §4）。因此纯 SQL / 控制台场景里，`user:<名>` 才是稳妥的授权对象。
 - **access → 内部权限的翻译**在 `PaimonPermissionModel`：例如 TABLE 的 SELECT →
   `TABLE_READ_DATA`、UPDATE → `TABLE_WRITE_DATA`；DATABASE 的 CREATETABLE →
   `TABLE_CREATE`（建表判定正落在 TABLE 层）、DESCRIBE → 命名空间与表的元数据读。
@@ -290,7 +299,18 @@ curl -s -X POST -H "Authorization: Bearer etl-token" -H "$J" \
 # -> 403：reader 只有 NAMESPACE_LIST，没有 NAMESPACE_CREATE
 ```
 
-用 Spark SQL 管理语句完成同样的装配见 `docs/spark-sql-extension.md` 与 `docs/spark-sql-reference.md` 第 8 节。
+上面第 `1)`～`3)` 步里，**建主体、建 principal role、把 principal role 装到主体上**在 Spark SQL
+里都有对应语句（见 `docs/spark-sql-extension.md` 与 `docs/spark-sql-reference.md`）；
+**建 catalog role 与把它装到 principal role 上没有**——catalog role 的建档、装配、清点共 7 条
+语法已经从 SQL 里移除（控制台也没有它的页面），这两步只能用本节的 curl（或
+`ManagementApiClient`）。
+
+> **两条链在 SQL 侧的分工。** 上面第 `4)` 步授权的是 Polaris 那条链（授权挂在 catalog role
+> 上）。**它在 SQL 侧一条语句都没有**：写侧（`... TO CATALOG ROLE r`）早已删除，唯一的只读口子
+> `SHOW GRANTS FOR CATALOG ROLE ...` 也随 catalog role 语句一并移除，改动与清点都走本节的 curl。
+> 要在 SQL 里直接授权，用官方权限模型那条链——
+> `GRANT LIST, DESCRIBE, SELECT ON CATALOG_ALL paimon TO USER alice`，
+> 与「权限管理」页同一个端点。最终判定取两路的**并集**，谁也不会覆盖谁。
 
 ### 5.1 从引擎侧验一遍：两个身份跑真 SQL
 
@@ -301,8 +321,9 @@ curl -s -X POST -H "Authorization: Bearer etl-token" -H "$J" \
 （`TABLE_CREATE` / `TABLE_WRITE_DATA` / `NAMESPACE_CREATE`）、被拒之后数据没变。
 
 跑法与所需的两个令牌见 `docs/spark-paimon-rest-e2e.md` §6.1。两个身份共用一份 SparkContext、
-只换 `spark.sql.catalog.<catalog>.token`；另外只读身份也必须有 `NAMESPACE_READ_PROPERTIES`
-——`SparkCatalog` 懒加载时会去读默认命名空间 `default` 的属性，这不是「读数据」的权限。
+只换 `spark.sql.catalog.<catalog>.token`；另外只读身份也必须有读元数据的能力
+——`SparkCatalog` 懒加载时会去读默认命名空间 `default` 的属性（对应官方的 `DESCRIBE`，
+翻译后是 `NAMESPACE_READ_PROPERTIES`），这不是「读数据」的权限。
 
 ---
 
@@ -332,5 +353,5 @@ curl -s -X POST -H "Authorization: Bearer etl-token" -H "$J" \
    而控制台访问令牌长 272 个字符，直接入库会让写入以
    `Data too long for column 'created_by'` 失败。配 `token-principals`
    把令牌映射成真正的名字才是正解，见 [`console-auth.md`](console-auth.md)。
-8. **语义模型授权的延迟语义未实现。** 文档标注为 deferred 的源表 / 视图权限校验与读时传播
+9. **语义模型授权的延迟语义未实现。** 文档标注为 deferred 的源表 / 视图权限校验与读时传播
    检查不在本层表达。

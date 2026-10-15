@@ -14,7 +14,9 @@ import scala.collection.JavaConverters._
  *
  * <p>桩服务端见 {@link StubManagementServer}。这里验证两件容易写错、且写错了只会
  * 在真实服务端上暴露的事：请求的**方法与路径**、请求体的**字段形状**——
- * 它们必须与 {@code spec/polaris-management-service.yml} 一致。
+ * 主体与角色那部分必须与 {@code spec/polaris-management-service.yml} 一致，
+ * 直授那部分必须与 Paimon 官方权限端点（{@code /v1/{prefix}/permissions}，
+ * 服务端实现见 {@code PermissionDtos}）一致。
  */
 object ManagementApiClientTests {
 
@@ -328,45 +330,169 @@ class ManagementApiClientTests {
     assertTrue(stub.last.body.contains("\"catalogRole\""), stub.last.body)
   }
 
+  // ------------------------------------------------------------------ 直授（官方权限模型）
+
   @Test
-  def addGrantUsesPutAndRevokeGrantUsesPostOnTheSamePath(): Unit = {
-    stub.responder = (_: RecordedRequest) => (201, "{}")
-    val grant = ManagementApiClient.GrantInfo.onObject("table", Seq("raw", "events").asJava,
-      "orders", "TABLE_READ_DATA")
+  def grantPermissionPostsTheLocatorAccessPrincipalAndExpiry(): Unit = {
+    stub.responder = (_: RecordedRequest) => (201, "")
 
-    client().addGrant("paimon", "reader", grant)
-    assertEquals("PUT", stub.last.method)
-    assertEquals("/api/management/v1/catalogs/paimon/catalog-roles/reader/grants", stub.last.path)
-    assertTrue(stub.last.body.contains("\"tableName\":\"orders\""), stub.last.body)
-    assertTrue(stub.last.body.contains("\"privilege\":\"TABLE_READ_DATA\""), stub.last.body)
+    client().grantPermission("paimon",
+      ManagementApiClient.PermissionResource.table("sales", "orders"),
+      "SELECT", "user:analyst", "2026-11-30T15:59:59.999Z")
 
-    client().revokeGrant("paimon", "reader", grant)
     assertEquals("POST", stub.last.method)
-    assertEquals("/api/management/v1/catalogs/paimon/catalog-roles/reader/grants", stub.last.path)
+    // 权限端点在 catalog API 下（/v1/…），与管理 API 是两个前缀
+    assertEquals("/v1/paimon/permissions/grant", stub.last.path)
+    assertTrue(stub.last.body.contains("\"type\":\"TABLE\""), stub.last.body)
+    assertTrue(stub.last.body.contains("\"database\":\"sales\""), stub.last.body)
+    assertTrue(stub.last.body.contains("\"table\":\"orders\""), stub.last.body)
+    assertTrue(stub.last.body.contains("\"access\":\"SELECT\""), stub.last.body)
+    assertTrue(stub.last.body.contains("\"principal\":\"user:analyst\""), stub.last.body)
+    assertTrue(stub.last.body.contains("\"expireTime\":\"2026-11-30T15:59:59.999Z\""),
+      stub.last.body)
   }
 
   @Test
-  def catalogLevelGrantOmitsNamespaceAndObjectName(): Unit = {
-    stub.responder = (_: RecordedRequest) => (201, "{}")
+  def catalogScopePermissionCarriesNeitherDatabaseNorObjectName(): Unit = {
+    stub.responder = (_: RecordedRequest) => (201, "")
 
-    client().addGrant("paimon", "admin",
-      ManagementApiClient.GrantInfo.onCatalog("CATALOG_MANAGE_CONTENT"))
+    client().grantPermission("paimon", ManagementApiClient.PermissionResource.catalogAll(),
+      "LIST", "role:analyst", null)
 
-    assertFalse(stub.last.body.contains("namespace"), stub.last.body)
-    assertFalse(stub.last.body.contains("tableName"), stub.last.body)
-    assertTrue(stub.last.body.contains("\"type\":\"catalog\""), stub.last.body)
+    assertTrue(stub.last.body.contains("\"type\":\"CATALOG_ALL\""), stub.last.body)
+    // catalog 由请求路径里的 prefix 决定，定位符里不该再出现一次
+    assertFalse(stub.last.body.contains("database"), stub.last.body)
+    assertFalse(stub.last.body.contains("table"), stub.last.body)
+    // 长期有效：请求体里不出现 expireTime（省略即不过期）
+    assertFalse(stub.last.body.contains("expireTime"), stub.last.body)
   }
 
   @Test
-  def namespaceLevelGrantOmitsObjectName(): Unit = {
-    stub.responder = (_: RecordedRequest) => (201, "{}")
+  def viewAndFunctionLocatorsUseTheirOwnFieldNames(): Unit = {
+    stub.responder = (_: RecordedRequest) => (201, "")
 
-    client().addGrant("paimon", "writer",
-      ManagementApiClient.GrantInfo.onNamespace(Seq("raw", "events").asJava, "NAMESPACE_CREATE"))
+    client().grantPermission("paimon",
+      ManagementApiClient.PermissionResource.view("sales", "v_orders"), "SELECT", "user:analyst", null)
+    assertTrue(stub.last.body.contains("\"view\":\"v_orders\""), stub.last.body)
+    assertFalse(stub.last.body.contains("\"table\""), stub.last.body)
 
-    assertTrue(stub.last.body.contains("\"type\":\"namespace\""), stub.last.body)
-    assertTrue(stub.last.body.contains("\"raw\""), stub.last.body)
-    assertFalse(stub.last.body.contains("tableName"), stub.last.body)
+    client().grantPermission("paimon",
+      ManagementApiClient.PermissionResource.function("sales", "f_clean"), "SELECT", "user:analyst", null)
+    assertTrue(stub.last.body.contains("\"function\":\"f_clean\""), stub.last.body)
+  }
+
+  @Test
+  def columnPermissionCarriesExactlyOneColumnList(): Unit = {
+    stub.responder = (_: RecordedRequest) => (201, "")
+
+    client().grantPermission("paimon",
+      ManagementApiClient.PermissionResource.column("sales", "orders",
+        java.util.List.of("amount", "id"), java.util.Collections.emptyList[String]()),
+      "SELECT", "user:analyst", null)
+
+    assertTrue(stub.last.body.contains("\"type\":\"COLUMN\""), stub.last.body)
+    assertTrue(stub.last.body.contains("\"table\":\"orders\""), stub.last.body)
+    assertTrue(stub.last.body.contains("\"columnNames\":[\"amount\",\"id\"]"), stub.last.body)
+    assertFalse(stub.last.body.contains("excludedColumnNames"), stub.last.body)
+
+    client().grantPermission("paimon",
+      ManagementApiClient.PermissionResource.column("sales", "orders",
+        java.util.Collections.emptyList[String](),
+        java.util.Collections.singletonList("card_no")),
+      "SELECT", "user:analyst", null)
+
+    assertTrue(stub.last.body.contains("\"excludedColumnNames\":[\"card_no\"]"), stub.last.body)
+    assertFalse(stub.last.body.contains("\"columnNames\""), stub.last.body)
+  }
+
+  @Test
+  def revokePermissionPostsToRevokeWithoutAnExpiry(): Unit = {
+    stub.responder = (_: RecordedRequest) => (201, "")
+
+    client().revokePermission("paimon",
+      ManagementApiClient.PermissionResource.database("sales"), "ALTER", "group:eng")
+
+    assertEquals("POST", stub.last.method)
+    assertEquals("/v1/paimon/permissions/revoke", stub.last.path)
+    assertTrue(stub.last.body.contains("\"type\":\"DATABASE\""), stub.last.body)
+    assertTrue(stub.last.body.contains("\"access\":\"ALTER\""), stub.last.body)
+    assertTrue(stub.last.body.contains("\"principal\":\"group:eng\""), stub.last.body)
+    assertFalse(stub.last.body.contains("expireTime"), stub.last.body)
+  }
+
+  @Test
+  def listPermissionsReadsTheAssignmentsAndFiltersByPrincipal(): Unit = {
+    stub.responder = (_: RecordedRequest) => (200,
+      """{"assignments":[
+        |{"resource":{"type":"TABLE","database":"sales","table":"orders"},"access":"SELECT",
+        | "principal":"user:analyst","expireTime":"2026-11-30T15:59:59.999Z"},
+        |{"resource":{"type":"COLUMN","database":"sales","table":"orders"},
+        | "access":"SELECT","principal":"role:reader",
+        | "columns":{"excludedColumnNames":["card_no"]}}]}""".stripMargin)
+
+    val entries = client().listPermissions("paimon", "user:analyst")
+
+    assertEquals(2, entries.size())
+    assertEquals("TABLE", entries.get(0).resource().`type`())
+    assertEquals("sales", entries.get(0).resource().database())
+    assertEquals("orders", entries.get(0).resource().objectName())
+    assertEquals("SELECT", entries.get(0).access())
+    assertEquals("user:analyst", entries.get(0).principal())
+    assertEquals("2026-11-30T15:59:59.999Z", entries.get(0).expireTime())
+    assertNull(entries.get(1).expireTime(), "列表里没有 expireTime 表示长期有效")
+    assertEquals(Seq("card_no").asJava, entries.get(1).resource().excludedColumns())
+
+    // 主体过滤与页大小写在查询串里，`:` 要编码
+    assertEquals("/v1/paimon/permissions", stub.last.path)
+    assertTrue(stub.last.query.contains("principal=user%3Aanalyst"), stub.last.query)
+  }
+
+  @Test
+  def listPermissionsFollowsPageTokens(): Unit = {
+    stub.responder = (request: RecordedRequest) =>
+      if (request.query.contains("pageToken=")) {
+        (200, """{"assignments":[{"resource":{"type":"CATALOG"},"access":"ALTER",
+                 |"principal":"user:root"}]}""".stripMargin)
+      } else {
+        (200, """{"assignments":[{"resource":{"type":"CATALOG"},"access":"GRANT",
+                 |"principal":"user:root"}],"nextPageToken":"p2"}""".stripMargin)
+      }
+
+    val entries = client().listPermissions("paimon", null)
+
+    // 下一页令牌要跟到底：SHOW 的语义是「列出全部」，静默截断比多几次请求糟糕
+    assertEquals(2, entries.size())
+    assertEquals(Seq("GRANT", "ALTER"), entries.asScala.map(_.access()).toSeq)
+    assertEquals(2, stub.requestsOf("GET").size, "两次 GET：第一页与第二页")
+  }
+
+  @Test
+  def theCatalogApiBaseUrlIsDerivedFromTheManagementBaseUrl(): Unit = {
+    stub.responder = (_: RecordedRequest) => (200, """{"assignments":[]}""")
+
+    val derived = client()
+    assertTrue(derived.permissionBaseUrlOptional.isPresent)
+    assertEquals(stub.baseUrl.replace("/api/management/v1", "/v1"),
+      derived.permissionBaseUrlOptional.get())
+
+    // 也可以用四参构造显式指定（服务部署在非标准路径下时）
+    val explicit = new ManagementApiClient(stub.baseUrl, null,
+      "http://127.0.0.1:9/custom/v1", Duration.ofSeconds(5))
+    assertEquals("http://127.0.0.1:9/custom/v1", explicit.permissionBaseUrlOptional.get())
+  }
+
+  @Test
+  def permissionCallsExplainWhichConfigKeyFixesAnUnderivableBaseUrl(): Unit = {
+    // 管理 API 不在标准路径下时推导不出 catalog API 基址：报错要指向配置项，
+    // 而不是发一个一定 404 的请求
+    val custom = new ManagementApiClient("http://127.0.0.1:9/custom/management", null,
+      Duration.ofSeconds(2))
+
+    val error = assertThrows(classOf[ManagementApiException], () =>
+      custom.listPermissions("paimon", null))
+
+    assertTrue(error.getMessage.contains("spark.paimon.rest.catalog.url"), error.getMessage)
+    assertEquals(0, error.status(), "没发出请求，状态码为 0")
   }
 
   // ------------------------------------------------------------------ 编码与认证

@@ -76,9 +76,13 @@ class ManagementSqlExecutionTests {
                  |"entityVersion":1}]}""".stripMargin)
       case ("GET", path) if path.endsWith("/catalogs") =>
         (200, """{"catalogs":[{"name":"paimon","type":"INTERNAL","entityVersion":1}]}""")
+      // 直授列表：权限端点长这样 /v1/{prefix}/permissions
+      case ("GET", path) if path.endsWith("/permissions") =>
+        (200, """{"assignments":[{"resource":{"type":"TABLE","database":"sales","table":"orders"},
+                 |"access":"SELECT","principal":"user:analyst"}]}""".stripMargin)
       case ("GET", _) =>
-        (200, """{"grants":[{"type":"table","namespace":["raw","events"],
-                 |"tableName":"orders","privilege":"TABLE_READ_DATA"}]}""".stripMargin)
+        // 兜底：剩下的 GET（例如 SHOW PRINCIPAL ROLES）给空列表就行，用例不断言它们的行
+        (200, "{}")
       case _ => (201, "{}")
     }
   }
@@ -156,35 +160,43 @@ class ManagementSqlExecutionTests {
   }
 
   @Test
-  def showGrantsExposesTheResourceAsASingleReadableColumn(): Unit = {
-    respondWithDefaults()
+  def grantExecutesOneRequestPerAccess(): Unit = {
+    stub.responder = (_: RecordedRequest) => (201, "")
 
-    val rows = session.sql("SHOW GRANTS FOR CATALOG ROLE reader IN CATALOG paimon").collect()
+    session.sql("GRANT SELECT, DESCRIBE ON TABLE sales.orders IN CATALOG paimon TO USER analyst")
+      .collect()
 
-    assertEquals(1, rows.length)
-    assertEquals("paimon", rows(0).getString(0))
-    assertEquals("reader", rows(0).getString(1))
-    assertEquals("table", rows(0).getString(2))
-    // resource 列把多级命名空间与对象名拼成完整名
-    assertEquals("raw.events.orders", rows(0).getString(3))
-    assertEquals("raw.events", rows(0).getString(4))
-    assertEquals("orders", rows(0).getString(5))
-    assertEquals("TABLE_READ_DATA", rows(0).getString(6))
-    assertEquals("/api/management/v1/catalogs/paimon/catalog-roles/reader/grants", stub.last.path)
+    val posts = stub.requestsOf("POST")
+    assertEquals(2, posts.size, "两项 access 应展开成两次授权请求")
+    // 权限端点在 catalog API 下，与管理 API 是两个前缀
+    assertTrue(posts.forall(_.path == "/v1/paimon/permissions/grant"), posts.map(_.path).toString)
+    assertTrue(posts.head.body.contains("\"SELECT\""), posts.head.body)
+    assertTrue(posts.head.body.contains("\"user:analyst\""), posts.head.body)
+    assertTrue(posts.last.body.contains("\"DESCRIBE\""), posts.last.body)
   }
 
   @Test
-  def grantExecutesOneRequestPerPrivilege(): Unit = {
-    stub.responder = (_: RecordedRequest) => (201, "{}")
+  def showPermissionsReturnsOneRowPerAssignment(): Unit = {
+    respondWithDefaults()
 
-    session.sql("GRANT TABLE_READ_DATA, TABLE_WRITE_DATA " +
-      "ON TABLE raw.events.orders IN CATALOG paimon TO CATALOG ROLE writer").collect()
+    val permissions = session.sql("SHOW PERMISSIONS IN CATALOG paimon")
 
-    val puts = stub.requestsOf("PUT")
-    assertEquals(2, puts.size, "两项权限应展开成两次授权请求")
-    assertTrue(puts.forall(_.path.endsWith("/catalogs/paimon/catalog-roles/writer/grants")))
-    assertTrue(puts.head.body.contains("\"TABLE_READ_DATA\""), puts.head.body)
-    assertTrue(puts.last.body.contains("\"TABLE_WRITE_DATA\""), puts.last.body)
+    // catalog、principal、type、resource、database、object_name、columns、access、expire_time
+    assertEquals(Seq("catalog", "principal", "type", "resource", "database", "object_name",
+      "columns", "access", "expire_time"), permissions.schema.fieldNames.toSeq)
+
+    val rows = permissions.collect()
+    assertEquals(1, rows.length)
+    assertEquals("paimon", rows(0).getString(0))
+    assertEquals("user:analyst", rows(0).getString(1))
+    assertEquals("TABLE", rows(0).getString(2))
+    assertEquals("sales.orders", rows(0).getString(3))
+    assertEquals("sales", rows(0).getString(4))
+    assertEquals("orders", rows(0).getString(5))
+    assertNull(rows(0).getString(6), "表级授权没有列范围")
+    assertEquals("SELECT", rows(0).getString(7))
+    assertNull(rows(0).getString(8), "列表里没有 expireTime 表示长期有效")
+    assertEquals("/v1/paimon/permissions", stub.last.path)
   }
 
   @Test
@@ -195,6 +207,8 @@ class ManagementSqlExecutionTests {
     assertTrue(session.sql("CREATE PRINCIPAL ROLE data_engineer").collect().isEmpty)
     assertTrue(session.sql(
       "GRANT PRINCIPAL ROLE data_engineer TO PRINCIPAL svc_etl").collect().isEmpty)
+    assertTrue(session.sql(
+      "REVOKE SELECT ON TABLE sales.orders IN CATALOG paimon FROM USER analyst").collect().isEmpty)
     assertTrue(session.sql("DROP PRINCIPAL IF EXISTS svc_etl").collect().isEmpty)
   }
 
@@ -237,12 +251,11 @@ class ManagementSqlExecutionTests {
   }
 
   @Test
-  def missingNamespaceInAnObjectGrantFailsBeforeAnyRequest(): Unit = {
+  def missingDatabaseInAnObjectGrantFailsBeforeAnyRequest(): Unit = {
     val error = assertThrows(classOf[ManagementSqlException], () =>
-      session.sql("GRANT TABLE_READ_DATA ON TABLE orders IN CATALOG paimon TO CATALOG ROLE reader")
-        .collect())
+      session.sql("GRANT SELECT ON TABLE orders IN CATALOG paimon TO USER analyst").collect())
 
-    assertTrue(error.getMessage.contains("namespace"), error.getMessage)
+    assertTrue(error.getMessage.contains("database"), error.getMessage)
     assertTrue(stub.requests.isEmpty, "形状非法时不应发起请求")
   }
 }
