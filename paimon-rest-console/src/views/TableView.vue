@@ -23,7 +23,6 @@
       <PanelCard flush>
         <el-tabs v-model="tab" class="pc-tabs" @tab-change="onTabChange">
           <el-tab-pane label="详细信息" name="details" />
-          <el-tab-pane label="变更" name="changes" />
           <el-tab-pane label="快照" name="snapshots" />
           <el-tab-pane label="标签" name="tags" />
           <el-tab-pane label="分支" name="branches" />
@@ -43,12 +42,16 @@
               <div class="pc-stat">
                 <div class="pc-stat-label">数据文件数</div>
                 <div class="pc-stat-value">{{ formatNumber(latest.fileCount) }}</div>
-                <div class="pc-stat-foot">最新快照引用的文件</div>
+                <div class="pc-stat-foot">
+                  {{ missingFileStats ? '快照未带文件统计' : '最新快照引用的文件' }}
+                </div>
               </div>
               <div class="pc-stat">
                 <div class="pc-stat-label">数据文件大小</div>
                 <div class="pc-stat-value">{{ formatBytes(latest.fileSizeInBytes) }}</div>
-                <div class="pc-stat-foot">不含快照与清单文件</div>
+                <div class="pc-stat-foot">
+                  {{ missingFileStats ? '提交时未附 statistics' : '不含快照与清单文件' }}
+                </div>
               </div>
               <div class="pc-stat">
                 <div class="pc-stat-label">最近文件写入</div>
@@ -214,77 +217,6 @@
               <p class="pc-tip">分区的统计口径是最新快照的活跃数据：只计算被最新快照引用的文件，
                 因此各分区之和可能小于仓库实际占用。</p>
             </template>
-          </template>
-
-          <!-------------------------------- 变更 ---------------------------------->
-          <template v-else-if="tab === 'changes'">
-            <el-alert type="info" :closable="false" show-icon class="pc-hint">
-              <template #title>变更会一次性提交</template>
-              <div>
-                服务端的 alter 接口接收一组变更并原子应用。先在这里逐条添加，
-                确认无误后再提交——提交后无法撤销，只能反向再做一次变更。
-              </div>
-            </el-alert>
-
-            <div class="pc-change-form">
-              <el-select v-model="builder.action" size="small" class="pc-change-action">
-                <el-option
-                  v-for="option in CHANGE_ACTIONS"
-                  :key="option.value"
-                  :label="option.label"
-                  :value="option.value"
-                />
-              </el-select>
-              <template v-for="field in builderFields" :key="field.key">
-                <el-checkbox v-if="field.type === 'bool'" v-model="builder.values[field.key]" size="small">
-                  {{ field.label }}
-                </el-checkbox>
-                <el-input
-                  v-else
-                  v-model="builder.values[field.key]"
-                  size="small"
-                  :placeholder="field.label"
-                  class="pc-change-input"
-                />
-              </template>
-              <el-button size="small" type="primary" @click="addChange">
-                <el-icon><Plus /></el-icon>
-                <span class="pc-btn-text">添加</span>
-              </el-button>
-            </div>
-
-            <el-table :data="pendingChanges" size="small" empty-text="还没有待提交的变更">
-              <el-table-column label="变更" min-width="420">
-                <template #default="{ row }">
-                  <span class="pc-mono pc-break">{{ compact(row) }}</span>
-                </template>
-              </el-table-column>
-              <el-table-column label="操作" width="70" align="right">
-                <template #default="{ $index }">
-                  <IconAction
-                    icon="Close"
-                    label="移除"
-                    type="danger"
-                    @click="pendingChanges.splice($index, 1)"
-                  />
-                </template>
-              </el-table-column>
-            </el-table>
-
-            <div class="pc-change-foot">
-              <el-button size="small" :disabled="!pendingChanges.length" @click="pendingChanges = []">
-                清空
-              </el-button>
-              <el-button
-                size="small"
-                type="primary"
-                :loading="submitting"
-                :disabled="!pendingChanges.length"
-                @click="submitChanges"
-              >
-                提交 {{ pendingChanges.length }} 项变更
-              </el-button>
-            </div>
           </template>
 
           <!-------------------------------- 快照 ---------------------------------->
@@ -634,14 +566,18 @@ import {
 } from '@/utils/format.js'
 
 /**
- * 表详情。七个页签：六个对应 catalog API 里以单张表为作用域的端点，
+ * 表详情。六个页签：五个对应 catalog API 里以单张表为作用域的端点，
  * 另有一个组合页签——「详细信息」汇总单表元数据（基本信息 + 快照统计 + options +
  * 字段列表 / 分区列表两个二级页签）。
  *
  * <p>授权不在这张表上做：表级权限统一到「权限管理」页（按 database + table 定位，
  * 一级资源一个表单），这里不再重复一份 catalog 角色的授权界面。
  *
- * <p>「详细信息」（字段）/「变更」「数据访问」只用 overview 已有数据，
+ * <p>改表结构不在控制台上做：服务端的 `alter` 端点仍在（HTTP 与 `paimon-rest-spark`
+ * 的 SQL 都能用），控制台里那份「变更构造器」已经撤掉——表结构变更是一次性的重决策，
+ * 一个逐条添加再提交的表单既给不了预览也给不了回退，不如让它在 SQL 里显式发生。
+ *
+ * <p>「详细信息」（字段）/「数据访问」只用 overview 已有数据，
  * 其余按需加载：切到某个页签才发它的请求；详细信息里的「分区列表」二级页签同理。
  * 打开一张表就发两个请求，在远端仓库上会让页面明显变慢。
  */
@@ -655,7 +591,7 @@ const table = computed(() => route.params.table)
 const tab = ref('details')
 
 /** 不需要额外请求的页签：切过去不触发 load。 */
-const SELF_CONTAINED_TABS = new Set(['details', 'changes', 'access'])
+const SELF_CONTAINED_TABS = new Set(['details', 'access'])
 
 const overview = useResource(async () => {
   const [detail, snapshot] = await Promise.all([
@@ -667,6 +603,15 @@ const overview = useResource(async () => {
 
 const table0 = computed(() => overview.data.value?.detail || null)
 const latest = computed(() => overview.data.value?.snapshot?.snapshot || null)
+
+/**
+ * 快照缺文件统计：那不是「0 个文件」，而是服务端没收到过统计——
+ * 客户端提交时没带 statistics（或那一行写在统计落库之前）。两者要分开说。
+ */
+const missingFileStats = computed(() => {
+  const value = latest.value
+  return value !== null && value.fileCount == null && value.fileSizeInBytes == null
+})
 
 const snapshots = useResource(
   () => catalogApi.listSnapshots(prefix.value, database.value, table.value),
@@ -840,112 +785,6 @@ watch([prefix, database, table], () => {
 function typeText(type) {
   if (type === null || type === undefined) return '—'
   return typeof type === 'string' ? type : JSON.stringify(type)
-}
-
-// ------------------------------------------------------------------ 变更
-
-const CHANGE_ACTIONS = [
-  { value: 'setOption', label: '设置表属性（setOption）', fields: [
-    { key: 'key', label: '键' }, { key: 'value', label: '值' }] },
-  { value: 'removeOption', label: '删除表属性（removeOption）', fields: [{ key: 'key', label: '键' }] },
-  { value: 'updateComment', label: '修改表注释（updateComment）', fields: [{ key: 'comment', label: '注释' }] },
-  { value: 'addColumn', label: '新增列（addColumn）', fields: [
-    { key: 'fieldName', label: '列名' }, { key: 'dataType', label: '类型，如 BIGINT' },
-    { key: 'comment', label: '注释（可选）' }] },
-  { value: 'dropColumn', label: '删除列（dropColumn）', fields: [{ key: 'fieldName', label: '列名' }] },
-  { value: 'renameColumn', label: '重命名列（renameColumn）', fields: [
-    { key: 'fieldName', label: '原列名' }, { key: 'newName', label: '新列名' }] },
-  { value: 'updateColumnType', label: '修改列类型（updateColumnType）', fields: [
-    { key: 'fieldName', label: '列名' }, { key: 'newDataType', label: '新类型' }] },
-  { value: 'updateColumnComment', label: '修改列注释（updateColumnComment）', fields: [
-    { key: 'fieldName', label: '列名' }, { key: 'newComment', label: '新注释' }] },
-  { value: 'updateColumnNullability', label: '修改列可空性（updateColumnNullability）', fields: [
-    { key: 'fieldName', label: '列名' }, { key: 'newNullability', label: '允许为空', type: 'bool' }] },
-  { value: 'move', label: '调整列位置（updateColumnPosition）', fields: [
-    { key: 'fieldName', label: '列名' }, { key: 'referenceFieldName', label: '参照列' }] },
-]
-
-const builder = reactive({ action: 'setOption', values: {} })
-
-const builderFields = computed(
-  () => CHANGE_ACTIONS.find((action) => action.value === builder.action)?.fields || [],
-)
-
-const pendingChanges = ref([])
-const submitting = ref(false)
-
-/** 按动作名把表单值收敛成规格里的 `SchemaChange` 形状。 */
-function toChange(action, values) {
-  const text = (key) => String(values[key] ?? '').trim()
-  switch (action) {
-    case 'setOption':
-      return { action, key: text('key'), value: text('value') }
-    case 'removeOption':
-      return { action, key: text('key') }
-    case 'updateComment':
-      return { action, comment: text('comment') || null }
-    case 'addColumn': {
-      const change = { action, fieldNames: [text('fieldName')], dataType: text('dataType') }
-      if (text('comment')) change.comment = text('comment')
-      return change
-    }
-    case 'dropColumn':
-      return { action, fieldNames: [text('fieldName')] }
-    case 'renameColumn':
-      return { action, fieldNames: [text('fieldName')], newName: text('newName') }
-    case 'updateColumnType':
-      return { action, fieldNames: [text('fieldName')], newDataType: text('newDataType') }
-    case 'updateColumnComment':
-      return { action, fieldNames: [text('fieldName')], newComment: text('newComment') }
-    case 'updateColumnNullability':
-      return { action, fieldNames: [text('fieldName')], newNullability: Boolean(values.newNullability) }
-    case 'move':
-      return { action: 'updateColumnPosition', move: {
-        fieldName: text('fieldName'),
-        referenceFieldName: text('referenceFieldName'),
-        type: 'after',
-      } }
-    default:
-      return { action }
-  }
-}
-
-/** 变更项的必填校验：缺了关键字段就在前端拦住，不要留到服务端报 400。 */
-function addChange() {
-  const fields = builderFields.value.filter((field) => field.type !== 'bool'
-    && !field.label.includes('可选')
-    && !['comment', 'newComment', 'value'].includes(field.key))
-  for (const field of fields) {
-    if (!String(builder.values[field.key] ?? '').trim()) {
-      notifyError(new Error(`请填写「${field.label}」`))
-      return
-    }
-  }
-  pendingChanges.value.push(toChange(builder.action, builder.values))
-  builder.values = {}
-}
-
-function compact(change) {
-  const rest = { ...change }
-  delete rest.action
-  return `${change.action} ${JSON.stringify(rest)}`
-}
-
-async function submitChanges() {
-  submitting.value = true
-  try {
-    await catalogApi.alterTable(prefix.value, database.value, table.value, {
-      changes: pendingChanges.value,
-    })
-    notifySuccess(`已提交 ${pendingChanges.value.length} 项变更`)
-    pendingChanges.value = []
-    builder.values = {}
-    overview.load()
-  } catch (error) {
-    notifyError(error)
-  } finally {
-    submitting.value = false
-  }
 }
 
 // ------------------------------------------------------------------ 快照
@@ -1252,30 +1091,6 @@ async function confirmDrop() {
   grid-template-columns: minmax(260px, 1fr) minmax(280px, 1fr);
   gap: 16px;
   margin-top: 16px;
-}
-
-.pc-change-form {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin-bottom: 14px;
-}
-
-.pc-change-action {
-  width: 260px;
-}
-
-.pc-change-input {
-  width: 180px;
-}
-
-.pc-change-foot {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-  margin-top: 12px;
 }
 
 .pc-version-input {

@@ -241,6 +241,29 @@ public class PartitionService {
         }
     }
 
+    /**
+     * 全表合计：各分区统计之和（spec 留空），时间戳取最晚者。
+     *
+     * <p>调用方只有一处——快照级累计统计缺基线时的兜底（见 {@code TableService}）。
+     * 它要扫该表的全部分区，因此**不能**放在每次提交的必经路径上：正常提交的基线是
+     * 上一个快照行，读一行就够。
+     */
+    @Transactional(readOnly = true)
+    public PartitionDtos.PartitionStatistics totals(String tableId) {
+        Long recordCount = null;
+        Long fileSizeInBytes = null;
+        Long fileCount = null;
+        Long lastFileCreationTime = null;
+        for (PartitionEntity partition : partitionRepository.findAllByTableIdOrderBySpecKeyAsc(tableId)) {
+            recordCount = add(recordCount, partition.getRecordCount());
+            fileSizeInBytes = add(fileSizeInBytes, partition.getFileSizeInBytes());
+            fileCount = add(fileCount, partition.getFileCount());
+            lastFileCreationTime = latest(lastFileCreationTime, partition.getLastFileCreationTime());
+        }
+        return new PartitionDtos.PartitionStatistics(Map.of(), recordCount, fileSizeInBytes,
+                fileCount, lastFileCreationTime, null);
+    }
+
     private void applyStatistics(PartitionEntity entity, PartitionDtos.PartitionStatistics stats, boolean replace) {
         if (stats == null) {
             return;
@@ -259,10 +282,10 @@ public class PartitionService {
                 entity.setLastFileCreationTime(stats.lastFileCreationTime());
             }
         } else {
-            entity.setRecordCount(sum(entity.getRecordCount(), stats.recordCount()));
-            entity.setFileSizeInBytes(sum(entity.getFileSizeInBytes(), stats.fileSizeInBytes()));
-            entity.setFileCount(sum(entity.getFileCount(), stats.fileCount()));
-            entity.setLastFileCreationTime(later(entity.getLastFileCreationTime(), stats.lastFileCreationTime()));
+            entity.setRecordCount(add(entity.getRecordCount(), stats.recordCount()));
+            entity.setFileSizeInBytes(add(entity.getFileSizeInBytes(), stats.fileSizeInBytes()));
+            entity.setFileCount(add(entity.getFileCount(), stats.fileCount()));
+            entity.setLastFileCreationTime(latest(entity.getLastFileCreationTime(), stats.lastFileCreationTime()));
         }
         if (stats.totalBuckets() != null) {
             entity.setTotalBuckets(stats.totalBuckets());
@@ -287,14 +310,21 @@ public class PartitionService {
         return value != null && value >= 0;
     }
 
-    private static Long sum(Long stored, Long delta) {
+    /**
+     * 累加口径的加法：{@code delta} 为负（未测量）时保留存储值，否则相加。
+     *
+     * <p>static 公开是刻意的：快照级文件统计（{@link TableService} 里累加到快照行上）
+     * 与分区级统计累加的是同一批增量，共用这一处算术就不会长出两套规则。
+     */
+    public static Long add(Long stored, Long delta) {
         if (!measured(delta)) {
             return stored;
         }
         return stored == null ? delta : stored + delta;
     }
 
-    private static Long later(Long stored, Long candidate) {
+    /** 两个时间戳取较晚者；未测量的一侧被忽略（两个时刻不能相加）。 */
+    public static Long latest(Long stored, Long candidate) {
         if (!measured(candidate)) {
             return stored;
         }

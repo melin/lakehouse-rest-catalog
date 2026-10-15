@@ -184,7 +184,7 @@ GET /api/console/v1/catalogs/{catalogName}/files?path=<相对仓库根>&prefix=<
 `GET /api/console/v1/tables/{tableId}/files?path=<相对表目录>`——根换成表元数据里的
 `path`，响应形状见 `ConsoleDtos.TableFileListing`（`root` 即表路径，`..` 与绝对路径
 同样被拒，因此出不了表目录）。取舍见
-[`console-table-detail.md` §2.6](console-table-detail.md#26-文件列表)。
+[`console-table-detail.md` §2.5](console-table-detail.md#25-文件列表)。
 
 ### 4.1 单文件下载
 

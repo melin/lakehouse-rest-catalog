@@ -18,11 +18,10 @@ spec/polaris-management-service.yml）。路径写错时前端只表现为「空
                   以及控制台契约表里的令牌端点路径与服务端下发的 tokenEndpoint 是否一致
   6. 产物完整     已提交的入口页存在，且它引用的每个 assets 文件都存在
   7. 产物新鲜     构建产物不比控制台源码旧（改了源码没重新构建会在这里暴露）
-  8. 变更构造器   表结构变更的请求形状与规格里 18 种 SchemaChange 子类型逐字段对齐
-  9. 对话框       每个 el-dialog 都声明 destroy-on-close（否则编辑时会残留上一次的状态）
- 10. 下拉选项     每个 el-select 都声明了候选来源（漏写 el-option 时点开只有「无数据」，
+  8. 对话框       每个 el-dialog 都声明 destroy-on-close（否则编辑时会残留上一次的状态）
+  9. 下拉选项     每个 el-select 都声明了候选来源（漏写 el-option 时点开只有「无数据」，
                   而这类漏写编译、类型检查与单元测试都不会报）
- 11. 静态凭据     catalog 自带 AK/SK 这条链路跨「服务端 DTO / 支持的类型 / 能力开关的
+ 10. 静态凭据     catalog 自带 AK/SK 这条链路跨「服务端 DTO / 支持的类型 / 能力开关的
                   暴露 / 前端表单」四处，任何一处漏改都表现为「填了没反应」或「填完才 400」
 
 用法：
@@ -288,128 +287,9 @@ else:
           not stale,
           "以下文件晚于构建产物，需要重新执行 npm run build：\n" + "\n".join(stale))
 
-# ------------------------------------------------------------------ 8. 变更构造器
+# ------------------------------------------------------------------ 8. 对话框状态
 
-print("8. 变更构造器（表结构变更的请求形状）")
-
-# 表详情的「变更」页签是个构造器：逐个动作填表，最后一次性 POST alterTable。
-# 请求体由 TableView.vue 的 toChange() 拼出来，这张表是最容易和服务端漂移的地方——
-# 动作名写错、字段名写错，服务端一律只回一句笼统的 400，而报错要等真提交了才看得到。
-# 规格里的 SchemaChange 是个判别联合，动作名与各自动作的字段都定义得很清楚，
-# 因此可以静态比对：能提交的动作必须在规格里，提交的字段必须在该动作的 schema 里有定义。
-table_view_path = os.path.join(CONSOLE_DIR, "src/views/TableView.vue")
-table_view = read(table_view_path)
-
-# 表单里可选的 action 值（UI 别名，未必等于提交时的 action）
-option_values = re.findall(r"\{\s*value:\s*'(\w+)',\s*label:", table_view)
-
-# 规格里全部 SchemaChange 子类型：action 常量 → 该动作允许的字段（含 action 自身）
-schema_changes = {}
-for name, node in (yaml.safe_load(read(CATALOG_SPEC)).get("components") or {}).get(
-        "schemas", {}).items():
-    if not isinstance(node, dict):
-        continue
-    props = node.get("properties")
-    if not props or "action" not in props:
-        continue
-    const = props["action"].get("const")
-    if const:
-        schema_changes[const] = set(props)
-
-
-def top_level_keys(inner):
-    """取一个字面对象的一级键。
-
-    必须按层次扫描而不是正则直接抓 `\\w+:`：`move` 这类字段的值是嵌套对象，
-    它的字段属于另一个 schema（规格里的 Move），混进来会误报。
-    """
-    keys, level, index = set(), 0, 0
-    while index < len(inner):
-        ch = inner[index]
-        if ch in "{[(":
-            level += 1
-        elif ch in "}])":
-            level -= 1
-        elif level == 0 and (ch.isalnum() or ch == "_"):
-            matched = re.match(r"(\w+)\s*([:,}]?)", inner[index:])
-            name, sep = matched.group(1), matched.group(2)
-            # `key: value` 与 `key,`（简写）都算一级键；其余（如函数调用）不是
-            if sep in (":", ",", "}"):
-                keys.add(name)
-            # 跳过整个标识符：停在中间会让正则从 "ction" 这种位置重新匹配
-            index += len(name)
-            continue
-        index += 1
-    return keys
-
-
-def to_change_cases(source):
-    """从 toChange() 的 switch 里取出「表单动作 → 提交的 action 与一级字段」。"""
-    match = re.search(r"function\s+toChange\s*\([^)]*\)\s*\{", source)
-    if not match:
-        return None
-    tail = source[match.end():]
-    end = re.search(r"\n\}", tail)
-    body = tail[:end.start()] if end else tail
-
-    cases = {}
-    for block in re.split(r"\n\s*case\s+'", body)[1:]:
-        quoted = re.match(r"(\w+)'", block)
-        if not quoted:
-            continue
-        form_value = quoted.group(1)
-        # `return { ... }` 与 `const change = { ... }` 两种写法都要认：
-        # addColumn 分支因为要条件添加 comment，走的是后一种
-        returned = re.search(r"(?:return|=)\s*\{", block)
-        if not returned:
-            continue
-        text, depth = [], 1
-        for index in range(returned.end(), len(block)):
-            ch = block[index]
-            if ch == "{":
-                depth += 1
-            elif ch == "}":
-                depth -= 1
-                if depth == 0:
-                    break
-            text.append(ch)
-        inner = "".join(text)
-        action = re.search(r"action:\s*'(\w+)'", inner)
-        cases[form_value] = (action.group(1) if action else form_value,
-                             top_level_keys(inner))
-    return cases
-
-
-cases = to_change_cases(table_view)
-check("TableView.vue 的变更构造器可解析（toChange 与 CHANGE_ACTIONS 都在）",
-      cases is not None and bool(option_values),
-      "未找到 toChange() 或 CHANGE_ACTIONS；改了函数名就要同步改本脚本的解析")
-
-if cases and option_values:
-    unknown_actions = []
-    for form_value in option_values:
-        action, _ = cases.get(form_value, (None, set()))
-        if action is None or action not in schema_changes:
-            unknown_actions.append(f"{form_value} → {action}")
-    check(f"表单能提交的 {len(option_values)} 个动作都在规格的 SchemaChange 里",
-          not unknown_actions,
-          "\n".join(sorted(unknown_actions)))
-
-    bad_fields = []
-    for form_value in option_values:
-        action, keys = cases.get(form_value, (None, set()))
-        if action not in schema_changes:
-            continue
-        for key in sorted(keys - schema_changes[action]):
-            bad_fields.append(f"{action}.{key}（规格的字段是 "
-                              f"{sorted(schema_changes[action] - {'action'})}）")
-    check("提交的字段都在对应动作的 schema 里有定义",
-          not bad_fields,
-          "\n".join(bad_fields))
-
-# ------------------------------------------------------------------ 9. 对话框状态
-
-print("9. 对话框（打开/关闭时的状态残留）")
+print("8. 对话框（打开/关闭时的状态残留）")
 
 # 对话框默认常驻 DOM，内部维护副本的组件只在创建时读一次 props，
 # 于是第二次打开（编辑）时表单还停在上一次的值上——保存就会把 A 类型改写成 B 类型。
@@ -434,9 +314,9 @@ check(f"全部 {dialogs} 个对话框都声明了 destroy-on-close",
       not dialog_status,
       "\n".join(dialog_status))
 
-# ------------------------------------------------------------------ 10. 下拉选项
+# ------------------------------------------------------------------ 9. 下拉选项
 
-print("10. 下拉选项（el-select 的候选来源）")
+print("9. 下拉选项（el-select 的候选来源）")
 
 # `el-select` 漏写 `el-option` 时，它不是一个「空列表」，而是一个点开只写「无数据」的面板：
 # 带着 `allow-create` 还能让用户手工敲进去，看着像是能用；没有就成了一个点了没反应的下拉。
@@ -508,9 +388,9 @@ check(f"全部 {select_count} 个下拉都声明了候选来源（或显式豁�
       not empty_selects,
       "\n".join(empty_selects))
 
-# ------------------------------------------------------------------ 11. 静态凭据
+# ------------------------------------------------------------------ 10. 静态凭据
 
-print("11. 静态凭据（表单 ↔ 服务端字段与能力开关）")
+print("10. 静态凭据（表单 ↔ 服务端字段与能力开关）")
 
 # catalog 自带的 AK/SK 是超出规格的扩展，它这条链路横跨四个文件：服务端 DTO 声明字段、
 # StorageConfigs 决定哪些类型有这对字段、ConsoleDtos / ConsoleMetaService 把「本部署能不能

@@ -16,6 +16,7 @@ import io.github.melin.paimonrest.domain.repo.TableSchemaVersionRepository;
 import io.github.melin.paimonrest.domain.repo.TableSnapshotRepository;
 import io.github.melin.paimonrest.domain.repo.TagRepository;
 import io.github.melin.paimonrest.dto.CommonDtos;
+import io.github.melin.paimonrest.dto.PartitionDtos;
 import io.github.melin.paimonrest.dto.TableDtos;
 import io.github.melin.paimonrest.dto.TypeDtos;
 import io.github.melin.paimonrest.support.ApiException;
@@ -42,7 +43,7 @@ import tools.jackson.databind.JsonNode;
  * <p>schema 每次变更都会写入 {@code paimon_table_schema} 形成历史版本，
  * 表实体上的 {@code schemaId} 指向当前版本，因此 {@code rollback-schema} 可以直接改回历史版本。
  * 快照按 {@code snapshot_id} 单调递增存放，{@code rollback} 会丢弃目标之后的所有快照。
-op *
+ *
  * <p><b>本类只维护「服务端数据库里的」元数据，写入 Paimon 仓库那一步交给
  * {@link TableMetadataService}。</b>两者必须成对发生，而且顺序不能反：先落库再落仓库，
  * 才谈得上「失败时数据库一致性有保证」——严格模式下仓库写入失败会让整个事务回滚
@@ -390,6 +391,7 @@ public class TableService {
         entity.setWatermark(snapshot.watermark());
         entity.setStatistics(snapshot.statistics());
         entity.setRecordCount(snapshot.totalRecordCount());
+        applyFileStatistics(entity, table.getId(), snapshot.id(), request.statistics());
         snapshotRepository.save(entity);
 
         partitionService.applyCommitStatistics(table.getId(), request.statistics());
@@ -402,6 +404,57 @@ public class TableService {
         // 先落库再落仓库，与 schema 同一顺序（理由见类注释）
         tableMetadataService.materializeSnapshot(table, snapshot.id(), snapshotDoc);
         return new TableDtos.CommitTableResponse(true);
+    }
+
+    /**
+     * 快照级文件统计（{@code fileCount} / {@code fileSizeInBytes} / {@code lastFileCreationTime}）。
+     *
+     * <p>快照自己只带记录数（{@code totalRecordCount}），文件数与体积不在快照里——它们由提交
+     * 请求携带的**分区统计增量**累计而来（客户端一次提交只报它改动的分区）。本方法把这份增量
+     * 叠到上一个快照的累计值上，于是每一行快照都存着「那个时刻的表级文件统计」。
+     *
+     * <p>为什么不用「查分区表求合计」当基线：那要扫该表全部分区，而提交是高频操作，
+     * 读一行上一个快照（走 {@code table_id + snapshot_id}）才是 O(1)。增量与基线的算术都取自
+     * {@link PartitionService#add} / {@link PartitionService#latest}，与分区级统计同一套规则
+     * （负值＝未测量，跳过；时间戳取较晚者），两级统计不会漂移。
+     *
+     * <p>基线取上一个快照行，三种情形各有理由：正常的一行直接继承；行里的文件统计为空说明
+     * 它写在「文件统计落库」之前，退回按分区求合计（两处累计的本来就是同一批增量，结果一致，
+     * 历史表因此不必等新数据才有值）；没有上一行（表的第一行快照）则从零起算——分区表里此刻
+     * 可能已经有统计（例如建分区时随带报过整分区统计），但那属于另一次提交，一并计入会翻倍。
+     */
+    private void applyFileStatistics(TableSnapshotEntity entity, String tableId, long snapshotId,
+                                     List<PartitionDtos.PartitionStatistics> statistics) {
+        TableSnapshotEntity base = snapshotRepository
+                .findFirstByTableIdAndSnapshotIdLessThanOrderBySnapshotIdDesc(tableId, snapshotId)
+                .orElse(null);
+        Long fileCount = null;
+        Long fileSizeInBytes = null;
+        Long lastFileCreationTime = null;
+        if (base != null && base.getFileCount() != null) {
+            fileCount = base.getFileCount();
+            fileSizeInBytes = base.getFileSizeInBytes();
+            lastFileCreationTime = base.getLastFileCreationTime();
+        } else if (base != null) {
+            // 基线那一行的文件统计为空：它写在文件统计落库之前的版本里，按分区求合计补上。
+            PartitionDtos.PartitionStatistics totals = partitionService.totals(tableId);
+            fileCount = totals.fileCount();
+            fileSizeInBytes = totals.fileSizeInBytes();
+            lastFileCreationTime = totals.lastFileCreationTime();
+        }
+        if (statistics != null) {
+            for (PartitionDtos.PartitionStatistics stats : statistics) {
+                if (stats == null) {
+                    continue;
+                }
+                fileCount = PartitionService.add(fileCount, stats.fileCount());
+                fileSizeInBytes = PartitionService.add(fileSizeInBytes, stats.fileSizeInBytes());
+                lastFileCreationTime = PartitionService.latest(lastFileCreationTime, stats.lastFileCreationTime());
+            }
+        }
+        entity.setFileCount(fileCount);
+        entity.setFileSizeInBytes(fileSizeInBytes);
+        entity.setLastFileCreationTime(lastFileCreationTime);
     }
 
     /**
@@ -429,11 +482,29 @@ public class TableService {
         tableMetadataService.discardSnapshotsAfter(table, targetSnapshotId);
     }
 
+    /**
+     * 取最新快照的 DTO，不存在时抛出 404 SNAPSHOT。这是控制台统计卡片（记录数 / 数据文件数 /
+     * 数据文件大小 / 最近文件写入）的数据源。
+     *
+     * <p>文件统计三列是提交时累计落库的，**统计落库之前**写入的快照行三列全是 null——
+     * 这种表升级后卡片会一直空白，除非再来一次提交。但该行既然是最新快照，
+     * 它引用的文件就是分区表的当前状态，而分区统计（{@code applyCommitStatistics}）
+     * 从更早的版本就在维护：读时按分区合计兜底，与提交累计的口径同源（都是
+     * {@link PartitionService#add} / {@link PartitionService#latest} 那套算术）。
+     * 历史快照不做这件事——分区合计只对应当前状态，套在旧快照上是错的数。
+     */
     @Transactional(readOnly = true)
     public TableDtos.GetTableSnapshotResponse getTableSnapshot(String prefix, String databaseName, String tableName) {
         TableEntity table = tableLookup.requireTable(prefix, databaseName, tableName);
         TableSnapshotEntity entity = snapshotRepository.findFirstByTableIdOrderBySnapshotIdDesc(table.getId())
                 .orElseThrow(() -> ApiException.snapshotNotExist(0));
+        if (entity.getFileCount() == null && entity.getFileSizeInBytes() == null
+                && entity.getLastFileCreationTime() == null) {
+            PartitionDtos.PartitionStatistics totals = partitionService.totals(table.getId());
+            return new TableDtos.GetTableSnapshotResponse(new TableDtos.TableSnapshot(
+                    toSnapshot(entity), entity.getRecordCount(),
+                    totals.fileSizeInBytes(), totals.fileCount(), totals.lastFileCreationTime()));
+        }
         return new TableDtos.GetTableSnapshotResponse(toTableSnapshot(entity));
     }
 
@@ -630,7 +701,8 @@ public class TableService {
                 .orElseThrow(() -> ApiException.snapshotNotExist(snapshotId));
     }
 
-    private TableDtos.TableSnapshot toTableSnapshot(TableSnapshotEntity entity) {        return new TableDtos.TableSnapshot(
+    private TableDtos.TableSnapshot toTableSnapshot(TableSnapshotEntity entity) {
+        return new TableDtos.TableSnapshot(
                 toSnapshot(entity),
                 entity.getRecordCount(),
                 entity.getFileSizeInBytes(),

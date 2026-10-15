@@ -33,7 +33,13 @@ export const catalogApi = {
   getTable: (prefix, database, table) => get('getTable', { params: { prefix, database, table } }),
   /** 按表 ID 反查表，用于「只知道 ID 要定位到某张表」的排查场景。 */
   getTableById: (prefix, tableId) => get('getTableById', { params: { prefix, tableId } }),
-  /** `body` 形如 `{changes: [{action: 'setOption', ...}]}`。 */
+  /**
+   * 改表结构。`body` 形如 `{changes: [{action: 'setOption', ...}]}`。
+   *
+   * <p>这一条目前**没有页面在调**：控制台原先的「变更构造器」已撤掉，改表结构走
+   * HTTP 或 Spark SQL。它留在端点表里是因为端点表是接口的完整映射，
+   * 也是 `verify-console.py` 比对端点存在性的依据。
+   */
   alterTable: (prefix, database, table, body) => post('alterTable', { params: { prefix, database, table }, body }),
   dropTable: (prefix, database, table) => del('dropTable', { params: { prefix, database, table } }),
   /**

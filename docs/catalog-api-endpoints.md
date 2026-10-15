@@ -143,3 +143,12 @@ Paimon Rest Catalog API 在本服务端的全部 **60 个端点**，按资源分
 Paimon 客户端一致（见 `RESTApi.loadSnapshot(identifier, version)` 的契约）：
 `EARLIEST` 取最早、`LATEST` 取最新、**数字即快照 id**、其余按标签名查。
 数字不是 `Snapshot.version`——那是快照文件格式版本，客户端每个快照都送同一个值。
+
+`GET /v1/{prefix}/databases/{db}/tables/{t}/snapshot` 回的是 **`TableSnapshot`**：
+快照本身加上表级统计。`recordCount` 就是快照的 `totalRecordCount`，而
+`fileCount` / `fileSizeInBytes` / `lastFileCreationTime` **不在快照里**——快照只记清单指针，
+这三个数由 `commit` 请求随带的 `statistics`（各分区在本次提交里的增量）累计而来。
+因此客户端没送 `statistics` 时它们为 `null`，与「0 个文件」不是一回事（页面上的呈现见
+[`console-table-detail.md` §2.1](console-table-detail.md#21-详细信息)）。
+统计落库之前写的快照行三项也是 `null`——该端点只回**最新**快照，此时分区合计与它引用的
+文件一致，所以读路径按分区合计现算兜底，老表升级后立即有值；历史快照没有这个兜底。

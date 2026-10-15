@@ -164,7 +164,7 @@ docs/                   14 份设计文档
 | `spark-paimon-rest-e2e.md` | Spark 经本服务端建表：连接配置、可执行 SQL、报错对照 |
 | `authorization.md` | 权限实体链、授权映射、失败关闭的取舍 |
 | `console.md` | 改控制台 / 排查「页面空列表」：分层、端点契约表、机械校验、加页面清单 |
-| `console-table-detail.md` | 改表详情页：七个页签的数据来源（详细信息含字段/分区列表、表目录文件列表、「为什么没有权限页签」）、按需加载、破坏性操作 |
+| `console-table-detail.md` | 改表详情页：六个页签的数据来源（详细信息含字段/分区列表、表目录文件列表、「为什么没有权限页签」）、按需加载、破坏性操作 |
 | `console-catalog-detail.md` | 改 Catalog 详情页 / 仓库文件浏览：三页签、下钻与路径防护、单文件下载、只读取舍、「配置」页为何暂不实现 |
 | `console-auth.md` | 配控制台登录：三种登录方式、两个开关的边界、令牌链、安全考量 |
 | `polaris-capabilities-and-design.md` | 对比 Polaris、看整体设计与已知缺口 |
@@ -222,7 +222,7 @@ docs/                   14 份设计文档
 
 | 层 | 命令 | 抓什么 |
 | --- | --- | --- |
-| 单元/集成 | `mvn -o test`（服务端 303 + Spark 90，共 393） | 行为回归。注意 Spark 模块的 `example/PaimonS3Test` 当前会在 BUILD FAILURE 停下（缺 `spark.sql.extensions`，与 S3 环境无关）；要单独看服务端结果用 `mvn -o test -pl paimon-rest-server` |
+| 单元/集成 | `mvn -o test`（服务端 304 + Spark 90，共 394） | 行为回归。注意 Spark 模块的 `example/PaimonS3Test` 当前会在 BUILD FAILURE 停下（缺 `spark.sql.extensions`，与 S3 环境无关）；要单独看服务端结果用 `mvn -o test -pl paimon-rest-server` |
 | 端点多面 | `verify-console.py`、`verify-management-contract.py`、`verify-spark-sql-doc.py`、`verify-k8s-manifests.py` | **跨文件的机械一致性**：前端字段名 vs 服务端 record、文档表格 vs 规格、语法文件 vs PermissionDtos vs 客户端 |
 | 契约（桩） | `ManagementSqlExecutionTests`（真实 SparkSession + 桩服务端） | 扩展真被加载、真执行 |
 | 契约（真服务端） | `./scripts/e2e-spark-sql.sh` | 客户端与服务端的**实际**契约（桩只能证明客户端与自己的假设自洽） |

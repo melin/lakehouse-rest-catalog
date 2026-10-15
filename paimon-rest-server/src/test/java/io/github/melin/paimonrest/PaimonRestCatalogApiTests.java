@@ -7,6 +7,8 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import io.github.melin.paimonrest.domain.entity.TableSnapshotEntity;
+import io.github.melin.paimonrest.domain.repo.TableSnapshotRepository;
 import io.github.melin.paimonrest.dto.BranchDtos;
 import io.github.melin.paimonrest.dto.CommonDtos;
 import io.github.melin.paimonrest.dto.ConsumerDtos;
@@ -77,6 +79,9 @@ class PaimonRestCatalogApiTests {
     private ConsumerService consumerService;
     @Autowired
     private CredentialService credentialService;
+    /** 只有「模拟升级前写下的快照行」这一个用例需要直接改库，用它是为了不新开一条服务端入口。 */
+    @Autowired
+    private TableSnapshotRepository snapshotRepository;
 
     @Test
     void configExposesPrefixForClientBootstrap() {
@@ -328,6 +333,100 @@ class PaimonRestCatalogApiTests {
                 null, null, "dt=2024-02%");
         assertEquals(1, matched.partitions().size());
         assertEquals(0, partitionService.list(PREFIX, database, "events", null, null, "dt=2099%").partitions().size());
+    }
+
+    /**
+     * 快照行的文件统计（{@code TableSnapshot} 的 fileCount / fileSizeInBytes /
+     * lastFileCreationTime）由提交携带的分区统计**增量**累计而来。
+     *
+     * <p>快照自己只带记录数，另外三个数不在快照里——客户端一次提交只报它改动过的分区，
+     * 服务端把这份增量叠到上一个快照的累计值上。因此五件事要一起钉住：累加、未测量的
+     * 字段（负值）被跳过、没带统计的提交沿用上一个快照的值而不是清空、基线那一行
+     * 本身没有文件统计时（写在统计落库之前的行）退回按分区求合计，以及最新快照的行
+     * 缺文件统计时读路径按分区合计兜底（老服务端写的表升级后立即有值，不必等新提交）。
+     */
+    @Test
+    void snapshotFileStatisticsAccumulateAcrossCommits() {
+        String database = "it_snapshot_stats";
+        createDatabase(database);
+        tableService.create(PREFIX, database, new TableDtos.CreateTableRequest(
+                new CommonDtos.Identifier(database, "orders"), ordersSchema()));
+        TableDtos.GetTableResponse table = tableService.get(PREFIX, database, "orders");
+
+        // 还没有快照：统计取不到就是 404，控制台据此把统计块留空
+        assertEquals(404, assertThrows(ApiException.class,
+                () -> tableService.getTableSnapshot(PREFIX, database, "orders")).getStatus());
+
+        // 第一次提交：一个分区带统计、一个分区的字段全是未测量
+        commitSnapshot(database, "orders", 1L, 100L, List.of(
+                new PartitionDtos.PartitionStatistics(Map.of("dt", "2024-01-01"), 100L, 2048L, 3L, 1000L, 2),
+                new PartitionDtos.PartitionStatistics(Map.of("dt", "2024-02-01"), -1L, -1L, -1L, -1L, null)));
+        TableDtos.TableSnapshot first = tableService.getTableSnapshot(PREFIX, database, "orders").snapshot();
+        assertEquals(100L, first.recordCount(), "记录数始终取快照自带的 totalRecordCount");
+        assertEquals(3L, first.fileCount(), "未测量的分区字段不进合计");
+        assertEquals(2048L, first.fileSizeInBytes());
+        assertEquals(1000L, first.lastFileCreationTime());
+
+        // 第二次提交：在上一个快照的累计值上继续加，时间戳取较晚者
+        commitSnapshot(database, "orders", 2L, 150L, List.of(
+                new PartitionDtos.PartitionStatistics(Map.of("dt", "2024-01-01"), 50L, 1024L, 2L, 3000L, 2)));
+        TableDtos.TableSnapshot second = tableService.getTableSnapshot(PREFIX, database, "orders").snapshot();
+        assertEquals(150L, second.recordCount());
+        assertEquals(5L, second.fileCount());
+        assertEquals(3072L, second.fileSizeInBytes());
+        assertEquals(3000L, second.lastFileCreationTime());
+
+        // 没带统计的提交（老客户端、或只改了元数据的空提交）：沿用上一个快照的累计值
+        commitSnapshot(database, "orders", 3L, 150L, null);
+        TableDtos.TableSnapshot third = tableService.getTableSnapshot(PREFIX, database, "orders").snapshot();
+        assertEquals(5L, third.fileCount());
+        assertEquals(3072L, third.fileSizeInBytes());
+        assertEquals(3000L, third.lastFileCreationTime());
+
+        // 基线那一行没有文件统计（统计落库之前写的行，升级后的表就是这种形状）：
+        // 退回按分区求合计当基线，而不是只算本次增量——否则历史表会一直显示「从升级点起」的小值。
+        TableSnapshotEntity legacy = snapshotRepository
+                .findByTableIdAndSnapshotId(table.id(), third.snapshot().id())
+                .orElseThrow();
+        legacy.setFileCount(null);
+        legacy.setFileSizeInBytes(null);
+        legacy.setLastFileCreationTime(null);
+        snapshotRepository.save(legacy);
+
+        commitSnapshot(database, "orders", 4L, 200L, List.of(
+                new PartitionDtos.PartitionStatistics(Map.of("dt", "2024-01-01"), 25L, 4096L, 4L, 5000L, 2)));
+        TableDtos.TableSnapshot fourth = tableService.getTableSnapshot(PREFIX, database, "orders").snapshot();
+        assertEquals(9L, fourth.fileCount(), "分区合计 5 + 本次 4");
+        assertEquals(7168L, fourth.fileSizeInBytes(), "分区合计 3072 + 本次 4096");
+        assertEquals(5000L, fourth.lastFileCreationTime());
+
+        // 读时兜底：最新快照的行没有文件统计（老服务端写的行，分区统计倒是早就在维护），
+        // 读路径按分区合计现算——升级后的历史表不必等下一次提交才有值。
+        // 分区合计与提交累计同源同值（都是同一批增量），dt=2024-02-01 全未测量被跳过。
+        TableSnapshotEntity stale = snapshotRepository
+                .findByTableIdAndSnapshotId(table.id(), fourth.snapshot().id())
+                .orElseThrow();
+        stale.setFileCount(null);
+        stale.setFileSizeInBytes(null);
+        stale.setLastFileCreationTime(null);
+        snapshotRepository.save(stale);
+        TableDtos.TableSnapshot fallback = tableService.getTableSnapshot(PREFIX, database, "orders").snapshot();
+        assertEquals(9L, fallback.fileCount(), "读时按分区合计兜底：3 + 2 + 4");
+        assertEquals(7168L, fallback.fileSizeInBytes(), "读时按分区合计兜底：2048 + 1024 + 4096");
+        assertEquals(5000L, fallback.lastFileCreationTime(), "时间戳取各分区里较晚者");
+    }
+
+    /** 提交一个 APPEND 快照，可随带该次提交的分区统计。 */
+    private void commitSnapshot(String database, String name, long snapshotId, long totalRecordCount,
+                                List<PartitionDtos.PartitionStatistics> statistics) {
+        TableDtos.GetTableResponse table = tableService.get(PREFIX, database, name);
+        TableDtos.Snapshot snapshot = new TableDtos.Snapshot(1, "uuid-" + snapshotId, snapshotId, table.schemaId(),
+                "base-" + snapshotId + ".manifest", "delta-" + snapshotId + ".manifest", null,
+                "index-" + snapshotId + ".manifest", "tester", String.valueOf(snapshotId), "APPEND",
+                1700000000000L + snapshotId, Map.of(), totalRecordCount, totalRecordCount, 0L, null, null);
+        TableDtos.CommitTableResponse committed = tableService.commit(PREFIX, database, name,
+                new TableDtos.CommitTableRequest(table.id(), null, snapshot, statistics));
+        assertTrue(committed.success());
     }
 
     @Test
