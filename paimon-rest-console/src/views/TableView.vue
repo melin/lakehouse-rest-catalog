@@ -23,12 +23,10 @@
       <PanelCard flush>
         <el-tabs v-model="tab" class="pc-tabs" @tab-change="onTabChange">
           <el-tab-pane label="详细信息" name="details" />
-          <el-tab-pane label="Schema" name="schema" />
           <el-tab-pane label="变更" name="changes" />
           <el-tab-pane label="快照" name="snapshots" />
           <el-tab-pane label="标签" name="tags" />
           <el-tab-pane label="分支" name="branches" />
-          <el-tab-pane label="分区" name="partitions" />
           <el-tab-pane label="文件列表" name="files" />
           <el-tab-pane label="数据访问" name="access" />
         </el-tabs>
@@ -77,6 +75,8 @@
                 <dd><TimeText :millis="table0.createdAt" /> · {{ orPlaceholder(table0.createdBy) }}</dd>
                 <dt>更新</dt>
                 <dd><TimeText :millis="table0.updatedAt" /> · {{ orPlaceholder(table0.updatedBy) }}</dd>
+                <dt>表注释</dt>
+                <dd>{{ orPlaceholder(table0.schema?.comment) }}</dd>
               </dl>
               <JsonBlock
                 :value="table0.schema?.options || {}"
@@ -85,30 +85,135 @@
                 max-height="300px"
               />
             </div>
-          </template>
 
-          <!-------------------------------- Schema -------------------------------->
-          <template v-else-if="tab === 'schema'">
-            <el-table :data="table0.schema?.fields || []" size="small">
-              <el-table-column prop="id" label="ID" width="64" align="right" />
-              <el-table-column prop="name" label="字段名" min-width="160" />
-              <el-table-column label="类型" min-width="180">
-                <template #default="{ row }">
-                  <span class="pc-mono">{{ typeText(row.type) }}</span>
-                </template>
-              </el-table-column>
-              <el-table-column prop="description" label="注释" min-width="140" />
-              <el-table-column prop="defaultValue" label="默认值" min-width="110" />
-            </el-table>
+            <!-- 字段列表 / 分区列表：合并进详细信息页（原先是两个独立页签）。
+                 二级页签按需加载：字段来自 overview 里的 schema，分区切过去才请求。 -->
+            <el-tabs v-model="detailsSection" class="pc-subtabs" @tab-change="onDetailsSectionChange">
+              <el-tab-pane label="字段列表" name="fields" />
+              <el-tab-pane label="分区列表" name="partitions" />
+            </el-tabs>
 
-            <dl class="pc-kv pc-schema-meta">
-              <dt>分区键</dt>
-              <dd>{{ (table0.schema?.partitionKeys || []).join(', ') || '（未分区）' }}</dd>
-              <dt>主键</dt>
-              <dd>{{ (table0.schema?.primaryKeys || []).join(', ') || '（无主键表）' }}</dd>
-              <dt>表注释</dt>
-              <dd>{{ orPlaceholder(table0.schema?.comment) }}</dd>
-            </dl>
+            <template v-if="detailsSection === 'fields'">
+              <div class="pc-filter-row">
+                <el-input
+                  v-model="schemaFilterInput"
+                  size="small"
+                  class="pc-prefix-input"
+                  placeholder="输入字段名称过滤"
+                  clearable
+                />
+              </div>
+
+              <ResourceState
+                :empty="!filteredFields.length && (table0.schema?.fields || []).length"
+                :empty-text="`没有名称包含「${schemaFilter}」的字段`"
+              />
+
+              <el-table :data="pagedFields" size="small">
+                <el-table-column prop="id" label="序号" width="64" align="right" />
+                <el-table-column prop="name" label="字段名称" min-width="150" />
+                <el-table-column label="类型" min-width="170">
+                  <template #default="{ row }">
+                    <span class="pc-mono">{{ typeText(row.type) }}</span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="非空" width="70" align="center">
+                  <template #default="{ row }">{{ isNotNull(row) ? '是' : '否' }}</template>
+                </el-table-column>
+                <el-table-column label="主键" width="70" align="center">
+                  <template #default="{ row }">{{ isPrimaryKey(row) ? '是' : '否' }}</template>
+                </el-table-column>
+                <el-table-column label="分区字段" width="80" align="center">
+                  <template #default="{ row }">{{ isPartitionKey(row) ? '是' : '否' }}</template>
+                </el-table-column>
+                <el-table-column prop="description" label="描述" min-width="130">
+                  <template #default="{ row }">{{ orPlaceholder(row.description) }}</template>
+                </el-table-column>
+                <el-table-column prop="defaultValue" label="默认值" min-width="100">
+                  <template #default="{ row }">{{ orPlaceholder(row.defaultValue) }}</template>
+                </el-table-column>
+              </el-table>
+
+              <el-pagination
+                v-if="filteredFields.length > fieldPageSize"
+                v-model:current-page="fieldPage"
+                v-model:page-size="fieldPageSize"
+                :page-sizes="[10, 50, 100, 200, 500]"
+                :total="filteredFields.length"
+                layout="total, sizes, prev, pager, next"
+                size="small"
+                class="pc-pager"
+              />
+
+            </template>
+
+            <template v-else>
+              <div class="pc-filter-row">
+                <el-input
+                  v-model="partitionFilterInput"
+                  size="small"
+                  class="pc-prefix-input"
+                  placeholder="输入分区名过滤"
+                  clearable
+                />
+              </div>
+
+              <ResourceState
+                :loading="partitions.loading.value"
+                :error="partitions.error.value"
+                :empty="partitions.data.value !== null && !filteredPartitions.length"
+                :empty-text="partitionFilterInput.trim()
+                  ? `没有包含「${partitionFilterInput.trim()}」的分区`
+                  : '这张表没有分区，或还没有数据'"
+              />
+
+              <el-table
+                v-if="filteredPartitions.length || partitions.loading.value"
+                v-loading="partitions.loading.value"
+                :data="pagedPartitions"
+                size="small"
+                empty-text="这张表没有分区，或还没有数据"
+              >
+                <el-table-column label="分区名" min-width="200">
+                  <template #default="{ row }">
+                    <span class="pc-mono pc-break">{{ inlineMap(row.spec) }}</span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="记录数" width="110" align="right">
+                  <template #default="{ row }">{{ formatNumber(row.recordCount) }}</template>
+                </el-table-column>
+                <el-table-column label="文件数" width="90" align="right">
+                  <template #default="{ row }">{{ formatNumber(row.fileCount) }}</template>
+                </el-table-column>
+                <el-table-column label="大小" width="110" align="right">
+                  <template #default="{ row }">{{ formatBytes(row.fileSizeInBytes) }}</template>
+                </el-table-column>
+                <el-table-column label="桶数" width="80" align="right">
+                  <template #default="{ row }">{{ orPlaceholder(row.totalBuckets) }}</template>
+                </el-table-column>
+                <el-table-column label="已完成" width="90">
+                  <template #default="{ row }">
+                    <el-tag size="small" :type="row.done ? 'success' : 'info'" effect="plain">
+                      {{ row.done ? '是' : '否' }}
+                    </el-tag>
+                  </template>
+                </el-table-column>
+              </el-table>
+
+              <el-pagination
+                v-if="filteredPartitions.length > partitionPageSize"
+                v-model:current-page="partitionPage"
+                v-model:page-size="partitionPageSize"
+                :page-sizes="[10, 50, 100, 200, 500]"
+                :total="filteredPartitions.length"
+                layout="total, sizes, prev, pager, next"
+                size="small"
+                class="pc-pager"
+              />
+
+              <p class="pc-tip">分区的统计口径是最新快照的活跃数据：只计算被最新快照引用的文件，
+                因此各分区之和可能小于仓库实际占用。</p>
+            </template>
           </template>
 
           <!-------------------------------- 变更 ---------------------------------->
@@ -286,45 +391,6 @@
                   <IconAction icon="EditPen" label="重命名" @click="openRenameBranch(branchName(row))" />
                   <IconAction icon="DArrowRight" label="推进到最新" @click="forwardBranch(branchName(row))" />
                   <IconAction icon="Delete" label="删除" type="danger" @click="confirmDropBranch(branchName(row))" />
-                </template>
-              </el-table-column>
-            </el-table>
-          </template>
-
-          <!-------------------------------- 分区 ---------------------------------->
-          <template v-else-if="tab === 'partitions'">
-            <el-alert type="info" :closable="false" show-icon class="pc-hint">
-              <template #title>这里的统计口径是最新快照的活跃数据</template>
-              <div>分区级统计只计算被最新快照引用的文件，因此各分区之和可能小于仓库实际占用。</div>
-            </el-alert>
-            <el-table
-              v-loading="partitions.loading.value"
-              :data="partitions.data.value?.partitions || []"
-              size="small"
-              empty-text="这张表没有分区，或还没有数据"
-            >
-              <el-table-column label="分区" min-width="230">
-                <template #default="{ row }">
-                  <span class="pc-mono pc-break">{{ inlineMap(row.spec) }}</span>
-                </template>
-              </el-table-column>
-              <el-table-column label="记录数" width="110" align="right">
-                <template #default="{ row }">{{ formatNumber(row.recordCount) }}</template>
-              </el-table-column>
-              <el-table-column label="文件数" width="90" align="right">
-                <template #default="{ row }">{{ formatNumber(row.fileCount) }}</template>
-              </el-table-column>
-              <el-table-column label="大小" width="110" align="right">
-                <template #default="{ row }">{{ formatBytes(row.fileSizeInBytes) }}</template>
-              </el-table-column>
-              <el-table-column label="桶数" width="80" align="right">
-                <template #default="{ row }">{{ orPlaceholder(row.totalBuckets) }}</template>
-              </el-table-column>
-              <el-table-column label="已完成" width="90">
-                <template #default="{ row }">
-                  <el-tag size="small" :type="row.done ? 'success' : 'info'" effect="plain">
-                    {{ row.done ? '是' : '否' }}
-                  </el-tag>
                 </template>
               </el-table-column>
             </el-table>
@@ -568,15 +634,15 @@ import {
 } from '@/utils/format.js'
 
 /**
- * 表详情。九个页签：七个对应 catalog API 里以单张表为作用域的端点，
- * 另有两个组合页签——「详细信息」汇总单表元数据（基本信息 + 快照统计 + options），
- * 「文件列表」看表目录在存储上的物理内容（根是表目录，出不了表外）。
+ * 表详情。七个页签：六个对应 catalog API 里以单张表为作用域的端点，
+ * 另有一个组合页签——「详细信息」汇总单表元数据（基本信息 + 快照统计 + options +
+ * 字段列表 / 分区列表两个二级页签）。
  *
  * <p>授权不在这张表上做：表级权限统一到「权限管理」页（按 database + table 定位，
  * 一级资源一个表单），这里不再重复一份 catalog 角色的授权界面。
  *
- * <p>「详细信息」「Schema」「变更」「数据访问」只用 overview 已有数据，
- * 其余页签按需加载：切到某个页签才发它的请求。
+ * <p>「详细信息」（字段）/「变更」「数据访问」只用 overview 已有数据，
+ * 其余按需加载：切到某个页签才发它的请求；详细信息里的「分区列表」二级页签同理。
  * 打开一张表就发两个请求，在远端仓库上会让页面明显变慢。
  */
 
@@ -589,7 +655,7 @@ const table = computed(() => route.params.table)
 const tab = ref('details')
 
 /** 不需要额外请求的页签：切过去不触发 load。 */
-const SELF_CONTAINED_TABS = new Set(['details', 'schema', 'changes', 'access'])
+const SELF_CONTAINED_TABS = new Set(['details', 'changes', 'access'])
 
 const overview = useResource(async () => {
   const [detail, snapshot] = await Promise.all([
@@ -680,13 +746,59 @@ async function downloadEntry(row) {
 
 const loadedTabs = new Set()
 
+// ------------------------------------------------------------------ 详细信息：字段列表 / 分区列表
+
+/**
+ * 详细信息页里的二级页签。分区仍然按需加载（切过去才请求）：
+ * 合并页签不等于把打开页面的成本从两个请求变成三个。
+ */
+const detailsSection = ref('fields')
+
+/** 字段来自 overview 里的 schema，不过滤时原样展示；分区数据量大，同样本地过滤 + 分页。 */
+const schemaFilterInput = ref('')
+const filteredFields = computed(() => {
+  const keyword = schemaFilterInput.value.trim().toLowerCase()
+  const fields = table0.value?.schema?.fields || []
+  if (!keyword) return fields
+  return fields.filter((field) => field.name.toLowerCase().includes(keyword))
+})
+const { page: fieldPage, pageSize: fieldPageSize, paged: pagedFields } = useLocalPaging(filteredFields)
+
+const partitionFilterInput = ref('')
+const filteredPartitions = computed(() => {
+  const keyword = partitionFilterInput.value.trim().toLowerCase()
+  const rows = partitions.data.value?.partitions || []
+  if (!keyword) return rows
+  return rows.filter((row) => inlineMap(row.spec).toLowerCase().includes(keyword))
+})
+const { page: partitionPage, pageSize: partitionPageSize, paged: pagedPartitions } =
+  useLocalPaging(filteredPartitions)
+
+function onDetailsSectionChange(name) {
+  if (name === 'partitions' && !partitions.data.value && !partitions.loading.value) {
+    partitions.load()
+  }
+}
+
+/** 非空藏在类型串里（`BIGINT NOT NULL`）；嵌套类型是对象，如实按「否」处理。 */
+function isNotNull(field) {
+  return typeof field.type === 'string' && /not\s+null/i.test(field.type)
+}
+
+function isPrimaryKey(field) {
+  return (table0.value?.schema?.primaryKeys || []).includes(field.name)
+}
+
+function isPartitionKey(field) {
+  return (table0.value?.schema?.partitionKeys || []).includes(field.name)
+}
+
 function onTabChange(name) {
   if (loadedTabs.has(name)) return
   loadedTabs.add(name)
   if (name === 'snapshots') snapshots.load()
   if (name === 'tags') tags.load()
   if (name === 'branches') branches.load()
-  if (name === 'partitions') partitions.load()
   // 文件列表要等概览回来才有 tableId：概览没到时先不请求（加载器会返回 null），
   // 等下次切到这个页签、或概览加载完成后的 reloadAll 再拉
   if (name === 'files' && table0.value && !tableFiles.data.value && !tableFiles.loading.value) {
@@ -701,6 +813,8 @@ function reloadAll() {
   // 文件列表不在 onTabChange 的首次加载判定里：刷新要真的重新拉一次，
   // 否则刷新按钮在文件页签上什么也不做（数据还在，被判定成「已加载」）
   if (tab.value === 'files') tableFiles.load()
+  // 分区列表同理：数据在就重拉，让刷新在这个二级页签上也有效
+  if (tab.value === 'details' && detailsSection.value === 'partitions') partitions.load()
 }
 
 watch([prefix, database, table], () => {
@@ -712,6 +826,10 @@ watch([prefix, database, table], () => {
   tableFilePrefixInput.value = ''
   tableFiles.data.value = null
   tableFiles.error.value = ''
+  // 分区列表同样换表即作废；二级页签回到「字段列表」（默认落点）
+  partitions.data.value = null
+  partitions.error.value = ''
+  detailsSection.value = 'fields'
   overview.load()
   if (!SELF_CONTAINED_TABS.has(tab.value)) {
     loadedTabs.add(tab.value)
@@ -1224,6 +1342,15 @@ async function confirmDrop() {
   align-items: center;
   gap: 2px;
   overflow-wrap: anywhere;
+}
+
+/* 二级页签（详细信息里的字段列表 / 分区列表）：比主页签轻一档，不占 flush 卡的边距 */
+.pc-subtabs {
+  margin-top: 16px;
+}
+
+.pc-subtabs :deep(.el-tabs__header) {
+  margin-bottom: 12px;
 }
 
 /* 过滤行：前缀输入 + 查询按钮，右侧显示这一批的条数 */

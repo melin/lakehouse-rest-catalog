@@ -70,7 +70,7 @@ Maven 坐标与包名：`groupId` 为 `io.github.melin`，三个 artifact 分别
 | [`spark-paimon-rest-e2e.md`](docs/spark-paimon-rest-e2e.md) | 要让 Spark 通过本服务端建 Paimon 表——连接配置、可执行的 SQL、报错对照表 |
 | [`authorization.md`](docs/authorization.md) | 要理解权限怎么判——实体链、授权映射、失败关闭的取舍 |
 | [`console.md`](docs/console.md) | 要改 Web 控制台或排查「页面空列表」——前端分层、端点契约表、机械校验 |
-| [`console-table-detail.md`](docs/console-table-detail.md) | 要改表详情页——九个页签的数据来源、为什么授权不在这页、破坏性操作与边界 |
+| [`console-table-detail.md`](docs/console-table-detail.md) | 要改表详情页——七个页签的数据来源、为什么授权不在这页、破坏性操作与边界 |
 | [`console-catalog-detail.md`](docs/console-catalog-detail.md) | 要改 Catalog 详情页或仓库文件浏览——三个页签、下钻与路径防护、只读的取舍、「配置」页为何暂不实现 |
 | [`console-auth.md`](docs/console-auth.md) | 要给浏览器访问控制台配登录——三种登录方式、两个开关的边界、令牌与认证链、安全考量 |
 | [`polaris-capabilities-and-design.md`](docs/polaris-capabilities-and-design.md) | 要对比 Polaris 或看整体设计——核心能力提取、映射关系、已知缺口 |
@@ -878,7 +878,7 @@ http://localhost:8080/console/
 | `/login`、`/auth/callback` | 登录与 SSO 回调 |
 | `/` | 概览：统计块、服务端配置、**连接自检**、catalog 清单、`GET /v1/config` |
 | `/browse` | 目录浏览：库/表/视图/函数/语义视图；建库建表、注册表、按表 ID 定位、重命名、删除 |
-| `/tables/:prefix/:database/:table` | [表详情](docs/console-table-detail.md)：九个页签（含**文件列表**——表目录物理内容，出不了表外）、快照与标签回滚 |
+| `/tables/:prefix/:database/:table` | [表详情](docs/console-table-detail.md)：七个页签——详细信息（含字段列表 / 分区列表）、**文件列表**（表目录物理内容，出不了表外）、快照与标签回滚 |
 | `/catalogs` | Catalog 列表：创建、编辑（带版本）、删除；名称进详情页 |
 | `/catalogs/:catalogName` | [Catalog 详情](docs/console-catalog-detail.md)：概览 / **文件列表**（仓库物理目录，目录名可点下钻、文件可下载、文件名前缀过滤 + 本地分页）/ 配置（预留设计，暂未实现） |
 | `/principals`、`/principal-roles` | 治理：主体、角色；角色页含「授予 / 撤销 catalog 角色」。**catalog 角色与它的资源授权没有页面**——这两件事的入口是管理 API 与 Spark SQL |
@@ -915,6 +915,6 @@ OIDC 授权码 + PKCE 三种方式；令牌是自包含 JWT，多实例互认但
 | 文档 | 内容 |
 | --- | --- |
 | [`docs/console.md`](docs/console.md) | 控制台总览：目录结构、服务端如何托管、页面清单、端点契约表与机械校验、构建与提交约定、测试分层 |
-| [`docs/console-table-detail.md`](docs/console-table-detail.md) | 表详情页：九个页签逐个说明（含表目录文件列表）、为什么授权不在这页、破坏性操作、已知边界 |
+| [`docs/console-table-detail.md`](docs/console-table-detail.md) | 表详情页：七个页签逐个说明（详细信息含字段/分区列表、表目录文件列表）、为什么授权不在这页、破坏性操作、已知边界 |
 | [`docs/console-catalog-detail.md`](docs/console-catalog-detail.md) | Catalog 详情页：概览与文件列表两个已实现页签、下钻与路径防护、为什么只读、「配置」页的预留设计 |
 | [`docs/console-auth.md`](docs/console-auth.md) | 登录与鉴权：两个开关的边界、三种登录方式与令牌端点、错误码、安全考量、已知边界 |
