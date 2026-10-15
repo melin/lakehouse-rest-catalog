@@ -142,12 +142,28 @@ const trail = computed(() => {
   return items
 })
 
+/**
+ * 切换当前 catalog，并把页面带到新目录下。
+ *
+ * <p>三类页面的「当前目录」来源不同，跟着过去的方式也就不同：目录浏览把它放在
+ * **URL query**（`?catalog=`，页面以 query 为准，见 `BrowseView` 的 `prefix`）；
+ * 表详情放在**路由参数** `:prefix`；目录详情（管理 API）带的本来就是目录名本身。
+ * 这三处的 URL 都写着旧目录，原地刷新改不动它——刷新出来还是旧目录的数据，
+ * 看起来像没生效，而顶栏选择器已经跳到了新值，两边对不上。
+ *
+ * <p>目录浏览这一条最容易漏：它自己的路由没有 `meta.parent`（它是别人的父级），
+ * 只判 `meta.parent === 'browse'` 会把它漏到 `refresh()` 分支里，于是出现
+ * 「选了另一个 catalog，页面纹丝不动」。所以这里把 `route.name === 'browse'`
+ * 与 `meta.parent === 'browse'` 并到一起判。
+ *
+ * <p>其余页面读的是 `session.selectedCatalog`，切完广播一次刷新即可。
+ */
 function onSelectCatalog(name) {
   session.selectCatalog(name)
-  // 切了目录，当前页面展示的资源多半不在新目录里：两个「详情」页各自带目录名，
-  // 跟过去比原地刷新有意义——刷新出来的还是旧目录的数据，看起来像没生效。
-  // 其余页面各自重新加载即可（刷新广播）。
-  if (route.meta?.parent === 'browse') {
+  if (route.name === 'browse' || route.meta?.parent === 'browse') {
+    // 同目录重选不跳：vue-router 会警告重复导航，且会把已选中的库冲掉
+    if (route.query.catalog === name) return
+    // 不带 database：新目录下多半没有同名的库，交给浏览页落到第一个
     router.push({ name: 'browse', query: { catalog: name } })
     return
   }
