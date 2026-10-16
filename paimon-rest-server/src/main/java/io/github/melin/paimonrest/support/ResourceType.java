@@ -27,5 +27,8 @@ public enum ResourceType {
     PRINCIPAL_ROLE,
     CATALOG_ROLE,
     GRANT,
+    /** 存储优化策略与优化批次（本服务自己的一组资源，管理 API 的一部分）。 */
+    TABLE_OPTIMIZATION,
+    OPTIMIZATION_JOB,
     UNKNOWN
 }

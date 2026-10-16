@@ -276,3 +276,52 @@ paimon:
         - name: default
           options:
             owner: paimon
+
+    # -----------------------------------------------------------------------
+    # 表存储优化（Compaction / Snapshot Expire / Orphan File Remove）
+    #
+    # 三项动作的参数默认值不放这里：它们属于**每个 catalog 自己的默认设置**
+    # （catalog 属性里 `optimization.<动作>.<参数>` 前缀的键，与 table-default.* 同一套做法），
+    # 由控制台或管理 API 维护。这里只配「本部署怎么跑优化任务」。
+    #
+    # 完整设计见 docs/table-optimization.md。
+    # -----------------------------------------------------------------------
+    optimization:
+      # 关掉只停调度，不影响手动「立即优化」与状态查询。
+      # 用途：优化任务由外部系统触发出批的部署，以及需要确定性行为的测试。
+      scheduler-enabled: true
+      # 多久扫一次「有策略到期了、有批次等着提交/跟踪」。调快它不会让优化跑得更勤，
+      # 只影响「到期后多久被看见」。
+      scan-interval: 1m
+      # 提交与跟踪节拍。比扫描快：提交要趁热，跟踪决定用户看到「运行中」到什么精度。
+      dispatch-interval: 10s
+      # 单批最多几张表（超出拆到下一批，避免一个批次跑太久、重试代价过大）
+      max-tables-per-job: 20
+      # 同时允许几个批次在跑（超出的留在 PENDING 排队）
+      max-concurrent-jobs: 2
+      # 批次超时：超过它仍未终结的批次判失败并清理执行侧资源
+      job-timeout: 2h
+
+      # ---- 提交方式 ----
+      # k8s：创建 k8s Job（生产用）；log：只记日志不真提交（本地调试用）
+      submitter: k8s
+      namespace: default
+      # 优化任务镜像：含 paimon-rest-optimizer 的 jar 与它要的 Spark 运行时。
+      # k8s 提交器必填，留空会在提交时失败
+      image: ""
+      image-pull-policy: IfNotPresent
+      # 运行优化任务的 service account：若集群开了 PodSecurityPolicy / 需要镜像拉取密钥，
+      # 应指向一个专用账号而不是 default
+      service-account: ""
+      # k8s API 地址与集群内认证。集群内默认走 service 域名；
+      # token/CA 从 service account 挂载文件现读（kubelet 会轮转它们）
+      api-server: https://kubernetes.default.svc
+      token-file: /var/run/secrets/kubernetes.io/serviceaccount/token
+      ca-file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+      # 下发给优化任务的服务端地址，任务用它回调拉清单、上报结果。
+      # 容器里必须配成服务端在本集群内的可解析地址（Service 名，不是 pod 名）
+      management-url: http://127.0.0.1:8080
+      # catalog 数据面令牌：批次回调令牌只对优化回调端点有效，任务访问 /v1/{prefix}
+      # 需要这一份。留空表示本部署没开认证；开了认证必须配一个专用主体（optimizer）的令牌。
+      # 待办：改成服务端为每批签发的短期令牌（见 docs/table-optimization.md §9.5）
+      catalog-token: ""

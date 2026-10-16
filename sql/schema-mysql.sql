@@ -124,6 +124,52 @@ USE `paimon_catalog`;
         primary key (id)
     ) engine=InnoDB;
 
+    create table paimon_optimization_job (
+        table_count integer not null,
+        created_at bigint,
+        deadline_at bigint,
+        finished_at bigint,
+        started_at bigint,
+        submitted_at bigint,
+        updated_at bigint,
+        trigger_type varchar(16) not null,
+        status_value varchar(24) not null,
+        submitter varchar(32),
+        actions varchar(64) not null,
+        callback_token varchar(64) not null,
+        catalog_id varchar(64) not null,
+        id varchar(64) not null,
+        retry_of varchar(64),
+        k8s_namespace varchar(128),
+        spark_app_id varchar(128),
+        k8s_resource varchar(256),
+        error_message varchar(1000),
+        created_by varchar(255),
+        owner varchar(255),
+        updated_by varchar(255),
+        primary key (id)
+    ) engine=InnoDB;
+
+    create table paimon_optimization_job_item (
+        created_at bigint,
+        finished_at bigint,
+        reported_at bigint,
+        started_at bigint,
+        updated_at bigint,
+        status_value varchar(16) not null,
+        actions varchar(64) not null,
+        id varchar(64) not null,
+        job_id varchar(64) not null,
+        table_id varchar(64) not null,
+        error_message varchar(1000),
+        table_full_name varchar(1024),
+        metrics_json varchar(8192),
+        created_by varchar(255),
+        owner varchar(255),
+        updated_by varchar(255),
+        primary key (id)
+    ) engine=InnoDB;
+
     create table paimon_partition (
         done_flag bit not null,
         total_buckets integer,
@@ -287,6 +333,28 @@ USE `paimon_catalog`;
         primary key (id)
     ) engine=InnoDB;
 
+    create table paimon_table_optimization (
+        compaction_enabled_flag bit not null,
+        enabled_flag bit not null,
+        orphan_remove_enabled_flag bit not null,
+        schedule_interval_seconds integer not null,
+        snapshot_expire_enabled_flag bit not null,
+        created_at bigint,
+        next_run_at bigint,
+        updated_at bigint,
+        catalog_id varchar(64) not null,
+        id varchar(64) not null,
+        last_job_id varchar(64),
+        table_id varchar(64) not null,
+        created_by varchar(255),
+        owner varchar(255),
+        updated_by varchar(255),
+        compaction_config_json text,
+        orphan_remove_config_json text,
+        snapshot_expire_config_json text,
+        primary key (id)
+    ) engine=InnoDB;
+
     create table paimon_table_schema (
         created_at bigint not null,
         schema_id bigint not null,
@@ -356,6 +424,18 @@ USE `paimon_catalog`;
     alter table paimon_function 
        add constraint uk_function unique (catalog_id, database_id, name);
 
+    create index ix_optimization_job_catalog 
+       on paimon_optimization_job (catalog_id);
+
+    create index ix_optimization_job_status 
+       on paimon_optimization_job (status_value);
+
+    create index ix_optimization_item_job 
+       on paimon_optimization_job_item (job_id);
+
+    create index ix_optimization_item_table 
+       on paimon_optimization_job_item (table_id);
+
     create index ix_partition_table 
        on paimon_partition (table_id);
 
@@ -412,6 +492,15 @@ USE `paimon_catalog`;
 
     alter table paimon_table 
        add constraint uk_table unique (catalog_id, database_id, name);
+
+    create index ix_table_optimization_catalog 
+       on paimon_table_optimization (catalog_id);
+
+    create index ix_table_optimization_due 
+       on paimon_table_optimization (enabled_flag, next_run_at);
+
+    alter table paimon_table_optimization 
+       add constraint uk_table_optimization unique (table_id);
 
     create index ix_table_schema_table 
        on paimon_table_schema (table_id);

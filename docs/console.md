@@ -140,12 +140,13 @@ paimon-rest-console/
 | `/auth/callback` | SSO 回调 | 校验 `state` → 用授权码换令牌 → 让服务端确认 → 回跳原页面。不套管理布局 |
 | `/` | 控制台概览 | 统计块（三个数量）、服务端配置摘要、**连接自检**、catalog 清单、`GET /v1/config` 展示 |
 | `/browse` | 目录浏览 | 左库右对象；四页签（表/视图/函数/语义视图）；建库、建表（Paimon 表 / Format 表 / Object 表三种表格式，Lance 表留在选项里但禁用，见 [console-catalog-detail.md](console-catalog-detail.md) §3.5）、注册表、按表 ID 定位、重命名、删除、详情抽屉。表页签列出表名 / 表格式 / 表类型（Managed 或外部表）/ 创建时间 / 元数据更新时间 / 操作六列，数据取自 `table-details`（只回表名的 `/tables` 给不出这几列）；「元数据更新时间」是服务端这条表记录的最后改动时间，快照提交与回滚也会推动它。表页签的过滤为空时说明「没有匹配 ×××」，与「库里没有表」区分开 |
-| `/tables/:prefix/:database/:table` | [表详情](console-table-detail.md) | 六页签：详细信息 / 快照 / 标签 / 分支 / **文件列表** / 数据访问；含快照与标签的**回滚**。**没有「变更」页签**：改表结构走 HTTP 或 Spark SQL，理由见该文档 §2。详细信息首屏的四张统计卡片取自 `getTableSnapshot`（三个文件统计的来路与「什么时候会空」见该文档 §2.1），内含**字段列表 / 分区列表**二级页签（名称过滤 + 本地分页，分区按需加载）。文件列表按表目录物理内容列一层（根是表目录，出不了表外），目录名可点下钻、文件可下载、支持文件名前缀过滤与本地分页。授权不在这张表上做——表级权限统一到「权限管理」页 |
+| `/tables/:prefix/:database/:table` | [表详情](console-table-detail.md) | 七页签：详细信息 / 快照 / 标签 / 分支 / **文件列表** / 数据访问 / **存储优化**；含快照与标签的**回滚**。**没有「变更」页签**：改表结构走 HTTP 或 Spark SQL，理由见该文档 §2。详细信息首屏的四张统计卡片取自 `getTableSnapshot`（三个文件统计的来路与「什么时候会空」见该文档 §2.1），内含**字段列表 / 分区列表**二级页签（名称过滤 + 本地分页，分区按需加载）。文件列表按表目录物理内容列一层（根是表目录，出不了表外），目录名可点下钻、文件可下载、支持文件名前缀过滤与本地分页。存储优化页签承载表级策略与执行历史（见 [table-optimization.md](table-optimization.md) §7）。授权不在这张表上做——表级权限统一到「权限管理」页 |
 | `/catalogs` | Catalogs | 列出 / 创建 / 详情 / 更新（带版本）/ 删除。名称链到详情页；操作列另有「浏览库与对象」直达 `/browse` |
 | `/catalogs/:catalogName` | [Catalog 详情](console-catalog-detail.md) | 三页签：概览 / 文件列表 / 配置。文件列表按仓库物理目录列一层，目录名可点下钻、带面包屑与「返回上级」；只读，不提供删除与建目录。**配置页签**可编辑「Paimon 表默认参数」（`table-default.*`，见 [catalog-api-endpoints.md](catalog-api-endpoints.md#catalog-级默认表属性table-default)），其余属性只读回填 |
 | `/principals` | 主体 | 列出 / 创建 / 更新 / 删除 / rotate / reset；授予与撤销角色。创建、轮换、重置后的凭据弹窗可一键导出 JSON 文件（`{principal, clientId, clientSecret}`，文件名 `<主体>-credentials.json`），密钥仍只在弹窗期间可见 |
 | `/principal-roles` | 角色 | 列出 / 创建 / 更新 / 删除；查看成员；授予与撤销 catalog 角色（选 catalog 后自动加载，无需点「加载」） |
 | `/permissions` | 权限管理 | 控制台**唯一**的授权入口（Paimon 官方权限模型，principal 直授）：页头「添加授权」按钮开弹窗填表——多选授权对象（`user:` / `role:`，可手输任意 principal）、选**作用范围**（Catalog / Database / Table / View，四级就是官方的四种资源类型：catalog 不需要选库，表 / 视图还要选具体对象）、权限项按范围给（catalog：Create database/Alter/Drop/Grant；db：Create table/Alter/Drop/Describe；表：Select/Insert/Delete/Describe/Alter/Drop；视图：Select/Describe/Alter/Drop）、**有效期**默认长期有效，可选「指定日期」（按所选当天 23:59:59 本地时区换算成官方的 UTC instant；日历与手输都挡掉过去的时间）；主界面是授权清单——一行 = 一个主体 × 一个作用范围，同范围的权限并列成标签、点标签上的 × 逐项撤销，过期时间按日期显示（完整时刻在悬浮提示，7 天内到期标「N 天后」，过期条目不隐藏但标注「已过期」，多项不一致取最早并标注），资源合成「作用范围」一列（`整个 catalog` / `库` / `库.对象`，标注整 catalog/整库/单表），权限用与表单一致的词（UPDATE 显示为 Insert / Delete），空态给「添加授权」入口；支持过滤与幂等撤销 |
+| `/optimization-jobs` | 优化任务 | 表存储优化的批次运维页（数据来自管理 API `/api/management/v1/optimization/**`，策略配置在表详情的「存储优化」页签）。四张统计卡（运行中 / 排队中 / 今日批次 / 失败 24h）与列表共用**最近 200 个批次**的窗口，状态 / 动作 / Catalog / 触发方式四个过滤器在本地做——统计卡与列表若是两个口径，「失败 3 个」就会在列表里数不出来。批次表展开行按需拉表级明细（每行指标摘要与失败原因），「批次详情」抽屉给键值对 + 时间线 + 回调令牌 + 原始响应；操作列的重试（只重跑失败表，原批次保留）与取消都带确认框。`?job=` 查询参数用于从表详情的历史点批次号跳过来直接展开 |
 | `/settings` | 连接设置 | API 基址、访问令牌、登录状态、主题；`/api/console/v1/meta` 原始响应 |
 | `/:pathMatch(.*)*` | 未找到 | 兜底 |
 
@@ -181,6 +182,24 @@ paimon-rest-console/
   因为过滤后的结果还要按同一个上限截断（两边各过滤一次，界面上
   「只显示了前 N 条（共 M 条）」就对不上了）。前缀框**回车/点查询才发请求**，
   不做逐字符过滤：那是把每一次按键变成一次存储列举。
+- **圆角统一 2px。** 一屏里常同时出现卡片、统计块、表格、标签、按钮；圆角一大
+  （曾为 6~14px，Element Plus 自己是 4px）它们各自成一个气泡，块与块之间显得碎。
+  2px 只削掉直角，分层交给留白与描边。收敛在 `--pc-radius`（自有组件）与
+  `--el-border-radius-base`（一个值带动 71 处：按钮 / 输入 / 下拉 / 弹窗 /
+  单选按钮组……）。有两处 Element Plus 的坑：标签、卡片、消息框、通知、popover
+  的圆角变量被它声明在**组件元素自己身上**（如 `.el-tag { --el-tag-border-radius: 4px }`），
+  自定义属性「元素自身声明优先于继承」，`:root` 的覆盖够不着，只能在
+  `styles/index.css` 里按组件类名再覆盖一层；tooltip 走 `--el-popper-border-radius`。
+  刻意不动的是「胶囊形 / 圆形」：开关轨道、进度条、徽标、滑块轨道、圆形图标按钮——
+  那里的圆角表达的是形状（半圆或整圆），改成方角就画错了。
+- **控件高度跟设计基准走，不跟 Element Plus 的默认值走。** 控制台把 `small`
+  从 24px 抬到 30px（`--el-component-size-small`），但 Element Plus 有三个组件
+  把高度钉在自己的变量上、不跟随基准，已逐一补齐：按钮（`.el-button` 钉 24/32px）、
+  下拉框（`.el-select__wrapper` 钉 24px）、数字输入的步进器
+  （`.is-controls-right` 的 `--el-input-number-controls-height` 按 EP 原生
+  24/32/40px 算好——11px 的两个「＋/－」放在 30px 的输入框里，中间空出 6px 一条缝）。
+  规则集中在 `styles/index.css`，数值从基准反算（步进器 = (控件高 − 2) / 2，
+  上下各内缩 1px），改基准时它们自己跟着走。
 - **密度即美学。** 这是运维界面：不做渐变统计卡、不做入场动画、不做全大写小标签。
   统计块只放真正的数量（能力类信息进「服务端配置」列表），摘要页的表格只保留
   「有什么、数据在哪」，详情留给对应的管理页。

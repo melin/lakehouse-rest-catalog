@@ -23,6 +23,8 @@ spec/polaris-management-service.yml）。路径写错时前端只表现为「空
                   而这类漏写编译、类型检查与单元测试都不会报）
  10. 静态凭据     catalog 自带 AK/SK 这条链路跨「服务端 DTO / 支持的类型 / 能力开关的
                   暴露 / 前端表单」四处，任何一处漏改都表现为「填了没反应」或「填完才 400」
+ 11. 优化参数键   存储优化的表单字段名必须与服务端 OptimizationOptions.KNOWN_KEYS 逐字一致
+                  （键名写错的表现是保存时吃一个 400，只有点进去才会发现）
 
 用法：
     python3 scripts/verify-console.py
@@ -76,6 +78,9 @@ STORAGE_CONFIG_FIELDS = os.path.join(
     CONSOLE_DIR, "src/components/StorageConfigFields.vue")
 CATALOGS_VIEW = os.path.join(CONSOLE_DIR, "src/views/CatalogsView.vue")
 
+OPTIMIZATION_OPTIONS = os.path.join(SERVER_JAVA, "support/OptimizationOptions.java")
+OPTIMIZATION_UTIL = os.path.join(CONSOLE_DIR, "src/utils/optimization.js")
+
 # 管理规格的 servers[0].url 是 {scheme}://{host}/api/management/v1，路径要去掉基址才可比
 MANAGEMENT_BASE = "/api/management/v1"
 
@@ -114,6 +119,21 @@ EXTENSION_ENDPOINTS = {
     ("GET", "/v1/{prefix}/permissions"): "Paimon 官方权限端点：列出 principal 直授",
     ("POST", "/v1/{prefix}/permissions/grant"): "Paimon 官方权限端点：授予 principal 直授",
     ("POST", "/v1/{prefix}/permissions/revoke"): "Paimon 官方权限端点：撤销 principal 直授（幂等）",
+    # 表存储优化（本工程扩展，挂管理 API 基址）。三份规格里都没有它：策略与批次是
+    # 服务端自己的资源，不是 Paimon 元数据的一部分。服务端实现见 OptimizationController。
+    #
+    # 两个回调端点（`/jobs/{id}/submission`、`/jobs/{id}/items/{itemId}`）刻意不在这里：
+    # 它们的调用方是 k8s 里的任务，控制台没有那条调用路径。
+    ("GET", "/api/management/v1/optimization/catalogs/{catalogName}/settings"): "优化：catalog 级默认设置（读）",
+    ("PUT", "/api/management/v1/optimization/catalogs/{catalogName}/settings"): "优化：catalog 级默认设置（逐键写）",
+    ("GET", "/api/management/v1/optimization/tables/{catalogName}/{databaseName}/{tableName}/policy"): "优化：表策略（含生效值与差异）",
+    ("PUT", "/api/management/v1/optimization/tables/{catalogName}/{databaseName}/{tableName}/policy"): "优化：表策略（逐字段写）",
+    ("POST", "/api/management/v1/optimization/tables/{catalogName}/{databaseName}/{tableName}/run"): "优化：立即优化一张表（返回新建的批次）",
+    ("GET", "/api/management/v1/optimization/tables/{catalogName}/{databaseName}/{tableName}/items"): "优化：单表的执行历史",
+    ("GET", "/api/management/v1/optimization/jobs"): "优化：批次列表",
+    ("GET", "/api/management/v1/optimization/jobs/{jobId}"): "优化：批次详情（含表级明细）",
+    ("POST", "/api/management/v1/optimization/jobs/{jobId}/retry"): "优化：重试失败的表（新建批次）",
+    ("POST", "/api/management/v1/optimization/jobs/{jobId}/cancel"): "优化：取消批次",
 }
 
 problems = []
@@ -520,6 +540,59 @@ check("能力关着时表单给出可操作的提示（而不是把字段藏起�
 check("管理 API 读路径对存储配置脱敏（withoutSecrets）",
       "withoutSecrets" in read(MANAGEMENT_CATALOG_SERVICE),
       "ManagementCatalogService 的 toDto 需要在返回前抹掉 secretAccessKey 的密文")
+
+# ------------------------------------------------------------------ 11. 优化参数键
+
+print("11. 优化参数键（表单字段 ↔ 服务端 KNOWN_KEYS）")
+
+# 存储优化的每一项动作允许出现哪些参数键，由服务端的 OptimizationOptions.KNOWN_KEYS
+# 定义；键名写错的表现是保存时吃一个 400「Unknown compact option」——编译器、类型检查
+# 与单元测试都不会报，只有点进去保存一次才发现。因此在这里把两处逐字比一遍。
+#
+# 比的是「前端那份字段定义」而不是前端再抄一份名单：字段定义是渲染表单的依据，
+# 也是提交时唯一会出现在请求体里的键，它跟服务端对不上就是真的对不上。
+opt_source = read(OPTIMIZATION_OPTIONS)
+opt_util = read(OPTIMIZATION_UTIL)
+
+# 动作常量名 → wire 名（`COMPACT("compact", "Compaction")`）；不写死对照表，抄了就会漂移
+wire_of = dict(re.findall(r'(\w+)\("([a-z]+)",\s*"', opt_source))
+# 参数键常量 → 字面量（`public static final String STRATEGY = "strategy";`）
+literals = dict(re.findall(r'public static final String (\w+)\s*=\s*"([^"]+)";', opt_source))
+
+server_keys = {}
+for constant, names in re.findall(r"Action\.(\w+),\s*Set\.of\(([^)]*)\)", opt_source):
+    wire = wire_of.get(constant)
+    if wire is None:
+        continue
+    resolved = []
+    for name in names.split(","):
+        name = name.strip()
+        if not name:
+            continue
+        # 解析不出的常量名原样带上：与其静默漏掉一个键，不如让它在这里显形
+        resolved.append(literals.get(name, "<未解析:" + name + ">"))
+    server_keys[wire] = sorted(resolved)
+
+# 前端：每个动作块里的 `key: '...'`（块从 `action: 'x',` 起，到下一个 action 声明前为止）
+frontend_keys = {}
+marks = [(match.group(1), match.start()) for match in re.finditer(r"action: '([a-z]+)',", opt_util)]
+for index, (wire, start) in enumerate(marks):
+    end = marks[index + 1][1] if index + 1 < len(marks) else len(opt_util)
+    frontend_keys[wire] = sorted(re.findall(r"key: '([^']+)'", opt_util[start:end]))
+
+differences = []
+for wire in sorted(set(server_keys) | set(frontend_keys)):
+    server = server_keys.get(wire, [])
+    front = frontend_keys.get(wire, [])
+    if server != front:
+        differences.append(f"{wire}: 服务端 {server}，前端 {front}")
+        continue
+    if any(name.startswith("<未解析:") for name in server):
+        differences.append(f"{wire}: 服务端有一处常量没解析出来 {server}")
+
+check(f"{len(server_keys)} 项动作的参数键与服务端 KNOWN_KEYS 逐字一致",
+      bool(server_keys) and not differences,
+      "\n".join(differences))
 
 # ------------------------------------------------------------------ 汇总
 

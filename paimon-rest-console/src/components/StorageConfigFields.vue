@@ -563,6 +563,6 @@ defineExpose({ validate, build })
   padding: 1px 4px;
   background: var(--pc-surface-2);
   border: 1px solid var(--pc-border);
-  border-radius: 4px;
+  border-radius: var(--pc-radius);
 }
 </style>

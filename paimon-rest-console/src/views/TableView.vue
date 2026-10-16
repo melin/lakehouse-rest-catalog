@@ -29,6 +29,10 @@
           <el-tab-pane v-if="isPaimonTable" label="分支" name="branches" />
           <el-tab-pane label="文件列表" name="files" />
           <el-tab-pane v-if="isPaimonTable" label="数据访问" name="access" />
+          <!-- 存储优化同理按表格式伸缩：三项动作都建立在 Paimon 的快照与清单文件上。
+               外部 Paimon 表仍会出现这个页签——它由服务端回答「不支持」并说明原因，
+               比「页签凭空消失」更容易理解（见 TableOptimizationPanel） -->
+          <el-tab-pane v-if="isPaimonTable" label="存储优化" name="optimization" />
         </el-tabs>
 
         <div class="pc-tab-body">
@@ -474,6 +478,19 @@
             />
           </template>
 
+          <!------------------------------- 存储优化 -------------------------------->
+          <!-- 这个页签的内容在独立组件里：它是唯一一块「可写的表单 + 历史」，
+               与其余只读页签不同量级（约 400 行），留在本文件只会把表详情页的
+               主线（概览 + 只读页签）淹掉 -->
+          <template v-else-if="tab === 'optimization'">
+            <TableOptimizationPanel
+              ref="optimizationPanel"
+              :catalog="prefix"
+              :database="database"
+              :table-name="table"
+            />
+          </template>
+
           <!------------------------------- 数据访问 -------------------------------->
           <template v-else>
             <div class="pc-access">
@@ -572,6 +589,7 @@ import IconAction from '@/components/IconAction.vue'
 import PageHeader from '@/components/PageHeader.vue'
 import PanelCard from '@/components/PanelCard.vue'
 import ResourceState from '@/components/ResourceState.vue'
+import TableOptimizationPanel from '@/components/TableOptimizationPanel.vue'
 import TimeText from '@/components/TimeText.vue'
 import TipNote from '@/components/TipNote.vue'
 import { catalogApi } from '@/api/catalog.js'
@@ -588,10 +606,12 @@ import {
 import { isSnapshotManaged, tableKindLabel, tableKindOf } from '@/utils/tableKind.js'
 
 /**
- * 表详情。页签随表格式伸缩：Paimon 表有六个——五个对应 catalog API 里以单张表为作用域的端点，
- * 另有一个组合页签「详细信息」（基本信息 + 快照统计 + options + 字段列表 / 分区列表两个二级页签）；
+ * 表详情。页签随表格式伸缩：Paimon 表有七个——五个对应 catalog API 里以单张表为作用域的端点，
+ * 外加组合页签「详细信息」（基本信息 + 快照统计 + options + 字段列表 / 分区列表两个二级页签）
+ * 与「存储优化」（策略配置 + 执行历史，唯一一块可写的内容）；
  * Format 表 / Object 表 / Lance 表只留「详细信息」与「文件列表」，因为快照、标签、分支、
- * 数据访问四项都是快照托管表的产物（理由与表格见下方 `tableKind`）。
+ * 数据访问四项都是快照托管表的产物，存储优化的三项动作也都建立在 Paimon 的快照与清单文件上
+ * （理由与表格见下方 `tableKind`）。
  *
  * <p>授权不在这张表上做：表级权限统一到「权限管理」页（按 database + table 定位，
  * 一级资源一个表单），这里不再重复一份 catalog 角色的授权界面。
@@ -751,6 +771,43 @@ async function downloadEntry(row) {
 
 const loadedTabs = new Set()
 
+/**
+ * 「存储优化」页签的组件引用。
+ *
+ * <p>这个页签的加载不走 `useResource` 的 `onMounted`：它要等父组件切过来才请求
+ * （与其余页签同一条按需加载规则），因此由父组件显式调它的 `load()`。
+ * 组件内部自己管策略与历史两份数据，父组件只负责「什么时候加载」。
+ */
+const optimizationPanel = ref(null)
+
+/**
+ * 攒下的那次加载请求。
+ *
+ * <p>「存储优化」的组件不在 `@tab-change` 那一刻存在：页签内容按 `tab` 渲染，而
+ * Element Plus 在 `v-model` 更新后**同步**抛出该事件，此时 DOM 还没更新，
+ * `optimizationPanel` 仍是空的——直接调用会被 `?.` 静默吃掉，而 `loadedTabs`
+ * 已经记下这个页签，切回来也不会补，页面就永远停在空白。
+ *
+ * <p>其余页签没这个问题：它们的数据在父组件的 composable 里，不需要等 DOM 挂载。
+ */
+const optimizationPending = ref(false)
+
+/** 面板挂载后立刻把攒下的请求发出去；已挂载时（切换回来、换表）直接调。 */
+watch(optimizationPanel, (panel) => {
+  if (panel && optimizationPending.value) {
+    optimizationPending.value = false
+    panel.load()
+  }
+})
+
+function loadOptimization() {
+  if (optimizationPanel.value) {
+    optimizationPanel.value.load()
+  } else {
+    optimizationPending.value = true
+  }
+}
+
 // ------------------------------------------------------------------ 详细信息：字段列表 / 分区列表
 
 /**
@@ -804,6 +861,9 @@ function onTabChange(name) {
   if (name === 'snapshots') snapshots.load()
   if (name === 'tags') tags.load()
   if (name === 'branches') branches.load()
+  // 存储优化：策略与历史都不在概览里，切过来才拉；组件内部按 catalog/database/table
+  // 自己拼请求，父组件只发一声「该加载了」（这一声可能得等组件挂载，见 loadOptimization）
+  if (name === 'optimization') loadOptimization()
   // 文件列表要等概览回来才有 tableId：概览没到时先不请求（加载器会返回 null），
   // 等下次切到这个页签、或概览加载完成后的 reloadAll 再拉
   if (name === 'files' && table0.value && !tableFiles.data.value && !tableFiles.loading.value) {
@@ -1188,7 +1248,7 @@ async function confirmDrop() {
   padding: 1px 4px;
   background: var(--pc-surface-2);
   border: 1px solid var(--pc-border);
-  border-radius: 4px;
+  border-radius: var(--pc-radius);
 }
 
 @media (max-width: 1080px) {

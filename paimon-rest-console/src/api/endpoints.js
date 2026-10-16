@@ -145,6 +145,30 @@ export const ENDPOINTS = {
   // 角色的建档、改名、删除与「角色携带的授权」没有控制台入口：那部分属于 Polaris 的
   // RBAC 面，交给管理 API 与 Spark SQL（`paimon-rest-spark` 的 CREATE ROLE / GRANT）。
   listCatalogRoles: { method: 'GET', path: '/api/management/v1/catalogs/{catalogName}/catalog-roles' },
+
+  // ------------------------------------------------------------------ 管理 API：表存储优化
+  // 挂管理 API 而不是 catalog API：优化策略与批次是**服务端自己的资源**，
+  // 不是 Paimon 元数据的一部分（引擎不需要也不该看到它们）。
+  //
+  // 路径里的 catalog 一律是**名字**（即 prefix），不是内部主键——优化任务拿它去建
+  // REST catalog 连接，服务端的权限判定也按名字走。
+  //
+  // 有意**不**包含优化任务的两个回调端点（`GET /jobs/{id}/submission`、
+  // `POST /jobs/{id}/items/{itemId}`）：它们由 k8s 里的任务带着批次令牌调用，
+  // 控制台既不是调用方，也拿不到那个令牌，列在这里只会变成永远没人调的死条目。
+  optimizationSettings: { method: 'GET', path: '/api/management/v1/optimization/catalogs/{catalogName}/settings' },
+  updateOptimizationSettings: { method: 'PUT', path: '/api/management/v1/optimization/catalogs/{catalogName}/settings' },
+  tableOptimizationPolicy: { method: 'GET', path: '/api/management/v1/optimization/tables/{catalogName}/{databaseName}/{tableName}/policy' },
+  updateTableOptimizationPolicy: { method: 'PUT', path: '/api/management/v1/optimization/tables/{catalogName}/{databaseName}/{tableName}/policy' },
+  runTableOptimization: { method: 'POST', path: '/api/management/v1/optimization/tables/{catalogName}/{databaseName}/{tableName}/run' },
+  // 单表历史。与批次列表分开：列表按设计不带表级明细，前端要拼出「这张表最近几次
+  // 跑成什么样」得逐个批次拉详情，那是 N 次请求换一屏数据。
+  tableOptimizationHistory: { method: 'GET', path: '/api/management/v1/optimization/tables/{catalogName}/{databaseName}/{tableName}/items' },
+  listOptimizationJobs: { method: 'GET', path: '/api/management/v1/optimization/jobs' },
+  getOptimizationJob: { method: 'GET', path: '/api/management/v1/optimization/jobs/{jobId}' },
+  // 重试只重跑失败的表，因此它会**新建**一个批次（返回 201 与新的批次号，`retryOf` 指向原批次）。
+  retryOptimizationJob: { method: 'POST', path: '/api/management/v1/optimization/jobs/{jobId}/retry' },
+  cancelOptimizationJob: { method: 'POST', path: '/api/management/v1/optimization/jobs/{jobId}/cancel' },
 }
 
 /** 端点名 → `METHOD path`，供校验脚本与调试输出复用。 */

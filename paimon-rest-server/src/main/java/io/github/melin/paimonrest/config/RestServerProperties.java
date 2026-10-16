@@ -66,6 +66,9 @@ public class RestServerProperties {
     /** {@code paimon.rest.file-browser.*}：控制台的文件浏览器（见 {@link FileBrowser}）。 */
     private final FileBrowser fileBrowser = new FileBrowser();
 
+    /** {@code paimon.rest.optimization.*}：表存储优化（见 {@link Optimization}）。 */
+    private final Optimization optimization = new Optimization();
+
     /** Bearer 鉴权开关。关闭时所有请求以 {@code principal} 身份通过。 */
     @Getter
     @Setter
@@ -772,5 +775,110 @@ public class RestServerProperties {
          * 排序是目录优先、名称升序，因此被截掉的总是尾部——用户至少能看到所有目录。
          */
         private int maxEntries = 1000;
+    }
+
+    /**
+     * {@code paimon.rest.optimization.*}：表存储优化。
+     *
+     * <p>这一组配置决定「优化任务在哪里跑、跑多久算超时、一批塞几张表」，
+     * 都属于部署形态而非业务参数——表级参数在策略里，catalog 级默认值在 catalog 属性里
+     * （{@code optimization.*}，见 {@code OptimizationOptions}）。
+     *
+     * <p><b>调度节拍的两个键由 {@code @Scheduled} 直接读</b>（{@code scan-interval}、
+     * {@code dispatch-interval}）：注解的占位符在 bean 绑定之前解析，注入不了这个对象，
+     * 因此这两个键在注解表达式与这里各出现一次，改的时候两处都要动（都写了同样的默认值，
+     * 漂移表现为「配置写了但节拍没变」）。其余键只在运行时通过本对象读取。
+     */
+    @Getter
+    @Setter
+    public static class Optimization {
+
+        /**
+         * 是否启用调度节拍（扫描到期策略、提交批次、跟踪运行状态）。
+         *
+         * <p>关掉只停调度，不影响手动「立即优化」与状态查询——用于「优化任务由外部系统
+         * 触发出批」的部署，以及需要确定性行为的测试。
+         */
+        private boolean schedulerEnabled = true;
+
+        /**
+         * 提交方式：{@code k8s}（默认，创建 k8s Job）或 {@code log}（只记日志，本地调试）。
+         */
+        private String submitter = "k8s";
+
+        /**
+         * 扫描节拍：多久检查一次「有策略到期了、有批次等着提交/跟踪」。
+         *
+         * <p>分钟级即可：真正的执行节奏由每个表的调度间隔与三项动作各自的执行间隔决定，
+         * 这个值只影响「到期后多久被看见」。调快它不会让优化跑得更勤，只会让空转查询变多。
+         */
+        @NotNull
+        private Duration scanInterval = Duration.ofMinutes(1);
+
+        /**
+         * 提交与跟踪节拍。
+         *
+         * <p>比扫描节拍快：提交要趁热（批次落库后立刻发出去），跟踪决定用户看到「运行中」
+         * 到什么精度。默认 10 秒对 k8s API 与数据库都是轻负载。
+         */
+        @NotNull
+        private Duration dispatchInterval = Duration.ofSeconds(10);
+
+        /** 单批最多几张表。超过则拆到下一批，避免一个批次跑太久、重试代价过大。 */
+        @Min(1)
+        private int maxTablesPerJob = 20;
+
+        /** 同时允许几个批次在跑。超出的批次留在 PENDING 排队。 */
+        @Min(1)
+        private int maxConcurrentJobs = 2;
+
+        /** 批次超时。超过它仍未终结的批次判失败并清理执行侧资源。 */
+        @NotNull
+        private Duration jobTimeout = Duration.ofHours(2);
+
+        /** 提交到 k8s 的命名空间。 */
+        private String namespace = "default";
+
+        /** 优化任务镜像（含优化任务与 Paimon Spark 运行时）。{@code k8s} 提交器必填。 */
+        private String image;
+
+        private String imagePullPolicy = "IfNotPresent";
+
+        /** k8s API 地址。集群内默认走 service 域名。 */
+        private String apiServer = "https://kubernetes.default.svc";
+
+        /** 运行优化任务的 service account 名；留空则用命名空间的默认账号。 */
+        private String serviceAccount = "";
+
+        /** service account 令牌文件（集群内由 kubelet 挂载并轮转）。 */
+        private String tokenFile = "/var/run/secrets/kubernetes.io/serviceaccount/token";
+
+        /** 集群 CA 证书文件。读不到时退回 JVM 默认信任库并打 WARN。 */
+        private String caFile = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt";
+
+        /**
+         * 下发给优化任务的服务端地址，任务用它回调拉明细、上报结果。
+         *
+         * <p>默认值只对「任务与实例同机」的调试场景成立；容器里必须配成服务端在本集群内的
+         * 可解析地址（Service 名，不是 pod 名——驱动可能在别的节点上起）。
+         */
+        private String managementUrl = "http://127.0.0.1:8080";
+
+        /**
+         * 下发给优化任务的 catalog 数据面令牌。
+         *
+         * <p>批次回调令牌只对优化回调端点有效，不能当 catalog 凭据——任务要访问
+         * {@code /v1/{prefix}} 才能拿到 Paimon 表对象，那一步走的是
+         * {@code paimon.rest.auth.*} 这套认证。两者作用域不同，因此是两个令牌。
+         *
+         * <p>留空表示目标部署没开认证（本地与测试形态），任务会不带头去连；
+         * 开了认证的部署必须配一个属于优化任务专用主体（{@code optimizer}）的令牌，
+         * 该主体的权限只需覆盖本批次的表（见 {@code docs/table-optimization.md} §3.5）。
+         *
+         * <p>与回调令牌一样，它写在容器参数里，能做同样的事：命名空间里能读 pod 定义
+         * 的人可以读到它。要收掉这个暴露面需要服务端为每批签一个短期令牌
+         * （{@code AccessTokenService} 已具备签发能力），属于后续优化项。
+         */
+        private String catalogToken = "";
     }
 }

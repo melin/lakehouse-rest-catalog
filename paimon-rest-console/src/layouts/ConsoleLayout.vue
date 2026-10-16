@@ -238,7 +238,7 @@ onMounted(() => {
 .pc-brand-mark {
   width: 34px;
   height: 34px;
-  border-radius: 8px;
+  border-radius: var(--pc-radius);
   display: grid;
   place-items: center;
   background: linear-gradient(140deg, #3b82f6, #1d4ed8);
@@ -283,7 +283,7 @@ onMounted(() => {
   gap: 10px;
   padding: 10px 12px;
   margin-bottom: 2px;
-  border-radius: 7px;
+  border-radius: var(--pc-radius);
   color: var(--pc-sidebar-fg);
   text-decoration: none;
   font-size: 14px;

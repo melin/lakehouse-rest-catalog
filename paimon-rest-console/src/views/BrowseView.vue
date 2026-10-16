@@ -1533,7 +1533,7 @@ defineExpose({ loadCurrentList })
   align-items: center;
   gap: 7px;
   padding: 6px 8px;
-  border-radius: 6px;
+  border-radius: var(--pc-radius);
   cursor: pointer;
   font-size: 12.5px;
 }

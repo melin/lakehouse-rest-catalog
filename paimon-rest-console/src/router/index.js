@@ -89,6 +89,21 @@ const routes = [
     meta: { title: '权限管理', icon: 'Lock', group: '治理（Management API）', nav: true },
   },
   {
+    // 优化批次是跨表跨库的运维入口：策略配在表上（表详情的「存储优化」页签），
+    // 而「哪些批次在跑、跑成什么样、失败的表怎么重试」只有一个地方看——这里。
+    //
+    // 排在治理分组而不是「目录浏览」旁边：它挂在管理 API
+    // （`/api/management/v1/optimization/**`）下，与 catalog API 的浏览是两套接口；
+    // 分组标签写的就是「这一页用的是哪套 API」。
+    //
+    // `?job=` 只用来「打开并展开某一个批次」——从表详情页的历史点批次号跳过来。
+    // 它不设成路由参数：这一页没有「当前批次」的概念，URL 也不必随展开状态变化。
+    path: '/optimization-jobs',
+    name: 'optimizationJobs',
+    component: () => import('@/views/OptimizationJobsView.vue'),
+    meta: { title: '优化任务', icon: 'Histogram', group: '治理（Management API）', nav: true },
+  },
+  {
     path: '/settings',
     name: 'settings',
     component: () => import('@/views/SettingsView.vue'),

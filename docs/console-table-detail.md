@@ -38,7 +38,7 @@ Paimon 表为此多付一个往返；Format / Object / Lance 表则**完全不�
 
 | 表格式 | 页签 |
 | --- | --- |
-| Paimon 表（`options` 里没有 `type`） | 详细信息 / 快照 / 标签 / 分支 / 文件列表 / 数据访问 |
+| Paimon 表（`options` 里没有 `type`） | 详细信息 / 快照 / 标签 / 分支 / 文件列表 / 数据访问 / 存储优化 |
 | Format 表（`type=format-table`） | 详细信息 / 文件列表 |
 | Object 表（`type=object-table`） | 详细信息 / 文件列表 |
 | Lance 表（`type=lance-table`） | 详细信息 / 文件列表 |
@@ -55,7 +55,7 @@ Lance 表）不渲染一行只有一个页签的栏，字段列表直接跟着�
 「这张表实际有哪些列」，与当初有没有手填无关（主键 / 分区字段两列对它恒为「否」，不渲染）。
 页面上有一条说明写清少掉的那几个页签去哪了，免得看起来像加载失败。
 
-**页签按需加载。** Paimon 表的六个页签里只有四个需要额外请求，切过去才发：
+**页签按需加载。** Paimon 表的七个页签里只有五个需要额外请求，切过去才发：
 
 | 页签 / 二级页签 | 切过去时的请求 |
 | --- | --- |
@@ -64,10 +64,13 @@ Lance 表）不渲染一行只有一个页签的栏，字段列表直接跟着�
 | 分支 | `listBranches` |
 | 详细信息 → 分区列表（二级页签） | `listPartitions` |
 | 文件列表 | `listTableFiles`（`GET /api/console/v1/tables/{tableId}/files?path=`） |
+| 存储优化 | `tableOptimizationPolicy` + `tableOptimizationHistory`（一次取齐三块历史） |
 
 「详细信息」（含字段列表）与「数据访问」只用 `overview` 已有数据，不发请求。
 已加载过的页签不重复请求，直到点「刷新」或路由参数变化——`reloadAll()` 清空
-已加载标记并重载当前页签。
+已加载标记并重载当前页签。存储优化页签的加载请求有一个时序细节（`@tab-change`
+在组件挂载前抛出，直接调用会被吞掉），见 [`console.md` §7](console.md) 的说明与
+`TableView.vue` 里 `loadOptimization()` 的注释。
 
 ---
 
@@ -83,6 +86,7 @@ Lance 表）不渲染一行只有一个页签的栏，字段列表直接跟着�
 | 分支 | `listBranches` / `createBranch` / `renameBranch` / `forwardBranch` / `dropBranch` | 可写的历史线 |
 | 文件列表 | `listTableFiles`（控制台扩展端点） | 表目录在存储上的物理内容 |
 | 数据访问 | `getTableToken` / `authTableQuery` | 临时凭据与查询级授权规则 |
+| 存储优化 | `tableOptimizationPolicy` / `updateTableOptimizationPolicy` / `runTableOptimization` / `tableOptimizationHistory` | 策略配置与执行历史（见 [table-optimization.md](table-optimization.md)） |
 
 **为什么没有「变更」页签。** 控制台曾经有一个变更构造器（选动作、逐条添加、
 一次性 POST `alterTable`），现已撤掉：服务端的 `alter` 端点仍在，改表结构请走
@@ -211,6 +215,33 @@ Polaris 的 RBAC 面退出控制台（管理面留在管理 API 与 Spark SQL）
   ——那种部署下由引擎自带的云凭据链负责鉴权。
 - **查询级授权规则**（`authTableQuery`）：传入要查询的列，服务端按调用主体的授权
   返回行过滤表达式与列脱敏规则。两者都在引擎侧生效，控制台只负责展示服务端给出了什么。
+
+### 2.8 存储优化
+
+只对 Paimon 表出现的运维页签，承载[表存储优化](table-optimization.md)的表级配置与
+执行历史。四块内容自上而下：
+
+- **总开关卡**：启用开关、调度间隔（分钟）、最近批次（链到「优化任务」页并直接展开）、
+  下次调度时间，以及「立即优化」——它产生一个单表批次，走与调度完全相同的
+  落库 → 提交 → 跟踪链路。
+- **三张动作卡**（Compaction / Snapshot Expire / Orphan File Remove）：每张卡有
+  启用勾选与「默认设置 / 自定义」两档。默认档只读展示三层合并后的生效值；
+  自定义档是参数表单，保存只提交**改动过的键 + 原本就配过的键**——把整份生效值
+  抄成差异等于钉死每个参数，运维之后调 catalog 默认值就再也影响不到这张表。
+  字段定义集中在 `utils/optimization.js` 的 `ACTIONS`，与
+  服务端 `OptimizationOptions.KNOWN_KEYS` 由校验脚本第 11 组逐字比对。
+- **干跑警示**：孤儿清理是三项里唯一删数据文件的，「干跑预览」关掉时页面出一条
+  warning，说明清理依据与先干跑一轮的建议。
+- **三块历史**：按动作各一块，一次 `GET .../items` 取齐（批次列表不带表级明细，
+  逐批拉详情是 N 次请求换一屏数据）。每行带开始时间、批次链接（跳「优化任务」页
+  并展开该批次）、状态、指标摘要（`412 → 96 个文件 · 38.4 GB → 36.1 GB` 这类）、
+  耗时与失败原因。失败原因（「说明」列）固定**单行、截断省略**，完整内容悬浮
+  气泡可见——错误信息动辄一两百字，换行会把一条记录撑成几行的区块，列表就没法
+  扫读了。配置在 `utils/optimization.js` 的 `OVERFLOW_TIP`，「优化任务」页的
+  批次明细共用同一条规则。
+
+这张表不支持优化（非 Paimon 表 / 外部表，或表在别处被改成外部表）时，页签不显示
+表单而是给出原因——「支持但你没开」与「根本不支持」是两句话，页面上都要能说清。
 
 ---
 

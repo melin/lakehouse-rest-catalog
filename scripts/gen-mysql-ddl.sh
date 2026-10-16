@@ -9,7 +9,10 @@
 #   ./scripts/gen-mysql-ddl.sh              # 生成并覆盖 sql/schema-mysql.sql
 #   OUT=/tmp/x.sql ./scripts/gen-mysql-ddl.sh
 #
-# 前置：JDK 21（与其它构建脚本一致）。
+# 前置：JDK 21（与其它构建脚本一致）；系统 mvn（3.9+）。
+#   本仓库**没有** Maven Wrapper（见 AGENTS.md），因此这里用 mvn。
+#   需要附加 Maven 参数（例如离线环境里覆盖 paimon.version）时用 MVN_ARGS：
+#     MVN_ARGS=-Dpaimon.version=2.0.0 ./scripts/gen-mysql-ddl.sh
 set -eu
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -17,6 +20,8 @@ OUT=${OUT:-$ROOT/sql/schema-mysql.sql}
 # 建库语句里的库名，需要与 spring.datasource.url 中的库名一致
 DB_NAME=${DB_NAME:-paimon_catalog}
 export JAVA_HOME=${JAVA_HOME:-/Library/Java/JavaVirtualMachines/jdk-21.jdk/Contents/Home}
+MVN=${MVN:-mvn}
+MVN_ARGS=${MVN_ARGS:-}
 
 GENERATED=$(mktemp -t paimon-mysql-schema.XXXXXX.sql)
 TARGET=$(mktemp -t paimon-mysql-schema-final.XXXXXX.sql)
@@ -24,10 +29,11 @@ trap 'rm -f "$GENERATED" "$TARGET"' EXIT
 
 echo "== 由实体元数据生成 MySQL DDL =="
 cd "$ROOT" || exit 1
-"$ROOT/mvnw" -o -pl paimon-rest-server test \
+"$MVN" -o -pl paimon-rest-server test \
   -Dtest=MysqlDdlGeneratorTests \
   -DfailIfNoTests=false \
   "-Dmysql.ddl.output=$GENERATED" \
+  $MVN_ARGS \
   -q
 
 if [ ! -s "$GENERATED" ]; then

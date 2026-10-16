@@ -220,7 +220,7 @@ Pod 启动验证**。已经做过的是：
 | --- | --- | --- |
 | kustomize 组装 | `kubectl kustomize deploy/kubernetes` | 渲染出 10 个资源，命名空间与标签注入正确 |
 | 清单内部引用 | `scripts/verify-k8s-manifests.py` | §1–§9 全部通过 |
-| 建表语句可用 | 在真实 MySQL 8.0.46 上执行 `sql/schema-mysql.sql` | 18 张表建出，`ddl-auto: validate` 通过 |
+| 建表语句可用 | 在真实 MySQL 8.0.46 上执行 `sql/schema-mysql.sql` | 22 张表建出，`ddl-auto: validate` 通过（加入三张优化表后重跑） |
 | **配置能否被服务端解析** | 把 ConfigMap 里的 `application-k8s.yml` 原样交给服务端（仅替换 MySQL 主机名与 warehouse 路径这两处本机不可达的值） | profile 生效、`${DB_PASSWORD}` 与 `${REST_TOKEN}` 解析成功、Hikari 连上 MySQL |
 | **鉴权与授权** | 同上实例 | 无令牌 401、错误令牌 401、正确令牌 200（`/v1/config` 与管理 API 都是） |
 | **warehouse 配置生效** | 同上实例 | `/v1/config` 返回配置的路径；建表后表路径为 `<warehouse>/k8s_check.db/orders` |

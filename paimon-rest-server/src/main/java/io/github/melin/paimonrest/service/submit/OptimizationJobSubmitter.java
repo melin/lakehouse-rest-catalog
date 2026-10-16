@@ -1,0 +1,51 @@
+package io.github.melin.paimonrest.service.submit;
+
+/**
+ * 把优化批次提交到执行环境的抽象。
+ *
+ * <p><b>为什么要有这层抽象。</b>批次状态机（落库 → 提交 → 跟踪 → 收尾）与
+ * 「提交到哪里、怎么问它跑到哪了」是两件事：前者是业务规则，后者随部署形态变化
+ * （k8s Job、Spark Operator 的 CRD、本地 spark-submit，甚至干脆没有执行环境）。
+ * 把它们分开之后，状态机可以在没有集群的环境里被完整测试——测试注入一个桩提交器，
+ * 直接驱动 {@link JobState} 的每一次跃迁，不必去起一个 k8s。
+ *
+ * <p>实现不抛受检异常：调用方（{@code OptimizationDispatcher}）对失败的处置是
+ * 「把批次置为 FAILED 并记下原因」，这个处置对所有实现都一样，方法签名上再声明一遍
+ * 异常只会让调用处多一层无意义的包装。
+ */
+public interface OptimizationJobSubmitter {
+
+    /** 实现标识，落库到批次的 {@code submitter} 列，用于排查「这批是谁提交的」。 */
+    String name();
+
+    /** 提交一个批次。实现要保证幂等：同名资源已存在时视为已提交成功。 */
+    Submitted submit(SubmissionRequest request);
+
+    /** 查询批次在执行侧的状态。资源不存在时返回 {@link JobState#UNKNOWN}。 */
+    JobState state(String namespace, String resource);
+
+    /** 取消批次；资源已不存在时静默返回。 */
+    void cancel(String namespace, String resource);
+
+    /** 执行侧的状态。只有前三种是终态判定用得上的，{@code UNKNOWN} 表示查不到。 */
+    enum JobState {
+        RUNNING,
+        SUCCEEDED,
+        FAILED,
+        UNKNOWN
+    }
+
+    /**
+     * 提交所需的最小信息。
+     *
+     * <p>表清单与配置**不在这里**：任务自己去回调管理 API 拉。原因是参数有长度上限，
+     * 而一批可能有几十张表、每张表三个动作各一组参数——塞进命令行迟早会撞上，
+     * 而且「库里是什么就执行什么」比「提交时快照一份参数」更不容易出岔子。
+     */
+    record SubmissionRequest(String jobId, String catalog, String callbackToken) {
+    }
+
+    /** 提交结果：执行侧的资源定位信息，回填到批次上用于跟踪与取消。 */
+    record Submitted(String namespace, String resource) {
+    }
+}

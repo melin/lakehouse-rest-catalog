@@ -11,14 +11,17 @@
 	<description>Paimon Rest Catalog 服务端与 Spark SQL 扩展</description>
 
 	<!--
-		聚合两个模块：
+		聚合三个模块：
 		  paimon-rest-server  Spring Boot 实现的 REST Catalog 服务，同时承载
 		                      catalog API（/v1/**）与 Management API（/api/management/v1/**）
 		  paimon-rest-spark   基于 SparkSessionExtensions 的 SQL 语法扩展，
 		                      用 SQL 管理主体、角色与授权
+		  paimon-rest-optimizer 表存储优化任务：由服务端作为 k8s Job 提交，
+		                      在集群上对一批 Paimon 表执行
+		                      compact / expire_snapshots / remove_orphan_files
 
 		聚合与继承在这里刻意分开：
-		  - 本 POM 只是聚合器，同时是 paimon-rest-spark 的父 POM；
+		  - 本 POM 只是聚合器，同时是 paimon-rest-spark 与 paimon-rest-optimizer 的父 POM；
 		  - paimon-rest-server 的父 POM 是 spring-boot-starter-parent。
 
 		如果把 spring-boot-starter-parent 提为本 POM 的父，它带来的
@@ -26,10 +29,14 @@
 		Jackson 2.15.2 抬到 Boot 管理的 2.21.x、把 netty / jersey 换成 Boot 的版本，
 		轻则类路径与集群不一致，重则在提交任务时 NoSuchMethodError。
 		两个模块的依赖世界本来就不同，因此不共用父 POM，只共用聚合。
+
+		paimon-rest-optimizer 与 paimon-rest-spark 属同一个依赖世界（Spark 由集群提供、
+		Jackson 2 对齐发行版），因此与后者共用父 POM 是安全的。
 	-->
 	<modules>
 		<module>paimon-rest-server</module>
 		<module>paimon-rest-spark</module>
+		<module>paimon-rest-optimizer</module>
 	</modules>
 
 	<properties>

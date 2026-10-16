@@ -50,11 +50,12 @@ REST Management API**（RBAC 管理面）与一个 **Vue 3 管理控制台**；�
    （`Could not deserialize ATN with version 3 (expected 4)`）。改 `spark.version` 时
    同步核对根 `pom.xml` 的 `antlr.runtime.version`。
 4. **聚合 POM 刻意不继承 `spring-boot-starter-parent`。** 根 `pom.xml` 只是聚合器
-   （同时是 `paimon-rest-spark` 的父 POM），`paimon-rest-server` 自己以 `<relativePath/>`
-   继承 Boot 父 POM。理由：Boot 的 `dependencyManagement` 会把 Spark 侧的 Jackson 2.15.2
-   抬到 2.21.x、替换 netty/jersey。**不要把 Boot 提为聚合 POM 的父。**
+   （同时是 `paimon-rest-spark` 与 `paimon-rest-optimizer` 的父 POM），
+   `paimon-rest-server` 自己以 `<relativePath/>` 继承 Boot 父 POM。理由：Boot 的
+   `dependencyManagement` 会把 Spark 侧的 Jackson 2.15.2 抬到 2.21.x、替换 netty/jersey。
+   **不要把 Boot 提为聚合 POM 的父。**
 5. **`sql/schema-mysql.sql` 是生成物，不要手改**（`scripts/gen-mysql-ddl.sh` 从 JPA 实体生成，
-   19 表 / 20 唯一约束 / 17 索引，下次生成会覆盖）。**改了实体就必须重跑生成**，
+   22 表 / 21 唯一约束 / 23 索引，下次生成会覆盖）。**改了实体就必须重跑生成**，
    否则启动时 `ddl-auto=validate` 直接失败。
 6. **构建服务端 jar（含控制台）用 `clean package`，不要裸 `package`。** 控制台产物按内容哈希命名，
    `maven-resources-plugin` 只覆写不删除 → `target/classes/static/console` 累积历次旧产物
@@ -158,7 +159,7 @@ docs/                   14 份设计文档
 | `catalog-api-endpoints.md` | Catalog API 的 60 个端点、基址、前缀、授权映射 |
 | `management-api-overview.md` | 33 个 operation 落在哪几个控制器、易读错的语义 |
 | `management-api-contract.md` | 管理 API 字段与权限枚举**逐字契约**（生成物，勿手改） |
-| `data-model.md` | 改实体 / 看 19 张表划分、摘要列与审计列的理由 |
+| `data-model.md` | 改实体 / 看 22 张表划分、摘要列与审计列的理由 |
 | `spark-sql-reference.md` | 语句级参考（第 10 节示例会被测试真跑） |
 | `spark-sql-extension.md` | 改 Spark 扩展：做法、两个约束、测试分层 |
 | `spark-paimon-rest-e2e.md` | Spark 经本服务端建表：连接配置、可执行 SQL、报错对照、三种非 Paimon 表（Format / Object / Lance）的读写边界（§4.4） |

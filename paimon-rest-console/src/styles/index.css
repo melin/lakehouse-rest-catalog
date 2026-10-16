@@ -27,7 +27,8 @@
   --pc-text: #1f2937;
   --pc-text-dim: #6b7280;
   --pc-accent: #1d4ed8;
-  --pc-radius: 10px;
+  /* 卡片、面板等自有组件的圆角。为什么是 2px：见下方「圆角：统一 2px」 */
+  --pc-radius: 2px;
   --pc-shadow: 0 1px 2px rgba(16, 24, 40, 0.05), 0 1px 3px rgba(16, 24, 40, 0.05);
 
   /* --- Element Plus 的尺寸与字号 -------------------------------------------
@@ -56,7 +57,50 @@
 
   /* 让 Element Plus 的主色与控制台一致 */
   --el-color-primary: #1d4ed8;
-  --el-border-radius-base: 8px;
+
+  /* --- 圆角：统一 2px -------------------------------------------------------
+   * 控制台走「小圆角」路线。一屏里常常同时有卡片、统计块、表格、标签、按钮，
+   * 圆角一大（原来 6~14px）它们就各自成一个气泡，块与块之间显得碎；2px 只削掉
+   * 直角，分层交给留白和描边。
+   *
+   * `--el-border-radius-base` 一个值带动 71 处（按钮 / 输入 / 下拉 / 弹窗 /
+   * 单选按钮组 / 表格内控件……）。tooltip 气泡的规则是
+   * `border-radius: var(--el-popover-border-radius, 4px)`——多数气泡上没人声明
+   * `--el-popover-border-radius`，全靠这里的兜底值。另外几个组件（标签 / 卡片 /
+   * 消息框 / 通知 / popover）的圆角变量被 Element Plus 声明在**组件元素自己
+   * 身上**，:root 覆盖够不着它们，见下方按组件类名的那一组。
+   *
+   * 刻意**不动**的是那几个「胶囊形 / 圆形」：开关轨道、进度条、徽标、滑块轨道、
+   * 圆形图标按钮。它们的圆角表示的是形状（两端半圆或整圆），不是装饰——
+   * 改成方角就画错了。
+   * ------------------------------------------------------------------------ */
+  --el-border-radius-base: 2px;
+  --el-border-radius-small: 2px;
+  --el-border-radius-round: 2px;
+  /* tooltip 的圆角变量：`.el-popper` 自己声明的 `--el-popper-border-radius` 引用它，
+   * 而多数气泡上没人声明这个值，回退是 4px——所以兜底值必须落在这里。 */
+  --el-popover-border-radius: 2px;
+}
+
+/* 这几个组件的圆角变量被 Element Plus 写在组件元素自己身上
+ * （如 `.el-tag { --el-tag-border-radius: 4px }`）——自定义属性遵循「元素自身的
+ * 声明优先于继承」，所以上面的 :root 覆盖对它们无效，只能按组件类名再来一次。
+ * 本文件在 element-plus 的样式之后引入，同样的选择器这里胜出。 */
+.el-tag {
+  --el-tag-border-radius: 2px;
+  --el-tag-border-radius-rounded: 2px;
+}
+.el-card {
+  --el-card-border-radius: 2px;
+}
+.el-message-box {
+  --el-messagebox-border-radius: 2px;
+}
+.el-notification {
+  --el-notification-radius: 2px;
+}
+.el-popover {
+  --el-popover-border-radius: 2px;
 }
 
 html.dark {
@@ -151,7 +195,7 @@ body {
 .pc-field-tip code {
   padding: 1px 5px;
   background: rgba(255, 255, 255, 0.14);
-  border-radius: 4px;
+  border-radius: var(--pc-radius);
   font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
   font-size: 12px;
 }
@@ -159,6 +203,14 @@ body {
 /* 气泡宽度：不限制时长备注会撑成一条横贯整屏的窄条 */
 .pc-field-tip-popper {
   max-width: 440px;
+}
+
+/* 「说明」列截断后的完整内容气泡（show-overflow-tooltip，见 utils/optimization.js
+ * 的 OVERFLOW_TIP）。与上面同一条纪律：不限制宽，一条长错误能把气泡拉成
+ * 横穿整屏的一条。限到半屏左右，超长行的折行交给 .el-popper 自带的
+ * overflow-wrap: break-word，气泡渲染在组件外，必须放全局。 */
+.pc-cell-tip {
+  max-width: 560px;
 }
 
 /* --- 按钮高度 -----------------------------------------------------------
@@ -213,6 +265,38 @@ body {
 
 .el-select--large .el-select__wrapper {
   min-height: var(--el-component-size-large);
+}
+
+/* --- 数字输入的步进器高度（controls-position="right"）----------------------
+ * 同一族问题的第三个：`el-input-number` 把右侧上下两个步进器的高度钉在
+ * `--el-input-number-controls-height` 上（`.is-controls-right` 默认 15px、
+ * `small` 11px、`large` 19px），同样不跟随 `--el-component-size*`。
+ *
+ * 那个默认值其实是**按输入框高度算好的**：步进器上下各内缩 1px（`top/bottom: 1px`），
+ * 两个正好铺满 —— default 32px → (32-2)/2 = 15px，small 24 → 11，large 40 → 19。
+ * 也就是说它假设输入框是 Element Plus 原生那三档高度；而我们已经把 small 抬到
+ * 30px，11px 的两个步进器只占 22px，中间空出 6px 一条缝，「＋」「－」像两个
+ * 各自漂着的小方块，跟输入框也不对位。
+ *
+ * 所以这里按当前基准反算，而不是再写死一个数：高度 = (控件高 - 2) / 2。
+ * small (30-2)/2 = 14px。这样以后改 `--el-component-size*`，步进器自己跟着走。
+ *
+ * 选择器照抄 Element Plus 的那两条（组件类 + `[class*=…]`），本文件在其样式之后
+ * 引入，同样的选择器这里胜出。
+ * ------------------------------------------------------------------------ */
+.el-input-number.is-controls-right .el-input-number__increase,
+.el-input-number.is-controls-right .el-input-number__decrease {
+  --el-input-number-controls-height: calc((var(--el-component-size) - 2px) / 2);
+}
+
+.el-input-number.is-controls-right[class*=small] [class*=increase],
+.el-input-number.is-controls-right[class*=small] [class*=decrease] {
+  --el-input-number-controls-height: calc((var(--el-component-size-small) - 2px) / 2);
+}
+
+.el-input-number.is-controls-right[class*=large] [class*=increase],
+.el-input-number.is-controls-right[class*=large] [class*=decrease] {
+  --el-input-number-controls-height: calc((var(--el-component-size-large) - 2px) / 2);
 }
 
 /* 区块级提示（通常挂在 el-alert 上）与下一个区块的间距 */
@@ -633,7 +717,7 @@ body {
   overflow: auto;
   background: var(--pc-surface-2);
   border: 1px solid var(--pc-border);
-  border-radius: 8px;
+  border-radius: var(--pc-radius);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12.5px;
   line-height: 1.7;
@@ -651,7 +735,7 @@ body {
 .pc-json::-webkit-scrollbar-thumb,
 .pc-scroll::-webkit-scrollbar-thumb {
   background: color-mix(in srgb, var(--pc-text-dim) 35%, transparent);
-  border-radius: 6px;
+  border-radius: var(--pc-radius);
 }
 
 /* --- Element Plus 的微调：表格与卡片风格统一 -----------------------------

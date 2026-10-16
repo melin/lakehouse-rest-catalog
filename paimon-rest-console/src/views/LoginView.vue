@@ -488,7 +488,7 @@ onMounted(async () => {
   padding: 32px 32px 28px;
   background: var(--pc-surface);
   border: 1px solid var(--pc-border);
-  border-radius: 14px;
+  border-radius: var(--pc-radius);
   box-shadow: 0 10px 30px rgba(16, 24, 40, 0.09), 0 2px 6px rgba(16, 24, 40, 0.05);
 }
 
@@ -502,7 +502,7 @@ onMounted(async () => {
 .pc-login-mark {
   width: 44px;
   height: 44px;
-  border-radius: 12px;
+  border-radius: var(--pc-radius);
   display: grid;
   place-items: center;
   background: linear-gradient(140deg, #3b82f6, #1d4ed8);

@@ -1,10 +1,10 @@
 # 数据模型
 
-服务端把 catalog 元数据与 RBAC 授权关系全部放进关系库，共 **19 张表、19 个 JPA 仓储接口**。
+服务端把 catalog 元数据与 RBAC 授权关系全部放进关系库，共 **22 张表、22 个 JPA 仓储接口**。
 本文件说明表的划分，以及三个容易看错或踩坑的设计点：摘要列、审计列、JSON 文档列。
 
 - 实体与仓储：`paimon-rest-server/src/main/java/io/github/melin/paimonrest/domain/entity/`
-  （19 个实体，另含 `AuditedEntity` 基类与 `JsonConverters`）与同级的 `domain/repo/`（19 个仓储接口）
+  （22 个实体，另含 `AuditedEntity` 基类与 `JsonConverters`）与同级的 `domain/repo/`（22 个仓储接口）
 - 建表语句：[`../sql/schema-mysql.sql`](../sql/schema-mysql.sql)（由实体生成，改实体后必须重跑）
 - 库结构由 `ddl-auto: validate` 守住：实体与库不一致时应用**直接启动失败**，
   代价是实体变更后要自行迁移存量数据（见 [`../README.md`](../README.md) 第 6 节「实现说明与已知边界」第 14 条）
@@ -45,6 +45,33 @@
 （`user:alice` / `role:sales_writer`），判定时与 RBAC 链取并集，
 见 [`authorization.md`](authorization.md) §2.5。
 
+## 2.1 表存储优化（3 张）
+
+三张表都**不是** Paimon 元数据的一部分，而是本服务端自己的运维记录：优化策略、优化批次、
+批次里每张表的结果。它们挂在表实体上（`table_id`），但不参与 catalog API 的任何响应。
+
+| 表 | 对应资源 | 说明 |
+| --- | --- | --- |
+| `paimon_table_optimization` | 表存储优化策略 | 与表 1:1（`uk_table_optimization`）：总开关、调度间隔、调度游标、三项动作各自的开关与**配置差异** |
+| `paimon_optimization_job` | 优化批次 | 一个批次 = 一次 k8s 提交；组批以 catalog 为界，一个批次含多张表 |
+| `paimon_optimization_job_item` | 批次内单表结果 | 批次 1:N；每张表的动作、状态、前后指标、错误原因 |
+
+三个设计点值得单独说明，理由都在
+[`table-optimization.md`](table-optimization.md) 里展开：
+
+- **配置存「差异」而不是「全量快照」。** 默认值属于 catalog
+  （`optimization.<动作>.<参数>` 前缀的 catalog 属性，与 `table-default.*` 同一套做法），
+  表级只写用户显式改过的键，取值靠三层合并（内置默认 → catalog → 表）得到。
+  存全量的话，「系统调整默认值」永远追不上已经建过策略的表。
+- **`next_run_at` 既是调度游标也是分布式抢占的落点。** 出批前用
+  「`update ... where id = ? and next_run_at = ?`」把它推到下一个周期，只有更新到 1 行的表
+  才进这一批——多副本部署下靠这一条条件更新互斥，不引入额外锁或选举组件。
+- **`catalog_id` 是冗余列。** 组批按 catalog 分组，扫描一次就要按它归并；
+  走 `table_id` 反查两张表既慢又没必要。它与 `paimon_table.catalog_id` 由写入方保持一致。
+
+对外接口一律用 catalog 名与「catalog.库.表」三段名，实体里存的是 id —— 转换只发生在
+`OptimizationJobService` 一处，见 [`table-optimization.md`](table-optimization.md) §5。
+
 ---
 
 ## 3. 为什么有两个摘要列
@@ -66,6 +93,33 @@ ERROR 1071 (42000): Specified key was too long; max key length is 3072 bytes
 改法是「原文入库 + 摘要入索引」：`spec_key` / `namespace_key` 保留，供等值查询使用；
 唯一约束改用定长 64 字符的摘要，索引长度与值的实际长度解耦，唯一性语义不变。
 摘要在 `@PrePersist` / `@PreUpdate` 里由原文重算（见 `Digests`），因此不依赖调用方是否记得规范化。
+
+## 3.1 行大小上限：配置列用 `text` 而不是 `varchar(8192)`
+
+§3 讲的是**索引键**上限（3072 字节），这里是另一个被同一件事放大的上限——
+utf8mb4 按 4 字节/字符计入，于是**整行**不能超过 65535 字节。两者互相独立，
+且都只在真库上才现形。
+
+`paimon_table_optimization` 的三个配置列原本都是 `varchar(8192)`。单看每一列都合法
+（8192 × 4 = 32768 < 65535），但同一张表放三个就合计 98304，建表直接失败：
+
+```
+ERROR 1118 (42000): Row size too large. The maximum row size for the used table type,
+not counting BLOBs, is 65535. ... You have to change some columns to TEXT or BLOBs
+```
+
+改成 `text` 即可：Hibernate 按 `@Column(length)` 选类型，写成 65535 就是 `text`，
+这类列只计入 9~12 字节的指针，整表预算从 102484 降到 4216 字节。
+
+- **为什么不担心装不下**：这张表只存**差异**，键集由 `OptimizationOptions.KNOWN_KEYS`
+  限定，值也都很短；65535 字节（utf8mb4 下约 1.6 万字符）远超需要。
+- **`paimon_optimization_job_item.metrics_json` 保持 `varchar(8192)`**：那张表合计
+  45116 字节，是全库最大的，仍在预算内（约 2/3）。不动它就省掉一次对已建库的列类型迁移。
+- **守门**：`MysqlDdlGeneratorTests#everyTableFitsTheMysqlRowSizeLimit` 按 MySQL 的算法
+  （`varchar(N)` 记 4N、`text` 家族记 12、其余类型按实际宽度，另加每行 64 字节开销）
+  逐表求和，越界即构建失败，并把超宽的表与列打进失败信息。
+  这条断言**必须在生成侧**：行大小上限是存储层的约束，Hibernate 生成 DDL 时不检查、
+  在 H2 上跑测试也检查不到——不补断言就只会在真库上炸，而那时建表脚本已经交付出去了。
 
 ## 4. 审计列：主体名超过 255 字符时记摘要
 
