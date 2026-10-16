@@ -222,7 +222,7 @@ docs/                   14 份设计文档
 
 | 层 | 命令 | 抓什么 |
 | --- | --- | --- |
-| 单元/集成 | `mvn -o test`（服务端 306 + Spark 94，共 400） | 行为回归。注意 Spark 模块的 `example/PaimonS3Test` 当前会在 BUILD FAILURE 停下（缺 `spark.sql.extensions`，与 S3 环境无关）；要单独看服务端结果用 `mvn -o test -pl paimon-rest-server` |
+| 单元/集成 | `mvn -o test`（服务端 307 + Spark 96，共 403） | 行为回归。注意 Spark 模块的 `example/PaimonS3Test` 当前会在 BUILD FAILURE 停下（缺 `spark.sql.extensions`，与 S3 环境无关）；要单独看服务端结果用 `mvn -o test -pl paimon-rest-server` |
 | 端点多面 | `verify-console.py`、`verify-management-contract.py`、`verify-spark-sql-doc.py`、`verify-k8s-manifests.py` | **跨文件的机械一致性**：前端字段名 vs 服务端 record、文档表格 vs 规格、语法文件 vs PermissionDtos vs 客户端 |
 | 契约（桩） | `ManagementSqlExecutionTests`（真实 SparkSession + 桩服务端） | 扩展真被加载、真执行 |
 | 契约（真服务端） | `./scripts/e2e-spark-sql.sh` | 客户端与服务端的**实际**契约（桩只能证明客户端与自己的假设自洽） |

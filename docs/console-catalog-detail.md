@@ -153,6 +153,11 @@ baseline 就推到新值，按钮回到「与服务端一致」。
 只移出「取值仍等于默认值」的那些：用户改过的说明他想显式写进这张表，保留。
 无默认参数时，`TipNote` 会指出配它们的地方（Catalogs 页里该 catalog 的「配置」页签）。
 
+同一处 `TipNote` 还说明了 `path` 对非 Paimon 表的含义：它是那张表的**数据目录**。
+填了就指向那个目录（服务端把它当作表位置、并按外部表登记，因此不往里写 `schema-0`），
+留空则由服务端按表位置分配。取舍与边界见
+[`catalog-api-endpoints.md` §「表位置与 `path`」](catalog-api-endpoints.md#表位置与-path)。
+
 ### 3.5 为什么不给 Lance 表的建表入口
 
 选择器里保留「Lance 表」这个选项，但标成不可选（`TABLE_KINDS` 里那条的 `disabled`）。

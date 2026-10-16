@@ -79,7 +79,7 @@
                 <dt>表 ID</dt>
                 <dd><CopyText :text="table0.id" /></dd>
                 <dt>是否外部表</dt>
-                <dd>{{ table0.isExternal ? '是（注册进来的表）' : '否（由本服务管理）' }}</dd>
+                <dd>{{ table0.isExternal ? '是（位置由外部给定，本服务不碰它的目录）' : '否（由本服务管理）' }}</dd>
                 <dt>表格式</dt>
                 <dd>{{ kindLabel }}</dd>
                 <dt>Schema 版本</dt>

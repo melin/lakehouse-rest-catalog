@@ -20,11 +20,11 @@ import org.apache.paimon.types.DataField;
  * <p>三种非 Paimon 表在建表时都需要一点只有目录才知道的信息，这些归一化集中在本类：
  *
  * <ul>
- *   <li><b>都要补 {@code path}</b>。引擎侧构造这三种表时只读 {@code options.path}
- *       （{@code CatalogUtils.toFormatTable/toObjectTable/toLanceTable}），
- *       而客户端在建表请求里不会带它——目录替内部表决定位置，正是 catalog 的职责。
- *       这与上游 {@code JdbcCatalog.createObjectTable} 的
- *       {@code options.putIfAbsent(PATH, tablePath)} 一致。</li>
+ *   <li><b>缺省时补 {@code path}</b>。引擎侧构造这三种表时只读 {@code options.path}
+ *       （{@code CatalogUtils.toFormatTable/toObjectTable/toLanceTable}）。客户端不给就用目录
+ *       分配的位置，给了就用客户端的（{@link #honorsClientPath}）——与上游
+ *       {@code JdbcCatalog.createObjectTable} 的 {@code options.putIfAbsent(PATH, tablePath)}
+ *       同一个次序：先客户端、后目录。</li>
  *   <li><b>Object 表用固定 schema</b>。它对外暴露的是「目录里对象的元数据」而不是用户声明的列，
  *       Paimon 的 {@code AbstractCatalog.buildObjectTableSchema} 就是拿
  *       {@link ObjectTable#SCHEMA} 覆盖掉用户字段的（六个固定列：
@@ -80,7 +80,9 @@ public final class TableKinds {
      * 是没必要的重复。
      *
      * @param schema    已被 {@link SchemaSupport#normalize} 归一化过的 schema，就地修改
-     * @param tablePath 服务端为这张表分配的仓库路径，用于补 {@code path}
+     * @param tablePath 这张表的**表位置**——客户端显式给的，或目录按模板分配的
+     *                  （由调用方用 {@link #honorsClientPath} / {@link #explicitPath} 定下来），
+     *                  {@code path} 缺省时用它
      * @param kind      这次要建的表格式
      * @throws ApiException 该类型不允许的入参（如 Format 表带主键）
      */
@@ -128,6 +130,33 @@ public final class TableKinds {
                             + FORMAT_TABLE + ", " + OBJECT_TABLE + ", " + LANCE_TABLE
                             + ", or omit " + TYPE_OPTION + " for a Paimon table");
         };
+    }
+
+    /**
+     * 这张表的「表位置」是否该由客户端决定。
+     *
+     * <p>三种非 Paimon 表的位置就是数据目录本身——Format 表读的是一批同格式文件所在的目录、
+     * Object 表索引的是一个对象目录、Lance 表指向一份 Lance 数据集。这些数据本来就在那里，
+     * 不是本服务端写出来的，所以客户端比目录更清楚位置（它可能就是那个桶的 owner）。
+     *
+     * <p>Paimon 表不在此列：它的位置由目录决定，客户端给的 {@code path} 会被忽略——
+     * 要让一张表指向另一份已经存在的 Paimon 数据，走 {@code register}。
+     */
+    public static boolean honorsClientPath(Kind kind) {
+        return kind != Kind.PAIMON;
+    }
+
+    /**
+     * 客户端在建表请求里显式给的位置（{@code options.path}）；没给、或给的是空白，返回 {@code null}。
+     *
+     * <p>只负责读，不判断这个值该不该用——用不用看 {@link #honorsClientPath}。
+     */
+    public static String explicitPath(TypeDtos.Schema schema) {
+        if (schema == null || schema.getOptions() == null) {
+            return null;
+        }
+        String path = schema.getOptions().get(PATH_OPTION);
+        return path == null || path.isBlank() ? null : path;
     }
 
     /** Object 表的固定列，直接取 Paimon 的 {@link ObjectTable#SCHEMA}，避免手抄一套枚举。 */

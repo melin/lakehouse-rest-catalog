@@ -164,12 +164,40 @@ SQL 侧同样是 `WITH ('type' = 'format-table')`。本服务端认四种取值�
 | `options.type` | 表格式 | 建表时的处理 |
 | --- | --- | --- |
 | 缺席（或 `table`） | Paimon 表 | 原样落库；**不写** `path`，位置由目录决定 |
-| `format-table` | Format 表 | 补 `path` = 表位置；**禁止主键**（400） |
-| `object-table` | Object 表 | 补 `path` = 表位置；用户声明的字段被**忽略**，落库的是固定六列 |
-| `lance-table` | Lance 表 | 补 `path` = 表位置；字段、非空、主键与 Paimon 表一致（**能建不能读写**，见下） |
+| `format-table` | Format 表 | 表位置 = 客户端给的 `path`（没给就按模板分配）；**禁止主键**（400） |
+| `object-table` | Object 表 | 同上；用户声明的字段被**忽略**，落库的是固定六列 |
+| `lance-table` | Lance 表 | 同上；字段、非空、主键与 Paimon 表一致（**能建不能读写**，见下） |
 
 其余取值一律 400。写进库的话，引擎读表时才在 `CoreOptions.TYPE` 的枚举上炸，
 出错现场离原因太远，所以宁可在这里回一句「不认识的类型」。
+
+### 表位置与 `path`
+
+表位置就是 `GetTableResponse.path`，也是引擎真正去读的那个目录。规则按表格式分两类：
+
+| 表格式 | 表位置 | 客户端给的 `path` |
+| --- | --- | --- |
+| Paimon 表 | 按 `paimon.rest.path-template` 分配，恒定 | 不参与（要指向一份已经存在的 Paimon 数据，走 `register`） |
+| Format / Object / Lance 表 | 客户端给了就用它，没给才按模板分配 | 就是表位置，同时写进 `options.path` |
+
+非 Paimon 表为什么必须这样做：Paimon 的 REST 客户端在 load 表时，用响应里的表位置
+**覆盖** `schema.options.path`（`RESTCatalog.toTableMetadata` 用的是 `put`，不是
+`putIfAbsent`）。所以「把客户端的目录只留在 `options` 里」是没用的——引擎读的仍会是
+模板分配的那个目录，对象目录里的东西一个也看不到。本服务端因此把客户端的目录
+**同时**写成表位置与 `options.path`，两者始终一致（`path` 只给空白视为没给）。
+
+客户端给了目录的表按**外部表**登记（`isExternal=true`）：那批文件不归本服务端管，
+因此不往里写 `schema/schema-0`、删表时也不删它的目录——与 `register` 同一套取舍
+（见 `TableMetadataService`）。
+
+> **Object 表的数据怎么进去。** 它没有 `INSERT`：Spark 侧 `SparkObjectTable` 只声明了
+> `BATCH_READ`（写语句在分析阶段就被拒），Paimon 侧的 `ObjectTableImpl` 是 `ReadonlyTable`。
+> 它的行是**读的时候现列目录**算出来的（固定六列），所以「写入」= 用存储侧的手段把对象
+> 放进那个目录：`aws s3 cp`、`hdfs dfs -put`、应用自己的 SDK PUT，或 Spark 把 DataFrame
+> 写成普通文件。放进去下一次查询就能看到，**不需要 refresh**——上游 1.0 时代 Flink 的
+> `CALL sys.refresh_object_table(...)` 与 `object-location` 选项在 2.0.0 里已经不存在
+> （2.0.0 的所有 paimon jar 里都搜不到这两个字符串）。实测见
+> [spark-paimon-rest-e2e.md §4.4](spark-paimon-rest-e2e.md#44-三种非-paimon-表format--object--lance-的能力边界)。
 
 > **Lance 表能建、不能读写。** Paimon 2.0.0 尚未实现它的读写，因此接口这层**不拦**
 > 建表请求（拦了会连「先登记、后用别的引擎读」这个用法一起堵死），只在控制台的
@@ -178,11 +206,11 @@ SQL 侧同样是 `WITH ('type' = 'format-table')`。本服务端认四种取值�
 
 三条规则都来自上游，这里只是把它们放到本服务端的建表路径上（实现见 `support/TableKinds`）：
 
-- **补 `path`**：引擎构造这三种表时只读 `options.path`
-  （`CatalogUtils.toFormatTable` / `toObjectTable` / `toLanceTable`），而客户端不会送它——
-  替内部表决定位置本就是 catalog 的职责，与 `JdbcCatalog.createObjectTable` 的
-  `options.putIfAbsent(PATH, tablePath)` 一致。客户端若要指向别处的目录，
-  自己在 `options.path` 里给，服务端只在缺席时补。
+- **`path` 缺省时才补**：引擎构造这三种表时只读 `options.path`
+  （`CatalogUtils.toFormatTable` / `toObjectTable` / `toLanceTable`）。客户端不给就用目录
+  按模板分配的位置，给了就用客户端的（且它同时是表位置，见上一节）——与上游
+  `JdbcCatalog.createObjectTable` 的 `options.putIfAbsent(PATH, tablePath)` 同一个次序：
+  先客户端、后目录。
 - **Object 表固定六列**：`path` / `name` / `length` / `mtime` / `atime` / `owner`
   （取 `ObjectTable.SCHEMA`，不手抄）。上游 `AbstractCatalog.buildObjectTableSchema`
   同样忽略用户字段，好处是落库的 schema、仓库里的 `schema-0`、引擎读到的列三者一致；
@@ -195,7 +223,9 @@ SQL 侧同样是 `WITH ('type' = 'format-table')`。本服务端认四种取值�
 `schema/schema-0`（Format 表的读路径把表目录下所有非隐藏文件当数据，写进去的 JSON
 会混进查询结果；它的写路径 `FormatTableCommit` 也不需要 schema 文件。Lance 目录
 布局由 lance 自己管理），Object 表**照写**（镜像上游 `JdbcCatalog.createObjectTable`，
-代价是查询结果会列出这份 schema 文件自己）。缘由与实测见
+代价是查询结果会列出这份 schema 文件自己）。但**外部表一律不写**：客户端指定了数据目录的
+表登记成外部表，那个目录里放的是用户自己的对象，写元数据进去既污染对象列表，
+也会在开了 `purge-on-drop` 时被连目录一起删掉。缘由与实测见
 [`spark-paimon-rest-e2e.md` §4.4](spark-paimon-rest-e2e.md#44-三种非-paimon-表format--object--lance-的能力边界)。
 
 `paimon_table.table_type` 列存的就是这个取值，`GET .../table-details?tableType=` 因此能按

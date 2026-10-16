@@ -40,6 +40,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -768,6 +769,55 @@ class PaimonRestCatalogApiTests {
         assertEquals(List.of("vectors"), tableService
                 .listDetails(PREFIX, database, null, null, null, "lance-table").tableDetails().stream()
                 .map(TableDtos.GetTableResponse::name).toList());
+    }
+
+    /**
+     * 非 Paimon 表带 {@code path} 建表：客户端指的那个目录就是表位置，表按外部表登记。
+     *
+     * <p>为什么非要把客户端的目录写成表位置：Paimon 的 REST 客户端在 load 表时用响应里的
+     * 表位置**覆盖** {@code options.path}（{@code RESTCatalog.toTableMetadata} 用的是
+     * {@code put}，不是 {@code putIfAbsent}）。只把位置留在 options 里是没用的——引擎读的
+     * 仍会是目录按模板分配的那个目录，对象目录里的东西一个也看不到（Spark 侧实测如此）。
+     *
+     * <p>按外部表登记的三条后果一起钉住：{@code isExternal=true}、不往那个目录写
+     * {@code schema-0}、{@code options.path} 与表位置一致。那个目录是用户自己的数据目录，
+     * 写元数据进去既污染对象列表，也会在开了 purge-on-drop 时被连目录一起删掉。
+     *
+     * <p>Paimon 表不适用这条规则：它的位置由目录决定，要指向一份已经存在的 Paimon 数据
+     * 应该走 {@code register}（见 {@link TableService#register}）。
+     */
+    @Test
+    void nonPaimonTableHonoursClientPathAsItsLocation() {
+        String database = "it_client_path";
+        createDatabase(database);
+        // 与测试仓库同处一片临时目录（application-test.yml 里的 default-warehouse 就在这儿）
+        String objectDir = System.getProperty("java.io.tmpdir").replaceAll("/+$", "")
+                + "/paimon-rest-server-tests/object-dir-" + UUID.randomUUID().toString().substring(0, 8);
+
+        TypeDtos.Schema objectSchema = tableSchema("object-table", null, List.of());
+        objectSchema.getOptions().put("path", objectDir);
+        tableService.create(PREFIX, database, new TableDtos.CreateTableRequest(
+                new CommonDtos.Identifier(database, "images"), objectSchema));
+
+        TableDtos.GetTableResponse object = tableService.get(PREFIX, database, "images");
+        assertEquals(objectDir, object.path(), "客户端指的对象目录应当就是表位置");
+        assertEquals(objectDir, object.schema().getOptions().get("path"));
+        assertTrue(object.isExternal(), "数据目录由客户端给定 → 按外部表登记");
+        assertFalse(java.nio.file.Files.exists(java.nio.file.Path.of(objectDir, "schema")),
+                "外部表不会往数据目录里写 schema-0");
+        assertEquals(List.of("path", "name", "length", "mtime", "atime", "owner"),
+                object.schema().getFields().stream().map(TypeDtos.DataField::getName).toList());
+
+        // 位置给空白等于没给：照旧用目录分配的位置，也照旧是内部表（schema-0 会写进去）
+        TypeDtos.Schema blankPath = tableSchema("format-table", "csv", List.of(field(0, "id", "BIGINT")));
+        blankPath.getOptions().put("path", "   ");
+        tableService.create(PREFIX, database, new TableDtos.CreateTableRequest(
+                new CommonDtos.Identifier(database, "blank_path"), blankPath));
+        TableDtos.GetTableResponse blank = tableService.get(PREFIX, database, "blank_path");
+        assertFalse(blank.isExternal(), "空白 path 不算客户端指定了位置");
+        assertTrue(blank.path().endsWith("/" + database + ".db/blank_path"),
+                "空白 path 应回落到路径模板，实际: " + blank.path());
+        assertEquals(blank.path(), blank.schema().getOptions().get("path"));
     }
 
     /**

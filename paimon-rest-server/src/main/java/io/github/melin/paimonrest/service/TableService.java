@@ -158,6 +158,25 @@ public class TableService {
         return toResponse(table, databaseNameOf(table.getDatabaseId()));
     }
 
+    /**
+     * 建表。
+     *
+     * <p><b>表位置</b>（也就是 {@code GetTableResponse.path}）在这里定下来，规则按表格式分两类：
+     *
+     * <ul>
+     *   <li><b>Paimon 表</b>：位置由目录按 {@code paimon.rest.path-template} 分配，客户端给的
+     *       {@code path} 不参与（要指向另一份已经存在的 Paimon 数据，走 {@link #register}）；</li>
+     *   <li><b>三种非 Paimon 表</b>：位置就是数据目录本身，客户端给了 {@code path} 就用它的，
+     *       没给才用目录分配的位置。**必须**把客户端的目录写成表位置——Paimon 的 REST 客户端
+     *       在 load 表时用响应里的表位置**覆盖** {@code options.path}
+     *       （{@code RESTCatalog.toTableMetadata} 用的是 {@code put}，不是 {@code putIfAbsent}），
+     *       所以只在 options 里留着客户端给的位置是没用的：引擎读的仍会是目录分配的那个目录。</li>
+     * </ul>
+     *
+     * <p>客户端指定了数据目录的表按<strong>外部表</strong>登记（{@code external=true}）：
+     * 那批文件不归本服务端管，因此不往里写 {@code schema-0}、删表时也不删它的目录
+     * （见 {@link TableMetadataService}）——与 {@link #register} 同一套取舍。
+     */
     @Transactional
     public void create(String prefix, String databaseName, TableDtos.CreateTableRequest request) {
         DatabaseEntity database = tableLookup.requireDatabase(prefix, databaseName);
@@ -169,13 +188,16 @@ public class TableService {
         SchemaSupport.normalize(schema);
 
         CatalogEntity catalog = catalogService.resolve(prefix);
-        String tablePath = Paths.tableLocation(properties.getPathTemplate(),
+        String assignedPath = Paths.tableLocation(properties.getPathTemplate(),
                 catalog.getWarehouse(), databaseName, tableName);
         // 表格式先定下来：catalog 级的默认表属性只合并到 Paimon 表（见 TableDefaults），
         // 下面的归一化也按它分派（见 TableKinds）。schemaDoc 与仓库里的 schema-0
         // 都取自这一份 schema，因此两步都必须在写库之前完成。
         TableKinds.Kind kind = TableKinds.parse(schema.getOptions());
         Map<String, String> defaults = TableDefaults.apply(schema, kind, catalog.getProperties());
+        // 客户端指了数据目录就认它的（只对非 Paimon 表，理由见方法注释）
+        String clientPath = TableKinds.honorsClientPath(kind) ? TableKinds.explicitPath(schema) : null;
+        String tablePath = clientPath == null ? assignedPath : clientPath;
         TableKinds.prepareCreate(schema, tablePath, kind);
         if (!defaults.isEmpty()) {
             // 表属性里多出来的键会跟着 schema 进仓库，记一条便于回答「这个参数哪来的」
@@ -189,7 +211,7 @@ public class TableService {
         table.setDatabaseId(database.getId());
         table.setName(tableName);
         table.setPath(tablePath);
-        table.setExternal(false);
+        table.setExternal(clientPath != null);
         table.setSchemaId(0);
         table.setSchemaDoc(Codecs.write(schema));
         table.setTableType(tableType(schema));

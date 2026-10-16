@@ -268,9 +268,12 @@ public class TableMetadataService {
     /**
      * 该不该为这张表动仓库。
      *
-     * <p>外部表（{@code register} 进来的）恒不处理：它代表「仓库里已经有一张表，
-     * 本服务端只登记位置」。反过来往它的目录里写 schema，等于用服务端数据库里的
-     * 空 schema 去覆盖一张真实表的元数据。
+     * <p>外部表恒不处理，两种来源都算：{@code register} 登记的，以及建表时客户端自己指了
+     * 数据目录的非 Paimon 表（见 {@code TableService.create}）。前者代表「仓库里已经有一张表，
+     * 本服务端只登记位置」——往它的目录里写 schema，等于用服务端数据库里的空 schema 去覆盖
+     * 一张真实表的元数据；后者的目录里放的是用户自己的对象与数据文件——写 {@code schema/schema-0}
+     * 进去既会污染对象列表（Object 表的行就是目录里的文件），也会在开了 purge-on-drop 时
+     * 被连目录一起删掉。
      */
     private boolean materializationEnabled(TableEntity table) {
         if (table == null || table.isExternal()) {

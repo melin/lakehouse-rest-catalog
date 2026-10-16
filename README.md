@@ -23,7 +23,9 @@
 - 模块：服务端（Spring Boot）+ Spark SQL 语法扩展（Scala）
 - 表格式：**Paimon 表**与三种不受快照管理的表——**Format 表**（目录里的既有文件）、
   **Object 表**（对象元数据，列由 Paimon 固定）、**Lance 表**；类型写在
-  `schema.options.type` 里，建表时的归一化与边界见第 6 节第 23 条。
+  `schema.options.type` 里，建表时的归一化与边界见第 6 节第 23 条。后三种的位置就是
+  数据目录本身，可以由建表请求里的 `path` 指定（指向一个已经存在的目录，如对象存储上
+  放图片的前缀），不指定则由目录按模板分配。
   其中 **Lance 表只登记不读写**（Paimon 2.0.0 未实现，见
   [`docs/spark-paimon-rest-e2e.md`](docs/spark-paimon-rest-e2e.md) §4.4）：
   接口照常接受建表请求，控制台的新建表表单不给入口
@@ -118,7 +120,7 @@ mysql -h 127.0.0.1 -u root -p < sql/schema-mysql.sql
 # 全量构建
 JAVA_HOME=/path/to/jdk-21 mvn -DskipTests install
 
-# 运行全部测试（服务端 306 + Spark 94，共 400 个用例；Spark 侧有 1 个示例用例
+# 运行全部测试（服务端 307 + Spark 96，共 403 个用例；Spark 侧有 1 个示例用例
 # 在本地缺 spark.sql.extensions 时会失败，见第 7 节）
 JAVA_HOME=/path/to/jdk-21 mvn test
 
@@ -561,18 +563,30 @@ Azure 只下发定位元数据是个明确的缺口：Polaris 的 `polaris.stora
     在那次提交到来之前，**最新快照**的读路径也会按分区合计现算兜底——分区统计从更早的版本就在
     维护，老表升级后立即有值，不必等新提交。历史快照不做这个兜底：分区合计只对应当前状态，
     套在旧快照上是错的数。
-23. **非 Paimon 表（Format / Object / Lance）的位置由目录补，列不按用户声明的写**。
+23. **非 Paimon 表（Format / Object / Lance）的位置可由客户端指定，列不按用户声明的写**。
     表格式写在 `schema.options.type` 里（规格的 `Schema` 没有类型字段，Paimon 自己也是这么
     表达的，SQL 侧同样是 `WITH ('type' = 'format-table')`）。建表时 `support/TableKinds`
-    做三件事：**补 `path`**（引擎构造这三种表时只读 `options.path`，客户端不会送）、
+    做三件事：**`path` 缺省时才补**（引擎构造这三种表时只读 `options.path`；客户端给了就用
+    客户端的——那三种表的位置就是数据目录本身，与上游 `JdbcCatalog.createObjectTable` 的
+    `putIfAbsent` 同序）、
     **Object 表换成固定六列** `path` / `name` / `length` / `mtime` / `atime` / `owner`
     （用户声明的字段被忽略，镜像上游 `buildObjectTableSchema`）、**Format 表带主键直接 400**。
     其余类型取值一律 400——写进库的话，引擎读表时才在 `CoreOptions.TYPE` 的枚举上炸，
-    出错现场离原因太远。服务端对这三种表只登记元数据，**物化则分三档**：
-    **Object 表写 `schema-0`**（镜像上游 `JdbcCatalog.createObjectTable`，代价是查询结果
-    会列出这份 schema 文件自己），**Format 表与 Lance 表不写**——Format 表的读路径把表目录下
-    所有非隐藏文件当数据，写进去的 JSON 会被当数据文件读（parquet 直接报
-    `not a Parquet file`，CSV 更糟：不报错、当数据行返回），Lance 目录则由 lance 自己管理。
+    出错现场离原因太远。
+    客户端给的 `path` 还必须**同时**成为表的「表位置」（`GetTableResponse.path`）：Paimon 的
+    REST 客户端在 load 表时用响应里的表位置**覆盖** `options.path`
+    （`RESTCatalog.toTableMetadata` 用的是 `put`，不是 `putIfAbsent`），只把位置留在 options 里，
+    引擎读的仍会是目录按 `path-template` 分配的那个目录——对象目录里的东西一个也看不到。
+    这类表按**外部表**登记（`isExternal=true`）：服务端不往里写元数据，删表也不删它的目录。
+    物化因此分三档：**客户端指定了目录的一律不写**、**Object 表写 `schema-0`**（位置由目录
+    分配时；镜像上游 `JdbcCatalog.createObjectTable`，代价是查询结果会列出这份 schema 文件
+    自己）、**Format 表与 Lance 表不写**——Format 表的读路径把表目录下所有非隐藏文件当数据，
+    写进去的 JSON 会被当数据文件读（parquet 直接报 `not a Parquet file`，CSV 更糟：不报错、
+    当数据行返回），Lance 目录则由 lance 自己管理。
+    Object 表也**没有 `INSERT`**（Spark 侧只声明 `BATCH_READ`，Paimon 侧的 `ObjectTableImpl`
+    是 `ReadonlyTable`）：它的行是读的时候现列目录算出来的，所以「写入」= 用存储侧的手段把对象
+    放进那个目录（`aws s3 cp` / `hdfs dfs -put` / 应用自己的 SDK），下次查询即可见，
+    **没有 refresh 这一步**（见 `docs/spark-paimon-rest-e2e.md` §4.4.1）。
     数据由引擎直接读写那个目录，因此快照、标签、分支、分区状态与提交累计的文件统计都不适用：
     控制台只给它们「详细信息」与「文件列表」两个页签，详细信息页里也不画那四张统计卡片。
     三者中 **Lance 表只登记不能读写**（Paimon 2.0.0 未实现，见
@@ -593,7 +607,7 @@ Azure 只下发定位元数据是个明确的缺口：Polaris 的 `polaris.stora
 
 ## 7. 测试
 
-### 单元与集成测试（400 个用例）
+### 单元与集成测试（403 个用例）
 
 ```bash
 JAVA_HOME=/path/to/jdk-21 mvn test
@@ -602,7 +616,7 @@ JAVA_HOME=/path/to/jdk-21 mvn test
 测试连的是内存 H2（`test` profile，见 `src/test/resources/application-test.yml`），
 **不依赖本机是否有 MySQL**。
 
-服务端（306 个）：
+服务端（307 个）：
 
 | 测试类 | 覆盖 |
 | --- | --- |
@@ -635,12 +649,12 @@ JAVA_HOME=/path/to/jdk-21 mvn test
 | `MysqlDdlGeneratorTests` | 由实体元数据生成 MySQL DDL，并断言方言被钉在 MySQL 8.0（见「代码生成」） |
 | `PaimonRestServerApplicationTests` | 上下文加载 |
 
-Spark 子模块（90 个，其中 19 个需要显式指向服务端）：
+Spark 子模块（96 个，其中 5 个类共 23 个用例需要显式指向服务端）：
 
 > `example/` 下的 `PaimonS3Test` **当前跑不过**，与 S3 环境无关：它在加载 Spark
 > catalog 时被 Paimon 的 `requiredSparkConfsCheck` 挡下（会话里没有
 > `spark.sql.extensions`），报错发生在任何 REST 调用之前。因此 `mvn test` 会停在
-> Spark 模块的 BUILD FAILURE，而服务端模块（306 个）是绿的。
+> Spark 模块的 BUILD FAILURE，而服务端模块（307 个）是绿的。
 
 | 测试类 | 覆盖 |
 | --- | --- |
@@ -649,7 +663,7 @@ Spark 子模块（90 个，其中 19 个需要显式指向服务端）：
 | `ManagementSqlExecutionTests` | 真实 `SparkSession` + 桩服务端：扩展是否真被加载、`spark.sql` 是否真执行命令、结果行列名、原生 SQL 不受影响 |
 | `ManagementSqlLiveServerTests` | 对真实服务端跑完整 SQL 链路：管理 API 契约、官方权限端点的 grant / list / revoke 与分页过滤（默认跳过，见下）。catalog role 的建档与装配已从语法移除，这一类用例里那半截脚手架改调 `ManagementApiClient`，于是顺带守住「管理 API 在 SQL 撤出之后仍然整条可用」 |
 | `PaimonTableDdlTests` | 用 Spark SQL 经 Paimon Rest Catalog 建表再写入：分区 append 表与主键表（含分区主键）、`LIKE`、`IF NOT EXISTS` 幂等与裸建冲突、内联主键约束与保留表属性被 Spark 拒绝、库不存在时报错，以及 `CTAS` 与分区主键表 `INSERT` 写完后读回数据；两种断言并重——`DESCRIBE` / `SHOW CREATE TABLE` 的输出，以及直接读服务端元数据核对注释、分区键、主键与选项（默认跳过，见下） |
-| `NonPaimonTableSqlTests` | Format / Object / Lance 三种非 Paimon 表的能力边界：Format 表（csv / parquet）建表-写入-读回全链路、Object 表固定六列与「读出 schema 文件自己」、Lance 表只有建表可行——读写在 Spark 分析阶段被拒；服务端侧同时核对 `type` / `path` / 字段的落库形状（默认跳过，见下） |
+| `NonPaimonTableSqlTests` | Format / Object / Lance 三种非 Paimon 表的能力边界：Format 表（csv / parquet）建表-写入-读回全链路、Object 表固定六列 + 「把对象放进表目录即可查到，无需 refresh」+ 「客户端给的 `path` 成为表位置，于是能索引一个既有对象目录（并按外部表登记、目录里不留 `schema-0`）」、Lance 表只有建表可行——读写在 Spark 分析阶段被拒；服务端侧同时核对 `type` / `path` / `isExternal` / 字段的落库形状（默认跳过，见下） |
 | `SparkSqlAuthorizationTests` | 同一个 catalog、同一张表，两个身份各跑一遍真 SQL：有写权限的那个能建库、建表、写入、读回；只读的那个读得到数据、也看得见表列表，但建库 / 建表 / 写数据一律被服务端授权判定拒绝，且断言拒绝报文点名了主体与**缺失的那一项权限**（`TABLE_CREATE` / `TABLE_WRITE_DATA` / `NAMESPACE_CREATE`）、被拒之后数据没变。两个角色的授权用官方权限语句装配（`ON CATALOG_ALL ... TO ROLE ...`，而 `role:` 要生效得先有同名 catalog role——这一层用 `ManagementApiClient` 建，顺带验证「管理 API 建角色 + SQL 授 `role:`」这条跨接口的组合），于是也顺带验证「`ROLE x` 折成 `role:x`」这一步（默认跳过，见下）。服务端已有的两层授权测试都走 MockMvc 直接打 REST，这一层验的是**引擎发出的请求**——403 会不会被 Paimon 客户端改写、拒绝后到底有没有落数据，只有真 SQL 才知道 |
 | `SparkSqlDocExamplesTests` | 抽出 `docs/spark-sql-reference.md` 第 10 节的示例并逐条执行，断言作用范围落到哪几列、列范围与有效期的回读、撤销一项 access 不影响同资源其它 access（默认跳过，见下） |
 | `PaimonRestCatalogTest` | 对象存储仓库的凭据链路：建表后服务端返回的 `path` 由 warehouse 模板展开、`INSERT` 写入分区主键表并逐列读回（默认跳过，见下）。它同时压住「类路径缺 `s3://` FileIO 实现」与「凭据没按引擎认的键名下发」这两种失败 |

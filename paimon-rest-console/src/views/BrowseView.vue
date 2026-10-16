@@ -129,9 +129,10 @@
                 <el-table-column label="表类型" width="96">
                   <template #default="{ row }">
                     <!-- Managed：本服务管它的元数据（schema-0 也由服务端写）；
-                         外部表：register 进来的，服务端只登记位置，不碰它的目录 -->
+                         外部表：位置由外部给定——register 登记进来的，或建表时自带 path 的
+                         Object / Format / Lance 表（那批文件不归本服务管，服务端不往里写东西） -->
                     <span :title="row.isExternal
-                      ? '外部表：由 register 登记，服务端只记录位置，不写它的元数据'
+                      ? '外部表：位置由外部给定（register 登记，或建表时自带 path 的非 Paimon 表），服务端只记录位置、不写它的目录'
                       : 'Managed：元数据由本服务管理，建表时服务端还会写出 schema-0'">
                       {{ row.isExternal ? '外部表' : 'Managed' }}
                     </span>
@@ -409,7 +410,8 @@
         <template #tip>
           <TipNote>
             表级属性。Paimon 表的属性会跟着 schema 写进仓库；Format 表的文件格式由上面那个下拉决定
-            （<code>file.format</code>），非 Paimon 表的 <code>path</code> 留空时由服务端按表位置补齐。
+            （<code>file.format</code>）。非 Paimon 表的 <code>path</code> 就是它的<strong>数据目录</strong>：
+            可以指向一个已经存在的目录（比如对象存储里放图片的那个前缀），留空则由服务端按表位置分配。
             <br /><br />
             <template v-if="defaultOptionNames.length">
               当前 catalog 配了 {{ defaultOptionNames.length }} 项默认参数（<code>table-default.*</code>），
