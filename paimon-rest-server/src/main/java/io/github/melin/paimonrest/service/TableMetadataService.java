@@ -6,6 +6,7 @@ import io.github.melin.paimonrest.domain.entity.TableEntity;
 import io.github.melin.paimonrest.domain.repo.CatalogRepository;
 import io.github.melin.paimonrest.support.ApiException;
 import io.github.melin.paimonrest.support.ResourceType;
+import io.github.melin.paimonrest.support.TableKinds;
 import java.io.IOException;
 import java.util.ServiceConfigurationError;
 import lombok.RequiredArgsConstructor;
@@ -109,7 +110,7 @@ public class TableMetadataService {
      * 「换个位置，或者清掉旧目录」这个选择留给调用方。
      */
     public void materializeNewTable(TableEntity table) {
-        if (!materializationEnabled(table)) {
+        if (!materializationEnabled(table) || schemaFileIsForeign(table)) {
             return;
         }
         attempt("write schema-0", table, () -> {
@@ -143,7 +144,7 @@ public class TableMetadataService {
      * 版本升级时可能变动的 API——paimon.version 钉在 2.0.0，升级时要看这里。
      */
     public void materializeSchemaVersion(TableEntity table, long schemaId) {
-        if (!materializationEnabled(table)) {
+        if (!materializationEnabled(table) || schemaFileIsForeign(table)) {
             return;
         }
         attempt("write schema-" + schemaId, table, () -> {
@@ -280,6 +281,35 @@ public class TableMetadataService {
             return false;
         }
         return true;
+    }
+
+    /**
+     * schema 文件写进某些表类型的目录里是<b>数据污染</b>而不是元数据补全。
+     *
+     * <p><b>Format 表。</b>它的读路径（{@code FormatTableScan.listDataFiles}）把表目录下
+     * 所有非隐藏文件当数据——只有 {@code _} / {@code .} 开头的名字才被跳过，
+     * {@code schema/} 不在其中。写一个 {@code schema/schema-0}（JSON）进去，
+     * 读 parquet 格式的表时它会以「not a Parquet file」炸掉整个查询；
+     * 读 CSV 格式时更糟——不报错，把 schema JSON 当数据行混进结果。
+     * 而写路径根本不需要它：{@code FormatTableCommit} 是纯文件系统级的两阶段提交，
+     * 没有 manifest、没有快照，不读 {@code schema-<n>}。
+     *
+     * <p><b>Lance 表。</b>它指向一个 Lance 数据集目录，布局由 lance 自己管理；
+     * 往里面塞一个 Paimon 的 schema 文件同样是污染（且 lance 运行时不认识它）。
+     *
+     * <p><b>Object 表不在此列</b>：上游 {@code JdbcCatalog.createObjectTable} 就是往表目录
+     * 提交 {@code schema-0} 的——代价是读路径会把这份 schema 文件当对象列出来，
+     * 但那是上游的行为，镜像它比发明一个不同行为更安全。
+     */
+    private boolean schemaFileIsForeign(TableEntity table) {
+        String type = table.getTableType();
+        boolean foreign = TableKinds.FORMAT_TABLE.equals(type) || TableKinds.LANCE_TABLE.equals(type);
+        if (foreign) {
+            log.debug("skip schema materialization for {} table {} ({}): "
+                            + "its format owns the directory layout",
+                    type, table.getName(), table.getPath());
+        }
+        return foreign;
     }
 
     /**

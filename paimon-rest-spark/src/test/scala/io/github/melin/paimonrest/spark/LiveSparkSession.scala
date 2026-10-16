@@ -192,7 +192,7 @@ object LiveSparkSession {
             s"""拿到的 SparkSession 不是本 holder 创建的那个，扩展配置为 "$effective"。
                |一个 JVM 只能有一个 SparkContext，而 spark.sql.extensions 只在建会话时生效。
                |请只运行需要真实服务端的测试类，例如：
-               |  mvn -o -pl paimon-rest-spark test -Dtest=ManagementSqlLiveServerTests,PaimonTableDdlTests,SparkSqlAuthorizationTests,SparkSqlDocExamplesTests
+               |  mvn -o -pl paimon-rest-spark test -Dtest=ManagementSqlLiveServerTests,PaimonTableDdlTests,NonPaimonTableSqlTests,SparkSqlAuthorizationTests,SparkSqlDocExamplesTests
                |或直接用 scripts/e2e-spark-sql.sh。""".stripMargin)
 
         // 提前初始化 sessionState：解析器在此时装配，装配出问题会立刻暴露，

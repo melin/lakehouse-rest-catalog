@@ -108,18 +108,20 @@ if [ -z "${DOC_VERIFIED:-}" ]; then
 fi
 
 echo "== 跑 Spark SQL 端到端验收 =="
-# 这四个类必须同批运行：一个 JVM 只能有一个 SparkContext，而
+# 这五个类必须同批运行：一个 JVM 只能有一个 SparkContext，而
 # spark.sql.extensions 只在建会话时生效，因此它们共用 LiveSparkSession 的会话。
 # 若把 ManagementSqlExecutionTests（用桩服务端、自建会话）也拉进来，
 # 先建的那个会话会被复用，端点与扩展都会错位——LiveSparkSession 会就此报错。
 #   ManagementSqlLiveServerTests    : 逐条语句对真实服务端验管理 API 契约
 #   PaimonTableDdlTests             : 用 Spark SQL 通过 REST catalog 建 Paimon 表，
 #                                     并核对落到服务端的 schema / 分区 / 表选项 / 路径
+#   NonPaimonTableSqlTests          : Format / Object / Lance 三种非 Paimon 表的
+#                                     建表、写入与查询边界（见 docs/spark-paimon-rest-e2e.md 4.4）
 #   SparkSqlAuthorizationTests      : 同一个 catalog、两种身份（令牌 alice / bob），
 #                                     验建库建表读写放行、只读身份的关键操作被 403 拒绝
 #   SparkSqlDocExamplesTests        : 执行参考文档第 10 节的示例，防止示例被改坏
 "$MVN" -o -pl paimon-rest-spark test \
-  -Dtest=ManagementSqlLiveServerTests,PaimonTableDdlTests,SparkSqlAuthorizationTests,SparkSqlDocExamplesTests \
+  -Dtest=ManagementSqlLiveServerTests,PaimonTableDdlTests,NonPaimonTableSqlTests,SparkSqlAuthorizationTests,SparkSqlDocExamplesTests \
   -DfailIfNoTests=false \
   -De2e.management.url="$BASE/api/management/v1" \
   -De2e.management.token=root

@@ -161,7 +161,7 @@ docs/                   14 份设计文档
 | `data-model.md` | 改实体 / 看 19 张表划分、摘要列与审计列的理由 |
 | `spark-sql-reference.md` | 语句级参考（第 10 节示例会被测试真跑） |
 | `spark-sql-extension.md` | 改 Spark 扩展：做法、两个约束、测试分层 |
-| `spark-paimon-rest-e2e.md` | Spark 经本服务端建表：连接配置、可执行 SQL、报错对照 |
+| `spark-paimon-rest-e2e.md` | Spark 经本服务端建表：连接配置、可执行 SQL、报错对照、三种非 Paimon 表（Format / Object / Lance）的读写边界（§4.4） |
 | `authorization.md` | 权限实体链、授权映射、失败关闭的取舍 |
 | `console.md` | 改控制台 / 排查「页面空列表」：分层、端点契约表、机械校验、加页面清单 |
 | `console-table-detail.md` | 改表详情页：页签随表格式伸缩的数据来源（详细信息含字段/分区列表、表目录文件列表、「为什么没有权限页签」）、按需加载与非 Paimon 表不问快照端点、破坏性操作 |
@@ -222,7 +222,7 @@ docs/                   14 份设计文档
 
 | 层 | 命令 | 抓什么 |
 | --- | --- | --- |
-| 单元/集成 | `mvn -o test`（服务端 306 + Spark 90，共 396） | 行为回归。注意 Spark 模块的 `example/PaimonS3Test` 当前会在 BUILD FAILURE 停下（缺 `spark.sql.extensions`，与 S3 环境无关）；要单独看服务端结果用 `mvn -o test -pl paimon-rest-server` |
+| 单元/集成 | `mvn -o test`（服务端 306 + Spark 94，共 400） | 行为回归。注意 Spark 模块的 `example/PaimonS3Test` 当前会在 BUILD FAILURE 停下（缺 `spark.sql.extensions`，与 S3 环境无关）；要单独看服务端结果用 `mvn -o test -pl paimon-rest-server` |
 | 端点多面 | `verify-console.py`、`verify-management-contract.py`、`verify-spark-sql-doc.py`、`verify-k8s-manifests.py` | **跨文件的机械一致性**：前端字段名 vs 服务端 record、文档表格 vs 规格、语法文件 vs PermissionDtos vs 客户端 |
 | 契约（桩） | `ManagementSqlExecutionTests`（真实 SparkSession + 桩服务端） | 扩展真被加载、真执行 |
 | 契约（真服务端） | `./scripts/e2e-spark-sql.sh` | 客户端与服务端的**实际**契约（桩只能证明客户端与自己的假设自洽） |
@@ -264,7 +264,7 @@ docs/                   14 份设计文档
 2. **改了控制台源码没重建** → 打包的是上一版控制台，**不报错**，只是安静地少一个按钮。
    `verify-console.py` 第 7 组查产物新鲜度，但要有人跑它。判是否干净：
    `ls paimon-rest-server/target/classes/static/console/assets | wc -l` 应与源码目录一致。
-3. **`e2e-spark-sql.sh` 里四个测试类必须同批运行**：一个 JVM 只能有一个 SparkContext，
+3. **`e2e-spark-sql.sh` 里五个测试类必须同批运行**：一个 JVM 只能有一个 SparkContext，
    而 `spark.sql.extensions` 只在建会话时生效。把用桩的 `ManagementSqlExecutionTests`
    混进同一批会让 `LiveSparkSession` 报错（有意守卫，不是 bug）。
 4. **`sweep-console-auth.sh` / `check:login` 一分钟跑超 5 次会被服务端自己的失败限速拦下**

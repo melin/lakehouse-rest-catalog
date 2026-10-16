@@ -9,7 +9,8 @@
 - 想用 SQL 建表并确认元数据真的落到了服务端；
 - 遇到报错想快速对照原因（见第 5 节）。
 
-可执行的验收用例在 `PaimonTableDdlTests`，跑法见第 6 节。
+可执行的验收用例在 `PaimonTableDdlTests`（Paimon 表）与 `NonPaimonTableSqlTests`
+（Format / Object / Lance 三种非 Paimon 表），跑法见第 6 节。
 
 ---
 
@@ -360,6 +361,57 @@ schema 物化补上之后它们已经翻转成断言写入成功。这个类保�
 `UnsupportedSchemeException` 说明客户端类路径缺 FileIO 实现（见 1.1）；
 停在一句 `UnknownReason` 说明凭据没按引擎认的键名送达（见 1.4）。
 
+### 4.4 三种非 Paimon 表（Format / Object / Lance）的能力边界
+
+`NonPaimonTableSqlTests` 把这三种表在 Spark + REST catalog 组合下的真实能力钉住了。
+边界都来自 Paimon 自己的实现（`SparkCatalog.loadSparkTable` 的分派），不是本服务端的发明：
+
+| 表类型 | 建表 | 写入 | 查询 | 说明 |
+| --- | --- | --- | --- | --- |
+| Format 表 | ✅ | ✅ | ✅ | 数据就是表目录下同格式的普通文件（`file.format` 决定 csv / parquet…），无快照、无 manifest |
+| Object 表 | ✅ | ❌ | ✅ | 列固定为 path / name / length / mtime / atime / owner，用户声明的字段被服务端替换（见 `TableKinds`）；查询=递归列出表目录下的文件 |
+| Lance 表 | ✅ | ❌ | ❌ | Spark 侧包装类的 capabilities 为空集，读写都在分析阶段被拒（`
+
+
+
+`），与 lance 运行时在不在类路径无关（理由见下） |
+
+**为什么 Lance 表是空集——不是缺 jar，是上游还没实现。** 三处证据：
+
+- `org.apache.paimon.table.lance.LanceTable` 的接口 Javadoc 原文：*"A lance table format
+  table, paimon does not support read and write operation on this table yet."*
+- `LanceTableImpl implements ReadonlyTable, LanceTable`，但 `newScan()` 与 `newRead()`
+  都直接抛 `UnsupportedOperationException`，两条消息还互相指路（`use newRead() instead` /
+  `use newScan() instead`）——两个方向都是占位，没有实现。
+- Spark 侧 `SparkTable.scala` 里 `case class SparkLanceTable(table: Table) extends BaseTable`
+  既不覆写 `capabilities()`（继承 `BaseTable` 的空集），也没有 `newScanBuilder`。
+  同一文件里的对照：`SparkObjectTable extends BaseTable with SupportsRead` 声明
+  `JEnumSet.of(BATCH_READ)` 并挂 `ObjectTableScanBuilder`；`PaimonFormatTable` 声明
+  `EnumSet.of(BATCH_READ, BATCH_WRITE, OVERWRITE_DYNAMIC, OVERWRITE_BY_FILTER)`。
+  （同样空壳的还有 `SparkIcebergTable`。）
+
+两条报错出自 Spark 的 `TableCapabilityCheck` 规则（`spark-sql`），消息由
+`QueryCompilationErrors.unsupportedTableOperationError` 按
+`Table <x> does not support <operation>.` 拼出，`operation` 取 `batch scan` /
+`append in batch mode`。也就是说它们在**分析期**就抛出——Paimon 的 `LanceTableImpl`
+根本没被调用，更没走到文件系统或 lance 的原生代码。补 `com.lancedb:lance-core`
+之类的 jar 不会改变结论：上游 2.0.0 的 `paimon-lance` 模块（真正的 lance 集成）在
+`paimon-spark-common` 的 pom 里是 `test` scope 且主动 exclude 了 `lance-core`，
+本项目 `paimon-rest-spark` 的依赖树里也完全没有 lance 相关 artifact。
+要读 Lance 数据得用 Lance 生态自己的 Spark 连接器，拿 `LanceTable.location()` 指过去；
+Paimon 的 Spark 连接器在当前版本不解。
+
+两个相关的服务端行为，测试连同理由一起钉住：
+
+- **Format / Lance 表不物化 `schema/schema-0`**。Format 表的读路径把表目录下所有
+  非隐藏文件当数据，写进去的 JSON schema 文件会混进查询结果（parquet 直接报
+  `not a Parquet file`，CSV 更糟——不报错、当数据行返回）；它的写路径
+  （`FormatTableCommit`）是纯文件系统级提交，也不需要 schema 文件。Lance 目录
+  布局由 lance 自己管理，同样不写。见 `TableMetadataService.schemaFileIsForeign`。
+- **Object 表物化 `schema/schema-0`**。这镜像上游 `JdbcCatalog.createObjectTable` 的
+  行为——代价是查询结果会列出这份 schema 文件自己（`path = schema/schema-0`），
+  测试按这个真实行为断言，防止有人单方面改掉。
+
 ---
 
 ## 5. 常见报错对照
@@ -375,6 +427,7 @@ schema 物化补上之后它们已经翻转成断言写入成功。这个类保�
 | 服务端 WARN 里出现 `ServiceConfigurationError: java.net.spi.InetAddressResolverProvider: Provider org.xbill.DNS.spi.DnsjavaInetAddressResolverProvider not found` | 服务端跑在 JDK 18+ 上，而 `paimon-s3` 插件包把 dnsjava 那个 provider 的实现类放在 `META-INF/versions/18/`，插件 loader 加载不到 → 该作用域内任何 `InetAddress` 解析都失败（触发点是 Hadoop 度量系统的 `getHostname`） | **把服务端运行时换成 JDK 17**，见 4.2。这是唯一可靠的处理；这条 WARN 会让对象存储上的 schema / 快照都写不出去，而 REST 读写看着一切正常 |
 | `Cannot get latest schema for table <表名>`（服务端日志里**没有**对应 WARN） | 物化那一步压根没被触发：`paimon.rest.table-metadata.enabled=false`，或者表是 `register` 进来的 `external` 表 | 前者打开开关；后者是有意不物化的（位置不归本服务端所有），需要引擎侧自己保证目录里有 schema |
 | `Content-Type 'text/plain;charset=UTF-8' is not supported` | 服务端未放宽 JSON 转换器。Paimon 客户端（Apache HttpClient 5）把 JSON 请求体标成 `text/plain`，早期版本会因此 415 | 已由 `JsonContentTypeConfig` 修复；若仍遇到，确认服务端版本 |
+| `Table <库.表> does not support batch scan.` / `does not support append in batch mode.` | 表的 `capabilities()` 里没有 `BATCH_READ` / `BATCH_WRITE`。Lance 表（连同 Iceberg 表）在 Paimon 2.0.0 里就是空集——上游只搭了 API 骨架，`LanceTableImpl` 的 `newScan()` / `newRead()` 都抛 `UnsupportedOperationException`，见 4.4 | **不是缺 jar**，补 `lance-core` 也没用。要读 Lance 数据用 Lance 生态自己的 Spark 连接器，拿 `LanceTable.location()` 指过去；Paimon 的 Spark 连接器在当前版本不解 |
 
 ---
 
@@ -386,7 +439,7 @@ schema 物化补上之后它们已经翻转成断言写入成功。这个类保�
 ./scripts/e2e-spark-sql.sh
 ```
 
-它执行的四个测试类必须**同批运行**：一个 JVM 只能有一个 SparkContext，而
+它执行的五个测试类必须**同批运行**：一个 JVM 只能有一个 SparkContext，而
 `spark.sql.extensions` 只在建会话时生效，因此它们共用 `LiveSparkSession` 的会话。
 把用桩服务端的 `ManagementSqlExecutionTests` 拉进同一批会先建会话、把端点与扩展都错位，
 `LiveSparkSession` 会就此直接报错（而不是静默跑错）。
@@ -395,6 +448,7 @@ schema 物化补上之后它们已经翻转成断言写入成功。这个类保�
 | --- | --- |
 | `ManagementSqlLiveServerTests` | 逐条管理语句对真实服务端验管理 API 契约 |
 | `PaimonTableDdlTests` | 建表、写入、读回，并核对落到服务端的 schema / 分区 / 表选项 / 路径 |
+| `NonPaimonTableSqlTests` | Format / Object / Lance 三种非 Paimon 表的建表、写入与查询边界（见 4.4） |
 | `SparkSqlAuthorizationTests` | 同一个 catalog、两种身份下的权限边界（见 6.1） |
 | `SparkSqlDocExamplesTests` | 执行 `spark-sql-reference.md` 第 10 节的示例 |
 

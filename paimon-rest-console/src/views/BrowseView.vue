@@ -271,13 +271,20 @@
         </el-form-item>
         <!-- 表格式决定这个对话框剩下的形状：字段要不要声明、能不能带主键与分区，
              以及提交时写进 options.type 的取值（Paimon 表不写，与服务端缺省一致）。
-             每种格式的说明收进标签旁的问号图标，不在表单里铺开一段文字。 -->
+             每种格式的说明收进标签旁的问号图标，不在表单里铺开一段文字。
+             Lance 表留在这一排里但不可选：直接删掉它，用户只会觉得「Paimon 支持的
+             四种格式怎么少了一种」；摆在那里并说明原因，才答得上这个问题。 -->
         <el-form-item>
           <template #label>
-            <FieldLabel label="表格式（type）" :tip="currentKind.hint" />
+            <FieldLabel label="表格式（type）" :tip="kindTip" />
           </template>
           <el-radio-group v-model="tableDialog.kind">
-            <el-radio-button v-for="kind in TABLE_KINDS" :key="kind.value" :value="kind.value">
+            <el-radio-button
+              v-for="kind in TABLE_KINDS"
+              :key="kind.value"
+              :value="kind.value"
+              :disabled="kind.disabled"
+            >
               {{ kind.label }}
             </el-radio-button>
           </el-radio-group>
@@ -616,6 +623,10 @@ const PAIMON_TYPES = [
  *
  * <p>Paimon 表（`table`）刻意不写这个键：服务端把「没有 type」当作 Paimon 表，
  * 少一个可以写错的地方，也与既有表一致（它们都没有这个选项）。
+ *
+ * <p>`disabled` 是**控制台自己的策略**，不是服务端的限制：服务端照常接受
+ * `type=lance-table` 的建表请求（Spark SQL 与 HTTP 都通，见
+ * `docs/spark-paimon-rest-e2e.md` §4.4），这里只是不给这个入口。
  */
 const TABLE_KINDS = [
   {
@@ -636,7 +647,9 @@ const TABLE_KINDS = [
   {
     value: 'lance-table',
     label: 'Lance 表',
-    hint: 'Lance 数据集表：字段、非空与主键的用法与 Paimon 表相同。',
+    hint: 'Lance 数据集表。',
+    disabled: true,
+    disabledReason: 'Paimon 2.0.0 还没实现 Lance 表的读写——Spark 侧的包装类没有声明任何读写能力，查询与写入都会在分析阶段被拒（不是缺依赖）。控制台因此不给建表入口；已存在的 Lance 表仍会正常列出与展示。',
   },
 ]
 
@@ -875,14 +888,34 @@ const tableDialog = reactive({
 const currentKind = computed(
   () => TABLE_KINDS.find((item) => item.value === tableDialog.kind) || TABLE_KINDS[0],
 )
+
+/**
+ * 表格式问号里的话：当前选项的说明，后面接不可选项（目前只有 Lance 表）的原因。
+ *
+ * <p>为什么把两边拼在一起：禁用的选项点不中，`currentKind.hint` 就永远轮不到它，
+ * 而「怎么少了一种格式」恰恰是用户在这个问号下最想问的。拼装写成从 `TABLE_KINDS`
+ * 里筛 `disabled`，以后谁再禁用一种，说明自动跟上。
+ */
+const kindTip = computed(() => {
+  const blocked = TABLE_KINDS.filter((kind) => kind.disabled)
+  if (!blocked.length) {
+    return currentKind.value.hint
+  }
+  return `${currentKind.value.hint} ${blocked
+    .map((kind) => `${kind.label}（${kind.value}）不可选：${kind.disabledReason}`)
+    .join(' ')}`
+})
+
 const isFormatTable = computed(() => tableDialog.kind === 'format-table')
 const isObjectTable = computed(() => tableDialog.kind === 'object-table')
 
 /**
- * 主键 / 非空 / 分区三列只在 Paimon 表与 Lance 表出现。
+ * 主键 / 非空 / 分区三列只在 Paimon 表出现。
  *
  * <p>Format 表没有主键语义（Paimon 的 `CatalogUtils.validateFormatTableOptions`
- * 明确禁止），分区也不由 catalog 管理（分区来自目录结构），所以这三列连同表头一起收起。
+ * 明确禁止），分区也不由 catalog 管理（分区来自目录结构），所以这三列连同表头一起收起；
+ * Object 表压根不渲染字段表格（列由 Paimon 固定）；Lance 表虽然与 Paimon 表同构，
+ * 但已不在可选之列（见 `TABLE_KINDS`），走不到这里。
  */
 const supportsKeys = computed(() => tableDialog.kind !== 'format-table')
 
@@ -907,7 +940,7 @@ const defaultOptionNames = computed(() => Object.keys(prefilledDefaults.value))
  * 表格式变了，默认参数跟着进出表单。
  *
  * <p>为什么要动它：服务端**只对 Paimon 表**合并默认参数（见服务端 `TableDefaults`），
- * 而表单里的表属性是原样发送的。切到 Format / Object / Lance 表后若把预填值留在原地，
+ * 而表单里的表属性是原样发送的。切到 Format / Object 表后若把预填值留在原地，
  * 它们就成了表级参数被真的写进去——与服务端的规则对不上，看起来还会像「默认值也进了 Format 表」。
  *
  * <p>只删「取值仍等于默认值」的那些：用户改过的说明他想显式写进这张表，保留。
@@ -989,6 +1022,14 @@ function openCreateTable() {
 }
 
 async function saveTable() {
+  // 表格式的选择器已把不可选项标成 disabled，但那是界面状态，不是校验：
+  // 判据落在 `TABLE_KINDS` 上再拦一次，免得哪天状态被别的路径改掉、或者
+  // 新增不可选格式时只改了配置没接上拦截。服务端不做这个限制（见 `TABLE_KINDS` 注释）。
+  const blockedKind = TABLE_KINDS.find((kind) => kind.value === tableDialog.kind)
+  if (blockedKind?.disabled) {
+    notifyError(new Error(`${blockedKind.label}暂不可建：${blockedKind.disabledReason}`))
+    return
+  }
   const name = tableDialog.name.trim()
   if (!name) {
     notifyError(new Error('请填写表名'))

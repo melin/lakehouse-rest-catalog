@@ -186,6 +186,13 @@ SQL 侧同样是 `WITH ('type' = 'format-table')`。本服务端认四种取值�
   （`Cannot define primaryKey for format table.`）。本服务端不经由 `AbstractCatalog` 建表，
   因此得自己拦下，否则 schema 文件要等引擎读的时候才报错。
 
+`TableMetadataService` 的 schema 物化对这三种表也分了档：Format 表与 Lance 表**不写**
+`schema/schema-0`（Format 表的读路径把表目录下所有非隐藏文件当数据，写进去的 JSON
+会混进查询结果；它的写路径 `FormatTableCommit` 也不需要 schema 文件。Lance 目录
+布局由 lance 自己管理），Object 表**照写**（镜像上游 `JdbcCatalog.createObjectTable`，
+代价是查询结果会列出这份 schema 文件自己）。缘由与实测见
+[`spark-paimon-rest-e2e.md` §4.4](spark-paimon-rest-e2e.md#44-三种非-paimon-表format--object--lance-的能力边界)。
+
 `paimon_table.table_type` 列存的就是这个取值，`GET .../table-details?tableType=` 因此能按
 格式过滤（Paimon 表的历史值是 `PAIMON`）；控制台据此伸缩页签，见
 [`console-table-detail.md` §1.1](console-table-detail.md#11-页签随表格式伸缩)。
