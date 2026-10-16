@@ -791,7 +791,7 @@ server 与协议面之间，不只是协议面内部的事。
 | 项 | 结果 |
 | --- | --- |
 | `mvn -o -DskipTests clean install` | **BUILD SUCCESS**，8 个模块（enforcer 三条不变量继续生效） |
-| 服务端测试 `mvn -o test -pl :lakehouse-rest-server` | TEST_RESULT_PLACEHOLDER |
+| 服务端测试 `mvn -o test -pl :lakehouse-rest-server` | **317 run / 0 failures / 0 errors / 0 skipped**（35 min）。这也是补上 §10.3 遗留的那一项：317 个测试**首次**在最终包名下实跑 |
 | 组件扫描 | 主类仍在 `io.github.melin.lakehouse.rest`，`rest.paimon.*` 是其子包，扫描范围不变；本轮仍无任何显式 `basePackages` / `@ComponentScan` / `logging.level.<包>` |
 | 残留检查 | 旧 FQCN（`rest.{dto,service,support,web}.<35 个类>`）全仓 **0** 处；`rest.paimon/` 这种斜杠形式 **0** 处 |
 | 改动规模 | 43 个文件 / +143 −120（含 4 个包目录的 rename，git 按 rename 识别） |
@@ -819,6 +819,9 @@ server 与协议面之间，不只是协议面内部的事。
 目录           ：四个模块嵌在 spring-parent/ 下（`-pl` 要写 :artifactId）                       ✅ 阶段 4（§9）
 Java 包        ：paimonrest → paimon.rest → io.github.melin.lakehouse.rest                      ✅ §9 / §10
                  与 artifactId 的 lakehouse 对齐；只留「最初名字」的空壳兜住既有部署
+                 协议面再各加一层格式子包：core/storage/server 共用 rest.*，
+                 Paimon 面独占 rest.paimon.{web,service,dto,support}，Iceberg 面对称   ✅ §11
+                 拆包必查「同包直呼」的引用——它们不写 import，编译器才会告诉你      （§11.2）
 对外名字的分层 ：能不能改看「谁写它」——spark.sql.extensions 要留壳；paimon.rest.* 配置键 /
                  k8s 资源名 / paimon_ 表前缀都不动；包名只有本仓库见过，直接改（§10.2）
 不改的三处     ：paimon.rest.* 配置前缀 · k8s 资源名 · paimon_ 表前缀（§4.3(1)(3)(4)）
