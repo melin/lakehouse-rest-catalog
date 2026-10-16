@@ -23,7 +23,10 @@
 - 模块：服务端（Spring Boot）+ Spark SQL 语法扩展（Scala）
 - 表格式：**Paimon 表**与三种不受快照管理的表——**Format 表**（目录里的既有文件）、
   **Object 表**（对象元数据，列由 Paimon 固定）、**Lance 表**；类型写在
-  `schema.options.type` 里，建表时的归一化与边界见第 6 节第 23 条
+  `schema.options.type` 里，建表时的归一化与边界见第 6 节第 23 条。
+  其中 **Lance 表只登记不读写**（Paimon 2.0.0 未实现，见
+  [`docs/spark-paimon-rest-e2e.md`](docs/spark-paimon-rest-e2e.md) §4.4）：
+  接口照常接受建表请求，控制台的新建表表单不给入口
 - 默认表属性：catalog 的 `properties` 里写 `table-default.<属性名>`（如
   `table-default.deletion-vectors.enabled=true`），新建 **Paimon 表**时自动带上该属性
   （去前缀、表级参数优先）；控制台入口是 Catalog 详情页的「配置」页签。见
@@ -565,9 +568,16 @@ Azure 只下发定位元数据是个明确的缺口：Polaris 的 `polaris.stora
     **Object 表换成固定六列** `path` / `name` / `length` / `mtime` / `atime` / `owner`
     （用户声明的字段被忽略，镜像上游 `buildObjectTableSchema`）、**Format 表带主键直接 400**。
     其余类型取值一律 400——写进库的话，引擎读表时才在 `CoreOptions.TYPE` 的枚举上炸，
-    出错现场离原因太远。服务端对这三种表只登记元数据并写 `schema-0`，数据由引擎直接读写
-    那个目录，因此快照、标签、分支、分区状态与提交累计的文件统计都不适用：控制台只给它们
-    「详细信息」与「文件列表」两个页签，详细信息页里也不画那四张统计卡片。
+    出错现场离原因太远。服务端对这三种表只登记元数据，**物化则分三档**：
+    **Object 表写 `schema-0`**（镜像上游 `JdbcCatalog.createObjectTable`，代价是查询结果
+    会列出这份 schema 文件自己），**Format 表与 Lance 表不写**——Format 表的读路径把表目录下
+    所有非隐藏文件当数据，写进去的 JSON 会被当数据文件读（parquet 直接报
+    `not a Parquet file`，CSV 更糟：不报错、当数据行返回），Lance 目录则由 lance 自己管理。
+    数据由引擎直接读写那个目录，因此快照、标签、分支、分区状态与提交累计的文件统计都不适用：
+    控制台只给它们「详细信息」与「文件列表」两个页签，详细信息页里也不画那四张统计卡片。
+    三者中 **Lance 表只登记不能读写**（Paimon 2.0.0 未实现，见
+    [`docs/spark-paimon-rest-e2e.md`](docs/spark-paimon-rest-e2e.md) §4.4），
+    服务端照常接受它的建表请求，控制台的新建表表单把它标成不可选。
 24. **catalog 级默认表属性（`table-default.*`）只作用于新建的 Paimon 表**。
     catalog 的 `properties` 里 `table-default.<属性名>` 的项，建表时**去掉前缀**写进表属性
     （`support/TableDefaults`）。四条边界：**表级参数优先**（只做 `putIfAbsent`，

@@ -148,10 +148,33 @@ baseline 就推到新值，按钮回到「与服务端一致」。
 默认参数**去掉前缀**预填进表属性。这样表单里看得见它们，不会有「表怎么凭空多了个属性」
 的疑问；服务端建表时也会合并同一份，表级参数优先，所以预填值与最终结果一致。
 
-表格式切换时它们会跟着进出（`watch(tableDialog.kind)`）：切到 Format / Object / Lance 表
+表格式切换时它们会跟着进出（`watch(tableDialog.kind)`）：切到 Format / Object 表
 就移出——服务端**只对 Paimon 表**合并默认值，留在表单里会被当作表级参数真的写进那张表。
 只移出「取值仍等于默认值」的那些：用户改过的说明他想显式写进这张表，保留。
 无默认参数时，`TipNote` 会指出配它们的地方（Catalogs 页里该 catalog 的「配置」页签）。
+
+### 3.5 为什么不给 Lance 表的建表入口
+
+选择器里保留「Lance 表」这个选项，但标成不可选（`TABLE_KINDS` 里那条的 `disabled`）。
+**不直接删掉它**：Paimon 支持的格式就是四种，删掉之后用户只会觉得「怎么少了一种」，
+摆在那里加一句原因，才答得上这个问题。
+
+原因是没有可用的读写能力：Paimon 2.0.0 的 `SparkLanceTable` 什么都不声明
+（`capabilities` 为空集），查询与写入都在 Spark 的**分析阶段**被拒
+（`does not support batch scan.` / `does not support append in batch mode.`），
+`LanceTableImpl` 的 `newScan()` / `newRead()` 也都抛 `UnsupportedOperationException`。
+**与依赖无关**：不是缺 `lance-core`。判据与证据见
+[spark-paimon-rest-e2e.md](spark-paimon-rest-e2e.md) §4.4。
+
+三条边界：
+
+- **这是控制台策略，不是服务端限制。** 服务端照常接受 `type=lance-table` 的建表请求，
+  Spark SQL 与 HTTP 都能建出来（e2e 里正有用例断言这件事）。控制台只是不给这个入口。
+- **既有 Lance 表照常展示。** `utils/tableKind.js` 里的显示名不能跟着删：认不出
+  `lance-table` 就会把它当成 Paimon 表，列表显示错格式，详情页还会去问快照端点。
+- **拦截落在两处，原因只有一份。** 选择器标 `disabled`（界面状态）+ `saveTable` 开头
+  按同一份 `TABLE_KINDS` 再拦一次（校验），免得状态被别的路径改掉、或以后新增不可选格式时
+  只改了配置没接上拦截；原因文案只有 `disabledReason` 一处，选择器问号里那几句是拼出来的。
 
 ---
 

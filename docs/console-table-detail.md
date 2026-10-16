@@ -44,7 +44,9 @@ Paimon 表为此多付一个往返；Format / Object / Lance 表则**完全不�
 | Lance 表（`type=lance-table`） | 详细信息 / 文件列表 |
 
 后三种表没有快照，快照 / 标签 / 分支三个页签自然无处可落；「数据访问」在当前约定里
-也只随 Paimon 表出现。详细信息页内部另有两处伸缩：四张快照统计卡片只对 Paimon 表渲染；
+也只随 Paimon 表出现。**Lance 表仍要认出来**：控制台的新建表表单已不给这个入口
+（[console-catalog-detail.md](console-catalog-detail.md) §3.5），但 HTTP 与 Spark SQL
+还能建出来，认不出它就会被当成 Paimon 表，显示错格式之外还会去问快照端点。详细信息页内部另有两处伸缩：四张快照统计卡片只对 Paimon 表渲染；
 「字段列表 / 分区列表」二级页签只在 Paimon 表出现两个（分区状态来自快照提交，
 其余表格式没有），**此时才渲染二级页签栏**——只剩字段列表一节时（Format / Object /
 Lance 表）不渲染一行只有一个页签的栏，字段列表直接跟着基本信息往下排。

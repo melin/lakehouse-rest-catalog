@@ -166,10 +166,15 @@ SQL 侧同样是 `WITH ('type' = 'format-table')`。本服务端认四种取值�
 | 缺席（或 `table`） | Paimon 表 | 原样落库；**不写** `path`，位置由目录决定 |
 | `format-table` | Format 表 | 补 `path` = 表位置；**禁止主键**（400） |
 | `object-table` | Object 表 | 补 `path` = 表位置；用户声明的字段被**忽略**，落库的是固定六列 |
-| `lance-table` | Lance 表 | 补 `path` = 表位置；字段、非空、主键与 Paimon 表一致 |
+| `lance-table` | Lance 表 | 补 `path` = 表位置；字段、非空、主键与 Paimon 表一致（**能建不能读写**，见下） |
 
 其余取值一律 400。写进库的话，引擎读表时才在 `CoreOptions.TYPE` 的枚举上炸，
 出错现场离原因太远，所以宁可在这里回一句「不认识的类型」。
+
+> **Lance 表能建、不能读写。** Paimon 2.0.0 尚未实现它的读写，因此接口这层**不拦**
+> 建表请求（拦了会连「先登记、后用别的引擎读」这个用法一起堵死），只在控制台的
+> 新建表表单里不给入口（见 [console-catalog-detail.md](console-catalog-detail.md) §3.5）。
+> 能力边界与证据：[spark-paimon-rest-e2e.md](spark-paimon-rest-e2e.md) §4.4。
 
 三条规则都来自上游，这里只是把它们放到本服务端的建表路径上（实现见 `support/TableKinds`）：
 

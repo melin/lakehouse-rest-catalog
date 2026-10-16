@@ -7,6 +7,10 @@
  * 因此这里也把「没有 type」读成 Paimon 表。
  *
  * <p>两个页面共用这一份：目录浏览的列表要显示表格式，详情页要按它伸缩页签。
+ *
+ * <p>`lance-table` 留在表里，虽然控制台的建表对话框已经不提供这个选项（见 `BrowseView`
+ * 的 `TABLE_KINDS`）：Lance 表还能从 HTTP 或 Spark SQL 建出来，认不出它就会被当成 Paimon 表，
+ * 于是列表显示错格式、详情页还会去问快照端点再报错。
  */
 
 export const TABLE_KIND_LABELS = {
