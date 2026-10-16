@@ -1,4 +1,4 @@
-# Paimon Rest Catalog Server。
+# LakeHouse Rest Catalog Server。
 #
 # 镜像来自仓库根目录的 Dockerfile（单阶段：JRE 17 + 一个预构建的 jar）：
 #   mvn -o -pl :lakehouse-rest-server -am clean package -DskipTests

@@ -180,7 +180,7 @@ router.beforeEach(async (to) => {
 
 router.afterEach((to) => {
   const title = to.meta?.title
-  document.title = title ? `${title} · Paimon Rest Catalog 控制台` : 'Paimon Rest Catalog 控制台'
+  document.title = title ? `${title} · LakeHouse Rest Catalog 控制台` : 'LakeHouse Rest Catalog 控制台'
 })
 
 export default router

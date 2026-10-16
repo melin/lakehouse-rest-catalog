@@ -13,6 +13,7 @@ import io.github.melin.lakehouse.rest.dto.OptimizationDtos.CatalogSettings;
 import io.github.melin.lakehouse.rest.dto.OptimizationDtos.TablePolicy;
 import io.github.melin.lakehouse.rest.dto.OptimizationDtos.UpdateCatalogSettingsRequest;
 import io.github.melin.lakehouse.rest.dto.OptimizationDtos.UpdateTablePolicyRequest;
+import io.github.melin.lakehouse.rest.paimon.service.TableLookup;
 import io.github.melin.lakehouse.rest.service.OptimizationJobService.BatchTable;
 import io.github.melin.lakehouse.rest.support.ApiException;
 import io.github.melin.lakehouse.rest.support.OptimizationOptions;

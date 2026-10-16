@@ -1,8 +1,8 @@
-# Paimon Rest Catalog Server（Spring Boot + JPA）
+# LakeHouse Rest Catalog Server（Spring Boot + JPA）
 
 使用 Spring Boot 与 JPA 实现 Apache Paimon 的 **REST Catalog API**（OpenAPI 规格 v1）。
 服务扮演目录（catalog）角色：集中保存 database、表 schema、快照、分支、标签、分区、
-视图与函数的元数据，供 Flink / Spark 等支持 Paimon Rest Catalog 协议的引擎通过 HTTP 读写。
+视图与函数的元数据，供 Flink / Spark 等支持 LakeHouse Rest Catalog 协议的引擎通过 HTTP 读写。
 
 同时实现了 Apache Polaris 的 **REST Management API**（`/api/management/v1`）：
 主体、principal role、catalog role 与资源授权的完整 RBAC 管理面，
@@ -49,7 +49,7 @@ paimon-rest/
 │   ├── pom.xml                       只有 POM、没有源码；四个服务端模块嵌在它下面
 │   ├── lakehouse-rest-core/          与表格式无关的地基：鉴权、授权、JPA 实体与仓储、共享 DTO 词表
 │   ├── lakehouse-rest-storage/       数据目录文件访问与 FileIO 构造（唯一允许依赖 paimon-core 的非协议模块）
-│   ├── lakehouse-rest-protocol-paimon/  Paimon REST Catalog 协议面：Catalog API 全部 60 个端点
+│   ├── lakehouse-rest-protocol-paimon/  LakeHouse Rest Catalog 协议面：Catalog API 全部 60 个端点
 │   └── lakehouse-rest-server/        可执行服务端：Management API + 控制台 API + 优化调度，最终 jar 在这里
 ├── lakehouse-rest-console/     Web 管理控制台（Vue 3 + Vite，产物构建进服务端，见第 9 节）
 ├── lakehouse-rest-spark/       Spark SQL 语法扩展：用 SQL 管理主体、角色与授权
@@ -93,13 +93,17 @@ Maven 坐标与包名：`groupId` 为 `io.github.melin`，八个 artifact 是
 `lakehouse-rest-parent`（聚合）、`lakehouse-rest-spring-parent`（服务端父 POM）、
 `lakehouse-rest-core`、`lakehouse-rest-storage`、`lakehouse-rest-protocol-paimon`、
 `lakehouse-rest-server`、`lakehouse-rest-spark`、`lakehouse-rest-optimizer`。
-包前缀为 `io.github.melin.lakehouse.rest`（两轮改定：`io.github.melin.paimonrest` →
-`io.github.melin.paimon.rest` → 本名，与 artifactId 的 `lakehouse` 对齐），
-Spark 模块在其下再用 `.spark` 子包（如
+包前缀为 `io.github.melin.lakehouse.rest`（三轮改定：`io.github.melin.paimonrest` →
+`io.github.melin.paimon.rest` → 本名 → 各协议面再加一层格式子包，主前缀与 artifactId 的
+`lakehouse` 对齐），Spark 模块在其下再用 `.spark` 子包（如
 `io.github.melin.lakehouse.rest.spark.ManagementSparkExtensions`）。
-服务端的四个模块共用同一个包树（`io.github.melin.lakehouse.rest.{web,service,domain,dto,support,config}`），
+服务端的四个模块里，core / storage / server 共用一个包树
+（`io.github.melin.lakehouse.rest.{web,service,domain,dto,support,config}`），
 好处是搬类不需要改任何 `import`、也不需要动 `@ComponentScan`；
 代价是包名不再告诉你类在哪个模块，只能看它在哪个目录。
+**协议面例外**：Paimon 面的类独占 `io.github.melin.lakehouse.rest.paimon.{web,service,dto,support}`
+子树，与 core 的 `rest.{dto,service,support,web}` 平级而不重合——协议面注定有两个且互不依赖，
+将来 Iceberg 面按同一形状铺 `rest.iceberg.*` 即可，删掉或新增一整面不会波及另一面。
 
 **这一处改名会打到用户，因此留了兼容壳。** `spark.sql.extensions` 填的是全限定类名，
 包名一改，既有部署的 Spark 会话会在初始化时报 `ClassNotFoundException`——错误离「升级了
@@ -719,7 +723,7 @@ Spark 子模块（96 个，其中 5 个类共 23 个用例需要显式指向服�
 | `ManagementApiClientTests` | 请求方法与路径、请求体字段形状、路径段编码、`ALTER` 的读-合并-回写、单资源裸对象与状态码、权限端点的基址推导与分页跟随、错误映射 |
 | `ManagementSqlExecutionTests` | 真实 `SparkSession` + 桩服务端：扩展是否真被加载、`spark.sql` 是否真执行命令、结果行列名、原生 SQL 不受影响 |
 | `ManagementSqlLiveServerTests` | 对真实服务端跑完整 SQL 链路：管理 API 契约、官方权限端点的 grant / list / revoke 与分页过滤（默认跳过，见下）。catalog role 的建档与装配已从语法移除，这一类用例里那半截脚手架改调 `ManagementApiClient`，于是顺带守住「管理 API 在 SQL 撤出之后仍然整条可用」 |
-| `PaimonTableDdlTests` | 用 Spark SQL 经 Paimon Rest Catalog 建表再写入：分区 append 表与主键表（含分区主键）、`LIKE`、`IF NOT EXISTS` 幂等与裸建冲突、内联主键约束与保留表属性被 Spark 拒绝、库不存在时报错，以及 `CTAS` 与分区主键表 `INSERT` 写完后读回数据；两种断言并重——`DESCRIBE` / `SHOW CREATE TABLE` 的输出，以及直接读服务端元数据核对注释、分区键、主键与选项（默认跳过，见下） |
+| `PaimonTableDdlTests` | 用 Spark SQL 经 LakeHouse Rest Catalog 建表再写入：分区 append 表与主键表（含分区主键）、`LIKE`、`IF NOT EXISTS` 幂等与裸建冲突、内联主键约束与保留表属性被 Spark 拒绝、库不存在时报错，以及 `CTAS` 与分区主键表 `INSERT` 写完后读回数据；两种断言并重——`DESCRIBE` / `SHOW CREATE TABLE` 的输出，以及直接读服务端元数据核对注释、分区键、主键与选项（默认跳过，见下） |
 | `NonPaimonTableSqlTests` | Format / Object / Lance 三种非 Paimon 表的能力边界：Format 表（csv / parquet）建表-写入-读回全链路、Object 表固定六列 + 「把对象放进表目录即可查到，无需 refresh」+ 「客户端给的 `path` 成为表位置，于是能索引一个既有对象目录（并按外部表登记、目录里不留 `schema-0`）」、Lance 表只有建表可行——读写在 Spark 分析阶段被拒；服务端侧同时核对 `type` / `path` / `isExternal` / 字段的落库形状（默认跳过，见下） |
 | `SparkSqlAuthorizationTests` | 同一个 catalog、同一张表，两个身份各跑一遍真 SQL：有写权限的那个能建库、建表、写入、读回；只读的那个读得到数据、也看得见表列表，但建库 / 建表 / 写数据一律被服务端授权判定拒绝，且断言拒绝报文点名了主体与**缺失的那一项权限**（`TABLE_CREATE` / `TABLE_WRITE_DATA` / `NAMESPACE_CREATE`）、被拒之后数据没变。两个角色的授权用官方权限语句装配（`ON CATALOG_ALL ... TO ROLE ...`，而 `role:` 要生效得先有同名 catalog role——这一层用 `ManagementApiClient` 建，顺带验证「管理 API 建角色 + SQL 授 `role:`」这条跨接口的组合），于是也顺带验证「`ROLE x` 折成 `role:x`」这一步（默认跳过，见下）。服务端已有的两层授权测试都走 MockMvc 直接打 REST，这一层验的是**引擎发出的请求**——403 会不会被 Paimon 客户端改写、拒绝后到底有没有落数据，只有真 SQL 才知道 |
 | `SparkSqlDocExamplesTests` | 抽出 `docs/spark-sql-reference.md` 第 10 节的示例并逐条执行，断言作用范围落到哪几列、列范围与有效期的回读、撤销一项 access 不影响同资源其它 access（默认跳过，见下） |

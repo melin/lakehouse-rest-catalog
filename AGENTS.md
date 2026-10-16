@@ -182,13 +182,14 @@ lakehouse-rest-spring-parent/   服务端世界的父 POM（继承 Boot 4.1.1）
                         及 Default / Noop 实现与 StorageCredentialCache、CatalogFileService
     support/              Paths
 
-  lakehouse-rest-protocol-paimon/   Paimon REST Catalog 协议面（35 个类）
-    web/                  9 个控制器（Table / Database / View / Function / Branch / Tag /
+  lakehouse-rest-protocol-paimon/   LakeHouse Rest Catalog 协议面（35 个类）
+    paimon/web/           9 个控制器（Table / Database / View / Function / Branch / Tag /
                         Partition / Consumer / SemanticView），路径与规格一一对应
-    service/              同名资源的 service，及 TableMetadataService（schema/快照物化）、
+    paimon/service/       同名资源的 service，及 TableMetadataService（schema/快照物化）、
                         SchemaChangeService、TableLookup、CredentialService
-    dto/                  与 rest-catalog-open-api.yaml 的 schema 对应的 9 个 DTO 文件
-    support/              Codecs、SchemaSupport、TableDefaults、TableKinds
+    paimon/dto/           与 rest-catalog-open-api.yaml 的 schema 对应的 9 个 DTO 文件
+    paimon/support/       Codecs、SchemaSupport、TableDefaults、TableKinds
+    ↑ 唯一一个包名比 core / storage / server 多一层 `.paimon` 的模块，理由见第 7 节
 
   lakehouse-rest-server/   可执行服务端（39 个类；测试也在这一模块：29 个测试类 + `TestClock` 支撑类）
     PaimonRestServerApplication.java   启动类（组件扫描按**包**不按 jar，见第 7 节）
@@ -224,13 +225,18 @@ docs/                   16 份设计文档
 ```
 
 服务端四模块的**类数**：core 86 · storage 8 · protocol-paimon 35 · server 39（共 168）。
-四个模块共用**同一个包树**（`io.github.melin.lakehouse.rest.*`），所以「按包扫描」的 Spring
-组件扫描与 JPA 实体扫描在拆分前后**行为完全一致**，搬类不需要改任何 `import`——编译通过
-本身就是搬对了的证据（详见 [`docs/maven-module-design.md`](docs/maven-module-design.md) §8）。
-包名本身改过两次（`io.github.melin.paimonrest` → `io.github.melin.paimon.rest` →
-`io.github.melin.lakehouse.rest`），那是与模块边界无关的另一件事：目录 `git mv` + 全仓字符串
-替换，一次做完。最终名与 artifactId 的 `lakehouse` 对齐；空壳只保留**最初**那个，
-中间名从未提交、从未发布，所以不需要壳（见第 7 节）。
+core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.rest.*`），所以「按包扫描」
+的 Spring 组件扫描与 JPA 实体扫描在拆分前后**行为完全一致**，搬类不需要改任何 `import`——
+编译通过本身就是搬对了的证据（详见 [`docs/maven-module-design.md`](docs/maven-module-design.md) §8）。
+**例外是 Paimon 协议面**：它独占 `rest.paimon.{web,service,dto,support}` 子树，与 core 的
+`rest.{dto,service,support,web}` 平级而不重合，为的是给 Iceberg 面留出对称的
+`rest.iceberg.*`（见第 7 节最后一条与设计文档 §11）。`rest.paimon.*` 仍是主类所在包的子包，
+组件扫描照旧覆盖。
+包名本身改过三次（`io.github.melin.paimonrest` → `io.github.melin.paimon.rest` →
+`io.github.melin.lakehouse.rest` → 各协议面加 `.paimon` 段），那是与模块边界无关的另一件事：
+目录 `git mv` + 全仓字符串替换，一次做完。最终名与 artifactId 的 `lakehouse` 对齐；空壳只保留
+**最初**那个（`spark.sql.extensions` 的存量值），中间名从未提交、从未发布，所以不需要壳
+（见第 7 节）。
 
 `docs/` 读哪份：
 
@@ -330,11 +336,17 @@ docs/                   16 份设计文档
   Spring Boot 4 / Jackson 3 / Hibernate 7，**Spark 模块是 Jackson 2**，两边 JSON 工具不要互串。
 - **Strict 分层**：`web → service → domain/repo`；DTO 不泄漏实体，实体不外传
   （对外一律过 DTO，存储配置对外必须先 `withoutSecrets`）。跨模块方向见第 1 节第 10 条。
-- **包名是 `io.github.melin.lakehouse.rest.*`，四个服务端模块共用同一个包树。**
-  这是刻意的：Spring 组件扫描与 JPA 实体扫描按**包**匹配，不认 jar，所以把一个类从
+- **包名是 `io.github.melin.lakehouse.rest.*`。core / storage / server 共用同一个包树，
+  两个协议面各占一层子树。**
+  共用是刻意的：Spring 组件扫描与 JPA 实体扫描按**包**匹配，不认 jar，所以把一个类从
   `server` 搬到 `core` 不需要改一行 `import`，也不需要动任何 `@ComponentScan` 配置。
   **代价**是包名不再能告诉你类在哪个模块——判断方式只有「看它在哪个目录」，
   以及用 `outputs/maven-module-refactor/deps.py <类名>` 查它的出入边。
+- **协议面独占 `rest.<格式>.*` 子树**（Paimon 面是 `rest.paimon.{web,service,dto,support}`），
+  与上一条的「共用」不冲突：共用针对跨格式的平台代码，独占针对「注定有两个、且互不依赖」的
+  协议面；Iceberg 面按同一形状铺 `rest.iceberg.*` 即可。**从共享包树里往外搬类必须补 `import`**
+  ——旧布局下 `rest.dto.TableDtos` 与 `rest.dto.CommonDtos` 同包，源码里直呼其名、不写 import；
+  分包后这类引用会整片失效，症状是编译器报「程序包 X 不存在」或「找不到符号」。详见设计文档 §11。
 - **改包名属于「对外契约」级改动：唯一被写进用户配置的名字是 `spark.sql.extensions` 的值。**
   所以 `lakehouse-rest-spark` 里保留了一个旧包名下的空壳
   `io.github.melin.paimonrest.spark.ManagementSparkExtensions`（只继承新实现、不覆盖方法），

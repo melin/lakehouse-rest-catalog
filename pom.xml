@@ -16,7 +16,7 @@
 		  服务端世界（Spring Boot）—— 由 lakehouse-rest-spring-parent 再聚合：
 		    lakehouse-rest-core              领域与共享契约（零格式依赖）
 		    lakehouse-rest-storage           对象存储访问（warehouse 的读写都从这里出）
-		    lakehouse-rest-protocol-paimon   Paimon REST Catalog 协议面
+		    lakehouse-rest-protocol-paimon   LakeHouse Rest Catalog 协议面
 		    lakehouse-rest-server            可执行：装配 / 管理 API / 控制台宿主
 		    （后续迭代再加 lakehouse-rest-protocol-iceberg）
 

@@ -18,6 +18,7 @@ import io.github.melin.lakehouse.rest.dto.ManagementEnums.GrantType;
 import io.github.melin.lakehouse.rest.dto.ManagementEnums.StorageType;
 import io.github.melin.lakehouse.rest.dto.Privilege;
 import io.github.melin.lakehouse.rest.dto.StorageDtos.StorageConfigInfo;
+import io.github.melin.lakehouse.rest.paimon.service.DatabaseService;
 import io.github.melin.lakehouse.rest.support.ApiException;
 import io.github.melin.lakehouse.rest.support.CredentialCipher;
 import io.github.melin.lakehouse.rest.support.Paging;

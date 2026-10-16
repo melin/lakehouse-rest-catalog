@@ -6,8 +6,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 
-import io.github.melin.lakehouse.rest.dto.DatabaseDtos;
-import io.github.melin.lakehouse.rest.service.DatabaseService;
+import io.github.melin.lakehouse.rest.paimon.dto.DatabaseDtos;
+import io.github.melin.lakehouse.rest.paimon.service.DatabaseService;
 import io.github.melin.lakehouse.rest.support.Paging;
 import java.io.UnsupportedEncodingException;
 import java.nio.charset.StandardCharsets;

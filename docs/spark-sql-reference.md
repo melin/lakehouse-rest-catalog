@@ -1,6 +1,6 @@
 # Spark SQL 管理语法参考
 
-`lakehouse-rest-spark` 把 Paimon Rest Catalog 的管理 API 接进 Spark SQL：主体（principal）、
+`lakehouse-rest-spark` 把 LakeHouse Rest Catalog 的管理 API 接进 Spark SQL：主体（principal）、
 principal role 与资源授权可以用 16 条 SQL 语句管理，不必手写 HTTP 请求。
 catalog role 没有 SQL 入口——它只剩管理 API 一条路（控制台也没有它的页面）。
 

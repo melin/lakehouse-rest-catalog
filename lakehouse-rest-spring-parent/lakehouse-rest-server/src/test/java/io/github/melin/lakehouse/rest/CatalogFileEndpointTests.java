@@ -6,12 +6,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 
 import io.github.melin.lakehouse.rest.dto.CommonDtos;
-import io.github.melin.lakehouse.rest.dto.DatabaseDtos;
-import io.github.melin.lakehouse.rest.dto.TableDtos;
+import io.github.melin.lakehouse.rest.paimon.dto.DatabaseDtos;
+import io.github.melin.lakehouse.rest.paimon.dto.TableDtos;
 import io.github.melin.lakehouse.rest.dto.TypeDtos;
 import io.github.melin.lakehouse.rest.service.CatalogService;
-import io.github.melin.lakehouse.rest.service.DatabaseService;
-import io.github.melin.lakehouse.rest.service.TableService;
+import io.github.melin.lakehouse.rest.paimon.service.DatabaseService;
+import io.github.melin.lakehouse.rest.paimon.service.TableService;
 import java.io.IOException;
 import java.net.URI;
 import java.nio.file.Files;

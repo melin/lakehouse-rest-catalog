@@ -95,6 +95,18 @@ io.github.melin:lakehouse-rest-parent                     pom   聚合器 + 集�
 > 里面，所以 `spring-parent` 的 `<module>` 写裸名字、子模块的 `<parent>` 不用写
 > `<relativePath>`。这是迭代二调整的结果——阶段 0–3 落成的是平级布局，见 §9.1。
 
+Java 包与这棵树**部分对齐**——对齐到「面」这一级，不对齐到模块：
+
+```
+io.github.melin.lakehouse.rest            core / storage / server 三者共用
+├── {config,domain,dto,service,support,web}
+├── paimon.{dto,service,support,web}      protocol-paimon 独占
+└── iceberg.{dto,service,support,web}     protocol-iceberg（未落地，形状已定）
+```
+
+> 共用是为了「搬类不改 import」（§7 那条：组件扫描按包不按 jar）；独占是为了让协议面的
+> 边界写进包名，而不只是 artifactId。两者的取舍见 §11。
+
 依赖方向（箭头 = 编译期依赖），三条不变量用 maven-enforcer 的 `bannedDependencies` 机械守住：
 
 ```
@@ -151,7 +163,7 @@ Jackson 2.15.2 抬到 Boot 的版本）。拆成 5 个服务端模块后，这�
 | --- | --- | --- |
 | `-core` | 22 张表的实体与仓库、共享服务（catalog/database/table/快照、授权、凭据接口）、共享 DTO、共享 Web 组件（`/v1/config`、错误模型基类、两个认证拦截器、`CatalogAccessRules`、`RestServerProperties`）、协议面 SPI | 两个协议面都要用它，而它自己**一行格式代码都不该有**——这条约束只有在它是个模块时才守得住 |
 | `-storage` | `StorageFileIoFactory`、`CatalogFileService`、`Paths`、`StorageConfigs`、`FileIoType`、凭据管理器的实现与缓存 | 它是唯一需要「往仓库写文件」的模块（Paimon 的 `FileIO` 在这里承担的是**通用文件系统客户端**：s3 插件加载、凭据刷新、路径模板）。若 Iceberg 面另引一套 hadoop-aws 做同样的事，就会有两套 s3 凭据解析逻辑——设计文档 §5.5 要的「凭据统一」当场破功 |
-| `-protocol-paimon` | `web/` 下 20 个控制器里属于 Paimon 协议面的 10 个、Paimon DTO、`TableMetadataService`（schema/snapshot 物化）、`TableKinds`、`SchemaChangeService` | 唯一允许 `import org.apache.paimon` 的服务端模块（`storage` 除外，且只用于 FileIO） |
+| `-protocol-paimon` | `paimon/web/` 下 9 个控制器、`paimon/dto/` 的 Paimon 契约、`TableMetadataService`（schema/snapshot 物化）、`TableKinds`、`SchemaChangeService`、`CredentialService` | 唯一允许 `import org.apache.paimon` 的服务端模块（`storage` 除外，且只用于 FileIO）；包名独占 `rest.paimon.*`（§11） |
 | `-protocol-iceberg` | 35 个端点、Iceberg DTO、元数据代数（update 应用 / requirements 校验 / CAS）、投影派生（`schemas[]`/`snapshots[]`/`refs` → 行）、Iceberg 错误模型 | 唯一允许 `import org.apache.iceberg` 的模块；`iceberg-core` 带来的 avro 等依赖被关在这里 |
 | `-server` | 启动类、管理 API 控制器（33 个 operation）、控制台宿主与静态资源、安全装配、优化调度与 k8s 提交、`application.yml` | **唯一产出可执行 jar 与镜像**的模块。镜像里有什么，看这一个 POM 就够了 |
 
@@ -712,6 +724,86 @@ optimizer 的 `Main-Class` 跟着改了，但它不是外部契约——镜像�
   `base`——它在循环结束后指向 walk 最后访问过的目录，拿它拼路径就删到了别处（11 个空目录
   一个都没清掉，且不报错）。已修正为从 `src` 反推父目录；本轮的空目录手工补删。这类
   「循环变量泄漏到循环外」的错在 Python 里不会报警，值得在同类脚本里留意。
+
+---
+
+## 11. 落地记录之四：Paimon 面的包名加一层 `.paimon`
+
+动机是 §3.1 那条「协议面注定有两个」：`-protocol-paimon` 与将来的 `-protocol-iceberg`
+在**模块**上已经分开，包名却仍同树——Paimon 面的 `TableController` 与 core 的
+`ConfigController` 都住在 `io.github.melin.lakehouse.rest.web`。只靠 artifactId 区分协议面，
+等于把「属于哪个面」这件事留给目录路径去表达，而包名恰恰是读代码时最先看到的东西。
+于是把 Paimon 面整体挪进 `rest.paimon.*`：
+
+| | 改前 | 改后 |
+| --- | --- | --- |
+| core / storage / server | `rest.{web,service,dto,support,...}` | **不变** |
+| protocol-paimon | `rest.{web,service,dto,support}` | `rest.paimon.{web,service,dto,support}` |
+| protocol-iceberg（未落地） | — | `rest.iceberg.{web,service,dto,support}` |
+
+### 11.1 为什么是「先格式后分层」
+
+`rest.paimon.web` 与 `rest.web.paimon` 两种排布都能表达同一个意思。选前者只有一条理由，
+但分量足够：**协议面是这套工程里最粗的一条切分线**——两个面互不依赖、注定分模块、
+将来各带一套格式依赖（§3.1 的不变量 2、3），所以「面」比「层」更接近稳定边界。让每个面
+独占 `rest.` 下的一棵子树，删掉一整面、或让某一面自己演进内部分层（Iceberg 面若要加
+`rest.iceberg.metadata`），都不会碰到另一面。
+
+### 11.2 真正的坑：同包引用不写 import，拆包时整片失效
+
+搬迁本身机械（`add-paimon-package.py`：4 个包目录 `git mv`、35 条 `package` 声明、
+按 FQCN 精确替换 85 处引用、命中 27 个文件），但**第一次编译直接失败**，错误集中在一类引用：
+
+```
+TableDtos.java:        程序包 CommonDtos 不存在
+DatabaseService.java:  找不到符号 类 CatalogService
+CredentialService.java:找不到符号 类 StorageRuntimePolicy
+```
+
+根因不在这 35 个类，而在**它们引用的别人**。旧布局下 `rest.dto.CommonDtos`（core）与
+`rest.dto.TableDtos`（Paimon 面）**同包**，所以 `TableDtos` 里直呼 `CommonDtos.Column`，
+从不写 import；`rest.service.CatalogService`（core）、`rest.service.StorageFileIoFactory`
+（storage）同样被 Paimon 面的 service 直呼。包名加一层，同包关系断掉，这些引用集体失效。
+
+关键在于**这类边在「import 计数」里完全不可见**——它们本来就没有 import 行。
+`add-paimon-package.py` 的审计阶段（统计谁 import 了这 35 个类）因此报出「core / storage
+各 0 处」，看着依赖方向干净，实则整整漏掉一类边。
+
+补救脚本 `add-cross-package-imports.py` 按依赖方向建候选池：Paimon 面 → core / storage，
+server → Paimon 面（反向不可能存在：core / storage 的 classpath 上看不见 Paimon 面，
+同包也白搭）。「旧同包」的键取模块 `rest/` 下的相对包路径、并抹掉 Paimon 面自己的
+`paimon/` 段，于是 core 的 `rest/dto` 与 Paimon 面的 `rest/paimon/dto` 同键。
+结果 **14 个文件补 23 条 import**，其中 2 条落在 server（`ManagementCatalogService →
+DatabaseService`、`TableOptimizationService → TableLookup`）——这两处证明同类边也存在于
+server 与协议面之间，不只是协议面内部的事。
+
+> **可复用的判据**：把类从一个包搬到另一个包时，要查的不是「它 import 了谁」，而是
+> 「谁**在同一个包里**直呼它」。后者不会在 import 列表里留下任何痕迹，只有编译器会告诉你。
+
+### 11.3 不加兼容壳
+
+包名不在对外契约里（§10.2 的判据：除了本仓库没人写它），`rest.paimon.*` 也从未出现在任何
+已发布产物中，因此不补壳。Spark 那个空壳
+（`io.github.melin.paimonrest.spark.ManagementSparkExtensions`）与本次无关，一个字未动。
+
+### 11.4 验收
+
+| 项 | 结果 |
+| --- | --- |
+| `mvn -o -DskipTests clean install` | **BUILD SUCCESS**，8 个模块（enforcer 三条不变量继续生效） |
+| 服务端测试 `mvn -o test -pl :lakehouse-rest-server` | TEST_RESULT_PLACEHOLDER |
+| 组件扫描 | 主类仍在 `io.github.melin.lakehouse.rest`，`rest.paimon.*` 是其子包，扫描范围不变；本轮仍无任何显式 `basePackages` / `@ComponentScan` / `logging.level.<包>` |
+| 残留检查 | 旧 FQCN（`rest.{dto,service,support,web}.<35 个类>`）全仓 **0** 处；`rest.paimon/` 这种斜杠形式 **0** 处 |
+| 改动规模 | 43 个文件 / +143 −120（含 4 个包目录的 rename，git 按 rename 识别） |
+
+### 11.5 脚本自身的坑（记一笔）
+
+`add-cross-package-imports.py` 第一版从 `pkg_rel` 拼 FQCN 时漏了 `/` → `.` 的转换，
+生成出 `import io.github.melin.lakehouse.rest.paimon/service.DatabaseService;` 这种非法语句
+（编译器报「需要';'」）。它在 Paimon 面**没暴露**——那一侧补的 import 全是单层包
+（`dto.CommonDtos`、`service.CatalogService`），只有 server 那一侧（池来自 `paimon/service`）
+才会踩到，于是错到第二次编译才现形。教训是这类脚本的预演输出要**逐条读**，
+而不是只看条数：`paimon/service` 与 `paimon.service` 在打印里只差一个字符。
 
 ---
 
