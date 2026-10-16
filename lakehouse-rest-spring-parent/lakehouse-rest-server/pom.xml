@@ -1,0 +1,223 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+	<modelVersion>4.0.0</modelVersion>
+
+	<!--
+		父 POM 是 lakehouse-rest-spring-parent（服务端世界的父，它继承 Boot），
+		而不是仓库根的聚合 POM。理由见那个文件：Boot 的 dependencyManagement
+		不能压到 Spark / optimizer 上，所以「一个依赖世界一个父」。
+
+		本模块与 lakehouse-rest-core / -storage / -protocol-paimon 一起嵌在
+		lakehouse-rest-spring-parent/ 之下，父 POM 就是上一级的 pom.xml——
+		因此不需要 <relativePath>（默认值即正确）。
+	-->
+	<parent>
+		<groupId>io.github.melin</groupId>
+		<artifactId>lakehouse-rest-spring-parent</artifactId>
+		<version>0.0.1-SNAPSHOT</version>
+	</parent>
+
+	<artifactId>lakehouse-rest-server</artifactId>
+	<packaging>jar</packaging>
+	<name>lakehouse-rest-server</name>
+	<description>湖仓 REST Catalog 服务端：catalog API、Management API、控制台宿主与优化调度（Spring Boot + JPA）</description>
+
+	<!--
+		本模块是**唯一产出可执行 jar 与镜像**的模块。装什么：
+
+		  PaimonRestServerApplication    启动类（组件扫描从 io.github.melin.lakehouse.rest 起，
+		                                 因此 core / storage / protocol-* 里的 bean、实体与
+		                                 仓储在哪个 jar 里都能被扫到——这是拆分不需要改包名的原因）
+		  web/Management*、Console*      管理 API（/api/management/v1/**，33 个 operation）
+		                                 与控制台自己的端点
+		  service/Optimization*          优化任务的记账与调度：批次、明细、抢占、提交 k8s
+		  service/submit/*               k8s Job 与本地 log 两种提交器
+		  domain 的三张优化表 + 三个仓储
+		  dto/Management*、Optimization* 管理 API 与优化的契约
+		  config/DataInitializer 等装配   启动期初始化与调度开关
+		  resources/application*.yml     配置；static/console 是控制台的构建产物（已提交）
+
+		镜像里有什么，看这一个 POM 就够了——这正是把可执行物单独成一个模块的价值。
+	-->
+	<dependencies>
+		<dependency>
+			<groupId>io.github.melin</groupId>
+			<artifactId>lakehouse-rest-core</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>io.github.melin</groupId>
+			<artifactId>lakehouse-rest-storage</artifactId>
+		</dependency>
+		<!--
+			目前只有 Paimon 一个协议面。等 lakehouse-rest-protocol-iceberg 落地时，
+			这里加一行依赖即可——装配层不需要改（面之间靠 prefix 与 SPI 选出来）。
+		-->
+		<dependency>
+			<groupId>io.github.melin</groupId>
+			<artifactId>lakehouse-rest-protocol-paimon</artifactId>
+		</dependency>
+
+		<!--
+			Paimon 的三个运行时构件集中声明在这里，而不是散在 core / protocol-paimon：
+			它们决定**可执行产物里装了哪几个文件系统插件与格式实现**，那是部署决策，
+			属于 server。上游的接口依赖（编译期）由 storage 与 protocol-paimon 各自声明。
+		-->
+		<dependency>
+			<groupId>org.apache.paimon</groupId>
+			<artifactId>paimon-core</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.apache.paimon</groupId>
+			<artifactId>paimon-format</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.apache.paimon</groupId>
+			<artifactId>paimon-s3</artifactId>
+		</dependency>
+
+		<!-- 元数据存储：默认 H2 内存库，可用 profile 切换到 MySQL / PostgreSQL -->
+		<dependency>
+			<groupId>com.h2database</groupId>
+			<artifactId>h2</artifactId>
+			<scope>runtime</scope>
+		</dependency>
+		<dependency>
+			<groupId>com.mysql</groupId>
+			<artifactId>mysql-connector-j</artifactId>
+			<scope>runtime</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.postgresql</groupId>
+			<artifactId>postgresql</artifactId>
+			<scope>runtime</scope>
+		</dependency>
+
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-data-jpa-test</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-validation-test</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-webmvc-test</artifactId>
+			<scope>test</scope>
+		</dependency>
+	</dependencies>
+
+	<build>
+		<plugins>
+			<!-- 只有本模块打成可执行 jar：spring-boot-maven-plugin 只在这里出现 -->
+			<plugin>
+				<groupId>org.springframework.boot</groupId>
+				<artifactId>spring-boot-maven-plugin</artifactId>
+			</plugin>
+			<!--
+				把版本号写进 jar 清单的 Implementation-Version。
+
+				用途只有一处：控制台的元数据端点要把服务端版本报给前端展示（见
+				ConsoleMetaService#version）。不写这个条目读取结果为 null，
+				前端就只能显示「未知版本」——排查问题时
+				「这个控制台连的是哪个版本的服务端」是第一个要被回答的问题。
+
+				这里用 jar 插件而不是 spring-boot:build-info：后者还会写入构建时间，
+				同一个 commit 重复构建会产出不同的字节，与「构建可复现」相冲突，
+				而版本号本身是稳定的。
+			-->
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-jar-plugin</artifactId>
+				<configuration>
+					<archive>
+						<manifest>
+							<addDefaultImplementationEntries>true</addDefaultImplementationEntries>
+						</manifest>
+					</archive>
+				</configuration>
+			</plugin>
+			<!--
+				每次构建前清掉 target/classes 里那份控制台产物。
+
+				为什么要这么做：控制台的构建产物按内容哈希命名（index-CG9zHvOr.js 这种），
+				每次前端重建文件名都会变，而 maven-resources-plugin 只做「复制/覆盖」，
+				从不删除 target 里已经不存在于 src 的文件。于是增量执行 package 时，
+				target/classes/static/console 会累积历次构建的旧文件——
+				实测一次增量构建就多出 20 个死文件（含上一版 1.1 MB 的 index chunk），
+				打进 jar 里就是白白胖胖的几 MB，而且看 jar 内容会误以为有两个入口 chunk。
+
+				镜像里的 jar 直接来自本地构建（Dockerfile 只装、不编译），
+				因此这条守卫要兜住的正是最常发生的场景：改完控制台后只跑
+				package，而不是 clean package。
+
+				绑到 initialize：早于 process-resources，所以随后的复制是干净的一次。
+				excludeDefaultDirectories 置真，避免误删整个 target（clean 的默认行为）。
+				故意不删 target/classes 本身——那会连带清掉编译输出，
+				把增量构建变成全量构建。
+			-->
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-clean-plugin</artifactId>
+				<executions>
+					<execution>
+						<id>clean-derived-console-assets</id>
+						<phase>initialize</phase>
+						<goals>
+							<goal>clean</goal>
+						</goals>
+						<configuration>
+							<excludeDefaultDirectories>true</excludeDefaultDirectories>
+							<filesets>
+								<fileset>
+									<directory>${project.build.outputDirectory}/static/console</directory>
+								</fileset>
+							</filesets>
+						</configuration>
+					</execution>
+				</executions>
+			</plugin>
+			<!--
+				不变量 3 的守卫：Iceberg 的实现只允许声明在 lakehouse-rest-protocol-iceberg。
+
+				searchTransitive=false 在这里是**必须**的：可执行产物最终会通过
+				server → protocol-iceberg 把 iceberg-core 带进来（它当然要在 fat jar 里，
+				否则 Iceberg 面跑不起来）。要守的不是「产物里有它」，而是
+				「除了那个面，没有第二个地方声明它」——那是让 iceberg-core 的版本与
+				依赖体积收口在一个模块的唯一办法。默认的 searchTransitive=true 会把
+				这条规则读成「server 不许装配 Iceberg 面」，与设计相反。
+			-->
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-enforcer-plugin</artifactId>
+				<executions>
+					<execution>
+						<id>no-direct-format-leak</id>
+						<goals>
+							<goal>enforce</goal>
+						</goals>
+						<configuration>
+							<rules>
+								<bannedDependencies>
+									<searchTransitive>false</searchTransitive>
+									<excludes>
+										<exclude>org.apache.iceberg:*</exclude>
+									</excludes>
+									<message>
+										lakehouse-rest-server 只做装配，不该直接声明任何格式实现。
+										Iceberg 的依赖要声明在 lakehouse-rest-protocol-iceberg 里，
+										由本模块间接引入。见 docs/maven-module-design.md §3.1 不变量 3。
+									</message>
+								</bannedDependencies>
+							</rules>
+						</configuration>
+					</execution>
+				</executions>
+			</plugin>
+		</plugins>
+	</build>
+
+</project>

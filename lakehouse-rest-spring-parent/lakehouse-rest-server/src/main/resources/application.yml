@@ -1,0 +1,327 @@
+server:
+  port: 8080
+  # Paimon Rest Catalog 客户端会把 database / table 名称作为单个 UTF-8 路径段传入，
+  # Tomcat 默认拒绝路径中的部分编码字符，这里放宽以便名称中含点号、空格等情况正常工作。
+  tomcat:
+    relaxed-path-chars: "[,]"
+    relaxed-query-chars: "[,]"
+
+spring:
+  application:
+    name: lakehouse-rest-server
+  # 元数据存储默认使用 MySQL。建表语句见仓库根目录的 sql/schema-mysql.sql，
+  # 首次部署需要先执行它；之后由 ddl-auto: validate 在启动时校验实体与库结构是否一致，
+  # 不一致就启动失败，而不是悄悄改表。
+  #
+  # 需要即用即丢的实例（本地调试、端到端脚本）时换用 h2 profile：
+  #   java -jar lakehouse-rest-spring-parent/lakehouse-rest-server/target/lakehouse-rest-server-0.0.1-SNAPSHOT.jar --spring.profiles.active=h2
+  datasource:
+    url: jdbc:mysql://172.18.6.181:3306/paimon_catalog?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    username: root
+    password: "Root2024!@"
+    hikari:
+      maximum-pool-size: 20
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    # 刻意不设 database-platform：由 JDBC 连接自动探测，
+    # 这样 h2 / postgresql profile 与测试不需要各自覆盖方言。
+    open-in-view: false
+    properties:
+      hibernate:
+        format_sql: false
+  jackson:
+    default-property-inclusion: non_null
+    serialization:
+      indent-output: false
+
+# ---------------------------------------------------------------------------
+# 服务端行为配置
+# ---------------------------------------------------------------------------
+paimon:
+  rest:
+    # 目录（catalog）默认值：GET /v1/config?warehouse=X 会把 prefix 回给客户端
+    default-prefix: paimon
+    default-warehouse: file:///tmp/paimon-warehouse
+    # 未注册的 prefix 是否自动登记为一个 catalog，便于客户端零配置接入
+    auto-create-catalog: true
+    # 表路径模板，支持 {warehouse} {database} {table} 占位符
+    path-template: "{warehouse}/{database}.db/{table}"
+    # 分页默认值与上限
+    default-page-size: 100
+    max-page-size: 1000
+
+    # -------------------------------------------------------------------------
+    # 表元数据物化：把 schema 与快照写进 Paimon 表目录
+    # （<warehouse>/<db>.db/<表>/schema/schema-<n> 与 snapshot/snapshot-<n>）。
+    #
+    # 为什么服务端要管这件事：Paimon 的 REST Catalog 客户端是瘦客户端——
+    # RESTCatalog.createTable 只把 schema POST 给服务端，物理目录从来不由客户端写；
+    # 提交快照同理，RESTCatalog.supportsVersionManagement() 恒为 true，
+    # 客户端走 CatalogSnapshotCommit 把快照 POST 给服务端，自己那份写 snapshot-<n>
+    # 的代码（RenamingSnapshotCommit）根本不会被实例化。
+    # 对照之下 HiveCatalog（自己就是表的拥有者）会在 createTableImpl 里调
+    # SchemaManager.createTable 写 schema 文件。换到 REST 形态，这份责任就落到了服务端。
+    #
+    # 不写会怎样：引擎提交快照前要读 schema/schema-<n> 取 schemaId，读不到就抛
+    # Cannot get latest schema for table <表名> 并回滚，留下已经写好的数据文件当孤儿。
+    # 快照文件的缺失更难发现：REST 的读路径也走服务端（SnapshotLoaderImpl 查的就是
+    # 本服务端的数据库），所以用 catalog 读写一切正常，只有绕开服务端直接看仓库
+    # 才会发现那是一张没有快照的表。
+    #
+    # 开关的意义与取舍见 docs/spark-paimon-rest-e2e.md 第 4 节，逐项说明见 README 第 5 节。
+    # -------------------------------------------------------------------------
+    table-metadata:
+      # 是否物化。默认开启。external=true 的表（register 进来的）始终不物化：
+      # 它的位置不归本服务端所有，往里写 schema / 快照是数据损坏而不是补全。
+      enabled: true
+      # 物化失败时是否让请求失败（500 且事务回滚）。
+      # 默认 false（尽力而为）：服务端写仓库需要 FileIO 实现、凭据、网络三者同时到位，
+      # 任缺一项，严格失败会让**建表整体不可用**——影响面比「表暂时写不进去」大得多。
+      # 置 true 适合「宁可建不出表，也不要有表写着写着写不进去」的部署。
+      # 注意：仓库在 s3:// / obs:// / oss:// 上时，服务端自己也要有对应 scheme 的
+      # FileIO 实现（paimon-core 只带 file / hdfs / viewfs），否则这里一直是 WARN。
+      fail-on-error: false
+      # DROP TABLE 时是否连表目录一起删除。
+      # 默认 false：删数据不可逆，默认值得是「谁都没看过这份文档时会发生什么」的那一个。
+      # 代价是「删表 -> 同名重建」会撞 Schema in filesystem exists, creation is not
+      # allowed.，此时要么打开这一项，要么手工清掉旧表目录。
+      purge-on-drop: false
+
+    auth:
+      # true 时所有 /v1/**、/api/catalog/v1/**、/api/management/v1/**、/api/console/v1/** 都要求
+      # Authorization: Bearer <token>（例外只三条：登录引导 /api/console/v1/auth、
+      # 登录 /api/console/v1/login 与令牌端点 /api/catalog/v1/oauth/tokens）
+      enabled: false
+      # 关闭鉴权时请求落到哪个主体名下
+      principal: anonymous
+      # 静态令牌：给机器用——Spark / Flink 客户端把它写死在配置里，之后不再变更。
+      # 浏览器不要用它：换人不改配置就区分不了，写在客户端配置里的令牌也很难轮转。
+      # 浏览器走下面的 console 两种登录方式。
+      tokens: []
+      # 令牌 → 主体名映射；授权判定按主体名查授权链路，未配置的令牌退化为「令牌即主体名」
+      token-principals: {}
+      # -----------------------------------------------------------------------
+      # 控制台登录签发的访问令牌。
+      #
+      # 令牌是自包含的 JWT，服务端不存任何会话。因此：
+      #   - 多实例部署下任一实例签发的令牌其余实例都认；
+      #   - 服务端重启不会让已登录的人掉线；
+      #   - 代价是无法即时撤销：令牌签发后在有效期内始终有效，TTL 是唯一的暴露窗口
+      #     上限。要踢掉某个人只能轮换 signing-key，而那会踢掉所有人。
+      # -----------------------------------------------------------------------
+      access-token:
+        # 浏览器一次工作会话的长度。没有撤销机制时这个值不宜大
+        ttl: 1h
+        # JWT 的 iss，用于自校验
+        issuer: paimon-rest
+        # HMAC-SHA256 签名密钥，Base64，解码后至少 32 字节。生成：openssl rand -base64 48
+        # 留空则进程启动时随机生成——本地单机调试可用，但重启会让所有人掉线、
+        # 多实例之间互相 401，生产必须显式配置（启动日志会就此告警）
+        signing-key: ""
+      # -----------------------------------------------------------------------
+      # 浏览器访问控制台时的登录方式，三种，可同时启用。
+      # 三者都只产出一个 access token，之后走同一条 Authorization: Bearer 通道。
+      #
+      # 两个开关别混在一起看：
+      #   auth.console.required（默认 true）——控制台要不要先登录（只挡界面与
+      #     /api/console/v1/**）。
+      #   auth.enabled（默认 false）——整个服务端要不要令牌，管的是 /v1/**、
+      #     /api/catalog/v1/**、/api/management/v1/**，也就是引擎用的数据面。
+      # 数据面默认仍匿名可调，因此控制台门禁挡的是「随手打开这个地址」，
+      # 不是「想拿数据的人」。要真正的访问控制就把 auth.enabled 设为 true。
+      # -----------------------------------------------------------------------
+      console:
+        # 控制台是否要求先登录。设 false 后打开控制台不再需要登录
+        # （只有 auth.enabled 也为 true 时才有意义，否则等于把界面上的门打开）。
+        required: true
+        # 方式一（默认）：用户名 + 密码，账号就在下面，不需要先建主体。
+        password:
+          enabled: true
+          # 用户名 → 密码。默认 admin/admin 是「开箱能用」，不是建议值：
+          # 任何能访问这个地址的人都能用它进来。密码仍是默认值时启动会告警。
+          users:
+            admin: admin
+          # 用户名 → 主体名；未配置的用户名即主体名。用于让「开门的账号」与
+          # 「授权链路里的主体」叫不同名字，例如把 admin 映射到已有的服务管理员主体
+          principals: {}
+          # 用户名密码比客户端凭据更怕爆破（密码是人定的，可能只有六七个字符），
+          # 因此阈值比下面那组更严。按「直连地址 + 用户名」分桶，只在失败时计数。
+          rate-limit:
+            enabled: true
+            max-failures: 5
+            window: 1m
+        # 方式二（默认）：OAuth 2.0 客户端凭据流程。
+        # 控制台把用户填的 clientId / clientSecret POST 到
+        # /api/catalog/v1/oauth/tokens，换回一个 Bearer 令牌。
+        # 凭据校验走 paimon_principal 表，与引擎调用管理 API 用的是同一份数据。
+        client-credentials:
+          enabled: true
+          # 令牌端点是这套鉴权里唯一能匿名反复调用的地方，失败限速防的是
+          # 「用已知 clientId 反复猜 clientSecret」时把数据库打满。
+          # 按「直连地址 + clientId」分桶，只在失败时计数。
+          # 若前置了反向代理，所有请求会被视为同一来源，此时应调大阈值或关掉限速。
+          rate-limit:
+            enabled: true
+            max-failures: 10
+            window: 1m
+        # 方式三（可选）：OpenID Connect 授权码 + PKCE，令牌由外部 IdP 签发，
+        # 本服务端只验签（RS256 / ES256，公钥从 IdP 的 JWKS 取）。
+        oidc:
+          enabled: false
+          # IdP 的 issuer URL，服务端据此拉 /.well-known/openid-configuration，
+          # 把授权端点、令牌端点与 JWKS 地址一并发现出来，并转告控制台。
+          # 例如：https://keycloak.example.com/realms/EXTERNAL
+          issuer-uri: ""
+          # 在 IdP 注册的公开客户端标识（PKCE，没有密钥——浏览器里放不下秘密）
+          client-id: ""
+          # 必须在 IdP 侧登记过的回调地址，例如
+          # http://localhost:8080/console/auth/callback
+          redirect-uri: ""
+          scope: openid profile email
+          # 从哪个 claim 取主体名。取到的值需要与 paimon_principal.name 或
+          # authorization.service-admins 里的名字对得上，否则登录成功但什么也看不到
+          principal-claim: sub
+          # 期望的 aud。留空不校验；同一 issuer 下还有别的应用时应当填上
+          audience: ""
+          metadata-cache-ttl: 10m
+          # 刷新失败时沿用旧值，因此 IdP 短暂不可用不会把已在用控制台的人踢出去
+          jwks-cache-ttl: 1h
+          # IdP 与本服务端的时钟不可能完全一致，留一点余量
+          clock-skew: 60s
+    # 管理 API（/api/management/v1/**）的 RBAC 授权，默认关闭以保持既有行为
+    authorization:
+      enabled: false
+      # 服务管理员：可管理 principal 与 principal role，并可在任意 catalog 上操作角色与授权。
+      # 管理规格的权限枚举没有覆盖「管理主体」的层级，故用名单表达
+      service-admins:
+        - root
+      # 启动时预置的引导主体与引导角色链（主体 → 角色 → 各 catalog 的 catalog_admin）
+      bootstrap-principal: root
+      bootstrap-principal-role: service_admin
+    credential:
+      # 数据访问令牌（凭证下发）有效期
+      ttl-seconds: 3600
+    # -----------------------------------------------------------------------
+    # 存储与凭据，对应 Polaris 1.8.0 配置参考的「Storage & Credentials」一节。
+    # 键名逐项对应，只把前缀从 polaris 换成 paimon.rest，运维迁配置时可以按名字平移。
+    # 例外是下面 obs / oss 两组：Polaris 没有这两个存储类型（它用 S3 兼容层接入），
+    # 因此没有可平移的键名，是本工程按厂商 FileIO 配置面新加的。
+    # -----------------------------------------------------------------------
+    storage:
+      aws:
+        # 默认 S3 凭据：未指定 storageName 的 S3 catalog 用它。两项留空则退化为
+        # 环境凭据链（实例角色、环境变量、配置文件），与 Polaris 的行为一致
+        access-key: ""
+        secret-key: ""
+        # 具名存储，键为 catalog 的 storageConfigInfo.storageName。
+        # 密钥只留在服务端配置里，不落进 catalog 元数据——这是本工程里唯一
+        # 让 S3 密钥不出现在管理 API 报文中的途径
+        storages: {}
+      gcp:
+        # GCS 访问令牌；留空则交给引擎自己的凭据链
+        token: ""
+        # 令牌有效期；非空时会同时收窄令牌自身与响应里的 expiresAt
+        lifespan: null
+      # 华为云 OBS 凭据。与 aws 分开而不是共用：三家的 AK/SK 独立签发、独立轮转、
+      # 独立授权，挤进同一个键空间后「给 OBS 换钥匙」与「给生产 S3 换钥匙」就没法区分。
+      # 这一组没有 Polaris 的对应项——Polaris 用 S3 兼容层接入 OBS，本工程单列。
+      obs:
+        # 三项都留空则退化为环境凭据链：引擎用自己的 fs.obs.security.provider
+        # （环境变量 / ECS 委托身份）去取，服务端不下发任何密钥
+        access-key: ""
+        secret-key: ""
+        # 临时凭据的安全令牌（华为的键名是 fs.obs.session.token）。
+        # 临时凭据必须 AK + SK + 令牌成套提供，只给令牌不会失败、只会签名不过
+        session-token: ""
+        # 具名存储，键为 catalog 的 storageConfigInfo.storageName。
+        # 密钥只留在服务端配置里，不落进 catalog 元数据
+        storages: {}
+      # 阿里云 OSS 凭据，结构同 obs
+      oss:
+        access-key: ""
+        secret-key: ""
+        # 阿里云侧的键名是 fs.oss.securityToken，这里沿用同一命名约定
+        session-token: ""
+        storages: {}
+      # 以下连接参数当前只做取值校验与启动日志输出：JDK 的 HttpClient 没有
+      # 对应的调节项，保留它们是为了配置面与 Polaris 一一对应
+      clients-cache-max-size: 100
+      max-http-connections: 20
+      read-timeout: 30s
+      connect-timeout: 10s
+      connection-acquisition-timeout: 10s
+      connection-max-idle-time: 5m
+      connection-time-to-live: 30m
+      expect-continue-enabled: true
+      credential-secret-key: mVPu1SDrF2tyq6mIBILyy/0STBS+gUiTcyMQkEEGiX0=
+    storage-credential-cache:
+      # 已下发凭据的复用上限；条目按各自过期时间失效，这个值只兜住内存占用
+      max-entries: 10000
+    credential-manager:
+      # default：按 catalog 的存储类型下发凭据
+      # noop：不下发，读表走到凭据下发接口时返回 501（引擎自带云凭据的部署用）
+      type: default
+    file-io:
+      # 本部署接入了哪些存储实现，决定 catalog 允许的 storageType：
+      # default -> FILE/S3/AZURE/GCS/OBS/OSS；s3|azure|gcs|obs|oss -> 对应云存储 + FILE；
+      # local -> 仅 FILE。obs / oss 两个取值是本工程扩展，Polaris 侧没有
+      type: default
+    initial-catalog:
+      # 启动时预置的 catalog；留空表示不预置
+      prefix: paimon
+      warehouse: file:///tmp/paimon-warehouse
+      databases:
+        - name: default
+          options:
+            owner: paimon
+
+    # -----------------------------------------------------------------------
+    # 表存储优化（Compaction / Snapshot Expire / Orphan File Remove）
+    #
+    # 三项动作的参数默认值不放这里：它们属于**每个 catalog 自己的默认设置**
+    # （catalog 属性里 `optimization.<动作>.<参数>` 前缀的键，与 table-default.* 同一套做法），
+    # 由控制台或管理 API 维护。这里只配「本部署怎么跑优化任务」。
+    #
+    # 完整设计见 docs/table-optimization.md。
+    # -----------------------------------------------------------------------
+    optimization:
+      # 关掉只停调度，不影响手动「立即优化」与状态查询。
+      # 用途：优化任务由外部系统触发出批的部署，以及需要确定性行为的测试。
+      scheduler-enabled: true
+      # 多久扫一次「有策略到期了、有批次等着提交/跟踪」。调快它不会让优化跑得更勤，
+      # 只影响「到期后多久被看见」。
+      scan-interval: 1m
+      # 提交与跟踪节拍。比扫描快：提交要趁热，跟踪决定用户看到「运行中」到什么精度。
+      dispatch-interval: 10s
+      # 单批最多几张表（超出拆到下一批，避免一个批次跑太久、重试代价过大）
+      max-tables-per-job: 20
+      # 同时允许几个批次在跑（超出的留在 PENDING 排队）
+      max-concurrent-jobs: 2
+      # 批次超时：超过它仍未终结的批次判失败并清理执行侧资源
+      job-timeout: 2h
+
+      # ---- 提交方式 ----
+      # k8s：创建 k8s Job（生产用）；log：只记日志不真提交（本地调试用）
+      submitter: k8s
+      namespace: default
+      # 优化任务镜像：含 lakehouse-rest-optimizer 的 jar 与它要的 Spark 运行时。
+      # k8s 提交器必填，留空会在提交时失败
+      image: ""
+      image-pull-policy: IfNotPresent
+      # 运行优化任务的 service account：若集群开了 PodSecurityPolicy / 需要镜像拉取密钥，
+      # 应指向一个专用账号而不是 default
+      service-account: ""
+      # k8s API 地址与集群内认证。集群内默认走 service 域名；
+      # token/CA 从 service account 挂载文件现读（kubelet 会轮转它们）
+      api-server: https://kubernetes.default.svc
+      token-file: /var/run/secrets/kubernetes.io/serviceaccount/token
+      ca-file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+      # 下发给优化任务的服务端地址，任务用它回调拉清单、上报结果。
+      # 容器里必须配成服务端在本集群内的可解析地址（Service 名，不是 pod 名）
+      management-url: http://127.0.0.1:8080
+      # catalog 数据面令牌：批次回调令牌只对优化回调端点有效，任务访问 /v1/{prefix}
+      # 需要这一份。留空表示本部署没开认证；开了认证必须配一个专用主体（optimizer）的令牌。
+      # 待办：改成服务端为每批签发的短期令牌（见 docs/table-optimization.md §9.5）
+      catalog-token: ""

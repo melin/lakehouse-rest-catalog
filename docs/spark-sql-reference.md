@@ -1,6 +1,6 @@
 # Spark SQL 管理语法参考
 
-`paimon-rest-spark` 把 Paimon Rest Catalog 的管理 API 接进 Spark SQL：主体（principal）、
+`lakehouse-rest-spark` 把 Paimon Rest Catalog 的管理 API 接进 Spark SQL：主体（principal）、
 principal role 与资源授权可以用 16 条 SQL 语句管理，不必手写 HTTP 请求。
 catalog role 没有 SQL 入口——它只剩管理 API 一条路（控制台也没有它的页面）。
 
@@ -20,13 +20,13 @@ SHOW PERMISSIONS IN CATALOG paimon FOR USER svc_etl;
 
 ## 1. 启用与配置
 
-前置两件事：`paimon-rest-spark` 的 jar 在 Spark 的 classpath 上；管理服务可达。
+前置两件事：`lakehouse-rest-spark` 的 jar 在 Spark 的 classpath 上；管理服务可达。
 
 ### 1.1 配置方式
 
 ```bash
 spark-sql \
-  --conf spark.sql.extensions=io.github.melin.paimonrest.spark.ManagementSparkExtensions \
+  --conf spark.sql.extensions=io.github.melin.lakehouse.rest.spark.ManagementSparkExtensions \
   --conf spark.paimon.rest.management.url=http://catalog-host:8080/api/management/v1 \
   --conf spark.paimon.rest.token=<执行这些语句的主体的令牌>
 ```

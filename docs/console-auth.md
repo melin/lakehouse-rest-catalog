@@ -607,7 +607,7 @@ paimon:
 | --- | --- | --- | --- |
 | 单元 / 切片 | `ConsoleAuthEndpointTests` + `ConsoleApiTests`（`./mvnw -o test`） | 错误码、豁免列表、状态码、`WWW-Authenticate`、门禁的生效范围、默认口令；连内存 H2，不需要外部依赖 | 31 + 12 个用例 |
 | 协议层 | `scripts/sweep-console-auth.sh` | 对运行中的实例发真实 HTTP：引导、用户名密码登录、换令牌、凭据校验、静态令牌、SPA 深链回退；断言实际报文而不只是状态码 | 63 项 |
-| 前端集成 | `npm run check:login`（在 `paimon-rest-console/`） | 跑 `src/store/auth.js` 与 `src/api/*` 的**真实代码**：请求体字段名与编码、令牌落盘的键、`Authorization` 的附加、登出、失败回滚 | 59 项 |
+| 前端集成 | `npm run check:login`（在 `lakehouse-rest-console/`） | 跑 `src/store/auth.js` 与 `src/api/*` 的**真实代码**：请求体字段名与编码、令牌落盘的键、`Authorization` 的附加、登出、失败回滚 | 59 项 |
 
 后两层都需要一个**开了鉴权**的实例（`--paimon.rest.auth.enabled=true`）。
 `CLIENT_ID` / `CLIENT_SECRET` 取自启动日志里 `created bootstrap principal` 那行——

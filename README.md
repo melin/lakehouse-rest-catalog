@@ -20,7 +20,9 @@
 - 元数据存储：**MySQL 8.0**（建表语句由实体生成，见 `sql/schema-mysql.sql`；
   22 张表的划分与设计取舍见 [`docs/data-model.md`](docs/data-model.md)），
   通过 JPA 访问；另有 H2 内存库与 PostgreSQL 两个 profile 可选
-- 模块：服务端（Spring Boot）+ Spark SQL 语法扩展（Scala）+ 表存储优化任务（Spark，由服务端投到 k8s）
+- 模块：**8 个 Maven 模块**——服务端拆为 `core`（与格式无关的地基）/ `storage`（FileIO）/
+  `protocol-paimon`（Catalog API）/ `server`（可执行）四个，另有 Spark SQL 语法扩展（Scala）、
+  表存储优化任务（Spark，由服务端投到 k8s）与两个父 POM，见第 1 节
 - 表格式：**Paimon 表**与三种不受快照管理的表——**Format 表**（目录里的既有文件）、
   **Object 表**（对象元数据，列由 Paimon 固定）、**Lance 表**；类型写在
   `schema.options.type` 里，建表时的归一化与边界见第 6 节第 23 条。后三种的位置就是
@@ -42,52 +44,97 @@
 ```
 paimon-rest/
 ├── Dockerfile               服务端镜像（单阶段：装预构建的 jar，见第 8 节）
-├── pom.xml                  聚合 POM（无父 POM，见「模块划分的取舍」）
-├── paimon-rest-server/      Spring Boot 服务端：Catalog API + Management API
-├── paimon-rest-console/     Web 管理控制台（Vue 3 + Vite，产物构建进服务端，见第 9 节）
-├── paimon-rest-spark/       Spark SQL 语法扩展：用 SQL 管理主体、角色与授权
+├── pom.xml                  根聚合 POM：lakehouse-rest-parent（无父 POM，见「模块划分的取舍」）
+├── lakehouse-rest-spring-parent/     服务端世界的父 POM（继承 Spring Boot 父 POM）
+│   ├── pom.xml                       只有 POM、没有源码；四个服务端模块嵌在它下面
+│   ├── lakehouse-rest-core/          与表格式无关的地基：鉴权、授权、JPA 实体与仓储、共享 DTO 词表
+│   ├── lakehouse-rest-storage/       数据目录文件访问与 FileIO 构造（唯一允许依赖 paimon-core 的非协议模块）
+│   ├── lakehouse-rest-protocol-paimon/  Paimon REST Catalog 协议面：Catalog API 全部 60 个端点
+│   └── lakehouse-rest-server/        可执行服务端：Management API + 控制台 API + 优化调度，最终 jar 在这里
+├── lakehouse-rest-console/     Web 管理控制台（Vue 3 + Vite，产物构建进服务端，见第 9 节）
+├── lakehouse-rest-spark/       Spark SQL 语法扩展：用 SQL 管理主体、角色与授权
+├── lakehouse-rest-optimizer/   表存储优化任务（Spark，由服务端投到 k8s 运行）
 ├── deploy/kubernetes/       Kubernetes 部署清单（kustomize 组装，见其目录下的 README）
-├── examples/                可运行的示例：Spark 经 Paimon Rest Catalog 建表
 ├── spec/                    OpenAPI 规格副本
 ├── sql/                     MySQL 建表语句（由实体生成，见第 7 节「代码生成」）
 ├── docs/                    设计文档、契约基线与 SQL 语法参考
 └── scripts/                 验收、代码生成、文档校验与镜像构建脚本
 ```
 
-模块划分的取舍：聚合 POM **不继承** `spring-boot-starter-parent`。因为
-`paimon-rest-spark` 依赖 Spark，而 Spring Boot 的 `dependencyManagement` 会把 Spark 自带的
-Jackson 2.15.2 抬到 2.21.x、并替换 netty 与 jersey，导致 Spark 侧出现难以定位的版本冲突。
-因此聚合 POM 只钉核心插件版本，由 `paimon-rest-server` 自己以 `<relativePath/>` 继承
-Spring Boot 父 POM。
+Iceberg REST 协议面落地时，按同样的方式嵌成 `lakehouse-rest-spring-parent/` 下的第五个模块
+（`lakehouse-rest-protocol-iceberg`）即可——它同样属于服务端世界，继承 `spring-parent`
+而不是根 POM。enforcer 的规则已经为它写好，见 [`maven-module-design.md`](docs/maven-module-design.md)。
 
-两个模块的依赖世界因此互不污染：服务端是 Spring Boot 4 / Jackson 3 / Hibernate 7，
+**模块划分的取舍：两个父 POM ＝ 两个依赖世界。**
+
+根 `pom.xml`（`lakehouse-rest-parent`）是**纯聚合器**，同时充当 `lakehouse-rest-spark` 与
+`lakehouse-rest-optimizer` 的父 POM，**刻意不继承** `spring-boot-starter-parent`：
+Spark 自带的 Jackson 2.15.2 会被 Boot 的 `dependencyManagement` 抬到 2.21.x，
+netty 与 jersey 也会被替换，导致 Spark 侧出现难以定位的版本冲突。
+
+服务端那四个模块则挂在 **`lakehouse-rest-spring-parent`** 下，由它继承 Spring Boot 父 POM，
+并统一声明 webmvc / data-jpa / validation / lombok 这几个共用 starter。
+两个依赖世界因此互不污染：服务端是 Spring Boot 4 / Jackson 3 / Hibernate 7，
 Spark 侧是 Scala 2.12 / Spark 3.5 / Jackson 2 / ANTLR 4.9.3。
 
-Maven 坐标与包名：`groupId` 为 `io.github.melin`，三个 artifact 分别是
-`paimon-rest-parent`（聚合）、`paimon-rest-server`、`paimon-rest-spark`；
-源码包前缀统一为 `io.github.melin.paimonrest`，Spark 模块在其下再用 `.spark`
-子包（如 `io.github.melin.paimonrest.spark.ManagementSparkExtensions`）——
-这个全限定名就是要填进 `spark.sql.extensions` 的值，改动它等于破坏所有既有部署，
-因此与 groupId 一起固定下来。
+服务端模块**嵌在** `lakehouse-rest-spring-parent/` 目录之下，因此各子模块的 `<parent>`
+**不需要写 `<relativePath>`**——默认的 `../pom.xml` 恰好就是那份父 POM。
+这一点是嵌套布局立下的功劳：若把四个模块放成仓库根下的平级兄弟目录，就必须显式写
+`<relativePath>../lakehouse-rest-spring-parent/pom.xml</relativePath>`，
+因为默认值会解析到根聚合器，那里没有这个 artifactId，Maven 便回退去远程仓库找，
+离线构建会直接失败。**不要把 Boot 提为根聚合器的父 POM。**
 
-`docs/` 里十四份文档的分工：
+三条依赖不变量由 `maven-enforcer-plugin` 守住（`core` 不含任何表格式依赖；两个协议面互不依赖；
+`iceberg-core` 只在 `protocol-iceberg` 里出现），违反即构建失败——这些规则不是文档约定，
+是构建期断言。完整依赖图与规则细节见
+[`maven-module-design.md`](docs/maven-module-design.md)。
+
+Maven 坐标与包名：`groupId` 为 `io.github.melin`，八个 artifact 是
+`lakehouse-rest-parent`（聚合）、`lakehouse-rest-spring-parent`（服务端父 POM）、
+`lakehouse-rest-core`、`lakehouse-rest-storage`、`lakehouse-rest-protocol-paimon`、
+`lakehouse-rest-server`、`lakehouse-rest-spark`、`lakehouse-rest-optimizer`。
+包前缀为 `io.github.melin.lakehouse.rest`（两轮改定：`io.github.melin.paimonrest` →
+`io.github.melin.paimon.rest` → 本名，与 artifactId 的 `lakehouse` 对齐），
+Spark 模块在其下再用 `.spark` 子包（如
+`io.github.melin.lakehouse.rest.spark.ManagementSparkExtensions`）。
+服务端的四个模块共用同一个包树（`io.github.melin.lakehouse.rest.{web,service,domain,dto,support,config}`），
+好处是搬类不需要改任何 `import`、也不需要动 `@ComponentScan`；
+代价是包名不再告诉你类在哪个模块，只能看它在哪个目录。
+
+**这一处改名会打到用户，因此留了兼容壳。** `spark.sql.extensions` 填的是全限定类名，
+包名一改，既有部署的 Spark 会话会在初始化时报 `ClassNotFoundException`——错误离「升级了
+服务端依赖」很远，不容易查。于是 Spark 模块里保留了**最初**包名下的同名空壳
+（`lakehouse-rest-spark/src/main/scala/io/github/melin/paimonrest/spark/ManagementSparkExtensions.scala`，
+只继承新实现、不覆盖任何方法），旧配置照旧可用；**新部署请写新包名**。
+中间那个 `io.github.melin.paimon.rest` 从未提交、也就从未发布，所以没有为它另留一个壳——
+壳的数量等于「历史的对外名字数」，不是「改过几次」。
+其余位置都不涉及外部契约：配置前缀（`paimon.rest.*`）、k8s 资源名、数据库表名都没跟着改，
+理由见下一段。
+
+k8s 资源名与数据库表名的 `paimon-` / `paimon_` 前缀同样**故意不改**：
+它们不是产品名，是历史标识，改了要动存量部署与存量数据。见
+[`maven-module-design.md`](docs/maven-module-design.md) §8.6。
+
+`docs/` 里十六份文档的分工：
 
 | 文档 | 读它的时机 |
 | --- | --- |
 | [`catalog-api-endpoints.md`](docs/catalog-api-endpoints.md) | 要查 Catalog API 有哪些端点——60 个端点按资源分组，含基址、前缀与授权映射说明 |
 | [`management-api-overview.md`](docs/management-api-overview.md) | 要读 Management API——33 个 operation 落在哪几个控制器上、几处容易读错的语义 |
 | [`management-api-contract.md`](docs/management-api-contract.md) | 要查管理 API 的端点、字段、权限枚举——由规格生成，逐字对照 |
-| [`data-model.md`](docs/data-model.md) | 要改实体或看表结构——22 张表的划分、摘要列与审计列的设计理由 |
+| [`data-model.md`](docs/data-model.md) | 要改实体或看表结构——22 张表的划分、摘要列与审计列的设计理由、实体与仓储分在哪两个模块、`paimon_` 前缀为什么与表格式无关 |
 | [`spark-sql-reference.md`](docs/spark-sql-reference.md) | 要用 SQL 管理主体与授权——语句级参考，含完整示例 |
 | [`spark-sql-extension.md`](docs/spark-sql-extension.md) | 要改这个 Spark 扩展——语法扩展的做法、两个必须知道的约束、测试分层 |
 | [`spark-paimon-rest-e2e.md`](docs/spark-paimon-rest-e2e.md) | 要让 Spark 通过本服务端建 Paimon 表——连接配置、可执行的 SQL、报错对照表 |
 | [`authorization.md`](docs/authorization.md) | 要理解权限怎么判——实体链、授权映射、失败关闭的取舍 |
 | [`console.md`](docs/console.md) | 要改 Web 控制台或排查「页面空列表」——前端分层、端点契约表、机械校验 |
 | [`console-table-detail.md`](docs/console-table-detail.md) | 要改表详情页——页签随表格式（Paimon / Format / Object / Lance）伸缩的数据来源、为什么授权不在这页、破坏性操作与边界 |
-| [`console-catalog-detail.md`](docs/console-catalog-detail.md) | 要改 Catalog 详情页或仓库文件浏览——三个页签、下钻与路径防护、只读的取舍、「配置」页为何暂不实现 |
+| [`console-catalog-detail.md`](docs/console-catalog-detail.md) | 要改 Catalog 详情页或仓库文件浏览——三个页签、下钻与路径防护、只读的取舍、「配置」页的默认表属性（`table-default.*`）编辑与并发冲突处理；建表表单里的默认参数预填与为什么不给 Lance 表建表入口 |
 | [`console-auth.md`](docs/console-auth.md) | 要给浏览器访问控制台配登录——三种登录方式、两个开关的边界、令牌与认证链、安全考量 |
 | [`polaris-capabilities-and-design.md`](docs/polaris-capabilities-and-design.md) | 要对比 Polaris 或看整体设计——核心能力提取、映射关系、已知缺口 |
-| [`iceberg-rest-catalog-compat.md`](docs/iceberg-rest-catalog-compat.md) | 要让原生 Iceberg REST 客户端连本服务端——可行性结论、两套协议面的差异与代价 |
+| [`iceberg-rest-catalog-design.md`](docs/iceberg-rest-catalog-design.md) | 要评估「同一份元数据同时服务 Paimon 与 Iceberg」——双协议方案：创建时区分格式、22 张表复用只加 9 列、路径冲突与错误模型、能力边界与效果图（`outputs/iceberg-rest-catalog/mockup.html`） |
+| [`maven-module-design.md`](docs/maven-module-design.md) | 要改模块布局或 artifact 名——`lakehouse-rest-*` 命名定案、两个父 POM / 两个依赖世界、三条用 enforcer 守住的依赖不变量、改名清单与「哪四处故意不改」（§8.6），以及**已落地**的实测记录（§8，含与设计不一致的六处及原因） |
+| [`table-optimization.md`](docs/table-optimization.md) | 要改表存储优化或排查优化任务——三个动作的语义、批次与并发两道闸门、k8s 提交与状态跟踪、控制台两处页面 |
 
 ---
 
@@ -117,25 +164,35 @@ mysql -h 127.0.0.1 -u root -p < sql/schema-mysql.sql
 ### 2.2 构建与运行
 
 ```bash
-# 全量构建
-JAVA_HOME=/path/to/jdk-21 mvn -DskipTests install
+# 全量构建（8 个模块；用 install 而不是 package，因为模块之间有内部依赖）
+JAVA_HOME=/path/to/jdk-21 mvn -o -DskipTests install
 
-# 运行全部测试（服务端 307 + Spark 96，共 403 个用例；Spark 侧有 1 个示例用例
+# 只要服务端可执行 jar：-am 会一并构建它依赖的 core / storage / protocol-paimon
+JAVA_HOME=/path/to/jdk-21 mvn -o -DskipTests -pl :lakehouse-rest-server -am clean package
+
+# 运行全部测试（服务端 317 + Spark 96，共 413 个用例；Spark 侧有 1 个示例用例
 # 在本地缺 spark.sql.extensions 时会失败，见第 7 节）
 JAVA_HOME=/path/to/jdk-21 mvn test
 
 # 启动服务端（默认 8080 端口，连 MySQL，预置 catalog prefix=paimon 与 database=default）
 # 这里必须是 17：运行服务端要避开 JDK 18+ 的 InetAddress 解析器 SPI，理由见本节开头
-JAVA_HOME=/path/to/jdk-17 mvn -pl paimon-rest-server spring-boot:run
+JAVA_HOME=/path/to/jdk-17 mvn -pl :lakehouse-rest-server spring-boot:run
 
 # 打包后直接运行（同样用 17 起的 JDK）
-java -jar paimon-rest-server/target/paimon-rest-server-0.0.1-SNAPSHOT.jar
+java -jar lakehouse-rest-spring-parent/lakehouse-rest-server/target/lakehouse-rest-server-0.0.1-SNAPSHOT.jar
 ```
+
+`clean` 不能省：控制台产物按内容哈希命名，`maven-resources-plugin` 只覆写不删除，
+不 clean 会让 `target/classes/static/console` 累积历次旧产物（jar 里出现多个 `index-*.js`）。
+服务端 POM 已把一次 `clean` 绑到 `initialize` 兜底，所以 `mvn package` 也能干净——但 `-pl` 之外的场景仍建议手写。
+
+构建过程中 `maven-enforcer-plugin` 会校验三条依赖不变量（见第 1 节），
+所以「构建成功」本身就包含了一次模块方向检查；它失败时的报错信息是中文的，会指出违反的是哪条。
 
 只需一个即用即丢、不依赖 MySQL 的实例时，用内存 H2：
 
 ```bash
-java -jar paimon-rest-server/target/paimon-rest-server-0.0.1-SNAPSHOT.jar --spring.profiles.active=h2
+java -jar lakehouse-rest-spring-parent/lakehouse-rest-server/target/lakehouse-rest-server-0.0.1-SNAPSHOT.jar --spring.profiles.active=h2
 ```
 
 冒烟验证：
@@ -204,8 +261,8 @@ Management API（catalog、主体、角色、catalog 角色与 grants）两个 A
 | `postgresql` | PostgreSQL | `ddl-auto: update` | 备用；**未做端到端验证** |
 
 ```bash
-mvn -pl paimon-rest-server spring-boot:run -Dspring-boot.run.profiles=h2
-mvn -pl paimon-rest-server spring-boot:run -Dspring-boot.run.profiles=postgresql
+mvn -pl :lakehouse-rest-server spring-boot:run -Dspring-boot.run.profiles=h2
+mvn -pl :lakehouse-rest-server spring-boot:run -Dspring-boot.run.profiles=postgresql
 ```
 
 ---
@@ -213,7 +270,7 @@ mvn -pl paimon-rest-server spring-boot:run -Dspring-boot.run.profiles=postgresql
 ## 3. 架构
 
 ```
-paimon-rest-server/
+lakehouse-rest-spring-parent/lakehouse-rest-server/
   web/          控制器层：Catalog API 按规格路径一一对应；Management API 另设 4 个控制器
   service/      业务层：目录解析、schema 变更、快照与版本、分区分支标签、RBAC 判定
   domain/       JPA 实体与仓储：元数据与授权关系持久化
@@ -221,7 +278,7 @@ paimon-rest-server/
   support/      公共设施：JSON 编解码、schema 字段树、分页、路径、错误
   config/       服务端配置、Bearer 鉴权、授权拦截器、启动初始化
 
-paimon-rest-spark/
+lakehouse-rest-spark/
   antlr4/…/ManagementSql.g4   管理语句语法（16 条语句、15 条规则）
   client/                     REST 客户端（JDK HttpClient + Jackson 2）
   …/ManagementCommands.scala  13 个 RunnableCommand：语句 → HTTP 调用
@@ -256,7 +313,7 @@ paimon-rest-spark/
 
 ## 4. Spark SQL 扩展
 
-`paimon-rest-spark` 把管理 API 接进 Spark SQL，16 条语句覆盖主体、principal role、装配、授权与查询：
+`lakehouse-rest-spark` 把管理 API 接进 Spark SQL，16 条语句覆盖主体、principal role、装配、授权与查询：
 
 ```sql
 CREATE PRINCIPAL svc_etl PROPERTIES ('owner' = 'data-platform');
@@ -607,7 +664,7 @@ Azure 只下发定位元数据是个明确的缺口：Polaris 的 `polaris.stora
 
 ## 7. 测试
 
-### 单元与集成测试（403 个用例）
+### 单元与集成测试（413 个用例）
 
 ```bash
 JAVA_HOME=/path/to/jdk-21 mvn test
@@ -616,7 +673,7 @@ JAVA_HOME=/path/to/jdk-21 mvn test
 测试连的是内存 H2（`test` profile，见 `src/test/resources/application-test.yml`），
 **不依赖本机是否有 MySQL**。
 
-服务端（307 个）：
+服务端（317 个）：
 
 | 测试类 | 覆盖 |
 | --- | --- |
@@ -654,7 +711,7 @@ Spark 子模块（96 个，其中 5 个类共 23 个用例需要显式指向服�
 > `example/` 下的 `PaimonS3Test` **当前跑不过**，与 S3 环境无关：它在加载 Spark
 > catalog 时被 Paimon 的 `requiredSparkConfsCheck` 挡下（会话里没有
 > `spark.sql.extensions`），报错发生在任何 REST 调用之前。因此 `mvn test` 会停在
-> Spark 模块的 BUILD FAILURE，而服务端模块（307 个）是绿的。
+> Spark 模块的 BUILD FAILURE，而服务端模块（317 个）是绿的。
 
 | 测试类 | 覆盖 |
 | --- | --- |
@@ -675,7 +732,7 @@ Spark 子模块（96 个，其中 5 个类共 23 个用例需要显式指向服�
 ```bash
 # 需先有一个服务端实例；不指定 profile 时连 MySQL
 # （想用内存库就在启动命令上加 --spring.profiles.active=h2）
-java -jar paimon-rest-server/target/paimon-rest-server-0.0.1-SNAPSHOT.jar &
+java -jar lakehouse-rest-spring-parent/lakehouse-rest-server/target/lakehouse-rest-server-0.0.1-SNAPSHOT.jar &
 
 # Catalog API：覆盖规格中全部 60 个 operation
 # 脚本会创建并清理 database sales，因此要求目标实例为初始状态
@@ -703,7 +760,7 @@ STATIC_TOKEN=<需与启动参数 paimon.rest.auth.tokens[0] 一致，否则脚�
 
 # 前端登录逻辑：直接跑 src/store/auth.js 与 src/api/* 的真实代码——59 项
 # 用上面那个服务端实例即可
-cd paimon-rest-console
+cd lakehouse-rest-console
 BASE=http://127.0.0.1:8080 \
 CLIENT_ID=<引导主体 clientId> CLIENT_SECRET=<明文密钥> \
   npm run check:login
@@ -787,10 +844,10 @@ python3 -m pip install --user PyYAML
 
 ```bash
 # 1. 先产出 jar —— 镜像里没有 JDK 与 Maven，构建镜像不编译
-mvn -o -pl paimon-rest-server -am clean package -DskipTests
+mvn -o -pl :lakehouse-rest-server -am clean package -DskipTests
 
 # 2. 再打镜像
-docker build -t paimon-rest-server:0.0.1 .
+docker build -t lakehouse-rest-server:0.0.1 .
 ```
 
 单阶段：基础镜像是 `eclipse-temurin:17-jre-noble`，`Dockerfile` 只做三件事——
@@ -805,7 +862,7 @@ jar 是 17 编的还是 21 编的都不影响：根 POM 钉了 `maven.compiler.r
 jar**（同一份字节），而不是镜像内按同一份源码又编一遍的另一份产物——后者只要有一处
 环境差异，就变成「测过的」与「部署的」不是一回事。代价是工件必须先存在：忘了第 1 步，
 `docker build` 会在 `COPY` 处直接报找不到文件（`.dockerignore` 只放行
-`paimon-rest-server/target/*.jar`）。
+`lakehouse-rest-spring-parent/lakehouse-rest-server/target/*.jar`）。
 
 运行时以 uid 10001 非 root 运行；`ENTRYPOINT` 用 exec 形式，让 SIGTERM 直达 JVM，
 配合 Spring Boot 的优雅停机。
@@ -832,10 +889,10 @@ jar**（同一份字节），而不是镜像内按同一份源码又编一遍的
 
 ```bash
 ./scripts/build-image.sh                                    # 双平台，装进本机镜像存储
-OCI=/tmp/paimon-rest-server-multiarch.tar ./scripts/build-image.sh   # 导出 OCI 归档
+OCI=/tmp/lakehouse-rest-server-multiarch.tar ./scripts/build-image.sh   # 导出 OCI 归档
 PLATFORMS=linux/amd64 ./scripts/build-image.sh              # 退回单平台
 # 要有别的机器能用，只能推仓库（IMAGE 需带仓库地址）
-PUSH=1 IMAGE=registry.example.com/paimon-rest/paimon-rest-server:0.0.1 ./scripts/build-image.sh
+PUSH=1 IMAGE=registry.example.com/paimon-rest/lakehouse-rest-server:0.0.1 ./scripts/build-image.sh
 ```
 
 脚本只是把几条容易记错的约束固定下来，参数都是环境变量（`IMAGE` / `PLATFORMS` /
@@ -914,17 +971,22 @@ python3 scripts/verify-k8s-manifests.py
 这些错误 `kubectl apply` 时都不会报，只在运行时表现成 Pod 一直 Pending
 或启动时报「解析不了占位符」。
 
-### 8.3 可运行的示例
+### 8.3 可运行的端到端示例
 
-`examples/spark-paimon-rest/` 是一个能直接跑通的示例：自动起服务端，
-用 Spark SQL 经 Paimon Rest Catalog 建表，再把服务端侧的元数据打印出来。
+> 早期仓库里有一个 `examples/spark-paimon-rest/` 示例目录，已在提交 `de5476c`
+> （「delete example dir」）中删除；下面的脚本是它的等价替代，且不需要单独维护一份 pom。
+
+`scripts/e2e-spark-sql.sh` 能直接跑通「Spark SQL → 本服务端 → 建 Paimon 表」：
+它自动起一个 h2 profile 的服务端实例，把服务端地址与令牌传给测试类，跑完自动停。
 
 ```bash
-mvn -o install -DskipTests    # 只需一次
-cd examples/spark-paimon-rest && ./run-example.sh
+mvn -o install -DskipTests        # 只需一次（-am 会带上 core / storage / protocol-paimon）
+./scripts/e2e-spark-sql.sh        # 默认端口 18080；PORT= / KEEP=1 见脚本头部注释
 ```
 
 不需要预先安装 Spark 发行版——classpath 由本仓库的 Maven 依赖提供。
+它同时是第 6 节验证阶梯里「客户端与服务端的**实际**契约」那一层：
+用桩的 `ManagementSqlExecutionTests` 只能证明客户端与自己的假设自洽。
 要在自己的 Spark 集群上手工执行，用同目录的 `spark-defaults.conf`，
 SQL 与报错对照见 [`spark-paimon-rest-e2e.md`](docs/spark-paimon-rest-e2e.md)。
 
@@ -955,10 +1017,10 @@ http://localhost:8080/console/
 - **它是运维工具，不是写入入口。** 不提供 `commitTable`（控制台拼不出一个指向真实文件的快照）；
   对表的改动只有回滚与删除——改表结构要走 HTTP 或 Spark SQL（控制台的「变更」页签已撤掉），
   表级授权不在表详情页做，统一到「权限管理」页。
-- **构建产物提交在仓库里。** 产物落在 `paimon-rest-server/src/main/resources/static/console`，
+- **构建产物提交在仓库里。** 产物落在 `lakehouse-rest-spring-parent/lakehouse-rest-server/src/main/resources/static/console`，
   因此构建服务端 jar 不需要 Node；代价是改了前端必须重建并提交产物，
   用 `./scripts/build-console.sh` 一条命令完成构建与校验。
-- **路径不靠人工比对。** 全部端点收在 `paimon-rest-console/src/api/endpoints.js` 一张表里，
+- **路径不靠人工比对。** 全部端点收在 `lakehouse-rest-console/src/api/endpoints.js` 一张表里，
   由 `scripts/verify-console.py` 与两份 OpenAPI 规格机械比对（10 组 25 项：端点存在性、
   引用完整性、五处基址一致、产物新鲜度、对话框状态、下拉候选来源、
   静态凭据字段与服务端的一致性）；

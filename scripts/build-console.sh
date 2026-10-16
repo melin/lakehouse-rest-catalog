@@ -2,7 +2,7 @@
 # 构建 Web 管理控制台前端，并把产物落到服务端的 classpath 里。
 #
 # 为什么要有这个脚本：控制台的构建产物是**提交进仓库**的
-# （paimon-rest-server/src/main/resources/static/console），这样构建服务端 jar
+# （lakehouse-rest-spring-parent/lakehouse-rest-server/src/main/resources/static/console），这样构建服务端 jar
 # 不需要 node/npm（Dockerfile 只装现成的 jar，也不涉及 Node）。代价是源码改动后
 # 产物会变旧，而旧的产物不会让任何东西报错——它只是安静地少一个按钮。
 # 本脚本把「装依赖 → 构建 → 校验产物与源码一致」串成一条命令，
@@ -18,8 +18,8 @@
 set -eu
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-CONSOLE="$ROOT/paimon-rest-console"
-OUT="$ROOT/paimon-rest-server/src/main/resources/static/console"
+CONSOLE="$ROOT/lakehouse-rest-console"
+OUT="$ROOT/lakehouse-rest-spring-parent/lakehouse-rest-server/src/main/resources/static/console"
 # 不经 PATH 里的 python3：宿主机常同时存在多个解释器，装 PyYAML 的未必是默认那个
 PYTHON=${PYTHON:-python3}
 VERIFY=1

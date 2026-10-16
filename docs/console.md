@@ -1,6 +1,6 @@
 # Web 管理控制台
 
-控制台是 `paimon-rest-server` 自带的一个 Vue 单页应用，挂在 `/console/` 下，
+控制台是 `lakehouse-rest-server` 自带的一个 Vue 单页应用，挂在 `/console/` 下，
 覆盖服务端两个 API 面：
 
 | API 面 | 基址 | 控制台覆盖 |
@@ -16,7 +16,7 @@
 
 ## 1. 快速开始
 
-控制台的构建产物**提交在仓库里**（`paimon-rest-server/src/main/resources/static/console`），
+控制台的构建产物**提交在仓库里**（`lakehouse-rest-spring-parent/lakehouse-rest-server/src/main/resources/static/console`），
 因此**只是启动服务端不需要 Node**：
 
 ```bash
@@ -24,7 +24,7 @@
 ./mvnw -o package -DskipTests
 
 # 2) 启动（h2 profile 用于本地试跑）
-java -jar paimon-rest-server/target/paimon-rest-server-0.0.1-SNAPSHOT.jar \
+java -jar lakehouse-rest-spring-parent/lakehouse-rest-server/target/lakehouse-rest-server-0.0.1-SNAPSHOT.jar \
   --spring.profiles.active=h2 --server.port=8080
 
 # 3) 打开
@@ -51,8 +51,8 @@ open http://127.0.0.1:8080/console/
 前端要热更新时，用 Vite 的 dev server，它把 `/v1` 与 `/api` 代理到 `127.0.0.1:8080`：
 
 ```bash
-./mvnw -o -pl paimon-rest-server spring-boot:run -Dspring-boot.run.profiles=h2
-cd paimon-rest-console && npm run dev        # http://127.0.0.1:5173/console/
+./mvnw -o -pl :lakehouse-rest-server spring-boot:run -Dspring-boot.run.profiles=h2
+cd lakehouse-rest-console && npm run dev        # http://127.0.0.1:5173/console/
 ```
 
 dev server 的基址也是 `/console/`（与生产一致），因此不需要为开发环境改任何路径。
@@ -62,7 +62,7 @@ dev server 的基址也是 `/console/`（与生产一致），因此不需要为
 ## 2. 目录结构
 
 ```
-paimon-rest-console/
+lakehouse-rest-console/
 ├── index.html                     入口页（含首屏占位样式）
 ├── vite.config.js                 base=/console/，outDir 指向服务端 resources/static/console
 └── src/
@@ -267,7 +267,7 @@ meta 只暴露枚举取值与服务端自身的配置，不含任何主体、cat
 ### 5.1 为什么要有一张端点表
 
 控制台是用字符串拼 URL 的，而服务端的路径属于**契约**（catalog API 见
-`paimon-rest-server/src/main/resources/static/rest-catalog-open-api.yaml`，
+`lakehouse-rest-spring-parent/lakehouse-rest-server/src/main/resources/static/rest-catalog-open-api.yaml`，
 管理 API 见 `spec/polaris-management-service.yml`）。路径写错时前端的表现是
 「404 空列表」，看不出是前端拼错了还是服务端改了——而这批路径有 85 条，
 靠人工比对不现实。
@@ -343,7 +343,7 @@ BASE=http://127.0.0.1:8080 CLIENT_ID=<clientId> CLIENT_SECRET=<secret> \
 
 # 前端集成：跑 src/store/auth.js 与 src/api/* 的真实代码——59 项
 BASE=http://127.0.0.1:8080 CLIENT_ID=<clientId> CLIENT_SECRET=<secret> \
-  npm run check:login     # 在 paimon-rest-console/ 下
+  npm run check:login     # 在 lakehouse-rest-console/ 下
 ```
 
 （`CLIENT_ID` / `CLIENT_SECRET` 只在开了授权时才会由启动日志自动给出。
@@ -495,7 +495,7 @@ OIDC 登录期间还会在 `sessionStorage` 里放三个短命键
 
 ```js
 build: {
-  outDir: '../paimon-rest-server/src/main/resources/static/console',
+  outDir: '../lakehouse-rest-spring-parent/lakehouse-rest-server/src/main/resources/static/console',
   emptyOutDir: true,
 }
 ```
@@ -506,14 +506,14 @@ jar，连 Maven 都不跑，更不涉及 Node），Java 侧构建路径上完全
 
 ### 8.2 产物要提交
 
-`paimon-rest-console/.gitignore` 忽略的是 `node_modules/`、`dist/`、`.vite/`；
+`lakehouse-rest-console/.gitignore` 忽略的是 `node_modules/`、`dist/`、`.vite/`；
 构建产物不在这个目录里，它落在服务端 `src/main/resources/static/console` 下，
 **属于被跟踪的内容**：
 
 - 改了控制台源码却没重新构建并提交产物 → 服务端打包出来的是上一版控制台；
 - `verify-console.py` 第 7 组会查出产物比源码旧（但只在有人跑它的时候）。
 
-`.dockerignore` 排除了 `paimon-rest-console/node_modules/`（几十万个文件，
+`.dockerignore` 排除了 `lakehouse-rest-console/node_modules/`（几十万个文件，
 纯粹的上下文体积），保留源码——镜像不需要它，但留着便于在容器内排查。
 
 ### 8.3 增量构建的一个坑：target/classes 会累积旧产物
@@ -526,7 +526,7 @@ jar，连 Maven 都不跑，更不涉及 Node），Java 侧构建路径上完全
 
 这条守卫在 POM 里，因此与「谁」执行构建无关——`Dockerfile` 现在直接装你构建出的
 那个 jar，不再自己跑 Maven。受影响的是**本地改完控制台后只跑 `package`** 的场景，
-而那恰好是最常见的场景。因此在 `paimon-rest-server/pom.xml` 里
+而那恰好是最常见的场景。因此在 `lakehouse-rest-spring-parent/lakehouse-rest-server/pom.xml` 里
 把 `maven-clean-plugin` 的一个执行绑到了 `initialize`：
 
 ```xml
@@ -549,7 +549,7 @@ jar，连 Maven 都不跑，更不涉及 Node），Java 侧构建路径上完全
 判断它是否生效：
 
 ```bash
-ls paimon-rest-server/target/classes/static/console/assets | wc -l   # 应与源码目录一致
+ls lakehouse-rest-spring-parent/lakehouse-rest-server/target/classes/static/console/assets | wc -l   # 应与源码目录一致
 ```
 
 ### 8.4 产物体积
@@ -605,7 +605,7 @@ ls paimon-rest-server/target/classes/static/console/assets | wc -l   # 应与源
 运行：
 
 ```bash
-./mvnw -o -pl paimon-rest-server -Dtest=ConsoleApiTests test
+./mvnw -o -pl :lakehouse-rest-server -Dtest=ConsoleApiTests test
 ```
 
 ---

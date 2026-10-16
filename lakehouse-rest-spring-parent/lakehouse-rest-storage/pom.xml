@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+	<modelVersion>4.0.0</modelVersion>
+
+	<parent>
+		<groupId>io.github.melin</groupId>
+		<artifactId>lakehouse-rest-spring-parent</artifactId>
+		<version>0.0.1-SNAPSHOT</version>
+		<!--
+			不用写 <relativePath>：本模块嵌在父 POM 目录之下，默认的 `../pom.xml`
+			就是父 POM。平级布局下才必须显式指路（默认值会落到仓库根的聚合 POM 上）。
+		-->
+	</parent>
+
+	<artifactId>lakehouse-rest-storage</artifactId>
+	<packaging>jar</packaging>
+	<name>lakehouse-rest-storage</name>
+	<description>对象存储访问：FileIO 提供者、warehouse 路径、存储凭据管理器的实现与缓存</description>
+
+	<!--
+		装什么：
+		  StorageFileIoFactory   按 catalog 的存储配置装出 FileIO（ServiceLoader 找 Paimon 的
+		                         插件实现，含凭据刷新与路径模板）
+		  CatalogFileService     控制台的仓库文件浏览（列目录、读文件头）
+		  Paths                  warehouse 与表目录的路径拼装
+		  StorageCredential*     凭据的下发、缓存与刷新
+		  StorageRuntimePolicy   存储相关配置的解析与启动期自检
+
+		凭什么值得一个模块：它是**唯一「往仓库写 / 读文件」的模块**。这里有个容易
+		看漏的点——Paimon 的 FileIO 在本模块里承担的是**通用文件系统客户端**的角色
+		（s3 插件加载、凭据刷新），与「表格式」无关。如果让后续的 Iceberg 协议面
+		另引一套 hadoop-aws 做同样的事，就会出现两套 s3 凭据解析逻辑，
+		「凭据统一」当场破功。所以这一层必须共用。
+
+		因此本模块**允许**依赖 org.apache.paimon（只用 fs / catalog / options 这几个包，
+		见 §3.1 的依赖方向图），但**不允许**依赖任一协议面。
+	-->
+	<dependencies>
+		<dependency>
+			<groupId>io.github.melin</groupId>
+			<artifactId>lakehouse-rest-core</artifactId>
+		</dependency>
+		<!--
+			FileIO 的接口与实现加载：org.apache.paimon.fs.* / catalog.CatalogContext /
+			options.Options。只用这几个包，不用 schema / table / types —— 那不是
+			存储层的事。
+		-->
+		<dependency>
+			<groupId>org.apache.paimon</groupId>
+			<artifactId>paimon-core</artifactId>
+		</dependency>
+	</dependencies>
+
+	<build>
+		<plugins>
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-enforcer-plugin</artifactId>
+				<executions>
+					<execution>
+						<id>storage-boundary</id>
+						<goals>
+							<goal>enforce</goal>
+						</goals>
+						<configuration>
+							<rules>
+								<bannedDependencies>
+									<excludes>
+										<!--
+											允许 org.apache.paimon（FileIO），不允许任何
+											表格式的**协议实现**依赖进来。
+										-->
+										<exclude>org.apache.iceberg:*</exclude>
+										<exclude>io.github.melin:lakehouse-rest-protocol-paimon</exclude>
+										<exclude>io.github.melin:lakehouse-rest-protocol-iceberg</exclude>
+									</excludes>
+									<message>
+										lakehouse-rest-storage 是两套协议面共用的存储层：它可以用
+										Paimon 的 FileIO 当通用文件系统客户端，但不能依赖任何
+										协议面模块，也不能把 Iceberg 的实现拖进来。
+										见 docs/maven-module-design.md §3.3。
+									</message>
+								</bannedDependencies>
+							</rules>
+						</configuration>
+					</execution>
+				</executions>
+			</plugin>
+		</plugins>
+	</build>
+
+</project>

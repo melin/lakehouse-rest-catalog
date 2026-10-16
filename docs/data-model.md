@@ -3,8 +3,21 @@
 服务端把 catalog 元数据与 RBAC 授权关系全部放进关系库，共 **22 张表、22 个 JPA 仓储接口**。
 本文件说明表的划分，以及三个容易看错或踩坑的设计点：摘要列、审计列、JSON 文档列。
 
-- 实体与仓储：`paimon-rest-server/src/main/java/io/github/melin/paimonrest/domain/entity/`
-  （22 个实体，另含 `AuditedEntity` 基类与 `JsonConverters`）与同级的 `domain/repo/`（22 个仓储接口）
+- 实体与仓储按模块分两处（模块划分见 [`maven-module-design.md`](maven-module-design.md) §8，
+  目录层级见其 §9.1；下面两个路径里的 `lakehouse-rest-spring-parent/` 就是那层嵌套）：
+  - `lakehouse-rest-spring-parent/lakehouse-rest-core/.../domain/entity/` —— **19 个实体**（catalog 侧 12 + 管理侧 7），
+    另含 `AuditedEntity` 基类与 `JsonConverters`；同级 `domain/repo/` 有 **19 个仓储接口**
+  - `lakehouse-rest-spring-parent/lakehouse-rest-server/.../domain/entity/` —— **3 个表存储优化实体**
+    （`TableOptimization` / `OptimizationJob` / `OptimizationJobItem`）；同级 `domain/repo/` 有 3 个仓储接口
+  - 合计仍是 22 个实体 + 22 个仓储接口。分家的依据是**谁读它**而不是谁写它：
+    优化三表只有 server 侧的调度与控制器会读，留在 server；其余实体被协议层（`protocol-paimon`）
+    的面复用，所以下沉到 core，否则协议层要反向依赖 server
+- **表名的 `paimon_` 前缀是历史遗留，与表格式无关。** 服务端早期只服务 Paimon 一种格式，
+  表名就带了这个前缀；加 Iceberg REST 支持时**不改**这些表名、也不另建一套元数据表，
+  而是在 `paimon_catalog` 上加一列 `catalog_format`（PAIMON / ICEBERG，建 catalog 时确定、不可变）
+  来做格式分派——**不复用**已有的 `catalog_type`（那是**托管模式**：INTERNAL / EXTERNAL，
+  与格式正交；混用会让「外部 Iceberg 仓库的入口」这种状态没有地方表达）。
+  详见 [`iceberg-rest-catalog-design.md`](iceberg-rest-catalog-design.md) §3.1–3.2
 - 建表语句：[`../sql/schema-mysql.sql`](../sql/schema-mysql.sql)（由实体生成，改实体后必须重跑）
 - 库结构由 `ddl-auto: validate` 守住：实体与库不一致时应用**直接启动失败**，
   代价是实体变更后要自行迁移存量数据（见 [`../README.md`](../README.md) 第 6 节「实现说明与已知边界」第 14 条）

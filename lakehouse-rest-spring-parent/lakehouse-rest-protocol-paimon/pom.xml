@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+	<modelVersion>4.0.0</modelVersion>
+
+	<parent>
+		<groupId>io.github.melin</groupId>
+		<artifactId>lakehouse-rest-spring-parent</artifactId>
+		<version>0.0.1-SNAPSHOT</version>
+		<!--
+			不用写 <relativePath>：本模块嵌在父 POM 目录之下，默认的 `../pom.xml`
+			就是父 POM。平级布局下才必须显式指路（默认值会落到仓库根的聚合 POM 上）。
+		-->
+	</parent>
+
+	<artifactId>lakehouse-rest-protocol-paimon</artifactId>
+	<packaging>jar</packaging>
+	<name>lakehouse-rest-protocol-paimon</name>
+	<description>Paimon REST Catalog 协议面：catalog API 的控制器、Paimon 契约 DTO 与元数据物化</description>
+
+	<!--
+		装什么（catalog API `/v1/**` 的 Paimon 侧）：
+		  web/          DatabaseController、TableController、Branch / Tag / Partition /
+		                Consumer / SemanticView / Function / View 控制器
+		  dto/          这些端点各自的请求与响应契约
+		  service/      TableService（表的增删改与读取）、TableMetadataService（消费仓库里的
+		                schema-* / snapshot-* 物化成行）、SchemaChangeService、以及
+		                branch / tag / partition / consumer / semantic-view / function / view
+		                各自的服务、DatabaseService、CredentialService、TableLookup
+		  support/      TableKinds（表格式：Paimon / Format / Object / Lance）、SchemaSupport、
+		                TableDefaults、Codecs
+
+		凭什么值得一个模块：**它是唯一允许 import org.apache.paimon 的协议模块**
+		（storage 除外，且只用于 FileIO）。Paimon 的 schema / snapshot 读写、
+		Object 表与 Format 表的归一化都在这里，将来 Iceberg 面要的是完全不同的
+		元数据代数（update 应用 / requirements 校验 / CAS），两者不该在同一个编译单元里。
+
+		注意本模块**不做**协议分派：进来的请求已经由 prefix 定位到具体 catalog，
+		由 server 的装配层确认过格式，这里只处理 Paimon 形状的契约。
+	-->
+	<dependencies>
+		<dependency>
+			<groupId>io.github.melin</groupId>
+			<artifactId>lakehouse-rest-core</artifactId>
+		</dependency>
+		<!--
+			存储层：TableMetadataService 要把 schema-* / snapshot-* 从仓库里读出来。
+			只在 storage 里重复实现一遍 FileIO 装配会让凭据解析分叉，所以走依赖而不是复制。
+		-->
+		<dependency>
+			<groupId>io.github.melin</groupId>
+			<artifactId>lakehouse-rest-storage</artifactId>
+		</dependency>
+		<!--
+			Paimon 元数据 API：org.apache.paimon.{Snapshot, fs.*, schema.*, utils.*,
+			table.object.ObjectTable, types.DataField}。这就是「格式名出现在
+			artifactId 里」的意义——这个模块**就是** Paimon 的实现。
+		-->
+		<dependency>
+			<groupId>org.apache.paimon</groupId>
+			<artifactId>paimon-core</artifactId>
+		</dependency>
+	</dependencies>
+
+	<build>
+		<plugins>
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-enforcer-plugin</artifactId>
+				<executions>
+					<execution>
+						<id>single-face</id>
+						<goals>
+							<goal>enforce</goal>
+						</goals>
+						<configuration>
+							<rules>
+								<bannedDependencies>
+									<excludes>
+										<!--
+											不变量 2：两个协议面互不依赖。装配层按 prefix 选面，
+											面与面之间没有调用关系——一旦有，就说明有代码放错了层。
+										-->
+										<exclude>io.github.melin:lakehouse-rest-protocol-iceberg</exclude>
+										<!--
+											不变量 3：Iceberg 的实现只允许出现在 Iceberg 面。
+											（lakehouse-rest-protocol-iceberg 落地时，那条禁令写在那里，
+											本模块不需要重复声明——它已经在禁这条依赖。）
+										-->
+										<exclude>org.apache.iceberg:*</exclude>
+									</excludes>
+									<message>
+										lakehouse-rest-protocol-paimon 不能依赖 Iceberg 面或
+										Iceberg 的实现。两个协议面互不依赖，是「两套依赖世界不共处
+										一个编译单元」这条设计的直接形式。见
+										docs/maven-module-design.md §3.1 的三条不变量。
+									</message>
+								</bannedDependencies>
+							</rules>
+						</configuration>
+					</execution>
+				</executions>
+			</plugin>
+		</plugins>
+	</build>
+
+</project>

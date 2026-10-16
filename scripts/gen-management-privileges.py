@@ -35,7 +35,7 @@ for r in ENUM_TO_RESOURCE.values():
 
 L = []
 w = L.append
-w("package io.github.melin.paimonrest.dto;")
+w("package io.github.melin.lakehouse.rest.dto;")
 w("")
 w("import java.util.Collections;")
 w("import java.util.LinkedHashMap;")

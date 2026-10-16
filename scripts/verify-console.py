@@ -51,25 +51,32 @@ except ImportError:  # 只在环境缺依赖时触发；脚本要读规格，yam
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-CONSOLE_DIR = os.path.join(ROOT, "paimon-rest-console")
+CONSOLE_DIR = os.path.join(ROOT, "lakehouse-rest-console")
 ENDPOINTS_JS = os.path.join(CONSOLE_DIR, "src/api/endpoints.js")
 VITE_CONFIG = os.path.join(CONSOLE_DIR, "vite.config.js")
 ROUTER = os.path.join(CONSOLE_DIR, "src/router/index.js")
 CLIENT_JS = os.path.join(CONSOLE_DIR, "src/api/client.js")
 
 CATALOG_SPEC = os.path.join(
-    ROOT, "paimon-rest-server/src/main/resources/static/rest-catalog-open-api.yaml")
+    ROOT, "lakehouse-rest-spring-parent/lakehouse-rest-server/src/main/resources/static/rest-catalog-open-api.yaml")
 MANAGEMENT_SPEC = os.path.join(ROOT, "spec/polaris-management-service.yml")
 
 CONSOLE_ASSETS = os.path.join(
-    ROOT, "paimon-rest-server/src/main/resources/static/console")
+    ROOT, "lakehouse-rest-spring-parent/lakehouse-rest-server/src/main/resources/static/console")
+
+# 服务端拆成四个模块后，被校验的源码分处两个模块目录。包名没变，变的只是
+# 「这个包在哪个 jar 里」——因此这里按包的归属分别定位，而不是拼一个总前缀。
+# 归属见 docs/maven-module-design.md §3.3：dto/support 里与格式无关的公共类型在 core，
+# 控制台自己的服务与控制器在 server。
+CORE_JAVA = os.path.join(
+    ROOT, "lakehouse-rest-spring-parent/lakehouse-rest-core/src/main/java/io/github/melin/lakehouse/rest")
 
 SERVER_JAVA = os.path.join(
-    ROOT, "paimon-rest-server/src/main/java/io/github/melin/paimonrest")
+    ROOT, "lakehouse-rest-spring-parent/lakehouse-rest-server/src/main/java/io/github/melin/lakehouse/rest")
 
-STORAGE_DTOS = os.path.join(SERVER_JAVA, "dto/StorageDtos.java")
-STORAGE_CONFIGS = os.path.join(SERVER_JAVA, "support/StorageConfigs.java")
-CONSOLE_DTOS = os.path.join(SERVER_JAVA, "dto/ConsoleDtos.java")
+STORAGE_DTOS = os.path.join(CORE_JAVA, "dto/StorageDtos.java")
+STORAGE_CONFIGS = os.path.join(CORE_JAVA, "support/StorageConfigs.java")
+CONSOLE_DTOS = os.path.join(CORE_JAVA, "dto/ConsoleDtos.java")
 CONSOLE_META_SERVICE = os.path.join(SERVER_JAVA, "service/ConsoleMetaService.java")
 MANAGEMENT_CATALOG_SERVICE = os.path.join(
     SERVER_JAVA, "service/ManagementCatalogService.java")
@@ -250,7 +257,7 @@ check(f"路由的 history base 为 {CONSOLE_BASE}",
 # 服务端侧：静态资源处理器与转发目标
 web_config = read(os.path.join(
     ROOT,
-    "paimon-rest-server/src/main/java/io/github/melin/paimonrest/config/ConsoleWebConfig.java"))
+    "lakehouse-rest-spring-parent/lakehouse-rest-server/src/main/java/io/github/melin/lakehouse/rest/config/ConsoleWebConfig.java"))
 check("服务端静态资源位置与构建输出目录一致",
       f'CONSOLE_LOCATION = "classpath:/static{CONSOLE_BASE}"' in web_config,
       "ConsoleWebConfig 中的资源位置不是 classpath:/static/console/")
@@ -263,7 +270,7 @@ check("client.js 的默认 API 基址是同源（空串）",
 # 外部客户端打的是对的、浏览器登录打的是错的——「只有登录按钮坏」这种故障
 # 很难从现象反推回原因，因此在这里钉死。
 auth_controller = read(os.path.join(
-    ROOT, "paimon-rest-server/src/main/java/io/github/melin/paimonrest/web/ConsoleAuthController.java"))
+    ROOT, "lakehouse-rest-spring-parent/lakehouse-rest-server/src/main/java/io/github/melin/lakehouse/rest/web/ConsoleAuthController.java"))
 advertised = re.search(r'TOKEN_ENDPOINT\s*=\s*"([^"]+)"', auth_controller)
 console_token_path = endpoints.get("token", (None, None))[1]
 check("控制台的令牌端点与服务端下发的 tokenEndpoint 一致",

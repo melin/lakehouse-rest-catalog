@@ -35,9 +35,9 @@ build/
 ### macOS ###
 .DS_Store
 
-paimon-rest-server/src/main/resources/static/console
+lakehouse-rest-spring-parent/lakehouse-rest-server/src/main/resources/static/console
 
 # 语法文件的生成物。正常构建把它们写到 target/generated-sources/antlr4/（包名由
 # 目录结构推出）；手工跑 antlr4 CLI 容易把它们落在语法文件旁边，这里挡一下，
 # 免得「两份同名的 Lexer/Parser」被误提交。
-paimon-rest-spark/src/main/antlr4/**/gen/
+lakehouse-rest-spark/src/main/antlr4/**/gen/

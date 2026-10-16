@@ -4,7 +4,7 @@
 > P3 未做。落地过程中与原方案的偏差都写在对应小节里，并注明了改动的理由——本文同时是「当时为什么这么设计」的记录。
 >
 > 各节的实现状态：§2 动作映射 ✅ · §3 执行架构 ✅ · §4 数据模型 ✅（`sql/schema-mysql.sql` 已是 22 张表）·
-> §5 API ✅ · §6 优化任务模块 ✅（`paimon-rest-optimizer`）· §7 控制台 ⏳ 待做 · §8 分期见文末。
+> §5 API ✅ · §6 优化任务模块 ✅（`lakehouse-rest-optimizer`）· §7 控制台 ⏳ 待做 · §8 分期见文末。
 >
 > 对标对象：阿里云 DLF 的表存储优化（Compaction / Snapshot Expire / Orphan File Remove 三个子页签）与 AWS Lake Formation 的 Enable optimization（三项勾选 + 默认/自定义配置 + 三块历史）。**产品分层以 AWS 为基准**（总开关 → 三项独立启用 → 默认/自定义 → 历史三块），DLF 的快照详情卡、「立即清理」按钮与中文文案吸收进来。执行链路是本方案的自有部分：DLF 由服务端托管调度，AWS 由托管 optimizer（按 DPU 计费），我们用**先落库、再异步提交 k8s 运行 Spark 任务、多表合并执行**的方式实现。
 
@@ -209,9 +209,9 @@
 
 ---
 
-## 6. Spark 优化任务（模块 `paimon-rest-optimizer`）
+## 6. Spark 优化任务（模块 `lakehouse-rest-optimizer`）
 
-独立 maven 模块，main class `TableOptimizerJob`，打成镜像；与 `paimon-rest-spark` 共用父 POM
+独立 maven 模块，main class `TableOptimizerJob`，打成镜像；与 `lakehouse-rest-spark` 共用父 POM
 （同一个依赖世界：Spark 由集群提供、Jackson 2 对齐发行版）。
 
 **启动参数只有三个（外加一个可选）**，由服务端生成 k8s Job 时写入：
@@ -293,7 +293,7 @@ P1/P2 的服务端部分由 `OptimizationApiTests`（9 个用例）覆盖：策�
    会被白白吃掉（下一拍这张表还在，但已经「假装跑过」了）。`OptimizationApiTests` 里有对应断言。
 2. **目标集群是否已部署 Spark Operator** → 目前只实现了 k8s Job 通道；CRD 接入留给 P3，
    `OptimizationJobSubmitter` 接口已经为它留好位置（换实现不动调用方）。
-3. **优化镜像的基线** → 与 `paimon-rest-spark` 的 Spark 版本对齐（不引入第二套 Spark），
+3. **优化镜像的基线** → 与 `lakehouse-rest-spark` 的 Spark 版本对齐（不引入第二套 Spark），
    Paimon 运行时由镜像提供。
 4. **外置表与三类非 Paimon 表明确不支持** → 已实现：非 Paimon 表与外部表在策略读写与「立即优化」
    上一律 400，策略响应里用 `supported` / `unsupportedReason` 表达原因而不只是拒绝，

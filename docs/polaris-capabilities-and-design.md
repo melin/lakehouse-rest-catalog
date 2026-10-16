@@ -280,7 +280,7 @@ catalog API 的路径已含全部定位信息，判定统一放在拦截器。ca
 
 聚合 POM 不继承 `spring-boot-starter-parent`：其 `dependencyManagement` 会把 Spark 自带的
 Jackson 2.15.2 抬到 2.21.x，并替换 netty 与 jersey，导致 Spark 侧出现难以定位的版本冲突。
-改由 `paimon-rest-server` 自己继承 Spring Boot 父 POM，聚合 POM 只钉核心插件版本。
+改由 `lakehouse-rest-server` 自己继承 Spring Boot 父 POM，聚合 POM 只钉核心插件版本。
 
 ---
 

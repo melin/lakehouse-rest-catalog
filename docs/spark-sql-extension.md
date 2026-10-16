@@ -1,6 +1,6 @@
 # Spark SQL 管理语法扩展
 
-`paimon-rest-spark` 子模块把管理 API 的能力接进 Spark SQL：主体、principal role 与资源授权
+`lakehouse-rest-spark` 子模块把管理 API 的能力接进 Spark SQL：主体、principal role 与资源授权
 可以用 SQL 语句管理，而不必手写 HTTP 请求。**catalog role 不在其中**——它的建档、装配与清点
 共 7 条语法都已移除，只能用管理 API。
 
@@ -16,11 +16,11 @@ SHOW PERMISSIONS IN CATALOG paimon FOR USER svc_etl;
 
 ## 1. 启用
 
-前置：`paimon-rest-spark` 的 jar 在 Spark 的 classpath 上，管理服务可达。
+前置：`lakehouse-rest-spark` 的 jar 在 Spark 的 classpath 上，管理服务可达。
 
 ```bash
 spark-sql \
-  --conf spark.sql.extensions=io.github.melin.paimonrest.spark.ManagementSparkExtensions \
+  --conf spark.sql.extensions=io.github.melin.lakehouse.rest.spark.ManagementSparkExtensions \
   --conf spark.paimon.rest.management.url=http://catalog-host:8080/api/management/v1 \
   --conf spark.paimon.rest.token=<执行这些语句的主体的令牌>
 ```
@@ -33,6 +33,14 @@ val spark = PaimonRestManagement.install(SparkSession.builder())
   .config(PaimonRestManagement.TOKEN, token)
   .getOrCreate()
 ```
+
+> **旧包名仍然可用。** 包名已从 `io.github.melin.paimonrest` 改到 `io.github.melin.lakehouse.rest`
+> （中间经过一次 `io.github.melin.paimon.rest`，那版未发布），
+> 但模块里保留了一个旧包名下的空壳，所以既有配置写的
+> `io.github.melin.paimonrest.spark.ManagementSparkExtensions` **不用改也能启动**。
+> 新部署请写上面那个新包名——空壳只是过渡，确认没有部署再用旧名字之后就会删掉。
+> 这条兼容是必须的：`spark.sql.extensions` 的值是**启动那一刻**就要解析的全限定类名，
+> 写错了整个会话都建不起来，而报错信息离「升级了服务端依赖」很远。
 
 | 配置 | 默认值 | 说明 |
 | --- | --- | --- |
@@ -164,7 +172,7 @@ Spark 3.5 的 `SqlBase.g4` 是**封闭**的：它的 `statement` 规则没有类
 官方扩展点 `ParserInterface` 也不提供「往已有语法里加规则」的能力。
 
 因此本模块自带一份只描述管理语句的小语法
-（`paimon-rest-spark/src/main/antlr4/io/github/melin/paimonrest/spark/parser/ManagementSql.g4`），
+（`lakehouse-rest-spark/src/main/antlr4/io/github/melin/lakehouse/rest/spark/parser/ManagementSql.g4`），
 在 `ParserInterface.parsePlan` 里**先试自己的解析器**：
 
 - 解析成功 → 执行管理操作；

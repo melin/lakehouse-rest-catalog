@@ -16,7 +16,7 @@ kubectl apply -k deploy/kubernetes
 | --- | --- |
 | Kubernetes | 1.24 及以上。清单用了 `policy/v1` 的 PodDisruptionBudget（1.21 GA）与 `networking.k8s.io/v1` 的 Ingress |
 | 镜像 | 需要在能访问集群节点的机器上先构建，见第 2.2 节；节点架构不一致时要推多架构镜像 |
-| 构建产物 | 服务端 jar 必须先用 `mvn -o -pl paimon-rest-server -am clean package -DskipTests` 产出——镜像只装 jar、不编译，见第 2.2 节 |
+| 构建产物 | 服务端 jar 必须先用 `mvn -o -pl :lakehouse-rest-server -am clean package -DskipTests` 产出——镜像只装 jar、不编译，见第 2.2 节 |
 | 存储 | 集群要有默认 StorageClass，否则 `paimon-warehouse` 与 MySQL 的 PVC 会一直 Pending |
 | Ingress | 仅在需要从集群外访问时才要，没有的话把 ingress.yaml 从 kustomization.yaml 里去掉 |
 
@@ -45,20 +45,28 @@ kubectl -n paimon-rest create secret generic paimon-rest-credentials \
 
 ```bash
 # 先产出 jar —— 镜像里没有 JDK 与 Maven，构建镜像不编译
-mvn -o -pl paimon-rest-server -am clean package -DskipTests
+mvn -o -pl :lakehouse-rest-server -am clean package -DskipTests
 
-docker build -t paimon-rest-server:0.0.1 .
+docker build -t lakehouse-rest-server:0.0.1 .
 ```
 
 `deployment.yaml` 与 `mysql.yaml` 都引用了这个镜像，`imagePullPolicy` 是 `IfNotPresent`。
 单节点集群（kind / minikube / Docker Desktop）还需要把镜像送进节点：
 
+**关于名字：清单里的 Deployment / Service / 标签 / namespace 是 `paimon-rest`，
+而镜像是 `lakehouse-rest-server`，这不是笔误。** Maven 坐标改名（`paimon-rest-*` →
+`lakehouse-rest-*`）只动了构建产物；k8s 资源名绑的是集群里**已经存在**的对象——
+label selector、NetworkPolicy、ServiceMonitor 的抓取配置、`kubectl get -l` 脚本、
+Service DNS（`paimon-rest-server.paimon-rest.svc`）。改它们是一次带下线的迁移，
+收益只有一致性，所以刻意保持不动，只让镜像名跟随坐标。取舍详见
+[`docs/maven-module-design.md`](../../docs/maven-module-design.md) §4.3。
+
 ```bash
 # kind
-kind load docker-image paimon-rest-server:0.0.1
+kind load docker-image lakehouse-rest-server:0.0.1
 
 # minikube
-minikube image load paimon-rest-server:0.0.1
+minikube image load lakehouse-rest-server:0.0.1
 ```
 
 多节点集群请推到镜像仓库，并把清单里的 `image` 改成带仓库地址的完整引用。
@@ -69,7 +77,7 @@ minikube image load paimon-rest-server:0.0.1
 
 ```bash
 PLATFORMS=linux/amd64,linux/arm64 \
-PUSH=1 IMAGE=registry.example.com/paimon-rest/paimon-rest-server:0.0.1 \
+PUSH=1 IMAGE=registry.example.com/lakehouse-rest/lakehouse-rest-server:0.0.1 \
   ../../scripts/build-image.sh
 ```
 
@@ -89,7 +97,7 @@ kubectl -n paimon-rest get pods -w
 期望顺序：`paimon-mysql-0` 先 Init → Running → Ready，然后
 `paimon-rest-server` 的 `wait-for-mysql` 初始化容器通过，主容器启动。
 
-首次启动 MySQL 要执行建表语句（18 张表），会比后续重启慢。
+首次启动 MySQL 要执行建表语句（22 张表），会比后续重启慢。
 
 ### 2.4 验证
 

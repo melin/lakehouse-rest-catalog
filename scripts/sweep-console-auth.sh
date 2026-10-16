@@ -7,7 +7,7 @@
 # 因此这里直接对**运行中的实例**发真实的 HTTP 请求。
 #
 # 前置：服务端以开启鉴权的方式启动，且有一个可用的主体凭据。
-#   java -jar paimon-rest-server-*.jar --spring.profiles.active=h2 \
+#   java -jar lakehouse-rest-server-*.jar --spring.profiles.active=h2 \
 #     --paimon.rest.auth.enabled=true \
 #     --paimon.rest.auth.access-token.signing-key="$(openssl rand -base64 48)" \
 #     --paimon.rest.auth.tokens[0]=static-token-for-sweep

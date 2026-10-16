@@ -25,7 +25,7 @@
 
 构件名带 Scala 二进制版本后缀（`_2.12`），换 Spark 或 Scala 版本时必须同步换。
 
-本项目把这两项声明为 `paimon-rest-spark` 的**测试**依赖（`paimon-rest-spark/pom.xml`），
+本项目把这两项声明为 `lakehouse-rest-spark` 的**测试**依赖（`lakehouse-rest-spark/pom.xml`），
 发布产物里不含它们——本模块自己只做管理语句扩展，不依赖 Paimon 运行时。
 
 **warehouse 落在对象存储上时还要补一样**：对应 scheme 的 FileIO 实现。
@@ -39,13 +39,13 @@ for scheme 's3' in the classpath. Hadoop FileSystem also cannot access this path
 
 失败。这条报错来自**引擎的类路径，与服务端无关**：服务端做不做 S3 都改变不了它。
 S3 加 `org.apache.paimon:paimon-s3:2.0.0`（OBS / OSS 分别是 `paimon-obs` / `paimon-oss`），
-生产上放进 `spark/jars`，本仓库的测试已经在 `paimon-rest-spark/pom.xml` 里声明。
+生产上放进 `spark/jars`，本仓库的测试已经在 `lakehouse-rest-spark/pom.xml` 里声明。
 
 ### 1.2 会话配置
 
 ```properties
 # 两个扩展都要装，缺 Paimon 那个会被它自己的启动检查拦下
-spark.sql.extensions=io.github.melin.paimonrest.spark.ManagementSparkExtensions,org.apache.paimon.spark.extensions.PaimonSparkSessionExtensions
+spark.sql.extensions=io.github.melin.lakehouse.rest.spark.ManagementSparkExtensions,org.apache.paimon.spark.extensions.PaimonSparkSessionExtensions
 
 spark.sql.catalog.paimon=org.apache.paimon.spark.SparkCatalog
 spark.sql.catalog.paimon.metastore=rest
@@ -70,7 +70,7 @@ Spark 原生解析器，与 Paimon 注入的规则不重叠，因此谁在前都
 ```bash
 spark-sql \
   --jars paimon-spark-3.5_2.12-2.0.0.jar \
-  --conf spark.sql.extensions=io.github.melin.paimonrest.spark.ManagementSparkExtensions,org.apache.paimon.spark.extensions.PaimonSparkSessionExtensions \
+  --conf spark.sql.extensions=io.github.melin.lakehouse.rest.spark.ManagementSparkExtensions,org.apache.paimon.spark.extensions.PaimonSparkSessionExtensions \
   --conf spark.sql.catalog.paimon=org.apache.paimon.spark.SparkCatalog \
   --conf spark.sql.catalog.paimon.metastore=rest \
   --conf spark.sql.catalog.paimon.uri=http://127.0.0.1:8080 \
@@ -393,7 +393,7 @@ schema 物化补上之后它们已经翻转成断言写入成功。这个类保�
 根本没被调用，更没走到文件系统或 lance 的原生代码。补 `com.lancedb:lance-core`
 之类的 jar 不会改变结论：上游 2.0.0 的 `paimon-lance` 模块（真正的 lance 集成）在
 `paimon-spark-common` 的 pom 里是 `test` scope 且主动 exclude 了 `lance-core`，
-本项目 `paimon-rest-spark` 的依赖树里也完全没有 lance 相关 artifact。
+本项目 `lakehouse-rest-spark` 的依赖树里也完全没有 lance 相关 artifact。
 要读 Lance 数据得用 Lance 生态自己的 Spark 连接器，拿 `LanceTable.location()` 指过去；
 Paimon 的 Spark 连接器在当前版本不解。
 
@@ -484,7 +484,7 @@ options.put(PATH.key(), response.getPath());   // put，不是 putIfAbsent
 
 ```bash
 # 先起一个服务端
-java -jar paimon-rest-server/target/paimon-rest-server-0.0.1-SNAPSHOT.jar \
+java -jar lakehouse-rest-spring-parent/lakehouse-rest-server/target/lakehouse-rest-server-0.0.1-SNAPSHOT.jar \
   --spring.profiles.active=h2 --server.port=18080 \
   --paimon.rest.auth.enabled=true --paimon.rest.auth.tokens[0]=root \
   --paimon.rest.authorization.enabled=true \
@@ -492,7 +492,7 @@ java -jar paimon-rest-server/target/paimon-rest-server-0.0.1-SNAPSHOT.jar \
   --paimon.rest.authorization.bootstrap-principal=root
 
 # 对着它跑建表与写入用例
-mvn -o -pl paimon-rest-spark test -Dtest=PaimonTableDdlTests \
+mvn -o -pl :lakehouse-rest-spark test -Dtest=PaimonTableDdlTests \
   -De2e.management.url=http://127.0.0.1:18080/api/management/v1 \
   -De2e.management.token=root
 ```
@@ -510,7 +510,7 @@ mvn -o -pl paimon-rest-spark test -Dtest=PaimonTableDdlTests \
 因此服务端要多配两个令牌，并把它们映射到两个主体（`token-principals`）：
 
 ```bash
-java -jar paimon-rest-server/target/paimon-rest-server-0.0.1-SNAPSHOT.jar \
+java -jar lakehouse-rest-spring-parent/lakehouse-rest-server/target/lakehouse-rest-server-0.0.1-SNAPSHOT.jar \
   --spring.profiles.active=h2 --server.port=18080 \
   --paimon.rest.auto-create-catalog=true \
   --paimon.rest.auth.enabled=true \
@@ -521,7 +521,7 @@ java -jar paimon-rest-server/target/paimon-rest-server-0.0.1-SNAPSHOT.jar \
   --paimon.rest.authorization.service-admins[0]=root \
   --paimon.rest.authorization.bootstrap-principal=root
 
-mvn -o -pl paimon-rest-spark test -Dtest=SparkSqlAuthorizationTests -DfailIfNoTests=false \
+mvn -o -pl :lakehouse-rest-spark test -Dtest=SparkSqlAuthorizationTests -DfailIfNoTests=false \
   -De2e.management.url=http://127.0.0.1:18080/api/management/v1 \
   -De2e.management.token=root
 ```

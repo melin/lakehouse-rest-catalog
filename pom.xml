@@ -4,25 +4,32 @@
 	<modelVersion>4.0.0</modelVersion>
 
 	<groupId>io.github.melin</groupId>
-	<artifactId>paimon-rest-parent</artifactId>
+	<artifactId>lakehouse-rest-parent</artifactId>
 	<version>0.0.1-SNAPSHOT</version>
 	<packaging>pom</packaging>
-	<name>paimon-rest-parent</name>
-	<description>Paimon Rest Catalog 服务端与 Spark SQL 扩展</description>
+	<name>lakehouse-rest-parent</name>
+	<description>湖仓 REST Catalog 服务端、Spark SQL 扩展与表优化任务</description>
 
 	<!--
-		聚合三个模块：
-		  paimon-rest-server  Spring Boot 实现的 REST Catalog 服务，同时承载
-		                      catalog API（/v1/**）与 Management API（/api/management/v1/**）
-		  paimon-rest-spark   基于 SparkSessionExtensions 的 SQL 语法扩展，
-		                      用 SQL 管理主体、角色与授权
-		  paimon-rest-optimizer 表存储优化任务：由服务端作为 k8s Job 提交，
-		                      在集群上对一批 Paimon 表执行
-		                      compact / expire_snapshots / remove_orphan_files
+		聚合三类东西，对应**两个依赖世界**：
+
+		  服务端世界（Spring Boot）—— 由 lakehouse-rest-spring-parent 再聚合：
+		    lakehouse-rest-core              领域与共享契约（零格式依赖）
+		    lakehouse-rest-storage           对象存储访问（warehouse 的读写都从这里出）
+		    lakehouse-rest-protocol-paimon   Paimon REST Catalog 协议面
+		    lakehouse-rest-server            可执行：装配 / 管理 API / 控制台宿主
+		    （后续迭代再加 lakehouse-rest-protocol-iceberg）
+
+		  集群世界（Spark 由集群提供）—— 与上面共用本 POM 作父：
+		    lakehouse-rest-spark             基于 SparkSessionExtensions 的 SQL 语法扩展
+		    lakehouse-rest-optimizer         表存储优化任务：由服务端作为 k8s Job 提交
 
 		聚合与继承在这里刻意分开：
-		  - 本 POM 只是聚合器，同时是 paimon-rest-spark 与 paimon-rest-optimizer 的父 POM；
-		  - paimon-rest-server 的父 POM 是 spring-boot-starter-parent。
+		  - 本 POM 只是聚合器，同时是 lakehouse-rest-spark 与 lakehouse-rest-optimizer 的父 POM；
+		  - 服务端四个模块的父 POM 是 lakehouse-rest-spring-parent（它继承
+		    spring-boot-starter-parent）。**那四个模块的目录就嵌在 spring-parent/ 里面**，
+		    所以那边只需要本 POM 当聚合器、不需要再指点父 POM 的位置；
+		    也因此 `-pl` 要写坐标形式 `-pl :lakehouse-rest-server`——裸名字会被当成相对路径。
 
 		如果把 spring-boot-starter-parent 提为本 POM 的父，它带来的
 		dependencyManagement 会一并作用到 Spark 模块上——例如把 Spark 依赖的
@@ -30,13 +37,17 @@
 		轻则类路径与集群不一致，重则在提交任务时 NoSuchMethodError。
 		两个模块的依赖世界本来就不同，因此不共用父 POM，只共用聚合。
 
-		paimon-rest-optimizer 与 paimon-rest-spark 属同一个依赖世界（Spark 由集群提供、
+		lakehouse-rest-optimizer 与 lakehouse-rest-spark 属同一个依赖世界（Spark 由集群提供、
 		Jackson 2 对齐发行版），因此与后者共用父 POM 是安全的。
+
+		模块清单与依赖方向见 docs/maven-module-design.md；三条不变量
+		（core 无格式依赖 · 两个协议面互不依赖 · iceberg-core 只在本格式面）
+		由各模块 POM 的 maven-enforcer bannedDependencies 机械守住。
 	-->
 	<modules>
-		<module>paimon-rest-server</module>
-		<module>paimon-rest-spark</module>
-		<module>paimon-rest-optimizer</module>
+		<module>lakehouse-rest-spring-parent</module>
+		<module>lakehouse-rest-spark</module>
+		<module>lakehouse-rest-optimizer</module>
 	</modules>
 
 	<properties>
@@ -68,16 +79,23 @@
 		<jackson2.version>2.15.2</jackson2.version>
 		<junit.version>6.0.3</junit.version>
 		<!--
-			Paimon 的版本。
+			Paimon 的版本（集群世界）。
 
-			只用于 paimon-rest-spark 的**测试**（见该模块 POM 的说明）：
+			只用于 lakehouse-rest-spark / lakehouse-rest-optimizer 的**测试**与镜像打包：
 			建表用例需要真实的 Paimon Spark 目录来验证「Spark SQL 能否按我们的
-			REST 契约建出表」，而本模块自身运行时不依赖 Paimon——扩展只处理
-			管理语句，其余 SQL 原样交回 Spark 原生解析器。
+			REST 契约建出表」，而这两个模块自身运行时不编译 Paimon。
 
 			构件名带 Scala 二进制版本后缀（`paimon-spark-3.5_2.12`），
 			因此与 spark.version / scala.binary.version 是绑定的：
 			换 Spark 或 Scala 版本时必须同步换这里。
+
+			**服务端世界另有一份同名属性**（lakehouse-rest-spring-parent 的
+			paimon.version，锚的是 paimon-core / paimon-format / paimon-s3）。
+			两处必须写同一个值：它们决定「引擎侧把 schema 写成什么样」与
+			「服务端把 schema 读成什么样」是否一致，不一致的症状是引擎侧报
+			UnsupportedOperationException，或者读到缺列的 schema。
+			两个依赖世界不共用父 POM，所以这个一致性目前靠人工守——
+			改任一处时两处一起改（见 docs/maven-module-design.md §3.2）。
 		-->
 		<paimon.version>2.0.0</paimon.version>
 	</properties>
@@ -111,7 +129,7 @@
 			</dependency>
 			<!--
 				Paimon 的 Spark bundle，自带 paimon-core / 文件系统实现 / 依赖 shade。
-				测试用，见 paimon-rest-spark/pom.xml 的说明。
+				测试用，见 lakehouse-rest-spark/pom.xml 的说明。
 			-->
 			<dependency>
 				<groupId>org.apache.paimon</groupId>
@@ -170,6 +188,9 @@
 	<!--
 		本 POM 没有父 POM，因此核心插件的版本需要自己钉住，
 		否则会退回 Maven 内置的默认版本，构建结果依赖本机 Maven 版本。
+
+		服务端世界（spring-parent 及其五个模块）的插件版本由
+		spring-boot-starter-parent 提供，不在这里重复钉。
 	-->
 	<build>
 		<pluginManagement>

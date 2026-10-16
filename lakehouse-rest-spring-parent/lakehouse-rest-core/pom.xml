@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+	<modelVersion>4.0.0</modelVersion>
+
+	<parent>
+		<groupId>io.github.melin</groupId>
+		<artifactId>lakehouse-rest-spring-parent</artifactId>
+		<version>0.0.1-SNAPSHOT</version>
+		<!--
+			不用写 <relativePath>：本模块嵌在父 POM 目录之下，默认的 `../pom.xml`
+			就是父 POM。平级布局下才必须显式指路（默认值会落到仓库根的聚合 POM 上）。
+		-->
+	</parent>
+
+	<artifactId>lakehouse-rest-core</artifactId>
+	<packaging>jar</packaging>
+	<name>lakehouse-rest-core</name>
+	<description>领域与共享契约：22 张表的实体与仓库、共享服务、共享 DTO、共享 Web 组件（/v1/config、错误模型、认证拦截器、访问规则、配置属性）</description>
+
+	<!--
+		装什么、凭什么值得一个模块：
+
+		- domain/     22 张表的实体与仓储。谁都要用，谁都不该改它的形状。
+		- support/    跨面复用的工具与词表（ApiException、Json、Paging、TypeDtos 之类的公共
+		              类型映射、ResourceType、Privilege 词表）。
+		- service/    不分格式的共享服务：CatalogService（catalog 解析与 /v1/config 的数据源）、
+		              授权（AuthorizationService）、令牌与 OIDC、凭据接口的对外形状。
+		- dto/        两套协议都会用到的公共 DTO（TypeDtos / CommonDtos / GrantDtos /
+		              PermissionDtos / StorageDtos / ManagementEnums / ConsoleDtos）。
+		- web/        与协议无关的 Web 组件：ConfigController（两套协议共用同一个端点）、
+		              OAuthTokenController（路径不带 prefix）、GlobalExceptionHandler、
+		              两个认证拦截器、CatalogAccessRules。
+		- config/     RestServerProperties（paimon.rest.*，本期不改前缀）、RequestContext、Clock。
+
+		**格式名不出现在本模块。** 这是三条不变量里唯一由本模块自己承担的一条：
+		它必须一行格式代码都没有，否则两套协议面共享的这块地基会把 Paimon 与
+		Iceberg 的依赖同时吸进来。下面的 bannedDependencies 就是这个约束的机械形式——
+		它不是文档，是构建期会失败的断言。
+	-->
+	<build>
+		<plugins>
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-enforcer-plugin</artifactId>
+				<executions>
+					<execution>
+						<id>format-free-core</id>
+						<goals>
+							<goal>enforce</goal>
+						</goals>
+						<configuration>
+							<rules>
+								<bannedDependencies>
+									<!--
+										默认 searchTransitive=true：查的是**整棵依赖树**，
+										不是只看直接声明。core 的树里出现任何格式包都算越界——
+										哪怕它是某个共享库「顺手」带进来的。
+									-->
+									<excludes>
+										<exclude>org.apache.paimon:*</exclude>
+										<exclude>org.apache.iceberg:*</exclude>
+										<!-- 协议面依赖 core，反过来不允许 -->
+										<exclude>io.github.melin:lakehouse-rest-protocol-paimon</exclude>
+										<exclude>io.github.melin:lakehouse-rest-protocol-iceberg</exclude>
+									</excludes>
+									<message>
+										lakehouse-rest-core 不能依赖任何表格式实现：它是两套协议面
+										共享的地基，一旦引入 org.apache.paimon 或 org.apache.iceberg，
+										「一份元数据同时服务两种格式」就退化成「两套依赖共存于一个
+										编译单元」。格式相关的代码属于 lakehouse-rest-storage
+										（FileIO）或对应的 lakehouse-rest-protocol-* 模块。
+										见 docs/maven-module-design.md §3.1。
+									</message>
+								</bannedDependencies>
+							</rules>
+						</configuration>
+					</execution>
+				</executions>
+			</plugin>
+		</plugins>
+	</build>
+
+	<!-- 依赖全部来自 lakehouse-rest-spring-parent 的 <dependencies>（webmvc / data-jpa / validation / lombok），此处无增量 -->
+</project>

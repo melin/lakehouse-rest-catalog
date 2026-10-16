@@ -29,7 +29,7 @@ trap 'rm -f "$GENERATED" "$TARGET"' EXIT
 
 echo "== 由实体元数据生成 MySQL DDL =="
 cd "$ROOT" || exit 1
-"$MVN" -o -pl paimon-rest-server test \
+"$MVN" -o -pl :lakehouse-rest-server test \
   -Dtest=MysqlDdlGeneratorTests \
   -DfailIfNoTests=false \
   "-Dmysql.ddl.output=$GENERATED" \

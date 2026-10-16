@@ -28,12 +28,14 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DOC = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "docs/spark-sql-reference.md")
 
-GRAMMAR = os.path.join(ROOT, "paimon-rest-spark/src/main/antlr4/io/github/melin/paimonrest/spark/parser/ManagementSql.g4")
-COMMANDS = os.path.join(ROOT, "paimon-rest-spark/src/main/scala/io/github/melin/paimonrest/spark/ManagementCommands.scala")
-EXTENSIONS = os.path.join(ROOT, "paimon-rest-spark/src/main/scala/io/github/melin/paimonrest/spark/ManagementSparkExtensions.scala")
-CLIENT = os.path.join(ROOT, "paimon-rest-spark/src/main/java/io/github/melin/paimonrest/spark/client/ManagementApiClient.java")
+GRAMMAR = os.path.join(ROOT, "lakehouse-rest-spark/src/main/antlr4/io/github/melin/lakehouse/rest/spark/parser/ManagementSql.g4")
+COMMANDS = os.path.join(ROOT, "lakehouse-rest-spark/src/main/scala/io/github/melin/lakehouse/rest/spark/ManagementCommands.scala")
+EXTENSIONS = os.path.join(ROOT, "lakehouse-rest-spark/src/main/scala/io/github/melin/lakehouse/rest/spark/ManagementSparkExtensions.scala")
+CLIENT = os.path.join(ROOT, "lakehouse-rest-spark/src/main/java/io/github/melin/lakehouse/rest/spark/client/ManagementApiClient.java")
 # 参考文档里的资源定位器与 access 词表来自服务端的官方权限模型，实现就是这份 DTO
-PERMISSIONS = os.path.join(ROOT, "paimon-rest-server/src/main/java/io/github/melin/paimonrest/dto/PermissionDtos.java")
+# 拆模块后 PermissionDtos 落在 core（它与格式无关，两套协议面都要用权限词表）。
+PERMISSIONS = os.path.join(
+    ROOT, "lakehouse-rest-spring-parent/lakehouse-rest-core/src/main/java/io/github/melin/lakehouse/rest/dto/PermissionDtos.java")
 
 problems = []
 checks = 0

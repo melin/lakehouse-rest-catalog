@@ -33,16 +33,16 @@
 #      各跑一次 Maven。
 #
 # 前置：jar 必须先构建好——镜像里没有 JDK 与 Maven，构建镜像不编译。
-#   mvn -o -pl paimon-rest-server -am clean package -DskipTests
+#   mvn -o -pl :lakehouse-rest-server -am clean package -DskipTests
 #
 # 用法（环境变量，都可用在命令前）：
 #   scripts/build-image.sh                                  # 双平台，装进本机镜像存储
-#   PUSH=1 IMAGE=<仓库>/paimon-rest-server:0.0.1 scripts/build-image.sh   # 推仓库
-#   OCI=/tmp/paimon-rest-server.tar scripts/build-image.sh  # 导出 OCI tar
+#   PUSH=1 IMAGE=<仓库>/lakehouse-rest-server:0.0.1 scripts/build-image.sh   # 推仓库
+#   OCI=/tmp/lakehouse-rest-server.tar scripts/build-image.sh  # 导出 OCI tar
 #   PLATFORMS=linux/amd64 scripts/build-image.sh            # 退回单平台
 #   BUILDER=mirrorb scripts/build-image.sh                  # 指定 buildx builder
 #
-#   IMAGE       镜像名（含 tag）。默认 paimon-rest-server:0.0.1
+#   IMAGE       镜像名（含 tag）。默认 lakehouse-rest-server:0.0.1
 #   PLATFORMS   逗号分隔的平台列表。默认 linux/amd64,linux/arm64
 #   PUSH        置 1 则推送到 IMAGE 指明的仓库（与 OCI 互斥）
 #   OCI         输出 OCI 归档的路径（与 PUSH 互斥）
@@ -59,7 +59,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-IMAGE="${IMAGE:-paimon-rest-server:0.0.1}"
+IMAGE="${IMAGE:-lakehouse-rest-server:0.0.1}"
 PLATFORMS="${PLATFORMS:-linux/amd64,linux/arm64}"
 PUSH="${PUSH:-}"
 OCI="${OCI:-}"
@@ -68,7 +68,7 @@ ATTEST="${ATTEST:-}"
 EXTRA="${EXTRA:-}"
 
 # jar 的路径是 POM 的约定产物名；改版本号时这里与 Dockerfile 的 COPY 都要跟着改。
-JAR="paimon-rest-server/target/paimon-rest-server-0.0.1-SNAPSHOT.jar"
+JAR="lakehouse-rest-spring-parent/lakehouse-rest-server/target/lakehouse-rest-server-0.0.1-SNAPSHOT.jar"
 
 die() { echo "错误：$*" >&2; exit 1; }
 
@@ -76,7 +76,7 @@ die() { echo "错误：$*" >&2; exit 1; }
 
 [ -f Dockerfile ] || die "请在仓库根目录运行（当前 $ROOT 下没有 Dockerfile）"
 [ -f "$JAR" ] || die "找不到 $JAR —— 镜像只装 jar、不编译，请先执行：
-    mvn -o -pl paimon-rest-server -am clean package -DskipTests"
+    mvn -o -pl :lakehouse-rest-server -am clean package -DskipTests"
 
 command -v docker >/dev/null 2>&1 || die "找不到 docker"
 docker buildx version >/dev/null 2>&1 || die "找不到 docker buildx"
@@ -91,7 +91,7 @@ if [ -n "$PUSH" ]; then
   case "$IMAGE" in
     */*) ;;
     *) die "PUSH=1 时 IMAGE 要写成带仓库地址的完整引用，当前是 '$IMAGE'。
-    例如 IMAGE=registry.example.com/paimon-rest/paimon-rest-server:0.0.1" ;;
+    例如 IMAGE=registry.example.com/lakehouse-rest/lakehouse-rest-server:0.0.1" ;;
   esac
 fi
 

@@ -11,7 +11,7 @@
 #   KEEP=1 ./scripts/e2e-spark-sql.sh       # 保留服务端不退出，便于手工继续调试
 #
 # 前置：
-#   - 已执行过 mvn -o install -DskipTests（需要 paimon-rest-server 的 jar）
+#   - 已执行过 mvn -o install -DskipTests（需要 lakehouse-rest-server 的 jar）
 #
 # 说明：
 #   - 服务端用内存 H2（显式指定 h2 profile，因为默认数据源已是 MySQL），
@@ -26,7 +26,7 @@ set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 PORT=${PORT:-18080}
 BASE=http://127.0.0.1:$PORT
-JAR=$ROOT/paimon-rest-server/target/paimon-rest-server-0.0.1-SNAPSHOT.jar
+JAR=$ROOT/lakehouse-rest-spring-parent/lakehouse-rest-server/target/lakehouse-rest-server-0.0.1-SNAPSHOT.jar
 LOG=$(mktemp -t paimon-rest-e2e.XXXXXX.log)
 export JAVA_HOME=${JAVA_HOME:-/Library/Java/JavaVirtualMachines/jdk-21.jdk/Contents/Home}
 # 本仓库没有 Maven Wrapper（见 AGENTS.md §1），一律用系统 mvn（3.9+）
@@ -120,7 +120,7 @@ echo "== 跑 Spark SQL 端到端验收 =="
 #   SparkSqlAuthorizationTests      : 同一个 catalog、两种身份（令牌 alice / bob），
 #                                     验建库建表读写放行、只读身份的关键操作被 403 拒绝
 #   SparkSqlDocExamplesTests        : 执行参考文档第 10 节的示例，防止示例被改坏
-"$MVN" -o -pl paimon-rest-spark test \
+"$MVN" -o -pl :lakehouse-rest-spark test \
   -Dtest=ManagementSqlLiveServerTests,PaimonTableDdlTests,NonPaimonTableSqlTests,SparkSqlAuthorizationTests,SparkSqlDocExamplesTests \
   -DfailIfNoTests=false \
   -De2e.management.url="$BASE/api/management/v1" \
