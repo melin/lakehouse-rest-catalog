@@ -4,7 +4,7 @@
       <div class="pc-brand">
         <div class="pc-brand-mark">P</div>
         <div class="pc-brand-text">
-          <div class="pc-brand-name">LakeHouse Rest Catalog</div>
+          <div class="pc-brand-name">LakeHouse Catalog</div>
           <div class="pc-brand-sub">管理控制台</div>
         </div>
       </div>

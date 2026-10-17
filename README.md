@@ -1,8 +1,8 @@
-# LakeHouse Rest Catalog Server（Spring Boot + JPA）
+# LakeHouse Catalog Server（Spring Boot + JPA）
 
 使用 Spring Boot 与 JPA 实现 Apache Paimon 的 **REST Catalog API**（OpenAPI 规格 v1）。
 服务扮演目录（catalog）角色：集中保存 database、表 schema、快照、分支、标签、分区、
-视图与函数的元数据，供 Flink / Spark 等支持 LakeHouse Rest Catalog 协议的引擎通过 HTTP 读写。
+视图与函数的元数据，供 Flink / Spark 等支持 LakeHouse Catalog 协议的引擎通过 HTTP 读写。
 
 同时实现了 Apache Polaris 的 **REST Management API**（`/api/management/v1`）：
 主体、principal role、catalog role 与资源授权的完整 RBAC 管理面，
@@ -816,7 +816,7 @@ Spark 子模块（107 个，其中 6 个类共 35 个用例需要显式指向服
 | `ManagementApiClientTests` | 请求方法与路径、请求体字段形状、路径段编码、`ALTER` 的读-合并-回写、单资源裸对象与状态码、权限端点的基址推导与分页跟随、错误映射 |
 | `ManagementSqlExecutionTests` | 真实 `SparkSession` + 桩服务端：扩展是否真被加载、`spark.sql` 是否真执行命令、结果行列名、原生 SQL 不受影响 |
 | `ManagementSqlLiveServerTests` | 对真实服务端跑完整 SQL 链路：管理 API 契约、官方权限端点的 grant / list / revoke 与分页过滤（默认跳过，见下）。catalog role 的建档与装配已从语法移除，这一类用例里那半截脚手架改调 `ManagementApiClient`，于是顺带守住「管理 API 在 SQL 撤出之后仍然整条可用」 |
-| `PaimonTableDdlTests` | 用 Spark SQL 经 LakeHouse Rest Catalog 建表再写入：分区 append 表与主键表（含分区主键）、`LIKE`、`IF NOT EXISTS` 幂等与裸建冲突、内联主键约束与保留表属性被 Spark 拒绝、库不存在时报错，以及 `CTAS` 与分区主键表 `INSERT` 写完后读回数据；两种断言并重——`DESCRIBE` / `SHOW CREATE TABLE` 的输出，以及直接读服务端元数据核对注释、分区键、主键与选项（默认跳过，见下） |
+| `PaimonTableDdlTests` | 用 Spark SQL 经 LakeHouse Catalog 建表再写入：分区 append 表与主键表（含分区主键）、`LIKE`、`IF NOT EXISTS` 幂等与裸建冲突、内联主键约束与保留表属性被 Spark 拒绝、库不存在时报错，以及 `CTAS` 与分区主键表 `INSERT` 写完后读回数据；两种断言并重——`DESCRIBE` / `SHOW CREATE TABLE` 的输出，以及直接读服务端元数据核对注释、分区键、主键与选项（默认跳过，见下） |
 | `NonPaimonTableSqlTests` | Format / Object / Lance 三种非 Paimon 表的能力边界：Format 表（csv / parquet）建表-写入-读回全链路、Object 表固定六列 + 「把对象放进表目录即可查到，无需 refresh」+ 「客户端给的 `path` 成为表位置，于是能索引一个既有对象目录（并按外部表登记、目录里不留 `schema-0`）」、Lance 表只有建表可行——读写在 Spark 分析阶段被拒；服务端侧同时核对 `type` / `path` / `isExternal` / 字段的落库形状（默认跳过，见下） |
 | `SparkSqlAuthorizationTests` | **两种格式各两条**。Paimon 面：同一个 catalog、同一张表，两个身份各跑一遍真 SQL——有写权限的那个能建库、建表、写入、读回；只读的那个读得到数据、也看得见表列表，但建库 / 建表 / 写数据一律被服务端授权判定拒绝，且断言拒绝报文点名了主体与**缺失的那一项权限**（`TABLE_CREATE` / `TABLE_WRITE_DATA` / `NAMESPACE_CREATE`）、被拒之后数据没变。Iceberg 面（`icebergCatalog.*`）：同一批主体、另一套 catalog role（catalog role 是 catalog 内的实体，跨格式借不到），语句换成 `CREATE NAMESPACE` / `USING iceberg`，并钉住一条只从那一侧看得见的差异——写数据要 `UPDATE` + `ALTER`（指标上报判 `TABLE_WRITE_DATA`、提交端点判 `TABLE_WRITE_PROPERTIES`）。角色的授权用官方权限语句装配（`ON CATALOG_ALL ... TO ROLE ...`，而 `role:` 要生效得先有同名 catalog role——这一层用 `ManagementApiClient` 建，顺带验证「管理 API 建角色 + SQL 授 `role:`」这条跨接口的组合），于是也顺带验证「`ROLE x` 折成 `role:x`」这一步（默认跳过，见下）。服务端已有的两层授权测试都走 MockMvc 直接打 REST，这一层验的是**引擎发出的请求**——403 会不会被客户端改写、拒绝后到底有没有落数据，只有真 SQL 才知道 |
 | `IcebergTableDdlTests` | 用 Spark SQL 经 **Iceberg 协议面**（另一个 catalog，`type=rest`）建表：namespace 与 `CREATE DATABASE` 同义、分区表（`PARTITIONED BY` 的 transform 落成 `partition-specs[].transform`）、`INSERT` 之后的快照与 `summary`、更新代数改 schema（`current-schema-id` 前进、历史 schema 保留）、重命名、非空 namespace 不可删，以及 CTAS 的边界——Spark 把它翻成 staged create，缺 `transactions/commit` 时被服务端**指名拒绝**。断言同样两层：`DESCRIBE` / `SHOW CREATE TABLE`，以及服务端 `metadata` 里的 `schemas` / `partition-specs` / `properties` / `snapshots`（默认跳过，见下）。catalog 由 `ensureIcebergCatalog()` 经管理 API 预先建成 `ICEBERG`——让客户端撞 `/v1/config` 的自动登记会按部署默认值建成 Paimon |

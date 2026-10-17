@@ -842,6 +842,16 @@ body {
   margin-top: 16px;
 }
 
+/*
+ * 这条只该管「纵向堆叠」的卡片。并排布局（grid 两栏）里两张卡同样是 DOM
+ * 相邻兄弟，会被上面的规则误伤——右边的卡凭空多出 16px 上边距，顶部错位。
+ * 逐个并排容器把间距收回来：容器自己的 gap 已经负责列间距。
+ */
+.pc-grid > .pc-card + .pc-card,
+.pc-browse-body > .pc-card + .pc-card {
+  margin-top: 0;
+}
+
 .pc-card-head {
   display: flex;
   align-items: center;

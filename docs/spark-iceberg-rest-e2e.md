@@ -1,4 +1,4 @@
-# 用 Spark SQL 通过 LakeHouse Rest Catalog 建 Iceberg 表
+# 用 Spark SQL 通过 LakeHouse Catalog 建 Iceberg 表
 
 本文说明怎么把 Spark 接到本服务端的 **Iceberg 协议面**上、用 SQL 建 Iceberg 表，
 以及哪些能力已经可用、哪些还不在范围内。

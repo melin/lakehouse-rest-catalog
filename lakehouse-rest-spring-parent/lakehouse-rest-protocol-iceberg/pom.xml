@@ -13,7 +13,7 @@
 	<artifactId>lakehouse-rest-protocol-iceberg</artifactId>
 	<packaging>jar</packaging>
 	<name>lakehouse-rest-protocol-iceberg</name>
-	<description>LakeHouse Rest Catalog 协议面：catalog API 的 Iceberg 控制器、契约 DTO 与元数据物化</description>
+	<description>LakeHouse Catalog 协议面：catalog API 的 Iceberg 控制器、契约 DTO 与元数据物化</description>
 
 	<!--
 		装什么（catalog API `/v1/**` 的 Iceberg 侧，35 个端点里实现 26 个）：

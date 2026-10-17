@@ -186,7 +186,7 @@ lakehouse-rest-spring-parent/   服务端世界的父 POM（继承 Boot 4.1.1）
                         及 Default / Noop 实现与 StorageCredentialCache、CatalogFileService
     support/              Paths
 
-  lakehouse-rest-protocol-paimon/   LakeHouse Rest Catalog 协议面（35 个类）
+  lakehouse-rest-protocol-paimon/   LakeHouse Catalog 协议面（35 个类）
     paimon/web/           9 个控制器（Table / Database / View / Function / Branch / Tag /
                         Partition / Consumer / SemanticView），路径与规格一一对应
     paimon/service/       同名资源的 service，及 TableMetadataService（schema/快照物化）、

@@ -4,7 +4,7 @@
       <div class="pc-callback-brand">
         <div class="pc-callback-mark">P</div>
         <div>
-          <div class="pc-callback-name">LakeHouse Rest Catalog</div>
+          <div class="pc-callback-name">LakeHouse Catalog</div>
           <div class="pc-callback-sub">正在完成登录</div>
         </div>
       </div>

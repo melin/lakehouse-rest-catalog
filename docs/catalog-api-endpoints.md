@@ -1,6 +1,6 @@
 # Catalog API 端点清单
 
-LakeHouse Rest Catalog API 在本服务端的全部端点，按资源分组列出。
+LakeHouse Catalog API 在本服务端的全部端点，按资源分组列出。
 本服务端**同时服务两套协议面**（同一个进程、同一个 `/v1` 基址、同一套元数据库）：
 
 | 协议面 | 规格来源 | 端点 |

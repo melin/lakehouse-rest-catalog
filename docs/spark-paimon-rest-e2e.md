@@ -1,6 +1,6 @@
-# 用 Spark SQL 通过 LakeHouse Rest Catalog 建表
+# 用 Spark SQL 通过 LakeHouse Catalog 建表
 
-本文说明怎么把 Spark 接到本服务端的 LakeHouse Rest Catalog 上、用 SQL 建 Paimon 表，
+本文说明怎么把 Spark 接到本服务端的 LakeHouse Catalog 上、用 SQL 建 Paimon 表，
 以及哪些能力已经可用、哪些还不在范围内。
 
 会用到本文的场景：

@@ -12,7 +12,7 @@ import java.util.Locale;
 /**
  * catalog API（{@code /v1/**}）端点 → 所需权限的映射表。
  *
- * <p>LakeHouse Rest Catalog 规格本身不描述访问控制，这套映射取自 Polaris 的
+ * <p>LakeHouse Catalog 规格本身不描述访问控制，这套映射取自 Polaris 的
  * catalog API 授权约定：把每个端点归到「行使哪项权限」上，让
  * {@link io.github.melin.lakehouse.rest.service.AuthorizationService} 用同一套 RBAC 判定。
  *
