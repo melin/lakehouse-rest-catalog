@@ -98,6 +98,21 @@
 			改任一处时两处一起改（见 docs/maven-module-design.md §3.2）。
 		-->
 		<paimon.version>2.0.0</paimon.version>
+
+		<!--
+			Iceberg 的版本（集群世界）。
+
+			只用于 `lakehouse-rest-spark` / `lakehouse-rest-optimizer` 的**测试**：
+			`CREATE TABLE ... USING iceberg` 要由 Iceberg 自己的 Spark catalog 执行，
+			optimizer 侧的三个优化动作也靠它提供的 procedures。两个模块自身运行时
+			都不编译 Iceberg。
+
+			**必须与 spring-parent 的 iceberg.version 一致**：服务端用 iceberg-core
+			写/读元数据，引擎侧用 Spark bundle 生成/消费同一份元数据；版本不一致时
+			新写入的元数据（例如 v3 的 next-row-id）可能被旧运行时读不懂。
+			两个依赖世界不共用父 POM，一致性靠人工守（见 docs/maven-module-design.md §3.2）。
+		-->
+		<iceberg.version>1.11.0</iceberg.version>
 	</properties>
 
 	<dependencyManagement>
@@ -167,6 +182,18 @@
 				<groupId>org.apache.spark</groupId>
 				<artifactId>spark-hive_${scala.binary.version}</artifactId>
 				<version>${spark.version}</version>
+			</dependency>
+			<!--
+				Iceberg 的 Spark bundle，测试用（见 lakehouse-rest-spark/pom.xml 的说明）。
+
+				构件名带 Scala 二进制版本后缀，与 spark.version / scala.binary.version 绑定：
+				换 Spark 或 Scala 版本时这里要跟着换（Spark 4 / Scala 2.13 对应
+				`iceberg-spark-runtime-4.1_2.13`）。
+			-->
+			<dependency>
+				<groupId>org.apache.iceberg</groupId>
+				<artifactId>iceberg-spark-runtime-3.5_${scala.binary.version}</artifactId>
+				<version>${iceberg.version}</version>
 			</dependency>
 			<dependency>
 				<groupId>org.junit.jupiter</groupId>

@@ -17,24 +17,47 @@ Paimon 侧的同名文档是 [`spark-paimon-rest-e2e.md`](spark-paimon-rest-e2e.
 
 ## 0. 验证状态（先说清楚，别把没验过的当验过的）
 
-本文分三层，**只有前两层是实测过的**：
+本文分三层，**三层都是实测过的**：
 
 | 层 | 验的是什么 | 状态与证据 |
 | --- | --- | --- |
 | 协议层 | 26 个端点回什么：状态码、字段名、`metadata.json` 有没有真的落进仓库、错误体的形状 | **已实测**：`IcebergRestCatalogApiTests`（10 个用例，HTTP 行为） |
 | 客户端协商层 | 官方 Java 客户端能不能连上：`/v1/config` 的能力清单协商、嵌套错误体翻不翻得成具体异常、更新代数（`requirements` + `updates`）真跑不跑得通 | **已实测**：`IcebergClientEndToEndTests`（3 个用例，真 HTTP + `org.apache.iceberg.rest.RESTCatalog`） |
-| 引擎层 | Spark 起会话、跑 SQL | **未实测**：只静态核对过客户端侧的配置键与行为（`CatalogUtil` / `ResourcePaths` / `AuthManagers` / `RESTUtil` 的字节码与源码），没有真的起过 Spark |
+| 引擎层 | Spark 起会话、跑 SQL、写数据文件、再读回来 | **已实测**：`IcebergTableDdlTests`（10 个用例，真 `SparkSession` + 真服务端 + 真仓库，见第 0.1 节） |
 
-**为什么可以认为第 3 层已经证明了大半。** Spark 的 `SparkCatalog` 自己不实现协议——
-它把 SQL 翻成 `org.apache.iceberg.catalog.Catalog` 的调用，REST 那一层由
-`RESTCatalog` 承担，也就是 `IcebergClientEndToEndTests` 里跑的那个实现。
-所以「建 namespace → 建表 → 改 schema → 重命名 → 删」这条链上的**协议部分**已经验过；
-没验的是 Spark 自己的那一层：SQL 解析、`SparkWrite` 写数据文件、以及下面列的配置键
-在真实会话里能否生效。
+第 3 层此前只有静态核对（`CatalogUtil` / `ResourcePaths` / `AuthManagers` / `RESTUtil`
+的字节码与源码）。补上它之后，**§2.1–§2.3 与 §2.6 的 SQL 都是跑过的**；
+§2.4（分支与标签）与 §2.5（视图）本轮没有加用例，仍按规格与
+`IcebergRestCatalogApiTests` 的端点行为写成参考。CTAS 的边界见 §5。
 
-因此本文的 SQL **可以照着跑，但请把第 3 节当参考而不是当实测记录**。
-按 `docs/iceberg-rest-catalog-design.md` §11.1 第 13 条的约定，
-这里不写任何没跑过的「实测结果」。
+### 0.1 引擎层验了什么（`IcebergTableDdlTests`）
+
+跑法见 §6。用例与本文档的对应关系：
+
+| 用例 | 验的事 |
+| --- | --- |
+| `namespaceAndPartitionedTableRoundTripThroughServer` | 建 namespace 与分区表；`DESCRIBE` / `SHOW CREATE TABLE` 的渲染，以及服务端 `metadata` 里的 `schemas[].fields[].doc`（列注释）、`properties.comment`（表注释）、`partition-specs[].transform`、表位置模板 |
+| `createDatabaseIsTheSameAsCreateNamespace` | `CREATE DATABASE` 与 `CREATE NAMESPACE` 同义；服务端 `GET /namespaces` 与 `SHOW NAMESPACES` 看到同一份 |
+| `insertWritesSnapshotsAndIsReadable` | `INSERT` → 读回；服务端 `current-snapshot-id` 前进、`snapshots[].summary` 里有 `operation=append` / `total-records` / `added-data-files` |
+| `createTableAsSelectIsRejectedWithANamedReason` | CTAS 的边界：被拒且报文点名 `stage-create` 与 `transactions/commit`（§5） |
+| `schemaEvolutionAddsAndRenamesColumns` | `ADD COLUMN` / `RENAME COLUMN` 走更新代数，服务端 `current-schema-id` 前进、历史 schema 保留 |
+| `partitionTransformLandsInTheSpec` | `days(ts)` 在元数据里是 `transform = "day"`、字段名带后缀（`ts_day`） |
+| `renameKeepsLocationAndRemovesTheOldName` | 重命名只改标识不动位置；旧名字 404 |
+| `nonEmptyNamespaceCannotBeDropped` | 非空 namespace 删不掉，客户端翻成 `NamespaceNotEmptyException` |
+| `creatingTableInMissingNamespaceFails` | 404 被翻成 Iceberg 自己的 `NoSuchNamespaceException`（与 catalyst 那个同名不同类） |
+| `duplicateCreateIsRejected` | 重复建表报 already exists，且没有改动已有结构 |
+
+**测出来的四处「文档没写、跑一次才知道」**，都已写进第 4 / 5 节：
+
+1. CTAS 在当前服务端上不可用（staged create 没有提交路径）；
+2. `ALTER TABLE ... RENAME TO` 的目标不能写全限定名，否则 catalog 名会被当成第一级 namespace；
+3. 表的 decimal 类型在服务端返回的元数据里已被规范化成字符串 `decimal(18, 2)`，
+   而客户端刚生成的形态是对象（`{"type":"decimal","precision":18,"scale":2}`）；
+4. `SELECT * FROM <表>.snapshots` 这类**元数据表**用四段名（`catalog.ns.table.snapshots`）
+   在 Spark 3.5 + Iceberg 1.11 里解析不出来：Spark 把 `ns.table` 当成两级 namespace、
+   把 `snapshots` 当成表名，服务端如实回「namespace `ns.table` 不存在」。
+   要看快照就用 `IcebergTableView`（控制台）或直接读 `metadata.snapshots`，
+   别把文档里的 `SELECT * FROM t.snapshots` 当成能跑。
 
 跑第 2 层那三个用例：
 
@@ -63,8 +86,10 @@ mvn -o -pl :lakehouse-rest-server -am \
 「我用 Spark 能连，为什么用一段 Java 代码连不上」这个问题能一眼找到答案。
 
 `iceberg-spark-runtime` 是 shaded 的，不会与 Spark 自带的依赖打架。
-它**不进本工程的任何模块**——`lakehouse-rest-spark` 只是管理语句的语法扩展，
-不依赖任何 Iceberg 运行时（这条由校验脚本守着）。
+它在 `lakehouse-rest-spark` 里是**test scope**——那个模块只负责管理语句的语法扩展，
+运行期不编译也不打包 Iceberg；引入它是为了让 `IcebergTableDdlTests` 能真的建出
+Iceberg 表（`CREATE TABLE ... USING iceberg` 由 Iceberg 自己的 catalog 执行）。
+版本与本工程服务端用的 `iceberg-core` 同一个 `iceberg.version`。
 
 ### 1.2 会话配置
 
@@ -149,7 +174,47 @@ curl -s http://localhost:8080/v1/iceberg_demo/namespaces
 这三步与 `IcebergClientEndToEndTests` 里的第 1 个用例是同一件事，
 只是那个用例走的是官方客户端而不是 curl。
 
-### 1.5 对象存储的凭据从哪来
+### 1.5 授权：写数据为什么要给 `ALTER`
+
+认证解决「你是谁」，授权解决「能做什么」。Iceberg 面的路径与 Paimon 面用的是**同一套判定**
+（`AuthorizationService` + `CatalogAccessRules.namespaces`），但「写一张表」落到的端点不同，
+因此需要的 access 也不同：
+
+| 动作 | Paimon 面 | Iceberg 面 |
+| --- | --- | --- |
+| 写数据 | `POST …/databases/{db}/tables/{t}/commit` → `TABLE_WRITE_DATA` | ① `POST …/namespaces/{ns}/tables/{t}/metrics` → `TABLE_WRITE_DATA`<br>② `POST …/namespaces/{ns}/tables/{t}` → `TABLE_WRITE_PROPERTIES` |
+| 改 schema / 属性 | 该表自己的端点 → `TABLE_WRITE_PROPERTIES` | 同一个 `POST …/namespaces/{ns}/tables/{t}` → `TABLE_WRITE_PROPERTIES` |
+
+也就是**在 Iceberg 面「能写数据」= `UPDATE` + `ALTER`**（官方权限词表里 `UPDATE` 给
+`TABLE_WRITE_DATA`、`ALTER` 给 `TABLE_WRITE_PROPERTIES`），比 Paimon 多一项。原因不在映射：
+Iceberg 没有独立的提交端点，数据提交与属性变更都是 `POST …/tables/{t}` 上的一个 `updates`
+数组，判定发生在解析请求体之前，服务端分不清这次是哪一类。想只给「能写数据、不能改属性」，
+在当前端点上做不到——要再细分只能解析 `updates` 之后二次判定。
+
+装配方式与 Paimon 那套一样（官方权限模型 + `CATALOG_ALL`），只是 **catalog role 要在
+`iceberg_catalog` 这个 catalog 下另建一份**：catalog role 是 catalog 内的实体，跨格式借用会
+得到「角色不在此 catalog 下」，而那种错与「没授权」在报文里几乎一样。
+
+```sql
+-- 前提：catalog role 已用管理 API 建好，并挂到 principal role 上
+GRANT CREATEDATABASE ON CATALOG iceberg_catalog TO ROLE rw;
+GRANT LIST, DESCRIBE, SELECT, UPDATE, ALTER, CREATETABLE
+  ON CATALOG_ALL iceberg_catalog TO ROLE rw;   -- 写入靠 UPDATE + ALTER，见上表
+GRANT LIST, DESCRIBE, SELECT ON CATALOG_ALL iceberg_catalog TO ROLE ro;
+```
+
+被拒时服务端报的是路径 + 主体 + 缺的那项权限，例如：
+
+```
+Forbidden: The caller does not have permission to POST
+/v1/iceberg_catalog/namespaces/ice/tables/orders/metrics:
+principal e2e_bob lacks TABLE_WRITE_DATA on table ice.orders in catalog iceberg_catalog
+```
+
+这条链路由 `SparkSqlAuthorizationTests` 的 `icebergCatalog.*` 两条用例真跑（`docs/authorization.md`
+§5.1 有两侧的对照）。
+
+### 1.6 对象存储的凭据从哪来
 
 两处都可以给，语义不同：
 
@@ -169,6 +234,13 @@ curl -s http://localhost:8080/v1/iceberg_demo/namespaces
 `lakehouse` 是 1.2 里配的 catalog 名。Iceberg 把「库」叫 namespace，
 `CREATE DATABASE` 与 `CREATE NAMESPACE` 是同一个命令的两个拼法。
 
+下面用「库.表」两段名，前提是先切到 Iceberg catalog；写三段全限定名
+（`lakehouse.ice.orders`）也一样，但**不要**放进 `RENAME TO` 后面（见 §2.6）：
+
+```sql
+USE lakehouse;
+```
+
 ### 2.1 建库与建表
 
 ```sql
@@ -185,16 +257,38 @@ CREATE TABLE ice.orders (
 多级 namespace 用点号拼（`acct.tax`）。服务端同时接受规格默认的分隔符 `0x1F`，
 库里按点号存——**也就是说层级里的点号会被当成分隔符**，别用点号做层级名的一部分。
 
+**`CREATE TABLE ... AS SELECT` 在当前服务端上不可用**（引擎层实测）：
+Spark 把它翻成 Iceberg 的 **staged create**，提交要走
+`POST /v1/{prefix}/transactions/commit`——一期未实现的端点之一。
+服务端回的是指名原因的 400：
+
+```text
+stage-create is not supported by this catalog: multi-table transactions
+(POST /v1/{prefix}/transactions/commit) are not implemented,
+so a staged create has no commit path
+```
+
+要「建表并写第一批数据」，用 `CREATE TABLE` + `INSERT`（两条都验过，见 §2.2）。
+`IcebergTableDdlTests.createTableAsSelectIsRejectedWithANamedReason` 把这个边界钉住了：
+`transactions/commit` 一旦实现，那条用例会先响，提醒把断言翻成「CTAS 成功」。
+
 ### 2.2 写入与读取
 
 ```sql
 INSERT INTO ice.orders VALUES (1, 'a'), (2, 'b');
 SELECT * FROM ice.orders;
-
--- 服务端为每次提交物化一份 metadata.json，快照随提交一起落库
-SELECT * FROM ice.orders.snapshots;
-SELECT * FROM ice.orders.files;
 ```
+
+服务端为每次提交物化一份 `metadata/00001-<uuid>.metadata.json`，快照随提交一起落库。
+写入之后服务端的 `metadata.snapshots[].summary` 里能看到
+`operation=append` / `total-records` / `added-data-files`——这是
+`IcebergTableDdlTests` 的断言对象。
+
+**元数据表（`.snapshots` / `.files` / `.refs`）不要用 SQL 查。** 引擎层实测：
+`SELECT * FROM lakehouse.ice.orders.snapshots` 在 Spark 3.5 + Iceberg 1.11 下解析不出来——
+Spark 把 `ice.orders` 当成两级 namespace、把 `snapshots` 当成表名，服务端如实回
+`The given namespace does not exist: ice.orders`。看快照请用控制台的
+Iceberg 表详情页（`IcebergTableView`），或直接读服务端返回的 `metadata`。
 
 ### 2.3 改 schema
 
@@ -208,15 +302,18 @@ DESCRIBE ice.orders;
 （Iceberg 的「更新代数」）。`IcebergClientEndToEndTests` 里实测过
 `updateSchema().addColumn(...).commit()` 走通，包括服务端返回的新一代元数据能被客户端解析。
 
-### 2.4 分支与标签
+### 2.4 分支与标签（参考，本轮无用例）
 
 ```sql
 ALTER TABLE ice.orders CREATE BRANCH b1;
 ALTER TABLE ice.orders CREATE TAG t1;
-SELECT * FROM ice.orders.refs;
 ```
 
-### 2.5 视图
+这两条由 `IcebergSparkSessionExtensions` 解析、走更新代数提交，
+端点与改 schema 是同一条（`POST .../tables/{t}`）。`ice.orders.refs` 是元数据表，
+按 §2.2 末的说明不要用 SQL 查。
+
+### 2.5 视图（参考，本轮无用例）
 
 ```sql
 CREATE VIEW ice.v AS SELECT id FROM ice.orders;
@@ -231,6 +328,12 @@ ALTER TABLE ice.orders RENAME TO ice.orders_v2;
 DROP TABLE ice.orders_v2;              -- 只注销 catalog 条目，文件留着
 DROP NAMESPACE ice;                    -- 非空时被拒（见第 4 节）
 ```
+
+**`RENAME TO` 后面不要写全限定名**（引擎层实测）。Spark 3.5 只对**源**标识剥 catalog 前缀，
+目标是原样交给 catalog 的：写成 `RENAME TO lakehouse.ice.orders_v2`，
+catalog 收到的名字空间是 `["lakehouse", "ice"]`，服务端会回
+`The given namespace does not exist: lakehouse.ice`。正确写法是源写全、目标写「库.表」。
+`IcebergTableDdlTests.renameKeepsLocationAndRemovesTheOldName` 用的就是这个写法。
 
 **`DROP TABLE` 与 Paimon 侧要分开看。** Iceberg 规格把「注销」与「删数据」分成两条端点：
 本服务端上 `DROP TABLE`（不带 `PURGE`）只去掉 catalog 条目、**不碰仓库里的文件**，
@@ -279,6 +382,9 @@ DROP NAMESPACE ice;                    -- 非空时被拒（见第 4 节）
 | `NoClassDefFoundError: org.apache.hadoop.conf.Configurable` | 在**裸 JVM** 里用 Iceberg 客户端，默认 `io-impl` 的 `ResolvingFileIO` 需要 Hadoop | 换 `io-impl`，或把 Hadoop 加进客户端的类路径。Spark 里不会遇到 |
 | `IllegalArgumentException: Invalid codec name: <路径>` | 不会出现在客户端——这是服务端曾经的一个 bug，已在 `IcebergMetadataFiles` 修掉，记在这里只为报错搜索能命中 | 升级到含该修复的版本 |
 | 一次 `UPDATE` / `INSERT` 之后仍然读到旧数据 | 客户端开了元数据缓存 | `spark.sql.catalog.<名>.cache-enabled=false` 关掉，或刷新会话 |
+| `400 Malformed request: stage-create is not supported by this catalog: multi-table transactions (POST /v1/{prefix}/transactions/commit) are not implemented` | 用了 `CREATE TABLE ... AS SELECT`。Spark 把它翻成 staged create，提交要走未实现的 `transactions/commit` | 拆成 `CREATE TABLE` + `INSERT`（§2.1） |
+| `NoSuchNamespaceException: The given namespace does not exist: <catalog>.<库>` | `ALTER TABLE ... RENAME TO` 的目标写了三段全限定名，Spark 不剥 catalog 前缀 | 目标只写「库.表」（§2.6） |
+| `NoSuchNamespaceException: The given namespace does not exist: <库>.<表>` | 用 SQL 查元数据表（`…<表>.snapshots`），Spark 把「库.表」当成两级 namespace | 元数据表别用 SQL 查（§2.2 末） |
 
 ---
 
@@ -293,7 +399,7 @@ DROP NAMESPACE ice;                    -- 非空时被拒（见第 4 节）
 | `GET …/namespaces/{ns}/functions` | 二期（只读投影） | 客户端拒在本地 |
 | `GET …/namespaces/{ns}/functions/{fn}` | 二期 | 同上 |
 | `POST …/namespaces/{ns}/register-view` | 二期 | 同上 |
-| `POST …/transactions/commit` | 二期（跨表原子提交 + `requirements` 对齐） | 同上。**多表事务不可用**，单表写入不受影响 |
+| `POST …/transactions/commit` | 二期（跨表原子提交 + `requirements` 对齐） | 客户端拒在本地。**多表事务不可用**；单表 `INSERT` / 改 schema 不受影响，但 **CTAS 受影响**——Spark 的 `CREATE TABLE ... AS SELECT` 走 staged create，提交路径正是这条端点，因此会被服务端指名拒绝（§2.1） |
 | `POST …/tables/{t}/plan` | 不做（要常驻扫描规划引擎） | 同上 |
 | `GET …/tables/{t}/plan/{plan-id}` | 不做 | 同上 |
 | `DELETE …/tables/{t}/plan/{plan-id}` | 不做 | 同上 |
@@ -319,9 +425,22 @@ curl -s "http://localhost:8080/v1/config?warehouse=iceberg_demo" | jq -r '.endpo
 | --- | --- |
 | 端点的形状（状态码、字段名、落盘、错误体） | `IcebergRestCatalogApiTests`（10 个用例） |
 | 官方客户端连得上、能力清单协商、错误体翻异常、更新代数 | `IcebergClientEndToEndTests`（3 个用例，真 HTTP） |
+| Spark 真的建表 / 写入 / 改 schema / 重命名 | `IcebergTableDdlTests`（10 个用例）。它是 `scripts/e2e-spark-sql.sh` 那一批里的一类，**必须与另外五个类同批运行**（一个 JVM 只能有一个 SparkContext），见 [`spark-paimon-rest-e2e.md`](spark-paimon-rest-e2e.md) §6 |
+| 两个身份在 Iceberg 面各能做什么（含被拒报文点名哪项权限） | `SparkSqlAuthorizationTests` 的两条 `icebergCatalog.*` 用例（同批 4 条：Paimon 两条 + Iceberg 两条） |
 | 两个协议面共存的静态一致性 | `scripts/verify-iceberg-endpoints.py` |
 | 每个端点都在授权映射里登记过 | `CatalogEndpointAuthorizationTests` |
-| Spark 真跑一遍 | **本文没有提供实测记录**（第 0 节）。要落这份记录，照 1.2 配好会话后把第 2 节的 SQL 依次执行，再把 `INSERT` / `SELECT` 的结果与仓库目录里的 `metadata/` 一并记下来 |
+
+只跑本文这一层（先起一个服务端，见 `spark-paimon-rest-e2e.md` §6 的启动命令）：
+
+```bash
+mvn -o -pl :lakehouse-rest-spark test -Dtest=IcebergTableDdlTests \
+  -De2e.management.url=http://127.0.0.1:18080/api/management/v1 \
+  -De2e.management.token=root
+```
+
+单独跑这一层时，`LiveSparkSession` 会在会话里同时配好 Paimon 与 Iceberg 两个 catalog
+（扩展只在建会话时生效，一个 JVM 只有一个 SparkContext），因此它不依赖同批的其它类；
+反过来，整批跑的时候它共用同一个会话。
 
 跑服务端全量：
 

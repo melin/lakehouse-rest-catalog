@@ -255,7 +255,7 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
 | `spark-sql-reference.md` | 语句级参考（第 10 节示例会被测试真跑） |
 | `spark-sql-extension.md` | 改 Spark 扩展：做法、两个约束、测试分层 |
 | `spark-paimon-rest-e2e.md` | Spark 经本服务端建表：连接配置、可执行 SQL、报错对照、三种非 Paimon 表（Format / Object / Lance）的读写边界（§4.4） |
-| `spark-iceberg-rest-e2e.md` | 让 Spark 通过本服务端建 **Iceberg** 表：`spark.sql.catalog.*` 配置（含 `rest.auth.type` 与 `scope=PRINCIPAL_ROLE:ALL` 两个坑）、可执行 SQL、与 Paimon 那套的差异对照、一期不做的 9 个端点会怎么撞上来。**第 0 节显式分层标注验证状态：协议层与官方 Java 客户端层已实测，Spark 侧未跑**，所以 SQL 是参考而非实测记录 |
+| `spark-iceberg-rest-e2e.md` | 让 Spark 通过本服务端建 **Iceberg** 表：`spark.sql.catalog.*` 配置（含 `rest.auth.type` 与 `scope=PRINCIPAL_ROLE:ALL` 两个坑）、可执行 SQL、与 Paimon 那套的差异对照、一期不做的 9 个端点会怎么撞上来（含 **CTAS 受 `transactions/commit` 缺失影响**）。**三层都已实测**：协议层、官方 Java 客户端层、Spark 引擎层（`IcebergTableDdlTests`）；第 4 节记着跑出来的四条边界（CTAS / `RENAME TO` 不带 catalog 前缀 / 元数据表不能用四段名 / decimal 规范化） |
 | `authorization.md` | 权限实体链、授权映射、失败关闭的取舍；**多级 namespace 的判定口径在 §2.6**（两条链存的形状不同，按点号拼成路径再比，逐段比会静默不命中） |
 | `console.md` | 改控制台 / 排查「页面空列表」：分层、端点契约表、机械校验、加页面清单 |
 | `console-table-detail.md` | 改表详情页：页签随**表格式**（表级 `schema.options.type`）伸缩的数据来源（详细信息含字段/分区列表、表目录文件列表、「为什么没有权限页签」）、按需加载与非 Paimon 表不问快照端点、破坏性操作 |
@@ -317,7 +317,7 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
 
 | 层 | 命令 | 抓什么 |
 | --- | --- | --- |
-| 单元/集成 | `mvn -o test`（服务端 332 + Spark 96，共 428；Spark 侧 25 个跳过；optimizer 另有 25 个，`-pl :lakehouse-rest-optimizer` 单独跑） | 行为回归。注意 Spark 模块的 `example/PaimonS3Test` 当前会在 BUILD FAILURE 停下（缺 `spark.sql.extensions`，与 S3 环境无关）；要单独看服务端结果用 `mvn -o test -pl :lakehouse-rest-server` |
+| 单元/集成 | `mvn -o test`（服务端 332 + Spark 107，共 439；Spark 侧 37 个跳过，其中 35 个是需要真实服务端的六类；optimizer 另有 25 个，`-pl :lakehouse-rest-optimizer` 单独跑） | 行为回归。注意 Spark 模块的 `example/PaimonS3Test` 当前会在 BUILD FAILURE 停下（缺 `spark.sql.extensions`，与 S3 环境无关）；要单独看服务端结果用 `mvn -o test -pl :lakehouse-rest-server` |
 | 端点多面 | `verify-console.py`、`verify-management-contract.py`、`verify-spark-sql-doc.py`、`verify-k8s-manifests.py` | **跨文件的机械一致性**：前端字段名 vs 服务端 record、文档表格 vs 规格、语法文件 vs PermissionDtos vs 客户端 |
 | 契约（桩） | `ManagementSqlExecutionTests`（真实 SparkSession + 桩服务端） | 扩展真被加载、真执行 |
 | 契约（真服务端） | `./scripts/e2e-spark-sql.sh` | 客户端与服务端的**实际**契约（桩只能证明客户端与自己的假设自洽） |
@@ -389,9 +389,12 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
 2. **改了控制台源码没重建** → 打包的是上一版控制台，**不报错**，只是安静地少一个按钮。
    `verify-console.py` 第 7 组查产物新鲜度，但要有人跑它。判是否干净：
    `ls lakehouse-rest-spring-parent/lakehouse-rest-server/target/classes/static/console/assets | wc -l` 应与源码目录一致。
-3. **`e2e-spark-sql.sh` 里五个测试类必须同批运行**：一个 JVM 只能有一个 SparkContext，
-   而 `spark.sql.extensions` 只在建会话时生效。把用桩的 `ManagementSqlExecutionTests`
-   混进同一批会让 `LiveSparkSession` 报错（有意守卫，不是 bug）。
+3. **`e2e-spark-sql.sh` 里六个测试类必须同批运行**：一个 JVM 只能有一个 SparkContext，
+   而 `spark.sql.extensions` 只在建会话时生效（会话里同时注册了 Paimon 与 Iceberg 两个 catalog）。
+   把用桩的 `ManagementSqlExecutionTests` 混进同一批会让 `LiveSparkSession` 报错
+   （有意守卫，不是 bug）。Iceberg 那个 catalog 必须先用管理 API 建成 `ICEBERG`
+   ——`LiveSparkSession.ensureIcebergCatalog()` 做这件事，别让客户端撞 `/v1/config`
+   的自动登记（那会按部署默认值建成 Paimon，之后每次调用都 404）。
 4. **`sweep-console-auth.sh` / `check:login` 一分钟跑超 5 次会被服务端自己的失败限速拦下**
    ——不是回归。两者缺 `BASE` / `CLIENT_ID` / `CLIENT_SECRET` 时不跑假失败，直接退出码 2。
 5. **shell 里可能有 `http_proxy`** 指向本地代理，`curl http://127.0.0.1:...` 会失败——

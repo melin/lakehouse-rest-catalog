@@ -182,7 +182,7 @@ JAVA_HOME=/path/to/jdk-21 mvn -o -DskipTests install
 # 只要服务端可执行 jar：-am 会一并构建它依赖的 core / storage / 两个协议面
 JAVA_HOME=/path/to/jdk-21 mvn -o -DskipTests -pl :lakehouse-rest-server -am clean package
 
-# 运行全部测试（服务端 332 + Spark 96，共 428 个用例；Spark 侧有 1 个示例用例
+# 运行全部测试（服务端 332 + Spark 107，共 439 个用例；Spark 侧有 1 个示例用例
 # 在本地缺 spark.sql.extensions 时会失败，见第 7 节）
 JAVA_HOME=/path/to/jdk-21 mvn test
 
@@ -759,7 +759,7 @@ Azure 只下发定位元数据是个明确的缺口：Polaris 的 `polaris.stora
 
 ## 7. 测试
 
-### 单元与集成测试（428 个用例）
+### 单元与集成测试（439 个用例）
 
 ```bash
 JAVA_HOME=/path/to/jdk-21 mvn test
@@ -803,7 +803,7 @@ JAVA_HOME=/path/to/jdk-21 mvn test
 | `MysqlDdlGeneratorTests` | 由实体元数据生成 MySQL DDL，并断言方言被钉在 MySQL 8.0（见「代码生成」） |
 | `PaimonRestServerApplicationTests` | 上下文加载 |
 
-Spark 子模块（96 个，其中 5 个类共 23 个用例需要显式指向服务端）：
+Spark 子模块（107 个，其中 6 个类共 35 个用例需要显式指向服务端）：
 
 > `example/` 下的 `PaimonS3Test` **当前跑不过**，与 S3 环境无关：它在加载 Spark
 > catalog 时被 Paimon 的 `requiredSparkConfsCheck` 挡下（会话里没有
@@ -818,7 +818,8 @@ Spark 子模块（96 个，其中 5 个类共 23 个用例需要显式指向服�
 | `ManagementSqlLiveServerTests` | 对真实服务端跑完整 SQL 链路：管理 API 契约、官方权限端点的 grant / list / revoke 与分页过滤（默认跳过，见下）。catalog role 的建档与装配已从语法移除，这一类用例里那半截脚手架改调 `ManagementApiClient`，于是顺带守住「管理 API 在 SQL 撤出之后仍然整条可用」 |
 | `PaimonTableDdlTests` | 用 Spark SQL 经 LakeHouse Rest Catalog 建表再写入：分区 append 表与主键表（含分区主键）、`LIKE`、`IF NOT EXISTS` 幂等与裸建冲突、内联主键约束与保留表属性被 Spark 拒绝、库不存在时报错，以及 `CTAS` 与分区主键表 `INSERT` 写完后读回数据；两种断言并重——`DESCRIBE` / `SHOW CREATE TABLE` 的输出，以及直接读服务端元数据核对注释、分区键、主键与选项（默认跳过，见下） |
 | `NonPaimonTableSqlTests` | Format / Object / Lance 三种非 Paimon 表的能力边界：Format 表（csv / parquet）建表-写入-读回全链路、Object 表固定六列 + 「把对象放进表目录即可查到，无需 refresh」+ 「客户端给的 `path` 成为表位置，于是能索引一个既有对象目录（并按外部表登记、目录里不留 `schema-0`）」、Lance 表只有建表可行——读写在 Spark 分析阶段被拒；服务端侧同时核对 `type` / `path` / `isExternal` / 字段的落库形状（默认跳过，见下） |
-| `SparkSqlAuthorizationTests` | 同一个 catalog、同一张表，两个身份各跑一遍真 SQL：有写权限的那个能建库、建表、写入、读回；只读的那个读得到数据、也看得见表列表，但建库 / 建表 / 写数据一律被服务端授权判定拒绝，且断言拒绝报文点名了主体与**缺失的那一项权限**（`TABLE_CREATE` / `TABLE_WRITE_DATA` / `NAMESPACE_CREATE`）、被拒之后数据没变。两个角色的授权用官方权限语句装配（`ON CATALOG_ALL ... TO ROLE ...`，而 `role:` 要生效得先有同名 catalog role——这一层用 `ManagementApiClient` 建，顺带验证「管理 API 建角色 + SQL 授 `role:`」这条跨接口的组合），于是也顺带验证「`ROLE x` 折成 `role:x`」这一步（默认跳过，见下）。服务端已有的两层授权测试都走 MockMvc 直接打 REST，这一层验的是**引擎发出的请求**——403 会不会被 Paimon 客户端改写、拒绝后到底有没有落数据，只有真 SQL 才知道 |
+| `SparkSqlAuthorizationTests` | **两种格式各两条**。Paimon 面：同一个 catalog、同一张表，两个身份各跑一遍真 SQL——有写权限的那个能建库、建表、写入、读回；只读的那个读得到数据、也看得见表列表，但建库 / 建表 / 写数据一律被服务端授权判定拒绝，且断言拒绝报文点名了主体与**缺失的那一项权限**（`TABLE_CREATE` / `TABLE_WRITE_DATA` / `NAMESPACE_CREATE`）、被拒之后数据没变。Iceberg 面（`icebergCatalog.*`）：同一批主体、另一套 catalog role（catalog role 是 catalog 内的实体，跨格式借不到），语句换成 `CREATE NAMESPACE` / `USING iceberg`，并钉住一条只从那一侧看得见的差异——写数据要 `UPDATE` + `ALTER`（指标上报判 `TABLE_WRITE_DATA`、提交端点判 `TABLE_WRITE_PROPERTIES`）。角色的授权用官方权限语句装配（`ON CATALOG_ALL ... TO ROLE ...`，而 `role:` 要生效得先有同名 catalog role——这一层用 `ManagementApiClient` 建，顺带验证「管理 API 建角色 + SQL 授 `role:`」这条跨接口的组合），于是也顺带验证「`ROLE x` 折成 `role:x`」这一步（默认跳过，见下）。服务端已有的两层授权测试都走 MockMvc 直接打 REST，这一层验的是**引擎发出的请求**——403 会不会被客户端改写、拒绝后到底有没有落数据，只有真 SQL 才知道 |
+| `IcebergTableDdlTests` | 用 Spark SQL 经 **Iceberg 协议面**（另一个 catalog，`type=rest`）建表：namespace 与 `CREATE DATABASE` 同义、分区表（`PARTITIONED BY` 的 transform 落成 `partition-specs[].transform`）、`INSERT` 之后的快照与 `summary`、更新代数改 schema（`current-schema-id` 前进、历史 schema 保留）、重命名、非空 namespace 不可删，以及 CTAS 的边界——Spark 把它翻成 staged create，缺 `transactions/commit` 时被服务端**指名拒绝**。断言同样两层：`DESCRIBE` / `SHOW CREATE TABLE`，以及服务端 `metadata` 里的 `schemas` / `partition-specs` / `properties` / `snapshots`（默认跳过，见下）。catalog 由 `ensureIcebergCatalog()` 经管理 API 预先建成 `ICEBERG`——让客户端撞 `/v1/config` 的自动登记会按部署默认值建成 Paimon |
 | `SparkSqlDocExamplesTests` | 抽出 `docs/spark-sql-reference.md` 第 10 节的示例并逐条执行，断言作用范围落到哪几列、列范围与有效期的回读、撤销一项 access 不影响同资源其它 access（默认跳过，见下） |
 | `PaimonRestCatalogTest` | 对象存储仓库的凭据链路：建表后服务端返回的 `path` 由 warehouse 模板展开、`INSERT` 写入分区主键表并逐列读回（默认跳过，见下）。它同时压住「类路径缺 `s3://` FileIO 实现」与「凭据没按引擎认的键名下发」这两种失败 |
 | `PaimonRestManagementTests` | 配置解析的容错 |
@@ -844,8 +845,8 @@ BASE=http://127.0.0.1:8080 ./scripts/management-sweep.sh
 
 # Spark SQL：先校验参考文档，再自动起服务端（用 h2 profile，并配好令牌
 # root / limited / alice / bob）、跑 ManagementSqlLiveServerTests +
-# PaimonTableDdlTests + NonPaimonTableSqlTests + SparkSqlAuthorizationTests +
-# SparkSqlDocExamplesTests、收尾停服务端
+# PaimonTableDdlTests + NonPaimonTableSqlTests + IcebergTableDdlTests +
+# SparkSqlAuthorizationTests + SparkSqlDocExamplesTests、收尾停服务端
 ./scripts/e2e-spark-sql.sh
 
 # 控制台登录（HTTP 层）：登录引导、用户名密码登录、令牌端点的错误码、凭据校验、
@@ -872,12 +873,14 @@ CLIENT_ID=<引导主体 clientId> CLIENT_SECRET=<明文密钥> \
 存在失败时以非 0 退出；请求体形状与规格字段名一致，可直接作为接口调用示例。
 
 `e2e-spark-sql.sh` 是唯一会启动服务端的脚本，也是验证「客户端与服务端契约一致」的那一层：
-前几层测试用的是桩，只能证明客户端与自己的假设自洽。它一次跑五个类——
+前几层测试用的是桩，只能证明客户端与自己的假设自洽。它一次跑六个类——
 `ManagementSqlLiveServerTests`（管理 API 契约）、`PaimonTableDdlTests`（用 Spark SQL 建 Paimon 表）、
 `NonPaimonTableSqlTests`（Format / Object / Lance 三种非 Paimon 表的读写边界）、
+`IcebergTableDdlTests`（用 Spark SQL 建 Iceberg 表，走 Iceberg 协议面）、
 `SparkSqlAuthorizationTests`（两种身份跑真 SQL）、`SparkSqlDocExamplesTests`（参考文档示例）。
-五者**必须同批运行**：一个 JVM 只能有一个 SparkContext，而 `spark.sql.extensions` 只在建会话时生效，
-因此它们共用同一个会话；把用桩的 `ManagementSqlExecutionTests` 拉进同一批会让端点与扩展错位，
+六者**必须同批运行**：一个 JVM 只能有一个 SparkContext，而 `spark.sql.extensions` 只在建会话时生效，
+因此它们共用同一个会话（会话里同时注册了 Paimon 与 Iceberg 两个 catalog）；
+把用桩的 `ManagementSqlExecutionTests` 拉进同一批会让端点与扩展错位，
 `LiveSparkSession` 会就此直接报错，而不是静默跑错。
 
 `sweep-console-auth.sh` 与 `npm run check:login` 是登录链路的另外两层，都对着运行中的实例跑：

@@ -354,7 +354,7 @@ WARN 并被自动重定向，这是 Maven 为这种情况准备的原生机制�
 | **2 · `storage`** ✅ | 移入 FileIO 与路径相关的类；core 只留接口（`WarehouseFileIO`、凭据管理器接口） | 单元测试绿；server 起的集成测试绿（`mvn -o test -pl :lakehouse-rest-server`） | 低 |
 | **3 · `protocol-paimon`** ✅ | 移入 Paimon 协议面的 10 个控制器、Paimon DTO、`TableMetadataService`、`TableKinds`、`SchemaChangeService`；加协议面 SPI 实现 | 同上 + `api-sweep.sh` 60 个 operation 全绿；`/v1/config` 的 endpoints 契约测试上线 | 低 |
 | **4 · 模块嵌套 + 改包名** ✅ | 四个服务端模块 `git mv` 进 `spring-parent/`（`<module>` 去掉 `../`、子模块删掉 `<relativePath>`、全部 `-pl` 改成 `:artifactId`）；Java 包 11 个包目录 `git mv` + 全仓字面替换；Spark 扩展留旧包名空壳 | §9.3 的 DoD：全量构建绿、服务端 317 / Spark 96 与重构前一致、四个校验脚本全绿、控制台重建后仍 26 项通过 | 低（纯路径与字面改动，编译即验证；唯一有风险的落点是 `spark.sql.extensions`，用空壳兜住） |
-| **5 · `protocol-iceberg`** ✅ | **新建**（不搬迁）：一期 26 个端点、Iceberg DTO、元数据代数、投影派生、错误模型、协议面 SPI 实现 | 实际做法与这一格的计划有三处不同（见 §12）：**没有双客户端端到端**（Spark 连 Iceberg 未跑）、endpoints 契约换成静态三方比对脚本、SPI 只落 3 个方法 | 低（新建模块，边界在阶段 1–3 已定；唯一动到存量的是 core 里两条 rename 上移与 server 加一行依赖） |
+| **5 · `protocol-iceberg`** ✅ | **新建**（不搬迁）：一期 26 个端点、Iceberg DTO、元数据代数、投影派生、错误模型、协议面 SPI 实现 | 实际做法与这一格的计划有两处不同（见 §12）：endpoints 契约换成静态三方比对脚本、SPI 只落 3 个方法。**双客户端端到端后来补齐了**：官方 Java 客户端（`IcebergClientEndToEndTests`）与 Spark（`IcebergTableDdlTests`，10 个用例）都已真跑 | 低（新建模块，边界在阶段 1–3 已定；唯一动到存量的是 core 里两条 rename 上移与 server 加一行依赖） |
 
 阶段 0–3 的实际做法与上面的表述有三处出入，都以 §8 为准：
 控制器是 **9 个**不是 10 个（`ConfigController` / `OAuthTokenController` 归 core）；

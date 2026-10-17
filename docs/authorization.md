@@ -400,6 +400,23 @@ curl -s -X POST -H "Authorization: Bearer etl-token" -H "$J" \
 ——`SparkCatalog` 懒加载时会去读默认命名空间 `default` 的属性（对应官方的 `DESCRIBE`，
 翻译后是 `NAMESPACE_READ_PROPERTIES`），这不是「读数据」的权限。
 
+**Iceberg 面同样是这两条用例，只是换了 catalog 与一套 catalog role**
+（`SparkSqlAuthorizationTests` 里 `icebergCatalog.*` 两个方法）。做法照抄不是省事：
+catalog role 是 catalog 内的实体，跨格式借用会得到「角色不在此 catalog 下」，
+而这种错与「没授权」在报文里长得几乎一样。有一处**只能从这一侧看出来的差异**：
+
+| 动作 | Paimon 的闸门 | Iceberg 的闸门 |
+| --- | --- | --- |
+| 写数据 | `POST …/tables/{t}/commit` → `TABLE_WRITE_DATA`（`UPDATE`） | ① `POST …/tables/{t}/metrics` → `TABLE_WRITE_DATA`（`UPDATE`）<br>② `POST …/tables/{t}` → `TABLE_WRITE_PROPERTIES`（`ALTER`） |
+| 改 schema / 属性 | 各自的端点 | 同一个 `POST …/tables/{t}` → `TABLE_WRITE_PROPERTIES` |
+
+也就是说**在 Iceberg 面「能写数据」= `UPDATE` + `ALTER`**，比 Paimon 多一项。原因是
+Iceberg 没有独立的提交端点：数据提交与属性变更都是 `POST /namespaces/{ns}/tables/{t}` 上的
+`updates` 数组，判定发生在解析请求体之前，服务端分不清这次是哪一类。想只给「能写数据、
+不能改属性」在当前端点粒度上做不到——这是协议形状决定的，不是映射写粗了。
+用例对这一点留了容错（拒绝报文点名两者之一即通过，见 `assertDeniedEither`）：
+两个都是真闸门，但哪一个先冒到异常链上与 Iceberg 的容错顺序有关。
+
 ---
 
 ## 6. 已知边界
@@ -439,5 +456,13 @@ curl -s -X POST -H "Authorization: Bearer etl-token" -H "$J" \
    namespace」的端点，只能从根开始逐层 `?parent=` 递归（`listAllNamespaces`），
    深度上限 4 层、条数上限 500 条。超出的 namespace **不会出现在下拉框里**，
    但手工填写路径仍可授权——候选列表是便利性，不是权限边界。
-    深度上限同时意味着：授在 4 级以下的 namespace 只能用路径手填。
+   深度上限同时意味着：授在 4 级以下的 namespace 只能用路径手填。
+12. **Iceberg 面分不开「写数据」与「改属性」。** 两者共用
+   `POST /v1/{prefix}/namespaces/{ns}/tables/{t}` 这一个提交端点，判定只能要求
+   `TABLE_WRITE_PROPERTIES`（官方词表里由 `ALTER` 给出），因此「能写数据」在 Iceberg 面
+   必须同时给 `UPDATE`（`…/metrics` 上报要 `TABLE_WRITE_DATA`）与 `ALTER`。
+   Paimon 面没这个问题：提交走 `/tables/{t}/commit`，只认 `TABLE_WRITE_DATA`。
+   要再细分只能等服务端解析 `updates` 数组后按操作类型二次判定，而那时请求已经过了
+   授权这一层——属于协议提供的粒度，不是本层的疏漏。`SparkSqlAuthorizationTests`
+   对两侧各跑一遍，把这条差异钉在测试里。
 

@@ -108,7 +108,7 @@ if [ -z "${DOC_VERIFIED:-}" ]; then
 fi
 
 echo "== 跑 Spark SQL 端到端验收 =="
-# 这五个类必须同批运行：一个 JVM 只能有一个 SparkContext，而
+# 这六个类必须同批运行：一个 JVM 只能有一个 SparkContext，而
 # spark.sql.extensions 只在建会话时生效，因此它们共用 LiveSparkSession 的会话。
 # 若把 ManagementSqlExecutionTests（用桩服务端、自建会话）也拉进来，
 # 先建的那个会话会被复用，端点与扩展都会错位——LiveSparkSession 会就此报错。
@@ -117,11 +117,16 @@ echo "== 跑 Spark SQL 端到端验收 =="
 #                                     并核对落到服务端的 schema / 分区 / 表选项 / 路径
 #   NonPaimonTableSqlTests          : Format / Object / Lance 三种非 Paimon 表的
 #                                     建表、写入与查询边界（见 docs/spark-paimon-rest-e2e.md 4.4）
-#   SparkSqlAuthorizationTests      : 同一个 catalog、两种身份（令牌 alice / bob），
-#                                     验建库建表读写放行、只读身份的关键操作被 403 拒绝
+#   IcebergTableDdlTests            : 用 Spark SQL 通过 Iceberg REST 面建 Iceberg 表，
+#                                     并核对 namespace / 分区变换 / 快照 / 更新代数 /
+#                                     非空 namespace 不可删（见 docs/spark-iceberg-rest-e2e.md）
+#   SparkSqlAuthorizationTests      : 两个身份（令牌 alice / bob）各跑一遍真 SQL，
+#                                     Paimon 与 Iceberg 两种格式各两条：建库建表读写放行、
+#                                     只读身份的关键操作被 403 拒绝（Iceberg 侧写数据要
+#                                     UPDATE + ALTER，见 docs/spark-iceberg-rest-e2e.md §1.5）
 #   SparkSqlDocExamplesTests        : 执行参考文档第 10 节的示例，防止示例被改坏
 "$MVN" -o -pl :lakehouse-rest-spark test \
-  -Dtest=ManagementSqlLiveServerTests,PaimonTableDdlTests,NonPaimonTableSqlTests,SparkSqlAuthorizationTests,SparkSqlDocExamplesTests \
+  -Dtest=ManagementSqlLiveServerTests,PaimonTableDdlTests,NonPaimonTableSqlTests,IcebergTableDdlTests,SparkSqlAuthorizationTests,SparkSqlDocExamplesTests \
   -DfailIfNoTests=false \
   -De2e.management.url="$BASE/api/management/v1" \
   -De2e.management.token=root

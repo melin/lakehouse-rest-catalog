@@ -466,6 +466,13 @@ Iceberg 规格副本已在 `spec/rest-catalog-open-api-iceberg.yaml`，
   RBAC 存成 `["accounting","tax"]` 两段，逐段比会静默不命中——这条落在
   `AuthorizationService.isPrefix` 与 `PermissionManagementTests.namespaceGrantMatchesMultiLevelNamespace`
   里，理由见 [authorization.md](authorization.md) §2.6。
+- **引擎侧也真跑过一遍**：`SparkSqlAuthorizationTests` 的两条 `icebergCatalog.*` 用例
+  用同一批主体、另一套 catalog role 走真 SQL（建 namespace / 建表 / 写 / 读 + 三种拒绝）。
+  实测出一条**只在 Iceberg 面成立**的粒度限制：写数据要 `UPDATE` + `ALTER`
+  ——`…/tables/{t}/metrics` 判 `TABLE_WRITE_DATA`，提交端点 `POST …/tables/{t}` 判
+  `TABLE_WRITE_PROPERTIES`，而后者在官方词表里由 `ALTER` 给出。原因是 Iceberg 没有独立的
+  提交端点，数据提交与改属性共用一个 `updates` 数组，判定又发生在解析请求体之前。
+  详见 [spark-iceberg-rest-e2e.md](spark-iceberg-rest-e2e.md) §1.5。
 - **凭据委托**：Iceberg 的 `LoadTableResult` 有 `storage-credentials` 字段、
   请求侧有 `X-Iceberg-Access-Delegation: vended-credentials` 头。
   这套语义与 Paimon 的 `/token`、`/auth` 端点**同一件事**，
@@ -585,7 +592,7 @@ Iceberg 的 `delete namespace` 级联删表（规格要求 namespace 非空时�
 | `scripts/api-sweep.sh` 扩成两套 | Paimon 60 个 operation 保持现状；新增 Iceberg 35 个 operation 的逐条调用（会建 `ns`/`tbl` 并清理），覆盖率不靠人工比对 |
 | `CatalogAccessRules` 覆盖率测试 | 既有机制：未登记的 `/v1/**` 端点直接 403；Iceberg 路径登记漏了会立刻暴露 |
 | `endpoints` 契约测试 | `/v1/config` 下发的清单 ↔ 实际存在 handler 的路径集合，双向比对 |
-| **三层端到端** | ① 官方 **Java 客户端**走真 HTTP（`IcebergClientEndToEndTests`）——协商、错误模型、更新代数；② 26 个端点的 HTTP 行为（`IcebergRestCatalogApiTests`）；③ Spark 各连一次：Paimon `spark-paimon-rest-e2e.md` 那套照旧，Iceberg 侧见 `docs/spark-iceberg-rest-e2e.md`（**该文档只到 ① / ②，Spark 侧未跑，第 0 节显式标注**） |
+| **三层端到端** | ① 官方 **Java 客户端**走真 HTTP（`IcebergClientEndToEndTests`）——协商、错误模型、更新代数；② 26 个端点的 HTTP 行为（`IcebergRestCatalogApiTests`）；③ Spark 各连一次：Paimon `spark-paimon-rest-e2e.md` 那套照旧，Iceberg 侧见 `docs/spark-iceberg-rest-e2e.md`（`IcebergTableDdlTests`，10 个用例，随 `e2e-spark-sql.sh` 同批跑） |
 | 错误模型契约测试 | Iceberg 路径下故意触发 404/409，断言响应体是 `{error:{type,code}}` 形状 |
 | 行大小守门 | 既有 `everyTableFitsTheMysqlRowSizeLimit` 自动覆盖新列（§4.3） |
 | 投影一致性自检 | 造一次「文档与投影行不一致」，断言自检报出来（**变异测试**，不空跑） |
@@ -632,18 +639,19 @@ Iceberg 的 `delete namespace` 级联删表（规格要求 namespace 非空时�
 | 10 | §? 只说「`/config` 要下发清单」 | 三个存在性检查端点是**显式**的 `HEAD` 映射 | 规格要求它们的成功码是 **204**，而 Spring 对 `@GetMapping` 的隐式 HEAD 回落只给 200。显式登记不会歧义（读 Spring 7.0.9 字节码确认：`compareTo` 里 HEAD-only 优于 GET-only）。**代价是既有的 `CatalogEndpointAuthorizationTests` 当场失败**（`IllegalArgumentException: HEAD`）——它从运行时映射表枚举端点，那个枚举确实覆盖了新协议面，只是造请求的工厂只有四个方法 |
 | 11 | §7 控制台七处改动 | 起初只有前三处按图落地（新建弹窗的**表格式选项卡片**、列表的格式徽标与筛选、详情页的「协议与能力」），后四处**有意不做**；随后补了**目录浏览**、**Iceberg 建表表单**、**表详情页**（`IcebergTableView`）与**存储优化页签**（见下一条），七处现已全部落地 | 各处的共同前提是「控制台能读 Iceberg 的表」。这条接线在补目录浏览时做了，但**不是**当初设想的「把 26 条路径逐条登记进 `EXTENSION_ENDPOINTS`」，而是新增 `src/api/iceberg.js` 并登记**实际会用到的 13 条**：没被调用的端点登记进来就是死条目（`verify-console.py` 第 4 组会报），而第 1 组现在把 Iceberg 规格也并进比对，因此不需要用扩展白名单来「放行」它们。表详情页顺着同一条接线落地——数据几乎全部来自一次 `loadTable` 的整份 metadata，文件列表复用 catalog 级文件端点（`metadata.location` 减 warehouse 得根），不需要新端点。**判断标准没变**：不做的能力在页面上说明并给出去向（不发注定被拒的请求），不把 404 换个地方发生。边界记在 `docs/console.md` §10 与 §4.7，判据由 `verify-console.py` 第 12 组（伸缩）与第 13 组（Iceberg 契约形状，含表详情页）守 |
 | 12 | §9：「`api-sweep.sh` 扩成两套，Iceberg 35 个 operation 逐条调用」 | 换成 `scripts/verify-iceberg-endpoints.py`（**15 项**）+ `IcebergRestCatalogApiTests`（26 个端点的 HTTP 行为） | 逐条调用脚本要为 35 个操作维护 35 段会过期的期望值。静态三方比对（**规格 ↔ 声明的能力清单 ↔ 控制器映射**）+ 行为测试覆盖同样的错，且不会随实现漂移。脚本里那 9 条「不声明」写成**字面量**、不从「规格 − 声明」推——推出来的清单永远自洽，就永远发现不了漏实现 |
-| 13 | §9：「双客户端端到端，Iceberg 侧新建 `docs/spark-iceberg-rest-e2e.md`——落一份实测记录」 | 文档已建，但**实测记录只到客户端层为止**：用官方 **Java 客户端**（`org.apache.iceberg.rest.RESTCatalog`）走真 HTTP 的端到端已落（`IcebergClientEndToEndTests`，3 个用例）；**Spark 侧仍未跑过** | 两层要分开说。跑通官方客户端之后，「协议层」与「客户端协商层」已是实测：能力清单协商、嵌套错误体翻成具体异常、更新代数（`requirements` + `updates`）全过。剩下没验的只有 Spark 自己那一层（SQL 解析、`SparkWrite` 写文件、配置键在真实会话里能否生效），而 Spark 的 `SparkCatalog` 并不实现协议——它把 SQL 翻成 `Catalog` 调用，REST 那一层就是被测过的那个实现。因此文档按「已实测 / 未实测」分层标注，SQL 与连接配置照写但标明是参考而非实测记录。写「Spark 已实测」仍是假话 |
+| 13 | §9：「双客户端端到端，Iceberg 侧新建 `docs/spark-iceberg-rest-e2e.md`——落一份实测记录」 | 文档已建，**三层现在都是实测的**：协议层 `IcebergRestCatalogApiTests`（10 个用例）、客户端协商层 `IcebergClientEndToEndTests`（3 个，官方 `RESTCatalog` 走真 HTTP）、引擎层 `IcebergTableDdlTests`（10 个，真 `SparkSession` + 真服务端 + 真仓库） | 三层要分开验，因为失败的形状不同：协议层看报文，协商层看客户端认不认（能力清单、错误体、更新代数），引擎层看 **SQL 翻译与数据文件读写**——`SparkCatalog` 不实现协议，它把 SQL 翻成 `Catalog` 调用，所以前两层绿了之后引擎层仍可能红。补引擎层时跑出四条文档原先没写的边界，都已登记进 `spark-iceberg-rest-e2e.md`：CTAS 走 staged create 因而被 `transactions/commit` 的缺失挡住（§2.1）、`RENAME TO` 的目标不能带 catalog 前缀（§2.6）、元数据表不能用四段名查（§2.2）、decimal 类型在服务端返回时已被规范化成字符串。方法没变：先跑、再写，跑不出来的不写成实测 |
 | 14 | §9：「错误模型契约测试」 | 已落，并且**两个方向都比** | 不只验 Iceberg 路径的 404 是嵌套形状，也验「Iceberg 路径落在 Paimon catalog 上」的消息点出 `PAIMON catalog`（`IcebergRestCatalogApiTests`）。方向对了才说明形状是按**请求所属的面**选的，而不是按 catalog 的格式选的 |
 | 15 | §4.7：「`OptimizationOptions.KNOWN_KEYS` 需要补 Iceberg 专属参数」 | **不往一张表里加键**，改成按格式分派：`OptimizationOptions` 加一个 format 重载，Iceberg 的键表独立成 `IcebergOptimizationOptions` | 键表合并会让两种格式的参数互相可见——界面上会冒出「Paimon 表也能填 `delete-file-threshold`」这种既存不下去、也不会报错的字段，而控制台的参数定义又是从「键是否存在」推的。分开之后 `verify-console.py` 第 11 组多了一条断言：`iceberg_frontend_keys != paimon_frontend_keys`（防复制粘贴），两侧的键集合还各自与服务端常量逐字比对 |
 | 16 | §3.4/§5.5 隐含「权限管理与格式无关」，但没说判定怎么比 | `AuthorizationService.coversScope` 对 namespace **按点号拼成路径再比**（`NamespacePaths.STORAGE_SEPARATOR`），不逐段比 | 两条授权链存的形状不同：RBAC 存层级数组 `["accounting","tax"]`，Paimon 直授存一个字符串 `["accounting.tax"]`（`paimon_database.name` 的形状）。逐段比会让「授 `accounting.tax`、访问 `["accounting","tax"]`」**永远不命中**，且两端都不报错——页面显示已授权、客户端一直 403。反向的「在翻译层切层级」也不行：那会把**本来就含点号**的 Paimon 库名切坏。因此「怎么比」收敛到判定这一处，`PermissionManagementTests.namespaceGrantMatchesMultiLevelNamespace` 钉住覆盖后代 / 不反向覆盖 / `sales` 不命中 `salesforce` 三条 |
 
-### 11.2 落地后新增的三条机器守卫
+### 11.2 落地后新增的四条机器守卫
 
 | 守卫 | 守什么 | 为什么不能省 |
 | --- | --- | --- |
 | `scripts/verify-iceberg-endpoints.py` | 规格 35 条 ↔ `IcebergEndpoints.SUPPORTED` 26 条 ↔ 控制器映射，三方比对；`NOT_IMPLEMENTED` 的 9 条写成字面量 | 「声明了但没实现」与「实现了但没声明」两种错各自都会让客户端在**错误的时机**失败（前者是用户真的用到了那个能力时，后者是连接阶段就被拒）。另外它**先做过变异测试**：首跑就抓出三处既有问题（脚本自身的 `tasks` 写成 GET、`plan` 漏了 `DELETE`、控制器注释里的 `{@code @GetMapping}` 被当成映射），证明它不是空跑 |
 | `IcebergRestCatalogApiTests` | 26 个端点的**行为**：规格要求的成功码（`rename` 204 / `unregister` 200 / 两个 `HEAD` 204）、kebab-case 字段名、`metadata.json` 真的落到仓库、错误体嵌一层 `error`、外部表不被 purge、视图删除不碰仓库 | 静态校验与授权映射都只读**形状**（路径、方法、清单），从不发一个请求。状态码错了、字段名写成驼峰、文件没落盘，前两条守卫一条都发现不了 |
 | `IcebergClientEndToEndTests` | 用官方 `org.apache.iceberg.rest.RESTCatalog` 走**真 HTTP**（`RANDOM_PORT` + JDK `HttpClient` 建 catalog）验三件 MockMvc 看不见的事：① `/v1/config` 下发的 `endpoints` 与客户端自需端点**等值协商**（清单少了操作在本地就被拒、多了会真发出去拿到 404，两个方向 MockMvc 都发现不了）；② 嵌套错误体翻不翻得成 `NoSuchTableException` 等**具体**异常（形状对而 `type` 名字错在 MockMvc 里是绿的）；③ 更新代数真跑通（客户端自己生成 `requirements` 与 `updates`，服务端解、校验、应用、落库，客户端再解析回元数据） | 前两条守卫都只读**形状**，第三条只验服务端自己造出来的报文。只有真客户端才会去用服务端**发出去**的报文——清单、错误体、元数据文档这三样都是「服务端的输出被客户端消费」，只有这一层能证 |
+| `SparkSqlAuthorizationTests`（Iceberg 两条） | 两个身份（读写 / 只读）各跑一遍真 SQL：建 namespace、建表、写入、读回，以及三种被拒的写入。抓的是**「每一项映射都对、组合起来却写不进去」**——Iceberg 的写入要同时过 `…/metrics`（`TABLE_WRITE_DATA`）与 `POST …/tables/{t}`（`TABLE_WRITE_PROPERTIES`）两道闸，只给 `UPDATE` 的角色在映射表上「看起来该能写」，真写时才 403 | 前三条守卫都看不见权限的**组合**：`CatalogEndpointAuthorizationTests` 只验「每个端点都在映射里登记过」，一个端点一条记录，不验「做成一件事需要哪几条」。而且 `TABLE_WRITE_PROPERTIES` 在官方词表里由 `ALTER` 给出——「写数据要给 ALTER」这种结论只能从真跑里得到（见 §5.5 与 `spark-iceberg-rest-e2e.md` §1.5） |
 
 **后两条守卫都不是理论上需要，首跑都抓到了真问题。** `IcebergRestCatalogApiTests` 抓到
 `IcebergMetadataFiles` 的 codec 参数用错（见下）；`IcebergClientEndToEndTests`

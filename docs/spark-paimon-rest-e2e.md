@@ -467,7 +467,7 @@ options.put(PATH.key(), response.getPath());   // put，不是 putIfAbsent
 ./scripts/e2e-spark-sql.sh
 ```
 
-它执行的五个测试类必须**同批运行**：一个 JVM 只能有一个 SparkContext，而
+它执行的六个测试类必须**同批运行**：一个 JVM 只能有一个 SparkContext，而
 `spark.sql.extensions` 只在建会话时生效，因此它们共用 `LiveSparkSession` 的会话。
 把用桩服务端的 `ManagementSqlExecutionTests` 拉进同一批会先建会话、把端点与扩展都错位，
 `LiveSparkSession` 会就此直接报错（而不是静默跑错）。
@@ -477,8 +477,16 @@ options.put(PATH.key(), response.getPath());   // put，不是 putIfAbsent
 | `ManagementSqlLiveServerTests` | 逐条管理语句对真实服务端验管理 API 契约 |
 | `PaimonTableDdlTests` | 建表、写入、读回，并核对落到服务端的 schema / 分区 / 表选项 / 路径 |
 | `NonPaimonTableSqlTests` | Format / Object / Lance 三种非 Paimon 表的建表、写入与查询边界，含 Object 表「对象放进目录即可查到」与表位置由客户端 `path` 决定（见 4.4） |
-| `SparkSqlAuthorizationTests` | 同一个 catalog、两种身份下的权限边界（见 6.1） |
+| `IcebergTableDdlTests` | Iceberg 那一侧的同一条链：namespace / 分区变换 / 写入与快照 / 更新代数 / 重命名 / 非空 namespace 不可删，以及 CTAS 的边界（见 [`spark-iceberg-rest-e2e.md`](spark-iceberg-rest-e2e.md) §0.1） |
+| `SparkSqlAuthorizationTests` | 同一个 catalog、两种身份下的权限边界；**Paimon 与 Iceberg 两种格式各两条**（见 6.1） |
 | `SparkSqlDocExamplesTests` | 执行 `spark-sql-reference.md` 第 10 节的示例 |
+
+**同一个会话里两个 catalog。** `LiveSparkSession` 同时注册
+`spark.sql.catalog.paimon_catalog`（Paimon）与 `spark.sql.catalog.iceberg_catalog`（Iceberg），
+因为 `spark.sql.extensions` 建会话之后改不了。两种格式的元数据本来就互不可见
+（一个 catalog 一种格式），共用一个会话不会互相干扰；Iceberg 那个 catalog 由
+`ensureIcebergCatalog()` 先用管理 API 建成 `ICEBERG`——`/v1/config` 那条自动登记
+会按部署默认值建成 Paimon，之后每次调用都 404。
 
 只跑建表用例：
 
@@ -507,6 +515,13 @@ mvn -o -pl :lakehouse-rest-spark test -Dtest=PaimonTableDdlTests \
 `AuthorizationTests` 与 `CatalogEndpointAuthorizationTests` 的活——而是**引擎发出的请求**：
 403 会不会被 Paimon 客户端改写成别的错、被拒绝的写入到底有没有落数据。
 
+**这套用例现在两种格式各跑一遍**（4 条）：Paimon 那两条走 `/databases/**`，
+Iceberg 那两条（`icebergCatalog.*`）走 `/namespaces/**`，同一批主体、另一套 catalog role。
+Iceberg 侧有一条只从它那一侧才看得出来的差异——写数据要 `UPDATE` + `ALTER`
+（指标上报与提交是两个端点、两种权限），详见
+[`spark-iceberg-rest-e2e.md`](spark-iceberg-rest-e2e.md) §1.5 与
+[`authorization.md`](authorization.md) §5.1。
+
 因此服务端要多配两个令牌，并把它们映射到两个主体（`token-principals`）：
 
 ```bash
@@ -529,9 +544,12 @@ mvn -o -pl :lakehouse-rest-spark test -Dtest=SparkSqlAuthorizationTests -DfailIf
 两件事容易踩：
 
 - **两个身份共用一份 SparkContext，只换令牌。** `LiveSparkSession.sessionAs(token)` 调
-  `newSession()` 拿到独立 SQLConf 再覆盖 `spark.sql.catalog.<catalog>.token`。一个 JVM 只能
-  有一个 SparkContext，`SparkSession.builder().getOrCreate()` 会直接复用已有会话，因此不能靠
-  重建会话换身份。
+  `newSession()` 拿到独立 SQLConf 再覆盖 `spark.sql.catalog.<catalog>.token`。
+  一个 JVM 只能有一个 SparkContext，`SparkSession.builder().getOrCreate()` 会直接复用已有会话，
+  因此不能靠重建会话换身份。**两个 catalog 的令牌一起换**（`paimon_catalog` 与
+  `iceberg_catalog`）：身份是「这个会话对服务端是谁」，只换一半会得到最坏的结果——
+  Paimon 侧被拦、Iceberg 侧仍以 root 畅通，用例看起来「只读身份写不了 Paimon」，
+  其实从没验过 Iceberg。
 - **只读身份也必须有 `NAMESPACE_READ_PROPERTIES`。** `SparkCatalog.initialize` 在 Spark 首次
   解析到该 catalog 的限定名时懒加载它，而加载过程会去读默认命名空间 `default` 的属性
   （`GET /v1/{prefix}/databases/default`）。缺了这一项，连第一句 `SELECT` 都到不了表——

@@ -15,17 +15,15 @@
 	<name>lakehouse-rest-optimizer</name>
 	<description>表存储优化任务：在 k8s 上跑 Spark，按批次对多张 Paimon / Iceberg 表执行合并、快照清理与孤儿文件清理</description>
 
-	<properties>
-		<!--
-			Iceberg 的 Spark bundle。**必须与 spring-parent 的 iceberg.version 一致**：
-			服务端用 iceberg-core 写/读这份元数据，优化任务用 Spark bundle 执行 procedure，
-			两边版本不一致时，新写入的元数据（例如 v3 的 next-row-id）可能被旧运行时读不懂。
+	<!--
+		Iceberg 的版本由根 POM 的 `iceberg.version` 统一给出（与 lakehouse-rest-spark
+		的测试依赖同一个值）。它**必须与 spring-parent 的 iceberg.version 一致**：
+		服务端用 iceberg-core 写/读这份元数据，优化任务用 Spark bundle 执行 procedure，
+		两边版本不一致时，新写入的元数据（例如 v3 的 next-row-id）可能被旧运行时读不懂。
 
-			两个 POM 分属两个依赖世界（Spring Boot / 集群 Spark），没法共用一份属性，
-			因此各声明一次；改了其中一个，另一个要同步。
-		-->
-		<iceberg.version>1.11.0</iceberg.version>
-	</properties>
+		两个 POM 分属两个依赖世界（Spring Boot / 集群 Spark），没法共用一份属性，
+		因此各声明一次；改了其中一个，另一个要同步。
+	-->
 
 	<!--
 		这个模块是**一个可执行程序**，不是库：它由服务端作为 k8s Job 提交

@@ -1,8 +1,12 @@
 package io.github.melin.lakehouse.rest.spark
 
+import com.fasterxml.jackson.databind.ObjectMapper
 import io.github.melin.lakehouse.rest.spark.client.{ManagementApiClient, ManagementApiException}
 import org.apache.spark.sql.SparkSession
 
+import java.net.URI
+import java.net.http.{HttpClient, HttpRequest, HttpResponse}
+import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.time.Duration
 
@@ -22,11 +26,21 @@ import java.time.Duration
  *   <li>{@code io.github.melin.lakehouse.rest.spark.ManagementSparkExtensions} —— 本项目的管理语句扩展；
  *   <li>{@code org.apache.paimon.spark.extensions.PaimonSparkSessionExtensions} 与
  *       {@code spark.sql.catalog.paimon} —— Paimon 自身的扩展与 REST catalog，
- *       供 `CREATE TABLE ... USING paimon` 一类的建表用例使用。
+ *       供 `CREATE TABLE ... USING paimon` 一类的建表用例使用；
+ *   <li>{@code org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions} 与
+ *       {@code spark.sql.catalog.iceberg_catalog} —— Iceberg 自身的扩展与 REST catalog，
+ *       供 `CREATE TABLE ... USING iceberg` 一类的建表用例使用。
  * </ul>
  *
- * <p>两个扩展可以并存：本项目的扩展先用自己的解析器识别管理语句，
- * 识别不了就原样交回 Spark 原生解析器，与 Paimon 注入的规则不重叠。
+ * <p>三个扩展可以并存：本项目的扩展先用自己的解析器识别管理语句，
+ * 识别不了就原样交回 Spark 原生解析器；Paimon 与 Iceberg 注入的规则各自只认
+ * 自己的 catalog（数据源名 / catalog 实现类不同），互不重叠。
+ *
+ * <p><b>两个 catalog 为什么在同一个会话里。</b>`spark.sql.extensions` 只在建会话那一刻
+ * 生效，一个 JVM 又只能有一个 SparkContext——想把两种格式分成两个测试类、各建各的会话，
+ * 后建的那个会静默拿到先建的那个，扩展缺一半。因此 Paimon 与 Iceberg 的 catalog 都
+ * 配在这里，由 {@code spark.sql.catalog.<name>} 区分；两种格式的元数据本来就互不可见
+ * （一个 catalog 一种格式，建完不可改），共用一个会话不会互相干扰。
  *
  * <p>目标地址取自系统属性，未配置时 {@link #isAvailable} 为 false，
  * 各测试类据此跳过（见 {@code scripts/e2e-spark-sql.sh}）。
@@ -94,17 +108,25 @@ object LiveSparkSession {
     /** Paimon 自己的扩展类名。 */
     private val PaimonExtensionClass = "org.apache.paimon.spark.extensions.PaimonSparkSessionExtensions"
 
+    /** Iceberg 自己的扩展类名（`ALTER TABLE ... CREATE BRANCH` 这类 DDL 由它提供）。 */
+    private val IcebergExtensionClass = "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions"
+
     /**
-     * `spark.sql.extensions` 的取值：两个扩展都要装。
+     * `spark.sql.extensions` 的取值：三个扩展都要装。
      *
      * <p>顺序上本项目的扩展在前——它先用自己的解析器识别管理语句，
-     * 识别不了就原样交回 Spark 原生解析器，与 Paimon 注入的规则不重叠。
+     * 识别不了就原样交回 Spark 原生解析器，与另外两个注入的规则不重叠。
      *
      * <p>Paimon 的扩展**不能省**：`SparkCatalog.initialize` 会检查
      * `spark.sql.extensions` 里有没有它，缺了就直接抛异常、连建库都做不了
      * （提示语是 "When using Paimon, it is necessary to configure `spark.sql.extensions`…"）。
+     *
+     * <p>Iceberg 的扩展不检查自己的存在（只在用到 Iceberg 专有 DDL 时才生效），
+     * 但装上是必要的：`ALTER TABLE ... CREATE BRANCH` 一类的语句**没有它就会解析失败**，
+     * 而失败信息是通用的语法错误，与「少装了一个扩展」看不出关系。
      */
-    val extensions = PaimonRestManagement.EXTENSION_CLASS + "," + PaimonExtensionClass
+    val extensions = PaimonRestManagement.EXTENSION_CLASS + "," + PaimonExtensionClass +
+        "," + IcebergExtensionClass
 
     /**
      * 测试用的 catalog 标识，既是 `spark.sql.catalog.<name>` 的后缀，
@@ -116,6 +138,84 @@ object LiveSparkSession {
      * 收场——报错信息与真正的原因相去甚远。
      */
     val catalog: String = "paimon_catalog"
+
+    /**
+     * Iceberg 侧的 catalog 名，同样是「`spark.sql.catalog.<name>` 的后缀 + 服务端 prefix」。
+     *
+     * <p>与 {@link #catalog} 是两个独立登记项：服务端的 catalog 一格一种格式、建完不可改，
+     * 因此 Paimon 与 Iceberg 必须是**两个 catalog**，不能指望同一个 prefix 兼顾两者
+     * （同一个 prefix 上两种格式的元数据互不可见）。
+     *
+     * <p>这个 prefix 不会像 Paimon 那个由 `auto-create-catalog` 自动登记——`/v1/config`
+     * 这条连接阶段的路由不知道客户端要哪种格式，自动登记会按部署默认值建成 Paimon，
+     * 之后每一次 Iceberg 调用都会 404（报 "is a PAIMON catalog"）。所以
+     * {@link #ensureIcebergCatalog} 先用管理 API 把它建成 ICEBERG，再让客户端连。
+     */
+    val icebergCatalog: String = "iceberg_catalog"
+
+    /**
+     * Iceberg catalog 的仓库根，只在**首次**建 catalog 时用一次。
+     *
+     * <p>用临时目录而不是写死路径：同一台机器上反复跑测试不该踩上一轮留下的文件。
+     * 服务端按这个值判定 `allowedLocations`，表的实际位置仍由服务端的 `path-template`
+     * 推（`<warehouse>/<namespace>.db/<table>`）。
+     */
+    lazy val icebergWarehouse: String =
+        "file://" + Files.createTempDirectory("lakehouse-rest-iceberg-live-warehouse").toString
+
+    /** 建 catalog 是「一次就好」的副作用，见 {@link #ensureIcebergCatalog}。 */
+    private var icebergCatalogReady = false
+
+    /**
+     * 确保服务端上有一个 ICEBERG 格式的 {@link #icebergCatalog}。
+     *
+     * <p>走管理 API 而不是让客户端自己撞：`GET /v1/config?warehouse=<prefix>` 是连接阶段，
+     * 那时客户端还没说过自己要哪种格式，服务端的自动登记按部署默认值走（默认 PAIMON）。
+     * 一旦以 Paimon 登记，这个 prefix 上**每一次** Iceberg 调用都会以
+     * `prefix "..." is a PAIMON catalog` 失败，且错是第一次请求自己留下的。
+     *
+     * <p>幂等：已存在（409）时不再建，但仍要核对格式——同名 prefix 若是 Paimon，
+     * 继续跑下去只会得到一串与真正原因无关的 404，不如在这里说清楚。
+     */
+    def ensureIcebergCatalog(): Unit = synchronized {
+        if (icebergCatalogReady) {
+            return
+        }
+        val body = ("""{"catalog":{"type":"INTERNAL","name":"%s","catalogFormat":"ICEBERG",""" +
+            """"properties":{},"storageConfigInfo":{"storageType":"FILE","allowedLocations":["%s"]}}}""")
+            .format(icebergCatalog, icebergWarehouse)
+        val response = send(HttpRequest.newBuilder(URI.create(managementUrl + "/catalogs"))
+            .header("Content-Type", "application/json")
+            .header("Authorization", "Bearer " + token)
+            .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
+            .build())
+        val code = response.statusCode()
+        require(code == 201 || code == 409,
+            s"创建 ICEBERG catalog 失败：POST /catalogs -> $code ${response.body()}")
+
+        val actual = catalogFormatOf(icebergCatalog)
+        require(actual == "ICEBERG",
+            s"prefix $icebergCatalog 已存在且格式是 $actual，不是 ICEBERG。"
+                + "同一个 prefix 不能同时承载两种格式，请换一个名字（或删掉重建）。")
+        icebergCatalogReady = true
+    }
+
+    /** 读一个 catalog 的格式；读不到时返回空串（调用方负责把它变成一句能照做的提示）。 */
+    private def catalogFormatOf(prefix: String): String = {
+        val response = send(HttpRequest.newBuilder(URI.create(managementUrl + "/catalogs/" + prefix))
+            .header("Authorization", "Bearer " + token)
+            .header("Accept", "application/json")
+            .GET().build())
+        if (response.statusCode() != 200) {
+            return s"(读取失败：${response.statusCode()})"
+        }
+        val node = MAPPER.readTree(response.body()).get("catalogFormat")
+        if (node == null || node.isNull) "" else node.asText()
+    }
+
+    private def send(request: HttpRequest): HttpResponse[String] =
+        HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build()
+            .send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8))
 
     /**
      * 以指定令牌**另开一个会话**，用来在同一个 catalog 上扮演另一个身份。
@@ -132,12 +232,20 @@ object LiveSparkSession {
      *
      * <p>改的是 catalog 配置，所以子会话必须在**第一次使用该 catalog 之前**取；
      * 已经用过的会话不会因为改配置而换身份（`CatalogManager` 已经实例化过那个 catalog）。
+     *
+     * <p><b>两个 catalog 的令牌一起换。</b>身份是「这个会话对服务端是谁」，不是
+     * 「Paimon 这个 catalog 认谁」——只换一半会得到最坏的组合：Paimon 侧被拦、
+     * Iceberg 侧仍以 root 畅通，用例看起来「只读身份写不了 Paimon」，其实
+     * 从没验过 Iceberg。两个 key 各写一次而不是抽循环：名字不同、都不是数组，
+     * 抽出来省不下两行，反而看不出「这两个 catalog 各有一份令牌」。
      */
     def sessionAs(identity: String): SparkSession = {
         require(identity.nonEmpty, "identity token must not be empty")
         val session = instance.newSession()
         session.conf.set("spark.sql.catalog." + catalog + ".token", identity)
-        require(session.conf.get("spark.sql.catalog." + catalog + ".token") == identity,
+        session.conf.set("spark.sql.catalog." + icebergCatalog + ".token", identity)
+        require(session.conf.get("spark.sql.catalog." + catalog + ".token") == identity
+                && session.conf.get("spark.sql.catalog." + icebergCatalog + ".token") == identity,
             "子会话没能覆盖 catalog 令牌，身份不会生效")
         session
     }
@@ -177,6 +285,27 @@ object LiveSparkSession {
             // 代价是每次新建 FileIO 之前多一次 `.../tables/{t}/token` 请求，
             // 凭据在有效期内由双方缓存。
             .config("spark.sql.catalog." + catalog + ".data-token.enabled", "true")
+            // Iceberg 自己的 REST catalog：`type=rest` 是「走 REST 而不是 hive/hadoop」
+            // 的开关，CatalogUtil 按它选实现。两个 key 与 Paimon 那套刻意不同：
+            // Paimon 是 `metastore=rest`，Iceberg 是 `type=rest`——写混了得到的是
+            // 「不认识的 catalog 实现」，不是「退化成默认」，所以这里不抽公共方法。
+            .config("spark.sql.catalog." + icebergCatalog, "org.apache.iceberg.spark.SparkCatalog")
+            .config("spark.sql.catalog." + icebergCatalog + ".type", "rest")
+            .config("spark.sql.catalog." + icebergCatalog + ".uri", catalogUrl)
+            // 同上：这里的 warehouse 是 catalog 的 prefix，不是仓库路径
+            .config("spark.sql.catalog." + icebergCatalog + ".warehouse", icebergCatalog)
+            // 令牌 + 显式声明认证方式。
+            //
+            // 只给 `token` 也能用：客户端看到 token 会**猜**成 oauth2 并打一条
+            // `Inferring rest.auth.type=oauth2` 的警告。显式写出来是为了让日志干净，
+            // 也为了把「属性全名是 rest.auth.type」这条坑留在代码里（写成 auth.type
+            // 不会切换认证方式，只会变成一个发给服务端但没人看的 catalog 属性）。
+            .config("spark.sql.catalog." + icebergCatalog + ".rest.auth.type", "oauth2")
+            .config("spark.sql.catalog." + icebergCatalog + ".token", token)
+            // 关掉客户端的元数据缓存：用例要的是「每一次都真的发请求」。
+            // 开着的话，INSERT 之后的 SELECT 可能命中本地缓存的旧 metadata，
+            // 表现是「写入成功但读不到」——与服务端的回归长得一模一样。
+            .config("spark.sql.catalog." + icebergCatalog + ".cache-enabled", "false")
             .config(PaimonRestManagement.MANAGEMENT_URL, managementUrl)
             .config(PaimonRestManagement.TOKEN, token)
             .getOrCreate()
@@ -188,11 +317,12 @@ object LiveSparkSession {
         // 与其静默跑错，不如立刻说清楚。
         val effective = session.conf.get("spark.sql.extensions", "")
         require(effective.contains(PaimonExtensionClass)
+                && effective.contains(IcebergExtensionClass)
                 && effective.contains(PaimonRestManagement.EXTENSION_CLASS),
             s"""拿到的 SparkSession 不是本 holder 创建的那个，扩展配置为 "$effective"。
                |一个 JVM 只能有一个 SparkContext，而 spark.sql.extensions 只在建会话时生效。
                |请只运行需要真实服务端的测试类，例如：
-               |  mvn -o -pl :lakehouse-rest-spark test -Dtest=ManagementSqlLiveServerTests,PaimonTableDdlTests,NonPaimonTableSqlTests,SparkSqlAuthorizationTests,SparkSqlDocExamplesTests
+               |  mvn -o -pl :lakehouse-rest-spark test -Dtest=ManagementSqlLiveServerTests,PaimonTableDdlTests,NonPaimonTableSqlTests,IcebergTableDdlTests,SparkSqlAuthorizationTests,SparkSqlDocExamplesTests
                |或直接用 scripts/e2e-spark-sql.sh。""".stripMargin)
 
         // 提前初始化 sessionState：解析器在此时装配，装配出问题会立刻暴露，
@@ -200,4 +330,6 @@ object LiveSparkSession {
         val _ = session.sessionState.sqlParser
         session
     }
+
+    private val MAPPER = new ObjectMapper()
 }

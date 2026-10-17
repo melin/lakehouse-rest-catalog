@@ -114,6 +114,30 @@
 			<scope>test</scope>
 		</dependency>
 		<!--
+			Iceberg 的 Spark bundle：**只用于测试**。
+
+			与上面 Paimon 那条同一个理由——`CREATE TABLE ... USING iceberg` 由 Iceberg
+			自己的 Spark catalog（`org.apache.iceberg.spark.SparkCatalog` + `type=rest`）
+			执行，它按 Iceberg REST 规格发请求。用桩替换服务端就只能证明「我们与自己的
+			假设自洽」，证明不了「Iceberg 客户端真的接受我们的响应」。
+
+			**它必须与我们服务端用的 iceberg-core 同版本**（根 POM 的 iceberg.version）：
+			客户端生成元数据、服务端校验并落库，两边对 metadata.json 的代数理解不一致时，
+			症状是客户端解析响应失败，而不是服务端报错。
+
+			bundle 是 shaded 的（parquet / orc / avro / jackson 都在
+			`org.apache.iceberg.shaded.*` 下），不会顶掉 Spark 自带的同名依赖；
+			它同时包含 `IcebergSparkSessionExtensions`（`ALTER TABLE ... CREATE BRANCH`
+			这类 Iceberg 专有 DDL 由它提供）。
+
+			运行期不打进产物：scope 是 test，发布 jar 里没有它。
+		-->
+		<dependency>
+			<groupId>org.apache.iceberg</groupId>
+			<artifactId>iceberg-spark-runtime-3.5_${scala.binary.version}</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<!--
 			Paimon 的 Spark 扩展初始化时会引用 spark-hive 中的 HiveUDFExpressionBuilder。
 			提交到集群时 spark-hive 由发行版提供，直接跑 JUnit 时没有，因此测试期引入。
 		-->
