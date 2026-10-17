@@ -110,6 +110,40 @@ export const ENDPOINTS = {
   upsertSemanticView: { method: 'POST', path: '/v1/{prefix}/databases/{database}/semantic-views/{semanticView}' },
   dropSemanticView: { method: 'DELETE', path: '/v1/{prefix}/databases/{database}/semantic-views/{semanticView}' },
 
+  // ------------------------------------------------------------------ catalog API：Iceberg 协议面
+  // 同样是 `/v1/{prefix}` 基址，但资源是 `namespaces/**` 而不是 `databases/**`，
+  // 报文也是 kebab-case（`partition-spec` / `next-page-token`）。两套路径按 prefix
+  // 对应的 catalog 格式分派，控制台按页面选择其中一套，从不混用。
+  //
+  // 这些路径逐条对得上 `spec/rest-catalog-open-api-iceberg.yaml`，
+  // 由 `verify-console.py` 第 1 组与服务端控制器双向比对。
+  //
+  // 有意**不**登记的三类：
+  // · `plan` / `tasks` / `sign` / `transactions/commit` / `register-view` /
+  //   `functions`：服务端一期不实现（见 `IcebergEndpoints` 的类注释），登记进来就是死条目；
+  // · `POST .../tables/{table}`（提交 update）：请求体里是 metadata 代数相关的
+  //   `updates` / `requirements`，控制台拼不出一轮合法的提交——与 Paimon 侧不登记
+  //   `commitTable` 同一个理由；
+  // · `HEAD` 两个存在性检查：控制台用不到（列表已经告诉它有没有），
+  //   而 `client.js` 的动词糖只有 GET/POST/PUT/DELETE。
+  icebergListNamespaces: { method: 'GET', path: '/v1/{prefix}/namespaces' },
+  icebergCreateNamespace: { method: 'POST', path: '/v1/{prefix}/namespaces' },
+  icebergDropNamespace: { method: 'DELETE', path: '/v1/{prefix}/namespaces/{namespace}' },
+  icebergListTables: { method: 'GET', path: '/v1/{prefix}/namespaces/{namespace}/tables' },
+  icebergCreateTable: { method: 'POST', path: '/v1/{prefix}/namespaces/{namespace}/tables' },
+  icebergRegisterTable: { method: 'POST', path: '/v1/{prefix}/namespaces/{namespace}/register' },
+  icebergLoadTable: { method: 'GET', path: '/v1/{prefix}/namespaces/{namespace}/tables/{table}' },
+  icebergDropTable: { method: 'DELETE', path: '/v1/{prefix}/namespaces/{namespace}/tables/{table}' },
+  // 与 Paimon 的 `renameTable` **同一条路径**，请求体不同（Iceberg 的 identifier 里
+  // namespace 是数组）。两个面各有一个名字，是为了让调用点读得懂自己在调哪套契约；
+  // 路径重复不影响 `verify-console.py` 的比对（它按 METHOD+path 做集合运算）。
+  icebergRenameTable: { method: 'POST', path: '/v1/{prefix}/tables/rename' },
+  // 只摘目录条目、不动仓库里的文件（规格里的 `unregister`，成功码 200 而不是 204）。
+  icebergUnregisterTable: { method: 'POST', path: '/v1/{prefix}/namespaces/{namespace}/tables/{table}/unregister' },
+  icebergListViews: { method: 'GET', path: '/v1/{prefix}/namespaces/{namespace}/views' },
+  icebergLoadView: { method: 'GET', path: '/v1/{prefix}/namespaces/{namespace}/views/{view}' },
+  icebergDropView: { method: 'DELETE', path: '/v1/{prefix}/namespaces/{namespace}/views/{view}' },
+
   // ------------------------------------------------------------------ 管理 API：catalog
   listCatalogs: { method: 'GET', path: '/api/management/v1/catalogs' },
   createCatalog: { method: 'POST', path: '/api/management/v1/catalogs' },

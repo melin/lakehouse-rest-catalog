@@ -2,13 +2,13 @@
   <div class="pc-opt">
     <ResourceState :loading="policy.loading.value" :error="policy.error.value" />
 
-    <!-- 非 Paimon 表与外部表本来进不到这个页签（页签按表格式伸缩），这条分支兜的是
+    <!-- 格式不支持或外部表本来进不到这个页签（页签按表格式伸缩），这条分支兜的是
          「表在别处被改动过」的情况：策略接口仍会回答，页面要说清为什么没有开关 -->
     <el-alert v-if="loaded && !supported" type="info" :closable="false" show-icon class="pc-hint">
       <template #title>{{ unsupportedReason || '这张表不支持存储优化' }}</template>
       <div>
-        三项动作（Compaction / Snapshot Expire / Orphan File Remove）都建立在 Paimon
-        的快照与清单文件之上，另外三种表格式没有这些东西；外部表的位置也不归本服务所有。
+        三项动作（Compaction / Snapshot Expire / Orphan File Remove）只对 Paimon 与 Iceberg 表
+        可用；外部表也不支持——它的位置不归本服务所有，对它做 compaction 等于在别人的目录里写文件。
       </div>
     </el-alert>
 
@@ -28,6 +28,15 @@
                 三项动作各自的「执行间隔」是另一个维度：调度节拍决定「多久看一次」，
                 执行间隔决定「多久真做一次」——快照清理每天一次足够，Compaction 值得跟着
                 小时级的节拍走。
+                <template v-if="isIceberg">
+                  <br /><br />
+                  这是一张 <strong>Iceberg</strong> 表：三项动作分别落到
+                  <code class="pc-mono">rewrite_data_files</code> /
+                  <code class="pc-mono">expire_snapshots</code> /
+                  <code class="pc-mono">remove_orphan_files</code>，参数按 Iceberg 的口径
+                  （快照保留默认 5 天、目标文件 512 MB、孤儿清理默认干跑）。
+                  与同一张 Paimon 表相比，指标读数的含义也不同——它报的是 procedure 实际输出的列。
+                </template>
               </TipNote>
             </div>
             <div class="pc-dim">到期的表会被合并进一个批次，先落库再异步提交到 k8s 执行。</div>
@@ -103,7 +112,7 @@
         </template>
       </SectionTitle>
 
-      <PanelCard v-for="spec in ACTIONS" :key="spec.action">
+      <PanelCard v-for="spec in actions" :key="spec.action">
         <div class="pc-opt-head">
           <el-checkbox
             :model-value="cards[spec.action].enabled"
@@ -224,7 +233,7 @@
       </SectionTitle>
 
       <PanelCard
-        v-for="spec in ACTIONS"
+        v-for="spec in actions"
         :key="`history-${spec.action}`"
         :title="`${spec.label} 历史`"
         :hint="historyHint(spec)"
@@ -299,7 +308,7 @@ import TipNote from '@/components/TipNote.vue'
 import { confirmDanger, notifyError, notifySuccess, useResource } from '@/composables/index.js'
 import { relativeTime } from '@/utils/format.js'
 import {
-  ACTIONS,
+  actionsFor,
   actionsOf,
   itemStatus,
   metricDuration,
@@ -309,13 +318,19 @@ import {
 } from '@/utils/optimization.js'
 
 /**
- * 表详情页的「存储优化」页签。
+ * 表详情页的「存储优化」页签（Paimon 与 Iceberg 共用）。
  *
  * <p>三项动作（Compaction / Snapshot Expire / Orphan File Remove）的参数表单由
- * `@/utils/optimization.js` 的 `ACTIONS` 描述。字段定义放在那里而不是这里，是因为
- * 参数键名必须与服务端的 `OptimizationOptions.KNOWN_KEYS` 逐字一致，而键名写错的表现是
- * 保存时吃一个 400——`scripts/verify-console.py` 会拿那份定义与服务端逐字比对，
- * 因此这里只负责渲染，不再自己列一遍字段。
+ * `@/utils/optimization.js` 按格式描述：Paimon 的 `ACTIONS`、Iceberg 的
+ * `ICEBERG_ACTIONS`，取用一律走 `actionsFor(format)`（见那里的注释）。
+ * 字段定义放在 utils 而不是这里，是因为参数键名必须与服务端的
+ * `OptimizationOptions`（Paimon）与 `IcebergOptimizationOptions`（Iceberg）逐字一致，
+ * 而键名写错的表现是保存时吃一个 400——`scripts/verify-console.py` 会拿那两份定义
+ * 与服务端逐字比对，因此这里只负责渲染，不再自己列一遍字段。
+ *
+ * <p><b>格式从哪儿来。</b>以策略响应里的 `format` 为准（服务端按表的 `table_type` 推的），
+ * `format` prop 只用于响应回来之前渲染第一屏——否则首帧会用错格式的字段把表单建起来，
+ * 等数据到了再重建，用户看得见闪一下。
  *
  * <p><b>「默认设置 / 自定义」不是布尔开关，而是「差异为不为空」。</b>表策略只存用户
  * 显式改过的键（三层合并的最后一层），所以切回默认等于清空差异。保存时也只提交
@@ -330,6 +345,11 @@ const props = defineProps({
   catalog: { type: String, required: true },
   database: { type: String, required: true },
   tableName: { type: String, required: true },
+  /**
+   * 表格式（`PAIMON` / `ICEBERG`），只作首屏兜底：父组件知道自己渲染的是哪一页，
+   * 传进来比等策略响应早一帧；响应一到就以响应里的 `format` 为准。
+   */
+  format: { type: String, default: '' },
 })
 
 /** 每项动作的历史表最多显示多少行。 */
@@ -349,6 +369,17 @@ const supported = computed(() => policy.data.value?.supported !== false)
 const unsupportedReason = computed(() => policy.data.value?.unsupportedReason || '')
 /** 策略对象；未加载时给一份空壳，模板里就不必到处判空。 */
 const policy0 = computed(() => policy.data.value || {})
+
+/**
+ * 生效格式：「响应里的 format → prop → Paimon」。
+ * 三段回落的顺序与服务端 `CatalogFormat.of` 的回落方向一致（认不出就是 Paimon）。
+ */
+const format = computed(() => policy.data.value?.format || props.format || 'PAIMON')
+
+/** 当前格式对应的三项动作定义（字段集与默认值按格式分）。 */
+const actions = computed(() => actionsFor(format.value))
+
+const isIceberg = computed(() => format.value === 'ICEBERG')
 
 // ------------------------------------------------------------------ 总开关
 
@@ -415,7 +446,7 @@ function resetCards() {
   // 允许 data 还没到：`immediate` 的那一次调用就发生在加载之前，先用空壳把三张卡
   // 建出来，模板里就不必到处判 `cards[action]` 存不存在
   const data = policy.data.value
-  for (const spec of ACTIONS) {
+  for (const spec of actions.value) {
     const action = (data?.actions || []).find((item) => item.action === spec.action) || {}
     const effective = action.effective || {}
     const values = {}
@@ -532,7 +563,7 @@ const enabledActions = computed(() => {
 
 async function runNow() {
   const labels = enabledActions.value.map((action) => {
-    const spec = ACTIONS.find((item) => item.action === action)
+    const spec = actions.value.find((item) => item.action === action)
     return spec ? spec.label : action
   })
   const ok = await confirmDanger({

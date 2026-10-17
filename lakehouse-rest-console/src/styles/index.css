@@ -413,6 +413,117 @@ body {
   color: var(--pc-text-dim);
 }
 
+/* 跟在某个控件下方的一行说明（不是 tooltip）：某些选项的后果要**在提交前**看见，
+ * 而不是藏在问号里等人去点。用次要色，与标签同一层级。 */
+.pc-field-note {
+  margin-top: 6px;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--pc-text-dim);
+}
+
+/* `.pc-field-note` 的警示变体：用于「两条路都填了，建议只保留一种」这类
+ * **只提示、不拦截**的情况。不写成 `el-alert`，因为那是整块的视觉重量，
+ * 而这条提示是次要的、可以忽略的——把它做成和「本部署未开启静态凭据」
+ * 一样的重量，会把一句建议读成一道拦截。左侧竖线足够醒目，又不会占据版心。 */
+.pc-field-note-warn {
+  padding-left: 8px;
+  border-left: 2px solid var(--el-color-warning);
+  color: var(--el-color-warning);
+}
+
+/* 表单项内部的 el-alert：el-form-item 只给内容留 0 边距，
+ * 紧跟在一个控件下面的提示条要自己拉开距离，否则贴着上一个输入框。 */
+.pc-form-alert {
+  margin-top: 10px;
+}
+
+/* 只读字段的展示行：与输入框同一行高，让「改成只读」不改变表单的节奏。
+ * 用在一个字段在编辑态不可改、却仍要让人看见它的值时（如 catalog 的表格式）。 */
+.pc-readonly-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: var(--el-component-size-small);
+  font-size: 13px;
+}
+
+/* --- 选项卡片 -------------------------------------------------------------
+ * 用在「选哪个会改变后面一切」的单选上（当前只有 catalog 的表格式）。
+ * 与下拉的区别是**信息量**：每个选项各自有一句说明与一行路径形状，
+ * 要能在选之前读完。下拉里塞不下这两行，只能退化成 tooltip，
+ * 而没人会为了选一个值去点问号。
+ *
+ * 为什么不用 el-radio-group：Element Plus 的单选按钮只承载一行文字，
+ * 要放说明就得覆盖它的内部结构（`el-radio-button__inner`），
+ * 而那串类名不是稳定的公开契约（见本文件开头）。三个 div 反而更耐久。
+ * ---------------------------------------------------------------------- */
+.pc-opt-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+  width: 100%;
+}
+
+.pc-opt {
+  padding: 10px 12px;
+  border: 1px solid var(--pc-border);
+  border-radius: var(--pc-radius);
+  background: var(--pc-surface);
+  cursor: pointer;
+  transition: border-color 0.15s, background-color 0.15s;
+}
+
+.pc-opt:hover {
+  border-color: var(--el-color-primary);
+}
+
+/* 选中态用主色描边 + 极浅底：只靠描边在浅色主题下不够显眼，
+   只靠底色则打印或截图时看不出选的是哪个 */
+.pc-opt.is-on {
+  border-color: var(--el-color-primary);
+  background: rgba(29, 78, 216, 0.05);
+}
+
+.pc-opt-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--pc-text);
+}
+
+/* 单选圆点：未选中是空心，选中是实心。用 CSS 而不是图标，
+   让「选中」这件事在两种主题下都靠边框与底色表达，不依赖图标字体 */
+.pc-opt-dot {
+  width: 9px;
+  height: 9px;
+  border: 1.5px solid var(--pc-text-dim);
+  border-radius: 50%;
+  flex: none;
+}
+
+.pc-opt.is-on .pc-opt-dot {
+  border-color: var(--el-color-primary);
+  background: var(--el-color-primary);
+  box-shadow: inset 0 0 0 1.5px var(--pc-surface);
+}
+
+.pc-opt-desc {
+  margin-top: 5px;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--pc-text-dim);
+}
+
+.pc-opt-meta {
+  margin-top: 5px;
+  font-size: 12px;
+  color: var(--pc-text-dim);
+  overflow-wrap: anywhere;
+}
+
 /* 横向栅格：用在「字段数随所选类型变化」的表单上（授权表单：catalog 级只有
  * 一个「权限」，表级还会多出命名空间与表名）。钉死列数时字段变少会留一片
  * 空白，按最小列宽自动折行则始终填满。
@@ -474,6 +585,147 @@ body {
 
 .pc-repeat-add {
   margin-left: 4px;
+}
+
+/* --- 折叠区（catalog 的「存储高级参数」） ---------------------------------
+ * 只做一件事：把「多数人不用填」的字段收起来，同时保证收起时也能看出
+ * 「这里有东西 / 这里可以不管」。
+ *
+ * 为什么自绘而不用 el-collapse：与 `.pc-opt-grid` 不用 el-radio-group 同一个
+ * 理由——Element Plus 的内部类名不是稳定公开契约，为了 2px 圆角与这套字号
+ * 去覆盖 `.el-collapse-item__header` 的 padding、border、字号，升级会静默失效。
+ * 键盘可达与语义由 `button` + `aria-expanded` 自己保证，代价是这二十行。
+ *
+ * 状态类名只有 `.is-open` 一个，挂在根节点上；模板里配 `v-show` 控制内容，
+ * 因此收起时不销毁子控件——正在输入的焦点不会因为一次误点而丢。 */
+.pc-collapse {
+  width: 100%;
+  margin-top: 4px;
+  border-top: 1px solid var(--pc-border);
+}
+
+.pc-collapse-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 12px 2px;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--pc-text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.pc-collapse-head:hover .pc-collapse-title {
+  color: var(--pc-accent);
+}
+
+/* 焦点环用 inset：按钮通栏，外扩的 ring 会被弹窗边缘裁掉一半 */
+.pc-collapse-head:focus-visible {
+  outline: 2px solid var(--pc-accent);
+  outline-offset: -2px;
+}
+
+/* 三角用 border 画，不用字符：字符的基线随字体变，垂直居中对不齐 */
+.pc-caret {
+  flex: none;
+  width: 0;
+  height: 0;
+  border-top: 4.5px solid transparent;
+  border-bottom: 4.5px solid transparent;
+  border-left: 6px solid var(--pc-text-dim);
+  transition: transform 0.15s;
+}
+
+.pc-collapse.is-open .pc-caret {
+  transform: rotate(90deg);
+}
+
+.pc-collapse-title {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+/* 计数徽标：收起态下「这里有已填的值」的唯一线索。
+ * 未填时用中性色（不制造焦虑），填了才用主色——颜色的变化本身就是信息。 */
+.pc-collapse-badge {
+  padding: 0 6px;
+  font-size: 11.5px;
+  line-height: 18px;
+  white-space: nowrap;
+  color: var(--pc-text-dim);
+  background: var(--pc-surface-2);
+  border: 1px solid var(--pc-border);
+  border-radius: var(--pc-radius);
+}
+
+.pc-collapse-badge.is-filled {
+  color: var(--pc-accent);
+  background: transparent;
+  border-color: var(--pc-accent);
+}
+
+/* 靠右的「全部留空即用默认值」：这一句是折叠能被信任的前提——
+ * 没有它，用户会以为收起区里有必填项而被迫展开。 */
+.pc-collapse-hint {
+  margin-left: auto;
+  font-size: 12.5px;
+  color: var(--pc-text-dim);
+}
+
+.pc-collapse-body {
+  padding: 2px 0 10px;
+}
+
+/* 区内首屏说明：措辞刻意不点名任何字段、不承诺任何行为——
+ * 服务端对其中多数字段只做「接收 + 回显」，前端判断不了哪个真的生效，
+ * 而把判断抄进前端正是 `docs/console.md` §10 反对的做法。 */
+.pc-collapse-note {
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--pc-text-dim);
+  background: var(--pc-surface-2);
+  border: 1px solid var(--pc-border);
+  border-radius: var(--pc-radius);
+}
+
+/* 收起态下把「已填了哪几项」露出来。缩进 15px 与折叠头的三角对齐，
+ * 让人一眼看出它属于上面那一行，而不是表单里的另一项。 */
+.pc-collapse-summary {
+  margin: -4px 0 12px 15px;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--pc-text-dim);
+}
+
+/* 区内分组标题。只在 ≥6 项时出现（见 StorageConfigFields 的 GROUP_THRESHOLD）：
+ * 3 项以内分组只会把本来就短的区块切得更碎。 */
+.pc-grp {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 14px 0 8px;
+}
+
+.pc-grp:first-child {
+  margin-top: 0;
+}
+
+.pc-grp-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  color: var(--pc-text-dim);
+}
+
+.pc-grp-line {
+  flex: 1;
+  height: 1px;
+  background: var(--pc-border);
 }
 
 /* --- 抽屉 / 弹窗里的一行式操作 ------------------------------------------ */
@@ -784,4 +1036,131 @@ body {
 
 .el-dialog__body {
   padding-top: 18px;
+}
+
+/* ---------------------------------------------------------------------------
+ * 目录浏览页的骨架（左列表 + 右对象面板）
+ *
+ * 两个页面共用：BrowseView 走 Paimon 协议面（databases），
+ * IcebergBrowseView 走 Iceberg 协议面（namespaces）。骨架相同、数据源不同，
+ * 因此布局放在这里而不是任一个组件的 scoped 样式里——放进去的那一份
+ * 另一个组件就用不上，只能再抄一遍。
+ *
+ * 只放「两页必须长得一样」的部分；字段编辑器、分区编辑器这些各自独有的
+ * 仍留在组件自己的 scoped 里。
+ * ------------------------------------------------------------------------- */
+
+.pc-browse-body {
+  display: grid;
+  grid-template-columns: 250px 1fr;
+  gap: 14px;
+  align-items: start;
+}
+
+.pc-db-pane {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 190px);
+  overflow: hidden;
+}
+
+.pc-pane-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--pc-border);
+}
+
+.pc-pane-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.pc-pane-tools {
+  padding: 10px 12px 6px;
+}
+
+.pc-db-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 8px 10px;
+}
+
+.pc-db-skeleton {
+  padding: 8px;
+}
+
+.pc-db-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 8px;
+  border-radius: var(--pc-radius);
+  cursor: pointer;
+  font-size: 12.5px;
+}
+
+.pc-db-item:hover {
+  background: var(--pc-surface-2);
+}
+
+.pc-db-item.is-active {
+  background: color-mix(in srgb, var(--el-color-primary) 12%, transparent);
+  color: var(--el-color-primary);
+  font-weight: 600;
+}
+
+.pc-db-icon {
+  font-size: 13px;
+  opacity: 0.8;
+}
+
+.pc-db-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pc-db-drop {
+  opacity: 0;
+  color: var(--el-color-danger);
+  font-size: 13px;
+}
+
+.pc-db-item:hover .pc-db-drop {
+  opacity: 0.75;
+}
+
+.pc-db-drop:hover {
+  opacity: 1;
+}
+
+.pc-obj-pane {
+  min-width: 0;
+}
+
+.pc-tabs {
+  padding: 0 14px;
+}
+
+.pc-tabs .el-tabs__header {
+  margin-bottom: 0;
+}
+
+.pc-obj-body {
+  padding: 6px 14px 14px;
+}
+
+.pc-filter {
+  width: 200px;
+}
+
+.pc-more {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+  font-size: 13px;
 }

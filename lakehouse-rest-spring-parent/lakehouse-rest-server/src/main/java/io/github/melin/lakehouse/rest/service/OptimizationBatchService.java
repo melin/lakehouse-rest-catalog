@@ -14,6 +14,7 @@ import io.github.melin.lakehouse.rest.domain.repo.OptimizationJobRepository;
 import io.github.melin.lakehouse.rest.domain.repo.TableOptimizationRepository;
 import io.github.melin.lakehouse.rest.domain.repo.TableRepository;
 import io.github.melin.lakehouse.rest.service.OptimizationJobService.BatchTable;
+import io.github.melin.lakehouse.rest.support.CatalogFormat;
 import io.github.melin.lakehouse.rest.support.OptimizationOptions;
 import io.github.melin.lakehouse.rest.support.OptimizationOptions.Action;
 import io.github.melin.lakehouse.rest.support.OptimizationStatus.Item;
@@ -123,6 +124,9 @@ public class OptimizationBatchService {
             return false;
         }
         Map<String, String> catalogProperties = catalog.getProperties();
+        // 一个 catalog 只有一种格式（catalogFormat 创建后不可变），因此整组共用一份，
+        // 不必逐表判断——逐表判断反而会掩盖「同一 catalog 里混了两种格式的表」这种脏数据。
+        CatalogFormat format = CatalogFormat.of(catalog.getCatalogFormat());
         List<String> tableIds = policies.stream().map(TableOptimizationEntity::getTableId).toList();
         Map<String, TableEntity> tables = new HashMap<>();
         for (TableEntity table : tableRepository.findAllById(tableIds)) {
@@ -147,12 +151,12 @@ public class OptimizationBatchService {
         for (TableOptimizationEntity policy : policies) {
             List<Action> actions = TableOptimizationService.enabledActions(policy);
             enabled.put(policy.getId(), actions);
-            Map<String, Map<String, String>> resolved = configResolver.resolve(catalogProperties,
+            Map<String, Map<String, String>> resolved = configResolver.resolve(format, catalogProperties,
                     OptimizationConfigResolver.tableConfigs(policy));
             effective.put(policy.getId(), resolved);
             for (Action action : actions) {
                 windowMillis = Math.max(windowMillis,
-                        OptimizationOptions.interval(action, resolved.get(action.wire())).toMillis());
+                        OptimizationOptions.interval(format, action, resolved.get(action.wire())).toMillis());
             }
         }
         // 窗口至少留 1 小时：全部动作都「刚跑过」时窗口为 0 会把历史全滤掉，
@@ -167,6 +171,14 @@ public class OptimizationBatchService {
                 log.debug("skip optimization policy {}: table {} no longer exists", policy.getId(), policy.getTableId());
                 continue;
             }
+            // 策略是写入时校验的，但表可以在之后被改成外部表（Iceberg 的 register 就是这条路），
+            // 也可以因为脏数据落在另一种格式上。这里再过一道：进批之后再被服务端拒绝，
+            // 结果是整批失败，代价比跳过一次调度大得多。
+            if (!TableOptimizationService.isOptimizable(table)) {
+                log.debug("skip table {}: it is not optimizable any more (type={}, external={})",
+                        table.getId(), table.getTableType(), table.isExternal());
+                continue;
+            }
             if (busy.contains(policy.getTableId())) {
                 log.debug("skip table {}: an optimization item is still running", policy.getTableId());
                 continue;
@@ -174,7 +186,8 @@ public class OptimizationBatchService {
             List<Action> dueActions = new ArrayList<>();
             for (Action action : enabled.getOrDefault(policy.getId(), List.of())) {
                 long last = lastRuns.getOrDefault(policy.getTableId(), Map.of()).getOrDefault(action, 0L);
-                long interval = OptimizationOptions.interval(action, effective.get(policy.getId()).get(action.wire()))
+                long interval = OptimizationOptions
+                        .interval(format, action, effective.get(policy.getId()).get(action.wire()))
                         .toMillis();
                 if (last == 0L || now - last >= interval) {
                     dueActions.add(action);

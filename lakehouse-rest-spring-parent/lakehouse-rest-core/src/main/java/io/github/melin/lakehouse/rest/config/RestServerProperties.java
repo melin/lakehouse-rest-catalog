@@ -38,6 +38,20 @@ public class RestServerProperties {
      */
     private boolean autoCreateCatalog = true;
 
+    /**
+     * 自动登记（以及建 catalog 时未指定格式）create 出来的 catalog 用哪种表格式。
+     *
+     * <p>不设这个开关会有一个很难查的故障：一个 Iceberg 客户端敲了一个尚未登记的
+     * prefix，服务端按默认的 {@code PAIMON} 自动建出一个 catalog，于是该客户端
+     * **此后每一次调用都是 404**，而错误信息是「Unknown catalog prefix」——
+     * 它会以为自己的 prefix 写错了，真正的原因却是格式不对。
+     *
+     * <p>这是「按部署选择自动登记建哪种格式」的那一半对策；另一半是「格式不匹配时
+     * 报明确的错」（见 {@code CatalogService#resolveForFormat}），两者都要有：
+     * 后者覆盖「catalog 已存在但格式不对」，前者覆盖「两边都没说清」。
+     */
+    private String defaultCatalogFormat = "PAIMON";
+
     /** 表路径模板，可用占位符 {@code {warehouse}}、{@code {database}}、{@code {table}}。 */
     private String pathTemplate = "{warehouse}/{database}.db/{table}";
 
@@ -435,6 +449,21 @@ public class RestServerProperties {
     public static class InitialCatalog {
         private String prefix;
         private String warehouse;
+
+        /**
+         * 预置 catalog 的表格式（{@code PAIMON} / {@code ICEBERG}），留空则用
+         * {@code paimon.rest.default-catalog-format}。
+         *
+         * <p>为什么值得单独一个开关：预置出来的是本地开发、演示环境里那把「默认钥匙」，
+         * 而**格式决定了用它敲哪一套客户端**。没有这个开关时，想试 Iceberg 就得先手改
+         * 启动配置里的 prefix、或者干脆手写一条管理 API 请求——前者会把 Paimon 的
+         * 开发环境顶掉，后者要先把服务端跑起来。
+         *
+         * <p>只对**新建**生效：已存在的 catalog 不会被改（格式不可变，见
+         * {@code CatalogFormat}），此时若配置与库中不一致会留一条 warn。
+         */
+        private String format;
+
         private List<DatabaseSeed> databases = new ArrayList<>();
     }
 

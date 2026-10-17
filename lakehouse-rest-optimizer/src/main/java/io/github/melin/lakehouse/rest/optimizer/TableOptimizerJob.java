@@ -2,8 +2,8 @@ package io.github.melin.lakehouse.rest.optimizer;
 
 import io.github.melin.lakehouse.rest.optimizer.OptimizationApiClient.Plan;
 import io.github.melin.lakehouse.rest.optimizer.OptimizationApiClient.Table;
-import io.github.melin.lakehouse.rest.optimizer.PaimonProcedures.Step;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -43,6 +43,16 @@ public final class TableOptimizerJob {
     private static final String PAIMON_EXTENSION =
             "org.apache.paimon.spark.extensions.PaimonSparkSessionExtensions";
 
+    /**
+     * Iceberg 的扩展。{@code CALL} 在 Iceberg 里由这个扩展注册成 procedure，
+     * 只把 iceberg-spark-runtime 放进类路径是不够的。
+     */
+    private static final String ICEBERG_EXTENSION =
+            "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions";
+
+    /** 清单里的格式取值，与服务端 {@code CatalogFormat} 的 wire 名逐字一致。 */
+    private static final String ICEBERG = "ICEBERG";
+
     private TableOptimizerJob() {
     }
 
@@ -72,8 +82,8 @@ public final class TableOptimizerJob {
                 log.error("cannot fetch the plan of batch {}: {}", options.jobId(), exception.getMessage());
                 return 1;
             }
-            log.info("batch {}: catalog={}, actions={}, tables={}",
-                    plan.jobId(), plan.catalog(), plan.actions(), plan.tables().size());
+            log.info("batch {}: catalog={}, format={}, actions={}, tables={}",
+                    plan.jobId(), plan.catalog(), plan.format(), plan.actions(), plan.tables().size());
 
             SparkSession session = null;
             int failed = 0;
@@ -86,7 +96,7 @@ public final class TableOptimizerJob {
                 }
                 try {
                     if (session == null) {
-                        session = spark(plan.catalog(), options);
+                        session = spark(plan, options);
                     }
                     execute(session, client, plan, table);
                 } catch (RuntimeException exception) {
@@ -105,11 +115,18 @@ public final class TableOptimizerJob {
 
     // ------------------------------------------------------------------ 单表执行
 
+    /** 一步：动作 wire 名 + 语句。两种格式的步骤在调度上完全同构，只有语句不同。 */
+    private record Step(String action, String statement) {
+    }
+
     /** 按固定顺序执行该表的动作，采集指标，最后上报一次结论。 */
     private static void execute(SparkSession session, OptimizationApiClient client, Plan plan, Table table) {
         String within = PaimonProcedures.withinCatalog(plan.catalog(), table.table());
         List<String> actions = PaimonProcedures.normalizeActions(plan.actions());
-        List<Step> steps = PaimonProcedures.steps(plan.catalog(), within, actions, table.options());
+        // 窗口基准只取一次：三步共用同一个「现在」，否则跨步骤的几分钟会让
+        // expire 与 orphan 的窗口起点相差一截（批内可复现，批间不可比）。
+        Instant now = Instant.now();
+        List<Step> steps = steps(plan, within, actions, table.options(), now);
         if (steps.isEmpty()) {
             client.report(plan.jobId(), table.itemId(), "SKIPPED",
                     Map.of("reason", "no enabled action for this table"), null);
@@ -119,7 +136,9 @@ public final class TableOptimizerJob {
         boolean changed = false;
         for (Step step : steps) {
             long started = System.currentTimeMillis();
-            StepResult result = runStep(session, within, step);
+            StepResult result = isIceberg(plan)
+                    ? runIcebergStep(session, step)
+                    : runPaimonStep(session, within, step);
             result.metrics().forEach((key, value) -> metrics.put(step.action() + "." + key, value));
             metrics.put(step.action() + ".duration-ms", Long.toString(System.currentTimeMillis() - started));
             log.info("table {} {} done in {} ms: {}", within, step.action(),
@@ -132,8 +151,35 @@ public final class TableOptimizerJob {
                 metrics, changed ? null : "nothing to do: all steps reported no change");
     }
 
-    /** 执行一步，把 procedure 的输出行转成指标。{@code step.action()} 是动作的 wire 名。 */
-    private static StepResult runStep(SparkSession session, String table, Step step) {
+    /**
+     * 该表要执行的步骤，按格式翻译。
+     *
+     * <p>两种格式的动作顺序与上报结构完全一样（{@code compact → expire → orphan}、
+     * 指标带动作前缀），因此只在「语句怎么生成」这一处分派——把执行流程也拆成两套，
+     * 只会让「跳过 / 部分成功 / 耗时」这些共同语义各写一遍。
+     */
+    private static List<Step> steps(Plan plan, String within, List<String> actions,
+                                    Map<String, Map<String, String>> options, Instant now) {
+        List<Step> steps = new ArrayList<>();
+        if (isIceberg(plan)) {
+            for (IcebergProcedures.Step step : IcebergProcedures.steps(plan.catalog(), within, actions, options, now)) {
+                steps.add(new Step(step.action(), step.statement()));
+            }
+        } else {
+            for (PaimonProcedures.Step step : PaimonProcedures.steps(plan.catalog(), within, actions, options)) {
+                steps.add(new Step(step.action(), step.statement()));
+            }
+        }
+        return steps;
+    }
+
+    /** 清单里的格式是不是 Iceberg。缺字段（老服务端）按 Paimon 处理，那是本特性引入前的唯一形状。 */
+    private static boolean isIceberg(Plan plan) {
+        return ICEBERG.equalsIgnoreCase(plan.format());
+    }
+
+    /** 执行一步 Paimon procedure，把输出行转成指标。{@code step.action()} 是动作的 wire 名。 */
+    private static StepResult runPaimonStep(SparkSession session, String table, Step step) {
         Map<String, String> metrics = new LinkedHashMap<>();
         switch (step.action()) {
             case PaimonProcedures.COMPACT -> {
@@ -161,6 +207,55 @@ public final class TableOptimizerJob {
                 metrics.put("released-size", humanSize(bytes));
                 // 干跑模式下也报 SUCCESS：用户按下的就是「预览」，预览出结果就是本次的目的。
                 // dry-run 与否由策略参数决定，这里不替它判断。
+                return new StepResult(files > 0 || dryRun(step), metrics);
+            }
+            default -> throw new IllegalArgumentException("unsupported action: " + step.action());
+        }
+    }
+
+    /**
+     * 执行一步 Iceberg procedure。
+     *
+     * <p><b>指标口径与 Paimon 侧不同，这是数据本身决定的。</b>
+     * {@code rewrite_data_files} 不给压缩前后的文件数（它只报重写/新增了多少），
+     * {@code expire_snapshots} 不给「删了几个快照」（它只报删了多少数据与清单文件）。
+     * 因此这里报的是 procedure 真正输出的列，控制台的指标展示按动作兼容两套键；
+     * 硬把 Iceberg 的读数翻译成 Paimon 的键（例如把 deleted_data_files_count
+     * 当成 deleted-snapshots）会让同一个键在两种表上含义不同，那是更坏的选择。
+     */
+    private static StepResult runIcebergStep(SparkSession session, Step step) {
+        Map<String, String> metrics = new LinkedHashMap<>();
+        switch (step.action()) {
+            case IcebergProcedures.COMPACT -> {
+                Row row = session.sql(step.statement()).head();
+                long rewritten = asLong(row, "rewritten_data_files_count");
+                long added = asLong(row, "added_data_files_count");
+                long bytes = asLong(row, "rewritten_bytes_count");
+                metrics.put("rewritten-files", Long.toString(rewritten));
+                metrics.put("added-files", Long.toString(added));
+                metrics.put("rewritten-size", humanSize(bytes));
+                return new StepResult(rewritten > 0, metrics);
+            }
+            case IcebergProcedures.EXPIRE -> {
+                Row row = session.sql(step.statement()).head();
+                long data = asLong(row, "deleted_data_files_count");
+                long manifests = asLong(row, "deleted_manifest_files_count");
+                long manifestLists = asLong(row, "deleted_manifest_lists_count");
+                long statistics = asLong(row, "deleted_statistics_files_count");
+                metrics.put("deleted-data-files", Long.toString(data));
+                metrics.put("deleted-manifest-files", Long.toString(manifests));
+                metrics.put("deleted-manifest-lists", Long.toString(manifestLists));
+                if (statistics > 0) {
+                    metrics.put("deleted-statistics-files", Long.toString(statistics));
+                }
+                return new StepResult(data + manifests + manifestLists + statistics > 0, metrics);
+            }
+            case IcebergProcedures.ORPHAN -> {
+                // remove_orphan_files 的输出是「一行一个孤儿文件路径」，没有汇总列。
+                // count() 会真的把 procedure 跑完（干跑时就是把候选列全），这也是我们要的：
+                // 干跑的产出就是这份清单的数量。
+                long files = session.sql(step.statement()).count();
+                metrics.put("deleted-files", Long.toString(files));
                 return new StepResult(files > 0 || dryRun(step), metrics);
             }
             default -> throw new IllegalArgumentException("unsupported action: " + step.action());
@@ -221,25 +316,52 @@ public final class TableOptimizerJob {
      * 任务自己没有任何密钥——端点和凭据都由服务端下发，这正是 REST catalog 存在的意义。
      * 对本地文件系统仓库无害（服务端仍回一份自包含令牌，本地 FileIO 不读它）。
      */
-    private static SparkSession spark(String catalog, OptimizerOptions options) {
+    private static SparkSession spark(Plan plan, OptimizerOptions options) {
+        String catalog = plan.catalog();
         org.apache.spark.sql.SparkSession.Builder builder = SparkSession.builder()
                 .appName("lakehouse-rest-optimizer-" + options.jobId())
-                .config("spark.sql.extensions", PAIMON_EXTENSION)
-                .config("spark.sql.catalog." + catalog, "org.apache.paimon.spark.SparkCatalog")
-                .config("spark.sql.catalog." + catalog + ".metastore", "rest")
-                .config("spark.sql.catalog." + catalog + ".uri", options.catalogUrl())
-                .config("spark.sql.catalog." + catalog + ".warehouse", catalog)
-                .config("spark.sql.catalog." + catalog + ".data-token.enabled", "true");
-        if (options.catalogToken() != null) {
-            builder.config("spark.sql.catalog." + catalog + ".token.provider", "bear")
-                    .config("spark.sql.catalog." + catalog + ".token", options.catalogToken());
+                // Iceberg 的 older_than 是 absolute timestamp；Paimon 侧用的是相对时长，
+                // 这个设置对它没有影响。两边都钉成 UTC，窗口不会随集群默认时区平移。
+                .config("spark.sql.session.timeZone", "UTC");
+        if (isIceberg(plan)) {
+            builder.config("spark.sql.extensions", ICEBERG_EXTENSION)
+                    .config("spark.sql.catalog." + catalog, "org.apache.iceberg.spark.SparkCatalog")
+                    .config("spark.sql.catalog." + catalog + ".type", "rest")
+                    .config("spark.sql.catalog." + catalog + ".uri", options.catalogUrl())
+                    // warehouse 填 prefix（catalog 名），与服务端 /v1/config 的约定一致
+                    .config("spark.sql.catalog." + catalog + ".warehouse", catalog)
+                    // 批内同一张表会被反复读（procedure 会重新加载元数据），缓存反而会读到旧快照
+                    .config("spark.sql.catalog." + catalog + ".cache-enabled", "false")
+                    // 服务端的「不问不给」：带这个头才会在响应里回短期凭据。
+                    // 无对象存储的部署上它只是一个没有被消费的响应字段。
+                    .config("spark.sql.catalog." + catalog
+                            + ".header.X-Iceberg-Access-Delegation", "vended-credentials");
+            if (options.catalogToken() != null) {
+                builder.config("spark.sql.catalog." + catalog + ".token", options.catalogToken())
+                        // 显式声明认证方式：只给 token 时客户端会「猜」成 oauth2 并打一条警告
+                        .config("spark.sql.catalog." + catalog + ".rest.auth.type", "oauth2");
+            } else {
+                log.info("no catalog token provided: connecting to {} without data plane credentials,"
+                        + " which only works on deployments with authentication disabled", options.catalogUrl());
+            }
         } else {
-            log.info("no catalog token provided: connecting to {} without data plane credentials,"
-                    + " which only works on deployments with authentication disabled", options.catalogUrl());
+            builder.config("spark.sql.extensions", PAIMON_EXTENSION)
+                    .config("spark.sql.catalog." + catalog, "org.apache.paimon.spark.SparkCatalog")
+                    .config("spark.sql.catalog." + catalog + ".metastore", "rest")
+                    .config("spark.sql.catalog." + catalog + ".uri", options.catalogUrl())
+                    .config("spark.sql.catalog." + catalog + ".warehouse", catalog)
+                    .config("spark.sql.catalog." + catalog + ".data-token.enabled", "true");
+            if (options.catalogToken() != null) {
+                builder.config("spark.sql.catalog." + catalog + ".token.provider", "bear")
+                        .config("spark.sql.catalog." + catalog + ".token", options.catalogToken());
+            } else {
+                log.info("no catalog token provided: connecting to {} without data plane credentials,"
+                        + " which only works on deployments with authentication disabled", options.catalogUrl());
+            }
         }
         SparkSession session = builder.getOrCreate();
         session.sparkContext().setLogLevel("WARN");
-        log.info("spark session ready for catalog {}", catalog);
+        log.info("spark session ready for catalog {} ({})", catalog, plan.format());
         return session;
     }
 

@@ -6,6 +6,7 @@ import io.github.melin.lakehouse.rest.dto.ManagementEnums.CatalogType;
 import io.github.melin.lakehouse.rest.dto.ManagementEnums.GrantType;
 import io.github.melin.lakehouse.rest.dto.ManagementEnums.StorageType;
 import io.github.melin.lakehouse.rest.dto.Privilege;
+import io.github.melin.lakehouse.rest.support.CatalogFormat;
 import io.github.melin.lakehouse.rest.support.CredentialCipher;
 import io.github.melin.lakehouse.rest.support.CredentialManagerType;
 import io.github.melin.lakehouse.rest.support.FileIoType;
@@ -56,6 +57,7 @@ public class ConsoleMetaService {
                 fileIoType.wireName(),
                 properties.getDefaultPrefix(),
                 properties.getDefaultWarehouse(),
+                CatalogFormat.of(properties.getDefaultCatalogFormat()).wireName(),
                 properties.isAutoCreateCatalog(),
                 properties.getDefaultPageSize(),
                 properties.getMaxPageSize(),
@@ -102,6 +104,7 @@ public class ConsoleMetaService {
 
         return new ConsoleDtos.Enums(
                 names(CatalogType.values()),
+                names(CatalogFormat.values()),
                 names(StorageType.values()),
                 supported,
                 cipher.available(),

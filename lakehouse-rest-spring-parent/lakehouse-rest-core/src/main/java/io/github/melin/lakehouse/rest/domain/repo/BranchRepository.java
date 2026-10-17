@@ -12,4 +12,7 @@ public interface BranchRepository extends JpaRepository<BranchEntity, String> {
     boolean existsByTableIdAndName(String tableId, String name);
 
     List<BranchEntity> findAllByTableIdOrderByNameAsc(String tableId);
+
+    /** 删掉一张表的全部分支行。Iceberg 侧删表时用（分支是 {@code refs} 的派生投影）。 */
+    long deleteByTableId(String tableId);
 }

@@ -46,24 +46,27 @@ paimon-rest/
 ├── Dockerfile               服务端镜像（单阶段：装预构建的 jar，见第 8 节）
 ├── pom.xml                  根聚合 POM：lakehouse-rest-parent（无父 POM，见「模块划分的取舍」）
 ├── lakehouse-rest-spring-parent/     服务端世界的父 POM（继承 Spring Boot 父 POM）
-│   ├── pom.xml                       只有 POM、没有源码；四个服务端模块嵌在它下面
-│   ├── lakehouse-rest-core/          与表格式无关的地基：鉴权、授权、JPA 实体与仓储、共享 DTO 词表
+│   ├── pom.xml                       只有 POM、没有源码；五个服务端模块嵌在它下面
+│   ├── lakehouse-rest-core/          与表格式无关的地基：鉴权、授权、JPA 实体与仓储、协议分派、共享 DTO 词表
 │   ├── lakehouse-rest-storage/       数据目录文件访问与 FileIO 构造（唯一允许依赖 paimon-core 的非协议模块）
-│   ├── lakehouse-rest-protocol-paimon/  LakeHouse Rest Catalog 协议面：Catalog API 全部 60 个端点
+│   ├── lakehouse-rest-protocol-paimon/  Paimon 协议面：Catalog API 全部 60 个端点
+│   ├── lakehouse-rest-protocol-iceberg/ Iceberg 协议面：35 个端点里的一期 26 个 + `iceberg-core` 元数据代数
 │   └── lakehouse-rest-server/        可执行服务端：Management API + 控制台 API + 优化调度，最终 jar 在这里
 ├── lakehouse-rest-console/     Web 管理控制台（Vue 3 + Vite，产物构建进服务端，见第 9 节）
 ├── lakehouse-rest-spark/       Spark SQL 语法扩展：用 SQL 管理主体、角色与授权
 ├── lakehouse-rest-optimizer/   表存储优化任务（Spark，由服务端投到 k8s 运行）
 ├── deploy/kubernetes/       Kubernetes 部署清单（kustomize 组装，见其目录下的 README）
-├── spec/                    OpenAPI 规格副本
+├── spec/                    OpenAPI 规格副本（两套协议面各一份）
 ├── sql/                     MySQL 建表语句（由实体生成，见第 7 节「代码生成」）
 ├── docs/                    设计文档、契约基线与 SQL 语法参考
 └── scripts/                 验收、代码生成、文档校验与镜像构建脚本
 ```
 
-Iceberg REST 协议面落地时，按同样的方式嵌成 `lakehouse-rest-spring-parent/` 下的第五个模块
-（`lakehouse-rest-protocol-iceberg`）即可——它同样属于服务端世界，继承 `spring-parent`
-而不是根 POM。enforcer 的规则已经为它写好，见 [`maven-module-design.md`](docs/maven-module-design.md)。
+**两个协议面在同一个进程、同一个 `/v1` 基址、同一套元数据库上服务。**
+一个 catalog 只有一种格式（`paimon_catalog.catalog_format`，创建时定下、不可变），
+因此「路径 → `{prefix}` → catalog → 格式 → 协议处理链」这条链上唯一需要判断的地方
+就是 core 的协议分派；两个面本身互不认识，也不互相依赖（见第 3 节与
+[`iceberg-rest-catalog-design.md`](docs/iceberg-rest-catalog-design.md)）。
 
 **模块划分的取舍：两个父 POM ＝ 两个依赖世界。**
 
@@ -72,14 +75,14 @@ Iceberg REST 协议面落地时，按同样的方式嵌成 `lakehouse-rest-sprin
 Spark 自带的 Jackson 2.15.2 会被 Boot 的 `dependencyManagement` 抬到 2.21.x，
 netty 与 jersey 也会被替换，导致 Spark 侧出现难以定位的版本冲突。
 
-服务端那四个模块则挂在 **`lakehouse-rest-spring-parent`** 下，由它继承 Spring Boot 父 POM，
+服务端那五个模块则挂在 **`lakehouse-rest-spring-parent`** 下，由它继承 Spring Boot 父 POM，
 并统一声明 webmvc / data-jpa / validation / lombok 这几个共用 starter。
 两个依赖世界因此互不污染：服务端是 Spring Boot 4 / Jackson 3 / Hibernate 7，
 Spark 侧是 Scala 2.12 / Spark 3.5 / Jackson 2 / ANTLR 4.9.3。
 
 服务端模块**嵌在** `lakehouse-rest-spring-parent/` 目录之下，因此各子模块的 `<parent>`
 **不需要写 `<relativePath>`**——默认的 `../pom.xml` 恰好就是那份父 POM。
-这一点是嵌套布局立下的功劳：若把四个模块放成仓库根下的平级兄弟目录，就必须显式写
+这一点是嵌套布局立下的功劳：若把五个模块放成仓库根下的平级兄弟目录，就必须显式写
 `<relativePath>../lakehouse-rest-spring-parent/pom.xml</relativePath>`，
 因为默认值会解析到根聚合器，那里没有这个 artifactId，Maven 便回退去远程仓库找，
 离线构建会直接失败。**不要把 Boot 提为根聚合器的父 POM。**
@@ -89,21 +92,25 @@ Spark 侧是 Scala 2.12 / Spark 3.5 / Jackson 2 / ANTLR 4.9.3。
 是构建期断言。完整依赖图与规则细节见
 [`maven-module-design.md`](docs/maven-module-design.md)。
 
-Maven 坐标与包名：`groupId` 为 `io.github.melin`，八个 artifact 是
+Maven 坐标与包名：`groupId` 为 `io.github.melin`，九个 artifact 是
 `lakehouse-rest-parent`（聚合）、`lakehouse-rest-spring-parent`（服务端父 POM）、
 `lakehouse-rest-core`、`lakehouse-rest-storage`、`lakehouse-rest-protocol-paimon`、
-`lakehouse-rest-server`、`lakehouse-rest-spark`、`lakehouse-rest-optimizer`。
+`lakehouse-rest-protocol-iceberg`、`lakehouse-rest-server`、`lakehouse-rest-spark`、
+`lakehouse-rest-optimizer`。
 包前缀为 `io.github.melin.lakehouse.rest`（三轮改定：`io.github.melin.paimonrest` →
 `io.github.melin.paimon.rest` → 本名 → 各协议面再加一层格式子包，主前缀与 artifactId 的
 `lakehouse` 对齐），Spark 模块在其下再用 `.spark` 子包（如
 `io.github.melin.lakehouse.rest.spark.ManagementSparkExtensions`）。
-服务端的四个模块里，core / storage / server 共用一个包树
+服务端的 core / storage / server 共用一个包树
 （`io.github.melin.lakehouse.rest.{web,service,domain,dto,support,config}`），
 好处是搬类不需要改任何 `import`、也不需要动 `@ComponentScan`；
 代价是包名不再告诉你类在哪个模块，只能看它在哪个目录。
 **协议面例外**：Paimon 面的类独占 `io.github.melin.lakehouse.rest.paimon.{web,service,dto,support}`
-子树，与 core 的 `rest.{dto,service,support,web}` 平级而不重合——协议面注定有两个且互不依赖，
-将来 Iceberg 面按同一形状铺 `rest.iceberg.*` 即可，删掉或新增一整面不会波及另一面。
+子树、Iceberg 面同理独占 `…rest.iceberg.*`，两者与 core 的 `rest.{dto,service,support,web}`
+平级而不重合——协议面注定有两个且互不依赖，删掉或新增一整面不会波及另一面。
+因此**同一个前缀不能出现在两个面里**：两套规格里唯一真冲突的两条
+（`POST /v1/{prefix}/tables/rename`、`…/views/rename`）上移到 core 的
+`CatalogRenameController`，否则 Spring 会以 `Ambiguous mapping` 拒绝启动。
 
 **这一处改名会打到用户，因此留了兼容壳。** `spark.sql.extensions` 填的是全限定类名，
 包名一改，既有部署的 Spark 会话会在初始化时报 `ClassNotFoundException`——错误离「升级了
@@ -119,24 +126,25 @@ k8s 资源名与数据库表名的 `paimon-` / `paimon_` 前缀同样**故意不
 它们不是产品名，是历史标识，改了要动存量部署与存量数据。见
 [`maven-module-design.md`](docs/maven-module-design.md) §8.6。
 
-`docs/` 里十六份文档的分工：
+`docs/` 里十七份文档的分工：
 
 | 文档 | 读它的时机 |
 | --- | --- |
-| [`catalog-api-endpoints.md`](docs/catalog-api-endpoints.md) | 要查 Catalog API 有哪些端点——60 个端点按资源分组，含基址、前缀与授权映射说明 |
+| [`catalog-api-endpoints.md`](docs/catalog-api-endpoints.md) | 要查 Catalog API 有哪些端点——Paimon 的 60 个与 Iceberg 的 26 个按资源分组，含基址、前缀与授权映射说明 |
 | [`management-api-overview.md`](docs/management-api-overview.md) | 要读 Management API——33 个 operation 落在哪几个控制器上、几处容易读错的语义 |
 | [`management-api-contract.md`](docs/management-api-contract.md) | 要查管理 API 的端点、字段、权限枚举——由规格生成，逐字对照 |
 | [`data-model.md`](docs/data-model.md) | 要改实体或看表结构——22 张表的划分、摘要列与审计列的设计理由、实体与仓储分在哪两个模块、`paimon_` 前缀为什么与表格式无关 |
 | [`spark-sql-reference.md`](docs/spark-sql-reference.md) | 要用 SQL 管理主体与授权——语句级参考，含完整示例 |
 | [`spark-sql-extension.md`](docs/spark-sql-extension.md) | 要改这个 Spark 扩展——语法扩展的做法、两个必须知道的约束、测试分层 |
 | [`spark-paimon-rest-e2e.md`](docs/spark-paimon-rest-e2e.md) | 要让 Spark 通过本服务端建 Paimon 表——连接配置、可执行的 SQL、报错对照表 |
+| [`spark-iceberg-rest-e2e.md`](docs/spark-iceberg-rest-e2e.md) | 要让 Spark 通过本服务端建 Iceberg 表——`spark.sql.catalog.*` 配置、可执行的 SQL、与 Paimon 那套的差异对照 |
 | [`authorization.md`](docs/authorization.md) | 要理解权限怎么判——实体链、授权映射、失败关闭的取舍 |
 | [`console.md`](docs/console.md) | 要改 Web 控制台或排查「页面空列表」——前端分层、端点契约表、机械校验 |
 | [`console-table-detail.md`](docs/console-table-detail.md) | 要改表详情页——页签随表格式（Paimon / Format / Object / Lance）伸缩的数据来源、为什么授权不在这页、破坏性操作与边界 |
 | [`console-catalog-detail.md`](docs/console-catalog-detail.md) | 要改 Catalog 详情页或仓库文件浏览——三个页签、下钻与路径防护、只读的取舍、「配置」页的默认表属性（`table-default.*`）编辑与并发冲突处理；建表表单里的默认参数预填与为什么不给 Lance 表建表入口 |
 | [`console-auth.md`](docs/console-auth.md) | 要给浏览器访问控制台配登录——三种登录方式、两个开关的边界、令牌与认证链、安全考量 |
 | [`polaris-capabilities-and-design.md`](docs/polaris-capabilities-and-design.md) | 要对比 Polaris 或看整体设计——核心能力提取、映射关系、已知缺口 |
-| [`iceberg-rest-catalog-design.md`](docs/iceberg-rest-catalog-design.md) | 要评估「同一份元数据同时服务 Paimon 与 Iceberg」——双协议方案：创建时区分格式、22 张表复用只加 9 列、路径冲突与错误模型、能力边界与效果图（`outputs/iceberg-rest-catalog/mockup.html`） |
+| [`iceberg-rest-catalog-design.md`](docs/iceberg-rest-catalog-design.md) | 要看「同一份元数据同时服务 Paimon 与 Iceberg」怎么做的——双协议方案：创建时区分格式、22 张表复用只加 9 列、路径冲突与错误模型、能力边界与效果图（`outputs/iceberg-rest-catalog/mockup.html`），以及**已落地的实测记录与与方案不一致的几处**（§11） |
 | [`maven-module-design.md`](docs/maven-module-design.md) | 要改模块布局或 artifact 名——`lakehouse-rest-*` 命名定案、两个父 POM / 两个依赖世界、三条用 enforcer 守住的依赖不变量、改名清单与「哪四处故意不改」（§8.6），以及**已落地**的实测记录（§8，含与设计不一致的六处及原因） |
 | [`table-optimization.md`](docs/table-optimization.md) | 要改表存储优化或排查优化任务——三个动作的语义、批次与并发两道闸门、k8s 提交与状态跟踪、控制台两处页面 |
 
@@ -168,13 +176,13 @@ mysql -h 127.0.0.1 -u root -p < sql/schema-mysql.sql
 ### 2.2 构建与运行
 
 ```bash
-# 全量构建（8 个模块；用 install 而不是 package，因为模块之间有内部依赖）
+# 全量构建（9 个模块；用 install 而不是 package，因为模块之间有内部依赖）
 JAVA_HOME=/path/to/jdk-21 mvn -o -DskipTests install
 
-# 只要服务端可执行 jar：-am 会一并构建它依赖的 core / storage / protocol-paimon
+# 只要服务端可执行 jar：-am 会一并构建它依赖的 core / storage / 两个协议面
 JAVA_HOME=/path/to/jdk-21 mvn -o -DskipTests -pl :lakehouse-rest-server -am clean package
 
-# 运行全部测试（服务端 317 + Spark 96，共 413 个用例；Spark 侧有 1 个示例用例
+# 运行全部测试（服务端 332 + Spark 96，共 428 个用例；Spark 侧有 1 个示例用例
 # 在本地缺 spark.sql.extensions 时会失败，见第 7 节）
 JAVA_HOME=/path/to/jdk-21 mvn test
 
@@ -274,13 +282,26 @@ mvn -pl :lakehouse-rest-server spring-boot:run -Dspring-boot.run.profiles=postgr
 ## 3. 架构
 
 ```
-lakehouse-rest-spring-parent/lakehouse-rest-server/
-  web/          控制器层：Catalog API 按规格路径一一对应；Management API 另设 4 个控制器
-  service/      业务层：目录解析、schema 变更、快照与版本、分区分支标签、RBAC 判定
-  domain/       JPA 实体与仓储：元数据与授权关系持久化
-  dto/          请求/响应模型：与两份 OpenAPI 规格的 schema 一一对应
-  support/      公共设施：JSON 编解码、schema 字段树、分页、路径、错误
-  config/       服务端配置、Bearer 鉴权、授权拦截器、启动初始化
+lakehouse-rest-spring-parent/
+  lakehouse-rest-core/          与格式无关的地基
+    web/          两套协议共用的端点：/v1/config、/v1/oauth/tokens、两条同路径 rename
+    service/      协议分派（CatalogFormat / CatalogProtocol / CatalogProtocols）、错误形状判定、RBAC 判定
+    domain/       JPA 实体与仓储（22 张表）
+    dto/          两套规格共用的 DTO 词表、管理 API 与远程控制台契约
+    support/      公共设施：JSON 编解码、schema 字段树、分页、路径、错误、存储配置
+    config/       服务端配置、Bearer 鉴权、授权拦截器、启动初始化
+  lakehouse-rest-storage/       数据目录文件访问与 FileIO 构造（路径 + 文本的窄契约）
+  lakehouse-rest-protocol-paimon/   Paimon 面：60 个端点、Paimon DTO 与元数据代数
+    web/          按规格路径一一对应的控制器
+    service/      目录解析、schema 变更、快照与版本、分区分支标签；格式门禁在 DatabaseService
+  lakehouse-rest-protocol-iceberg/  Iceberg 面：26 个端点、Iceberg DTO 与元数据代数
+    web/          namespace / table / view 三棵控制器
+    service/      update 代数、requirements 校验、CAS 提交、投影派生
+    support/      元数据文件命名、端点清单（endpoints）、update 编解码
+  lakehouse-rest-server/        可执行产物与「不属于任何协议面」的东西
+    web/          管理 API 的 4 个控制器、控制台扩展端点
+    service/      管理服务、控制台 meta、凭据与存储策略、优化调度
+    config/       数据源 profile、启动预置（DataInitializer）
 
 lakehouse-rest-spark/
   antlr4/…/ManagementSql.g4   管理语句语法（16 条语句、15 条规则）
@@ -292,23 +313,33 @@ lakehouse-rest-spark/
 
 关键设计：
 
-- **前缀路由**：`{prefix}` 是 catalog 的对外标识，由 `GET /v1/config` 下发。未登记的 prefix
-  在 `paimon.rest.auto-create-catalog=true`（默认）时自动登记，客户端可零配置接入。
+- **前缀路由 + 格式分派**：`{prefix}` 是 catalog 的对外标识，由 `GET /v1/config` 下发。
+  未登记的 prefix 在 `paimon.rest.auto-create-catalog=true`（默认）时自动登记，客户端可零配置接入。
+  一个 catalog 只有一种**格式**（`catalog_format`，创建时定下、不可变），它决定这个 prefix
+  服务哪一套协议：路径 → prefix → catalog → 格式 → 协议处理链。两个面互不依赖，
+  装配层靠 Spring 收集 `List<CatalogProtocol>` 拿到它们，因此 core 不需要认识任何一个面。
+- **格式不匹配要报「格式不对」**：一个 Iceberg 客户端敲了 Paimon catalog 的 prefix（或反过来）
+  时回 404，消息里点出两个格式——否则客户端只会以为自己的库名/表名写错了。
+  自动登记时**按请求所属的面的格式建**，避免「一次失败的请求留下一个格式不对的 catalog」。
 - **认证与授权分离**：`BearerAuthInterceptor` 只回答「调用者是谁」，RBAC 判定由授权层完成。
   两者分别由 `paimon.rest.auth.*` 与 `paimon.rest.authorization.*` 控制，可以只开认证不开授权。
 - **catalog API 的授权映射集中在一张表**：`CatalogAccessRules` 把 `/v1/**` 路径映射到所需权限，
   **未登记映射的端点直接拒绝而不是放行**；测试从运行时的请求映射里枚举全部端点核对覆盖率，
   新增端点若忘记登记会让构建失败。详见 `docs/authorization.md`。
-- **JSON 文档列**：schema、函数定义、分区 spec 等结构以 JSON 文本存单列，实体字段保持强类型，
-  避免为每个属性建表；复杂结构通过 `AttributeConverter` 转换。
+- **两套错误形状，按请求所属的协议面二选一**：Paimon 是扁平的
+  `{message, resourceType, resourceName, code}`，Iceberg 是嵌套一层的
+  `{error: {message, type, code}}`。判据优先看路径形状（两套规格用的是不同的资源名词），
+  只在四条同路径端点上回落到按 catalog 格式查。
+- **JSON 文档列**：schema、函数定义、分区 spec、Iceberg 的整份 `TableMetadata` 等结构以
+  JSON 文本存单列，实体字段保持强类型，避免为每个属性建表；复杂结构通过 `AttributeConverter` 转换。
 - **多态变更分派**：规格中 `SchemaChange` / `ViewChange` / `FunctionChange` 是以 `action`
   判别的多态联合，统一按 `List<Map<String,Object>>` 接收后在服务层按 `action` 分派，
-  不把多态解析绑死在具体 JSON 库上。
+  不把多态解析绑死在具体 JSON 库上。Iceberg 的 `MetadataUpdate` 也走同一条路子。
 - **管理语句靠语法而非前缀识别**：Spark 3.5 的 SQL 语法没有兜底分支，无法用 visitor 拦截
   新关键字，因此 Spark 子模块自带一份只描述管理语句的语法，解析成功才接管，失败原样交回。
 
 两份 API 与元数据的清单不在本文展开：Catalog API 的
-[60 个端点](docs/catalog-api-endpoints.md)、Management API 的
+[Paimon 60 个与 Iceberg 26 个端点](docs/catalog-api-endpoints.md)、Management API 的
 [33 个 operation 概览](docs/management-api-overview.md)（逐字契约见
 [`management-api-contract.md`](docs/management-api-contract.md)）、以及
 [22 张表的数据模型与设计取舍](docs/data-model.md)。
@@ -663,12 +694,72 @@ Azure 只下发定位元数据是个明确的缺口：Polaris 的 `polaris.stora
     `alter` 的范畴）。默认值放在 `properties` 而不是 `defaults` / `overrides`：后两者是随
     `GET /v1/config` 下发给引擎的**连接参数**，改它影响的是客户端能否连上。Spark SQL 建表走的
     同样是 `POST .../tables`，因此引擎侧不需要各做一遍。
+25. **Iceberg 协议面：一期 26 个端点，9 个不声明；一个 catalog 一种格式，建完改不了。**
+    Iceberg 面与 Paimon 面**共用同一份元数据**（22 张表全部复用、只加 9 列，
+    见 [`docs/data-model.md`](docs/data-model.md) §1.1），但对外是**第二个协议面**，
+    能力比 Paimon 面窄一截，且其中几处是「明确不做」而不是「还没做」。
+
+    - **不声明的 9 个端点**：`functions` 只读两个、`register-view`、
+      `transactions/commit` 归二期；`plan`（`POST` 建 / `GET` 拉 / `DELETE` 取消）、
+      `tasks`、`sign` 明确不做——扫描规划要一个常驻执行引擎、远程签名要 KMS，
+      都是另一个产品的份量。逐条清单在
+      [`docs/iceberg-rest-catalog-design.md`](docs/iceberg-rest-catalog-design.md) §6.1，
+      **代码里有两处副本且必须逐字一致**：`IcebergEndpoints` 的类注释与
+      `scripts/verify-iceberg-endpoints.py` 的 `NOT_IMPLEMENTED`。
+      这份清单同时是 `GET /v1/config` 里 `endpoints` 字段的内容：Iceberg 规格规定
+      **不发这个字段等于承诺一整套默认端点**，而那份默认清单里含 `transactions/commit`——
+      少发一个字段的后果是客户端一路正常，直到用户真的发起一次多表提交才炸，
+      而那时错误现场离原因已经很远（客户端报的是
+      `Server does not support endpoint: …`，看着像服务端坏了一半）。
+    - **一个 catalog 只有一种格式，且创建后不可改**（`paimon_catalog.catalog_format`，
+      非空 + 库级默认 `'PAIMON'`）。管理 API 的 `PUT` 改了它一律 400，
+      理由是改格式会让既有表在同一份元数据上突然按另一套语义解释。
+      由此推出一个**明确不支持**的用法：**同一个仓库目录不能既当 Paimon 又当 Iceberg 用**——
+      那是两个 catalog、两份互不可见的元数据。共用一个目录而两边都能读，要求两种格式的
+      元数据互相翻译，是另一个量级的工作。
+    - **两条 `rename` 是唯一真冲突**（`POST /v1/{prefix}/tables/rename`、`…/views/rename`）：
+      HTTP 方法与路径逐字相同，而两个协议面又禁止互相 import（enforcer 守着），
+      所以上移到 core 的 `CatalogRenameController`，由 `CatalogProtocol#rename` 分派。
+      格式判据两层：**先查库里 prefix 的格式**，查不到才看请求体字段名
+      （`{namespace: […], name}` 是 Iceberg、`{database, object}` 是 Paimon）。
+      两边**成功状态码不同**——Paimon 200、Iceberg 204，分派层按格式各自返回。
+    - **错误报文形状按协议面二选一**（Paimon 扁平、Iceberg 在 `error` 里再嵌一层；
+      形状选错时 Iceberg 客户端拿不到 `error` 字段，只会报一句没有 message 的
+      「Unable to process」）。判据是**路径形状优先、catalog 格式兜底**：两个规格选了
+      不同的资源名词（`databases` / `namespaces`），绝大多数请求只看路径就能定，
+      只有四条需要查库。这里有个必须写对的细节：判「某面独有」时要把**集合路径本身**
+      （`/v1/{prefix}/namespaces`）也算上，只匹配 `namespaces/` 前缀会漏掉它——
+      漏掉的后果不是少判一条，而是**判给另一个面**（见
+      `CatalogFormatResolver#firstSegmentIs` 的注释）。
+    - **表的写路径是「先写仓库、后落库」**：`metadata/vN-<uuid>.metadata.json`
+      先进表目录，再提交元数据行；并发靠 DB 的 `metadata_location` 做 CAS，
+      叠加客户端 `requirements` 的双向校验。因此一次失败的提交**不留半成品**——
+      仓库里可能多一个没被引用的 metadata 文件，但库里那行不会被改成指向它。
+      这也是 Iceberg 表与 Paimon 表在物化时机上的差别：Iceberg 的元数据文件是
+      **提交链的一部分**，而 Paimon 那份 `schema-0` 是投影（缺了不阻断请求，
+      见第 23 条）。
+    - **Iceberg 侧没有四类 Paimon 语义**：分区状态、消费者位点、语义视图、数据访问
+      （授予 / 凭据）这四类端点在 Iceberg 协议里不存在。**目录浏览与表详情都按格式分两套实现**：
+      Paimon catalog 走 `/v1/{prefix}/databases/**`，Iceberg catalog 走
+      `IcebergBrowseView`（`namespaces/**`：命名空间平铺、建表 / 登记 / 改名 / 删除 / 注销、
+      视图读与删）与 **`IcebergTableView`**（`/iceberg-tables/...`：详细信息 / 快照 / 文件列表 /
+      存储优化四个页签——前三个读一次 `loadTable` 的整份 metadata，
+      文件列表走 catalog 级文件端点并由 `metadata.location` 减 warehouse 得到根；
+      **存储优化页签挂的是与 Paimon 表同一个面板**，只把 `format="ICEBERG"` 传进去，
+      参数键与默认值按 Iceberg 的 procedure 换一套，动作名与执行顺序不变）。
+      **权限管理页也覆盖 Iceberg catalog**：「库」那一级显示为 Namespace，候选按层递归、
+      多级用点号显示；授权仍走同一个端点，判定按「拼起来的路径」比较（见 `docs/authorization.md` §2.6）。
+      Paimon 版表详情页在 Iceberg catalog 下
+      仍不发请求、只给跳转。catalog 详情页的「文件列表」（仓库物理目录，与协议面无关）
+      与「协议与能力」（读 `/v1/config` 的实际下发内容）一直可用。差异与理由见设计文档 §11.1 第 11 条。
+      **表格式 v1 / v2 / v3 建表全支持**（控制台的 format-version 下拉三个值都有）；
+      v3 的 `next-row-id` / `encryption-keys` 是透传，不做校验。
 
 ---
 
 ## 7. 测试
 
-### 单元与集成测试（413 个用例）
+### 单元与集成测试（428 个用例）
 
 ```bash
 JAVA_HOME=/path/to/jdk-21 mvn test
@@ -677,14 +768,16 @@ JAVA_HOME=/path/to/jdk-21 mvn test
 测试连的是内存 H2（`test` profile，见 `src/test/resources/application-test.yml`），
 **不依赖本机是否有 MySQL**。
 
-服务端（317 个）：
+服务端（332 个）：
 
 | 测试类 | 覆盖 |
 | --- | --- |
 | `PaimonRestCatalogApiTests` | 配置发现、建表与 schema 变更（加列 / 列改名 / 改类型 / 改可空性 / 改属性）/ 回滚、四种表格式建表（Paimon / Format / Object / Lance：非 Paimon 表补 `path`、Format 表禁主键、Object 表用固定六列覆盖用户字段、Lance 表保留主键、未知类型 400、`listTableDetails` 按 `tableType` 过滤）、catalog 级默认表属性（`table-default.*`：去前缀写入、表级参数优先、只对 Paimon 表生效、只在建表时合并、`type` 不接受默认）、快照提交与乐观并发、快照文件统计（由提交携带的 `statistics` 增量累计：跨提交叠加、未测量字段不进合计、没带统计的提交沿用上一个快照、缺基线时退回分区合计、最新快照缺统计时读路径兜底）、分区统计、表重命名（改名不动数据位置、跨库重命名、目标名被占用 409）、视图与函数、语义视图 1 MiB 上限、消费者位点、凭证下发与 403、各类 404 的 `resourceType` |
+| `IcebergRestCatalogApiTests` | Iceberg 协议面 26 个端点的**行为**：`/v1/config` 的能力清单恰是 26 条且不含 `transactions/commit` / `plan` / `tasks` / `sign`；namespace 全套（列举 / 建 / 读 / 存在性 / properties 批量增删含 `missing` / 重名 409 / 空层级 400 / 多级 namespace 两种分隔符 / `?parent=` 只列直接子级 / **非空时删除 409**）；表全套（建表把 `metadata.json` 真的写进仓库且序号是 `00001-`、`format-version` 默认 2、服务端补 `created-at`、读回来与写下去**逐字节同一份**、`snapshots=all\|refs` 与非法取值 400、凭据不问不给 / 问了给 / `/credentials` 无条件给、`stage-create` 400 且表没建出来、`report-type` 必填）；提交（空 updates 不换位置、`assert-table-uuid` 放行且序号走到 `00002-`、对不上时 409 `CommitFailedException`、`identifier` 与路径不符 400、畸形 update 400）；重命名（**204**、只改标识不改位置、目标名被占用 409、报文残缺 400）；`register` / `unregister` / `drop`（外部表**永不清**、`unregister` 不碰仓库、`purgeRequested` 的作用范围——这三条只能落到文件系统上验）；视图全套（建 / 读 / 存在性 / 提交 / **204** 重命名 / 删除**不删元数据文件**）；跨面门禁（Iceberg 路径落在 Paimon catalog 上拿到嵌套形状且消息点出 `PAIMON catalog`） |
+| `IcebergClientEndToEndTests` | 用 **Iceberg 官方 Java 客户端**（`org.apache.iceberg.rest.RESTCatalog`）走真 HTTP（随机端口 + JDK `HttpClient` 建 catalog），验三件 MockMvc 结构性看不见的事：① `/v1/config` 的 `endpoints` 与客户端自需端点**等值协商**（清单少了操作在本地就被拒、多了会真发出去拿到 404，两个方向 MockMvc 都发现不了）；② 嵌套错误体真的被翻成**具体**异常（`NoSuchTableException` / `NoSuchNamespaceException` / `AlreadyExistsException`，而不是退化成通用 `RESTException`）；③ 更新代数真跑通（客户端自己生成 `requirements` 与 `updates`，服务端解、校验、应用、落库，客户端再解析回元数据）。另外它钉住了两处**客户端环境**上的坑：裸 JVM 里默认 `io-impl`（`ResolvingFileIO`）装不上（需要 Hadoop），以及上游 `createNamespace` 对 `Map.of(...)` 会因 `containsKey(null)` 抛 NPE |
 | `TableMetadataMaterializationTests` | 把 schema 与快照物化到 Paimon 表目录：建表写 `schema-0`、改表写下一个号、回滚把旧内容写到**新号**（回滚也是向前一步）、`register` 进来的外部表一个文件都不碰、缺 FileIO 实现时默认只记日志不打断请求（并断言打开 `fail-on-error` 后确实变成 500）；快照侧写 `snapshot/snapshot-<id>` 与 `LATEST`、落盘的是客户端**原文**（`properties` 这类规格没建模的字段不能丢）、`VERSION AS OF <数字>` 按**快照 id** 而不是 `Snapshot.version` 取值（含 `LATEST` / `EARLIEST` / 标签名）、快照回滚会删掉目标之后的快照文件；钉住「数据库 `schemaId` ↔ 仓库 `schema-<n>`」与「数据库 `snapshotId` ↔ 仓库 `snapshot-<n>`」逐号对应 |
-| `ManagementApiTests` | 管理 API 的主体、角色、装配与授权链路 |
-| `PermissionManagementTests` | Paimon 原生权限端点（`/v1/{prefix}/permissions`）与直授判定：赋权三元组的增删查、官方词表的入参校验、撤销幂等、重复授予覆盖过期时间，以及直授真的能打通 catalog API 的权限判定（`user:` 与 `role:` 两种 principal 形式各一条链路）；与 `AuthorizationTests`（Polaris RBAC 链）互补 |
+| `ManagementApiTests` | 管理 API 的主体、角色、装配与授权链路；以及**格式分派**（`catalogFormat` 省略时用部署默认值、显式 ICEBERG 落库且能读回、认不出的取值 400 不让脏值进库、改已有 catalog 的格式 400 且消息说明不可变、原样带回则放行、`/v1/config` 的形状随格式变（Iceberg 带 `endpoints` 而 Paimon 不带）、两个方向的格式不匹配都给出**指名原因**的 404） |
+| `PermissionManagementTests` | Paimon 原生权限端点（`/v1/{prefix}/permissions`）与直授判定：赋权三元组的增删查、官方词表的入参校验、撤销幂等、重复授予覆盖过期时间，以及直授真的能打通 catalog API 的权限判定（`user:` 与 `role:` 两种 principal 形式各一条链路）；**Iceberg 多级 namespace 的判权口径**（授 `accounting.tax` 命中 `["accounting","tax"]`、授上级覆盖后代、不反向覆盖、`sales` 不命中 `salesforce`）；与 `AuthorizationTests`（Polaris RBAC 链）互补 |
 | `StorageConfigApiTests` | `storageConfigInfo` 六种存储类型的建 / 读 / 改往返、`AZURE` 缺 `tenantId` 与空位置的 400、换存储后新库位置随之改变、OBS↔OSS 换类型时端点一起替换 |
 | `StorageConfigDtosTests` | 判别联合的绑定位形：子类型注册名与枚举一致、判别字段只出现一次、跨类型字段不串、落库路径（`Json`）往返、静态凭据字段随实体往返 |
 | `StorageCredentialApiTests` | 按存储类型下发凭据的 HTTP 链路：S3 的密钥来源（默认配置与具名存储）与不下发 `endpointInternal` / `stsEndpoint`、`stsUnavailable` 时不给密钥、Azure 只给定位元数据、GCS 的 `lifespan` 收窄 `expiresAt`、OBS / OSS 各自走对键族且不串族、FILE 保留自包含令牌、未过期凭据被复用（比对 `expiresAt` 而非密钥） |
@@ -694,8 +787,8 @@ JAVA_HOME=/path/to/jdk-21 mvn test
 | `CredentialCipherTests` | 落库加解密单元行为：往返、同一明文两次密文不同（随机 IV）、空值保持空、未配密钥时拒绝加密、换密钥后解不开、密文被篡改时认证失败、明文当密文传入被拒、密文载荷畸形被拒、密钥不是 Base64 或解码后不是 32 字节时启动即失败、留空的密钥视为关闭 |
 | `StoragePolicyApiTests` | `file-io.type=s3` 时拒绝 Azure / GCS / OBS / OSS catalog 并在报错里点明原因、接受 S3 与 FILE；`credential-manager.type=noop` 时凭据下发返回 501 |
 | `AuthorizationTests` | 权限蕴含与判定的单元行为 |
-| `CatalogEndpointAuthorizationTests` | 从运行时请求映射枚举全部 `/v1/{prefix}/**` 端点，逐一核对授权映射是否已登记——新增端点若忘记登记映射会让构建失败 |
-| `ConsoleApiTests` | 控制台的托管与元数据：`/console` 重定向、目录式路径转发入口页、深链回退、缺失 assets 仍 404、已提交入口页引用的产物都存在、meta 的枚举与权限分组跟着规格走、登录引导同时如实返回 `authEnabled` 与 `consoleRequired`、门禁开着时控制台端点拒匿名而数据面仍开放（见第 9 节） |
+| `CatalogEndpointAuthorizationTests` | 从运行时请求映射枚举全部 `/v1/{prefix}/**` 端点，逐一核对授权映射是否已登记——新增端点若忘记登记映射会让构建失败。枚举是**方法无关**的：Iceberg 面那三个显式登记的 `HEAD` 存在性检查端点一开始就把造请求的工厂顶爆了（`IllegalArgumentException: HEAD`），说明枚举确实覆盖了新协议面，而不是静默少测一批 |
+| `ConsoleApiTests` | 控制台的托管与元数据：`/console` 重定向、目录式路径转发入口页、深链回退、缺失 assets 仍 404、已提交入口页引用的产物都存在、meta 的枚举与权限分组跟着规格走（含 `catalogFormats` 与服务端 `CatalogFormat` 枚举一致、`defaultCatalogFormat`）、登录引导同时如实返回 `authEnabled` 与 `consoleRequired`、门禁开着时控制台端点拒匿名而数据面仍开放（见第 9 节） |
 | `ConsoleAuthEndpointTests` | 控制台登录在 HTTP 层的端到端：豁免端点可达而受保护端点拒绝匿名、**用户名密码登录成功/失败/缺参/限速与默认 `admin/admin`**、令牌签发与使用、错误密钥 401 与 `WWW-Authenticate`、**clientId 与用户名两种「不存在」的报文都与「密码不对」一字不差**、`invalid_scope` / `unsupported_grant_type`、Basic 与 JSON 体、失败限速、静态令牌映射、伪造 JWT 与畸形头。这一层才会暴露接线错误——排除列表写错、响应字段名写成驼峰、令牌端点自己反被鉴权挡住 |
 | `CatalogFileBrowserTests` | 仓库文件浏览的服务语义：下钻一层、目录优先排序、冗余分隔符与 `.` 归一化、`..` 与绝对路径 / 带 scheme 拒绝、目录不存在 404、指向文件 400、未知 catalog 404、无 warehouse 400、超出上限标 `truncated`、关开关 501；表目录为根的三条（表级下钻、出不了表目录、未知表 404）；名称前缀过滤的四条（过滤与回显、过滤先于截断、只比本层条目名、含 `/` 拒 400，含表级过滤）；下载的三条（流里字节数与元数据一致、目录与仓库根 400、关开关 501） |
 | `CatalogFileEndpointTests` | 四条端点的**接口形状**：URL、`path` / `prefix` 查询参数、状态码、响应字段名；下载钉 `Content-Disposition` 与 `Content-Length` 与实际字节一致；前缀过滤钉回显与 `total` 口径。与服务语义分开是因为这些错误各自独立——服务能把目录列对不代表端点拼对了，反过来同理 |
@@ -715,7 +808,7 @@ Spark 子模块（96 个，其中 5 个类共 23 个用例需要显式指向服�
 > `example/` 下的 `PaimonS3Test` **当前跑不过**，与 S3 环境无关：它在加载 Spark
 > catalog 时被 Paimon 的 `requiredSparkConfsCheck` 挡下（会话里没有
 > `spark.sql.extensions`），报错发生在任何 REST 调用之前。因此 `mvn test` 会停在
-> Spark 模块的 BUILD FAILURE，而服务端模块（317 个）是绿的。
+> Spark 模块的 BUILD FAILURE，而服务端模块（332 个）是绿的。
 
 | 测试类 | 覆盖 |
 | --- | --- |
@@ -744,6 +837,10 @@ BASE=http://127.0.0.1:8080 ./scripts/api-sweep.sh
 
 # Management API：覆盖规格中全部 33 个 operation
 BASE=http://127.0.0.1:8080 ./scripts/management-sweep.sh
+
+# Iceberg 协议面：不需要服务端实例——它是静态三方比对
+# （规格 35 条 ↔ 声明的能力清单 26 条 ↔ 控制器映射），15 项断言
+./scripts/verify-iceberg-endpoints.py
 
 # Spark SQL：先校验参考文档，再自动起服务端（用 h2 profile，并配好令牌
 # root / limited / alice / bob）、跑 ManagementSqlLiveServerTests +
@@ -834,6 +931,16 @@ python3 -m pip install --user PyYAML
 **不手工维护**——22 张表、21 个唯一约束、23 个索引，手工维护必然漂移。生成器连的是 H2
 但方言被钉在 MySQL 8.0（`MySql8DialectResolver`），因此生成过程不需要 MySQL，
 产出则已用真实 MySQL 8.0.46 验证过可直接执行。`DB_NAME=...` 可改建库语句里的库名。
+Iceberg 协议面落地的 9 个新列也由它产出（`catalog_format` 是
+`varchar(32) default 'PAIMON' not null`），**改实体后必须重跑**——
+`ddl-auto: validate` 会在启动时对不上就拒绝启动。
+
+`verify-iceberg-endpoints.py` **不依赖 PyYAML**：它只需要规格里「路径 / 方法」两层
+（indent 2 / indent 4），所以自写了一个缩进解析器，而不是为一条校验引入一个部署前提。
+它做的三方比对是「规格 35 条 ↔ `IcebergEndpoints.SUPPORTED` 26 条 ↔ 控制器映射」，
+并且把「9 个不声明」写成**字面量**——从「规格 − 声明」推出来的清单永远自洽，
+就永远发现不了漏实现。派生自规格而不是照抄文档，是因为 `plan` 有三个方法、
+`tasks` 是 `POST`，这两处照记忆写必然错。
 
 `verify-management-contract.py` 刻意不复用生成器的任何函数——它把 Markdown 表格反解回结构化
 数据再独立比对，因此能发现生成器自身的推导错误（两者共用代码时错误会互相掩盖）。
@@ -1025,10 +1132,19 @@ http://localhost:8080/console/
   因此构建服务端 jar 不需要 Node；代价是改了前端必须重建并提交产物，
   用 `./scripts/build-console.sh` 一条命令完成构建与校验。
 - **路径不靠人工比对。** 全部端点收在 `lakehouse-rest-console/src/api/endpoints.js` 一张表里，
-  由 `scripts/verify-console.py` 与两份 OpenAPI 规格机械比对（10 组 25 项：端点存在性、
-  引用完整性、五处基址一致、产物新鲜度、对话框状态、下拉候选来源、
-  静态凭据字段与服务端的一致性）；
+  由 `scripts/verify-console.py` 与三份 OpenAPI 规格（Paimon / Iceberg / 管理 API）机械比对
+  （15 组 65 项：端点存在性、引用完整性、五处基址一致、产物新鲜度、对话框状态、下拉候选来源、
+  静态凭据字段与服务端的一致性、两种格式的优化参数键、**catalog 表格式**、**Iceberg 目录浏览的契约形状**、
+  **存储字段分层**，最后由一组「文档计数」盯住这个数字本身与脚本一致）；
   服务端侧 `ConsoleApiTests` 守住静态资源托管与 SPA 深链回退。
+- **表格式（Paimon / Iceberg）在创建 Catalog 时就选定，之后不可改。** 新建弹窗里用
+  **选项卡片**而不是下拉：每个选项要能读出「客户端走哪段路径」与一句话影响面；
+  清单页有格式徽标与筛选；catalog 详情页的「协议与能力」把**服务端实际下发的**
+  端点清单摆出来（Iceberg 侧读 `GET /v1/config` 的 `endpoints` 原文，前端不抄一份）。
+  目录浏览与表详情按格式换实现：Paimon catalog 走 `databases/**` 的浏览页与表详情页，
+  Iceberg catalog 走 `IcebergBrowseView`（`namespaces/**`：命名空间平铺、建表/登记/改名/删除/注销、
+  视图读与删）与 `IcebergTableView`（详细信息 / 快照 / 文件列表 / 存储优化四个页签）。
+  Paimon 版表详情页在 Iceberg catalog 下不发请求、只给跳转。
 
 ### 9.1 登录与鉴权
 

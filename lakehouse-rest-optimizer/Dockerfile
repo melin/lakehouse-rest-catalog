@@ -45,6 +45,14 @@ COPY lakehouse-rest-optimizer/target/lakehouse-rest-optimizer-0.0.1-SNAPSHOT.jar
 COPY lakehouse-rest-optimizer/target/jars/paimon-spark-3.5_2.12-2.0.0.jar /opt/spark/jars/
 COPY lakehouse-rest-optimizer/target/jars/paimon-s3-2.0.0.jar /opt/spark/jars/
 
+# Iceberg 的 Spark bundle。一个镜像同时服务两种格式的批次：会话的
+# `spark.sql.extensions` 与 catalog 实现由任务按批次格式选，jar 本身一起放着即可。
+#
+# 版本必须与 lakehouse-rest-optimizer/pom.xml 的 iceberg.version 对齐；
+# 对象存储是 s3:// 时还需要 org.apache.iceberg:iceberg-aws-bundle（本镜像没有内置，
+# 见 docs/iceberg-storage-optimization.md 的「部署前提」一节）。
+COPY lakehouse-rest-optimizer/target/jars/iceberg-spark-runtime-3.5_2.12-1.11.0.jar /opt/spark/jars/
+
 # 容器就是 driver：整个批次只建一次 Spark 会话，在一张 pod 里以 local 模式跑完所有表。
 #
 # 为什么不是 `spark-submit --master k8s://...`（在容器里再投一个 driver pod）：

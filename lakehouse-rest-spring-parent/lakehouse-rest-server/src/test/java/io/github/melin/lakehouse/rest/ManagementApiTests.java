@@ -3,6 +3,7 @@ package io.github.melin.lakehouse.rest;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -12,6 +13,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 import tools.jackson.databind.node.JsonNodeFactory;
+import java.util.ArrayList;
 import java.util.List;
 import org.junit.jupiter.api.MethodOrderer;
 import org.junit.jupiter.api.Order;
@@ -378,5 +380,85 @@ class ManagementApiTests {
         json(404, "GET", M + "/catalogs/" + CATALOG, null);
         // 库随 catalog 一起消失
         json(404, "GET", "/v1/" + CATALOG + "/databases/cascade_db", null);
+    }
+
+    // ------------------------------------------------------------------ 表格式
+
+    /**
+     * catalog 的**表格式**：管理面能读能建、不能改；它决定这个 prefix 服务哪一套协议。
+     *
+     * <p>本用例走的是 HTTP，因此顺带覆盖了三件只有装配起来才能验的事：
+     * {@code /v1/config} 的响应形状按格式二选一、错误响应形状按格式二选一、
+     * 以及格式不匹配时那条「点出真正原因」的消息。这三件事都在管理 API 之外的
+     * 代码里，但它们的输入只有一个——管理面写下的那个字段。
+     */
+    @Test
+    @Order(7)
+    void catalogFormatDrivesProtocolSelection() throws Exception {
+        // 省略 catalogFormat -> 用部署默认格式（test profile 不改 default-catalog-format）
+        JsonNode defaulted = json(201, "POST", M + "/catalogs", """
+                {"catalog":{"type":"INTERNAL","name":"fmt-default","properties":{},
+                 "storageConfigInfo":{"storageType":"FILE","allowedLocations":["file:///tmp/fmt-default"]}}}
+                """);
+        assertEquals("PAIMON", defaulted.get("catalogFormat").asString());
+
+        // 显式 ICEBERG
+        JsonNode iceberg = json(201, "POST", M + "/catalogs", """
+                {"catalog":{"type":"INTERNAL","name":"fmt-iceberg","catalogFormat":"ICEBERG","properties":{},
+                 "storageConfigInfo":{"storageType":"FILE","allowedLocations":["file:///tmp/fmt-iceberg"]}}}
+                """);
+        assertEquals("ICEBERG", iceberg.get("catalogFormat").asString());
+        // 建完就落库了：GET 回同一个值
+        assertEquals("ICEBERG", json(200, "GET", M + "/catalogs/fmt-iceberg", null)
+                .get("catalogFormat").asString());
+
+        // 认不出来的取值 400，不让脏值进库（否则该 catalog 的所有请求都会被按 Paimon 解释）
+        json(400, "POST", M + "/catalogs", """
+                {"catalog":{"type":"INTERNAL","name":"fmt-typo","catalogFormat":"ICEBURG","properties":{},
+                 "storageConfigInfo":{"storageType":"FILE","allowedLocations":[]}}}
+                """);
+
+        // 格式不可变：改一个已有 catalog 的格式 -> 400，消息点明「要换就删除重建」
+        JsonNode refused = json(400, "PUT", M + "/catalogs/fmt-iceberg",
+                "{\"catalogFormat\":\"PAIMON\"}");
+        assertTrue(refused.get("message").asString().contains("immutable"),
+                "消息应说明格式不可变: " + refused.get("message").asString());
+        // 原样带回同一个值则放行（管理面的 GET -> 改字段 -> PUT 往返会带上它）
+        json(200, "PUT", M + "/catalogs/fmt-iceberg",
+                "{\"catalogFormat\":\"ICEBERG\",\"properties\":{\"tier\":\"silver\"}}");
+        assertEquals("ICEBERG", json(200, "GET", M + "/catalogs/fmt-iceberg", null)
+                .get("catalogFormat").asString());
+
+        // /v1/config 的形状随格式变：Iceberg 必须带 endpoints，Paimon 不带
+        JsonNode icebergConfig = json(200, "GET", "/v1/config?warehouse=fmt-iceberg", null);
+        assertEquals("fmt-iceberg", icebergConfig.get("defaults").get("prefix").asString());
+        assertTrue(icebergConfig.get("endpoints").isArray(), "Iceberg 的 /v1/config 必须发能力清单");
+        // 不发 endpoints 时客户端会假定一整套默认端点存在，其中包含多表事务
+        assertFalse(strings(icebergConfig.get("endpoints")).contains("POST /v1/{prefix}/transactions/commit"),
+                "不实现的多表事务不能出现在能力清单里");
+
+        JsonNode paimonConfig = json(200, "GET", "/v1/config?warehouse=fmt-default", null);
+        assertEquals("fmt-default", paimonConfig.get("defaults").get("prefix").asString());
+        assertNull(paimonConfig.get("endpoints"), "Paimon 的 /v1/config 不发 endpoints");
+
+        // 走错面的客户端拿到的必须是「格式不对」，而不是「没有这个东西」——
+        // 否则它会以为是自己把库名写错了，再试一百次也不会对。
+        // 这里是 Paimon 独有的路径，因此错误是**扁平**形状：形状按路径定（客户端拼出
+        // 这个路径就说明它本来在说 Paimon 的话），不按 catalog 的格式定
+        JsonNode mismatch = json(404, "GET", "/v1/fmt-iceberg/databases", null);
+        assertNull(mismatch.get("error"), "Paimon 路径上的错误是扁平形状");
+        assertTrue(mismatch.get("message").asString().contains("ICEBERG catalog"),
+                "消息要点出这个 prefix 是什么格式: " + mismatch.get("message").asString());
+
+        // 反向：Paimon catalog 上的 Iceberg 路径 -> 嵌套形状 + 同样的明确消息
+        JsonNode reverse = json(404, "GET", "/v1/fmt-default/namespaces", null);
+        assertTrue(reverse.get("error").get("message").asString().contains("PAIMON catalog"),
+                "消息要点出这个 prefix 是什么格式: " + reverse.get("error").get("message").asString());
+    }
+
+    private static List<String> strings(JsonNode array) {
+        List<String> values = new ArrayList<>();
+        array.forEach(node -> values.add(node.asString()));
+        return values;
     }
 }

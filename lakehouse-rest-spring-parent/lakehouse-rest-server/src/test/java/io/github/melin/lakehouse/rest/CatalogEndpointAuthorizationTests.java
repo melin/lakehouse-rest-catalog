@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.head;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 
@@ -143,9 +144,20 @@ class CatalogEndpointAuthorizationTests {
         return mockMvc.perform(request).andReturn().getResponse().getStatus();
     }
 
+    /**
+     * 按方法名造请求。
+     *
+     * <p><b>为什么要有 {@code HEAD}。</b>Iceberg 侧的三个「存在性检查」端点
+     * （namespace / table / view）是**显式**登记的 {@code HEAD} 映射，而
+     * {@link #catalogEndpoints()} 是从运行时映射表读端点的——它会把这三个一并读出来，
+     * 于是一个只能造 GET/POST/PUT/DELETE 的工厂会在这里以
+     * {@code IllegalArgumentException: HEAD} 失败。这不是「多加一个 case」那么简单：
+     * 它证明端点枚举确实覆盖了新协议面，而枚举不到的分支会静默地少测一批端点。
+     */
     private MockHttpServletRequestBuilder builder(String method, String path) {
         return switch (method) {
             case "GET" -> get(path);
+            case "HEAD" -> head(path);
             case "DELETE" -> delete(path);
             case "POST" -> post(path);
             case "PUT" -> put(path);

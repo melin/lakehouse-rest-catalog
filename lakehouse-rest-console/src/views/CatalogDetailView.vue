@@ -47,7 +47,12 @@
               </TipNote>
             </template>
           </el-tab-pane>
-          <el-tab-pane name="config">
+          <!--
+            「配置」页签只在 Paimon 侧出现：它编辑的是 `table-default.*`，
+            而这些属性的作用域是「在这个 catalog 下新建 Paimon 表」（见页签内的说明）。
+            对 Iceberg catalog 它们不生效，留在那里会让人以为配了就管用。
+          -->
+          <el-tab-pane v-if="!isIceberg" name="config">
             <template #label>
               配置
               <TipNote>
@@ -70,6 +75,13 @@
                 <dd>{{ catalog0.name }}</dd>
                 <dt>类型</dt>
                 <dd>{{ catalog0.type === 'EXTERNAL' ? 'EXTERNAL（外部同步，只读）' : 'INTERNAL（本服务托管元数据）' }}</dd>
+                <dt>表格式</dt>
+                <dd>
+                  <el-tag size="small" effect="plain" :type="catalogFormatTagType(catalog0)">
+                    {{ catalogFormatLabel(catalog0) }}
+                  </el-tag>
+                  <span class="pc-dim pc-format-note">创建后不可更改</span>
+                </dd>
                 <dt>存储类型</dt>
                 <dd>{{ catalog0.storageConfigInfo?.storageType || '—' }}</dd>
                 <dt>仓库位置</dt>
@@ -95,6 +107,104 @@
                   label="Catalog 属性（properties）"
                   empty-text="没有属性"
                   max-height="260px"
+                />
+              </div>
+            </div>
+
+            <!--
+              「协议与能力」卡片。它的作用不是展示配置，而是回答排障时的第一个问题：
+              **这个 prefix 到底服务哪一套协议、客户端能调哪些端点。**
+              Iceberg 侧的答案就在 `GET /v1/config` 的 `endpoints` 里——那份清单是
+              服务端下发给客户端的原文，客户端拿它做等值比较，因此它是这一页唯一
+              可信的来源；前端不另抄一份端点表（抄了就会与实现漂移）。
+            -->
+            <SectionTitle title="协议与能力">
+              <template #tip>
+                <TipNote>
+                  这一块读的是 <code>GET /v1/config?warehouse={{ catalogName }}</code>，
+                  也就是客户端连接时第一个调的发现端点。这里显示的是服务端<strong>实际下发</strong>的内容，
+                  不是文档里抄来的清单。
+                </TipNote>
+              </template>
+            </SectionTitle>
+
+            <div class="pc-detail-grid">
+              <dl class="pc-kv">
+                <dt>协议面</dt>
+                <dd>
+                  <el-tag size="small" effect="plain" :type="catalogFormatTagType(catalog0)">
+                    {{ catalogFormatLabel(catalog0) }}
+                  </el-tag>
+                  <span class="pc-dim pc-format-note">{{ protocolName }}</span>
+                </dd>
+                <dt>客户端基址</dt>
+                <dd><CopyText :text="clientBase" /></dd>
+                <!-- 多级 namespace 的分隔符只有 Iceberg 侧存在：Paimon 的库名是一级字符串 -->
+                <template v-if="isIceberg">
+                  <dt>namespace 分隔符</dt>
+                  <dd class="pc-break">
+                    <span class="pc-mono">0x1F</span>（规格默认；解析时也接受
+                    <span class="pc-mono">.</span>，库里按点号拼接存储）
+                  </dd>
+                </template>
+                <dt>凭据下发</dt>
+                <dd class="pc-break">{{ credentialNote }}</dd>
+                <dt>能力清单</dt>
+                <dd>
+                  <template v-if="isIceberg">
+                    <template v-if="capabilities.error.value">
+                      <span class="pc-dim">读不到（{{ capabilities.error.value }}）</span>
+                    </template>
+                    <template v-else-if="capabilities.loading.value">
+                      <span class="pc-dim">读取中…</span>
+                    </template>
+                    <template v-else>
+                      已声明 <strong>{{ declaredEndpoints.length }}</strong> 个端点
+                      <span class="pc-dim">（规格里一共 35 个，其余是一期不做的）</span>
+                    </template>
+                  </template>
+                  <template v-else>
+                    <span class="pc-dim">
+                      Paimon 协议面不下发端点清单（规格里没有这个字段），
+                      客户端按规格调它需要的路径。本服务端实现了 60 个端点。
+                    </span>
+                  </template>
+                </dd>
+                <dt>格式说明</dt>
+                <dd class="pc-break">{{ catalogFormatNote(catalog0) }}</dd>
+              </dl>
+              <div class="pc-side">
+                <template v-if="isIceberg">
+                  <div class="pc-endpoints">
+                    <div class="pc-endpoints-head">
+                      已声明的端点（{{ declaredEndpoints.length }}）
+                      <span class="pc-dim">客户端会拿这份清单判断某项能力能不能用</span>
+                    </div>
+                    <ul class="pc-endpoints-list pc-scroll">
+                      <li v-for="endpoint in declaredEndpoints" :key="endpoint" class="pc-mono">{{ endpoint }}</li>
+                    </ul>
+                    <div class="pc-endpoints-foot">
+                      <div class="pc-foot-title">
+                        不声明支持
+                        <span class="pc-dim">客户端在能力发现阶段就知道不该调</span>
+                      </div>
+                      <div class="pc-tag-grid">
+                        <span v-for="item in NOT_DECLARED" :key="item" class="pc-tag">{{ item }}</span>
+                      </div>
+                      <div class="pc-dim pc-foot-note">
+                        这 {{ NOT_DECLARED_TOTAL }} 个操作<strong>不写进</strong>清单，因此不会出现
+                        「跑到一半才 404」。逐条与理由见
+                        <code>docs/iceberg-rest-catalog-design.md</code> §6。
+                      </div>
+                    </div>
+                  </div>
+                </template>
+                <JsonBlock
+                  v-else
+                  :value="configDefaults"
+                  label="客户端连接时读到的 defaults"
+                  empty-text="没有下发的默认值"
+                  max-height="300px"
                 />
               </div>
             </div>
@@ -310,6 +420,7 @@ import { useRoute } from 'vue-router'
 
 import { consoleApi } from '@/api/console.js'
 import { describeError } from '@/api/client.js'
+import { catalogApi } from '@/api/catalog.js'
 import { managementApi } from '@/api/management.js'
 import CopyText from '@/components/CopyText.vue'
 import IconAction from '@/components/IconAction.vue'
@@ -322,6 +433,12 @@ import TimeText from '@/components/TimeText.vue'
 import TipNote from '@/components/TipNote.vue'
 import { notifyError, notifySuccess, onConsoleRefresh, useLocalPaging, useResource } from '@/composables/index.js'
 import { session } from '@/store/session.js'
+import {
+  catalogFormatLabel,
+  catalogFormatNote,
+  catalogFormatTagType,
+  isIcebergCatalog,
+} from '@/utils/catalogFormat.js'
 import { formatBytes, inlineMap } from '@/utils/format.js'
 import { composeProperties, isTableDefaultKey, otherPropertiesOf, tableDefaultsOf } from '@/utils/tableDefaults.js'
 
@@ -346,6 +463,79 @@ const catalog0 = computed(() => overview.data.value)
 const warehouse = computed(() => {
   const info = catalog0.value?.storageConfigInfo
   return info?.allowedLocations?.[0] || catalog0.value?.properties?.warehouse || '—'
+})
+
+/**
+ * 表格式：`catalogFormat`（PAIMON / ICEBERG），**创建后不可更改**。
+ *
+ * <p>它决定这个页面上的三件事：协议面那一栏怎么读、「配置」页签出不出现
+ * （`table-default.*` 只对新建 Paimon 表生效）、以及「文件列表」以外
+ * 那些 Paimon 专有的东西要不要显示。
+ *
+ * <p>值从 `session.state.catalogs` 里读（列表在首屏就取回来了），而不是为了
+ * 一个字段再发一次管理 API 请求——见 `session.catalogByName` 的说明。
+ */
+const isIceberg = computed(() => isIcebergCatalog(catalog0.value))
+const protocolName = computed(() => (isIceberg.value ? 'Iceberg REST Catalog' : 'Paimon REST Catalog'))
+
+/** 客户端基址：`/v1/{prefix}`，而 prefix 就是 catalog 名（创建后不可改名）。 */
+const clientBase = computed(() => `/v1/${catalogName.value}`)
+
+/**
+ * 目录发现端点（`GET /v1/config?warehouse={prefix}`）。
+ *
+ * <p>为什么要读它而不是把端点清单写在前端：Iceberg 侧的能力清单是服务端
+ * **实际下发**给客户端的那一份，客户端拿它做等值比较（少一条就在连接阶段被拒）。
+ * 前端再抄一份，抄错了会显示一个「看上去对、实际不生效」的清单——
+ * 而这一页的全部价值就是「让排障的人不用去读文档也能知道这台服务端支持什么」。
+ *
+ * <p>它同时也是唯一一处能看到 `defaults` 的地方：客户端连上来读到的
+ * `warehouse` / `prefix` 这些值是服务端拼给它的，与页面上「仓库位置」那一栏
+ * 是两件事（前者是连接参数，后者是 catalog 的存储位置）。
+ *
+ * <p>这个端点**不需要授权**（见服务端 `CatalogAccessRules.isPublic`），
+ * 但可能因为服务端未启动/令牌失效而失败，因此错误照常显示在这一栏里，
+ * 不让整页挂掉。
+ */
+const capabilities = useResource(() => catalogApi.config(catalogName.value))
+const declaredEndpoints = computed(() => capabilities.data.value?.endpoints || [])
+const configDefaults = computed(() => capabilities.data.value?.defaults || {})
+
+/**
+ * 一期不做、因此**不声明**的端点，按能力分组显示。
+ *
+ * <p>为什么这份清单在前端：它是「**没有**出现在 `endpoints` 里的东西」——
+ * 服务端不会下发「我不支持什么」，没有就是没有。因此它只能写在这里，
+ * 并与来源保持同步：条数由 `scripts/verify-console.py` 与
+ * `scripts/verify-iceberg-endpoints.py` 的 `NOT_IMPLEMENTED` 对齐
+ * （分组是给人看的，条数是给机器比的）。
+ *
+ * <p>为什么值得摆在页面上：排障时「某项能力为什么报 UnsupportedOperation」的答案
+ * 就在这两栏里——清单里有没有它。要读文档才能回答的话，这一页就白做了。
+ */
+const NOT_DECLARED = [
+  'transactions/commit（多表事务）',
+  'plan / tasks（扫描规划）',
+  'sign（远程签名）',
+  'register-view（视图登记）',
+  'functions（只读两个）',
+]
+/** 不声明的操作总数（分组不是一对一，所以单独写一个数）。 */
+const NOT_DECLARED_TOTAL = 9
+
+/**
+ * 凭据下发：由 `credential-manager.type` 决定，读 `meta.service`。
+ *
+ * <p>写这一行是因为它**最容易被误解**：凭据端点在两套协议里都存在
+ * （Paimon 的 `/token`、Iceberg 的 `/credentials`），但默认部署（`noop`）下
+ * 它返回 501 并说明原因——「端点在但没开」与「端点不存在」在排障时是两件事。
+ */
+const credentialNote = computed(() => {
+  const type = session.state.meta?.service?.credentialManagerType || ''
+  if (!type || type === 'noop') {
+    return '不代发凭据（credential-manager.type=noop）：客户端的凭据端点存在，但返回 501 并说明原因，凭据由客户端自己配置'
+  }
+  return `由 ${type} 代发`
 })
 
 /**
@@ -417,9 +607,24 @@ watch(catalogName, () => {
   // data 显式置空，否则「文件列表」页签会因为 data 非空而跳过首次加载
   files.data.value = null
   files.error.value = ''
+  // 能力清单同理：它是按 prefix 问出来的，留着上一个 catalog 的那份会显示错清单
+  capabilities.data.value = null
+  capabilities.error.value = ''
   overview.load()
+  capabilities.load()
   if (tab.value === 'files') {
     files.load()
+  }
+})
+
+/**
+ * 「配置」页签在 Iceberg catalog 上不存在（见模板里的说明），
+ * 而 `v-model` 停在一个没有对应面板的名字上会留下一片空白。
+ * 发现格式变了就退回「概览」——比让用户对着一块空白猜要好。
+ */
+watch(isIceberg, (iceberg) => {
+  if (iceberg && tab.value === 'config') {
+    tab.value = 'overview'
   }
 })
 
@@ -435,6 +640,7 @@ function onTabChange(name) {
 
 function reloadAll() {
   overview.load()
+  capabilities.load()
   if (tab.value === 'files') {
     files.load()
   }
@@ -575,6 +781,87 @@ async function saveDefaults() {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+/* 「表格式」那一行的补充说明：紧跟徽标，与值同排 */
+.pc-format-note {
+  margin-left: 8px;
+}
+
+/* --- 协议与能力：端点清单 ------------------------------------------------
+ * 清单是按行读的（排障时在找某一条），因此用等宽字体逐行列出而不是塞进表格：
+ * 表格会按内容分配列宽，而这些字符串长且同构，多一列反而更难扫。
+ * 高度封顶 + 滚动，避免一个 catalog 的 26 行把整页顶下去。
+ * ---------------------------------------------------------------------- */
+.pc-endpoints {
+  border: 1px solid var(--pc-border);
+  border-radius: var(--pc-radius);
+  overflow: hidden;
+}
+
+.pc-endpoints-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  background: var(--pc-surface-2);
+  border-bottom: 1px solid var(--pc-border);
+}
+
+.pc-endpoints-head .pc-dim {
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.pc-endpoints-list {
+  max-height: 240px;
+  overflow: auto;
+  margin: 0;
+  padding: 6px 12px;
+  list-style: none;
+  font-size: 12.5px;
+  line-height: 1.9;
+}
+
+.pc-endpoints-list li {
+  overflow-wrap: anywhere;
+}
+
+.pc-endpoints-foot {
+  padding: 8px 12px;
+  font-size: 12px;
+  line-height: 1.7;
+  border-top: 1px solid var(--pc-border);
+}
+
+.pc-foot-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--pc-text);
+}
+
+/* 不声明的能力按标签铺开：它们是可数的几个词组，一行一个太占高度，
+   换行铺开才看得出「一共就这么几块」 */
+.pc-tag-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 6px 0;
+}
+
+.pc-tag {
+  padding: 1px 7px;
+  font-size: 11.5px;
+  color: var(--pc-text-dim);
+  background: var(--pc-surface-2);
+  border: 1px solid var(--pc-border);
+  border-radius: var(--pc-radius);
+}
+
+.pc-foot-note {
+  margin-top: 2px;
 }
 
 /* 默认表属性的编辑区：表头与数据行共用同一套栅格（属性名 / 取值 / 操作）。

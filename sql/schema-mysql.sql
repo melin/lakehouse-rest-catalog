@@ -39,6 +39,7 @@ USE `paimon_catalog`;
         entity_version integer not null,
         created_at bigint,
         updated_at bigint,
+        catalog_format varchar(32) default 'PAIMON' not null,
         catalog_type varchar(32),
         storage_type varchar(32),
         id varchar(64) not null,
@@ -292,8 +293,10 @@ USE `paimon_catalog`;
         file_count bigint,
         file_size_in_bytes bigint,
         last_file_creation_time bigint,
+        parent_snapshot_id bigint,
         record_count bigint,
         schema_id bigint not null,
+        sequence_number bigint,
         snapshot_id bigint not null,
         time_millis bigint,
         total_record_count bigint,
@@ -309,12 +312,14 @@ USE `paimon_catalog`;
         commit_identifier varchar(255),
         commit_user varchar(255),
         log_offsets_json text,
+        summary_json text,
         statistics_doc mediumtext,
         primary key (id)
     ) engine=InnoDB;
 
     create table paimon_table (
         external_flag bit not null,
+        format_version integer,
         created_at bigint,
         latest_snapshot_id bigint,
         schema_id bigint not null,
@@ -324,11 +329,14 @@ USE `paimon_catalog`;
         id varchar(64) not null,
         latest_snapshot_uuid varchar(64),
         table_type varchar(64),
+        table_uuid varchar(64),
         name varchar(512) not null,
+        metadata_location varchar(1024),
         path_value varchar(1024),
         created_by varchar(255),
         owner varchar(255),
         updated_by varchar(255),
+        metadata_doc mediumtext,
         schema_doc mediumtext,
         primary key (id)
     ) engine=InnoDB;
@@ -381,6 +389,7 @@ USE `paimon_catalog`;
         database_id varchar(64) not null,
         id varchar(64) not null,
         name varchar(512) not null,
+        metadata_location varchar(1024),
         created_by varchar(255),
         owner varchar(255),
         updated_by varchar(255),

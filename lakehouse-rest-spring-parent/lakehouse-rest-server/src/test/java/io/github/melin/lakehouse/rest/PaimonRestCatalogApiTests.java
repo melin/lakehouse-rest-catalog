@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import io.github.melin.lakehouse.rest.domain.entity.CatalogEntity;
 import io.github.melin.lakehouse.rest.domain.entity.TableSnapshotEntity;
 import io.github.melin.lakehouse.rest.domain.repo.TableSnapshotRepository;
 import io.github.melin.lakehouse.rest.paimon.dto.BranchDtos;
@@ -22,6 +23,7 @@ import io.github.melin.lakehouse.rest.paimon.dto.TagDtos;
 import io.github.melin.lakehouse.rest.dto.TypeDtos;
 import io.github.melin.lakehouse.rest.paimon.dto.ViewDtos;
 import io.github.melin.lakehouse.rest.paimon.service.BranchService;
+import io.github.melin.lakehouse.rest.service.CatalogProtocols;
 import io.github.melin.lakehouse.rest.service.CatalogService;
 import io.github.melin.lakehouse.rest.paimon.service.ConsumerService;
 import io.github.melin.lakehouse.rest.paimon.service.CredentialService;
@@ -64,6 +66,8 @@ class PaimonRestCatalogApiTests {
     @Autowired
     private CatalogService catalogService;
     @Autowired
+    private CatalogProtocols protocols;
+    @Autowired
     private DatabaseService databaseService;
     @Autowired
     private TableService tableService;
@@ -92,7 +96,10 @@ class PaimonRestCatalogApiTests {
 
     @Test
     void configExposesPrefixForClientBootstrap() {
-        CommonDtos.ConfigResponse config = catalogService.config("paimon");
+        // 与 ConfigController 一样的组装方式：业务侧解析 prefix，装配侧拼出响应体
+        CatalogEntity catalog = catalogService.resolveForConfig("paimon");
+        CommonDtos.ConfigResponse config = (CommonDtos.ConfigResponse)
+                protocols.configResponse(catalogService.formatOf(catalog), catalog);
         assertEquals("paimon", config.defaults().get("prefix"));
         assertNotNull(config.defaults().get("warehouse"));
         assertNotNull(config.overrides());
@@ -844,7 +851,7 @@ class PaimonRestCatalogApiTests {
         catalogProperties.put("table-default.", "没有属性名的项，忽略");
         catalogProperties.put("table-default.type", "object-table");
         catalogManagementService.update(PREFIX,
-                new ManagementDtos.UpdateCatalogRequest(null, catalogProperties, null));
+                new ManagementDtos.UpdateCatalogRequest(null, null, catalogProperties, null));
         try {
             // Paimon 表：默认参数剥掉前缀进表属性；表级 bucket=8 覆盖默认的 4
             tableService.create(PREFIX, database, new TableDtos.CreateTableRequest(
@@ -874,7 +881,7 @@ class PaimonRestCatalogApiTests {
         } finally {
             // 默认参数是 catalog 的属性，留着会影响同类里的其它用例
             catalogManagementService.update(PREFIX,
-                    new ManagementDtos.UpdateCatalogRequest(null, Map.of(), null));
+                    new ManagementDtos.UpdateCatalogRequest(null, null, Map.of(), null));
         }
     }
 

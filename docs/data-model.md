@@ -41,6 +41,40 @@
 | `paimon_consumer` | consumer | 流式消费位点 |
 | `paimon_semantic_view` | semantic view | 格式 + 全文定义 |
 
+### 1.1 Iceberg 协议面新增的 9 个列
+
+加 Iceberg REST Catalog 支持时**一张表都没新建**，只在三张表上加了 9 个列
+（取舍见 [`iceberg-rest-catalog-design.md`](iceberg-rest-catalog-design.md) §4）：
+
+| 表 | 列 | 类型 | 说明 |
+| --- | --- | --- | --- |
+| `paimon_catalog` | `catalog_format` | `varchar(32)`，默认 `PAIMON` | 协议判别列，建 catalog 时确定、**不可变**；格式不进任何键 |
+| `paimon_table` | `metadata_doc` | `mediumtext` | **Iceberg 整份 `TableMetadata` JSON**，Iceberg 表的真相源 |
+| `paimon_table` | `metadata_location` | `varchar(1024)` | 元数据文件路径；**同时是乐观并发的 CAS 条件** |
+| `paimon_table` | `table_uuid` | `varchar(64)` | Iceberg `table-uuid`，跨重命名与改位置不变 |
+| `paimon_table` | `format_version` | `int` | Iceberg `format-version`（1/2/3）；Paimon 表为 `null` |
+| `paimon_snapshot` | `parent_snapshot_id` | `bigint` | Iceberg 快照链的前驱 |
+| `paimon_snapshot` | `sequence_number` | `bigint` | Iceberg v2 的提交次序；refs 保留与快照过期按它排序 |
+| `paimon_snapshot` | `summary_json` | `text` | Iceberg `summary` 原样存（键集合随版本漂移，因此不挑键建列） |
+| `paimon_view` | `metadata_location` | `varchar(1024)` | Iceberg 视图的 `ViewMetadata` 文件指针兼 CAS 条件；Paimon 视图不写元数据文件，为 `null` |
+
+两边的资源模型在这三张表上本来就是同构的，因此**既有列一个都没改**，只是复用：
+
+| 既有列 | Iceberg 侧的来源 |
+| --- | --- |
+| `paimon_table.path_value` | `location`（表目录） |
+| `paimon_table.schema_id` + `schema_doc` | `current-schema-id` + 当前 schema |
+| `paimon_table.table_type` | Iceberg 用 `ICEBERG`（与 `format-table` / `object-table` 同列，因此按 `tableType` 过滤照旧可用） |
+| `paimon_table_schema`（一行一个 schema 版本） | `schemas[]` 里逐个 `schema-id` |
+| `paimon_snapshot.base_manifest_list` | `manifest-list`（Iceberg 每个快照只有一个清单） |
+| `paimon_snapshot.total_record_count` | `summary["total-records"]` |
+| `paimon_branch` / `paimon_tag` | `refs` 里 `type=branch` / `type=tag`（不含 `main`） |
+| `paimon_view.view_schema_doc` | Iceberg 用同一列存整份 `ViewMetadata` JSON，因此视图**不需要任何投影行** |
+
+`paimon_partition` / `paimon_consumer` / `paimon_semantic_view` / `paimon_function`
+在 Iceberg 侧不写：分区由 manifest 决定（REST catalog 不逐分区登记）、Iceberg 没有消费位点、
+没有语义视图，`FunctionMetadata` 的只读投影是二期。
+
 ## 2. 管理侧（7 张，RBAC + Paimon 原生权限）
 
 | 表 | 对应资源 | 说明 |

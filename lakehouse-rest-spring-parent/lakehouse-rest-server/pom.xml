@@ -50,12 +50,22 @@
 			<artifactId>lakehouse-rest-storage</artifactId>
 		</dependency>
 		<!--
-			目前只有 Paimon 一个协议面。等 lakehouse-rest-protocol-iceberg 落地时，
-			这里加一行依赖即可——装配层不需要改（面之间靠 prefix 与 SPI 选出来）。
+			两个协议面都进可执行产物：它们各自声明自己那一套端点与元数据代数，
+			装配层靠 prefix 与 SPI 把请求分给对的那个面，因此**加一个面 = 加一行依赖**，
+			控制器与配置发现都不用改（见 docs/iceberg-rest-catalog-design.md §2.3）。
+
+			少写一个并非编译错误，表现是运行时的 500
+			「no protocol implementation is registered for catalog format ICEBERG」——
+			只有在真的用那个格式的客户端发来请求时才会出现，因此这里的每一行都有测试兜着
+			（ManagementApiTests#catalogFormatDrivesProtocolSelection）。
 		-->
 		<dependency>
 			<groupId>io.github.melin</groupId>
 			<artifactId>lakehouse-rest-protocol-paimon</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>io.github.melin</groupId>
+			<artifactId>lakehouse-rest-protocol-iceberg</artifactId>
 		</dependency>
 
 		<!--

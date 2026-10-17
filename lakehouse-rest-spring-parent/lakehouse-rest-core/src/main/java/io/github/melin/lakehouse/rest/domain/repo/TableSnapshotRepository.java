@@ -28,4 +28,15 @@ public interface TableSnapshotRepository extends JpaRepository<TableSnapshotEnti
     List<TableSnapshotEntity> findAllByTableIdOrderBySnapshotIdDesc(String tableId);
 
     long deleteByTableIdAndSnapshotIdGreaterThan(String tableId, long snapshotId);
+
+    /**
+     * 删掉一张表的全部快照行。
+     *
+     * <p>给 Iceberg 面用：那张表的快照是 {@code metadata_doc} 的派生投影，
+     * 删表时由 {@code IcebergProjections#deleteAll} 整批清掉。
+     * Paimon 面的删表路径走的是按 id 逐个删（那里还要保留「目标之后」的语义），
+     * 因此这条只服务 Iceberg 侧——但这不构成两条路径的语义分叉：
+     * 两者都要求「表实体消失之后，快照行不留下孤儿」。
+     */
+    long deleteByTableId(String tableId);
 }

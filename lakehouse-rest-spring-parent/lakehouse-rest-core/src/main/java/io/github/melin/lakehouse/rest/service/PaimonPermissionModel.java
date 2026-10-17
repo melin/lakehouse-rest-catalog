@@ -47,6 +47,12 @@ public final class PaimonPermissionModel {
      * {@code *_ALL} 的「显式作用域、含此后新建后代」语义一致）；TABLE/COLUMN →
      * 对象级；VIEW → view 对象级；FUNCTION → 所在 namespace（内部没有 function 层级，
      * {@code CatalogAccessRules} 也把 function 端点归到 namespace 权限上）。
+     *
+     * <p><b>{@code db} 原样放进去，不切层级。</b>它是库里那一列库名：Paimon 是单级库名，
+     * Iceberg 的多级 namespace 在库里是点号拼接（{@code NamespacePaths.toStorageName}）。
+     * 两种形态由判定层按「拼起来的路径」比较（{@code AuthorizationService.isPrefix}），
+     * 因此这里不必知道格式；反过来在这里切层级，会把含点号的 Paimon 库名切坏
+     * ——那种破坏是静默的：权限看起来授了，但谁都不生效。
      */
     public static MappedGrant map(PermissionAssignmentEntity entity) {
         String type = entity.getResourceType();

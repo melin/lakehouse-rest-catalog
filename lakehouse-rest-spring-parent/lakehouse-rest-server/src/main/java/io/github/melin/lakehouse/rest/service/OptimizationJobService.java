@@ -18,6 +18,7 @@ import io.github.melin.lakehouse.rest.service.submit.OptimizationJobSubmitter;
 import io.github.melin.lakehouse.rest.service.submit.OptimizationJobSubmitter.JobState;
 import io.github.melin.lakehouse.rest.service.submit.OptimizationJobSubmitter.Submitted;
 import io.github.melin.lakehouse.rest.support.ApiException;
+import io.github.melin.lakehouse.rest.support.CatalogFormat;
 import io.github.melin.lakehouse.rest.support.OptimizationOptions;
 import io.github.melin.lakehouse.rest.support.OptimizationOptions.Action;
 import io.github.melin.lakehouse.rest.support.OptimizationStatus.Item;
@@ -400,18 +401,32 @@ public class OptimizationJobService {
     @Transactional(readOnly = true)
     public Submission submission(String jobId) {
         OptimizationJobEntity job = require(jobId);
+        CatalogFormat format = catalogFormat(job.getCatalogId());
         List<SubmissionTable> tables = new ArrayList<>();
         for (OptimizationJobItemEntity item : itemRepository.findAllByJobIdOrderByCreatedAtAsc(jobId)) {
             Map<String, Map<String, String>> all = configResolver
-                    .resolveByTable(job.getCatalogId(), item.getTableId());
+                    .resolveByTable(format, job.getCatalogId(), item.getTableId());
             Map<String, Map<String, String>> wanted = new LinkedHashMap<>();
             for (Action action : OptimizationOptions.fromWire(item.getActions())) {
                 wanted.put(action.wire(), all.get(action.wire()));
             }
             tables.add(new SubmissionTable(item.getId(), item.getTableFullName(), item.getStatus(), wanted));
         }
-        return new Submission(job.getId(), catalogName(job.getCatalogId()), job.getTriggerType(),
+        return new Submission(job.getId(), catalogName(job.getCatalogId()), format.wireName(),
+                job.getTriggerType(),
                 OptimizationOptions.fromWire(job.getActions()).stream().map(Action::wire).toList(), tables);
+    }
+
+    /**
+     * 批次所属 catalog 的格式。
+     *
+     * <p>catalog 已被删除时回落 Paimon：批次是历史事实，此时它不可能再被提交
+     * （提交前服务端会先查到 catalog），回落只影响一条查询的返回值，不会影响执行。
+     */
+    private CatalogFormat catalogFormat(String catalogId) {
+        return catalogRepository.findById(catalogId)
+                .map(catalog -> CatalogFormat.of(catalog.getCatalogFormat()))
+                .orElse(CatalogFormat.DEFAULT);
     }
 
     /**

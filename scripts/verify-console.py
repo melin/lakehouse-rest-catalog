@@ -23,8 +23,24 @@ spec/polaris-management-service.yml）。路径写错时前端只表现为「空
                   而这类漏写编译、类型检查与单元测试都不会报）
  10. 静态凭据     catalog 自带 AK/SK 这条链路跨「服务端 DTO / 支持的类型 / 能力开关的
                   暴露 / 前端表单」四处，任何一处漏改都表现为「填了没反应」或「填完才 400」
- 11. 优化参数键   存储优化的表单字段名必须与服务端 OptimizationOptions.KNOWN_KEYS 逐字一致
-                  （键名写错的表现是保存时吃一个 400，只有点进去才会发现）
+ 11. 优化参数键   存储优化的表单字段名必须与服务端 OptimizationOptions.KNOWN_KEYS（Paimon）
+                  与 IcebergOptimizationOptions.KNOWN_KEYS（Iceberg）各逐字一致
+                  （键名写错的表现是保存时吃一个 400，只有点进去才会发现；
+                  两套键混用的表现更糟——被收下、然后静默不生效）
+ 12. 表格式       catalog 的 PAIMON / ICEBERG 跨「服务端枚举 / meta 下发 / 前端兜底 /
+                  新建表单 / 列表徽标与筛选 / 三个页面按格式伸缩」六处，且格式**不可变**；
+                  清单与判据都不能由前端另抄一份
+ 13. Iceberg 浏览   Iceberg catalog 的目录浏览走 namespaces/** 而不是 databases/**。
+                  这一组钉「契约形状」：endpoints 逐条对 Iceberg 规格、参数名是 pageSize
+                  而不是 maxResults、namespace 段用 0x1F、建表体是 Iceberg 的 schema/spec；
+                  以及 Iceberg 表详情页（IcebergTableView）的契约：文件列表走 catalog 级
+                  文件端点、快照处理 -1 哨兵、存储优化页签复用共用面板并传 ICEBERG。
+                  错法的共同点是**不报错**——列表少一页、层级被切错、填了保存不进去
+ 14. 存储字段分层  catalog 表单的字段被拆成「基本 / 高级」两张表，高级那张进折叠区。
+                  两条静默风险：拆表时漏一个字段（只是保存不进去，不报错）、
+                  以及顺手让折叠状态参与提交内容（展开看一眼再收起，报文就变了）
+ 15. 文档计数     文档里写的「N 组 M 项」与脚本实际一致——加校验组的人要顺手改文档，
+                  而这条约定此前没人执行（真漂过一次：docs/console.md 37、实际 38）
 
 用法：
     python3 scripts/verify-console.py
@@ -59,6 +75,10 @@ CLIENT_JS = os.path.join(CONSOLE_DIR, "src/api/client.js")
 
 CATALOG_SPEC = os.path.join(
     ROOT, "lakehouse-rest-spring-parent/lakehouse-rest-server/src/main/resources/static/rest-catalog-open-api.yaml")
+# Iceberg 协议面另有一份规格副本。控制台在 Iceberg catalog 下走的是这一套路径
+# （namespaces / identifiers / kebab-case 报文），因此端点比对必须把两份规格
+# 并起来——只比 Paimon 那份的话，新加的 Iceberg 端点会被判成「规格里没有」。
+ICEBERG_SPEC = os.path.join(ROOT, "spec/rest-catalog-open-api-iceberg.yaml")
 MANAGEMENT_SPEC = os.path.join(ROOT, "spec/polaris-management-service.yml")
 
 CONSOLE_ASSETS = os.path.join(
@@ -85,7 +105,18 @@ STORAGE_CONFIG_FIELDS = os.path.join(
     CONSOLE_DIR, "src/components/StorageConfigFields.vue")
 CATALOGS_VIEW = os.path.join(CONSOLE_DIR, "src/views/CatalogsView.vue")
 
+# 表格式（PAIMON / ICEBERG）这条链路的六个落点。与静态凭据那一组同一个理由：
+# 一个字段横跨服务端枚举、meta 下发、前端兜底与四个页面，任何一处漏改都表现为
+# 「界面看起来正常，点下去才发现不对」——正是静态校验该管的事。
+CATALOG_FORMAT_UTIL = os.path.join(CONSOLE_DIR, "src/utils/catalogFormat.js")
+CATALOG_FORMAT_ENUM = os.path.join(CORE_JAVA, "support/CatalogFormat.java")
+CATALOG_DETAIL_VIEW = os.path.join(CONSOLE_DIR, "src/views/CatalogDetailView.vue")
+BROWSE_VIEW = os.path.join(CONSOLE_DIR, "src/views/BrowseView.vue")
+TABLE_VIEW = os.path.join(CONSOLE_DIR, "src/views/TableView.vue")
+PERMISSIONS_VIEW = os.path.join(CONSOLE_DIR, "src/views/PermissionsView.vue")
+
 OPTIMIZATION_OPTIONS = os.path.join(SERVER_JAVA, "support/OptimizationOptions.java")
+ICEBERG_OPTIMIZATION_OPTIONS = os.path.join(SERVER_JAVA, "support/IcebergOptimizationOptions.java")
 OPTIMIZATION_UTIL = os.path.join(CONSOLE_DIR, "src/utils/optimization.js")
 
 # 管理规格的 servers[0].url 是 {scheme}://{host}/api/management/v1，路径要去掉基址才可比
@@ -178,10 +209,14 @@ for match in entry_pattern.finditer(endpoints_source):
     endpoints[name] = (method, path)
 
 catalog_paths = yaml.safe_load(read(CATALOG_SPEC))["paths"]
+iceberg_paths = yaml.safe_load(read(ICEBERG_SPEC))["paths"]
 management_paths = yaml.safe_load(read(MANAGEMENT_SPEC))["paths"]
 
 spec_routes = set()
 for path, operations in catalog_paths.items():
+    for method in operations:
+        spec_routes.add((method.upper(), path))
+for path, operations in iceberg_paths.items():
     for method in operations:
         spec_routes.add((method.upper(), path))
 for path, operations in management_paths.items():
@@ -553,53 +588,568 @@ check("管理 API 读路径对存储配置脱敏（withoutSecrets）",
 print("11. 优化参数键（表单字段 ↔ 服务端 KNOWN_KEYS）")
 
 # 存储优化的每一项动作允许出现哪些参数键，由服务端的 OptimizationOptions.KNOWN_KEYS
-# 定义；键名写错的表现是保存时吃一个 400「Unknown compact option」——编译器、类型检查
-# 与单元测试都不会报，只有点进去保存一次才发现。因此在这里把两处逐字比一遍。
+# （Paimon）与 IcebergOptimizationOptions.KNOWN_KEYS（Iceberg）定义；键名写错的表现是
+# 保存时吃一个 400「Unknown compact option」——编译器、类型检查与单元测试都不会报，
+# 只有点进去保存一次才发现。因此在这里把两处逐字比一遍。
+#
+# **两种格式各一套键**：`retain-min`（Paimon，最少保留几个快照）与 `retain-last`
+# （Iceberg，保留最后几个）是语义相反的一对，键名共用一套的话，保存时会 400，
+# 或者更糟——互不认识却都被收下，然后静默不生效。因此下面按格式各比一次。
 #
 # 比的是「前端那份字段定义」而不是前端再抄一份名单：字段定义是渲染表单的依据，
 # 也是提交时唯一会出现在请求体里的键，它跟服务端对不上就是真的对不上。
-opt_source = read(OPTIMIZATION_OPTIONS)
 opt_util = read(OPTIMIZATION_UTIL)
 
-# 动作常量名 → wire 名（`COMPACT("compact", "Compaction")`）；不写死对照表，抄了就会漂移
-wire_of = dict(re.findall(r'(\w+)\("([a-z]+)",\s*"', opt_source))
-# 参数键常量 → 字面量（`public static final String STRATEGY = "strategy";`）
-literals = dict(re.findall(r'public static final String (\w+)\s*=\s*"([^"]+)";', opt_source))
 
-server_keys = {}
-for constant, names in re.findall(r"Action\.(\w+),\s*Set\.of\(([^)]*)\)", opt_source):
-    wire = wire_of.get(constant)
-    if wire is None:
-        continue
-    resolved = []
-    for name in names.split(","):
-        name = name.strip()
-        if not name:
+def server_option_keys(source, wire_of):
+    """服务端某个参数类里的 {动作 wire 名: 排序后的键名}。
+
+    解析的是两件东西：`public static final String STRATEGY = "strategy";` 这样的键常量，
+    与 `Action.XXX, Set.of(...)` 这样的「动作 → 键集合」映射，两者用动作常量名对上。
+    动作常量本身（`COMPACT("compact", "Compaction")`）只在 `OptimizationOptions` 里声明一次，
+    Iceberg 那份用的是同一个枚举，所以 `wire_of` 由调用方传进来、不从本类里找。
+    不写死对照表，抄了就会漂移。
+    """
+    literals = dict(re.findall(r'public static final String (\w+)\s*=\s*"([^"]+)";', source))
+    keys = {}
+    for constant, names in re.findall(r"Action\.(\w+),\s*Set\.of\(([^)]*)\)", source):
+        wire = wire_of.get(constant)
+        if wire is None:
             continue
-        # 解析不出的常量名原样带上：与其静默漏掉一个键，不如让它在这里显形
-        resolved.append(literals.get(name, "<未解析:" + name + ">"))
-    server_keys[wire] = sorted(resolved)
+        resolved = []
+        for name in names.split(","):
+            name = name.strip()
+            if not name:
+                continue
+            # 解析不出的常量名原样带上：与其静默漏掉一个键，不如让它在这里显形
+            resolved.append(literals.get(name, "<未解析:" + name + ">"))
+        keys[wire] = sorted(resolved)
+    return keys
 
-# 前端：每个动作块里的 `key: '...'`（块从 `action: 'x',` 起，到下一个 action 声明前为止）
-frontend_keys = {}
-marks = [(match.group(1), match.start()) for match in re.finditer(r"action: '([a-z]+)',", opt_util)]
-for index, (wire, start) in enumerate(marks):
-    end = marks[index + 1][1] if index + 1 < len(marks) else len(opt_util)
-    frontend_keys[wire] = sorted(re.findall(r"key: '([^']+)'", opt_util[start:end]))
 
-differences = []
-for wire in sorted(set(server_keys) | set(frontend_keys)):
-    server = server_keys.get(wire, [])
-    front = frontend_keys.get(wire, [])
-    if server != front:
-        differences.append(f"{wire}: 服务端 {server}，前端 {front}")
+def console_field_keys(source, marker):
+    """前端某个字段表里的 {动作 wire 名: 排序后的 `key:` 值}。
+
+    `marker` 是那张表的声明（`const PAIMON_FIELDS = {` / `const ICEBERG_FIELDS = {`）：
+    从它起、到下一个顶层声明（顶格 `const` / `export` / `function`）前为止。
+    段内的动作块以两格缩进的 `compact: [` 起头——两格是这张表的层级，
+    因此不会误吃动作元数据里那些顶格与四格缩进的东西。
+    """
+    start = source.index(marker) + len(marker)
+    tail = source[start:]
+    end = re.search(r"^(?:const|export|function)\s", tail, re.M)
+    block = tail[:end.start()] if end else tail
+    marks = [(match.group(1), match.start()) for match in re.finditer(r"^  ([a-z]+): \[", block, re.M)]
+    keys = {}
+    for index, (wire, offset) in enumerate(marks):
+        stop = marks[index + 1][1] if index + 1 < len(marks) else len(block)
+        keys[wire] = sorted(re.findall(r"key: '([^']+)'", block[offset:stop]))
+    return keys
+
+
+def compare_option_keys(label, server_keys, frontend_keys):
+    """逐动作比一次，返回不一致的描述（空列表表示一致）。"""
+    differences = []
+    for wire in sorted(set(server_keys) | set(frontend_keys)):
+        server = server_keys.get(wire, [])
+        front = frontend_keys.get(wire, [])
+        if server != front:
+            differences.append(f"{label} {wire}: 服务端 {server}，前端 {front}")
+            continue
+        if any(name.startswith("<未解析:") for name in server):
+            differences.append(f"{label} {wire}: 服务端有一处常量没解析出来 {server}")
+    return differences
+
+
+optimization_source = read(OPTIMIZATION_OPTIONS)
+# 动作常量名 → wire 名（`COMPACT("compact", "Compaction")`）。两种格式共用这一个枚举，
+# 因此只解析一次，两个参数类都用它。
+action_wire = dict(re.findall(r'(\w+)\("([a-z]+)",\s*"', optimization_source))
+paimon_server_keys = server_option_keys(optimization_source, action_wire)
+iceberg_server_keys = server_option_keys(read(ICEBERG_OPTIMIZATION_OPTIONS), action_wire)
+paimon_frontend_keys = console_field_keys(opt_util, "const PAIMON_FIELDS = {")
+iceberg_frontend_keys = console_field_keys(opt_util, "const ICEBERG_FIELDS = {")
+
+paimon_differences = compare_option_keys("Paimon", paimon_server_keys, paimon_frontend_keys)
+check(f"{len(paimon_server_keys)} 项动作的 Paimon 参数键与服务端 KNOWN_KEYS 逐字一致",
+      bool(paimon_server_keys) and not paimon_differences,
+      "\n".join(paimon_differences))
+
+# Iceberg 那一份必须**真的不同**：两套键若能对上同一批键名，说明有人把 Iceberg 的
+# 字段直接复制了 Paimon 那份（`retain-min` 之类会一起跟过来），这条就是那道闸。
+iceberg_differences = compare_option_keys("Iceberg", iceberg_server_keys, iceberg_frontend_keys)
+check(f"{len(iceberg_server_keys)} 项动作的 Iceberg 参数键与服务端 KNOWN_KEYS 逐字一致",
+      bool(iceberg_server_keys) and not iceberg_differences
+      and iceberg_frontend_keys != paimon_frontend_keys,
+      "\n".join(iceberg_differences) if iceberg_differences
+      else "Iceberg 与 Paimon 的参数字段完全相同——Iceberg 那份大概率是复制过来的")
+
+# ------------------------------------------------------------------ 12. 表格式
+
+print("12. catalog 表格式（创建时区分 Paimon / Iceberg）")
+
+# 这一组的理由：catalog 的表格式是**创建时选定、之后不可改**的一条属性，
+# 它同时决定「客户端能用哪些端点」与「控制台能显示哪些页签」。前端如果在任何一处
+# 自己猜（猜候选、猜默认值、猜哪些页面该收敛），错法都很安静：候选少一个 → 建不出
+# Iceberg catalog；默认值猜错 → 表单里选 Paimon、建出来是 Iceberg；漏收敛一个页面 →
+# 对着 Iceberg catalog 打 Paimon 路径，页面上是一串 404，看着像故障而不是「一期不支持」。
+# 这四种都不会被编译、类型检查或单元测试拦住。
+format_util = read(CATALOG_FORMAT_UTIL)
+format_enum = read(CATALOG_FORMAT_ENUM)
+detail_view = read(CATALOG_DETAIL_VIEW)
+browse_view = read(BROWSE_VIEW)
+table_view = read(TABLE_VIEW)
+
+# --- 12.1 取值只有两个，且服务端是唯一权威 ---------------------------------
+# 取枚举常量：`public enum CatalogFormat {` 之后到枚举段结束的 `;` 之前。
+# 先去掉注释，否则枚举上的 Javadoc 里的全大写词会被当成取值。
+enum_body = format_enum.split("public enum CatalogFormat {", 1)[-1].split(";", 1)[0]
+enum_body = re.sub(r"/\*.*?\*/", "", enum_body, flags=re.S)
+enum_body = re.sub(r"//[^\n]*", "", enum_body)
+server_formats = sorted(re.findall(r"\b([A-Z][A-Z_]+)\b", enum_body))
+
+fallback = re.search(r"CATALOG_FORMATS\s*=\s*\[([^\]]*)\]", format_util)
+frontend_formats = sorted(re.findall(r"'([A-Z]+)'", fallback.group(1))) if fallback else []
+
+check(f"前端兜底的取值与服务端 CatalogFormat 枚举逐字一致（{server_formats or '未解析出枚举'}）",
+      bool(server_formats) and frontend_formats == server_formats,
+      f"CatalogFormat.java={server_formats or '未解析出枚举常量'}，"
+      f"catalogFormat.js={frontend_formats or '未找到 CATALOG_FORMATS'}")
+
+# 下发的必须是枚举本身，而不是 meta 服务里另写的一份列表——另写一份就会漂移，
+# 而漂移的表现是「界面上能选一个服务端不认的格式」，提交时才 400。
+check("服务端 meta 下发的 catalogFormats 来自枚举本身",
+      "names(CatalogFormat.values())" in meta_service,
+      "ConsoleMetaService 的 enums() 需要传 names(CatalogFormat.values())，不能另写一份字面量列表")
+
+check("服务端 meta 下发的 defaultCatalogFormat 也走同一个枚举",
+      "CatalogFormat.of(properties.getDefaultCatalogFormat())" in meta_service,
+      "默认值要过 CatalogFormat.of() 归一化，前端拿它预选时才不会与服务端的兜底方向不同")
+
+# --- 12.2 新建表单：候选、默认值、提交体 -----------------------------------
+start = catalogs_view.find("managementApi.updateCatalog(")
+update_call = catalogs_view[start:start + 320] if start >= 0 else ""
+create_wiring = {
+    "候选来自 meta 的 enums.catalogFormats": "enums?.catalogFormats" in catalogs_view,
+    "默认值来自 meta 的 service.defaultCatalogFormat": "service?.defaultCatalogFormat" in catalogs_view,
+    # 绑定形式有两种都算过：下拉（`v-model`）与选项卡片（点击赋值）。
+    # 效果图用的是卡片，改成卡片时这条断言跟着换，而不是把卡片改回下拉去迁就断言。
+    "表单绑定 dialog.catalogFormat": 'v-model="dialog.catalogFormat"' in catalogs_view
+        or '@click="dialog.catalogFormat = option.value"' in catalogs_view,
+    "提交体带 catalogFormat": "catalogFormat: dialog.catalogFormat" in catalogs_view,
+    "编辑不回传它（格式不可变）": start >= 0 and "catalogFormat" not in update_call,
+}
+check("新建表单从 meta 取候选与默认值、提交时带上 catalogFormat；编辑不回传它",
+      all(create_wiring.values()),
+      "\n".join(name for name, ok in create_wiring.items() if not ok))
+
+# 选项下方要有一行影响面说明：选 Iceberg 之后客户端只能走 Iceberg 路径、
+# 控制台一期不浏览它的表——这些要**在提交前**看到，而不是建完再发现。
+check("新建表单在选项下方给出影响面说明（选 Iceberg 之前就能看见）",
+      "catalogFormatNote(dialog.catalogFormat)" in catalogs_view
+      and "isIcebergCatalog(dialog.catalogFormat)" in catalogs_view,
+      "CatalogsView 应在格式选择下方渲染 catalogFormatNote，并在选中 Iceberg 时给出额外提示")
+
+# --- 12.3 列表：徽标 + 筛选 ------------------------------------------------
+check("列表有格式徽标与格式筛选",
+      "catalogFormatTagType(row)" in catalogs_view
+      and "catalogFormatLabel(row)" in catalogs_view
+      and "FORMAT_FILTERS" in catalogs_view
+      and 'v-model="formatFilter"' in catalogs_view,
+      "CatalogsView 的清单需要「表格式」列（徽标）与一个格式筛选器")
+
+# 筛选用的是同一个归属函数（catalogFormatOf），不能裸比字段：裸比会让
+# 「旧数据没有这一列」的行在徽标上显示 Paimon、在筛选里却被漏掉。
+check("筛选与徽标用同一个归属函数（筛出来的集合与看到的集合一致）",
+      re.search(r"allRows\.value\.filter\(\(row\) => catalogFormatOf\(row\)", catalogs_view) is not None,
+      "筛选条件应为 catalogFormatOf(row) === formatFilter.value")
+
+# --- 12.4 三个页面按格式伸缩 ----------------------------------------------
+# 判据不是「模板里藏了内容」，而是**loader 里挡了请求**：只在模板上做 v-if
+# 仍然会把注定被拒的请求发出去，页面上留下 404 日志，看起来像故障。
+#
+# 目录浏览这一条在 Iceberg 支持落地后变了形状：不再是「整页说明」，而是
+# **换一个走 Iceberg 契约的组件**。判据因此要盯两件事——换页这一下真的在，
+# 以及 Paimon 的那几个 loader 仍保留守卫（watch / 刷新会绕过模板直接调 load）。
+page_wiring = {
+    "表详情：loader 里挡掉 Paimon 表端点": "if (icebergCatalog.value)" in table_view,
+    "表详情：模板给出说明而不是空页": "!icebergCatalog" in table_view,
+    "目录浏览：Iceberg catalog 换成 Iceberg 协议面的浏览页":
+        '<IcebergBrowseView v-if="icebergCatalog" />' in browse_view,
+    "目录浏览：Paimon 的库列表 loader 在 Iceberg 下仍挡请求": "if (icebergCatalog.value) return []" in browse_view,
+    "目录浏览：Paimon 的四个对象列表 loader 一并挡掉": "|| icebergCatalog.value) {" in browse_view,
+    "catalog 详情：Paimon 专有的「配置」页签按格式收起": 'v-if="!isIceberg"' in detail_view,
+}
+check("三个页面都按 catalog 格式伸缩（且在 loader 里挡请求，不只是藏界面）",
+      all(page_wiring.values()),
+      "\n".join(name for name, ok in page_wiring.items() if not ok))
+
+# 深链接进来时 catalog 列表可能还没到，格式就无从判断——那时会默认走 Paimon 路径。
+# 两页都要先等一次列表（`ensureCatalogs`），否则「直接打开链接」这条路径上是猜的。
+check("两页都先确认格式再发请求（深链接进来时不猜）",
+      "session.state.catalogsLoaded" in table_view
+      and "session.state.catalogsLoaded" in browse_view,
+      "TableView 与 BrowseView 都应在第一个请求之前确保 catalog 列表已加载")
+
+# --- 12.5 能力清单以服务端下发的为准 --------------------------------------
+# Iceberg 侧的 endpoints 是服务端**下发**给客户端的原文，客户端拿它做等值比较。
+# 前端另抄一份会出现「界面显示的能力与实际生效的不一致」——而这一块的全部价值
+# 就是排障时不用去读文档。因此详情页必须是「读回来再显示」。
+check("catalog 详情页的能力清单读服务端的 /v1/config，而不是前端抄一份",
+      "catalogApi.config(catalogName.value)" in detail_view
+      and "endpoints" in detail_view
+      and "GET /v1/{prefix}/namespaces" not in detail_view,
+      "CatalogDetailView 应读 catalogApi.config() 的 endpoints；端点的字面量清单不能写在前端")
+
+check("详情页给出客户端基址与「创建后不可更改」这两条可核对的说明",
+      "clientBase" in detail_view and "创建后不可更改" in detail_view,
+      "CatalogDetailView 的概览应显示表格式（含不可变说明）与 /v1/{prefix} 基址")
+
+# --- 12.6 「不声明支持」的条数与唯一的来源对齐 ------------------------------
+# 这一栏只能写在前端：服务端不会下发「我不支持什么」，没有就是没有。
+# 于是界面上那个数字成了唯一会随实现漂移的地方——每多实现一个端点，它就该少一条。
+# 因此把它与 `verify-iceberg-endpoints.py` 里那份**字面量**清单的条数比一遍：
+# 那份清单本身已经被「规格 − 声明」双向校验过（见该脚本）。
+not_declared_total = re.search(r"NOT_DECLARED_TOTAL\s*=\s*(\d+)", detail_view)
+iceberg_script = read(os.path.join(ROOT, "scripts/verify-iceberg-endpoints.py"))
+not_implemented_block = iceberg_script.split("NOT_IMPLEMENTED = [", 1)[-1].split("]", 1)[0]
+not_implemented = re.findall(r'"([A-Z]+ /v1[^"]+)"', not_implemented_block)
+check("详情页「不声明支持」的条数与 verify-iceberg-endpoints.py 的 NOT_IMPLEMENTED 一致"
+      f"（{len(not_implemented)} 条）",
+      not_declared_total is not None and int(not_declared_total.group(1)) == len(not_implemented),
+      f"CatalogDetailView 写的是 {not_declared_total.group(1) if not_declared_total else '未找到 NOT_DECLARED_TOTAL'}，"
+      f"verify-iceberg-endpoints.py 登记了 {len(not_implemented)} 条")
+
+# --- 12.7 权限页：候选来源按格式分派 --------------------------------------
+# 「权限管理」页的中间那一层在两种格式里名字与来源都不同：Paimon 是扁平库名
+# （`databases/**`），Iceberg 是多级 namespace（`namespaces/**`，且端点只回直接子级，
+# 要按层递归）。选错来源的表现是**空下拉**或一串 404——而授权本身照旧提交得进去
+# （服务端不校验库名是否存在），于是落库的是一条永远匹配不上的权限。
+# 这类错编译、类型检查都不会报：`catalogApi.listDatabases` 与 `icebergApi.listNamespaces`
+# 在类型上都是「返回一个列表」。
+permission_view = read(PERMISSIONS_VIEW)
+permission_wiring = {
+    "格式判断走统一的归属函数":
+        "isIcebergCatalog(session.catalogByName(catalogName.value))" in permission_view,
+    "Iceberg：namespace 候选按层递归取（listAllNamespaces）":
+        "listAllNamespaces(" in permission_view,
+    "Iceberg：表 / 视图候选走 icebergApi，并按 identifiers 取":
+        "icebergApi.listTables(" in permission_view
+        and "icebergApi.listViews(" in permission_view
+        and "identifiers" in permission_view,
+    "Paimon：仍走 databases 与 tables / views":
+        "catalogApi.listDatabases(" in permission_view,
+    "文案随格式切换（Namespace / Database）":
+        "'Namespace'" in permission_view and "scopeTerm" in permission_view,
+    "先确认格式再取候选（深链接进来时不猜）":
+        "ensureCatalogs" in permission_view,
+}
+check("权限页按 catalog 格式取候选（Iceberg 走 namespaces/**，Paimon 走 databases/**）",
+      all(permission_wiring.values()),
+      "\n".join(name for name, ok in permission_wiring.items() if not ok))
+
+# ------------------------------------------------------------------ 13. Iceberg 目录浏览
+
+print()
+print("13. Iceberg 目录浏览（namespace / table / view 走 Iceberg 契约）")
+
+# 起因：控制台原先对 Iceberg catalog 是「整页说明、不发请求」。现在这一页真的
+# 能读了，于是多出一类新的静默错误——**用 Paimon 的形状去读 Iceberg**：
+#
+#   · 路径对上但参数名错（`maxResults` 而不是 `pageSize`）→ 服务端不报错，
+#     只是按默认页大小回一页，列表看起来「就是只有 50 条」；
+#   · namespace 段用点号拼 → 层级名含点时被切错，也是不报错；
+#   · 表列表想显示 location / 时间 → 只能逐表 load，N 次请求换一屏数据，
+#     而 `identifiers` 里本来就没有这些字段。
+#
+# 这一组只钉「契约形状」，不钉像素。
+iceberg_api = read(os.path.join(CONSOLE_DIR, "src/api/iceberg.js"))
+iceberg_browse = read(os.path.join(CONSOLE_DIR, "src/views/IcebergBrowseView.vue"))
+
+# 第 1 组比的是「并集」，一条 Iceberg 端点若碰巧与 Paimon 同路径也可能过关
+# （rename 就是同路径的那一条）。这里只取 iceberg* 端点，逐条对 Iceberg 规格。
+iceberg_entry = re.compile(
+    r"^\s*(iceberg\w+):\s*\{\s*method:\s*'([A-Z]+)',\s*path:\s*'([^']+)'\s*\},?\s*$", re.M)
+iceberg_endpoints = {m.group(1): (m.group(2), m.group(3)) for m in iceberg_entry.finditer(endpoints_source)}
+iceberg_spec_routes = {
+    (method.upper(), path)
+    for path, operations in iceberg_paths.items()
+    for method in operations
+}
+not_in_iceberg_spec = sorted(
+    name for name, route in iceberg_endpoints.items() if route not in iceberg_spec_routes)
+
+check(f"endpoints.js 里 {len(iceberg_endpoints)} 条 iceberg* 端点都能在 Iceberg 规格中找到",
+      iceberg_endpoints and not not_in_iceberg_spec,
+      "\n".join(f"{name} → {iceberg_endpoints[name][0]} {iceberg_endpoints[name][1]}"
+                for name in not_in_iceberg_spec))
+
+check("Iceberg 浏览页只调 icebergApi（不混用 Paimon 的 catalogApi）",
+      "icebergApi" in iceberg_browse and "catalogApi" not in iceberg_browse,
+      "IcebergBrowseView 里出现了 catalogApi 的引用，两套契约会串")
+
+# 一条断言钉住「路径分隔符」：0x1F 是服务端的存储口径，点号只是显示口径。
+check("namespace 路径段用 0x1F 拼，不是点号",
+      "NAMESPACE_SEPARATOR = '\\u001F'" in iceberg_api
+      and "join(NAMESPACE_SEPARATOR)" in iceberg_api
+      and "namespaceLabel" in iceberg_api,
+      "api/iceberg.js 应导出 NAMESPACE_SEPARATOR（\\u001F）与 namespacePath/namespaceLabel 两个方向的转换")
+
+# 分页参数名是这一组最容易错、又最不会报错的一条。
+# 判据看的是**查询键**（`maxResults:`），不是这个词出现过没有：注释里提一句
+# 「Paimon 面叫 maxResults」是在解释差异，那正是该留下的东西。
+check("列表请求用 Iceberg 的 pageSize（不是 Paimon 的 maxResults）",
+      "pageSize" in iceberg_api and "maxResults:" not in iceberg_api
+      and "next-page-token" in iceberg_api,
+      "api/iceberg.js 里出现了 maxResults 这个查询键，那是 Paimon 面的参数名")
+
+# 表列表只拿得到 identifiers：控制台不能假装列表里有 location / 时间。
+# loadTable 属于表详情页（IcebergTableView），浏览页里出现它就是又在逐表拼列。
+iceberg_table_view = read(os.path.join(CONSOLE_DIR, "src/views/IcebergTableView.vue"))
+check("表与视图列表都按 identifiers 取，逐表 load 只发生在表详情页",
+      iceberg_browse.count("createPagedList('identifiers'") == 2
+      and "icebergApi.loadTable" not in iceberg_browse
+      and "icebergApi.loadTable" in iceberg_table_view,
+      "两个列表都应以 identifiers 为字段；loadTable 应只在 IcebergTableView 里按需调用")
+
+# 建表报文是 Iceberg 形状：schema-id / required / source-id / field-id。
+# 这四项任何一项写成 Paimon 的样子，服务端会用 SchemaParser 报一句难懂的错。
+check("Iceberg 建表体是 Iceberg 形状（schema-id / required / partition-spec / source-id）",
+      all(token in iceberg_browse for token in ("'schema-id'", "required:", "'partition-spec'", "'source-id'", "'field-id'")),
+      "IcebergBrowseView 的建表表单应拼出 Iceberg 的 schema 与 partition-spec，而不是 Paimon 的 fields/partitionKeys")
+
+check("Iceberg 浏览页不出现 Paimon 的路径与参数（/databases）",
+      "/databases" not in iceberg_browse and "/databases" not in iceberg_api,
+      "Iceberg 侧的路径是 /namespaces/**")
+
+# 删命名空间在 Iceberg 里不是级联删除：非空回 409。确认框要说清这一点，
+# 否则用户删失败后会以为是控制台的问题。
+check("删除命名空间的确认框说明「非空会被拒绝（409）」并按需先清空",
+      "409" in iceberg_browse and "级联" in iceberg_browse,
+      "Iceberg 的 drop namespace 与 Paimon 的 drop database 语义不同，界面要如实说明")
+
+# 两个浏览页共用一套骨架样式：搬回某个组件的 scoped 里，另一页会塌。
+index_css = read(os.path.join(CONSOLE_DIR, "src/styles/index.css"))
+check("左列表 + 右面板的骨架样式在全局，两个浏览页共用一份",
+      ".pc-browse-body" in index_css and ".pc-db-item" in index_css
+      and ".pc-browse-body" not in read(BROWSE_VIEW).split("<style")[1],
+      "styles/index.css 应有 .pc-browse-body；BrowseView 的 scoped 里不该再有一份")
+
+# --- 13.2 Iceberg 表详情页 ---------------------------------------------------
+# 起因：表详情从「整页说明、不发请求」升级为真实可读的独立页（IcebergTableView）。
+# 它与 Paimon 版 TableView 平行，最容易犯的错还是「用 Paimon 的形状去读 Iceberg」，
+# 外加两条它特有的：
+#
+#   · 文件列表去调 Paimon 的 tableId 端点 —— LoadTableResult 里没有内部 id，
+#     那个端点也只认 Paimon 表元数据的 path，正确做法是 catalog 级端点
+#     （根 = warehouse）+ metadata.location 减去 warehouse 前缀；
+#   · 存储优化页签自己调优化端点、或忘了传 format —— 面板按 format 取参数集
+#     （Iceberg 的 retain-last vs Paimon 的 retain-min），漏传的表现是表单显示
+#     Paimon 的参数、保存时 400，而不是编译错误。
+router_source = read(ROUTER)
+
+check("Iceberg 表详情页有独立路由（icebergTable），与 Paimon 版平行",
+      "'icebergTable'" in router_source and "IcebergTableView" in router_source,
+      "router/index.js 应声明 /iceberg-tables/... 路由并指向 IcebergTableView")
+
+check("Iceberg 表详情页只调 icebergApi（不混用 Paimon 的 catalogApi）",
+      "icebergApi" in iceberg_table_view and "catalogApi" not in iceberg_table_view,
+      "IcebergTableView 里出现了 catalogApi 的引用，两套契约会串")
+
+check("Iceberg 表详情页不出现 Paimon 的路径（/databases）",
+      "/databases" not in iceberg_table_view,
+      "Iceberg 侧的路径是 /namespaces/**")
+
+check("表详情的文件列表走 catalog 级文件端点（根 = warehouse），不用 Paimon 的 tableId 端点",
+      "listCatalogFiles" in iceberg_table_view and "listTableFiles" not in iceberg_table_view,
+      "LoadTableResult 里没有内部 id；文件浏览应由 metadata.location 减去 warehouse 前缀后调 listCatalogFiles")
+
+check("快照读 metadata.snapshots，并处理 current-snapshot-id=-1 的无快照哨兵",
+      "'current-snapshot-id'" in iceberg_table_view and "> 0" in iceberg_table_view
+      and "无快照" in iceberg_table_view,
+      "建表后还没提交时 current-snapshot-id 是 -1，照原样显示会让人去找编号 -1 的快照")
+
+check("存储优化页签挂的是共用面板，并显式传入 ICEBERG（取 Iceberg 那套参数集）",
+      "TableOptimizationPanel" in iceberg_table_view
+      and 'format="ICEBERG"' in iceberg_table_view
+      # 面板按 props 自己拼请求，页签不该自己再调一次策略/执行端点——那会变成
+      # 两份「什么时候加载、加载哪个」的逻辑，且第二份迟早漏掉 format
+      and "tableOptimizationPolicy" not in iceberg_table_view
+      and "runTableOptimization" not in iceberg_table_view,
+      "Iceberg 表详情的「存储优化」应复用 TableOptimizationPanel 并传 format=\"ICEBERG\"；"
+      "参数键与执行语句由 format 分派，页签自己调端点会绕过这条分派")
+
+check("建表表单的 format-version 提供 1 / 2 / 3 三个选项",
+      all(f'value="{version}"' in iceberg_browse for version in ("1", "2", "3")),
+      "iceberg-core 1.11 支持 v3（实测 properties['format-version']='3' 落出 format-version: 3），"
+      "表单只给 1 / 2 是过时的")
+
+# ------------------------------------------------------------------ 14. 存储字段分层
+
+print()
+print("14. 存储字段分层（基本 / 高级两张表，折叠不改提交内容）")
+
+# 起因：S3 有 12 个字段，其中 10 个是「绝大多数人不用填」的（跨账户角色、STS、KMS）。
+# 把它们收进「存储高级参数」折叠区，看起来只是模板上的事，实际有两个静默风险：
+#
+#   ① 拆表时漏掉一个字段 —— 不报错，只是那个字段从此保存不进去。用户会以为
+#      「服务端不认 roleArn 了」而去查 IAM，而真实原因是在前端被丢了。
+#   ② 顺手让折叠状态参与提交 —— 展开看一眼再收起来，报文里就多了几个 false。
+#      这种差异只有 diff 报文才看得见，所以这里把「build() 不读折叠状态」变成断言。
+#
+# 判据尽量对着**服务端 record**，而不是在前端再抄一份字段名单：
+# 抄了就会漂移，而漂移的表现是「两边都错得一致」，校验静默通过。
+field_source = read(STORAGE_CONFIG_FIELDS)
+
+
+def vue_string_list(const_name):
+    """取 `const NAME = ['a', 'b']` 这类字面量的字符串项。"""
+    found = re.search(rf"{const_name} = \[([^\]]*)\]", field_source)
+    return re.findall(r"'([^']+)'", found.group(1)) if found else []
+
+
+def vue_field_table(const_name):
+    """取「存储类型 -> 字段 key 列表」的表。
+
+    不引入 JS 解析器：这两张表是纯字面量、形状固定（`TYPE: [ { key: 'x' }, ... ]`），
+    正则足够；万一它被改成别的形状（例如按类型拼装），这里会解析成空表，
+    校验随即失败——那正是该人工看一遍的时候。
+    """
+    block = re.search(rf"const {const_name} = \{{(.*?)\n\}}\n", field_source, re.S)
+    if not block:
+        return None
+    table = {}
+    for entry in re.finditer(r"\n  (\w+): \[(.*?)\]", block.group(1), re.S):
+        table[entry.group(1)] = re.findall(r"key: '([^']+)'", entry.group(2))
+    return table
+
+
+basic_table = vue_field_table("BASIC_FIELDS")
+advanced_table = vue_field_table("ADVANCED_FIELDS")
+
+# 共有字段与静态凭据不走这两张表（它们由模板单独渲染、由 build() 单独处理），
+# 因此比对时要从服务端 record 里减掉——这两个名单同样从前端读，不另抄。
+shared_keys = set(vue_string_list("COMMON_KEYS"))
+credential_keys = set(vue_string_list("STATIC_CREDENTIAL_KEYS"))
+
+
+def dto_form_fields(wire):
+    """服务端 record 里「该由这两张表渲染」的字段；找不到对应 record 时返回 None。"""
+    shape = shapes.get(by_type.get(wire, ""))
+    if shape is None:
+        return None
+    return set(parameter_names(shape[0])) - shared_keys - credential_keys
+
+
+# --- 13.1 拆分不丢字段、也不多出服务端没有的字段 -----------------------------
+union_issues = []
+for wire in sorted(set(basic_table or {}) | set(advanced_table or {})):
+    expected = dto_form_fields(wire)
+    if expected is None:
+        union_issues.append(f"{wire}: StorageDtos.java 里找不到对应的 record")
         continue
-    if any(name.startswith("<未解析:") for name in server):
-        differences.append(f"{wire}: 服务端有一处常量没解析出来 {server}")
+    actual = (set((basic_table or {}).get(wire, []))
+              | set((advanced_table or {}).get(wire, [])))
+    if actual != expected:
+        union_issues.append(
+            f"{wire}: 少了 {sorted(expected - actual) or '无'}，"
+            f"多了 {sorted(actual - expected) or '无'}")
 
-check(f"{len(server_keys)} 项动作的参数键与服务端 KNOWN_KEYS 逐字一致",
-      bool(server_keys) and not differences,
-      "\n".join(differences))
+check("两张字段表合并后覆盖服务端 record 的全部专属字段（不丢、不多）",
+      basic_table is not None and advanced_table is not None and not union_issues,
+      "\n".join(union_issues) or "未解析出 BASIC_FIELDS / ADVANCED_FIELDS")
+
+# --- 13.2 两张表之间不重叠 ---------------------------------------------------
+# 重叠的表现是同一个键渲染两次：两个控件的 v-model 指向同一处，
+# 改一个另一个跟着变，看起来像「输入框卡住了」。
+overlaps = []
+for wire in (basic_table or {}):
+    both = set(basic_table.get(wire, [])) & set((advanced_table or {}).get(wire, []))
+    if both:
+        overlaps.append(f"{wire}: {sorted(both)}")
+
+check("同一类型下基本表与高级表不重叠（重叠会让同一个键渲染两次）",
+      basic_table is not None and advanced_table is not None and not overlaps,
+      "\n".join(overlaps) or "未解析出 BASIC_FIELDS / ADVANCED_FIELDS")
+
+# --- 13.3 build() 不读折叠状态 -----------------------------------------------
+# 这是本组最该存在的一条：折叠是纯视觉改动，最常见的事故是顺手在提交逻辑里
+# 也加一层「收起就不提交」。一旦加了，表现是**静默改坏配置**而不是报错。
+# 同时要求它仍读合并后的 `fields.value`——若改成硬编码列表，13.1 也就形同虚设了。
+build_match = re.search(r"function build\(\) \{(.*?)\n\}", field_source, re.S)
+build_body = build_match.group(1) if build_match else ""
+leaked = [token for token in ("advancedOpen", "advancedFields", "filledAdvanced")
+          if token in build_body]
+if not build_body:
+    build_detail = "未找到 build() 函数体（改名了？本组的所有判据都依赖它）"
+elif leaked:
+    build_detail = (f"build() 里出现 {leaked}：折叠状态不得参与提交内容，"
+                    "否则「展开看一眼再收起」会改变报文")
+elif "fields.value" not in build_body:
+    build_detail = "build() 不再读合并后的 fields.value，可能改成了硬编码字段列表"
+else:
+    build_detail = ""
+
+check("build() 不读取折叠状态、仍读合并后的字段视图",
+      bool(build_body) and not leaked and "fields.value" in build_body,
+      build_detail)
+
+# --- 13.4 FILE 没有高级字段、折叠区按「有没有」决定是否出现 -------------------
+# 判据写成 advancedFields.length 而不是「类型 === 'S3'」：后者在服务端给
+# 某个类型加字段时会静默漏掉，而那正是最不容易被发现的一类遗漏。
+check("FILE 没有高级字段（折叠区整块不出现）",
+      advanced_table is not None and advanced_table.get("FILE") == [],
+      f"ADVANCED_FIELDS.FILE = {advanced_table.get('FILE') if advanced_table else '未解析'}")
+
+check("折叠区按「当前类型有没有高级字段」出现，而不是硬编码成某个类型",
+      'v-if="advancedFields.length"' in field_source,
+      '模板里应写 v-if="advancedFields.length"')
+
+# --- 13.5 默认收起，且收起态说得出「可以不管它」 ------------------------------
+# 「默认收起」是需求本身；而「全部留空即用服务端默认值」这句话是折叠能被信任的
+# 前提——没有它，用户会以为收起区里有必填项而被迫展开，折叠就白做了。
+check("折叠区默认收起（初始值 false，不由是否有值反推）",
+      bool(re.search(r"advancedOpen = ref\(false\)", field_source)),
+      "StorageConfigFields 里应写 advancedOpen = ref(false)")
+
+check("收起态给出计数徽标与「可以不管它」的说明",
+      "advancedBadge" in field_source and "全部留空即用服务端默认值" in field_source,
+      "折叠头需要 计数（advancedBadge）+ 一句「全部留空即用服务端默认值」")
+
+# ------------------------------------------------------------------ 14. 文档计数
+
+print()
+print("15. 文档计数（文档写的「N 组 M 项」必须与脚本实际一致）")
+
+# 这一组是**元校验**，起因是一次真实的漂移：docs/console.md 写「12 组 37 项」、
+# README 写「12 组 38 项」，而脚本实际是 38——两个数字都没人核对，因为脚本此前
+# 只打印计数、从不断言它。`AGENTS.md` §6 写着「加校验组要顺手把总数写进文档」，
+# 但那是靠人记的约定，而人记不住（这次就没记住）。
+#
+# 期望值由脚本自身推出，不写死常量：组数＝源码里 `print("<n>. ...")` 的条数，
+# 项数＝本次 check() 的总次数（含本组这两条）。于是新增/删除校验项时这里不用改，
+# 但**文档必须改**——它正是本组要逼出来的那个动作。
+#
+# 本组的盲区：拦不住「连本组一起删掉」。这一点没有低成本解法，只能靠 review 时
+# 注意到文档里的组数少了一组，所以在这里写明，免得下一个人以为它是全覆盖的。
+this_source = read(os.path.abspath(__file__))
+actual_groups = len(re.findall(r'^print\("\d+\. ', this_source, re.M))
+actual_items = checks + 2  # 本组这两条还没跑，先计入总数
+
+
+def documented_counts(path):
+    """取文档里的「N 组 M 项」；没有这种写法时返回 None。"""
+    found = re.search(r"(\d+)\s*组\s*(\d+)\s*项", read(path))
+    return (int(found.group(1)), int(found.group(2))) if found else None
+
+
+for label, doc_path in (("docs/console.md", os.path.join(ROOT, "docs/console.md")),
+                        ("README.md", os.path.join(ROOT, "README.md"))):
+    documented = documented_counts(doc_path)
+    check(f"{label} 的组数与项数（应为 {actual_groups} 组 {actual_items} 项）与实际一致",
+          documented == (actual_groups, actual_items),
+          f"文档里写的是 {documented[0]} 组 {documented[1]} 项" if documented
+          else "文档里找不到「N 组 M 项」这样的写法")
 
 # ------------------------------------------------------------------ 汇总
 

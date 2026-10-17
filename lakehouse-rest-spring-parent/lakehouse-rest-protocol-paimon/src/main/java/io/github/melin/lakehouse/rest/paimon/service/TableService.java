@@ -25,6 +25,7 @@ import io.github.melin.lakehouse.rest.paimon.support.TableDefaults;
 import io.github.melin.lakehouse.rest.paimon.support.TableKinds;
 import io.github.melin.lakehouse.rest.service.CatalogService;
 import io.github.melin.lakehouse.rest.support.ApiException;
+import io.github.melin.lakehouse.rest.support.CatalogFormat;
 import io.github.melin.lakehouse.rest.support.Json;
 import io.github.melin.lakehouse.rest.support.Paging;
 import io.github.melin.lakehouse.rest.support.Paths;
@@ -126,7 +127,7 @@ public class TableService {
     public TableDtos.ListTablesGloballyResponse listGlobally(String prefix, String databaseNamePattern,
                                                              String tableNamePattern, Integer maxResults,
                                                              String pageToken) {
-        CatalogEntity catalog = catalogService.resolve(prefix);
+        CatalogEntity catalog = catalogService.resolveForFormat(prefix, CatalogFormat.PAIMON);
         List<CommonDtos.Identifier> identifiers = new ArrayList<>();
         for (TableEntity table : tableRepository.findAllByCatalogIdOrderByDatabaseIdAscNameAsc(catalog.getId())) {
             String databaseName = databaseNameOf(table.getDatabaseId());
@@ -152,7 +153,7 @@ public class TableService {
 
     @Transactional(readOnly = true)
     public TableDtos.GetTableResponse getById(String prefix, String tableId) {
-        CatalogEntity catalog = catalogService.resolve(prefix);
+        CatalogEntity catalog = catalogService.resolveForFormat(prefix, CatalogFormat.PAIMON);
         TableEntity table = tableRepository.findById(tableId)
                 .filter(candidate -> catalog.getId().equals(candidate.getCatalogId()))
                 .orElseThrow(() -> ApiException.tableNotExist(tableId));
@@ -188,7 +189,7 @@ public class TableService {
         TypeDtos.Schema schema = request.schema() == null ? new TypeDtos.Schema() : request.schema();
         SchemaSupport.normalize(schema);
 
-        CatalogEntity catalog = catalogService.resolve(prefix);
+        CatalogEntity catalog = catalogService.resolveForFormat(prefix, CatalogFormat.PAIMON);
         String assignedPath = Paths.tableLocation(properties.getPathTemplate(),
                 catalog.getWarehouse(), databaseName, tableName);
         // 表格式先定下来：catalog 级的默认表属性只合并到 Paimon 表（见 TableDefaults），

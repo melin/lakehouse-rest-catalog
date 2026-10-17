@@ -1,6 +1,10 @@
 <template>
   <div class="pc-page pc-browse">
+    <!-- Iceberg 分支整页换成 IcebergBrowseView，本页的页头与对话框都不该再出现：
+         页头里的动作（刷新 / 新建表 / 新建数据库）是 Paimon 语义的，留下只会出现
+         「同一屏两个页头、两套按钮」。IcebergBrowseView 自带页头与对话框。 -->
     <PageHeader
+      v-if="!icebergCatalog"
       title="Catalog"
       :subtitle="`浏览 catalog「${prefix || '未选择'}」下的库与对象。这里看到的元数据与引擎客户端读到的是同一份，改动会立刻反映到它们的查询上。`"
     >
@@ -9,11 +13,11 @@
           <el-icon><Refresh /></el-icon>
           <span class="pc-btn-text">刷新</span>
         </el-button>
-        <el-button size="small" :disabled="!database" @click="openCreateTable">
+        <el-button size="small" :disabled="!database || icebergCatalog" @click="openCreateTable">
           <el-icon><Plus /></el-icon>
           <span class="pc-btn-text">新建表</span>
         </el-button>
-        <el-button size="small" type="primary" @click="openCreateDatabase">
+        <el-button size="small" type="primary" :disabled="icebergCatalog" @click="openCreateDatabase">
           <el-icon><Plus /></el-icon>
           <span class="pc-btn-text">新建数据库</span>
         </el-button>
@@ -27,6 +31,14 @@
         或确认 <code class="pc-mono">paimon.rest.auto-create-catalog</code> 是否开启。
       </div>
     </el-alert>
+
+    <!--
+      Iceberg catalog：整页换成 Iceberg 协议面的浏览（namespace / tables / views）。
+      两套契约的差异不是参数级的（资源名、标识符形状、分页字段名都不同），
+      因此是另一个组件而不是本页里的一串 v-if；本页剩下一件事——
+      **别把 Paimon 的请求发出去**，那由下面 loader 里的守卫保证。
+    -->
+    <IcebergBrowseView v-if="icebergCatalog" />
 
     <div v-else class="pc-browse-body">
       <!-- 左：数据库 -->
@@ -596,10 +608,12 @@ import ResourceState from '@/components/ResourceState.vue'
 import SectionTitle from '@/components/SectionTitle.vue'
 import TimeText from '@/components/TimeText.vue'
 import TipNote from '@/components/TipNote.vue'
+import IcebergBrowseView from '@/views/IcebergBrowseView.vue'
 import { catalogApi } from '@/api/catalog.js'
 import { describeError } from '@/api/client.js'
 import { confirmDanger, notifyError, notifySuccess, useResource } from '@/composables/index.js'
 import { session } from '@/store/session.js'
+import { isIcebergCatalog } from '@/utils/catalogFormat.js'
 import { formatTime, orPlaceholder, prettyJson } from '@/utils/format.js'
 import { tableKindLabel } from '@/utils/tableKind.js'
 import { tableDefaultsOf } from '@/utils/tableDefaults.js'
@@ -669,6 +683,34 @@ const tableFilter = ref('')
 const prefix = computed(() => route.query.catalog || session.state.selectedCatalog || '')
 const database = computed(() => route.query.database || '')
 
+/**
+ * 这个 catalog 是不是 Iceberg 协议面。
+ *
+ * <p>**本页只服务 Paimon 协议面**：它调的是 `/v1/{prefix}/databases/**`，
+ * 而 Iceberg catalog 服务的是 `/v1/{prefix}/namespaces/**`。对 Iceberg catalog
+ * 打这些路径会被服务端以「格式不匹配」拒绝（一句指名原因的 404，见
+ * `docs/iceberg-rest-catalog-design.md` §3.3），所以模板整页换成
+ * `IcebergBrowseView`，同时**loader 里也挡一道**——watch 与「刷新 / 重试」
+ * 都会绕过模板直接调 `load()`，只靠 v-if 仍会把请求发出去。
+ *
+ * <p>格式读的是 session 里的 catalog 列表（`catalogFormat` 只在那里），
+ * 而首屏它可能还没取回来，见下面 watch 里的 `ensureCatalogs()`。
+ */
+const icebergCatalog = computed(() => isIcebergCatalog(session.catalogByName(prefix.value)))
+
+/**
+ * 首屏可能来不及：`catalogsLoaded` 之前读格式只会得到「不是 Iceberg」，
+ * 于是会对着一个 Iceberg catalog 发出注定 404 的请求。等它一次。
+ *
+ * <p>与顶栏的 `session.bootstrap()` 可能并发发出同一个列表请求——代价是一次
+ * 便宜的 GET，换来的是「不猜格式」。猜错的表现是页面上出现一串 404，
+ * 而那看起来像故障、不像「一期不支持」。
+ */
+async function ensureCatalogs() {
+  if (session.state.catalogsLoaded) return
+  await session.loadCatalogs().catch(() => null)
+}
+
 const pageSize = computed(() => session.state.meta?.service?.maxPageSize || 1000)
 
 // ------------------------------------------------------------------ 数据库
@@ -677,6 +719,9 @@ const pageSize = computed(() => session.state.meta?.service?.maxPageSize || 1000
 // 否则挂载时会与 watch 的首次回调各发一次请求。
 const databaseResource = useResource(async () => {
   if (!prefix.value) return []
+  // 这一层守卫是必要的（而不是只靠 watch 里的那一处）：refresh 与「重试」
+  // 都会直接调 load()，绕过 watch。守卫写在 loader 里，任何入口都盖得住。
+  if (icebergCatalog.value) return []
   const payload = await catalogApi.listDatabases(prefix.value, { maxResults: pageSize.value })
   return payload.databases || []
 }, { immediate: false })
@@ -717,7 +762,10 @@ function createPagedList(field, call) {
 
   async function load(reset = true) {
     const current = ++sequence
-    if (!prefix.value || !database.value) {
+    // 第二个短路条件是 Iceberg catalog：这四条路径（表 / 视图 / 函数 / 语义视图）
+    // 都是 Paimon 协议面的，对一个 Iceberg catalog 发出去只会拿到 404。
+    // 与数据库列表同一个策略——守卫收在 loader 里，页签切换、刷新、「重试」都盖得住。
+    if (!prefix.value || !database.value || icebergCatalog.value) {
       items.value = []
       token.value = ''
       return
@@ -799,10 +847,13 @@ function loadCurrentList() {
   currentList.value.load(true)
 }
 
-watch([prefix, database], ([nextPrefix]) => {
+watch([prefix, database], async ([nextPrefix]) => {
   if (nextPrefix && nextPrefix !== session.state.selectedCatalog) {
     session.selectCatalog(nextPrefix)
   }
+  // 先确认 catalog 格式再决定发不发请求：格式在 catalog 列表里，
+  // 而深链接直接打开本页时它可能还没到（见 ensureCatalogs 的说明）。
+  await ensureCatalogs()
   databaseResource.load()
   loadCurrentList()
 }, { immediate: true })
@@ -1486,121 +1537,8 @@ defineExpose({ loadCurrentList })
 </script>
 
 <style scoped>
-
-.pc-browse-body {
-  display: grid;
-  grid-template-columns: 250px 1fr;
-  gap: 14px;
-  align-items: start;
-}
-
-.pc-db-pane {
-  display: flex;
-  flex-direction: column;
-  height: calc(100vh - 190px);
-  overflow: hidden;
-}
-
-.pc-pane-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 11px 14px;
-  border-bottom: 1px solid var(--pc-border);
-}
-
-.pc-pane-title {
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.pc-pane-tools {
-  padding: 10px 12px 6px;
-}
-
-.pc-db-list {
-  flex: 1;
-  overflow-y: auto;
-  padding: 4px 8px 10px;
-}
-
-.pc-db-skeleton {
-  padding: 8px;
-}
-
-.pc-db-item {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 6px 8px;
-  border-radius: var(--pc-radius);
-  cursor: pointer;
-  font-size: 12.5px;
-}
-
-.pc-db-item:hover {
-  background: var(--pc-surface-2);
-}
-
-.pc-db-item.is-active {
-  background: color-mix(in srgb, var(--el-color-primary) 12%, transparent);
-  color: var(--el-color-primary);
-  font-weight: 600;
-}
-
-.pc-db-icon {
-  font-size: 13px;
-  opacity: 0.8;
-}
-
-.pc-db-name {
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.pc-db-drop {
-  opacity: 0;
-  color: var(--el-color-danger);
-  font-size: 13px;
-}
-
-.pc-db-item:hover .pc-db-drop {
-  opacity: 0.75;
-}
-
-.pc-db-drop:hover {
-  opacity: 1;
-}
-
-.pc-obj-pane {
-  min-width: 0;
-}
-
-.pc-tabs {
-  padding: 0 14px;
-}
-
-.pc-tabs :deep(.el-tabs__header) {
-  margin-bottom: 0;
-}
-
-.pc-obj-body {
-  padding: 6px 14px 14px;
-}
-
-.pc-filter {
-  width: 200px;
-}
-
-.pc-more {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-top: 12px;
-  font-size: 13px;
-}
+/* 页面骨架（左列表 + 右对象面板）在 styles/index.css 里：Iceberg 浏览页共用同一套，
+   放在任一个组件的 scoped 里另一页就用不上。这里只剩 Paimon 建表表单独有的部分。 */
 
 /* 字段编辑器：容器与行走全局基元（.pc-repeat / .pc-repeat-row），
    这里只决定三列各占多宽 */

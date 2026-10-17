@@ -5,147 +5,329 @@
  * 展示同一批动作、同一套状态取值与同一份指标口径，两处各写一份必然漂移——
  * 而漂移的表现是「同一张表在两个页面显示的参数不一样」，最难查的那类问题。
  *
- * <p><b>参数键名不是随便起的。</b>每一项动作允许出现的键由服务端的
- * `OptimizationOptions.KNOWN_KEYS` 定义，键名写错的表现是保存时吃一个
- * 400「Unknown compact option」；而这类错字编译、类型检查都不会报。
- * `scripts/verify-console.py` 会拿本文件里的 `fields` 与服务端那张表逐字比对，
- * 因此**加参数只改这一处**（服务端那边同步改，校验脚本会指出不一致）。
+ * <p><b>两种格式各一套参数。</b>动作名与执行顺序是格式无关的契约，参数不是：
+ * Paimon 的 `retain-min`、Iceberg 的 `retain-last` 是语义相反的一对键，
+ * 强行共用一套字段的后果不是报错，而是把 A 格式的参数写进 B 格式的策略里、
+ * 保存时吃 400。因此这里按格式各列一份（{@link ACTIONS} / {@link ICEBERG_ACTIONS}），
+ * 取用一律走 {@link actionsFor}，页面不自己判断格式。
  *
- * <p>取值口径也要跟服务端的 {@code OptimizationOptions.validate} 对齐
- * （数字区间的上下限写在字段的 `min` / `max` 上，由输入控件挡住大部分非法值）：
- * 校验失败发生在**保存时**，而在表单上先拦住比让用户提交后看报错便宜。
+ * <p><b>参数键名不是随便起的。</b>每一项动作允许出现的键由服务端的
+ * `OptimizationOptions`（Paimon）与 `IcebergOptimizationOptions`（Iceberg）定义，
+ * 键名写错的表现是保存时吃一个 400「Unknown compact option」；而这类错字编译、
+ * 类型检查都不会报。`scripts/verify-console.py` 会拿这两份 `fields` 与服务端那两张表
+ * 逐字比对，因此**加参数只改这一处**（服务端那边同步改，校验脚本会指出不一致）。
+ *
+ * <p>取值口径也要跟服务端的 `validate` 对齐（数字区间的上下限写在字段的
+ * `min` / `max` 上，由输入控件挡住大部分非法值）：校验失败发生在**保存时**，
+ * 而在表单上先拦住比让用户提交后看报错便宜。
  */
 
-/** 三项动作的展示元数据与参数表单定义。顺序与执行顺序一致（compact → expire → orphan）。 */
-export const ACTIONS = [
-  {
-    action: 'compact',
-    label: 'Compaction',
-    summary: '把小文件合并成更大的文件，提升查询性能',
-    fields: [
-      {
-        key: 'strategy',
-        label: '合并策略',
-        type: 'select',
-        choices: [
-          { value: 'binpack', label: '小文件合并（Binpack）' },
-          { value: 'sort', label: '排序合并（Sort）' },
-        ],
-        tip: 'Binpack 把小文件合并到目标大小；排序合并按指定列重排后再合并，'
-          + '适合经常按某几列过滤的表——代价是合并本身更贵。',
-      },
-      {
-        key: 'sort-columns',
-        label: '排序列',
-        type: 'text',
-        placeholder: '如 dt,id',
-        showWhen: (values) => values.strategy === 'sort',
-        tip: '排序合并必填，逗号分隔。一般填查询里最常出现在过滤条件中的列。',
-      },
-      {
-        key: 'min-input-files',
-        label: '触发阈值',
-        type: 'number',
-        unit: '个文件',
-        min: 1,
-        max: 1000,
-        tip: '待合并的小文件数达到这个值才启动合并。给 compaction 一个阈值是必要的：'
-          + '没有阈值，每次扫描都会变成一次作业。',
-      },
-      {
-        key: 'target-file-size-mb',
-        label: '目标文件大小',
-        type: 'number',
-        unit: 'MB',
-        min: 1,
-        max: 4096,
-        tip: '合并后单个文件的目标大小。对象存储上小文件意味着读放大，'
-          + '但文件太大又会让单次读的并行度上不去，128 MB 左右是常见的折中。',
-      },
-      {
-        key: 'interval-hours',
-        label: '执行间隔',
-        type: 'number',
-        unit: '小时',
-        min: 1,
-        max: 8760,
-        tip: '两次 compaction 之间至少隔这么久。它决定的是这张表的动作频率，'
-          + '与表的调度间隔（多久扫一次）是两件事。',
-      },
-    ],
-  },
-  {
-    action: 'expire',
-    label: 'Snapshot Expire',
-    summary: '清理过期快照及其关联的数据文件，回收存储空间',
-    fields: [
-      {
-        key: 'retention-hours',
-        label: '快照保留时长',
-        type: 'number',
-        unit: '小时',
-        min: 1,
-        max: 8760,
-        tip: '早于这个时长的快照会被清掉。它同时是「能回滚到多久之前」的上限，'
-          + '调小要慎重：快照没了，基于它的时间旅行查询也就没了。',
-      },
-      {
-        key: 'retain-min',
-        label: '最少保留快照数',
-        type: 'number',
-        unit: '个',
-        min: 0,
-        max: 10000,
-        tip: '无论多旧，至少留下这么多个快照。防止「写入停了很久」的表一开清理就被清成只剩一个。',
-      },
-      {
-        key: 'interval-hours',
-        label: '执行间隔',
-        type: 'number',
-        unit: '小时',
-        min: 1,
-        max: 8760,
-        tip: '快照清理每天一次足够，比 compaction 迟钝是合理的：它要遍历快照历史，'
-          + '而收益（回收空间）不随时间线性增长。',
-      },
-    ],
-  },
-  {
-    action: 'orphan',
-    label: 'Orphan File Remove',
-    summary: '清理未被任何快照引用的废弃文件',
-    fields: [
-      {
-        key: 'older-than-hours',
-        label: '清理早于',
-        type: 'number',
-        unit: '小时前写入的文件',
-        min: 1,
-        max: 8760,
-        tip: '清理窗口必须大于这张表的最大提交间隔，否则会把正在写入、'
-          + '还没被任何快照引用的数据文件当成孤儿删掉。下限 1 小时是服务端强制的。',
-      },
-      {
-        key: 'interval-days',
-        label: '执行间隔',
-        type: 'number',
-        unit: '天',
-        min: 1,
-        max: 365,
-        tip: '三类动作里最贵的一项（要遍历目录），按周执行足够。',
-      },
-      {
-        key: 'dry-run',
-        label: '干跑预览',
-        type: 'switch',
-        on: '只列出将删除的文件，不真删',
-        off: '直接删除文件',
-        tip: '三项动作里只有它会删数据文件，因此默认开着。'
-          + '确认无误后再关掉——关掉的那一刻起，扫描到的东西就被真删了。',
-      },
-    ],
-  },
+/**
+ * 三项动作的展示元数据：名字、一句话说明、与执行顺序。
+ *
+ * <p>格式无关：两种表做的三件事一一对应（小文件合并 / 过期快照清理 / 孤儿文件清理），
+ * 名字也一样，差别只在参数与默认值。把名字抄两份，迟早出现「同一张表在两个页面
+ * 叫两个名字」。
+ */
+const ACTION_META = [
+  { action: 'compact', label: 'Compaction', summary: '把小文件合并成更大的文件，提升查询性能' },
+  { action: 'expire', label: 'Snapshot Expire', summary: '清理过期快照及其关联的数据文件，回收存储空间' },
+  { action: 'orphan', label: 'Orphan File Remove', summary: '清理未被任何快照引用的废弃文件' },
 ]
+
+/**
+ * Paimon 表的参数表单。
+ *
+ * <p>键名由服务端 `OptimizationOptions.KNOWN_KEYS` 定义，写错的表现是保存时吃一个
+ * 400「Unknown compact option」；`scripts/verify-console.py` 会拿这份定义与服务端那张表
+ * 逐字比对，因此**加参数只改这一处**（服务端那边同步改，校验脚本会指出不一致）。
+ *
+ * <p>取值口径与 `OptimizationOptions.validate` 对齐：数字区间的上下限写在字段的
+ * `min` / `max` 上，由输入控件挡住大部分非法值——校验失败发生在**保存时**，
+ * 在表单上先拦住比让用户提交后看报错便宜。
+ */
+const PAIMON_FIELDS = {
+  compact: [
+    {
+      key: 'strategy',
+      label: '合并策略',
+      type: 'select',
+      choices: [
+        { value: 'binpack', label: '小文件合并（Binpack）' },
+        { value: 'sort', label: '排序合并（Sort）' },
+      ],
+      tip: 'Binpack 把小文件合并到目标大小；排序合并按指定列重排后再合并，'
+        + '适合经常按某几列过滤的表——代价是合并本身更贵。',
+    },
+    {
+      key: 'sort-columns',
+      label: '排序列',
+      type: 'text',
+      placeholder: '如 dt,id',
+      showWhen: (values) => values.strategy === 'sort',
+      tip: '排序合并必填，逗号分隔。一般填查询里最常出现在过滤条件中的列。',
+    },
+    {
+      key: 'min-input-files',
+      label: '触发阈值',
+      type: 'number',
+      unit: '个文件',
+      min: 1,
+      max: 1000,
+      tip: '待合并的小文件数达到这个值才启动合并。给 compaction 一个阈值是必要的：'
+        + '没有阈值，每次扫描都会变成一次作业。',
+    },
+    {
+      key: 'target-file-size-mb',
+      label: '目标文件大小',
+      type: 'number',
+      unit: 'MB',
+      min: 1,
+      max: 4096,
+      tip: '合并后单个文件的目标大小。对象存储上小文件意味着读放大，'
+        + '但文件太大又会让单次读的并行度上不去，128 MB 左右是常见的折中。',
+    },
+    {
+      key: 'interval-hours',
+      label: '执行间隔',
+      type: 'number',
+      unit: '小时',
+      min: 1,
+      max: 8760,
+      tip: '两次 compaction 之间至少隔这么久。它决定的是这张表的动作频率，'
+        + '与表的调度间隔（多久扫一次）是两件事。',
+    },
+  ],
+  expire: [
+    {
+      key: 'retention-hours',
+      label: '快照保留时长',
+      type: 'number',
+      unit: '小时',
+      min: 1,
+      max: 8760,
+      tip: '早于这个时长的快照会被清掉。它同时是「能回滚到多久之前」的上限，'
+        + '调小要慎重：快照没了，基于它的时间旅行查询也就没了。',
+    },
+    {
+      key: 'retain-min',
+      label: '最少保留快照数',
+      type: 'number',
+      unit: '个',
+      min: 0,
+      max: 10000,
+      tip: '无论多旧，至少留下这么多个快照。防止「写入停了很久」的表一开清理就被清成只剩一个。',
+    },
+    {
+      key: 'interval-hours',
+      label: '执行间隔',
+      type: 'number',
+      unit: '小时',
+      min: 1,
+      max: 8760,
+      tip: '快照清理每天一次足够，比 compaction 迟钝是合理的：它要遍历快照历史，'
+        + '而收益（回收空间）不随时间线性增长。',
+    },
+  ],
+  orphan: [
+    {
+      key: 'older-than-hours',
+      label: '清理早于',
+      type: 'number',
+      unit: '小时前写入的文件',
+      min: 1,
+      max: 8760,
+      tip: '清理窗口必须大于这张表的最大提交间隔，否则会把正在写入、'
+        + '还没被任何快照引用的数据文件当成孤儿删掉。下限 1 小时是服务端强制的。',
+    },
+    {
+      key: 'interval-days',
+      label: '执行间隔',
+      type: 'number',
+      unit: '天',
+      min: 1,
+      max: 365,
+      tip: '三类动作里最贵的一项（要遍历目录），按周执行足够。',
+    },
+    {
+      key: 'dry-run',
+      label: '干跑预览',
+      type: 'switch',
+      on: '只列出将删除的文件，不真删',
+      off: '直接删除文件',
+      tip: '三项动作里只有它会删数据文件，因此默认开着。'
+        + '确认无误后再关掉——关掉的那一刻起，扫描到的东西就被真删了。',
+    },
+  ],
+}
+
+/**
+ * Iceberg 表的参数表单。
+ *
+ * <p>键名由服务端的 `IcebergOptimizationOptions.KNOWN_KEYS` 定义（与 Paimon 那份是
+ * **两套**：`retain-min` 换成 `retain-last`、`target-file-size-mb` 默认 512、
+ * 多出 `max-concurrent-file-group-rewrites`）。两套键混用的后果不是报错而是
+ * 保存时 400，因此这里按格式分开列，`actionsFor(format)` 是唯一的取用入口。
+ *
+ * <p>与 Paimon 侧的三处实质差异（都在文案里说清，因为用户会拿两张表对比）：
+ *
+ * - **zorder 是第三种策略**：Iceberg 没有独立的 zorder，它是 `strategy=sort` +
+ *   `sort_order=zorder(...)`；控制台按「策略」这一档呈现，翻译在执行侧。
+ * - **`retain-last` 数的是「最后几个快照」**，不是「最少保留几个」：语义相反的一对
+ *   参数，取值 0 表示不强制保留（清空所有过期快照）。
+ * - **孤儿清理默认干跑**，与 Paimon 侧一致，理由相同。
+ */
+const ICEBERG_FIELDS = {
+  compact: [
+    {
+      key: 'strategy',
+      label: '合并策略',
+      type: 'select',
+      choices: [
+        { value: 'binpack', label: '小文件合并（Binpack）' },
+        { value: 'sort', label: '排序合并（Sort）' },
+        { value: 'zorder', label: '多维排序（Z-Order）' },
+      ],
+      tip: 'Binpack 只按大小合并；Sort 按指定列重排，适合单列/前缀过滤；'
+        + 'Z-Order 让多个列在同一份数据里都保持局部有序，适合多列组合过滤——'
+        + '代价是重写更慢，且列数越多收益越摊薄（一般 2～4 列）。',
+    },
+    {
+      key: 'sort-columns',
+      label: '排序列',
+      type: 'text',
+      placeholder: '如 dt,user_id',
+      showWhen: (values) => values.strategy === 'sort' || values.strategy === 'zorder',
+      tip: '排序与 Z-Order 都必填，逗号分隔。Z-Order 建议 2～4 列：'
+        + '再多，每列的局部性都会被摊薄到接近没有。',
+    },
+    {
+      key: 'min-input-files',
+      label: '触发阈值',
+      type: 'number',
+      unit: '个文件',
+      min: 1,
+      max: 1000,
+      tip: '一个文件组里的小文件数达到这个值才重写。Iceberg 按分区/文件组分别判断，'
+        + '因此它是「每个组」的门槛，不是整张表的。',
+    },
+    {
+      key: 'target-file-size-mb',
+      label: '目标文件大小',
+      type: 'number',
+      unit: 'MB',
+      min: 1,
+      max: 8192,
+      tip: '重写后单个文件的目标大小，默认 512 MB（Iceberg 自己的默认）。'
+        + 'Iceberg 的扫描规划把一个文件当一个 split，文件太大反而会让并行度上不去；'
+        + '小文件多则意味着读放大与元数据膨胀。',
+    },
+    {
+      key: 'max-concurrent-file-group-rewrites',
+      label: '并发重写组数',
+      type: 'number',
+      unit: '组',
+      min: 1,
+      max: 100,
+      tip: '同时提交多少个文件组的重写。调大能缩短大表的整体耗时，代价是并发写'
+        + '更容易撞上提交冲突（冲突会重试，不会丢数据，但会更慢）。',
+    },
+    {
+      key: 'interval-hours',
+      label: '执行间隔',
+      type: 'number',
+      unit: '小时',
+      min: 1,
+      max: 8760,
+      tip: '两次 compaction 之间至少隔这么久。与「多久扫一次」是两件事：'
+        + '扫描只是看看该不该做，执行间隔决定真的做多频繁。',
+    },
+  ],
+  expire: [
+    {
+      key: 'retention-hours',
+      label: '快照保留时长',
+      type: 'number',
+      unit: '小时',
+      min: 1,
+      max: 8760,
+      tip: '早于这个时长的快照会被清掉（默认 5 天，与 Iceberg 的'
+        + ' history.expire.max-snapshot-age-ms 一致）。它同时是「能回滚到多久之前」'
+        + '的上限：快照没了，时间旅行查询也就没了。',
+    },
+    {
+      key: 'retain-last',
+      label: '保留最后快照数',
+      type: 'number',
+      unit: '个',
+      min: 0,
+      max: 10000,
+      tip: '无论多旧，最近这么多个快照一定留下。注意它数的是「最后几个」，'
+        + '与 Paimon 的「最少保留几个」不是同一个口径；填 0 表示不额外保留。',
+    },
+    {
+      key: 'interval-hours',
+      label: '执行间隔',
+      type: 'number',
+      unit: '小时',
+      min: 1,
+      max: 8760,
+      tip: '快照清理每天一次足够：它要遍历快照历史与清单文件，'
+        + '而收益（回收空间）不随时间线性增长。',
+    },
+  ],
+  orphan: [
+    {
+      key: 'older-than-hours',
+      label: '清理早于',
+      type: 'number',
+      unit: '小时前写入的文件',
+      min: 1,
+      max: 8760,
+      tip: '清理窗口必须大于这张表的最大提交间隔，否则会把正在写入、'
+        + '还没被任何快照引用的数据文件当成孤儿删掉。默认 72 小时是留够余量的取值。',
+    },
+    {
+      key: 'interval-days',
+      label: '执行间隔',
+      type: 'number',
+      unit: '天',
+      min: 1,
+      max: 365,
+      tip: '三类动作里最贵的一项（要列举整个表目录并逐个比对元数据），按周执行足够。',
+    },
+    {
+      key: 'dry-run',
+      label: '干跑预览',
+      type: 'switch',
+      on: '只列出将删除的文件，不真删',
+      off: '直接删除文件',
+      tip: '三项动作里只有它会删数据文件，因此默认开着。'
+        + '确认无误后再关掉——关掉的那一刻起，扫描到的东西就被真删了。',
+    },
+  ],
+}
+
+/** 把元数据与某一套字段拼成页面直接消费的列表（顺序 = 执行顺序）。 */
+function withFields(fields) {
+  return ACTION_META.map((meta) => ({ ...meta, fields: fields[meta.action] }))
+}
+
+/** Paimon 表的动作与参数定义。保持原名：跨格式的页面（批次页）只读它的 `label`。 */
+export const ACTIONS = withFields(PAIMON_FIELDS)
+
+/** Iceberg 表的动作与参数定义。 */
+export const ICEBERG_ACTIONS = withFields(ICEBERG_FIELDS)
+
+/**
+ * 按 catalog 格式取动作定义。`format` 是服务端 `TablePolicy.format` 的原值
+ * （`PAIMON` / `ICEBERG`）；缺省与认不出的取值都按 Paimon——与服务端
+ * `CatalogFormat.of` 的回落方向一致。
+ */
+export function actionsFor(format) {
+  return format === 'ICEBERG' ? ICEBERG_ACTIONS : ACTIONS
+}
+
 
 /** 动作 wire 名 → 中文显示名。批次里存的是 wire 名，页面显示的是这个。 */
 const ACTION_LABELS = Object.fromEntries(ACTIONS.map((item) => [item.action, item.label]))
@@ -270,6 +452,11 @@ export function formatDurationMs(value) {
 /**
  * 一个明细在某项动作下的指标摘要（一行文字）。
  *
+ * <p><b>两套指标键，一个函数。</b>执行侧按格式报的是**不同**的列（Iceberg 的
+ * `rewrite_data_files` 不给压缩前后的文件数、`expire_snapshots` 不给「删了几个快照」），
+ * 因此这段不判格式、只判键存在：两套键在同一动作下互不重叠，谁在就说谁。
+ * 这样批次页（一批里可能混着两种格式的表）也不需要知道每张表的格式。
+ *
  * <p>不认识的键不显示：指标口径归执行侧（`TableOptimizerJob`）所有，
  * 那边加了一个新指标时，这里没更新的表现应该是「少显示一项」，
  * 而不是把 `some-new-key=42` 原样糊到页面上。
@@ -284,12 +471,33 @@ export function metricSummary(item, action) {
     if (values['size-before'] || values['size-after']) {
       parts.push(`${values['size-before'] ?? '?'} → ${values['size-after'] ?? '?'}`)
     }
+    // Iceberg：重写了几个、新增了几个（重写前后总量由这两个数与目标大小共同决定，
+    // procedure 本身不报「合并后一共几个文件」）
+    if (values['rewritten-files'] !== undefined || values['added-files'] !== undefined) {
+      parts.push(`重写 ${values['rewritten-files'] ?? '?'} → 新增 ${values['added-files'] ?? '?'} 个文件`)
+    }
+    if (values['rewritten-size']) {
+      parts.push(`写入 ${values['rewritten-size']}`)
+    }
   } else if (action === 'expire') {
     if (values['deleted-snapshots'] !== undefined) {
       parts.push(`删除 ${values['deleted-snapshots']} 个快照`)
     }
+    // Iceberg：删的是数据文件与清单文件，不是「快照」这个对象
+    if (values['deleted-data-files'] !== undefined) {
+      parts.push(`删除 ${values['deleted-data-files']} 个数据文件`)
+    }
+    const metadata = Number(values['deleted-manifest-files'] || 0)
+      + Number(values['deleted-manifest-lists'] || 0)
+    if (metadata > 0) {
+      parts.push(`${metadata} 个清单文件`)
+    }
+    if (values['deleted-statistics-files'] !== undefined) {
+      parts.push(`${values['deleted-statistics-files']} 个统计文件`)
+    }
   } else if (action === 'orphan') {
     if (values['deleted-files'] !== undefined) {
+      // 干跑时这个数就是「候选清单条数」，执行侧不区分——所以文案不写「已删除」
       parts.push(`${values['deleted-files']} 个文件`)
     }
     if (values['released-size']) {

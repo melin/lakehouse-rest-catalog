@@ -15,6 +15,7 @@ import java.util.List;
 import java.util.Map;
 import lombok.Getter;
 import lombok.Setter;
+import org.hibernate.annotations.ColumnDefault;
 
 /**
  * catalog 实例。REST 路径中的 {@code {prefix}} 就是它的对外标识，
@@ -52,6 +53,33 @@ public class CatalogEntity extends AuditedEntity {
     /** INTERNAL：元数据由本服务托管；EXTERNAL：外部同步、只读。 */
     @Column(name = "catalog_type", length = 32)
     private String catalogType = "INTERNAL";
+
+    /**
+     * 本 catalog 服务哪一种 REST Catalog 协议：{@code PAIMON} / {@code ICEBERG}。
+     *
+     * <p><b>与 {@code catalogType} 是两条正交的属性</b>，因此另开一列而不是往那个枚举里
+     * 加取值——{@code EXTERNAL + ICEBERG}（外部 Iceberg 仓库的只读入口）是
+     * {@code catalogType} 单独表达不了的状态。它也不进任何唯一约束：一个 catalog
+     * 只有一种格式，格式不是键的一部分。
+     *
+     * <p>存字符串而不是 {@code @Enumerated(EnumType.STRING)}：与同表其余状态列
+     * （{@code catalog_type} / {@code storage_type}）保持一致，且这个列还会被
+     * 管理 API 直接读写（{@code catalogFormat} 字段），字符串少一层转换。
+     *
+     * <p><b>创建后不可变</b>，理由见 {@link io.github.melin.lakehouse.rest.support.CatalogFormat}。
+     * 存量数据零迁移：默认值就是本特性引入前的事实（全部 Paimon）。
+     *
+     * <p><b>为什么这一列有 {@code not null} 与库级默认值，而同表其它状态列没有。</b>
+     * 这一列是**分派键**：读不出来（{@code null}）时按什么解释都有道理，而选错的后果是
+     * 整套请求走错协议面。库级默认值让「手工 INSERT、旧脚本、运维直接改库」这些
+     * 绕开 JPA 的写入也落到 {@code PAIMON}——那正是本特性引入前它们唯一能表达的东西。
+     * 升级已有库时用
+     * {@code alter table paimon_catalog add column catalog_format varchar(32) not null default 'PAIMON';}
+     * （带默认值的加列，MySQL 会把存量行一并回填）。
+     */
+    @Column(name = "catalog_format", length = 32, nullable = false)
+    @ColumnDefault("'PAIMON'")
+    private String catalogFormat = "PAIMON";
 
     /**
      * 管理 API 视角下的 catalog 属性。

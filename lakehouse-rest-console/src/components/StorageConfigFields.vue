@@ -63,7 +63,7 @@
         <el-input v-model="form.storageName" placeholder="留空则使用服务端默认凭据" />
       </el-form-item>
 
-      <template v-for="field in fields" :key="field.key">
+      <template v-for="field in basicFields" :key="field.key">
         <el-form-item>
           <template #label>
             <FieldLabel :label="field.label" :tip="field.hint" />
@@ -118,6 +118,14 @@
           />
         </el-form-item>
 
+        <!-- roleArn 与静态凭据是两条并存的取密钥路径。服务端今天都接受
+             （`StorageConfigs` 只拒绝「静态凭据 × storageName」），所以这里
+             只提示、不拦截：前端比服务端更严，会让一份服务端认可的配置在控制台里存不回去。
+             之所以仍要说一句，是因为 roleArn 收进折叠区后，用户更难自己发现。 -->
+        <p v-if="credentialConflict" class="pc-field-note pc-field-note-warn">
+          已同时填写 <code>accessKeyId</code> 与「存储高级参数」里的 <code>roleArn</code>。
+          两者是两条并存的取密钥路径（直接用它 / 由服务端 assume 角色），建议只保留一种。
+        </p>
         <!-- 能力关着时给出可操作的出路：字段被禁用只是一半，
              不告诉用户「去开哪个配置项、密钥怎么生成」就会停在死路上 -->
         <p v-if="!staticCredentialsEnabled" class="pc-static-disabled-hint">
@@ -141,6 +149,77 @@
           </div>
         </el-alert>
       </template>
+
+      <!-- 存储高级参数：默认收起。
+           收起态必须同时给出三件事，否则折叠就退化成「把字段藏起来」：
+           ① 归属（标题）；② 计数（徽标）；③ 为什么可以不管它（右侧一行说明）。
+           缺 ③，用户会以为这里有必填项而被迫展开——那才是折叠真正的成本。
+
+           为什么自绘而不用 el-collapse：它的类名不是稳定的公开契约（见
+           `styles/index.css` 开头），为了 2px 圆角与这套字号去覆盖内部结构，
+           比这十几行更脆。键盘可达与语义由 button + aria-* 自己保证。
+
+           为什么用 v-show 而不是 v-if：收起时保留 DOM，展开/收起不重建子控件，
+           也就不会打断正在输入的焦点。 -->
+      <div v-if="advancedFields.length" class="pc-collapse" :class="{ 'is-open': advancedOpen }">
+        <button
+          type="button"
+          class="pc-collapse-head"
+          :aria-expanded="advancedOpen ? 'true' : 'false'"
+          @click="advancedOpen = !advancedOpen"
+        >
+          <span class="pc-caret" aria-hidden="true"></span>
+          <span class="pc-collapse-title">存储高级参数</span>
+          <span class="pc-collapse-badge" :class="{ 'is-filled': filledAdvancedKeys.length }">
+            {{ advancedBadge }}
+          </span>
+          <span class="pc-collapse-hint">全部留空即用服务端默认值</span>
+        </button>
+
+        <div v-show="advancedOpen" class="pc-collapse-body">
+          <p class="pc-collapse-note">
+            本区字段随存储类型变化，当前 <code>{{ form.storageType }}</code> 有
+            {{ advancedFields.length }} 项。它们会原样写入 catalog 元数据（服务端接受并回显）；
+            是否影响引擎行为，取决于服务端的凭据实现。
+          </p>
+
+          <template v-for="(group, index) in advancedGroups" :key="group.name || index">
+            <div v-if="group.name" class="pc-grp">
+              <span class="pc-grp-title">{{ group.name }}</span>
+              <span class="pc-grp-line"></span>
+            </div>
+            <el-form-item v-for="field in group.fields" :key="field.key">
+              <template #label>
+                <FieldLabel :label="field.label" :tip="field.hint" />
+              </template>
+              <el-switch v-if="field.type === 'bool'" v-model="form.extras[field.key]" />
+              <div v-else-if="field.type === 'list'" class="pc-repeat">
+                <div v-for="(_, itemIndex) in form.extras[field.key]" :key="itemIndex" class="pc-repeat-row">
+                  <el-input v-model="form.extras[field.key][itemIndex]" size="small" :placeholder="field.placeholder || ''" />
+                  <el-button size="small" text type="danger" @click="form.extras[field.key].splice(itemIndex, 1)">
+                    <el-icon><Delete /></el-icon>
+                  </el-button>
+                </div>
+                <el-button size="small" text type="primary" @click="form.extras[field.key].push('')">
+                  <el-icon><Plus /></el-icon>
+                  <span class="pc-repeat-add">添加一项</span>
+                </el-button>
+              </div>
+              <el-input v-else v-model="form.extras[field.key]" :placeholder="field.placeholder || ''" />
+            </el-form-item>
+          </template>
+        </div>
+      </div>
+
+      <!-- 收起时把「已填了什么」露出来。编辑一个别人建的 catalog 时，
+           没有这一行就会以为这些配置不存在，而它们会被原样提交回服务端。 -->
+      <p
+        v-if="advancedFields.length && !advancedOpen && filledAdvancedKeys.length"
+        class="pc-collapse-summary"
+      >
+        已填：<code>{{ filledAdvancedKeys.join('、') }}</code>
+        （展开可查看；留空的项不会出现在提交体里）
+      </p>
 
       <el-alert
         v-if="carriedKeys.length"
@@ -193,51 +272,106 @@ const COMMON_KEYS = ['storageType', 'allowedLocations', 'storageName']
  *
  * <p>它们是服务端 `StorageConfigInfo` 的扩展字段（规格里没有「用户填 AK/SK」的位置），
  * 语义与普通字段不同：`secretAccessKey` 只写不读，服务端从不回显，
- * 因此这里单独处理，不走下面的 `TYPE_FIELDS` 那套「空值即删除」的通用规则——
- * 对它来说「空」的含义是「保持不变」，见 `build()` 的说明。
+ * 因此这里单独处理，不走下面 `BASIC_FIELDS` / `ADVANCED_FIELDS` 那套「空值即删除」
+ * 的通用规则——对它来说「空」的含义是「保持不变」，见 `build()` 的说明。
  */
 const STATIC_CREDENTIAL_KEYS = ['accessKeyId', 'secretAccessKey']
 
 const STATIC_CREDENTIAL_TYPES = ['S3', 'OBS', 'OSS']
 
 /**
- * 各存储类型的专属字段。`bool` 用开关，其余用输入框。
+ * 各存储类型的字段，按「要不要在创建时就决定」分成两张表。
  *
- * <p>OBS / OSS 只有 `endpoint` 与 `stsUnavailable`：这是本工程的扩展类型，
- * 字段刻意保持最小（服务端 `StorageDtos` 的说明里写了为什么不给它们 `region`
- * ——两家云的 FileIO 配置面都没有这一项，区域含在 endpoint 里）。
+ * <p><b>基本字段</b>：每次建 catalog 都要做的决定，不填服务端就落不了地
+ * （仓库定位靠它们）。留在主表单里平铺。
+ *
+ * <p><b>高级字段</b>：只有特定场景才需要动、多数人留空也正确的。收进
+ * 「存储高级参数」折叠区，默认收起。
+ *
+ * <p><b>为什么拆成两张表，而不是给字段加一个 `advanced: true` 标记</b>：
+ * 拆表让「哪些进折叠区」这件事在数据里就看得见，而不是散在模板的 `v-if` 里；
+ * 更重要的是，`build()` 读的是下面 `fields` 这个**合并后**的视图，
+ * 因此它完全不知道自己被分了层——「折叠只改变可见性、绝不改变提交内容」
+ * 这条约束于是由结构保证，不靠自觉。
+ *
+ * <p>分层的判据只有一条：<b>不填就跑不起来的留在外面，其余收进去</b>。
+ * 收进去的不等于不重要——`roleArn` 是另一条取密钥的路径，它被收起是因为
+ * 跨账户访问在本部署里是少数场景。
+ *
+ * <p>`group` 只是折叠区里的分组归属（`null` 表示不分组）。S3 有 10 项、
+ * 其中 6 项同属「STS 与角色」，分组能把这层语义显出来；其余类型只有 1–3 项，
+ * 不为了整齐硬造只有一个成员的分组。
  */
-const TYPE_FIELDS = {
+const BASIC_FIELDS = {
   S3: [
     { key: 'region', label: 'region', placeholder: 'us-east-1' },
     { key: 'endpoint', label: 'endpoint', placeholder: 'https://s3.us-east-1.amazonaws.com' },
-    { key: 'stsEndpoint', label: 'stsEndpoint', placeholder: '可选，STS 端点' },
-    { key: 'endpointInternal', label: 'endpointInternal', placeholder: '可选，内网端点' },
-    { key: 'roleArn', label: 'roleArn', placeholder: '跨账户访问时填写' },
-    { key: 'externalId', label: 'externalId' },
-    { key: 'userArn', label: 'userArn' },
-    { key: 'pathStyleAccess', label: 'pathStyleAccess', type: 'bool' },
-    { key: 'stsUnavailable', label: 'stsUnavailable', type: 'bool' },
-    { key: 'kmsUnavailable', label: 'kmsUnavailable', type: 'bool' },
-    { key: 'encryptionKeys', label: 'encryptionKeys', type: 'list', placeholder: 'KMS 密钥 ARN' },
-    { key: 'decryptionKeys', label: 'decryptionKeys', type: 'list', placeholder: 'KMS 密钥 ARN' },
   ],
-  GCS: [{ key: 'gcsServiceAccount', label: 'gcsServiceAccount', placeholder: '服务账号邮箱' }],
+  GCS: [],
   AZURE: [
     { key: 'tenantId', label: 'tenantId', placeholder: 'Azure 租户 ID（必填）' },
+  ],
+  OBS: [
+    { key: 'endpoint', label: 'endpoint', placeholder: 'obs.cn-north-4.myhuaweicloud.com' },
+  ],
+  OSS: [
+    { key: 'endpoint', label: 'endpoint', placeholder: 'oss-cn-hangzhou.aliyuncs.com' },
+  ],
+  FILE: [],
+}
+
+/**
+ * 折叠区里的字段（见 `BASIC_FIELDS` 的说明）。
+ *
+ * <p>OBS / OSS 各只有 `stsUnavailable`：这是本工程的扩展类型，字段刻意保持最小
+ * （服务端 `StorageDtos` 的说明里写了为什么不给它们 `region`——两家云的
+ * FileIO 配置面都没有这一项，区域含在 endpoint 里）。
+ *
+ * <p>`FILE` 是空数组：本地文件系统没有凭据概念，折叠区整个不出现。
+ * 判据是「当前类型有没有高级字段」，不是「类型是不是 S3」——服务端以后
+ * 给某个类型加字段，这里加上就会自动出现。
+ */
+const ADVANCED_FIELDS = {
+  S3: [
+    { key: 'roleArn', label: 'roleArn', placeholder: '跨账户访问时填写', group: 'STS 与角色' },
+    { key: 'externalId', label: 'externalId', group: 'STS 与角色' },
+    { key: 'userArn', label: 'userArn', group: 'STS 与角色' },
+    { key: 'stsEndpoint', label: 'stsEndpoint', placeholder: '可选，STS 端点', group: 'STS 与角色' },
+    { key: 'endpointInternal', label: 'endpointInternal', placeholder: '可选，内网端点', group: 'STS 与角色' },
+    { key: 'stsUnavailable', label: 'stsUnavailable', type: 'bool', group: 'STS 与角色' },
+    { key: 'pathStyleAccess', label: 'pathStyleAccess', type: 'bool', group: '访问方式' },
+    { key: 'kmsUnavailable', label: 'kmsUnavailable', type: 'bool', group: 'KMS 与加密' },
+    { key: 'encryptionKeys', label: 'encryptionKeys', type: 'list', placeholder: 'KMS 密钥 ARN', group: 'KMS 与加密' },
+    { key: 'decryptionKeys', label: 'decryptionKeys', type: 'list', placeholder: 'KMS 密钥 ARN', group: 'KMS 与加密' },
+  ],
+  GCS: [
+    { key: 'gcsServiceAccount', label: 'gcsServiceAccount', placeholder: '服务账号邮箱' },
+  ],
+  AZURE: [
     { key: 'multiTenantAppName', label: 'multiTenantAppName' },
     { key: 'consentUrl', label: 'consentUrl' },
     { key: 'hierarchical', label: 'hierarchical', type: 'bool' },
   ],
   OBS: [
-    { key: 'endpoint', label: 'endpoint', placeholder: 'obs.cn-north-4.myhuaweicloud.com' },
     { key: 'stsUnavailable', label: 'stsUnavailable', type: 'bool' },
   ],
   OSS: [
-    { key: 'endpoint', label: 'endpoint', placeholder: 'oss-cn-hangzhou.aliyuncs.com' },
     { key: 'stsUnavailable', label: 'stsUnavailable', type: 'bool' },
   ],
   FILE: [],
+}
+
+/** 本控制台认识的存储类型（基本表与高级表覆盖到的并集）。 */
+const KNOWN_TYPES = new Set([...Object.keys(BASIC_FIELDS), ...Object.keys(ADVANCED_FIELDS)])
+
+/**
+ * 某个类型的全部字段，按「基本在前、高级在后」。
+ *
+ * <p>顺序有意义：`build()` 顺着它写 `config`，报文里的键序因此与界面一致，
+ * 排查时对着表单和请求体可以一一对应。
+ */
+function fieldsOf(type) {
+  return [...(BASIC_FIELDS[type] || []), ...(ADVANCED_FIELDS[type] || [])]
 }
 
 /**
@@ -296,9 +430,9 @@ const secretPlaceholder = computed(() => (storedAccessKeyId.value
   ? '已保存密钥，留空即保持不变'
   : '仅填写时不回显，请确认无误'))
 
-/** 表单覆盖的键集合（按类型不同）。 */
+/** 表单覆盖的键集合（按类型不同）。两张字段表都要算进来，否则分层会让字段被当成「不认识」。 */
 function knownKeys(type) {
-  const keys = new Set([...COMMON_KEYS, ...(TYPE_FIELDS[type] || []).map((field) => field.key)])
+  const keys = new Set([...COMMON_KEYS, ...fieldsOf(type).map((field) => field.key)])
   if (STATIC_CREDENTIAL_TYPES.includes(type)) {
     STATIC_CREDENTIAL_KEYS.forEach((key) => keys.add(key))
   }
@@ -309,12 +443,12 @@ function knownKeys(type) {
 const unknownType = computed(() => {
   const type = form.storageType
   if (!type) return ''
-  return TYPE_FIELDS[type] ? '' : type
+  return KNOWN_TYPES.has(type) ? '' : type
 })
 
 function collectExtras(source, type) {
   const extras = {}
-  for (const field of TYPE_FIELDS[type] || []) {
+  for (const field of fieldsOf(type)) {
     const value = source[field.key]
     if (field.type === 'bool') {
       extras[field.key] = Boolean(value)
@@ -364,9 +498,87 @@ function adopt(source) {
   form.removeCredentials = false
   storedAccessKeyId.value = form.accessKeyId
   carried.value = splitCarried(next, type)
+  // 换了一份配置（打开对话框、切到另一个 catalog）就回到收起态：
+  // 这是「默认收起」在组件不重建时也能成立的地方。它不监听 form 自身的变化，
+  // 因此用户手动展开后不会被打断——那条路径上的变化都被 lastEmitted 挡在 watch 外面。
+  advancedOpen.value = false
 }
 
-const fields = computed(() => TYPE_FIELDS[form.storageType] || [])
+/**
+ * 基本字段（主表单平铺）与高级字段（折叠区）。
+ *
+ * <p>`fields` 是两者的合并视图，<b>只给 `build()` 用</b>，刻意不暴露给模板：
+ * 模板要的是「分区的两半」，给它合并后的整体就无从判断哪一半该进折叠区了。
+ */
+const basicFields = computed(() => BASIC_FIELDS[form.storageType] || [])
+const advancedFields = computed(() => ADVANCED_FIELDS[form.storageType] || [])
+const fields = computed(() => [...basicFields.value, ...advancedFields.value])
+
+/**
+ * 折叠区是否展开。
+ *
+ * <p>初始恒为 `false`，且<b>不由「是否有值」反推</b>：一旦写成「有值就展开」，
+ * 编辑一个别人建的 catalog 时它每次都会弹开，用户刚收起它这件事被忽略。
+ * 「我收起来了它自己又开」比「我得多点一下」糟得多。
+ */
+const advancedOpen = ref(false)
+
+/** 分组的下限：少于 6 项不分组（理由见 `ADVANCED_FIELDS` 的说明）。 */
+const GROUP_THRESHOLD = 6
+
+/** 折叠区内的分组；不分组时返回一个无名组，模板因此只有一套渲染路径。 */
+const advancedGroups = computed(() => {
+  const list = advancedFields.value
+  if (list.length < GROUP_THRESHOLD) {
+    return [{ name: '', fields: list }]
+  }
+  const groups = []
+  for (const field of list) {
+    const name = field.group || ''
+    const last = groups[groups.length - 1]
+    if (last && last.name === name) {
+      last.fields.push(field)
+    } else {
+      groups.push({ name, fields: [field] })
+    }
+  }
+  return groups
+})
+
+/**
+ * 已填的高级项（键名）。
+ *
+ * <p>判定与 `build()` 的落盘规则一一对应：文本与列表按「有非空项」计，
+ * 布尔<b>只在打开时</b>计。`false` 是默认值，把它算成「已填」会让每一份 S3
+ * 配置都显示「已填 3 项」，计数随即失去意义。
+ */
+const filledAdvancedKeys = computed(() => advancedFields.value
+  .filter((field) => {
+    const value = form.extras[field.key]
+    if (field.type === 'bool') return value === true
+    if (field.type === 'list') return (value || []).some((item) => String(item ?? '').trim() !== '')
+    return String(value ?? '').trim() !== ''
+  })
+  .map((field) => field.key))
+
+/** 折叠头上的计数徽标。收起时它是「这里有东西」的唯一线索。 */
+const advancedBadge = computed(() => (filledAdvancedKeys.value.length
+  ? `已填 ${filledAdvancedKeys.value.length} 项`
+  : '未填写'))
+
+/**
+ * `roleArn` 与静态凭据同时填写时的提示。
+ *
+ * <p><b>这是提示，不是校验</b>：服务端今天接受这种组合
+ * （`StorageConfigs` 只拒绝「静态凭据 × storageName」，`roleArn` 那一对没被检查），
+ * 前端不该比服务端更严——拦下来会让一份服务端认可的配置在控制台里存不回去。
+ * 之所以仍然要说一句，是因为 `roleArn` 现在收进了折叠区，用户更不容易
+ * 发现自己同时填了两条路。
+ */
+const credentialConflict = computed(() => {
+  if (!supportsStaticCredentials.value || form.removeCredentials) return false
+  return Boolean(String(form.accessKeyId || '').trim() && String(form.extras.roleArn || '').trim())
+})
 
 const carriedKeys = computed(() => Object.keys(carried.value))
 
@@ -389,6 +601,8 @@ function onTypeChange(next) {
   form.removeCredentials = false
   storedAccessKeyId.value = ''
   carried.value = splitCarried(carried.value, next)
+  // 换类型会清空 extras，此时还张着一个空区块会让人以为刚才填的丢了
+  advancedOpen.value = false
   push()
 }
 

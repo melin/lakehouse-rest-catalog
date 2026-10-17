@@ -14,6 +14,7 @@ import io.github.melin.lakehouse.rest.domain.repo.ViewRepository;
 import io.github.melin.lakehouse.rest.paimon.dto.DatabaseDtos;
 import io.github.melin.lakehouse.rest.service.CatalogService;
 import io.github.melin.lakehouse.rest.support.ApiException;
+import io.github.melin.lakehouse.rest.support.CatalogFormat;
 import io.github.melin.lakehouse.rest.support.Paging;
 import io.github.melin.lakehouse.rest.support.Paths;
 import java.util.ArrayList;
@@ -26,6 +27,15 @@ import org.springframework.transaction.annotation.Transactional;
 
 /**
  * database（命名空间）的增删改查。
+ *
+ * <p><b>本类同时是 Paimon 面的格式门禁。</b>每次解析 prefix 都走
+ * {@code resolveForFormat(prefix, PAIMON)}：一个 Iceberg catalog 的 prefix 敲到 Paimon
+ * 路径上（或反过来）时，必须报「格式不对」而不是「这个库里没有这张表」——
+ * 后者会让客户端一直去改自己的库名 / 表名，而真正的原因它永远猜不到。
+ *
+ * <p>门禁放在这里还有一个结构上的原因：{@code TableLookup}（分区 / 分支 / 标签 /
+ * 消费者 / 语义视图 / 凭据那几个服务共用的定位入口）只依赖本类，
+ * 因此这一处判定就覆盖了 Paimon 面的全部资源路径，而不是每个服务各判一次。
  */
 @Service
 @RequiredArgsConstructor
@@ -43,7 +53,7 @@ public class DatabaseService {
 
     @Transactional(readOnly = true)
     public DatabaseDtos.ListDatabasesResponse list(String prefix, Integer maxResults, String pageToken) {
-        CatalogEntity catalog = catalogService.resolve(prefix);
+        CatalogEntity catalog = catalogService.resolveForFormat(prefix, CatalogFormat.PAIMON);
         List<DatabaseEntity> databases = databaseRepository.findAllByCatalogIdOrderByNameAsc(catalog.getId());
         List<String> names = new ArrayList<>();
         for (DatabaseEntity database : databases) {
@@ -60,7 +70,7 @@ public class DatabaseService {
         if (request == null || request.name() == null || request.name().isBlank()) {
             throw ApiException.badRequest("Database name must not be blank");
         }
-        CatalogEntity catalog = catalogService.resolve(prefix);
+        CatalogEntity catalog = catalogService.resolveForFormat(prefix, CatalogFormat.PAIMON);
         if (databaseRepository.existsByCatalogIdAndName(catalog.getId(), request.name())) {
             throw ApiException.databaseAlreadyExist(request.name());
         }
@@ -100,7 +110,7 @@ public class DatabaseService {
      */
     @Transactional
     public int dropAll(String prefix) {
-        CatalogEntity catalog = catalogService.resolve(prefix);
+        CatalogEntity catalog = catalogService.resolveForFormat(prefix, CatalogFormat.PAIMON);
         List<DatabaseEntity> databases =
                 databaseRepository.findAllByCatalogIdOrderByNameAsc(catalog.getId());
         for (DatabaseEntity database : databases) {
@@ -163,7 +173,7 @@ public class DatabaseService {
     /** 按名称取得 database，不存在时抛出 404。 */
     @Transactional(readOnly = true)
     public DatabaseEntity require(String prefix, String name) {
-        CatalogEntity catalog = catalogService.resolve(prefix);
+        CatalogEntity catalog = catalogService.resolveForFormat(prefix, CatalogFormat.PAIMON);
         return databaseRepository.findByCatalogIdAndName(catalog.getId(), name)
                 .orElseThrow(() -> ApiException.databaseNotExist(name));
     }

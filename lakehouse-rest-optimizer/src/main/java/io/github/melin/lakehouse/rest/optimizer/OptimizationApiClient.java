@@ -136,8 +136,14 @@ public final class OptimizationApiClient implements AutoCloseable {
 
     // ------------------------------------------------------------------ 清单模型
 
-    /** 执行清单（对应服务端 {@code OptimizationDtos.Submission}）。 */
-    public record Plan(String jobId, String catalog, String triggerType,
+    /**
+     * 执行清单（对应服务端 {@code OptimizationDtos.Submission}）。
+     *
+     * <p>{@code format} 是 {@code PAIMON} / {@code ICEBERG}：它决定会话怎么建、
+     * 动作翻成哪套 procedure。缺字段的老服务端会得到 {@code null}，任务按 Paimon
+     * 处理——那是本特性引入前的唯一格式。
+     */
+    public record Plan(String jobId, String catalog, String format, String triggerType,
                        List<String> actions, List<Table> tables) {
     }
 

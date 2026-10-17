@@ -56,6 +56,13 @@ public final class ConsoleDtos {
             String defaultPrefix,
             /** {@code paimon.rest.default-warehouse} */
             String defaultWarehouse,
+            /**
+             * {@code paimon.rest.default-catalog-format}：本部署建 catalog 时未指定格式
+             * 用哪种。下发它是为了让新建表单**预选**这一项——默认值最终由服务端决定，
+             * 前端猜一个（例如恒选第一项）在部署改过默认时会与服务端不一致，
+             * 表现为「表单里选的是 Paimon，建出来却是 Iceberg」。
+             */
+            String defaultCatalogFormat,
             /** {@code paimon.rest.auto-create-catalog} */
             boolean autoCreateCatalog,
             /** {@code paimon.rest.default-page-size} */
@@ -86,6 +93,12 @@ public final class ConsoleDtos {
      */
     public record Enums(
             List<String> catalogTypes,
+            /**
+             * catalog 的**表格式**（{@code PAIMON} / {@code ICEBERG}），与 {@code catalogTypes}
+             * 正交：前者是托管模式，这里是协议面。控制台的新建表单据此渲染格式选择，
+             * 清单页据此渲染徽标与筛选器。
+             */
+            List<String> catalogFormats,
             List<String> storageTypes,
             List<String> supportedStorageTypes,
             /** 能否把静态凭据加密落库（{@code paimon.rest.storage.credential-secret-key} 已配置）。 */

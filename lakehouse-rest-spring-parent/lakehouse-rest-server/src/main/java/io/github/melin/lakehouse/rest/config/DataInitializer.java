@@ -19,6 +19,7 @@ import io.github.melin.lakehouse.rest.domain.repo.ResourceGrantRepository;
 import io.github.melin.lakehouse.rest.dto.ManagementEnums.GrantType;
 import io.github.melin.lakehouse.rest.dto.Privilege;
 import io.github.melin.lakehouse.rest.service.ManagementCatalogService;
+import io.github.melin.lakehouse.rest.support.CatalogFormat;
 import io.github.melin.lakehouse.rest.support.Paging;
 import io.github.melin.lakehouse.rest.support.Paths;
 import io.github.melin.lakehouse.rest.support.Secrets;
@@ -77,6 +78,7 @@ public class DataInitializer implements ApplicationRunner {
         }
 
         String resolvedWarehouse = warehouse;
+        CatalogFormat format = initialFormat();
         CatalogEntity catalog = catalogRepository.findByPrefix(prefix).orElseGet(() -> {
             CatalogEntity created = new CatalogEntity();
             created.setId(Paging.newId());
@@ -86,9 +88,11 @@ public class DataInitializer implements ApplicationRunner {
             created.setDefaults(new LinkedHashMap<>());
             created.setOverrides(new LinkedHashMap<>());
             created.setCatalogType("INTERNAL");
+            created.setCatalogFormat(format.wireName());
             created.markCreated(SYSTEM_PRINCIPAL, System.currentTimeMillis());
             return catalogRepository.save(created);
         });
+        warnIfInitialFormatIgnored(catalog, format);
 
         long now = System.currentTimeMillis();
         for (RestServerProperties.DatabaseSeed seed : properties.getInitialCatalog().getDatabases()) {
@@ -110,6 +114,48 @@ public class DataInitializer implements ApplicationRunner {
 
         bootstrapAuthorization(catalog, now);
         warnAboutPasswordAccountsWithoutPrincipal();
+    }
+
+    /**
+     * 预置 catalog 用哪种表格式。
+     *
+     * <p>{@code paimon.rest.initial-catalog.format} 优先，留空回落到
+     * {@code paimon.rest.default-catalog-format}——后者本来就是「本部署建 catalog 时
+     * 未指定格式用哪种」的那个开关，预置与自动登记都归它管，运维只需记住一处。
+     *
+     * <p>认不出来的取值按默认格式处理并留 warn，而不是启动失败：这是启动路径上的
+     * 一个预置便利项，为它让整个服务起不来不划算；而 warn 里带着配置键名，
+     * 拼错了能一眼看到。
+     */
+    private CatalogFormat initialFormat() {
+        String configured = properties.getInitialCatalog().getFormat();
+        if (configured == null || configured.isBlank()) {
+            return CatalogFormat.of(properties.getDefaultCatalogFormat());
+        }
+        return CatalogFormat.parse(configured).orElseGet(() -> {
+            log.warn("paimon.rest.initial-catalog.format is set to an unrecognized value \"{}\";"
+                            + " falling back to {}", configured,
+                    CatalogFormat.of(properties.getDefaultCatalogFormat()).wireName());
+            return CatalogFormat.of(properties.getDefaultCatalogFormat());
+        });
+    }
+
+    /**
+     * 预置 catalog 已存在、而配置里的格式与库中不一致时的告警。
+     *
+     * <p>不报错的理由：库中那一份才是权威（格式不可变，见 {@code CatalogFormat}），
+     * 一个已有的 catalog 不会因为改了启动配置就换格式。但**必须说出来**——
+     * 否则表现是「我明明配了 ICEBERG，客户端还是全 404」，而原因是那个 prefix 早就
+     * 以 Paimon 的形式存在于库里了。
+     */
+    private void warnIfInitialFormatIgnored(CatalogEntity catalog, CatalogFormat configured) {
+        CatalogFormat stored = CatalogFormat.of(catalog.getCatalogFormat());
+        if (stored != configured) {
+            log.warn("initial catalog {} already exists as a {} catalog; the configured {} in"
+                            + " paimon.rest.initial-catalog.format is ignored (catalog format is"
+                            + " immutable). Delete the catalog or seed a different prefix.",
+                    catalog.getPrefix(), stored.wireName(), configured.wireName());
+        }
     }
 
     /**

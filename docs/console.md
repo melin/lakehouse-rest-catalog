@@ -139,13 +139,13 @@ lakehouse-rest-console/
 | `/login` | 登录 | 按服务端下发的登录方式渲染页签：用户名密码（默认）/ 主体凭据（OAuth 2.0 客户端凭据）/ SSO（OIDC）/ 静态令牌（需配 `auth.tokens`）。**未开启的方式不渲染**；一个可用方式都没有时说明该开哪个配置项。门禁单开时先显示一句「只挡住界面」。不套管理布局 |
 | `/auth/callback` | SSO 回调 | 校验 `state` → 用授权码换令牌 → 让服务端确认 → 回跳原页面。不套管理布局 |
 | `/` | 控制台概览 | 统计块（三个数量）、服务端配置摘要、**连接自检**、catalog 清单、`GET /v1/config` 展示 |
-| `/browse` | 目录浏览 | 左库右对象；四页签（表/视图/函数/语义视图）；建库、建表（Paimon 表 / Format 表 / Object 表三种表格式，Lance 表留在选项里但禁用，见 [console-catalog-detail.md](console-catalog-detail.md) §3.5）、注册表、按表 ID 定位、重命名、删除、详情抽屉。表页签列出表名 / 表格式 / 表类型（Managed 或外部表）/ 创建时间 / 元数据更新时间 / 操作六列，数据取自 `table-details`（只回表名的 `/tables` 给不出这几列）；「元数据更新时间」是服务端这条表记录的最后改动时间，快照提交与回滚也会推动它。表页签的过滤为空时说明「没有匹配 ×××」，与「库里没有表」区分开 |
+| `/browse` | 目录浏览 | 按选中 catalog 的**表格式**换一套实现：Paimon catalog 是「左库右对象、四页签（表/视图/函数/语义视图）」；Iceberg catalog 换成 `IcebergBrowseView`（左命名空间右表/视图，见 §4.6）。Paimon 侧能力：建库、建表（Paimon 表 / Format 表 / Object 表三种表格式，Lance 表留在选项里但禁用，见 [console-catalog-detail.md](console-catalog-detail.md) §3.5）、注册表、按表 ID 定位、重命名、删除、详情抽屉。表页签列出表名 / 表格式 / 表类型（Managed 或外部表）/ 创建时间 / 元数据更新时间 / 操作六列，数据取自 `table-details`（只回表名的 `/tables` 给不出这几列）；「元数据更新时间」是服务端这条表记录的最后改动时间，快照提交与回滚也会推动它。表页签的过滤为空时说明「没有匹配 ×××」，与「库里没有表」区分开 |
 | `/tables/:prefix/:database/:table` | [表详情](console-table-detail.md) | 七页签：详细信息 / 快照 / 标签 / 分支 / **文件列表** / 数据访问 / **存储优化**；含快照与标签的**回滚**。**没有「变更」页签**：改表结构走 HTTP 或 Spark SQL，理由见该文档 §2。详细信息首屏的四张统计卡片取自 `getTableSnapshot`（三个文件统计的来路与「什么时候会空」见该文档 §2.1），内含**字段列表 / 分区列表**二级页签（名称过滤 + 本地分页，分区按需加载）。文件列表按表目录物理内容列一层（根是表目录，出不了表外），目录名可点下钻、文件可下载、支持文件名前缀过滤与本地分页。存储优化页签承载表级策略与执行历史（见 [table-optimization.md](table-optimization.md) §7）。授权不在这张表上做——表级权限统一到「权限管理」页 |
 | `/catalogs` | Catalogs | 列出 / 创建 / 详情 / 更新（带版本）/ 删除。名称链到详情页；操作列另有「浏览库与对象」直达 `/browse` |
 | `/catalogs/:catalogName` | [Catalog 详情](console-catalog-detail.md) | 三页签：概览 / 文件列表 / 配置。文件列表按仓库物理目录列一层，目录名可点下钻、带面包屑与「返回上级」；只读，不提供删除与建目录。**配置页签**可编辑「Paimon 表默认参数」（`table-default.*`，见 [catalog-api-endpoints.md](catalog-api-endpoints.md#catalog-级默认表属性table-default)），其余属性只读回填 |
 | `/principals` | 主体 | 列出 / 创建 / 更新 / 删除 / rotate / reset；授予与撤销角色。创建、轮换、重置后的凭据弹窗可一键导出 JSON 文件（`{principal, clientId, clientSecret}`，文件名 `<主体>-credentials.json`），密钥仍只在弹窗期间可见 |
 | `/principal-roles` | 角色 | 列出 / 创建 / 更新 / 删除；查看成员；授予与撤销 catalog 角色（选 catalog 后自动加载，无需点「加载」） |
-| `/permissions` | 权限管理 | 控制台**唯一**的授权入口（Paimon 官方权限模型，principal 直授）：页头「添加授权」按钮开弹窗填表——多选授权对象（`user:` / `role:`，可手输任意 principal）、选**作用范围**（Catalog / Database / Table / View，四级就是官方的四种资源类型：catalog 不需要选库，表 / 视图还要选具体对象）、权限项按范围给（catalog：Create database/Alter/Drop/Grant；db：Create table/Alter/Drop/Describe；表：Select/Insert/Delete/Describe/Alter/Drop；视图：Select/Describe/Alter/Drop）、**有效期**默认长期有效，可选「指定日期」（按所选当天 23:59:59 本地时区换算成官方的 UTC instant；日历与手输都挡掉过去的时间）；主界面是授权清单——一行 = 一个主体 × 一个作用范围，同范围的权限并列成标签、点标签上的 × 逐项撤销，过期时间按日期显示（完整时刻在悬浮提示，7 天内到期标「N 天后」，过期条目不隐藏但标注「已过期」，多项不一致取最早并标注），资源合成「作用范围」一列（`整个 catalog` / `库` / `库.对象`，标注整 catalog/整库/单表），权限用与表单一致的词（UPDATE 显示为 Insert / Delete），空态给「添加授权」入口；支持过滤与幂等撤销 |
+| `/permissions` | 权限管理 | 控制台**唯一**的授权入口（Paimon 官方权限模型，principal 直授）：页头「添加授权」按钮开弹窗填表——多选授权对象（`user:` / `role:`，可手输任意 principal）、选**作用范围**（Catalog / Database / Table / View，四级就是官方的四种资源类型；**Iceberg catalog 下 `Database` 这一级显示为 `Namespace`**，候选与文案都跟着换，见 §4.8；catalog 不需要选库，表 / 视图还要选具体对象）、权限项按范围给（catalog：Create database/Alter/Drop/Grant；db：Create table/Alter/Drop/Describe；表：Select/Insert/Delete/Describe/Alter/Drop；视图：Select/Describe/Alter/Drop）、**有效期**默认长期有效，可选「指定日期」（按所选当天 23:59:59 本地时区换算成官方的 UTC instant；日历与手输都挡掉过去的时间）；主界面是授权清单——一行 = 一个主体 × 一个作用范围，同范围的权限并列成标签、点标签上的 × 逐项撤销，过期时间按日期显示（完整时刻在悬浮提示，7 天内到期标「N 天后」，过期条目不隐藏但标注「已过期」，多项不一致取最早并标注），资源合成「作用范围」一列（`整个 catalog` / `库` / `库.对象`，标注整 catalog/整库/单表），权限用与表单一致的词（UPDATE 显示为 Insert / Delete），空态给「添加授权」入口；支持过滤与幂等撤销 |
 | `/optimization-jobs` | 优化任务 | 表存储优化的批次运维页（数据来自管理 API `/api/management/v1/optimization/**`，策略配置在表详情的「存储优化」页签）。四张统计卡（运行中 / 排队中 / 今日批次 / 失败 24h）与列表共用**最近 200 个批次**的窗口，状态 / 动作 / Catalog / 触发方式四个过滤器在本地做——统计卡与列表若是两个口径，「失败 3 个」就会在列表里数不出来。批次表展开行按需拉表级明细（每行指标摘要与失败原因），「批次详情」抽屉给键值对 + 时间线 + 回调令牌 + 原始响应；操作列的重试（只重跑失败表，原批次保留）与取消都带确认框。`?job=` 查询参数用于从表详情的历史点批次号跳过来直接展开 |
 | `/settings` | 连接设置 | API 基址、访问令牌、登录状态、主题；`/api/console/v1/meta` 原始响应 |
 | `/:pathMatch(.*)*` | 未找到 | 兜底 |
@@ -260,6 +260,162 @@ meta 只暴露枚举取值与服务端自身的配置，不含任何主体、cat
 - **前端先拦一遍**同样的四条规则：有密钥没 ID、换 ID 不带新密钥、与 `storageName` 互斥、
   能力未开启。理由与下拉候选来源一致：服务端只会回一句笼统的 400，而这一层能说清是哪一条。
 
+### 4.4 存储高级参数（折叠区）
+
+同一个组件里，字段被拆成两张表：`BASIC_FIELDS`（主表单平铺）与 `ADVANCED_FIELDS`
+（收进默认收起的「存储高级参数」）。判据只有一条：**不填就跑不起来的留在外面**
+（`region` / `endpoint` / Azure 的 `tenantId` 决定仓库在哪），其余收进去。
+
+| 存储类型 | 主表单 | 折叠区 |
+| --- | --- | --- |
+| `S3` | `region`、`endpoint` | `roleArn`、`externalId`、`userArn`、`stsEndpoint`、`endpointInternal`、`stsUnavailable`、`pathStyleAccess`、`kmsUnavailable`、`encryptionKeys`、`decryptionKeys`（10 项，分「STS 与角色 / 访问方式 / KMS 与加密」三组） |
+| `AZURE` | `tenantId`（必填） | `multiTenantAppName`、`consentUrl`、`hierarchical` |
+| `GCS` | — | `gcsServiceAccount` |
+| `OBS` / `OSS` | `endpoint` | `stsUnavailable` |
+| `FILE` | — | 无（折叠区整块不出现） |
+
+三条规则与它们的理由：
+
+- **默认收起，且不自动展开。** 初始值恒为 `false`，不由「是否有值」反推；换类型与
+  换一份配置（打开对话框、切到另一个 catalog）时重置为收起。不自动展开是因为状态会被抢：
+  用户手动收起后，任何一次父组件回传都会把它再弹开，「我收起来了它自己又开」比
+  「我得多点一下」糟得多。代价是收起态**必须看得见有值**——所以折叠头带计数徽标，
+  下面还有一行「已填：`roleArn`、…」的摘要。
+- **「已填」的判定与落盘规则一一对应。** 文本与列表按「有非空项」计，布尔**只在打开时**计。
+  `false` 是默认值，算成「已填」会让每份 S3 配置都显示「已填 3 项」，计数立刻失去意义。
+- **折叠只改变可见性，绝不改变提交内容。** `build()` 读的是两张表**合并后**的 `fields`，
+  因此它不知道自己被分了层；对布尔项仍是既有的「无条件写入」。谁都不许在这里加
+  「收起就不提交」——那会造出「展开看一眼再收起来，报文里多了几个 `false`」这种
+  只能靠 diff 报文发现的行为差异。第 13 组盯着这一条，`AGENTS.md` 里也写了。
+
+两点与需求相关的说明：
+
+- **「不限制」的边界是「三项都不设」**：都不必填（`validate()` 不为折叠区加规则）、
+  取值不校验形状（ARN / URL 的形态随云厂商与私有化部署而变，前端猜错一次就拦掉一个
+  合法配置）、`encryptionKeys` / `decryptionKeys` 条数不限。它**不是**「键名任意」——
+  服务端 `StorageConfigInfo` 是判别联合，未知键会被静默丢弃（这一行为有测试钉死：
+  `StorageConfigApiTests.fieldsBelongingToAnotherStorageTypeAreIgnored`），
+  要做「任意键」得先扩服务端契约。
+- **这 10 项里服务端当前只消费 2 项**（`pathStyleAccess` → 下发 `s3.path-style-access`，
+  `stsUnavailable` → 决定是否下发密钥）。其余 8 项接收、落库、回显，但不参与行为——
+  它们仍是 Polaris 管理 API 契约的一部分，所以不能删控件。前端判断不了「哪几个真的生效」，
+  因此折叠区里只给了一句中立说明（「是否影响引擎行为，取决于服务端的凭据实现」），
+  不点名字段、不加徽标：把服务端的实现细节抄进前端，正是 §10 反对的做法。
+
+### 4.5 `roleArn` 与静态凭据并存时只提示、不拦截
+
+`StorageDtos` 的注释写着「静态凭据与 `roleArn` 系列互斥，由 `StorageConfigs` 拒绝」，
+但 `StorageConfigs.requireSingleCredentialSource` 实际只判「静态凭据 × `storageName`」。
+**服务端今天接受这种组合**，因此控制台只给一条提示（`.pc-field-note-warn`），不写进
+`validateCredentials()`：前端比服务端更严，会让一份服务端认可的配置在控制台里存不回去。
+要根治得在服务端补拒绝逻辑，那属于契约变更。
+
+### 4.6 Iceberg catalog 的目录浏览
+
+Iceberg catalog 打开 `/browse` 时渲染的是 `IcebergBrowseView`，不是 Paimon 那一页
+加一串 `v-if`。分开的理由不是洁癖——两套契约的差异到了「资源都不叫同一个名字」的程度：
+
+| | Paimon 面 | Iceberg 面 |
+| --- | --- | --- |
+| 资源 | `databases` | `namespaces`（层级数组） |
+| 路径段 | `/v1/{prefix}/databases/{db}` | `/v1/{prefix}/namespaces/{ns}`，层级用 `0x1F`（`%1F`）拼 |
+| 分页参数 | `maxResults` | `pageSize`；令牌字段是 `next-page-token` |
+| 表列表内容 | `table-details`（格式 / 表类型 / 时间） | `identifiers`（**只有名字**） |
+| 标识符 | `{database, object}` | `{namespace: [...], name}` |
+
+**能做什么**：命名空间平铺列出（含多级，点号显示）、新建、删除（**非空回 409**，
+与 Paimon 的级联删除刻意不同，确认框里写明）、建表、登记已有表（`metadata-location`）、
+重命名、删除、注销（`unregister`：只摘目录条目、保留文件）、视图列表 / 详情 / 删除；
+表名与「详情」进 **Iceberg 表详情页**（§4.7），视图详情走抽屉
+（`LoadViewResponse` 原文 + 元数据摘要）。
+
+**不做什么，以及为什么**：
+
+- **不在列表里显示 location / 时间 / 快照数。** `identifiers` 里没有这些字段，
+  要拼出来只能逐表 `loadTable`——N 次请求换一屏数据，而且一旦表多到翻页就不可行。
+  这些信息在表详情页按需取（见 §4.7）。
+- **不提供建视图。** 建视图要 `schema` 与 `view-version` 两段元数据（后者含
+  `version-id` / `timestamp-ms` / `summary` / `representations`），控制台拼不出
+  一份可靠的；拼错了服务端只会用 `ViewMetadata` 的解析器报一句难懂的错。
+  页面上直说「用 Spark 或客户端建」。
+- **不按表 ID 定位。** Iceberg 协议面没有 `tables/id/{id}` 这条反查端点。
+
+### 4.7 Iceberg 表详情
+
+表名可点（或点「详情」），进 `IcebergTableView`（路由 `/iceberg-tables/:prefix/:database/:table`）。
+与 Paimon 版 `TableView` 平行而不是同一个页面里二选一：Paimon 版的七个页签挂在
+`databases/**` 上，而这一页的数据几乎全部来自**一次** `loadTable`——
+`LoadTableResult` 里的 `metadata` 是整份 `TableMetadata` JSON，按需加载的单位完全不同。
+
+| 页签 | 数据来源 |
+| --- | --- |
+| 详细信息 | 当前快照 `summary` 的统计卡（记录数 / 文件数 / 大小）+ 元数据 KV + 当前 schema 字段表 + 当前分区 spec；还没有提交时显示 `current-snapshot-id = -1` 的「无快照」说明，而不是把 0 当统计 |
+| 快照 | `metadata.snapshots[]`（按时间倒序）与 `metadata.refs`（Iceberg 把标签与分支合成一张 map，不像 Paimon 面拆两个页签）；快照详情抽屉给整行原文 |
+| 文件列表 | **catalog 级**文件端点（根 = warehouse）：初始路径由 `metadata.location` 减去 warehouse 前缀算出，之后在表目录里下钻；下载走 catalog 级单文件端点。location 不在 warehouse 下（登记的外部表最常见）时给出去处而不是 404 |
+| 存储优化 | **挂的是与 Paimon 表同一个面板**（`TableOptimizationPanel`，显式传 `format="ICEBERG"`）：三项动作与 Paimon 同名、按顺序执行，参数键与默认值按 Iceberg 的 procedure 走（`strategy` 多一个 `zorder`、`retain-last` 而非 `retain-min`、目标文件 512 MB）。策略存的是同一批表，执行历史与 `/optimization-jobs` 同一批批次。差异细节见 [table-optimization.md](table-optimization.md) §2.5 |
+
+两个边界：
+
+- **文件列表为什么走 catalog 级端点。** Paimon 面那条 `/api/console/v1/tables/{tableId}/files`
+  要的是 Paimon 的内部表 id，而 `LoadTableResult` 里没有它，Iceberg 协议面也没有
+  反查端点；catalog 级端点（根 = warehouse）不依赖 id，`location` 减去 warehouse
+  就能得到初始路径，代价是要多取一次 catalog 信息（只在第一次切到文件页签时发生）。
+- **快照没有「按版本号查单个」的表单。** Paimon 面有独立的 snapshot-by-version 端点，
+  Iceberg 协议面没有对应物——列表就在 metadata 里，一次全给了。
+  快照的回滚 / 过期也不在控制台做：协议面的更新提交（`POST .../tables/{table}`）
+  是 metadata 代数的 `updates` / `requirements`，控制台拼不出一轮合法的提交（与 §7 同一理由）。
+
+页头另有一个「权限」按钮，跳「权限管理」页并带上 `?catalog=<prefix>`。**表级授权不在这一页做**
+（与 Paimon 表详情同一条约定，见 §4 的 `/tables/:prefix/:database/:table` 行）：
+入口只负责把人送到唯一那个授权页，并选定正确的 catalog。
+
+> **页签懒加载的一个老坑，这一页照搬了 `TableView` 的解法。** 存储优化面板的策略要按
+> `catalog/database/table` 现取，因此必须在页签真正显示之后才加载；而 `@tab-change` 在
+> `v-model` 更新后**同步**抛出，此时 `ref` 指向的面板组件还没挂载，直接调它的方法会静默无声。
+> 所以先记一个 `optimizationPending`，再用 `watch(panelRef, ...)` 等组件到位；换表时若当前
+> 正停在这个页签，也主动重取一次（否则会看到上一张表的策略）。
+
+**命名空间平铺的代价**：`GET /namespaces` 只回**直接子级**，要平铺就得按层递归。
+深度上限 4 层、条目上限 500 个（`MAX_NAMESPACE_DEPTH` / `MAX_NAMESPACE_COUNT`）——
+护栏挡的是「某天有人建了几千个 namespace，打开页面发几千个请求」。
+显示用点号拼接是**有损**的（层级名本身可以含点），发请求一律用 `0x1F`；
+这个取舍与 §4.6 的来源见 `iceberg-rest-catalog-design.md` §4.6。
+
+**多级命名空间必须逐级存在，控制台因此按 `mkdir -p` 建。** 实测：只建 `a.b`
+而不建 `a` 时，请求会成功，但 `a.b` 在顶层列表里**永远不出现**（服务端按
+「正好深一层」判定直接子级），本页的递归也走不到它——建成功了却看不见。
+所以新建命名空间填 `a.b` 时，前端先建 `a` 再建 `a.b`，属性只落在最深一级；
+中途某级已存在（409）按预期跳过。这个行为对客户端同样成立：用客户端建
+多级命名空间而不建父级，同样不可见。
+
+### 4.8 权限管理的两套候选来源
+
+「权限管理」是同一页面对两种 catalog 格式，不是两个页面。差异只在**「库」那一级的
+候选从哪来、叫什么**，其余（授权对象、权限词、有效期、清单与撤销）完全一致：
+
+| | Paimon catalog | Iceberg catalog |
+| --- | --- | --- |
+| 那一级叫什么 | `Database` | **`Namespace`** |
+| 候选来源 | `GET /v1/{prefix}/databases`（扁平，一次全给） | `listAllNamespaces`（`namespaces?parent=` 按层递归，深度 4 / 条数 500 上限） |
+| 显示形式 | 库名原样 | 多级用点号拼接（`accounting.tax`） |
+| 对象候选 | `GET .../databases/{db}/tables` / `.../views`，取名字数组 | `GET .../namespaces/{ns}/tables` / `.../views`，取 `identifiers[].name` |
+| 空范围标签 | 「（整库）」 | 「（整 namespace）」 |
+
+三条实现约定：
+
+- **格式判断先补齐 catalog 列表。** `icebergCatalog = isIcebergCatalog(session.catalogByName(...))`，
+  在这之前先 `ensureCatalogs()`。深链接（`/permissions?catalog=xxx`，Iceberg 表详情的
+  「权限」按钮就是这么跳的）进来时 catalog 列表可能还没到，此时若「猜 Paimon」，
+  就会拿 `databases/**` 去打一个 Iceberg catalog——一串 404，看着像故障而不像「格式不同」。
+  判断不出来就**不发请求**，而不是发一个错的。
+- **候选集合与浏览页是同一份。** `listAllNamespaces` 下沉到 `src/api/iceberg.js`，
+  浏览页（§4.6）与权限页共用它和同一组上限。各写一份 BFS 迟早给出不同的集合，
+  表现是「浏览页里看得见的 namespace，权限页授不了」。
+- **提交值与显示值同一个字符串。** 表单里选的是 `accounting.tax`，发给服务端的也是它。
+  Iceberg 的请求体里 namespace 是数组、路径里是 `%1F` 拼接，这两处编码都在 API 层做；
+  若页面里先编一次、API 层再编一次，会得到 `accounting%1Ftax` 字面量这样的双级命名空间。
+  服务端判定这一侧的比较口径见 [authorization.md](authorization.md) §2.6。
+
 ---
 
 ## 5. 契约表与机械校验
@@ -290,7 +446,7 @@ python3 scripts/verify-console.py      # 退出码 0 通过 / 1 不一致 / 2 �
 PYTHON=/path/to/python3 scripts/verify-console.py   # 多解释器时指定装了 PyYAML 的那个
 ```
 
-它**不构建前端、不启动服务端**，只做静态比对，因此可以放进提交前的检查。10 组 25 项：
+它**不构建前端、不启动服务端**，只做静态比对，因此可以放进提交前的检查。15 组 65 项：
 
 | 组 | 校验内容 |
 | --- | --- |
@@ -304,13 +460,37 @@ PYTHON=/path/to/python3 scripts/verify-console.py   # 多解释器时指定装�
 | 8. 对话框状态 | 每个 `el-dialog` 都声明了 `destroy-on-close`（否则编辑时会残留上一次的状态） |
 | 9. 下拉候选来源 | 每个 `el-select` 都声明了候选来源（`el-option` / `:options` 等）；确属自由输入的要在源码里写 `el-select-free-input` 标记显式豁免（否则「下拉是空的」这类 bug 只有打开页面才看得到） |
 | 10. 静态凭据 | catalog 自带 AK/SK 这条链路横跨四个文件（服务端 DTO 的字段名、`supportsStaticCredentials` 认可的类型、meta 里的能力开关、前端表单），逐处对齐：字段名与三种类型的 record 参数逐字一致、类型集合两侧一致、**规格里确实没有这两个字段**（否则不再是扩展，要先对齐语义）、能力开关从 meta 一路传到表单 prop、能力关着时给的是可操作提示而不是把字段藏起来、读路径仍做脱敏 |
+| 11. 优化参数键 | 存储优化各动作的表单字段名与服务端逐字一致：Paimon 那份对 `OptimizationOptions.KNOWN_KEYS`、Iceberg 那份对 `IcebergOptimizationOptions.KNOWN_KEYS`（键名写错的表现是保存时吃一个 400，而编译、类型检查与单元测试都不会报；两套键混用的表现更糟——`retain-min` 与 `retain-last` 被互相收下、然后静默不生效） |
+| 12. catalog 表格式 | `PAIMON` / `ICEBERG` 这条链路跨六处：服务端 `CatalogFormat` 枚举 ↔ 前端兜底取值逐字一致、meta 下发的候选与默认值都来自枚举本身、新建表单从 meta 取候选与默认值且提交体带 `catalogFormat`、**编辑不回传它**（格式不可变）、列表有徽标与格式筛选（筛选与徽标用同一个归属函数）、三个页面按 catalog 格式伸缩**且在 loader 里就挡住请求**、详情页的能力清单读服务端 `/v1/config` 而不是前端抄一份、**权限页的候选来源按格式分派**（Iceberg 走 `namespaces/**` 并按层递归、Paimon 走 `databases/**`，选错来源的表现是空下拉而不是报错） |
+| 13. Iceberg 浏览 | Iceberg catalog 的目录浏览走 `namespaces/**` 而不是 `databases/**`。这一组钉的是**契约形状**，不是像素：13 条 `iceberg*` 端点逐条对 Iceberg 规格（不靠第 1 组的并集蒙混）、浏览页只调 `icebergApi` 不混用 `catalogApi`、namespace 路径段用 `0x1F` 拼（点号只是显示口径）、分页键是 `pageSize` 而不是 `maxResults`、两个列表都按 `identifiers` 取（逐表 `loadTable` 只许出现在表详情页）、建表体是 Iceberg 的 `schema` / `partition-spec`（`schema-id`、`required`、`source-id`、`field-id`）、浏览页与 API 层都不出现 `/databases`、删除命名空间的确认框写明「非空会被拒（409）」、两页共用的骨架样式留在全局；以及 **Iceberg 表详情页**（`IcebergTableView`）：有独立路由、只调 `icebergApi`、文件列表走 catalog 级文件端点（不用 Paimon 的 `tableId` 端点）、快照处理 `-1` 无快照哨兵、存储优化页签复用共用面板并显式传 `format="ICEBERG"`（页签自己调端点会绕过 format 分派）、建表表单的 `format-version` 提供 1/2/3 |
+| 14. 存储字段分层 | catalog 表单的字段拆成「基本 / 高级」两张表，高级那张进默认收起的折叠区。判据对着**服务端 record**，不在前端另抄名单：两张表合并后与 record 的专属字段**不丢不多**、两表之间不重叠、`build()` 既**不读折叠状态**又仍读合并后的视图、`FILE` 没有高级字段、折叠区按「有没有高级字段」出现而非硬编码某类型、默认收起、收起态给出计数与「可以不管它」的说明 |
+| 15. 文档计数 | 本节这张表上方的「N 组 M 项」与脚本实际一致（`docs/console.md` 与 `README.md` 各一条）。期望值由脚本自身推出——组数是源码里分组标题的条数，项数是本次校验的总条数——因此加/删校验项时这里不用改，但**文档必须跟着改** |
 
 第 7 组是这套机制里最实用的一条：**产物过期不会让任何东西报错**，
 它只是安静地少一个按钮。
 
+第 12 组里有两处判据值得说明，它们都不是「源码里有没有这个字符串」那么直白：
+
+- **按格式伸缩那一项断言的是「loader 里挡了请求」，不是「模板里有 `v-if`」。**
+  只在模板上藏内容，请求照样发得出去——对一个 Iceberg catalog 打 Paimon 的
+  `/databases/**`，页面上会留下一串 404，看起来像故障。
+  目录浏览这一条在 Iceberg 浏览落地后变成两半：**换页那一半**断言
+  `<IcebergBrowseView v-else-if="icebergCatalog" />` 真的在，**挡请求那一半**
+  断言 Paimon 的五个 loader 仍保留守卫——`watch`、刷新与「重试」都会绕过模板
+  直接调 `load()`，只换页不挡请求仍然会发出去。
+- **能力清单那一项断言「读 `/v1/config`」并且「源码里没有端点字面量」。**
+  Iceberg 的 `endpoints` 是服务端**下发**给客户端的原文（客户端拿它做等值比较），
+  前端自己抄一份，抄错了会显示一个「看上去对、实际不生效」的能力表，
+  而这一块的全部价值就是排障时不用去读文档。
+
 编写这类校验时值得注意：**要能证明它抓得住错误**。把 `addColumn` 的 `fieldNames`
 改成单数、或把某个动作名改掉，脚本应当报出具体的字段/动作名而不是通过——空跑的校验
 比没有校验更糟。
+
+第 15 组就是这么来的：**「加了校验组要顺手改文档」是一条靠人记的约定，而它真的漏过一次**
+——`docs/console.md` 写 37 项、`README.md` 写 38 项、脚本实际 38，两个数字都没人对账，
+直到有人去数。现在这条约定变成了一条断言。它的盲区是拦不住「连第 15 组一起删掉」，
+因此文档里的组数仍值得在 review 时扫一眼——**没有哪个自校验能覆盖它自己**。
 
 唯一允许出现在规格之外的端点是 `EXTENSION_ENDPOINTS` 里的：
 
@@ -645,3 +825,25 @@ ls lakehouse-rest-spring-parent/lakehouse-rest-server/target/classes/static/cons
   [`console-table-detail.md`](console-table-detail.md)。
 - **无 i18n。** 界面为中文单语，文案直接写在组件里。
 - **产物需手工同步。** 没有 CI 钩子强制 `verify-console.py`（见 §8.2）。
+- **Iceberg 协议面：目录浏览与表详情已通，写路径仍不做。** 已落地：
+  Catalog 列表的「表格式」徽标与格式筛选、新建 Catalog 弹窗的「表格式」选择
+  （默认值取 `meta.service.defaultCatalogFormat`，**创建后不可改**，编辑表单不回传它）、
+  catalog 详情的格式展示与「协议与能力」卡片（读 `GET /v1/config?warehouse=` 的
+  `endpoints` 原文，不是前端抄的清单）、**目录浏览的 Iceberg 版**（`IcebergBrowseView`：
+  命名空间平铺 / 建表（format-version 支持 1/2/3）/ 登记 / 改名 / 删除 / 注销 /
+  视图列表与详情，见 §4.6）、以及 **Iceberg 表详情页**（`IcebergTableView`：
+  详细信息 / 快照 / 文件列表 / 存储优化四个页签，见 §4.7），
+  以及**权限管理页对 Iceberg catalog 的适配**（「库」那一级换成 Namespace，
+  候选按层递归，见 §4.8）。
+  仍未落地的是**写路径**：快照回滚 / 过期、refs 的管理都要走协议面的更新提交
+  （`POST .../tables/{table}`，metadata 代数的 `updates` / `requirements`），
+  控制台拼不出一轮合法的提交（与 §7 同一理由）。
+  取舍与理由见 [`iceberg-rest-catalog-design.md`](iceberg-rest-catalog-design.md) §11.1 第 11 条。
+- **表格式有两个层级，别混。** `src/utils/catalogFormat.js` 管的是 **catalog 级**的
+  `catalogFormat`（`PAIMON` / `ICEBERG`，决定服务哪套 REST 协议）；
+  `src/utils/tableKind.js` 管的是 **表级**的 `schema.options.type`
+  （`table` / `format-table` / `object-table` / `lance-table`，Paimon 自己的表格式）。
+  `ICEBERG` 只属于前者，不在 `TABLE_KIND_LABELS` 里。两者正交：一个 Iceberg catalog
+  下不存在这四种 Paimon 表格式，反过来 Paimon catalog 下也不该出现 `ICEBERG`
+  这个表格式。判别顺序是「先 catalog 格式、再表格式」——把顺序倒过来，
+  会拿表级的判别去解释一个 catalog 级的属性。

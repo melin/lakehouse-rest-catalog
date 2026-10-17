@@ -83,7 +83,26 @@ function selectCatalog(name) {
 
 /** 当前 catalog 的对象（含 storageConfigInfo），未选中时为 `null`。 */
 function currentCatalog() {
-  return state.catalogs.find((catalog) => catalog.name === state.selectedCatalog) || null
+  return catalogByName(state.selectedCatalog)
+}
+
+/**
+ * 按名字取 catalog 的对象，未登记时为 `null`。
+ *
+ * <p>为什么要有这个：**catalog 的 `catalogFormat` 只在这一份列表里**。
+ * 详情页与表详情页的路径里只有 prefix（catalog 名），管理 API 的单条查询虽然也能拿到，
+ * 但为了读一个格式字段再发一次请求不值当；而列表在首屏就已经取回来了
+ * （`session.bootstrap()`），它本来就是控制台每个页面都依赖的那份数据。
+ *
+ * <p>`name` 为空时直接返回 `null`，不靠 `undefined === undefined` 的巧合——
+ * 未选 catalog 时 `name` 是空串，而列表里不可能有空名字的 catalog，
+ * 这条短路让「还没选」与「选了但不存在」两件事都不再返回一个假对象。
+ */
+function catalogByName(name) {
+  if (!name) {
+    return null
+  }
+  return state.catalogs.find((catalog) => catalog.name === name) || null
 }
 
 export const session = {
@@ -92,6 +111,7 @@ export const session = {
   loadMeta,
   selectCatalog,
   currentCatalog,
+  catalogByName,
   /** 首屏加载：两个请求互不依赖，并发发出。 */
   bootstrap() {
     return Promise.allSettled([loadCatalogs(), loadMeta()])

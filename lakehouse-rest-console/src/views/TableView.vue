@@ -2,7 +2,9 @@
   <div class="pc-page">
     <PageHeader
       :title="`表：${table}`"
-      :subtitle="`${prefix} / ${database} / ${table}　这里看到的结构与提交历史就是引擎客户端读写的那一份；删除表不可撤销。`"
+      :subtitle="icebergCatalog
+        ? `${prefix} / ${database} / ${table}　这个 catalog 是 Iceberg 协议面，本页不适用（见下方说明）。`
+        : `${prefix} / ${database} / ${table}　这里看到的结构与提交历史就是引擎客户端读写的那一份；删除表不可撤销。`"
     >
       <template #actions>
         <el-button size="small" @click="$router.push({ name: 'browse', query: { catalog: prefix, database } })">
@@ -13,13 +15,52 @@
           <el-icon><Refresh /></el-icon>
           <span class="pc-btn-text">刷新</span>
         </el-button>
-        <el-button size="small" type="danger" plain @click="confirmDrop">删除表</el-button>
+        <!-- Iceberg catalog 下这个按钮会打 Paimon 的删表端点（拿 404），不显示 -->
+        <el-button v-if="!icebergCatalog" size="small" type="danger" plain @click="confirmDrop">删除表</el-button>
       </template>
     </PageHeader>
 
-    <ResourceState :loading="overview.loading.value" :error="overview.error.value" />
+    <ResourceState v-if="!icebergCatalog" :loading="overview.loading.value" :error="overview.error.value" />
 
-    <template v-if="table0">
+    <!--
+      Iceberg catalog：本页读的是 Paimon 协议面的表端点
+      （`/v1/{prefix}/databases/{db}/tables/{tbl}`），对一个 Iceberg catalog
+      发出去会被服务端以「格式不匹配」拒绝。这里不发那个请求，也不显示一屏错误：
+      把「本页不适用」与「Iceberg 版表详情页在哪儿」一起说出来。
+    -->
+    <PanelCard v-else>
+      <el-alert type="info" :closable="false" show-icon>
+        <template #title>catalog「{{ prefix }}」是 Iceberg 协议面，请使用 Iceberg 版表详情页</template>
+        <div>
+          本页读的是 Paimon 协议面的表端点
+          （<code class="pc-mono">/v1/{prefix}/databases/{database}/tables/{table}</code>），
+          而 Iceberg 客户端走 <code class="pc-mono">/v1/{prefix}/namespaces/**</code>，
+          两者不是同一套资源，因此这里不做拼接式的「换一套路径再看」——
+          图的含义、快照的代数与视图的形状都不一样。
+          Iceberg 表的详细信息 / 快照 / 文件列表在 Iceberg 版表详情页里。
+        </div>
+      </el-alert>
+      <div class="pc-tools-row">
+        <el-button
+          size="small"
+          type="primary"
+          @click="$router.push({ name: 'icebergTable', params: { prefix, database, table } })"
+        >
+          <el-icon><View /></el-icon>
+          <span class="pc-btn-text">打开 Iceberg 表详情</span>
+        </el-button>
+        <el-button size="small" @click="$router.push({ name: 'catalogDetail', params: { catalogName: prefix } })">
+          <el-icon><Coin /></el-icon>
+          <span class="pc-btn-text">打开 catalog 详情</span>
+        </el-button>
+        <el-button size="small" @click="$router.push({ name: 'browse', query: { catalog: prefix } })">
+          <el-icon><Back /></el-icon>
+          <span class="pc-btn-text">返回目录浏览</span>
+        </el-button>
+      </div>
+    </PanelCard>
+
+    <template v-if="!icebergCatalog && table0">
       <PanelCard flush>
         <el-tabs v-model="tab" class="pc-tabs" @tab-change="onTabChange">
           <el-tab-pane label="详细信息" name="details" />
@@ -29,7 +70,8 @@
           <el-tab-pane v-if="isPaimonTable" label="分支" name="branches" />
           <el-tab-pane label="文件列表" name="files" />
           <el-tab-pane v-if="isPaimonTable" label="数据访问" name="access" />
-          <!-- 存储优化同理按表格式伸缩：三项动作都建立在 Paimon 的快照与清单文件上。
+          <!-- 存储优化同样按表格式伸缩：本页只展示 Paimon 表（Iceberg 表走 IcebergTableView，
+               那边挂的是同一个组件、传 format="ICEBERG"）。
                外部 Paimon 表仍会出现这个页签——它由服务端回答「不支持」并说明原因，
                比「页签凭空消失」更容易理解（见 TableOptimizationPanel） -->
           <el-tab-pane v-if="isPaimonTable" label="存储优化" name="optimization" />
@@ -596,6 +638,8 @@ import { catalogApi } from '@/api/catalog.js'
 import { consoleApi } from '@/api/console.js'
 import { describeError } from '@/api/client.js'
 import { confirmDanger, notifyError, notifySuccess, useLocalPaging, useResource } from '@/composables/index.js'
+import { session } from '@/store/session.js'
+import { isIcebergCatalog } from '@/utils/catalogFormat.js'
 import {
   formatBytes,
   formatNumber,
@@ -632,6 +676,32 @@ const prefix = computed(() => route.params.prefix)
 const database = computed(() => route.params.database)
 const table = computed(() => route.params.table)
 
+/**
+ * 这个 catalog 是不是 Iceberg 协议面。
+ *
+ * <p>**本页整个建立在 Paimon 协议面上**：表详情、快照、标签、分支、分区与数据访问
+ * 都是 `/v1/{prefix}/databases/{db}/tables/{tbl}/**` 这套路径。Iceberg catalog
+ * 服务的是 `/v1/{prefix}/namespaces/{ns}/tables/{tbl}`，两套资源不是「换个路径再看一眼」
+ * 的关系（图的含义、快照的代数、视图的形状都不同）。因此这里不拼路径，
+ * 而是不去发那个注定被拒的请求，直接给出说明（见模板）。
+ *
+ * <p>值从 session 的 catalog 列表里读——`catalogFormat` 只在那里，见
+ * `session.catalogByName`。首屏它可能还没到，见 `overview` 里的 `ensureCatalogs()`。
+ */
+const icebergCatalog = computed(() => isIcebergCatalog(session.catalogByName(prefix.value)))
+
+/**
+ * 首屏可能来不及：`catalogsLoaded` 之前读格式只会得到「不是 Iceberg」，
+ * 于是会对着一个 Iceberg catalog 发出注定被拒的请求。
+ *
+ * <p>与顶栏的 `session.bootstrap()` 可能并发发出同一个列表请求——代价是一次
+ * 便宜的 GET，换来的是「不猜格式」。
+ */
+async function ensureCatalogs() {
+  if (session.state.catalogsLoaded) return
+  await session.loadCatalogs().catch(() => null)
+}
+
 const tab = ref('details')
 
 /** 不需要额外请求的页签：切过去不触发 load。 */
@@ -651,6 +721,12 @@ const SELF_CONTAINED_TABS = new Set(['details', 'access'])
  * 表详情是控制台里最常打开、也最重的读路径，重复的代价不该由它付。
  */
 const overview = useResource(async () => {
+  // 先确认 catalog 格式（见 icebergCatalog / ensureCatalogs 的说明）
+  await ensureCatalogs()
+  if (icebergCatalog.value) {
+    // 不打注定被拒的 Paimon 路径；模板会在 `!icebergCatalog` 的那一支里给出说明
+    return null
+  }
   const detail = await catalogApi.getTable(prefix.value, database.value, table.value)
   const snapshot = isSnapshotManaged(detail)
     ? await catalogApi.tableSnapshot(prefix.value, database.value, table.value).catch(() => null)

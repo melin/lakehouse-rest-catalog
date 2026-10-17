@@ -22,6 +22,10 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
  *       它被挡在鉴权后面会形成死循环。
  *   <li>{@code /api/console/v1/login}：用它换令牌。
  *   <li>{@code /api/catalog/v1/oauth/tokens}：同上，OAuth 版本。
+ *   <li>{@code /v1/oauth/tokens}：同一个 OAuth 令牌端点的**另一个路径**（Iceberg 规格里的
+ *       那一个）。Iceberg 客户端在拿到 {@code /v1/config} 之前就要用它换令牌，
+ *       因此它在 {@code /v1/**} 下却不带 prefix，也必须可达。两个路径由同一个方法处理，
+ *       理由见 {@code OAuthTokenController}。
  * </ul>
  *
  * <p>控制台自身的静态资源（{@code /console/**}）不在认证范围内。这不是豁免，
@@ -56,7 +60,8 @@ public class WebConfig implements WebMvcConfigurer {
                 .excludePathPatterns(
                         "/api/console/v1/auth",
                         "/api/console/v1/login",
-                        "/api/catalog/v1/oauth/tokens");
+                        "/api/catalog/v1/oauth/tokens",
+                        "/v1/oauth/tokens");
         registry.addInterceptor(authorizationInterceptor)
                 .addPathPatterns("/v1/**");
     }

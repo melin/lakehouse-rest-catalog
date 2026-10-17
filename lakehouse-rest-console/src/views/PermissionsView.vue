@@ -2,7 +2,7 @@
   <div class="pc-page">
     <PageHeader
       title="权限管理"
-      subtitle="当前 catalog 的授权清单：谁被允许对哪个 catalog、库、表或视图做什么，逐条可撤销。这里把权限直接授给用户、用户组或角色；服务端另有一条「主体 → 角色 → catalog 角色」的授权链（由 Spark SQL 与管理 API 维护），实际权限取两者并集。"
+      subtitle="当前 catalog 的授权清单：谁被允许对哪个 catalog、库（Iceberg 为 namespace）、表或视图做什么，逐条可撤销。这里把权限直接授给用户、用户组或角色；服务端另有一条「主体 → 角色 → catalog 角色」的授权链（由 Spark SQL 与管理 API 维护），实际权限取两者并集。"
     >
       <template #actions>
         <el-button type="primary" size="small" :disabled="!catalogName" @click="openDialog">
@@ -146,24 +146,30 @@
           <el-form-item label="作用范围" required>
             <el-radio-group v-model="form.scope" @change="onScopeChange">
               <el-radio-button value="catalog">Catalog</el-radio-button>
-              <el-radio-button value="database">Database</el-radio-button>
+              <el-radio-button value="database">{{ scopeTerm }}</el-radio-button>
               <el-radio-button value="table">Table</el-radio-button>
               <el-radio-button value="view">View</el-radio-button>
             </el-radio-group>
           </el-form-item>
 
           <!-- catalog 级授权不需要再选库：定位符就是 catalog 自己 -->
-          <el-form-item v-if="form.scope !== 'catalog'" label="Database" required>
+          <el-form-item v-if="form.scope !== 'catalog'" :label="scopeTerm" required>
             <el-select
               v-model="form.database"
               filterable
               class="pc-full"
-              placeholder="选择 database"
+              :placeholder="`选择${scopeTerm}`"
               :loading="databasesLoading"
               @change="onDatabaseChange"
             >
               <el-option v-for="name in databases" :key="name" :label="name" :value="name" />
             </el-select>
+            <!-- Iceberg 的 namespace 是多级的（`accounting.tax`）：点号形式既是显示口径，
+                 也是提交给 `resource.database` 的值——服务端就是按点号把它拼进库名那一列的 -->
+            <div v-if="icebergCatalog" class="pc-scope-kind pc-field-hint">
+              多级 namespace 用点号显示（如 <span class="pc-mono">accounting.tax</span>），
+              授在上级即覆盖其全部下级。
+            </div>
           </el-form-item>
 
           <el-form-item
@@ -179,7 +185,7 @@
               collapse-tags
               collapse-tags-tooltip
               class="pc-full"
-              :placeholder="form.database ? '选择要授权的对象（可多选）' : '先选择 database'"
+              :placeholder="form.database ? '选择要授权的对象（可多选）' : `先选择${scopeTerm}`"
               :disabled="!form.database"
               :loading="objectsLoading"
             >
@@ -273,20 +279,35 @@ import PageHeader from '@/components/PageHeader.vue'
 import PanelCard from '@/components/PanelCard.vue'
 import ResourceState from '@/components/ResourceState.vue'
 import { catalogApi } from '@/api/catalog.js'
+import { icebergApi, listAllNamespaces, namespaceLabel, namespaceLevels } from '@/api/iceberg.js'
 import { managementApi } from '@/api/management.js'
 import { permissionApi } from '@/api/permission.js'
 import { describeError } from '@/api/client.js'
 import { confirmDanger, notifyError, notifySuccess, onConsoleRefresh } from '@/composables/index.js'
 import { session } from '@/store/session.js'
+import { isIcebergCatalog } from '@/utils/catalogFormat.js'
 import { formatDate, formatTime } from '@/utils/format.js'
 
 /**
- * 权限管理页（Paimon 官方权限模型）。
+ * 权限管理页（Paimon 原生权限模型）。
  *
  * <p>控制台唯一的授权入口。授权直接面向 principal（`user:alice` / `group:eng` /
  * `role:sales_writer`），覆盖 catalog / database / table / view 四级资源；
  * 服务端另有一条 Polaris 的 RBAC 链路（主体 → 角色 → catalog 角色 → 资源授权），
  * 由管理 API 与 Spark SQL 维护，没有控制台页面——判定时两路取并集。
+ *
+ * <p><b>两种 catalog 格式共用这一页。</b>授权的落库形状与判定口径是格式无关的
+ * （`/v1/{prefix}/permissions` 在任何 catalog 上都可用），差别只在**候选从哪来**：
+ *
+ * - Paimon：库是扁平的单级名，候选走 `databases/**`；
+ * - Iceberg：namespace 是多级数组，候选要走 `namespaces/**` 并按层递归，显示成
+ *   `accounting.tax` 这样的点号形式。提交时 `resource.database` 就填这个点号形式
+ *   ——服务端正是把多级 namespace 按点号拼进那一列的，判定层也按拼接后的路径比对
+ *   （`AuthorizationService.isPrefix`），因此「授 `accounting` 覆盖 `accounting.tax`」
+ *   在两套协议面上都成立。
+ *
+ * <p>术语跟着格式走：Iceberg 页面上的「Namespace」不是文案洁癖——Iceberg 客户端里
+ * 那个层级的名字就叫 namespace，写成 database 会让人以为要填的是 Paimon 的库。
  *
  * <p>表单按用户要求做了简化——权限只暴露
  * database 四项 / table 六项 / view 四项，Insert 与 Delete 在官方词表里同为 UPDATE，
@@ -388,18 +409,52 @@ async function loadGranteeOptions() {
 
 // ------------------------------------------------------------------ 资源范围
 
+/**
+ * 当前 catalog 是不是 Iceberg。
+ *
+ * <p>先 `ensureCatalogs()` 再判断，不猜——深链接进来时 catalog 列表可能还没到，
+ * 猜错的后果是拿 Paimon 的 `databases/**` 去打一个 Iceberg catalog（一串 404，
+ * 看着像故障而不像「格式不同」）。
+ */
+const icebergCatalog = computed(() => isIcebergCatalog(session.catalogByName(catalogName.value)))
+
+async function ensureCatalogs() {
+  if (session.state.catalogsLoaded) return
+  await session.loadCatalogs().catch(() => null)
+}
+
+/** 那一层的叫法：Iceberg 叫 namespace，Paimon 叫 database。 */
+const scopeTerm = computed(() => (icebergCatalog.value ? 'Namespace' : 'Database'))
+
 const databases = ref([])
 const databasesLoading = ref(false)
 /** 对象候选：按当前选中的对象类型，是表列表或视图列表。 */
 const objectOptions = ref([])
 const objectsLoading = ref(false)
 
+/** 列表请求用的页大小：Iceberg 侧叫 `pageSize`，与服务端 meta 里的上限对齐。 */
+const maxPageSize = computed(() => session.state.meta?.service?.maxPageSize || 100)
+
+/**
+ * 库 / namespace 候选。
+ *
+ * <p>两条来源按 catalog 格式选：Paimon 的 `databases` 是扁平列表；Iceberg 的
+ * namespace 是**多级**的，端点一次只回直接子级，因此走 `listAllNamespaces`（按层递归，
+ * 带深度与条数上限），显示成点号拼接的 `accounting.tax`——与提交给服务端的值、
+ * 与 SQL 里的三段名同一口径。
+ */
 async function loadDatabases() {
   if (!catalogName.value) return
   databasesLoading.value = true
   try {
-    const payload = await catalogApi.listDatabases(catalogName.value, { maxResults: 1000 })
-    databases.value = payload.databases || []
+    await ensureCatalogs()
+    if (icebergCatalog.value) {
+      const levels = await listAllNamespaces(catalogName.value, { pageSize: maxPageSize.value })
+      databases.value = levels.map(namespaceLabel)
+    } else {
+      const payload = await catalogApi.listDatabases(catalogName.value, { maxResults: 1000 })
+      databases.value = payload.databases || []
+    }
   } catch (error) {
     databases.value = []
     notifyError(error)
@@ -426,12 +481,25 @@ async function loadObjects() {
   if (!isObjectScope.value || !catalogName.value || !form.database) return
   objectsLoading.value = true
   try {
-    // 两个端点的列表字段名不同：表是 tables、视图是 views（与 catalog API 一致）
-    const isView = form.scope === 'view'
-    const payload = isView
-      ? await catalogApi.listViews(catalogName.value, form.database, { maxResults: 1000 })
-      : await catalogApi.listTables(catalogName.value, form.database, { maxResults: 1000 })
-    objectOptions.value = (isView ? payload.views : payload.tables) || []
+    await ensureCatalogs()
+    if (icebergCatalog.value) {
+      // 层级数组由显示名还原：列表里的层级名可能含点，理论上会切错，但这里的候选
+      // 就来自 loadDatabases 的列表，同一个命名空间不会既在这里又在别处
+      const levels = namespaceLevels(form.database)
+      const isView = form.scope === 'view'
+      const payload = isView
+        ? await icebergApi.listViews(catalogName.value, levels, { pageSize: maxPageSize.value })
+        : await icebergApi.listTables(catalogName.value, levels, { pageSize: maxPageSize.value })
+      // Iceberg 的列表响应是 identifiers（`{namespace, name}`），不是名字数组
+      objectOptions.value = (payload?.identifiers || []).map((item) => item.name)
+    } else {
+      // 两个端点的列表字段名不同：表是 tables、视图是 views（与 catalog API 一致）
+      const isView = form.scope === 'view'
+      const payload = isView
+        ? await catalogApi.listViews(catalogName.value, form.database, { maxResults: 1000 })
+        : await catalogApi.listTables(catalogName.value, form.database, { maxResults: 1000 })
+      objectOptions.value = (isView ? payload.views : payload.tables) || []
+    }
   } catch (error) {
     objectOptions.value = []
     notifyError(error)
@@ -464,7 +532,10 @@ const PERM_LABELS = {
   view: 'View 权限',
 }
 
-const permLabel = computed(() => PERM_LABELS[form.scope])
+/** 中间那一层的叫法跟着格式走（Iceberg 页面上写 Database 会让人以为要填库名）。 */
+const permLabel = computed(() => (form.scope === 'database'
+  ? `${scopeTerm.value} 权限`
+  : PERM_LABELS[form.scope]))
 
 /**
  * 勾选 → 官方 access 集合。Insert 与 Delete 同为 UPDATE：勾选任一或两者都只产生一条
@@ -539,7 +610,7 @@ const scopeReady = computed(() => {
 const targetLabel = computed(() => {
   // catalog 的全限定名就是右上角选中的那个 catalog（页面常量），这里不再重复写出来
   if (form.scope === 'catalog') return '整个 catalog'
-  if (form.scope === 'database') return `database ${form.database}`
+  if (form.scope === 'database') return `${scopeTerm.value.toLowerCase()} ${form.database}`
   return `${form.scope === 'view' ? '视图' : '表'} ${form.objects.join('、')}`
 })
 
@@ -563,7 +634,7 @@ async function submit() {
     return
   }
   if (form.scope !== 'catalog' && !form.database) {
-    notifyError(new Error('请选择 database'))
+    notifyError(new Error(`请选择 ${scopeTerm.value}`))
     return
   }
   if (isObjectScope.value && !form.objects.length) {
@@ -726,7 +797,9 @@ function toRow(item) {
     // 「库.对象」本身看不出是表还是视图，补一个类型注解把这句话说完整
     scopeKind: catalogWide
       ? '（整 catalog）'
-      : (object ? (OBJECT_KINDS[resourceType] || '（单个对象）') : '（整库）'),
+      : (object
+        ? (OBJECT_KINDS[resourceType] || '（单个对象）')
+        : (icebergCatalog.value ? '（整 namespace）' : '（整库）')),
     access: item.access || '',
     expireRaw,
     // 只有能解析成时间的才按日期显示；解析不出来的原样显示，不假装是永久
@@ -868,6 +941,14 @@ watch(catalogName, (name, previous) => {
 
 .pc-filter {
   width: 280px;
+}
+
+/* 字段下方的一行说明（Iceberg 的 namespace 是多级的，点号形式要解释一句）。
+   与控件同宽、不折行到标签那一列：它说的是「怎么填」，不是字段名的一部分。 */
+.pc-field-hint {
+  margin-left: 0;
+  margin-top: 4px;
+  line-height: 1.5;
 }
 
 /* 表格里的两个「补语」：主体类型标签、作用范围是整库还是单表。

@@ -2,6 +2,7 @@ package io.github.melin.lakehouse.rest.config;
 
 import io.github.melin.lakehouse.rest.dto.ManagementEnums.GrantType;
 import io.github.melin.lakehouse.rest.dto.Privilege;
+import io.github.melin.lakehouse.rest.support.NamespacePaths;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -53,15 +54,21 @@ public final class CatalogAccessRules {
     /**
      * 判断路径是否显式豁免授权。
      *
-     * <p>只有 {@code GET /v1/config}：它返回服务端能力清单，客户端在拿到认证凭据前
-     * 就要读取，且不含任何租户数据。其余端点一律要求授权。
+     * <p>只有两处：{@code GET /v1/config} 与 {@code POST /v1/oauth/tokens}。
+     * 两者都属于同一类——**认证凭据还没换到，就必须可达**。
+     * {@code /v1/config} 返回服务端能力清单，客户端在拿到凭据前就要读；OAuth 令牌端点
+     * 本身就是用来换凭据的，要求它自带令牌会形成死循环（这一点与
+     * {@code /api/catalog/v1/oauth/tokens} 完全相同，见 {@code OAuthTokenController}）。
+     * 两者都不含任何租户数据。
+     *
+     * <p>其余端点一律要求授权。
      */
     public static boolean isPublic(String requestUri) {
         if (requestUri == null) {
             return false;
         }
         String path = stripTrailingSlash(requestUri);
-        return "/v1/config".equals(path);
+        return "/v1/config".equals(path) || "/v1/oauth/tokens".equals(path);
     }
 
     /**
@@ -103,6 +110,9 @@ public final class CatalogAccessRules {
         }
         if ("permissions".equals(head)) {
             return permissions(catalog, path, read);
+        }
+        if ("namespaces".equals(head)) {
+            return namespaces(catalog, path, method, read);
         }
         if (!"databases".equals(head)) {
             return null;
@@ -306,6 +316,106 @@ public final class CatalogAccessRules {
             return at(catalog, GrantType.NAMESPACE, namespace, null, Privilege.NAMESPACE_READ_PROPERTIES);
         }
         return at(catalog, GrantType.NAMESPACE, namespace, null, Privilege.NAMESPACE_WRITE_PROPERTIES);
+    }
+
+    /**
+     * Iceberg 的命名空间端点：{@code /v1/{prefix}/namespaces……}。
+     *
+     * <p>与 Paimon 的 {@code databases/**} 是**同一件事的两个名词**，因此权限映射也同构：
+     * 「namespace 自身」读写属性、「{@code .../tables}」管表、「{@code .../views}」管视图。
+     * 差别只有两处，都是 Iceberg 规格带来的：
+     *
+     * <ul>
+     *   <li>namespace 是**多级**的，路径段用分隔符拼接，因此要先切成层级才能与授权条目比对
+     *       （{@link NamespacePaths}）。多级 namespace 的层级在授权上就是嵌套作用域，
+     *       在 {@code accounting} 上授予的同级权限覆盖 {@code accounting.tax}——这与
+     *       {@code AuthorizationService} 的「更宽的授予覆盖更窄的资源」是同一条规则。</li>
+     *   <li>Iceberg 没有「POST 单个 namespace」这个端点（改属性走
+     *       {@code POST .../properties}），因此 {@code POST /namespaces/{ns}} 不登记，
+     *       落在它上面的请求按「未登记 → 403」处理。</li>
+     * </ul>
+     *
+     * <p>{@code functions} 与 {@code register-view} 是一期不做的端点，不登记——
+     * 失败关闭保证它们不会因为「忘了登记」而变成静默的越权入口。
+     */
+    private static Requirement namespaces(String catalog, List<String> path, String method, boolean read) {
+        if (path.size() == 1) {
+            return read
+                    ? at(catalog, GrantType.CATALOG, List.of(), null, Privilege.NAMESPACE_LIST)
+                    : at(catalog, GrantType.CATALOG, List.of(), null, Privilege.NAMESPACE_CREATE);
+        }
+        List<String> namespace = NamespacePaths.parse(path.get(1));
+        if (namespace.isEmpty()) {
+            return null;
+        }
+        if (path.size() == 2) {
+            if (read) {
+                return at(catalog, GrantType.NAMESPACE, namespace, null, Privilege.NAMESPACE_READ_PROPERTIES);
+            }
+            return "DELETE".equals(method)
+                    ? at(catalog, GrantType.NAMESPACE, namespace, null, Privilege.NAMESPACE_DROP)
+                    : null;
+        }
+        return switch (path.get(2)) {
+            case "properties" -> "POST".equals(method)
+                    ? at(catalog, GrantType.NAMESPACE, namespace, null, Privilege.NAMESPACE_WRITE_PROPERTIES)
+                    : null;
+            case "tables" -> namespaceTables(catalog, namespace, path, method, read);
+            case "views" -> namespaceViews(catalog, namespace, path, method, read);
+            case "register" -> "POST".equals(method)
+                    ? at(catalog, GrantType.TABLE, namespace, null, Privilege.TABLE_CREATE)
+                    : null;
+            default -> null;
+        };
+    }
+
+    /** {@code /v1/{prefix}/namespaces/{ns}/tables……}，含 metrics / credentials / unregister 子资源。 */
+    private static Requirement namespaceTables(String catalog, List<String> namespace, List<String> path,
+                                               String method, boolean read) {
+        if (path.size() == 3) {
+            return read
+                    ? at(catalog, GrantType.TABLE, namespace, null, Privilege.TABLE_LIST)
+                    : at(catalog, GrantType.TABLE, namespace, null, Privilege.TABLE_CREATE);
+        }
+        String table = path.get(3);
+        if (path.size() == 4) {
+            if (read) {
+                return at(catalog, GrantType.TABLE, namespace, table, Privilege.TABLE_READ_PROPERTIES);
+            }
+            if ("DELETE".equals(method)) {
+                return at(catalog, GrantType.TABLE, namespace, table, Privilege.TABLE_DROP);
+            }
+            return at(catalog, GrantType.TABLE, namespace, table, Privilege.TABLE_WRITE_PROPERTIES);
+        }
+        String sub = path.get(4);
+        Privilege required = switch (sub) {
+            // 上报统计属于「改这张表的数据状态」，与 Paimon 的 consumers 归到同一档
+            case "metrics", "tasks" -> Privilege.TABLE_WRITE_DATA;
+            // 凭据下发与 Paimon 的 token / auth 是同一件事
+            case "credentials", "plan" -> Privilege.TABLE_READ_DATA;
+            case "unregister" -> Privilege.TABLE_DROP;
+            case "sign" -> Privilege.TABLE_READ_PROPERTIES;
+            default -> null;
+        };
+        return required == null ? null : at(catalog, GrantType.TABLE, namespace, table, required);
+    }
+
+    /** {@code /v1/{prefix}/namespaces/{ns}/views……}（Iceberg 形态的视图）。 */
+    private static Requirement namespaceViews(String catalog, List<String> namespace, List<String> path,
+                                              String method, boolean read) {
+        if (path.size() == 3) {
+            return read
+                    ? at(catalog, GrantType.VIEW, namespace, null, Privilege.VIEW_LIST)
+                    : at(catalog, GrantType.VIEW, namespace, null, Privilege.VIEW_CREATE);
+        }
+        String view = path.get(3);
+        if (read) {
+            return at(catalog, GrantType.VIEW, namespace, view, Privilege.VIEW_READ_PROPERTIES);
+        }
+        if ("DELETE".equals(method)) {
+            return at(catalog, GrantType.VIEW, namespace, view, Privilege.VIEW_DROP);
+        }
+        return at(catalog, GrantType.VIEW, namespace, view, Privilege.VIEW_WRITE_PROPERTIES);
     }
 
     private static Requirement at(String catalog, GrantType resourceType, List<String> namespace,

@@ -31,8 +31,18 @@ public final class ManagementDtos {
      *
      * <p>{@code name} 即 catalog API 中的 prefix：管理面用它标识 catalog，
      * catalog 面用它拼路径，两侧指向同一份数据。
+     *
+     * <p>{@code catalogFormat} 是**表格式**（{@code PAIMON} / {@code ICEBERG}），
+     * 与 {@code type}（托管模式 {@code INTERNAL} / {@code EXTERNAL}）正交：
+     * {@code EXTERNAL + ICEBERG} 这类组合只有两个字段都在才能表达。
+     * 它是这个模型里**唯一不可变**的字段——要换格式只能删除重建，
+     * 因为同一个 prefix 下两种格式的元数据代数、仓库物化产物、客户端可见的端点
+     * 都不同，改一个字段等于让所有已建对象的语义整体漂移。
+     * 因此 {@code PUT} 只在取值与库中相同时接受它（见
+     * {@code ManagementCatalogService#update}）。
      */
     public record Catalog(String type,
+                          String catalogFormat,
                           String name,
                           Map<String, String> properties,
                           Long createTimestamp,
@@ -45,8 +55,17 @@ public final class ManagementDtos {
     public record CreateCatalogRequest(Catalog catalog) {
     }
 
-    /** {@code UpdateCatalogRequest}。 */
+    /**
+     * {@code UpdateCatalogRequest}。
+     *
+     * <p>{@code catalogFormat} 在这里是**只读确认字段**，不是可改字段：给了就必须与
+     * 库中当前值一致，否则 400（消息里点明「格式不可变，要换请删除重建」）。
+     * 之所以还收它，是因为管理面常见用法是「GET 一个 catalog、改一个字段、PUT 回去」，
+     * 那种往返会把整个 {@code Catalog} 原样带回来。断言相等而不是静默忽略，
+     * 是为了让「以为能改格式」的调用方立刻知道不行，而不是以为改成功了。
+     */
     public record UpdateCatalogRequest(Integer currentEntityVersion,
+                                       String catalogFormat,
                                        Map<String, String> properties,
                                        StorageConfigInfo storageConfigInfo) {
     }

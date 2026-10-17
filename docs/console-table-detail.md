@@ -5,6 +5,8 @@
 ——引擎客户端读到的表就是这里显示的表。
 
 整体介绍见 [`console.md`](console.md)，权限判定链见 [`authorization.md`](authorization.md)。
+> **Iceberg catalog 下的表不进这一页。** 本页整页建立在 Paimon 协议面的表端点上；Iceberg catalog 的表走平行的 `IcebergTableView`（路由 `/iceberg-tables/...`，详细信息 / 快照 / 文件列表 / 存储优化四个页签），见 [`console.md` §4.7](console.md)。
+
 
 ---
 

@@ -15,6 +15,7 @@ import io.github.melin.lakehouse.rest.paimon.support.Codecs;
 import io.github.melin.lakehouse.rest.paimon.support.SchemaSupport;
 import io.github.melin.lakehouse.rest.service.CatalogService;
 import io.github.melin.lakehouse.rest.support.ApiException;
+import io.github.melin.lakehouse.rest.support.CatalogFormat;
 import io.github.melin.lakehouse.rest.support.Paging;
 import io.github.melin.lakehouse.rest.support.Patterns;
 import io.github.melin.lakehouse.rest.support.Values;
@@ -78,7 +79,7 @@ public class ViewService {
     public ViewDtos.ListViewsGloballyResponse listGlobally(String prefix, String databaseNamePattern,
                                                            String viewNamePattern, Integer maxResults,
                                                            String pageToken) {
-        CatalogEntity catalog = catalogService.resolve(prefix);
+        CatalogEntity catalog = catalogService.resolveForFormat(prefix, CatalogFormat.PAIMON);
         List<CommonDtos.Identifier> identifiers = new ArrayList<>();
         for (DatabaseEntity database : databaseRepository.findAllByCatalogIdOrderByNameAsc(catalog.getId())) {
             if (!Patterns.matches(database.getName(), databaseNamePattern)) {

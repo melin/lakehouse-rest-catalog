@@ -17,6 +17,7 @@ import io.github.melin.lakehouse.rest.domain.repo.ResourceGrantRepository;
 import io.github.melin.lakehouse.rest.dto.ManagementEnums.GrantType;
 import io.github.melin.lakehouse.rest.dto.Privilege;
 import io.github.melin.lakehouse.rest.support.ApiException;
+import io.github.melin.lakehouse.rest.support.NamespacePaths;
 import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.List;
@@ -57,6 +58,12 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 @RequiredArgsConstructor
 public class AuthorizationService {
+
+    /**
+     * 命名空间在「路径」这一侧的分隔符。与 {@link NamespacePaths#STORAGE_SEPARATOR} 同一口径：
+     * 库里那一列库名、Iceberg 的层级数组、SQL 里的三段名都用点号。
+     */
+    private static final String NAMESPACE_SEPARATOR = String.valueOf(NamespacePaths.STORAGE_SEPARATOR);
 
     private final RestServerProperties properties;
     private final PrincipalRepository principalRepository;
@@ -290,21 +297,40 @@ public class AuthorizationService {
         }
         // 对象级授权：类型、命名空间、对象名三者都要对上
         return scope == resourceType
-                && grantNamespace.equals(namespace)
+                && sameNamespace(grantNamespace, namespace)
                 && objectName != null
                 && objectName.equalsIgnoreCase(grantObjectName);
     }
 
+    /**
+     * 命名空间前缀判定，**按点号拼接后的路径**比，而不是逐段比。
+     *
+     * <p>两个授权来源存下来的 namespace 形状不同：RBAC 授权存的是层级数组
+     * （Iceberg 的多级 namespace 原样保留），Paimon 直授（{@code PaimonPermissionModel}）
+     * 存的是库里那一列库名——{@code List.of("accounting.tax")}。
+     * 逐段比会把 {@code ["accounting.tax"]} 与 {@code ["accounting","tax"]} 判成两个
+     * 命名空间，于是**用 Iceberg 协议面授出的权限永远不生效**，而页面上看起来授权是成功的。
+     *
+     * <p>拼起来比还要求边界落在点号上：这样 {@code a} 不会被当成 {@code ab} 的前缀，
+     * 而 {@code a} 仍然是 {@code a.b} 的前缀。
+     */
     private boolean isPrefix(List<String> prefix, List<String> candidate) {
-        if (prefix.size() > candidate.size()) {
-            return false;
+        String head = joinNamespace(prefix);
+        String tail = joinNamespace(candidate);
+        if (head.isEmpty()) {
+            // 空命名空间的作用域按 catalog 级处理（与本特性引入前的判定一致）
+            return true;
         }
-        for (int i = 0; i < prefix.size(); i++) {
-            if (!prefix.get(i).equals(candidate.get(i))) {
-                return false;
-            }
-        }
-        return true;
+        return tail.equals(head) || tail.startsWith(head + NAMESPACE_SEPARATOR);
+    }
+
+    /** 两个命名空间是否指同一个（形状可以不同：层级数组 vs 点号拼接的单段）。 */
+    private boolean sameNamespace(List<String> left, List<String> right) {
+        return joinNamespace(left).equals(joinNamespace(right));
+    }
+
+    private String joinNamespace(List<String> namespace) {
+        return namespace == null ? "" : String.join(NAMESPACE_SEPARATOR, namespace);
     }
 
     /** 生成 403 错误信息中的资源描述。 */

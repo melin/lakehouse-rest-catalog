@@ -33,13 +33,19 @@ schema 物化没生效：客户端建表成功、写入时报
 
 ## 2. 数据加载
 
-打开页面时只发一个请求：
+打开页面时只发两个请求：
 
 | 请求 | 用途 | 失败时 |
 | --- | --- | --- |
 | `GET /api/management/v1/catalogs/{catalogName}`（`getCatalog`） | 概览页签的全部读数 | 页面显示错误态，三个页签都不渲染 |
+| `GET /v1/config?warehouse={catalogName}`（`config`） | 「协议与能力」卡片：协议面、下发给客户端的 `defaults`，Iceberg 侧还有 `endpoints` 能力清单 | **只有这一块失败**：卡片里显示读不到及原因，整页照常 |
 
-**页签按需加载。** 文件列表不在这一个请求里：列目录要打一次存储
+**第二个请求为什么值得发。** 它问的是服务端**实际下发**给客户端的内容，而不是
+服务端库里存了什么——「客户端连上来会看到哪些能力」这件事只有这个端点能回答。
+它是发现端点，**不需要授权**（`CatalogAccessRules.isPublic`），因此不会因为
+当前主体缺权限而失败；失败只可能是服务端没起来或令牌失效，那时卡片里如实显示原因。
+
+**页签按需加载。** 文件列表不在这两个请求里：列目录要打一次存储
 （对象存储上是一次前缀列举），不该在打开页面时就付这个代价。切到「文件列表」
 才发第一次请求，之后同一个目录不重复请求。
 
@@ -70,9 +76,9 @@ schema 物化没生效：客户端建表成功、写入时报
 
 | 页签 | 数据来源 | 一句话 |
 | --- | --- | --- |
-| 概览 | `getCatalog` | 名称 / 类型 / 存储类型 / 仓库位置 / 属性 / 版本 / 创建 / 更新，右侧是 `storageConfigInfo` 与 `properties` 的原始 JSON |
+| 概览 | `getCatalog` + `config` | 名称 / 类型 / **表格式** / 存储类型 / 仓库位置 / 属性 / 版本 / 创建 / 更新，右侧是 `storageConfigInfo` 与 `properties` 的原始 JSON；下方是「协议与能力」卡片 |
 | 文件列表 | `listCatalogFiles` | 仓库物理目录的一层内容，目录名可点下钻 |
-| 配置 | `getCatalog` + `updateCatalog` | 「Paimon 表默认参数（`table-default.*`）」可编辑；其余属性只读回填；末尾列出仍未实现的三项 |
+| 配置 | `getCatalog` + `updateCatalog` | 「Paimon 表默认参数（`table-default.*`）」可编辑；其余属性只读回填；末尾列出仍未实现的三项。**Iceberg catalog 下不出现**（见 §3.3） |
 
 ### 3.1 概览
 
@@ -85,9 +91,40 @@ schema 物化没生效：客户端建表成功、写入时报
 与 `CatalogsView.warehouseOf` 同一个约定（两处写在一起，因为「位置从哪儿读」
 这件事只有一个答案）。
 
+**表格式**（`catalogFormat`）在这里以徽标显示，并注明**创建后不可更改**。
+它与「类型」（INTERNAL / EXTERNAL）是两条正交的属性，因此是两行。
+值取自 `session.state.catalogs`（列表在首屏就取回来了）：
+为一个字段再发一次管理 API 请求不值当，而这一页本来就要等列表才有「当前 catalog」。
+
 页签底部写明：属性与存储配置的修改走管理 API
 （`PUT /api/management/v1/catalogs/{catalogName}`），**控制台目前只读展示**，
 编辑入口在 Catalogs 列表的编辑弹窗里。
+
+### 3.1.1 协议与能力
+
+这一块回答的是排障时的第一个问题：**这个 prefix 服务哪一套协议、客户端能调哪些端点。**
+
+| 行 | 来源 | 说明 |
+| --- | --- | --- |
+| 协议面 | `catalogFormat` | Paimon REST Catalog / Iceberg REST Catalog |
+| 客户端基址 | 由 prefix 拼出 | `/v1/{catalogName}`，可一键复制 |
+| namespace 分隔符 | 仅 Iceberg | `0x1F`（规格默认；解析时也接受 `.`，库里按点号拼接） |
+| 凭据下发 | `meta.service.credentialManagerType` | `noop`（默认）时说明「端点在但返回 501 并说明原因」——**「端点在但没开」与「端点不存在」在排障时是两件事** |
+| 能力清单 | Iceberg：`config` 的 `endpoints`；Paimon：一句说明 | 见下 |
+| 格式说明 | `utils/catalogFormat.js` | 一句话影响面（客户端走哪段路径、控制台能显示什么） |
+
+**能力清单读的是服务端下发的原文，前端不抄一份。** Iceberg 规格写明：服务端若不返回
+`endpoints`，客户端会假定一整套默认端点存在（其中含本服务端不做的多表事务）；
+客户端拿到清单后做的是**等值比较**，少一条就在连接阶段被拒。因此前端自己抄一份
+端点表，抄错了会显示一个「看上去对、实际不生效」的清单——而这一块的全部价值
+就是让人不用去读文档。清单是对的就够了，界面只负责把它列出来（等宽字体逐行，
+高度封顶可滚）。
+
+右栏下半是**不声明支持**的那几项。这一栏只能写在前端：服务端不会下发
+「我不支持什么」，没有就是没有。它是可数的几个词组，因此铺成标签而不是一行一条。
+其中「共 N 个操作」的 N 与 `scripts/verify-iceberg-endpoints.py` 里那份**字面量**
+`NOT_IMPLEMENTED` 的条数由 `verify-console.py` 对齐——每多实现一个端点，它就该少一条，
+而这是这个页面上唯一会随实现漂移的数字。
 
 ### 3.2 文件列表
 
@@ -116,6 +153,12 @@ schema 物化没生效：客户端建表成功、写入时报
 ### 3.3 配置
 
 页面分三段：**Paimon 表默认参数**（可编辑）、**其它属性**（只读回填）、
+
+**Iceberg catalog 下这个页签不出现。** `table-default.*` 的作用域是「在这个 catalog 下
+新建 **Paimon 表**」（见页签内的三条边界），对 Iceberg 侧的建表请求不生效。
+留一个点了不生效的页签比没有更糟，因此模板上直接 `v-if="!isIceberg"`。
+若用户正停在它上面而当前 catalog 换成了 Iceberg，`watch(isIceberg)` 会把页签退回
+「概览」——`v-model` 停在一个没有对应面板的名字上只会留下一片空白。
 
 #### 3.3.1 Paimon 表默认参数（`table-default.*`）
 
@@ -378,3 +421,11 @@ GET /api/console/v1/catalogs/{catalogName}/files?path=<相对仓库根>&prefix=<
   不能到某个具体子目录。
 - **切换 catalog 会重置当前目录。** 有意为之（见 §2.1），代价是同一层级
   换了 catalog 后要重新钻。
+- **Iceberg catalog 上，catalog 详情只有「概览」与「文件列表」两页是自己的。**
+  「文件列表」读的是仓库物理目录，与协议面无关，因此对 Iceberg catalog 同样可用。
+  反过来，「配置」页签（`table-default.*`）只对新建 Paimon 表生效，Iceberg catalog
+  下整块收起。**目录浏览**已按格式分成两套实现（Iceberg 走 `IcebergBrowseView`
+  的 `namespaces/**`，见 `console.md` §4.6），而**表详情页**仍然只有 Paimon 版：
+  它整页挂在 Paimon 的表端点上，因此在 Iceberg catalog 下**在 loader 里就返回空、
+  不发请求**，只给出说明与去向；Iceberg 表的详情在浏览页的抽屉里看。
+  理由见 `iceberg-rest-catalog-design.md` §11.1 第 11 条。

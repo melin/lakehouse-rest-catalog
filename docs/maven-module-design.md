@@ -22,12 +22,12 @@ Paimon 与 Iceberg」的协议方案。本文件解决它的前置问题：**代
 | 骨架模块 | `lakehouse-rest-parent`（聚合）、`lakehouse-rest-spring-parent`（服务端世界的父）、`-core`、`-storage`、`-server` |
 | 协议面模块 | `lakehouse-rest-protocol-paimon`、`lakehouse-rest-protocol-iceberg` —— **格式名只允许出现在协议面模块的 artifactId 里**（§2.2） |
 | 集群侧模块 | `lakehouse-rest-spark`、`lakehouse-rest-optimizer`（职责不变，只改前缀） |
-| Maven 项目数 | 4（1 聚合 + 3 jar）→ **8**（阶段 0–3 已落地：2 个 pom + 6 个 jar）；`-protocol-iceberg` 落地后为 **9** |
+| Maven 项目数 | 4（1 聚合 + 3 jar）→ **8**（阶段 0–3：2 个 pom + 6 个 jar）→ **9**（`-protocol-iceberg` 已落地，见 §12） |
 | Java 包名 | `io.github.melin.lakehouse.rest`。阶段 0–3 **不动它**（拆分不需要改包名，见 §4.3(2)）；阶段 4 按 §4.3(2) 预告的配方改成 `paimon.rest` 并给 Spark 扩展留了兼容壳（§9.2）；第二次改到当前名（§10） |
 | Spring 配置前缀 | **不改**（`paimon.rest.*`）。它是用户面的配置 API，改名配方见 §4.3(1) |
 | k8s 资源名 / 库名 / 表前缀 | **不改**。它们绑的是已部署的实例与已有数据，不是构建产物（§4.3(3)(4)） |
 | 落地顺序 | 先改名（阶段 0），再拆模块（阶段 1–3），**Iceberg 的代码从第一天就落进 `-protocol-iceberg`**（§5） |
-| 落地状态 | **阶段 0–4 已实施**：阶段 0–3（改坐标 + 拆模块）见 **§8**；阶段 4（模块嵌进 `spring-parent/` + 改 Java 包名）见 **§9**；包名第二次调整见 **§10**；`protocol-iceberg` 留待后续 |
+| 落地状态 | **阶段 0–5 全部已实施**：阶段 0–3（改坐标 + 拆模块）见 **§8**；阶段 4（模块嵌进 `spring-parent/` + 改 Java 包名）见 **§9**；包名第二次调整见 **§10**；阶段 5（`-protocol-iceberg` 落地）见 **§12** |
 
 ---
 
@@ -85,7 +85,7 @@ io.github.melin:lakehouse-rest-parent                     pom   聚合器 + 集�
 │   ├── lakehouse-rest-core                               jar   领域与共享契约
 │   ├── lakehouse-rest-storage                            jar   对象存储访问
 │   ├── lakehouse-rest-protocol-paimon                    jar   Paimon 协议面（60 端点）
-│   ├── lakehouse-rest-protocol-iceberg                   jar   Iceberg 协议面（35 端点）
+│   ├── lakehouse-rest-protocol-iceberg                   jar   Iceberg 协议面（35 端点里的一期 26 个）
 │   └── lakehouse-rest-server                             jar   可执行：装配 / 管理 API / 控制台宿主
 ├── lakehouse-rest-spark                                  jar   Spark SQL 扩展
 └── lakehouse-rest-optimizer                              jar   k8s 优化任务
@@ -101,7 +101,7 @@ Java 包与这棵树**部分对齐**——对齐到「面」这一级，不对�
 io.github.melin.lakehouse.rest            core / storage / server 三者共用
 ├── {config,domain,dto,service,support,web}
 ├── paimon.{dto,service,support,web}      protocol-paimon 独占
-└── iceberg.{dto,service,support,web}     protocol-iceberg（未落地，形状已定）
+└── iceberg.{dto,service,support,web}     protocol-iceberg 独占（见 §12）
 ```
 
 > 共用是为了「搬类不改 import」（§7 那条：组件扫描按包不按 jar）；独占是为了让协议面的
@@ -179,7 +179,7 @@ Jackson 2.15.2 抬到 Boot 的版本）。拆成 5 个服务端模块后，这�
 | `GlobalExceptionHandler` | core 基类 + 各面各一个 `@RestControllerAdvice` | 错误体形状按格式分派（设计文档 §2.3）；基类管兜底与日志，面内覆盖形状 |
 | `CatalogAccessRules` / `AuthorizationInterceptor` / `BearerAuthInterceptor` | core | 按路径登记，与协议无关；两个面的请求都要过（Iceberg 路径逐条登记） |
 | `RestServerProperties`（`paimon.rest.*`） | core | 配置项被协议面与装配都读；前缀本期不改（§4.3） |
-| `TableKinds` | protocol-paimon | import 了 Paimon 的对象表/格式表类型。**但**「表种类」这个枚举值要留在 core——Iceberg 面也要产出它（控制台页签靠它伸缩） |
+| `TableKinds` | protocol-paimon | import 了 Paimon 的对象表/格式表类型。**这里是当初的预判**：「表种类」这个枚举值要留在 core，因为 Iceberg 面也要产出它（控制台页签靠它伸缩）。**阶段 5 的实测结论与预判相反**——Iceberg catalog 里的表没有 Paimon 那套「表种类」，`protocol-iceberg` 里的类一处都不引用 `TableKinds`，所以「枚举值提到 core」并没有发生。控制台改成**先看 catalog 格式、再看表种类**（`docs/console.md` §10） |
 | `TableMetadataService` | protocol-paimon | `SchemaManager` / `SnapshotManager` / `JsonSerdeUtil` 都是 Paimon 的类 |
 | `StorageFileIoFactory` / `CatalogFileService` / `Paths` | storage | FileIO 提供者 |
 | `Optimization*`（任务记录、批次、调度、`KubernetesJobSubmitter`） | server | 它是**平台行为**（记账 + 提交 k8s），不是协议契约；`optimizer` 模块通过管理 API 回调，与协议面无关 |
@@ -198,6 +198,15 @@ Jackson 2.15.2 抬到 Boot 的版本）。拆成 5 个服务端模块后，这�
 > 声明出来的 `endpoints()` 没有第二个消费者，也没法做端点的契约测试
 > （契约测试要拿两份清单去比对）。提前引入只会多一个无人读的接口。
 > 它落地的时点：`-protocol-iceberg` 动工的第一件事（见 §5 阶段 5）。
+>
+> **已落地，但形状与上面这份草案不同**（见 §12.2）：实际接口是 core 里的
+> `CatalogProtocol`，只有 **3 个方法**（`format()` / `configResponse()` / `rename()`），
+> 落在**协议面**模块而不是装配层。草案里的 `basePath()` 目前两个面都是 `/v1`，
+> 没有第二个取值就没有抽象；`order()` 被「先查库里的 prefix 格式、查不到才看请求体」
+> 这条更准的判据取代（`order()` 只能决定先问哪个面，而真冲突那两条的判据在请求体里）；
+> `endpoints()` 没有进接口——清单是 **Iceberg 面自己的常量**（`IcebergEndpoints.SUPPORTED`），
+> 因为只有 Iceberg 侧需要下发它，由 `scripts/verify-iceberg-endpoints.py` 做三方比对，
+> 比加一个每面都要实现、Paimon 面只能返空的接口方法更直接。
 
 ```java
 public interface CatalogProtocolFace {
@@ -345,11 +354,11 @@ WARN 并被自动重定向，这是 Maven 为这种情况准备的原生机制�
 | **2 · `storage`** ✅ | 移入 FileIO 与路径相关的类；core 只留接口（`WarehouseFileIO`、凭据管理器接口） | 单元测试绿；server 起的集成测试绿（`mvn -o test -pl :lakehouse-rest-server`） | 低 |
 | **3 · `protocol-paimon`** ✅ | 移入 Paimon 协议面的 10 个控制器、Paimon DTO、`TableMetadataService`、`TableKinds`、`SchemaChangeService`；加协议面 SPI 实现 | 同上 + `api-sweep.sh` 60 个 operation 全绿；`/v1/config` 的 endpoints 契约测试上线 | 低 |
 | **4 · 模块嵌套 + 改包名** ✅ | 四个服务端模块 `git mv` 进 `spring-parent/`（`<module>` 去掉 `../`、子模块删掉 `<relativePath>`、全部 `-pl` 改成 `:artifactId`）；Java 包 11 个包目录 `git mv` + 全仓字面替换；Spark 扩展留旧包名空壳 | §9.3 的 DoD：全量构建绿、服务端 317 / Spark 96 与重构前一致、四个校验脚本全绿、控制台重建后仍 26 项通过 | 低（纯路径与字面改动，编译即验证；唯一有风险的落点是 `spark.sql.extensions`，用空壳兜住） |
-| **5 · `protocol-iceberg`** | **新建**（不搬迁）：35 个端点、Iceberg DTO、元数据代数、投影派生、错误模型、协议面 SPI 实现 | 设计文档 §9 的那一套（双客户端端到端、错误模型契约、endpoints 契约） | 与功能实现同期 |
+| **5 · `protocol-iceberg`** ✅ | **新建**（不搬迁）：一期 26 个端点、Iceberg DTO、元数据代数、投影派生、错误模型、协议面 SPI 实现 | 实际做法与这一格的计划有三处不同（见 §12）：**没有双客户端端到端**（Spark 连 Iceberg 未跑）、endpoints 契约换成静态三方比对脚本、SPI 只落 3 个方法 | 低（新建模块，边界在阶段 1–3 已定；唯一动到存量的是 core 里两条 rename 上移与 server 加一行依赖） |
 
 阶段 0–3 的实际做法与上面的表述有三处出入，都以 §8 为准：
 控制器是 **9 个**不是 10 个（`ConfigController` / `OAuthTokenController` 归 core）；
-**SPI 没有实现**（留给阶段 5）；`storage` 只收真正读写仓库的类，
+**SPI 没有实现**（留给阶段 5，落成的形状见 §12.2）；`storage` 只收真正读写仓库的类，
 `StorageConfigs` / `FileIoType` 这两个词表留在 core。
 
 阶段 4 不在原始分期里——它是阶段 0–3 落地后追加的一次**布局与命名调整**：
@@ -405,7 +414,8 @@ WARN 并被自动重定向，这是 Maven 为这种情况准备的原生机制�
 > 本节描述的是阶段 0–3 当时的形态；**凡涉及「模块在磁盘上的位置」，以 §9.1 为准**。
 
 阶段 0（改名）与阶段 1–3（`spring-parent` / `core` / `storage` / `protocol-paimon`）已经实施，
-`protocol-iceberg` 按计划留到后续迭代。**实际落点与本文件 §3.3 / §3.4 有几处不同**，
+`protocol-iceberg` 当时按计划留到后续迭代（**已于阶段 5 落地，见 §12**）。
+**阶段 0–3 的实际落点与本文件 §3.3 / §3.4 有几处不同**，
 原因是那两张表是按「名字看着像谁」写的，而搬迁前先把依赖图算了一遍——真按原文搬会
 产生 46 条反向依赖。差异与理由逐条记在下面，§3.3 / §3.4 请配合本节阅读。
 
@@ -508,7 +518,7 @@ enforcer 会拦下来，但更好的做法是别让这种事有机会发生。
 | --- | --- | --- |
 | 1 | Paimon 升到 2.1.0 | 需要先迁移 `SchemaManager` 的用法；两处 `paimon.version` 一起改 |
 | 2 | 测试分区 | 29 个测试类全留在 `server`：它们是 Spring 集成测试，需要完整应用上下文，而 server 依赖其余三个模块、测试类路径天然能看到所有类。真正划算的分区是把 `JwtTests` / `CredentialCipherTests` / `StorageConfigDtosTests` 这类**纯单元测试**随被测类下移——但那要在三个模块各配一份 surefire，收益不大 |
-| 3 | `TableKinds` 与其「表种类」词表 | 现在在 protocol-paimon。Iceberg 面落地时它也**要产出**这个值（控制台页签靠它伸缩），届时需要把**枚举值**提到 core（或各面各持一份）。这是 §3.4 那条「枚举值留在 core」的落地时点 |
+| 3 | ~~`TableKinds` 与其「表种类」词表~~ | 当初的理由是「Iceberg 面落地时它也**要产出**这个值（控制台页签靠它伸缩），届时需要把**枚举值**提到 core」。**阶段 5 落地后结论变了**：Iceberg catalog 里的表没有 Paimon 那套「表种类」，`protocol-iceberg` 一处都不引用 `TableKinds`，因此这条不必做。控制台改为先按 catalog 格式分流、再读表级 `options.type`（`docs/console.md` §10） |
 | 4 | 表前缀 `paimon_` | 见 §4.3(4)：本次已在 `data-model.md` 补了一句「历史遗留、与表格式无关」，不做 RENAME |
 | 5 | 类名与包名里的 `Paimon` | `PaimonPermissionModel`、`PaimonRestServerApplication`、`io.github.melin.lakehouse.rest` 全部保留 |
 
@@ -642,7 +652,7 @@ optimizer 的 `Main-Class` 跟着改了，但它不是外部契约——镜像�
 | `mvn -o -DskipTests clean install` | **BUILD SUCCESS**，8 个模块（含 enforcer 三条不变量） |
 | `mvn -o test -pl :lakehouse-rest-server` | **317 run / 0 failures / 0 errors**，与阶段 0–3 一致 |
 | `mvn -o test -pl :lakehouse-rest-spark` | 96 run / 1 error（`PaimonS3Test`，文档已描述的既有失败）/ 25 skipped，与阶段 0–3 一致 |
-| `verify-console.py` | 26 项全过（含「构建输出目录 ↔ 服务端静态资源位置一致」） |
+| `verify-console.py` | 26 项全过（含「构建输出目录 ↔ 服务端静态资源位置一致」）。**26 是这一阶段的快照**，脚本随后还在长，当前项数以 `docs/console.md` §5.2 为准 |
 | `verify-spark-sql-doc.py` | 27 项全过 |
 | `verify-management-contract.py` / `verify-k8s-manifests.py` | 通过（后者含「镜像名与 Dockerfile 构建命令一致」） |
 | 控制台重建 | `./scripts/build-console.sh` 按新 `outDir` 重建，校验全过 |
@@ -650,7 +660,7 @@ optimizer 的 `Main-Class` 跟着改了，但它不是外部契约——镜像�
 
 ### 9.4 遗留
 
-- **`-protocol-iceberg` 仍未落地**，只是位置已经为它留好（§9.1 末尾）。
+- ~~**`-protocol-iceberg` 仍未落地**~~，只是位置已经为它留好（§9.1 末尾）——**阶段 5 已落地**（§12）。
 - **空壳的退役条件**：确认没有部署还在用旧 FQCN（或下一个大版本）之后再删。
 - **控制台产物仍未入版本库**（`.gitignore` 忽略、HEAD 里 0 个文件，见提交 `ccaf053`
   「console 生成的文件不提交仓库」），但 `build-console.sh`、`vite.config.js` 与 README
@@ -711,14 +721,14 @@ optimizer 的 `Main-Class` 跟着改了，但它不是外部契约——镜像�
 | `mvn -o -DskipTests clean install` | **BUILD SUCCESS**，8 个模块（含 enforcer 三条不变量） |
 | `mvn -o test -pl :lakehouse-rest-spark` | **96 run / 1 error（`PaimonS3Test`，既有）/ 25 skipped**，与阶段 4 逐字一致 |
 | `mvn -o test -pl :lakehouse-rest-server` | **本轮未复跑**（运行中被中断）。可依赖的间接证据：317 个测试类全部编译通过、按新包名解析；四个校验脚本全绿。复跑命令见 §9.1，预期仍是 317 / 0 / 0 |
-| 四个离线校验脚本 | 全绿（verify-console 26 项 · verify-spark-sql-doc 27 项 · verify-management-contract · verify-k8s-manifests） |
+| 四个离线校验脚本 | 全绿（verify-console 26 项 · verify-spark-sql-doc 27 项 · verify-management-contract · verify-k8s-manifests）；两个计数是这一阶段的快照，当前以 `docs/console.md` §5.2 为准 |
 | jar 内容 | 两个 FQCN 都在（实现 7786 B、空壳 914 B）；ANTLR 生成物落在 `io/github/melin/lakehouse/rest/spark/parser/`；`io/github/melin/paimon/` 下的条目数 **0** |
 | 空壳可用性 | `javap` 确认 `extends io.github.melin.lakehouse.rest.spark.ManagementSparkExtensions` + public 无参构造，Spark 能实例化 |
 | 残留检查 | 全仓 `paimonrest` 只剩空壳那一个文件；11 个空的旧包目录已清掉 |
 
 ### 10.4 遗留
 
-- **`-protocol-iceberg` 仍未落地**，位置已备好（§9.1）。
+- ~~**`-protocol-iceberg` 仍未落地**~~，位置已备好（§9.1）——**阶段 5 已落地**（§12）。
 - **空壳退役条件**同 §9.4：确认没有部署还在用旧 FQCN 之后再删。
 - **脚本自身的坑，记一笔**：清理「`git mv` 之后剩下的空目录」时误用了 `os.walk` 的循环变量
   `base`——它在循环结束后指向 walk 最后访问过的目录，拿它拼路径就删到了别处（11 个空目录
@@ -739,7 +749,7 @@ optimizer 的 `Main-Class` 跟着改了，但它不是外部契约——镜像�
 | --- | --- | --- |
 | core / storage / server | `rest.{web,service,dto,support,...}` | **不变** |
 | protocol-paimon | `rest.{web,service,dto,support}` | `rest.paimon.{web,service,dto,support}` |
-| protocol-iceberg（未落地） | — | `rest.iceberg.{web,service,dto,support}` |
+| protocol-iceberg（阶段 5 已落地，§12） | — | `rest.iceberg.{web,service,dto,support}` |
 
 ### 11.1 为什么是「先格式后分层」
 
@@ -807,12 +817,89 @@ server 与协议面之间，不只是协议面内部的事。
 
 ---
 
+## 12. 落地记录之五：阶段 5（`-protocol-iceberg` 落地）
+
+这是唯一一次**新建**模块（前面四次都只是搬目录或改名字），因此它才是这份文件里
+三条不变量的第一次真检验：新增一个协议面，骨架一行不改，而规则自己会拦住越界。
+
+### 12.1 加一个面 = 加一行依赖
+
+| 位置 | 改动 |
+| --- | --- |
+| `spring-parent/pom.xml` | `<module>` 清单加一条 |
+| `lakehouse-rest-protocol-iceberg/pom.xml` | 新建：`<parent>` 不用写 `<relativePath>`（嵌套布局的收益，§9.1）、依赖 core + storage + `iceberg-core` |
+| `lakehouse-rest-server/pom.xml` | **加一行** `lakehouse-rest-protocol-iceberg` |
+| `lakehouse-rest-core` / `-storage` / `-protocol-paimon` | **零改动**（前三处已定好 `CatalogProtocol` SPI 与 `CatalogProtocols` 注册表的位置） |
+
+那一行依赖**少写的表现是运行时 500**，不是编译错：core 通过 Spring 收集
+`List<CatalogProtocol>`，少一个实现就意味着某个格式没有处理链。实测的报错正是
+`no protocol implementation is registered for catalog format ICEBERG`——
+这句话够用，但它出现在**第一次请求某个 Iceberg catalog** 时，而不是启动时。
+这也是为什么新增 HTTP 用例值得：那个用例当场抓到了这行漏写的依赖。
+
+### 12.2 SPI 实际落成 3 个方法，且落在协议面
+
+§3.5 的草案（`CatalogProtocolFace`，4 个方法，含 `endpoints()` / `order()`）没有照抄。
+实际是 core 里的 `CatalogProtocol`：
+
+| 方法 | 为什么是它 |
+| --- | --- |
+| `format()` | 装配层要靠它把「收到的请求属于哪个面」换成「用哪个实现」 |
+| `configResponse(...)` | `/v1/config` 的响应体按格式二选一——Iceberg 侧多一份 `endpoints`，Paimon 面根本没有这个字段，所以两份响应必须是两个类型，不能给一个类型加「按格式可空」的注解 |
+| `rename(...)` | 两条同路径端点只能是「core 收请求 → 按格式转给对应面」。协议面之间禁止互相 import，core 又不认识 `{namespace:[...]}` 这种 Iceberg 形状的标识符，因此**只有 JSON 树能过这条边界**，绑定留在各面里 |
+
+`basePath()` 没进接口：目前两个面都是 `/v1`，一个取值的抽象不叫抽象。
+`order()` 没有解决问题——`order()` 只能决定「先问哪个面」，而两条 rename 的真判据是
+**请求体里的字段名**（`{namespace:[...]}` vs `{database, object}`）。所以实际做法是
+「先查库里 prefix 的格式，查不到才看请求体」，比顺序猜测准。
+`endpoints()` 也没进接口：只有 Iceberg 侧需要下发清单，它落成 Iceberg 面自己的常量
+（`IcebergEndpoints.SUPPORTED`），由 `verify-iceberg-endpoints.py` 与控制器映射做三方比对。
+让 Paimon 面实现一个永远返回空集的方法，是把「一个面的私有需求」写成两个面的义务。
+
+**实现者是一个 `@Component`，这本身就是不变量 2 的实现方式**：core 通过 Spring 收集
+`List<CatalogProtocol>`，因此 core 不 import 任何一个协议面。
+把它换成「core 里 new 一个」，core 就必须依赖该模块——规则会在 enforcer 那一步拦下。
+
+### 12.3 三条不变量的实际处置（两处要关掉默认值）
+
+| 不变量 | 落地时的情况 |
+| --- | --- |
+| 1 · core 不含任何表格式依赖 | 照旧；`CatalogFormat` 枚举、`CatalogProtocol` 接口、`CatalogProtocols` 注册表都在 core，它们只提格式**名字**，不引任何一个格式库 |
+| 2 · 两个协议面互不依赖 | 照旧；两个模块各在 `bannedDependencies` 里禁对方。唯一真冲突的产物是 core 的 `CatalogRenameController` |
+| 3 · `iceberg-core` 只出现在 `protocol-iceberg` | 照旧，但需要**两处配套**：① `storage` 的 `paimon-core` 必须 `<optional>true</optional>`——它是唯一允许依赖 Paimon 的非协议模块，而 `searchTransitive` 会把它传给 `protocol-iceberg`，于是 iceberg 面被自己的规则误杀；② `server` 的 `bannedDependencies` 要 `searchTransitive=false`（只禁直接声明）——它的可执行产物**必须**通过 `server → protocol-iceberg` 把 `iceberg-core` 带进来，默认的 true 会把这条规则读成「server 不许装配 Iceberg 面」，与设计正好相反 |
+
+第二条那个「必须关掉默认值」的坑，§8.4 已经记过一次（`searchTransitive` 的语义）；
+这次是同一个坑的另一面：**规则越严越要写清它是查直接声明还是查整棵树**，
+否则下一个人会以为规则坏了。
+
+### 12.4 包名对称已落地，无需再动
+
+`rest.iceberg.{dto,service,support,web}` 与 `rest.paimon.*` 平级而不重合，§11 定的
+形状一条不差。这条对称的价值在这次体现了：**新增一整面类不用改任何 `@ComponentScan`**，
+因为扫描是按包树扫的，而两面都在 `rest.*` 之下。
+
+### 12.5 计数与验收
+
+| 项 | 值 |
+| --- | --- |
+| Maven 项目数 | 4 → **9** |
+| 服务端 Artifact | 5 个模块（core / storage / protocol-paimon / protocol-iceberg / server） |
+| 服务端用例 | 318 → **331**（新增 `IcebergRestCatalogApiTests` 10 个、`IcebergClientEndToEndTests` 3 个，并修好被新端点顶爆的 `CatalogEndpointAuthorizationTests`） |
+| 全量用例 | 414 → **427**（服务端 331 + Spark 96）。服务端侧 `mvn -o test -pl :lakehouse-rest-server -am` 实测 **331 run / 0 failures / 0 errors / BUILD SUCCESS** |
+| 校验脚本 | 新增 `verify-iceberg-endpoints.py`（15 项，不依赖 PyYAML），另四个脚本全绿 |
+
+这次落地**先后三次被构建与测试拦住**，而三处都不是靠读文档发现的：
+enforcer 抓出 `paimon-core` 的传递泄露；HTTP 用例抓出 server 漏写的那一行依赖；
+同一批用例抓出「Paimon 面缺格式门禁」与「错误形状对集合路径判错」。
+
+---
+
 ## 附：一页速览
 
 ```
 改名（必做，小）：paimon-rest-* → lakehouse-rest-*   （坐标 / 目录 / 镜像名 / 脚本 / 文档）   ✅ 阶段 0
 命名分层       ：骨架中立 · 协议面带格式名 · k8s 名与表前缀不动
-模块（建议）   ：parent → spring-parent → { core · storage · protocol-paimon · (protocol-iceberg) · server }
+模块           ：parent → spring-parent → { core · storage · protocol-paimon · protocol-iceberg · server }  ✅ 阶段 1–5
                  parent → { spark · optimizer }                                              ✅ 阶段 1–3
 三条不变量     ：core 无格式依赖 · 两面互不依赖 · iceberg-core 只在 protocol-iceberg           ✅ enforcer 守
 顺序           ：先改名 → 再拆模块 → Iceberg 代码从第一天落进 protocol-iceberg
@@ -820,7 +907,7 @@ server 与协议面之间，不只是协议面内部的事。
 Java 包        ：paimonrest → paimon.rest → io.github.melin.lakehouse.rest                      ✅ §9 / §10
                  与 artifactId 的 lakehouse 对齐；只留「最初名字」的空壳兜住既有部署
                  协议面再各加一层格式子包：core/storage/server 共用 rest.*，
-                 Paimon 面独占 rest.paimon.{web,service,dto,support}，Iceberg 面对称   ✅ §11
+                 Paimon 面独占 rest.paimon.{web,service,dto,support}，Iceberg 面对称   ✅ §11 / §12
                  拆包必查「同包直呼」的引用——它们不写 import，编译器才会告诉你      （§11.2）
 对外名字的分层 ：能不能改看「谁写它」——spark.sql.extensions 要留壳；paimon.rest.* 配置键 /
                  k8s 资源名 / paimon_ 表前缀都不动；包名只有本仓库见过，直接改（§10.2）

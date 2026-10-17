@@ -110,4 +110,35 @@ public class TableSnapshotEntity {
 
     @Column(name = "last_file_creation_time")
     private Long lastFileCreationTime;
+
+    // ------------------------------------------------------- Iceberg 侧的三列
+    //
+    // 只对 Iceberg 表的快照行有值。Iceberg 的 snapshots[] 与 Paimon 的快照在
+    // 「快照 id、schema id、时间戳、清单文件、记录数」这五处本来就同构，因此复用既有列
+    // （映射关系见 docs/iceberg-rest-catalog-design.md §4.2），只有下面三样 Paimon 没有。
+
+    /** Iceberg 的 {@code parent-snapshot-id}：快照链的前驱。Paimon 的快照没有这个字段。 */
+    @Column(name = "parent_snapshot_id")
+    private Long parentSnapshotId;
+
+    /**
+     * Iceberg v2 的 {@code sequence-number}。
+     *
+     * <p>它不等于快照 id：sequence number 记录的是「元数据提交的次序」，删掉再提交会让两者
+     * 分叉。refs 的保留策略与快照过期都要按它排序，因此必须单独存——用快照 id 顶替
+     * 在正常路径上看不出差别，只在回滚后再提交时出错。v1 表恒为 0。
+     */
+    @Column(name = "sequence_number")
+    private Long sequenceNumber;
+
+    /**
+     * Iceberg 的 {@code summary} 原文（{@code added-records} / {@code total-files-size} / …）。
+     *
+     * <p>原样存 JSON 而不是挑几个键建列：summary 的键集合由 Iceberg 的
+     * {@code SnapshotSummary} 定义，且随版本增删（v1 没有 {@code total-data-files}）。
+     * 挑键建列等于把一个会漂移的集合固化进表结构。控制台需要的三个数
+     * （记录数 / 文件数 / 体积）已经从 summary 派生到了既有列上。
+     */
+    @Column(name = "summary_json", length = 65535)
+    private String summaryJson;
 }

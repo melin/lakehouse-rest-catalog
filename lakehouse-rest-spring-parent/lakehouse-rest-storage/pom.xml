@@ -45,10 +45,25 @@
 			FileIO 的接口与实现加载：org.apache.paimon.fs.* / catalog.CatalogContext /
 			options.Options。只用这几个包，不用 schema / table / types —— 那不是
 			存储层的事。
+
+			<optional>true</optional>：本模块对外的契约里**没有** Paimon
+			（`StorageFileAccess` 只有「路径 + 文本」，`StorageCredentialManager` /
+			`StorageRuntimePolicy` 的返回值都是 core 里的类型），Paimon 是它的
+			**内部实现**。标成 optional 就是把这句话写进 POM：依赖 storage 的模块
+			不该因此自动获得 Paimon，需要它的人自己声明。
+
+			这一条不是洁癖，它是 iceberg 面的依赖守卫能成立的前提：
+			那个模块禁的是 `org.apache.paimon:*`（含传递依赖），用来表达
+			「Iceberg 的实现里不许出现 Paimon 的类型」。若 Paimon 顺着 storage
+			传到它手上，那条禁令就只能降级成「不得直接声明」，失去它真正的意思。
+			运行时的三个消费者都已各自显式声明：protocol-paimon（paimon-core）、
+			server（paimon-core / paimon-format / paimon-s3）。见
+			docs/maven-module-design.md §3.1 与 §3.3。
 		-->
 		<dependency>
 			<groupId>org.apache.paimon</groupId>
 			<artifactId>paimon-core</artifactId>
+			<optional>true</optional>
 		</dependency>
 	</dependencies>
 

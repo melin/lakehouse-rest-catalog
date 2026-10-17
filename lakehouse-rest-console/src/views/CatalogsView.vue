@@ -2,7 +2,7 @@
   <div class="pc-page">
     <PageHeader
       title="Catalogs"
-      subtitle="catalog 是元数据与数据的命名空间，每个 catalog 指向一处存储位置。名称同时是客户端连接时用的 prefix，创建后不能改名。"
+      subtitle="catalog 是元数据与数据的命名空间，每个 catalog 指向一处存储位置。名称同时是客户端连接时用的 prefix，创建后不能改名；表格式（Paimon / Iceberg）决定它服务哪一套 REST 协议，同样是创建时选定、之后不能改。"
     >
       <template #actions>
         <el-button size="small" :loading="table.loading.value" @click="table.load">
@@ -18,8 +18,24 @@
 
     <PanelCard flush>
       <div class="pc-list-head">
-        <span class="pc-list-title">已登记的 catalog（{{ rows.length }}）</span>
+        <span class="pc-list-title">
+          已登记的 catalog（{{ rows.length }}<template v-if="formatFilter"> / {{ allRows.length }}</template>）
+        </span>
         <span class="pc-list-tools">
+          <!--
+            格式筛选。放在清单表头而不是页头：它只影响这张表的内容，
+            跟着表格走才不会被读成「换一个全局的当前格式」。
+            「全部」是一个真的取值（空串）而不是「不显示筛选器」——
+            选完格式之后要能回到全量，而筛出 0 条时用户更需要看到这个入口。
+          -->
+          <el-select v-model="formatFilter" size="small" class="pc-format-filter">
+            <el-option
+              v-for="option in FORMAT_FILTERS"
+              :key="option.value"
+              :label="option.label"
+              :value="option.value"
+            />
+          </el-select>
           <span class="pc-mono pc-dim">管理 API /catalogs</span>
         </span>
       </div>
@@ -27,7 +43,7 @@
         :loading="table.loading.value"
         :error="table.error.value"
         :empty="!rows.length"
-        empty-text="还没有登记任何 catalog。新建一个，引擎客户端就能用它连接了。"
+        :empty-text="emptyText"
       >
         <template #actions>
           <el-button size="small" type="primary" @click="openCreate">
@@ -43,6 +59,18 @@
               </RouterLink>
             </template>
           </el-table-column>
+          <!--
+            表格式紧跟在名称后面（效果图的列序），「类型」保持在它右边：
+            两条正交的属性，`EXTERNAL + ICEBERG`（外部 Iceberg 仓库的入口）
+            是「类型」那一列单独表达不了的状态，因此两列都要有。
+          -->
+          <el-table-column label="表格式" width="112">
+            <template #default="{ row }">
+              <el-tag size="small" effect="plain" :type="catalogFormatTagType(row)">
+                {{ catalogFormatLabel(row) }}
+              </el-tag>
+            </template>
+          </el-table-column>
           <el-table-column prop="type" label="类型" width="100" />
           <el-table-column label="存储类型" width="104">
             <template #default="{ row }">
@@ -54,11 +82,6 @@
           <el-table-column label="仓库位置" min-width="230">
             <template #default="{ row }">
               <span class="pc-mono pc-break">{{ warehouseOf(row) }}</span>
-            </template>
-          </el-table-column>
-          <el-table-column label="属性" min-width="160">
-            <template #default="{ row }">
-              <span class="pc-mono pc-dim pc-break">{{ inlineMap(row.properties) }}</span>
             </template>
           </el-table-column>
           <el-table-column label="更新时间" width="160">
@@ -103,11 +126,73 @@
           <el-input v-model="dialog.name" placeholder="例如 paimon，之后所有 /v1/{prefix}/... 都用它" />
         </el-form-item>
 
+        <!--
+          表格式。**只在创建时可选**：服务端把它当不可变列（改格式 = 删除重建），
+          编辑态因此不是一个禁用的下拉，而是一行只读展示——一个灰着的选择框
+          会让人以为「再点点看能不能改」，而这件事在服务端根本不存在。
+
+          用选项卡片而不是下拉（效果图见 `outputs/iceberg-rest-catalog/mockup.html`）：
+          两个选项各自的**后果**要能在选之前读完——客户端走哪段路径、控制台能显示什么。
+          下拉里塞不下这些，于是它们只能退化成 tooltip，而没人会为了选一个值去点问号。
+        -->
+        <el-form-item v-if="dialog.mode === 'create'" required>
+          <template #label>
+            <FieldLabel
+              label="表格式（catalogFormat）"
+              tip="决定这个 prefix 服务哪一套 REST 协议：Paimon REST 或 Iceberg REST。创建后不可更改，要换格式请删除重建。"
+            />
+          </template>
+          <div class="pc-opt-grid">
+            <div
+              v-for="option in formatOptions"
+              :key="option.value"
+              class="pc-opt"
+              :class="{ 'is-on': dialog.catalogFormat === option.value }"
+              @click="dialog.catalogFormat = option.value"
+            >
+              <div class="pc-opt-name">
+                <span class="pc-opt-dot" />
+                {{ option.label }}
+              </div>
+              <div class="pc-opt-desc">{{ option.desc }}</div>
+              <div class="pc-opt-meta pc-mono">{{ option.path }}</div>
+            </div>
+          </div>
+          <div class="pc-field-note">{{ catalogFormatNote(dialog.catalogFormat) }}</div>
+          <!-- 选 Iceberg 时再多一条：下面的说明讲的是「协议面不一样」，
+               这条讲的是「控制台这一期只跟到哪」，两件事不能合成一句——
+               合并之后，用户会把「界面没做」读成「Iceberg 不支持」。 -->
+          <el-alert
+            v-if="isIcebergCatalog(dialog.catalogFormat)"
+            class="pc-form-alert"
+            type="warning"
+            :closable="false"
+            show-icon
+            title="控制台一期不提供 Iceberg catalog 的表管理与数据浏览"
+            description="创建后可以在 catalog 详情查看协议与能力，表数据请通过 Spark 等 Iceberg REST 客户端访问。"
+          />
+        </el-form-item>
+
+        <el-form-item v-if="dialog.mode === 'edit'">
+          <template #label>
+            <FieldLabel
+              label="表格式（catalogFormat）"
+              tip="创建后不可更改：同一个 prefix 下两种格式的元数据代数、仓库产物与客户端可见的端点都不同，改一个列等于让所有已建对象的语义整体漂移。要换格式请删除重建。"
+            />
+          </template>
+          <div class="pc-readonly-row">
+            <el-tag size="small" effect="plain" :type="catalogFormatTagType(dialog.catalogFormat)">
+              {{ catalogFormatLabel(dialog.catalogFormat) }}
+            </el-tag>
+            <span class="pc-dim">创建后不可更改</span>
+          </div>
+        </el-form-item>
+
         <el-form-item v-if="dialog.mode === 'create'" required>
           <template #label>
             <FieldLabel
               label="类型（type）"
-              tip="INTERNAL 由本服务管理元数据；EXTERNAL 只作为已有仓库的入口。"
+              tip="INTERNAL 由本服务管理元数据；EXTERNAL 只作为已有仓库的入口。与表格式正交，可组合。"
             />
           </template>
           <el-select v-model="dialog.type" class="pc-full">
@@ -186,13 +271,54 @@ import TimeText from '@/components/TimeText.vue'
 import { managementApi } from '@/api/management.js'
 import { confirmDanger, notifyError, notifySuccess, onConsoleRefresh, useResource } from '@/composables/index.js'
 import { session } from '@/store/session.js'
-import { inlineMap } from '@/utils/format.js'
+import {
+  CATALOG_FORMATS,
+  catalogFormatLabel,
+  catalogFormatNote,
+  catalogFormatOf,
+  catalogFormatOption,
+  catalogFormatTagType,
+  ICEBERG,
+  isIcebergCatalog,
+  PAIMON,
+} from '@/utils/catalogFormat.js'
 
 const table = useResource(() => managementApi.listCatalogs())
 
 const router = useRouter()
 
-const rows = computed(() => table.data.value?.catalogs || [])
+const allRows = computed(() => table.data.value?.catalogs || [])
+
+/**
+ * 顶部格式筛选器的候选。空串是「全部」，不是「不筛选」——见模板里的说明。
+ *
+ * <p>标签写「Paimon 协议面 / Iceberg 协议面」而不是光写名字：这一列筛的是
+ * **catalog 服务哪套 REST 协议**，而「Paimon」在同一个界面上也可能被读成表格式
+ * （Format / Object / Lance 那些是表的格式，与这里无关）。
+ */
+const FORMAT_FILTERS = [
+  { value: '', label: '全部格式' },
+  { value: PAIMON, label: `${catalogFormatLabel(PAIMON)} 协议面` },
+  { value: ICEBERG, label: `${catalogFormatLabel(ICEBERG)} 协议面` },
+]
+
+const formatFilter = ref('')
+
+/**
+ * 按筛选值过一遍。
+ *
+ * <p>判据用 `catalogFormatOf`（认不出的取值按 PAIMON）而不是裸读字段：
+ * 筛出来的集合必须与徽标显示的集合**逐行一致**，否则会出现
+ * 「筛 Paimon 时那一行不出现、但它在表里写着 Paimon」这种自相矛盾的界面。
+ */
+const rows = computed(() => (formatFilter.value
+  ? allRows.value.filter((row) => catalogFormatOf(row) === formatFilter.value)
+  : allRows.value))
+
+/** 筛出 0 条与「一个都没登记」是两件事，空态文案要分开。 */
+const emptyText = computed(() => (formatFilter.value
+  ? `没有 ${catalogFormatLabel(formatFilter.value)} 格式的 catalog。把上面的筛选切回「全部格式」可以看到其余 catalog。`
+  : '还没有登记任何 catalog。新建一个，引擎客户端就能用它连接了。'))
 
 const meta = computed(() => session.state.meta)
 const catalogTypes = computed(() => meta.value?.enums?.catalogTypes || ['INTERNAL', 'EXTERNAL'])
@@ -206,6 +332,36 @@ const supportedTypes = computed(() => meta.value?.enums?.supportedStorageTypes |
  */
 const staticCredentialsEnabled = computed(() => meta.value?.enums?.staticCredentialsEnabled === true)
 
+/**
+ * 可选的表格式，来自 `GET /api/console/v1/meta` 的 `enums.catalogFormats`
+ * （服务端 `CatalogFormat` 枚举的下发）。
+ *
+ * <p>读不到元数据时用 `CATALOG_FORMATS` 兜底，与上面的存储类型同一个策略：
+ * 这两个取值是协议面的名字，不是部署相关的配置，兜底不会选出一个服务端不认的值。
+ */
+const catalogFormats = computed(() => meta.value?.enums?.catalogFormats || CATALOG_FORMATS)
+
+/**
+ * 选项卡片的内容：服务端给候选，前端只补「怎么描述它」。
+ *
+ * <p>**候选不在这里写死**（服务端以后多加一种格式时，界面应当把它列出来），
+ * 描述走 `catalogFormatOption` 的兜底——认不出的取值照实显示取值本身，
+ * 而不是套用 Paimon 的说明。
+ */
+const formatOptions = computed(() => catalogFormats.value.map((value) => ({
+  value,
+  ...catalogFormatOption(value),
+})))
+
+/**
+ * 本部署建 catalog 时未指定格式用的是哪种（`paimon.rest.default-catalog-format`）。
+ *
+ * <p>用它**预选**新建表单里的那一项，而不是恒选第一项：默认值最终由服务端决定，
+ * 前端猜一个在部署改过默认时会与服务端不一致，表现为
+ * 「表单里选的是 Paimon，建出来却是 Iceberg」。
+ */
+const defaultCatalogFormat = computed(() => meta.value?.service?.defaultCatalogFormat || PAIMON)
+
 const storageForm = ref(null)
 
 const dialog = reactive({
@@ -214,6 +370,7 @@ const dialog = reactive({
   saving: false,
   name: '',
   type: 'INTERNAL',
+  catalogFormat: PAIMON,
   entityVersion: 0,
   properties: {},
   storageConfigInfo: {},
@@ -227,6 +384,7 @@ function openCreate() {
   dialog.mode = 'create'
   dialog.name = ''
   dialog.type = 'INTERNAL'
+  dialog.catalogFormat = defaultCatalogFormat.value
   dialog.entityVersion = 0
   dialog.properties = {}
   dialog.storageConfigInfo = { storageType: supportedTypes.value[0] || 'FILE', allowedLocations: [] }
@@ -260,6 +418,8 @@ function openEdit(row) {
   dialog.mode = 'edit'
   dialog.name = row.name
   dialog.type = row.type
+  // 只读展示用（编辑表单不回传它）：服务端把格式当不可变列，改的话返回 400
+  dialog.catalogFormat = catalogFormatOf(row)
   dialog.entityVersion = row.entityVersion ?? 0
   dialog.properties = { ...(row.properties || {}) }
   dialog.storageConfigInfo = row.storageConfigInfo
@@ -302,11 +462,16 @@ async function save() {
       await managementApi.createCatalog({
         type: dialog.type,
         name: dialog.name.trim(),
+        // 格式创建后不可变，因此**必须**在建表这一步就带上；
+        // 不带的话服务端会用部署默认值，于是「表单里看到的」与「建出来的」可能不是同一个
+        catalogFormat: dialog.catalogFormat,
         properties: dialog.properties,
         storageConfigInfo,
       })
-      notifySuccess(`已创建 catalog ${dialog.name.trim()}`)
+      notifySuccess(`已创建 catalog ${dialog.name.trim()}（${catalogFormatLabel(dialog.catalogFormat)} 协议面）`)
     } else {
+      // 编辑**不带** catalogFormat：服务端把改格式当 400 拒绝，
+      // 前端连字段都不发，免得看起来像是「发了但没生效」
       await managementApi.updateCatalog(dialog.name, {
         currentEntityVersion: dialog.entityVersion,
         properties: dialog.properties,

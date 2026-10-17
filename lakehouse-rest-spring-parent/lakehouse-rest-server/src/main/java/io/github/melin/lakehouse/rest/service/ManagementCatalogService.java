@@ -20,11 +20,13 @@ import io.github.melin.lakehouse.rest.dto.Privilege;
 import io.github.melin.lakehouse.rest.dto.StorageDtos.StorageConfigInfo;
 import io.github.melin.lakehouse.rest.paimon.service.DatabaseService;
 import io.github.melin.lakehouse.rest.support.ApiException;
+import io.github.melin.lakehouse.rest.support.CatalogFormat;
 import io.github.melin.lakehouse.rest.support.CredentialCipher;
 import io.github.melin.lakehouse.rest.support.Paging;
 import io.github.melin.lakehouse.rest.support.ResourceType;
 import io.github.melin.lakehouse.rest.support.StorageConfigs;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
@@ -99,11 +101,13 @@ public class ManagementCatalogService {
                 : CatalogType.parse(inbound.type())
                 .orElseThrow(() -> ApiException.badRequest("Unsupported catalog.type: " + inbound.type()))
                 .wireName();
+        CatalogFormat format = parseFormat(inbound.catalogFormat());
 
         CatalogEntity entity = new CatalogEntity();
         entity.setId(Paging.newId());
         entity.setPrefix(name);
         entity.setCatalogType(type);
+        entity.setCatalogFormat(format.wireName());
         applyStorage(entity, inbound.storageConfigInfo(), null);
         entity.setProperties(inbound.properties() == null
                 ? new LinkedHashMap<>() : new LinkedHashMap<>(inbound.properties()));
@@ -138,6 +142,7 @@ public class ManagementCatalogService {
         if (request.properties() != null) {
             entity.setProperties(new LinkedHashMap<>(request.properties()));
         }
+        requireFormatUnchanged(entity, request.catalogFormat());
         if (request.storageConfigInfo() != null) {
             applyStorage(entity, request.storageConfigInfo(), StorageConfigs.of(entity));
         }
@@ -185,12 +190,62 @@ public class ManagementCatalogService {
     public Catalog toDto(CatalogEntity entity) {
         return new Catalog(
                 entity.getCatalogType(),
+                // 用 of() 而不是直接回列值：认不出来的取值（手工改库、旧数据）在
+                // 服务端别处都是按默认格式解释的（CatalogService#formatOf），
+                // 管理面若原样回一个服务端自己都不认的值，读的人会更困惑
+                CatalogFormat.of(entity.getCatalogFormat()).wireName(),
                 entity.getPrefix(),
                 new LinkedHashMap<>(entity.getProperties()),
                 entity.getCreatedAt(),
                 entity.getUpdatedAt(),
                 entity.getEntityVersion(),
                 StorageConfigs.withoutSecrets(StorageConfigs.of(entity)));
+    }
+
+    /**
+     * 解析管理 API 传入的 {@code catalogFormat}。
+     *
+     * <p>没给就用部署的默认格式（{@code paimon.rest.default-catalog-format}）——
+     * 与自动登记用的是同一个开关，理由也一样：这个值决定 catalog 此后服务哪一套协议，
+     * 猜错的表现是「客户端每一次调用都 404」，因此部署必须能替调用方定这个默认值。
+     *
+     * <p>给了但认不出来则 400，**不让脏值进库**：列是 {@code varchar}，写进去一个
+     * 拼错的 {@code ICEBURG} 不会有任何即时报错，而后果是该 catalog 的所有请求
+     * 都按 Paimon 解释——错误现场离原因非常远（{@link CatalogFormat#of} 的注释
+     * 说明了读取侧为什么只能回落而不能抛）。
+     */
+    private CatalogFormat parseFormat(String requested) {
+        if (requested == null || requested.isBlank()) {
+            return CatalogFormat.of(properties.getDefaultCatalogFormat());
+        }
+        return CatalogFormat.parse(requested)
+                .orElseThrow(() -> ApiException.badRequest("Unsupported catalog.catalogFormat: "
+                        + requested + "; expected one of " + Arrays.toString(CatalogFormat.values())));
+    }
+
+    /**
+     * 校验 {@code PUT} 里带来的格式确实是原来那个。
+     *
+     * <p>格式不可变（见 {@link CatalogFormat} 的注释）：同一个 prefix 下两种格式的
+     * 元数据代数、仓库里的物化产物、客户端可见的端点集合都不同，改一个字段等于让
+     * 所有已建对象的语义整体漂移。
+     *
+     * <p>这里**接受**取值相同的字段而不是一概拒绝，是因为管理面的常见用法是
+     * 「读一个 catalog、改一个字段、写回去」——那种往返会把整个 {@code Catalog}
+     * 带回来。断言相等而不是静默忽略，则是为了让「以为能改格式」的调用方立刻知道不行。
+     */
+    private void requireFormatUnchanged(CatalogEntity entity, String requested) {
+        if (requested == null || requested.isBlank()) {
+            return;
+        }
+        CatalogFormat current = CatalogFormat.of(entity.getCatalogFormat());
+        CatalogFormat parsed = parseFormat(requested);
+        if (parsed != current) {
+            throw ApiException.badRequest("catalog.catalogFormat is immutable: catalog \""
+                    + entity.getPrefix() + "\" is a " + current.wireName()
+                    + " catalog and cannot become a " + parsed.wireName()
+                    + " catalog; delete and recreate it to change the format");
+        }
     }
 
     /**

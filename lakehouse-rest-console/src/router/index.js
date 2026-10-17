@@ -48,6 +48,17 @@ const routes = [
     meta: { title: '表详情', group: '目录（Catalog API）', parent: 'browse' },
   },
   {
+    // Iceberg 表详情。与 `/tables/...` 平行而不是同一个页面里二选一：
+    // Paimon 版的七个页签挂在 `/databases/**` 上，这一页的数据几乎全部来自
+    // 一次 `loadTable`（LoadTableResult 的 metadata 是整份 TableMetadata），
+    // 数据形状与按需加载的单位都不同——塞进一个组件是每屏两遍 v-if。
+    // `database` 段是点号拼接的 namespace 显示名（与 /browse 的深链接同一口径）。
+    path: '/iceberg-tables/:prefix/:database/:table',
+    name: 'icebergTable',
+    component: () => import('@/views/IcebergTableView.vue'),
+    meta: { title: '表详情（Iceberg）', group: '目录（Catalog API）', parent: 'browse' },
+  },
+  {
     path: '/catalogs',
     name: 'catalogs',
     component: () => import('@/views/CatalogsView.vue'),

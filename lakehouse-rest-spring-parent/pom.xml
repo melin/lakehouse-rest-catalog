@@ -34,7 +34,7 @@
 	<description>服务端世界的父 POM：钉住 Spring Boot 世界的共用版本、依赖与插件</description>
 
 	<!--
-		四个服务端模块，**目录就嵌在本文件之下**。因此
+		五个服务端模块，**目录就嵌在本文件之下**。因此
 
 		  - 这里的 <module> 写裸名字（相对本文件解析，即 `./lakehouse-rest-core`）；
 		  - 各子模块的 <parent> **可以省掉 <relativePath>**——默认值 `../pom.xml`
@@ -50,20 +50,21 @@
 		  │   ├── pom.xml
 		  │   ├── lakehouse-rest-core/
 		  │   ├── lakehouse-rest-storage/
-		  │   ├── lakehouse-rest-protocol-paimon/
-		  │   ├── lakehouse-rest-server/
-		  │   └── lakehouse-rest-protocol-iceberg/       （未落地，见下一行注释）
+			│   ├── lakehouse-rest-protocol-paimon/
+			│   ├── lakehouse-rest-protocol-iceberg/
+			│   └── lakehouse-rest-server/
 		  ├── lakehouse-rest-spark/                      Spark SQL 语法扩展
 		  └── lakehouse-rest-optimizer/                  表存储优化任务
 
-		Iceberg 协议面落地时，把它按同样的方式嵌进来并在此处加一行
-		<module>lakehouse-rest-protocol-iceberg</module> 即可——它同样是服务端世界的
-		成员（继承本 POM，而不是根 POM）。
+		两个协议面是平级的兄弟：它们互不依赖（各自在 POM 里禁掉对方的 artifactId，
+		见 §3.1 的三条不变量），共用 core 与 storage，最终在 server 的 fat jar 里会合。
+		再加第三种表格式时照这个形状添一层即可。
 	-->
 	<modules>
 		<module>lakehouse-rest-core</module>
 		<module>lakehouse-rest-storage</module>
 		<module>lakehouse-rest-protocol-paimon</module>
+		<module>lakehouse-rest-protocol-iceberg</module>
 		<module>lakehouse-rest-server</module>
 	</modules>
 
@@ -86,6 +87,20 @@
 			一次代码迁移，那是独立的一件事，不该藏在「改坐标 + 拆模块」里。
 		-->
 		<paimon.version>2.0.0</paimon.version>
+		<!--
+			Iceberg 的版本（服务端世界）。
+
+			**只有 lakehouse-rest-protocol-iceberg 会用到它**，而且它锚的是那个模块的声音：
+			「本服务端实现的 Iceberg 元数据代数与哪个版本的客户端同源」。
+			这与 README 里写明的支持区间是同一件事——升级它等于宣布支持更宽的客户端区间，
+			两处要一起改。
+
+			1.11.0 的选择依据是「本机随即能拿到的 Spark 客户端版本」：
+			iceberg-spark-runtime-4.1_2.13 在仓库里就是 1.11.0，端到端验收用的是它。
+			服务端比客户端旧会在遇到新字段时报错，比客户端新则只是多认一些字段，
+			因此向上对齐而不是取「能跑就行」的更旧版本。
+		-->
+		<iceberg.version>1.11.0</iceberg.version>
 		<!-- 依赖边界守卫，见各模块 POM 里的 bannedDependencies -->
 		<enforcer.version>3.1.0</enforcer.version>
 	</properties>
@@ -111,6 +126,22 @@
 				<groupId>io.github.melin</groupId>
 				<artifactId>lakehouse-rest-protocol-paimon</artifactId>
 				<version>${project.version}</version>
+			</dependency>
+			<dependency>
+				<groupId>io.github.melin</groupId>
+				<artifactId>lakehouse-rest-protocol-iceberg</artifactId>
+				<version>${project.version}</version>
+			</dependency>
+
+			<!--
+				Iceberg：只有 lakehouse-rest-protocol-iceberg 会用到。
+				不进 <dependencies>（那会让 core 也拿到它），也不进 spark / optimizer
+				（它们是集群世界，客户端侧由 iceberg-spark-runtime 自带）。
+			-->
+			<dependency>
+				<groupId>org.apache.iceberg</groupId>
+				<artifactId>iceberg-core</artifactId>
+				<version>${iceberg.version}</version>
 			</dependency>
 
 			<!-- Paimon：只有 storage（FileIO）与各协议面（元数据读写）会用到 -->

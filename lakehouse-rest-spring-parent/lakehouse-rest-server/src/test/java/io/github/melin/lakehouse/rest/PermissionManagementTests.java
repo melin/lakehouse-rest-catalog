@@ -265,6 +265,41 @@ class PermissionManagementTests {
     }
 
     @Test
+    void namespaceGrantMatchesMultiLevelNamespace() throws Exception {
+        // 直授把库名存成一列字符串，而 Iceberg 协议面把路径切成层级数组。
+        // 「授 `accounting.tax` 覆盖 ["accounting","tax"]」这条如果断了，表现是
+        // **权限页显示已授权、Iceberg 客户端却一直 403**——两处都不报错。
+        grant("{\"resource\":{\"type\":\"DATABASE\",\"database\":\"accounting.tax\"},"
+                + "\"access\":\"DESCRIBE\",\"principal\":\"user:iceberg_two_levels\"}");
+
+        assertTrue(namespacePrivileges("iceberg_two_levels", List.of("accounting", "tax"))
+                        .contains(Privilege.NAMESPACE_READ_PROPERTIES),
+                "单段 `accounting.tax` 必须覆盖 Iceberg 的两级 namespace");
+        assertTrue(namespacePrivileges("iceberg_two_levels", List.of("accounting", "tax", "2026"))
+                        .contains(Privilege.NAMESPACE_READ_PROPERTIES),
+                "namespace 级授权按前缀覆盖后代");
+        assertFalse(namespacePrivileges("iceberg_two_levels", List.of("accounting"))
+                        .contains(Privilege.NAMESPACE_READ_PROPERTIES),
+                "两级授权不该反过来覆盖到上级");
+
+        // 前缀必须落在层级边界上：单段 `sales` 不能覆盖 `salesforce`
+        grant("{\"resource\":{\"type\":\"DATABASE\",\"database\":\"sales\"},"
+                + "\"access\":\"DESCRIBE\",\"principal\":\"user:iceberg_prefix\"}");
+        assertFalse(namespacePrivileges("iceberg_prefix", List.of("salesforce"))
+                        .contains(Privilege.NAMESPACE_READ_PROPERTIES),
+                "`sales` 不该被当成 `salesforce` 的前缀");
+        assertTrue(namespacePrivileges("iceberg_prefix", List.of("sales", "2026"))
+                        .contains(Privilege.NAMESPACE_READ_PROPERTIES),
+                "`sales` 仍应是 `sales.2026` 的前缀");
+    }
+
+    /** 主体在一组 namespace 层级上的有效权限（走直授判定链）。 */
+    private Set<Privilege> namespacePrivileges(String principal, List<String> levels) {
+        return authorizationService.effectivePrivileges(
+                principal, "paimon", GrantType.NAMESPACE, levels, null);
+    }
+
+    @Test
     void roleGrantResolvesThroughCatalogRoleName() throws Exception {
         // 准备 RBAC 链：bob → principal role → catalog role perm_sales_writer
         asRoot(201, "POST", M + "/catalogs/paimon/catalog-roles",

@@ -125,6 +125,80 @@ public final class OptimizationOptions {
         return key != null && KNOWN_KEYS.get(action).contains(key.trim());
     }
 
+    // ---------------------------------------------------------------- 按格式分派
+    //
+    // 三项动作的**名字**是格式无关的契约（API、库里的 actions 列、指标前缀都用它），
+    // 但每项动作的参数键、默认值与合法取值都是格式各自的——Paimon 的 retain-min 与
+    // Iceberg 的 retain-last 不是同一个东西。下面这组重载是唯一的格式分派点：
+    // 调用方只需把 catalog 的格式传进来，不必知道背后有两套参数表。
+
+    /** 内置默认值（按格式）。 */
+    public static Map<String, String> defaults(CatalogFormat format, Action action) {
+        return isIceberg(format) ? IcebergOptimizationOptions.defaults(action) : defaults(action);
+    }
+
+    /** catalog 属性里的默认值（按格式）。 */
+    public static Map<String, String> catalogDefaults(Map<String, String> catalogProperties,
+                                                      CatalogFormat format, Action action) {
+        return isIceberg(format)
+                ? IcebergOptimizationOptions.catalogDefaults(catalogProperties, action)
+                : catalogDefaults(catalogProperties, action);
+    }
+
+    /** 三层合并（按格式）。 */
+    public static Map<String, String> resolve(CatalogFormat format, Action action,
+                                              Map<String, String> catalogProperties,
+                                              Map<String, String> tableConfig) {
+        if (!isIceberg(format)) {
+            return resolve(action, catalogProperties, tableConfig);
+        }
+        Map<String, String> resolved = IcebergOptimizationOptions.defaults(action);
+        resolved.putAll(IcebergOptimizationOptions.catalogDefaults(catalogProperties, action));
+        if (tableConfig != null) {
+            tableConfig.forEach((key, value) -> {
+                if (key != null && value != null && !value.isBlank()
+                        && IcebergOptimizationOptions.isKnownOption(action, key)) {
+                    resolved.put(key.trim(), value.trim());
+                }
+            });
+        }
+        return resolved;
+    }
+
+    /** 校验（按格式）。 */
+    public static void validate(CatalogFormat format, Action action, Map<String, String> config) {
+        if (isIceberg(format)) {
+            IcebergOptimizationOptions.validate(action, config);
+        } else {
+            validate(action, config);
+        }
+    }
+
+    /** 某个键是不是该项动作认得的（按格式）。 */
+    public static boolean isKnownOption(CatalogFormat format, Action action, String key) {
+        return isIceberg(format)
+                ? IcebergOptimizationOptions.isKnownOption(action, key)
+                : isKnownOption(action, key);
+    }
+
+    /** 某项动作的合法键集合（按格式），用于报错文案与静态校验。 */
+    public static Set<String> knownKeys(CatalogFormat format, Action action) {
+        return isIceberg(format)
+                ? IcebergOptimizationOptions.knownKeys(action)
+                : KNOWN_KEYS.get(action);
+    }
+
+    /** 执行间隔（按格式）。 */
+    public static Duration interval(CatalogFormat format, Action action, Map<String, String> effective) {
+        return isIceberg(format)
+                ? IcebergOptimizationOptions.interval(action, effective)
+                : interval(action, effective);
+    }
+
+    private static boolean isIceberg(CatalogFormat format) {
+        return format == CatalogFormat.ICEBERG;
+    }
+
     /**
      * 新建策略时三项动作的默认开关。
      *

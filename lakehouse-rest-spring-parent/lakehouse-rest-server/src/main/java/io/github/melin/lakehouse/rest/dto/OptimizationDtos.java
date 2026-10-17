@@ -42,6 +42,14 @@ public final class OptimizationDtos {
     public record TablePolicy(String catalog,
                               String database,
                               String table,
+                              /**
+                               * 表格式（{@code PAIMON} / {@code ICEBERG}）。
+                               *
+                               * <p>控制台按它决定参数表单渲染哪一套键：同一张动作卡在两种格式下
+                               * 的字段不同（{@code retain-min} vs {@code retain-last}），
+                               * 靠页面自己判断「这是哪张表」会多一条判别、也会与这里漂移。
+                               */
+                              String format,
                               boolean enabled,
                               int scheduleIntervalSeconds,
                               Long nextRunAt,
@@ -153,9 +161,17 @@ public final class OptimizationDtos {
 
     // ---------------------------------------------------------------- 优化任务协定
 
-    /** 优化任务启动时拉取的执行清单。 */
+    /**
+     * 优化任务启动时拉取的执行清单。
+     *
+     * <p>{@code format} 决定执行侧建哪种 Spark 会话、把动作翻成哪套 procedure：
+     * 一个批次只属于一个 catalog，而一个 catalog 只有一种格式，所以放在清单级
+     * 而不是每张表上——表级给这个字段只会让执行侧多一个「同一批里格式不一致怎么办」
+     * 的分支，而那种数据本来就不该存在。
+     */
     public record Submission(String jobId,
                              String catalog,
+                             String format,
                              String triggerType,
                              List<String> actions,
                              List<SubmissionTable> tables) {

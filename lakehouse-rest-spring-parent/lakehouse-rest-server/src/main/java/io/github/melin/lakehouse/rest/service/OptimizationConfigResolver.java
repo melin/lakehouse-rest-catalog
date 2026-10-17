@@ -4,6 +4,7 @@ import io.github.melin.lakehouse.rest.domain.entity.CatalogEntity;
 import io.github.melin.lakehouse.rest.domain.entity.TableOptimizationEntity;
 import io.github.melin.lakehouse.rest.domain.repo.CatalogRepository;
 import io.github.melin.lakehouse.rest.domain.repo.TableOptimizationRepository;
+import io.github.melin.lakehouse.rest.support.CatalogFormat;
 import io.github.melin.lakehouse.rest.support.OptimizationOptions;
 import io.github.melin.lakehouse.rest.support.OptimizationOptions.Action;
 import java.util.LinkedHashMap;
@@ -56,36 +57,67 @@ public class OptimizationConfigResolver {
                 .orElseGet(LinkedHashMap::new);
     }
 
-    /** 三项动作的生效参数，键为动作的 wire 名。 */
+    /** 三项动作的生效参数，键为动作的 wire 名（Paimon 格式；保留给既有调用方）。 */
     public Map<String, Map<String, String>> resolve(Map<String, String> catalogProperties,
+                                                    Map<String, Map<String, String>> tableConfigs) {
+        return resolve(CatalogFormat.PAIMON, catalogProperties, tableConfigs);
+    }
+
+    /**
+     * 三项动作的生效参数（按格式）。
+     *
+     * <p>格式只影响「用哪套键与默认值」——合并与回落的结构两边完全一样。
+     */
+    public Map<String, Map<String, String>> resolve(CatalogFormat format,
+                                                    Map<String, String> catalogProperties,
                                                     Map<String, Map<String, String>> tableConfigs) {
         Map<String, Map<String, String>> resolved = new LinkedHashMap<>();
         for (Action action : Action.values()) {
             Map<String, String> tableConfig = tableConfigs == null ? null : tableConfigs.get(action.wire());
-            resolved.put(action.wire(), resolve(action, catalogProperties, tableConfig));
+            resolved.put(action.wire(), resolve(format, action, catalogProperties, tableConfig));
         }
         return resolved;
     }
 
-    /** 按表 id 解析生效参数；策略不存在（表已删或还没配过）时全部走默认值。 */
+    /** 按表 id 解析生效参数（Paimon 格式；保留给既有调用方）。 */
     @Transactional(readOnly = true)
     public Map<String, Map<String, String>> resolveByTable(String catalogId, String tableId) {
-        TableOptimizationEntity policy = policyRepository.findByTableId(tableId).orElse(null);
-        return resolve(catalogProperties(catalogId), tableConfigs(policy));
+        return resolveByTable(CatalogFormat.PAIMON, catalogId, tableId);
     }
 
-    /** 单项动作的生效参数。 */
+    /** 按表 id 解析生效参数（按格式）；策略不存在（表已删或还没配过）时全部走默认值。 */
+    @Transactional(readOnly = true)
+    public Map<String, Map<String, String>> resolveByTable(CatalogFormat format, String catalogId, String tableId) {
+        TableOptimizationEntity policy = policyRepository.findByTableId(tableId).orElse(null);
+        return resolve(format, catalogProperties(catalogId), tableConfigs(policy));
+    }
+
+    /** 单项动作的生效参数（Paimon 格式；保留给既有调用方）。 */
     public Map<String, String> resolve(Action action, Map<String, String> catalogProperties,
                                        Map<String, String> tableConfig) {
-        Map<String, String> catalogDefaults = OptimizationOptions.catalogDefaults(catalogProperties, action);
+        return resolve(CatalogFormat.PAIMON, action, catalogProperties, tableConfig);
+    }
+
+    /**
+     * 单项动作的生效参数（按格式）。
+     *
+     * <p>合并后仍要过一次格式自己的校验：catalog 默认值是运维直接改属性的，没人拦得住。
+     * 校验不过就**整项回落内置默认**并打 WARN——逐键丢弃会拼出自相矛盾的组合
+     * （例如 {@code strategy=sort} 配一个被丢掉的排序列）。
+     */
+    public Map<String, String> resolve(CatalogFormat format, Action action,
+                                       Map<String, String> catalogProperties,
+                                       Map<String, String> tableConfig) {
+        Map<String, String> catalogDefaults =
+                OptimizationOptions.catalogDefaults(catalogProperties, format, action);
         Map<String, String> resolved =
-                OptimizationOptions.resolve(action, catalogProperties, tableConfig);
+                OptimizationOptions.resolve(format, action, catalogProperties, tableConfig);
         try {
-            OptimizationOptions.validate(action, resolved);
+            OptimizationOptions.validate(format, action, resolved);
         } catch (RuntimeException exception) {
             log.warn("catalog level {} defaults are invalid ({}), falling back to built-in defaults: {}",
-                    action.wire(), exception.getMessage(), OptimizationOptions.defaults(action));
-            return OptimizationOptions.defaults(action);
+                    action.wire(), exception.getMessage(), OptimizationOptions.defaults(format, action));
+            return OptimizationOptions.defaults(format, action);
         }
         if (!catalogDefaults.isEmpty()) {
             log.debug("{} resolved with catalog defaults {}", action.wire(), catalogDefaults);

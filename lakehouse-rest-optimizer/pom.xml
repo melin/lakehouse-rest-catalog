@@ -13,7 +13,19 @@
 	<artifactId>lakehouse-rest-optimizer</artifactId>
 	<packaging>jar</packaging>
 	<name>lakehouse-rest-optimizer</name>
-	<description>表存储优化任务：在 k8s 上跑 Spark，按批次对多张 Paimon 表执行 compact / expire_snapshots / remove_orphan_files</description>
+	<description>表存储优化任务：在 k8s 上跑 Spark，按批次对多张 Paimon / Iceberg 表执行合并、快照清理与孤儿文件清理</description>
+
+	<properties>
+		<!--
+			Iceberg 的 Spark bundle。**必须与 spring-parent 的 iceberg.version 一致**：
+			服务端用 iceberg-core 写/读这份元数据，优化任务用 Spark bundle 执行 procedure，
+			两边版本不一致时，新写入的元数据（例如 v3 的 next-row-id）可能被旧运行时读不懂。
+
+			两个 POM 分属两个依赖世界（Spring Boot / 集群 Spark），没法共用一份属性，
+			因此各声明一次；改了其中一个，另一个要同步。
+		-->
+		<iceberg.version>1.11.0</iceberg.version>
+	</properties>
 
 	<!--
 		这个模块是**一个可执行程序**，不是库：它由服务端作为 k8s Job 提交
@@ -108,14 +120,30 @@
 			<artifactId>paimon-s3</artifactId>
 			<scope>test</scope>
 		</dependency>
+
+		<!--
+			Iceberg 的 Spark bundle。与 Paimon 两份同样的道理：运行时必须有（任务要在
+			Iceberg 表上执行 `CALL ... rewrite_data_files` / `expire_snapshots` /
+			`remove_orphan_files`），但本模块的代码一行都不碰 Iceberg——语句由集群上的
+			Iceberg 扩展解释。因此也不是 compile。
+
+			它同时提供 `org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions`：
+			只把 jar 放进类路径而不装这个扩展，`CALL` 会以「procedure 不存在」失败。
+		-->
+		<dependency>
+			<groupId>org.apache.iceberg</groupId>
+			<artifactId>iceberg-spark-runtime-3.5_${scala.binary.version}</artifactId>
+			<version>${iceberg.version}</version>
+			<scope>test</scope>
+		</dependency>
 	</dependencies>
 
 	<build>
 		<plugins>
 			<!--
-				把 Paimon 的两份运行时 jar 拷进 target/jars：镜像的构建上下文是仓库根目录，
-				而 Docker 的 COPY 既不能取构建上下文之外的文件，也不展开 ~。
-				在构建期把它们落进 target/，Dockerfile 就只需要 COPY 一个相对路径。
+				把两种格式的运行时 jar（Paimon 两份 + Iceberg 一份）拷进 target/jars：
+				镜像的构建上下文是仓库根目录，而 Docker 的 COPY 既不能取构建上下文之外的文件，
+				也不展开 ~。在构建期把它们落进 target/，Dockerfile 就只需要 COPY 一个相对路径。
 			-->
 			<plugin>
 				<groupId>org.apache.maven.plugins</groupId>
@@ -123,14 +151,14 @@
 				<version>3.8.1</version>
 				<executions>
 					<execution>
-						<id>copy-paimon-runtime</id>
+						<id>copy-runtime-jars</id>
 						<phase>package</phase>
 						<goals>
 							<goal>copy-dependencies</goal>
 						</goals>
 						<configuration>
 							<includeScope>test</includeScope>
-							<includeArtifactIds>paimon-spark-3.5_2.12,paimon-s3</includeArtifactIds>
+							<includeArtifactIds>paimon-spark-3.5_2.12,paimon-s3,iceberg-spark-runtime-3.5_2.12</includeArtifactIds>
 							<outputDirectory>${project.build.directory}/jars</outputDirectory>
 							<stripVersion>false</stripVersion>
 							<overWriteReleases>true</overWriteReleases>

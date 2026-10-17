@@ -1,10 +1,12 @@
 # 表存储优化
 
-> 状态：**服务端与优化任务模块已实现**（P1 + P2 的链路部分），**控制台页签与「优化任务」页尚未落地**，
-> P3 未做。落地过程中与原方案的偏差都写在对应小节里，并注明了改动的理由——本文同时是「当时为什么这么设计」的记录。
+> 状态：**服务端、优化任务模块与控制台页签均已实现**（P1 + P2 + P3 的 Iceberg 部分）。
+> 两项能力在 P3 之后补齐：**Iceberg 表的存储优化**（§2.5、§6.5）与**权限管理覆盖 Iceberg catalog**
+> （见 `docs/authorization.md` §7）。落地过程中与原方案的偏差都写在对应小节里，
+> 并注明了改动的理由——本文同时是「当时为什么这么设计」的记录。
 >
-> 各节的实现状态：§2 动作映射 ✅ · §3 执行架构 ✅ · §4 数据模型 ✅（`sql/schema-mysql.sql` 已是 22 张表）·
-> §5 API ✅ · §6 优化任务模块 ✅（`lakehouse-rest-optimizer`）· §7 控制台 ⏳ 待做 · §8 分期见文末。
+> 各节的实现状态：§2 动作映射 ✅（含 §2.5 Iceberg） · §3 执行架构 ✅ · §4 数据模型 ✅（`sql/schema-mysql.sql` 已是 22 张表，**Iceberg 未新增表**）·
+> §5 API ✅ · §6 优化任务模块 ✅（`lakehouse-rest-optimizer`）· §7 控制台 ✅（Paimon 与 Iceberg 表详情页共用同一面板）· §8 分期见文末。
 >
 > 对标对象：阿里云 DLF 的表存储优化（Compaction / Snapshot Expire / Orphan File Remove 三个子页签）与 AWS Lake Formation 的 Enable optimization（三项勾选 + 默认/自定义配置 + 三块历史）。**产品分层以 AWS 为基准**（总开关 → 三项独立启用 → 默认/自定义 → 历史三块），DLF 的快照详情卡、「立即清理」按钮与中文文案吸收进来。执行链路是本方案的自有部分：DLF 由服务端托管调度，AWS 由托管 optimizer（按 DPU 计费），我们用**先落库、再异步提交 k8s 运行 Spark 任务、多表合并执行**的方式实现。
 
@@ -14,7 +16,7 @@
 
 | 维度 | 阿里云 DLF | AWS Lake Formation | 本方案 |
 | --- | --- | --- | --- |
-| 入口 | 表详情「存储优化」页签，内部分三个子页签 | 表级「Enable optimization」独立页 | 表详情新增「存储优化」页签（仅 Paimon 表显示，同「快照/标签」的伸缩规则） |
+| 入口 | 表详情「存储优化」页签，内部分三个子页签 | 表级「Enable optimization」独立页 | 表详情新增「存储优化」页签（Paimon 与 Iceberg 表都有，外部表除外；参数按 catalog 格式分派，见 §2.5） |
 | 开关形态 | 「智能存储优化」总开关 + 三个子页签各自配置 | 三项勾选（Compaction / Snapshot retention / Orphan file deletion） | 总开关 + 三项独立启用（AWS 形态，中文文案取 DLF） |
 | 配置 | 每项一页，字段平铺 | **默认设置 / 自定义设置**两档，默认值来自 Data Catalog settings | 采用 AWS 两档：默认值收敛在 **catalog 级优化设置**，表级只写差异 |
 | 历史 | 各子页签内一份「执行历史」 | 页面底部三块 history（Compaction / Snapshot retention / Orphan file deletion） | 表页签内三块历史（AWS 形态）；跨表视角另设全局「优化任务」页 |
@@ -63,6 +65,53 @@
 ### 2.4 一批内的动作顺序
 
 同一批任务里对同一张表按 **compact → expire → orphan** 的固定顺序执行：compaction 产生新快照后，expire 才能基于最新状态判过期；orphan 最后跑，且它的 `olderThan` 窗口天然保护前两步刚产生的文件。顺序写死在优化任务里，不给用户配（配错的收益为零、风险为删数据）。
+
+---
+
+### 2.5 Iceberg 的对应物
+
+三项动作在 Iceberg 里都有官方 procedure，语义与 Paimon 一一对应，因此**没有新增任务信息表**：
+`paimon_table_optimization`（策略）、`optimization_job` / `optimization_job_item`（批次与明细）
+原样复用——它们存的本来就是「动作 + 键值对参数」和「动作 + 指标」，格式差异只体现在键名与指标口径上。
+
+| 项 | Paimon | Iceberg |
+| --- | --- | --- |
+| Compaction | `CALL sys.compact(...)` | `CALL catalog.system.rewrite_data_files(...)` |
+| Snapshot Expire | `CALL sys.expire_snapshots(...)` | `CALL catalog.system.expire_snapshots(...)` |
+| Orphan Remove | `CALL sys.remove_orphan_files(...)` | `CALL catalog.system.remove_orphan_files(...)` |
+| 参数来源 | `OptimizationOptions` | `IcebergOptimizationOptions`（`support/` 下独立一个类） |
+| 参数键 | `strategy` / `sort-columns` / `min-input-files` / `target-file-size-mb` / `retain-min` / `retention-hours` / `older-than-hours` / `interval-*` / `dry-run` | 同名为主，三处不同：`retain-min` → **`retain-last`**、新增 **`max-concurrent-file-group-rewrites`**、`target-file-size-mb` 默认 **512** |
+| 内置默认 | compact `{binpack, 5, 128MB, 1h}`；expire `{24h, 10, 24h}`；orphan `{72h, 7d, dry-run}` | compact `{binpack, 5, **512MB**, 5 并发, 1h}`；expire `{**120h**, 10, 24h}`；orphan `{72h, 7d, dry-run}` |
+| 窗口参数 | `older_than => '24 h'`（相对时长） | `older_than => TIMESTAMP '...'`（**绝对时间戳**，任务侧按 UTC 格式化） |
+
+**为什么参数表要单开一个类而不是加 if。** 两边的键名能对上「策略 / 阈值 / 保留窗口」这三件事，
+但 `retain-min`（最少保留几个快照）与 `retain-last`（保留最后几个祖先快照）是**语义相反**的一对，
+`target-file-size` 的默认值也不同（128 MB vs 512 MB，各自跟随上游的推荐值）。把它们塞进一张表，
+「某个键属于哪种格式」就变成一张隐式的真相表，而写错的那一侧不报错、只表现为行为悄悄变成另一种格式的语义。
+
+**zorder 在 Iceberg 里不是独立策略。** Paimon 的 `sort-compaction.strategy` 有 `zorder` 取值；
+Iceberg 的 `rewrite_data_files` 只有 `strategy => 'binpack' | 'sort'`，Z-Order 是
+`strategy => 'sort'` + `sort_order => 'zorder(c1,c2)'` 的组合。控制台仍按「策略」这一档呈现三种选择，
+翻译发生在执行侧（`IcebergProcedures`），并在控制台文案里说明「Z-Order 建议 2～4 列」。
+
+**时区。** Paimon 收相对时长（`24 h`），没有时区问题；Iceberg 的 `expire_snapshots` / `remove_orphan_files`
+收绝对时间戳 `older_than`。任务侧把 `Instant` 按 **UTC** 格式化成 `TIMESTAMP 'yyyy-MM-dd HH:mm:ss'`，
+同时把会话钉在 `spark.sql.session.timeZone=UTC`：两处都要做——只用其中一处时，集群默认时区不是 UTC
+就会把窗口整体平移，而 orphan 的窗口平移的后果是**多删文件**。
+
+**指标口径不顺译。** 执行侧报的是 procedure 真实输出的列，不是把 Iceberg 的读数套进 Paimon 的键：
+
+| 动作 | Paimon 指标 | Iceberg 指标 |
+| --- | --- | --- |
+| compact | `files-before` / `files-after` / `size-before` / `size-after` | `rewritten-files` / `added-files` / `rewritten-size`（`rewrite_data_files` 不报「合并后一共几个文件」） |
+| expire | `deleted-snapshots` | `deleted-data-files` / `deleted-manifest-files` / `deleted-manifest-lists`（`+ deleted-statistics-files`，>0 时才报） |
+| orphan | `deleted-files` / `released-size` | `deleted-files`（输出是「一行一个孤儿路径」，取 `count()`；干跑时就是候选条数） |
+
+控制台侧 `metricSummary()` 因此**不判格式、只判键存在**——两套键在同一动作下互不重叠，
+批次页（一批里可能混着两种格式的表）也就不需要知道每张表的格式。
+
+> 备注：`CALL` 在 Iceberg 里由 `IcebergSparkSessionExtensions` 注册成 procedure，
+> 只把 `iceberg-spark-runtime` 放进类路径不够（见 §6.5）。
 
 ---
 
@@ -206,6 +255,11 @@
 - **对外一律用 catalog 名与「catalog.库.表」三段名**，不用内部主键。catalog 名是 optimizer 建 REST catalog 连接时要用的那个值，主键只在服务端内部有意义；批次的 `catalog` 字段因此也是名字。外键 id 只在回调端点里按 `itemId` 出现（清单里给，任务原样带回来）。
 - **catalog 级默认键形如 `optimization.<动作>.<参数>`**，动作段用 wire 名：`optimization.compact.min-input-files`、`optimization.expire.retention-hours`、`optimization.orphan.older-than-hours`。与 API 的 `action` 字段、库里的 `actions` 列同一套词——不为 catalog 属性另起一套更长的英文名，否则两处映射必然漂移。
 - **回调令牌**（请求头 `X-Optimization-Token`，批次级、落库随机值）不参与 RBAC：调用方是 k8s 里的任务，没有主体身份。任务从 Job 的启动参数里拿到它。批次详情是否回显令牌由一条规则决定（授权关闭，或调用方是服务管理员）——`run` / `retry` / `cancel` / 详情四个端点共用这一条，不各判一次。
+- **这批端点对两种格式都回答，`format` 是响应里带出来的，不是路径里的。** 曾经有一段时间 Iceberg catalog 上
+  这些端点全 404（连 `GET .../policy` 也是），原因不是格式守卫在 controller，而是 `TableOptimizationService`
+  借道了 Paimon 的 `TableLookup` → `DatabaseService.require` → `resolveForFormat(prefix, PAIMON)`。
+  现在按 `catalogRepository / databaseRepository / tableRepository` 直查，格式只用来挑参数表
+  （`TablePolicy.format`、`Submission.format`，供 optimizer 与前端读）。
 
 ---
 
@@ -246,18 +300,48 @@
   某个时区格式化、再由 Paimon 按会话时区解析，两个时区不一致时窗口会整体平移，
   而窗口平移在 orphan 清理上的后果是多删文件。
 
-单元测试覆盖参数翻译（`PaimonProceduresTests`）与启动参数解析（`OptimizerOptionsTests`），
-共 18 例——这两块是「编译能过、跑起来才错」的高风险区，必须钉住。真跑一张表的端到端用例
-属于 P3（需要一个可用的集群与 Paimon 仓库）。
+单元测试覆盖参数翻译（`PaimonProceduresTests` / `IcebergProceduresTests`）与启动参数解析
+（`OptimizerOptionsTests`）——这两块是「编译能过、跑起来才错」的高风险区，必须钉住。真跑一张表的
+端到端用例属于 P3（需要一个可用的集群与仓库）。`IcebergProceduresTests` 除参数翻译外还钉住了三条
+容易写错的地方：binpack 不传 `strategy`、zorder 走 `sort` + `sort_order`（且**不含** `z_order_columns`
+——那是别人的参数名）、`expire` / `orphan` 的时间戳是 UTC 字面量。
+
+### 6.5 Iceberg 的差异（同一模块内分派）
+
+执行流程（跳过已上报的表、部分成功、耗时、失败上报、重试）两种格式**完全共用**，
+只在两处分派，其余一处也不分：
+
+| 分派点 | Paimon | Iceberg |
+| --- | --- | --- |
+| `steps()`：语句怎么生成 | `PaimonProcedures.steps(...)` | `IcebergProcedures.steps(...)` |
+| `spark()`：会话怎么建 | `spark.sql.catalog.<c>.metastore=rest` + `data-token.enabled=true` + Paimon 扩展 | `.type=rest` + `.header.X-Iceberg-Access-Delegation=vended-credentials` + `cache-enabled=false` + Iceberg 扩展 |
+
+- **Iceberg 的 `CALL` 需要 `IcebergSparkSessionExtensions`**：只把 `iceberg-spark-runtime` 放进类路径
+  是不够的，procedure 由这个扩展注册。扩展在 `spark()` 里按批次格式设置。
+- **`cache-enabled=false` 不是性能选项**：批内同一张表会被反复读（每个 procedure 都会重新加载元数据），
+  客户端缓存会让后一步读到前一步之前的快照。
+- **`X-Iceberg-Access-Delegation: vended-credentials`**：服务端「不问不给」——带这个头才会在响应里
+  下发短期凭据。仓库不在对象存储上的部署里，它只是一个没被消费的响应字段。
+- **镜像要带 `iceberg-spark-runtime`**：`Dockerfile` 从 `target/jars/` 里拷；`s3://` 仓库还要自行加
+  `iceberg-aws-bundle`（本轮**未内置**：本地 `~/.m2` 里那个 artifact 目录是空的，离线构建会失败）。
+  版本必须与 `spring-parent` 的 `iceberg.version` 一致——优化任务是另一个依赖世界，属性不共享。
+- **格式从执行清单里读**（`Plan.format`），缺字段时按 Paimon：那是本特性引入前的唯一形状。
 
 ---
 
 ## 7. 控制台
 
-- **表详情新增「存储优化」页签**：仅 `isPaimonTable` 时渲染（format/object/lance 表没有快照与 compaction 概念，页签隐藏——与「快照/标签/分支」同一条伸缩规则）；按需加载（首次切入才请求策略与历史）。
+- **表详情新增「存储优化」页签**：Paimon 侧仅 `isPaimonTable` 时渲染（format/object/lance 表没有快照与 compaction 概念，页签隐藏——与「快照/标签/分支」同一条伸缩规则）；按需加载（首次切入才请求策略与历史）。
+  **Iceberg 表用的是同一个组件**：`IcebergTableView` 挂 `TableOptimizationPanel` 并显式传 `format="ICEBERG"`，
+  组件内部按「策略响应的 `format` → prop → `PAIMON`」取格式，再用 `actionsFor(format)` 取那一套参数定义。
+  不另做一个面板的理由与「两种格式共用任务表」一致：动作名、执行顺序、三块历史、批次链接、干跑警示
+  全都不随格式变，真要分开写，这些会各有一份副本。
 - 页签内布局见效果图：总开关卡（开关 + 调度间隔 + 最近批次 + 下次调度 + 立即优化）→ 三张动作卡（勾选 + **默认/自定义两档**）→ 孤儿清理干跑关闭时的警示条 → 三块历史（Compaction / 快照清理 / 孤儿文件清理，各带批次链接可跳到「优化任务」页）。
   - 「默认设置 / 自定义」不是独立开关，而是「差异为不为空」：自定义档只提交**改动过的键 + 原本就配过的键**（整份回填会把当前默认值抄成差异，运维之后调 catalog 默认值就再也影响不到这张表）。
-  - 参数表单的字段定义只有一份（`utils/optimization.js` 的 `ACTIONS`），`scripts/verify-console.py` 拿它与服务端 `KNOWN_KEYS` 逐字比对——键名写错的表现是保存时吃 400，编译与类型检查都不报。
+  - 参数表单的字段定义只有一处取用入口（`utils/optimization.js` 的 `actionsFor(format)`），两套键表分别是
+    `PAIMON_FIELDS` / `ICEBERG_FIELDS`；`scripts/verify-console.py` 拿它们与服务端 `OptimizationOptions` /
+    `IcebergOptimizationOptions` 逐字比对，并额外断言两套键集合**不相等**（防复制粘贴）。键名写错的表现是
+    保存时吃 400，编译与类型检查都不报。
 - **全局「优化任务」页**（侧边栏「治理」分组新菜单）：统计卡（运行中 / 排队中 / 今日批次 / 失败 24h，与列表同用最近 200 个批次的窗口，过滤器在本地做——否则统计卡与列表是两个口径）+ 四个过滤器（状态 / 动作 / Catalog / 触发方式）+ 批次表（展开行拉表级明细）+ 详情抽屉（键值对 + 时间线 + 批次错误 + 回调令牌 + 原始响应）。`?job=` 查询参数支持从表详情的历史点批次号跳过来直接展开。
 - 实现上有一个值得记住的坑：`@tab-change` 在 `v-model` 更新后**同步**抛出，此刻页签内容还没渲染、子组件 ref 还是空的——直接 `panel.value?.load()` 会被静默吃掉，而 `loadedTabs` 已记下这个页签，切回来也不会补，页面永远空白。解法是把那次加载请求记成「待发」，等组件挂载（`watch(ref)`）后再发。
 

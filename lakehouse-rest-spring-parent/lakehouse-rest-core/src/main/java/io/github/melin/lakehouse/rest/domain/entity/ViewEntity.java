@@ -38,4 +38,15 @@ public class ViewEntity extends AuditedEntity {
 
     @Column(name = "view_schema_doc", length = 1048576)
     private String viewSchemaDoc;
+
+    /**
+     * 当前元数据文件路径（Iceberg 视图用）：
+     * {@code <location>/metadata/00001-<uuid>.metadata.json}。
+     *
+     * <p>Paimon 视图不写元数据文件（它是纯目录条目），这一列为 {@code null}。
+     * 与 {@code paimon_table.metadata_location} 同一个角色：既是「引擎该去读哪个文件」的
+     * 指针，也是乐观并发的 CAS 条件。
+     */
+    @Column(name = "metadata_location", length = 1024)
+    private String metadataLocation;
 }

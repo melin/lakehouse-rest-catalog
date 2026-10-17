@@ -1,12 +1,22 @@
 # Catalog API 端点清单
 
-LakeHouse Rest Catalog API 在本服务端的全部 **60 个端点**，按资源分组列出。
+LakeHouse Rest Catalog API 在本服务端的全部端点，按资源分组列出。
+本服务端**同时服务两套协议面**（同一个进程、同一个 `/v1` 基址、同一套元数据库）：
 
-- 规格来源：Apache Paimon 的 `docs/static/rest-catalog-open-api.yaml`
-  （随仓库副本 `spec/rest-catalog-open-api.yaml`，运行时也可从 `/rest-catalog-open-api.yaml` 下载）
-- 规格规模：**60 个端点、144 个 schema**
-- 基址：`{scheme}://{host}/v1`。除 `GET /v1/config` 外，全部端点都带 `{prefix}`——
-  它是 catalog 的对外标识，由 `GET /v1/config` 下发
+| 协议面 | 规格来源 | 端点 |
+| --- | --- | --- |
+| **Paimon**（本文档第 1–10 节） | Apache Paimon `docs/static/rest-catalog-open-api.yaml`（副本 `spec/rest-catalog-open-api.yaml`，运行时可从 `/rest-catalog-open-api.yaml` 下载） | **60 个**（规格全部实现）、144 个 schema |
+| **Iceberg**（本文档末尾） | Apache Iceberg `rest-catalog-open-api.yaml`（副本 `spec/rest-catalog-open-api-iceberg.yaml`） | **26 个**（规格共 35 个「路径 × 方法」组合，9 个不声明） |
+
+一个 catalog 只有一种格式（`paimon_catalog.catalog_format`，创建时定下、**不可变**），
+两套路径因此互不重叠地落在各自的 prefix 上。走错面的请求会拿到**指名原因的 404**
+（例如「prefix `sales` 是 ICEBERG catalog，Paimon REST 路径需要 PAIMON catalog」），
+而不是一句「没有这个东西」——否则客户端会以为是自己把库名写错了，
+再试一百次也不会对。分派与错误模型见
+[`iceberg-rest-catalog-design.md`](iceberg-rest-catalog-design.md) §2。
+
+- 基址：`{scheme}://{host}/v1`。除 `GET /v1/config` 与 `POST /v1/oauth/tokens` 外，
+  全部端点都带 `{prefix}`——它是 catalog 的对外标识，由 `GET /v1/config` 下发
 - 授权映射：`CatalogAccessRules` 把下面的路径映射到所需权限，
   **未登记映射的端点直接拒绝而不是放行**；测试从运行时请求映射枚举全部端点核对覆盖率，
   新增端点若忘记登记会让构建失败。详见 [`authorization.md`](authorization.md)
@@ -23,6 +33,13 @@ LakeHouse Rest Catalog API 在本服务端的全部 **60 个端点**，按资源
 > 服务端判定取两路并集；实现见 `PermissionController` 与 `PaimonPermissionModel`，
 > 控制台入口是「权限管理」页。授权要求：三端点都要求 catalog 级
 > `CATALOG_MANAGE_ACCESS`（官方语义的 GRANT，收敛到 catalog 级只会更严）。
+
+---
+
+## Paimon 协议面（60 个端点）
+
+下面各组（配置 / database / 表与快照 / 分区 / 分支与标签 / 消费者 / 视图 / 函数 /
+语义视图 / 建表）全部属于 Paimon 面；Iceberg 面在文档末尾单独成章。
 
 ## 配置（1）
 
@@ -275,3 +292,140 @@ POST /v1/paimon/databases/ods/tables
 `rollbackSchema` / `rename` / `commit` / `rollback` 都会推动它——所以「元数据最新更新时间」
 包含快照提交与回滚，不只是 schema 改动。控制台的表列表走的是 `table-details`，
 见 [`console.md`](console.md) 的 `/browse` 行。
+
+---
+
+## Iceberg 协议面（26 个端点）
+
+规格 `spec/rest-catalog-open-api-iceberg.yaml` 共 **35 个「路径 × 方法」组合**，
+本服务端一期实现 **26 个**，其余 9 个**不声明**（见本节末尾）。
+基址与 Paimon 面相同（`/v1`），`{prefix}` 的含义也相同——只是能落在它上面的 catalog
+必须是 Iceberg 格式。`{namespace}` 是**多级**拼接段：规格默认分隔符 `0x1F`
+（URL 编码 `%1F`），解析时同时接受点号。
+
+### 装配层（2）
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/v1/config` | 与 Paimon 的 `/v1/config` **同一条路径**，响应体按 catalog 格式二选一：Iceberg 侧多一份 `endpoints` 能力清单 |
+| POST | `/v1/oauth/tokens` | OAuth2 客户端凭据换令牌（与 Paimon 侧共用） |
+
+`endpoints` **必须发**：Iceberg 规格写明服务端不返回它时，客户端会假定一整套默认端点存在，
+而那份默认清单里含 `POST /v1/{prefix}/transactions/commit`（多表事务）——
+本服务端不做多表事务，不发声明等于承诺了一个不存在的能力，
+故障现场会离原因很远（客户端一路正常，直到用户真的发起一次多表提交）。
+清单的内容是 `IcebergEndpoints.SUPPORTED`，与控制器映射逐条对应，
+由 `scripts/verify-iceberg-endpoints.py` 机械校验。
+
+### namespace（6）
+
+| 方法 | 路径 | 成功 |
+| --- | --- | --- |
+| GET | `/v1/{prefix}/namespaces` | 200（可选 `?parent=` 只列直接子级） |
+| POST | `/v1/{prefix}/namespaces` | 200（重名 409） |
+| GET | `/v1/{prefix}/namespaces/{namespace}` | 200 |
+| HEAD | `/v1/{prefix}/namespaces/{namespace}` | **204** |
+| DELETE | `/v1/{prefix}/namespaces/{namespace}` | 204；**非空时 409 `NamespaceNotEmptyException`** |
+| POST | `/v1/{prefix}/namespaces/{namespace}/properties` | 200（`updated` / `removed` / `missing` 三份清单） |
+
+namespace ↔ `paimon_database` 是同一个东西的两个名词：Iceberg 的多级 namespace
+按点号拼进 `name` 列，所以 `["accounting","tax"]` 在库里是 `accounting.tax`，
+与控制台、与 Spark SQL 的三段名读法一致。
+
+**删除不级联**，与 Paimon 面 `DELETE /databases/{db}` 的行为**刻意不同**：
+规格要求非空时回 409。Iceberg 客户端拿到 409 的动作是「先把表删掉」，
+而静默级联会让它以为删完了、实际上数据文件成了孤儿。计数会把五种从属对象都数一遍
+（表 / 视图 / 函数 / 语义视图），因为客户端只知道自己那几个。
+
+### table（11）
+
+| 方法 | 路径 | 成功 |
+| --- | --- | --- |
+| GET | `/v1/{prefix}/namespaces/{namespace}/tables` | 200（`identifiers[]`，`namespace` 是数组） |
+| POST | `/v1/{prefix}/namespaces/{namespace}/tables` | 200（`stage-create` 报 400） |
+| POST | `/v1/{prefix}/namespaces/{namespace}/register` | 200（登记已存在于对象存储的表，标记为外部表） |
+| GET | `/v1/{prefix}/namespaces/{namespace}/tables/{table}` | 200（可选 `?snapshots=all\|refs`） |
+| HEAD | `/v1/{prefix}/namespaces/{namespace}/tables/{table}` | **204** |
+| POST | `/v1/{prefix}/namespaces/{namespace}/tables/{table}` | 200（一轮 update；并发冲突 409 `CommitFailedException`） |
+| DELETE | `/v1/{prefix}/namespaces/{namespace}/tables/{table}` | **204**（可选 `?purgeRequested=`） |
+| POST | `/v1/{prefix}/namespaces/{namespace}/tables/{table}/unregister` | **200**（不是 204） |
+| GET | `/v1/{prefix}/namespaces/{namespace}/tables/{table}/credentials` | 200（无条件下发凭据） |
+| POST | `/v1/{prefix}/namespaces/{namespace}/tables/{table}/metrics` | 204 |
+| POST | `/v1/{prefix}/tables/rename` | **204**（Paimon 同路径是 200） |
+
+几处与 Paimon 面不同、且客户端会据以判断结果的地方：
+
+- **写路径是「一轮 update 作用在当前元数据上」**，不是「提交一个新快照」。
+  `updates` / `requirements` 的元素交给 `iceberg-core` 的
+  `MetadataUpdateParser` / `UpdateRequirementParser` 解析，服务端只做校验与应用——
+  update 有 25 种、requirement 有 8 种，手写等于把上游的元数据代数重写一遍。
+- **元数据文件真的落到仓库**：`<表目录>/metadata/<5 位序号>-<uuid>.metadata.json`，
+  序号从上一代推出来（`ls metadata/` 是排障第一步，序号不连续会变成要读代码才能回答的问题）。
+  次序是**先写仓库、后落库**：失败时最多留一个孤儿文件（无害，`remove_orphan_files` 能清），
+  而反过来会让库里指向一个不存在的文件、表从此读不开。
+- **`X-Iceberg-Access-Delegation: vended-credentials` 是「请把凭据给我」**，
+  不问不给；`/credentials` 那条端点本身就是请求，不必再看头。两者都复用
+  Paimon 侧那套 `StorageCredentialManager` 与缓存（键同源，于是同一张表从两个面各取一次
+  会命中同一份——否则密钥轮换时会表现成一半请求失败）。
+- **`snapshots=all`（含不传参数）回库里存的**原文**，不是重新序列化一遍**：
+  引擎读到的那份文件与库里的必须逐字节相同，中间过一遍 parse/serialize 就可能把
+  本服务端不认识但必须保真的字段（`next-row-id` / `encryption-keys`）弄丢。
+  `refs` 时按上游 `suppressHistoricalSnapshots()` **重建**一份，而不是自己删数组元素。
+- **`metrics` 只校验 + 记一条 warn，不写投影**：报告里的是**本次提交的增量**，
+  而投影列存的是**表的当前总量**，写进去会让控制台的统计卡片立刻变成错的数。
+  它唯一能给出的确定结论是「报告里的 `snapshot-id` 不在本目录的投影里」——
+  那说明有人绕开本服务端往仓库里写了。
+
+### view（7）
+
+| 方法 | 路径 | 成功 |
+| --- | --- | --- |
+| GET | `/v1/{prefix}/namespaces/{namespace}/views` | 200 |
+| POST | `/v1/{prefix}/namespaces/{namespace}/views` | 200 |
+| GET | `/v1/{prefix}/namespaces/{namespace}/views/{view}` | 200 |
+| HEAD | `/v1/{prefix}/namespaces/{namespace}/views/{view}` | **204** |
+| POST | `/v1/{prefix}/namespaces/{namespace}/views/{view}` | 200（一轮 update 作用在 `ViewMetadata` 上） |
+| DELETE | `/v1/{prefix}/namespaces/{namespace}/views/{view}` | 204 |
+| POST | `/v1/{prefix}/views/rename` | **204** |
+
+视图与 Paimon 视图共用 `paimon_view` 表，但 `view_schema_doc` 存的是整份
+`ViewMetadata`（Iceberg 形状），因此两边互不认对方的行——一个通过 Paimon 面建的视图
+在 Iceberg 面会 404，反之亦然，且在报错里说清原因（而不是一句「视图不存在」）。
+
+**删视图只摘目录条目，不碰仓库，也不受 `purge-on-drop` 影响**：视图不拥有数据目录
+（它只是一段 SQL），它的位置甚至可能与别的对象共用，按目录删会误删别人的文件。
+代价是留一个几 KB 的孤儿 metadata 文件。
+
+### 一期不做的 9 个（因此不声明）
+
+| 端点 | 归入 |
+| --- | --- |
+| `GET /v1/{prefix}/namespaces/{namespace}/functions` | 二期（只读投影 `FunctionMetadata`） |
+| `GET /v1/{prefix}/namespaces/{namespace}/functions/{function}` | 二期 |
+| `POST /v1/{prefix}/namespaces/{namespace}/register-view` | 二期 |
+| `POST /v1/{prefix}/transactions/commit` | 二期（跨表原子提交 + `requirements` 对齐） |
+| `POST /v1/{prefix}/namespaces/{namespace}/tables/{table}/plan` | 不做（需要常驻扫描规划引擎） |
+| `GET /v1/{prefix}/namespaces/{namespace}/tables/{table}/plan/{plan-id}` | 不做 |
+| `DELETE /v1/{prefix}/namespaces/{namespace}/tables/{table}/plan/{plan-id}` | 不做 |
+| `POST /v1/{prefix}/namespaces/{namespace}/tables/{table}/tasks` | 不做 |
+| `POST /v1/{prefix}/namespaces/{namespace}/tables/{table}/sign` | 不做（远程签名要 KMS） |
+
+这份清单在代码里有两处副本，**必须与上表逐字一致**：`IcebergEndpoints` 的类注释
+（哪 9 个不声明）与 `scripts/verify-iceberg-endpoints.py` 的 `NOT_IMPLEMENTED`。
+校验脚本是从规格里读出「路径 × 方法」来比的，不是照抄上表——
+`plan` 有三个方法（`POST` 建 / `GET` 拉 / `DELETE` 取消）、`tasks` 是 `POST`（不是 `GET`），
+这两处容易照记忆写错。
+
+### 错误模型
+
+Iceberg 路径的错误响应是**嵌套一层**的 `{"error": {"message", "type", "code"}}`，
+与 Paimon 面的扁平形状不同。判据是**路径形状优先、catalog 格式兜底**：
+两个规格选了不同的资源名词（`databases` / `namespaces`），绝大多数请求只看路径就能定。
+形状选错的后果很具体——Spark 的 Iceberg 客户端拿不到 `error` 字段，
+只会报一句没有 message 的「Unable to process」，看不出真正的原因。
+
+`error.type` 是一个类名字符串（客户端不按它分支，只是展示给使用者）：
+`NoSuchNamespaceException` / `NoSuchTableException` / `NoSuchViewException` /
+`AlreadyExistsException` / `CommitFailedException` / `NamespaceNotEmptyException` /
+`UnsupportedOperationException` / `BadRequestException` / `ForbiddenException`。
+`code` 用 HTTP 状态码本身。详见 [`iceberg-rest-catalog-design.md`](iceberg-rest-catalog-design.md) §2.3。

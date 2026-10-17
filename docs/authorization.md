@@ -77,7 +77,7 @@ principal ──(N:M)── principal role ──(N:M)── catalog role ──
 | `type` | 作用域 | 定位字段 |
 | --- | --- | --- |
 | `catalog` | 该 catalog 下的全部资源 | 无 |
-| `namespace` | 该命名空间及其子树 | `namespace[]` |
+| `namespace` | 该命名空间及其子树 | `namespace[]`（多级就是一串层级，见 §2.6） |
 | `table` / `view` / `policy` / `semantic-model` | 仅该对象 | `namespace[]` + `{tableName,viewName,policyName,semanticModelName}` |
 
 对象级定位字段名按类型不同，这是规格的设计（见 `management-api-contract.md` 第 3 节）。
@@ -158,6 +158,49 @@ Spark SQL 的资源授权语句（`GRANT <access> ON <资源> TO <授权对象>`
 管理权限端点本身要求 catalog 级 `CATALOG_MANAGE_ACCESS`——官方要求对相关资源具备 GRANT，
 但 grant/revoke 的目标资源在请求体里、路径映射表看不到，收敛到 catalog 级只会更严、不产生越权。
 
+### 2.6 多级 namespace（Iceberg）：两种形状必须按「拼起来的路径」比
+
+Iceberg 的 namespace 是**多级**的（`["accounting","tax"]`），Paimon 的 database 是单级字符串。
+两条授权链存的形状因此不同：
+
+| 来源 | 存法 | `accounting.tax` 这个 namespace 长什么样 |
+| --- | --- | --- |
+| RBAC（Polaris 链） | `namespace_json` 层级数组（另有 `namespace_key`：`0x1F` 拼接，只用于等值定位与唯一约束，**不参与前缀比较**） | `["accounting","tax"]`（两段） |
+| 直授（Paimon 官方权限模型） | `paimon_permission_assignment.database_name` 一个字符串 | `["accounting.tax"]`（**一段**） |
+
+**判定时不能逐段比较。** 逐段比会让「直授 `accounting.tax`、访问 `["accounting","tax"]`」
+永远不命中：两边段数不同，第一段 `accounting.tax` 与 `accounting` 就已经不等。
+这种失效是静默的——权限页显示已授权、客户端一直收 403，两端都不报错。
+
+`AuthorizationService.coversScope` 因此把两边的层级都按
+`NamespacePaths.STORAGE_SEPARATOR`（点号）拼成一个字符串再比：
+
+```java
+private boolean isPrefix(List<String> prefix, List<String> candidate) {
+    String head = joinNamespace(prefix);       // ["accounting","tax"] -> "accounting.tax"
+    String tail = joinNamespace(candidate);
+    if (head.isEmpty()) return true;           // 空前缀 = catalog 级
+    return tail.equals(head) || tail.startsWith(head + NAMESPACE_SEPARATOR);
+}
+```
+
+三条语义随之确定，`PermissionManagementTests.namespaceGrantMatchesMultiLevelNamespace` 逐条钉住：
+
+1. **授在上级即覆盖全部下级。** 授 `accounting` 覆盖 `accounting.tax`、`accounting.tax.cn`。
+2. **不反向覆盖。** 授 `accounting.tax` 不覆盖 `accounting`。
+3. **边界落在分隔符上。** 授 `sales` 不覆盖 `salesforce`（只比 `startsWith("sales" + ".")`）。
+
+> **为什么不在翻译层切层级。** `PaimonPermissionModel.map()` 把 `db` 原样放进 `namespace[]`，
+> 不按点号拆成多段。在翻译层拆只能拿到 `database_name` 这一个字符串，拆了就再也
+> 分不清「原始库里就带点号」和「多级 namespace」——而 Paimon 的库名**允许**含点号。
+> 这个错误同样是静默的（授权照存，只是永不命中），所以把「怎么比」收敛到判定这一处。
+
+catalog API 侧对应 Iceberg 形态的路径（`/v1/{prefix}/namespaces/{namespace}/...`）由
+`CatalogAccessRules.namespaces(...)` 登记，`{namespace}` 路径段用 `NamespacePaths.parse(...)`
+切成层级后，同样落到 `GrantType.NAMESPACE` 判定。路径段里的分隔符两个都认：规格默认的
+`0x1F`（URL 编码 `%1F`）以及点号——**对外不声明**点号分隔符，但解析时接受，
+理由是服务端自己存的就是点号拼接形式，控制台与手工 `curl` 用点号最自然。
+
 ---
 
 ## 3. catalog API 的授权映射
@@ -204,6 +247,38 @@ catalog API 的「路径 → 所需权限」映射集中在 `CatalogAccessRules`
 | `GET /tables`（跨命名空间列举） | `TABLE_LIST`，作用域为 catalog 级 |
 | `POST /tables/rename` | `TABLE_WRITE_PROPERTIES` |
 | `GET /tables/id/{id}` | `TABLE_READ_PROPERTIES`，作用域为 catalog 级 |
+
+Iceberg 形态的路径单独一组（`/v1/{prefix}/namespaces/{namespace}/...`，`{namespace}` 是
+多级拼接的单个路径段，见 §2.6）：
+
+| 端点形态 | 要求的权限 |
+| --- | --- |
+| `GET /namespaces`、`GET /namespaces?parent=` | `NAMESPACE_LIST`，作用域为 catalog 级 |
+| `POST /namespaces` | `NAMESPACE_CREATE`，作用域为 catalog 级 |
+| `GET /namespaces/{ns}`、`HEAD /namespaces/{ns}` | `NAMESPACE_READ_PROPERTIES` |
+| `POST /namespaces/{ns}/properties` | `NAMESPACE_WRITE_PROPERTIES` |
+| `DELETE /namespaces/{ns}` | `NAMESPACE_DROP` |
+| `GET /namespaces/{ns}/tables` | `TABLE_LIST` |
+| `POST /namespaces/{ns}/tables`、`.../register` | `TABLE_CREATE` |
+| `GET/HEAD /namespaces/{ns}/tables/{t}` | `TABLE_READ_PROPERTIES` |
+| `POST .../tables/{t}` | `TABLE_WRITE_PROPERTIES` |
+| `DELETE .../tables/{t}`、`.../tables/{t}/unregister` | `TABLE_DROP`（注销也是从目录里摘掉，与删除同档） |
+| `POST .../tables/{t}/metrics` | `TABLE_WRITE_DATA`（上报统计＝改这张表的数据状态，与 Paimon 的 consumers 同档） |
+| `GET .../tables/{t}/credentials` | `TABLE_READ_DATA`（与 Paimon 的 `/token`、`/auth` 是同一件事） |
+| `.../namespaces/{ns}/views/**` | `VIEW_*`（与 Paimon 视图同权限层级） |
+
+**`POST /namespaces` 的父级在请求体里，因此只认 catalog 级。** 建多级 namespace 时客户端发的是
+`{"namespace": ["accounting","tax"], ...}`，路径只有 `/namespaces` 一段——作用域只能定在 catalog 级。
+这与 §3 那条「按 id 查表只认 catalog 级授权」是同一类取舍：路径里没有定位信息时，
+就退到能确定的最宽一层，不做凭猜测的收窄。
+
+**`POST /namespaces/{ns}` 不登记**：Iceberg 没有「更新单个 namespace」这个端点，改属性走
+`POST .../properties`。因此该路径落到「无授权规则」，返回 403 并说明未登记——
+这正是 §3 开头那条「未登记即拒绝」在起作用，不是漏登记。
+
+**`functions` 与 `register-view` 是一期不做的端点，同样不登记。** 失败关闭保证它们不会因为
+「忘了登记」而变成静默入口；等它们实现时要一并补映射，`CatalogEndpointAuthorizationTests`
+会在那之前就把「有 handler 没映射」报出来。
 
 两处需要说明的取舍：
 
@@ -355,3 +430,14 @@ curl -s -X POST -H "Authorization: Bearer etl-token" -H "$J" \
    把令牌映射成真正的名字才是正解，见 [`console-auth.md`](console-auth.md)。
 9. **语义模型授权的延迟语义未实现。** 文档标注为 deferred 的源表 / 视图权限校验与读时传播
    检查不在本层表达。
+10. **层级里含点号的 namespace 与两级 namespace 无法区分。** 多级 namespace 落库时按点号拼接
+   （`["a","b"]` → `a.b`），因此一个 level 字面就叫 `a.b` 的 namespace 与两级的 `a`/`b`
+   在库里是同一行。Iceberg 客户端实际不生成含点号的 level，为它把列内容改成读者看不懂的
+   转义形式代价更高；要彻底消除只能把 `paimon_database.name` 换成层级 JSON 列。
+   详见 [`iceberg-rest-catalog-design.md` §8](iceberg-rest-catalog-design.md) 的风险 10。
+11. **权限页的 namespace 候选是「按层递归列举」的结果，有上限。** Iceberg 没有「列举全部
+   namespace」的端点，只能从根开始逐层 `?parent=` 递归（`listAllNamespaces`），
+   深度上限 4 层、条数上限 500 条。超出的 namespace **不会出现在下拉框里**，
+   但手工填写路径仍可授权——候选列表是便利性，不是权限边界。
+    深度上限同时意味着：授在 4 级以下的 namespace 只能用路径手填。
+

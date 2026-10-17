@@ -1,5 +1,6 @@
 package io.github.melin.lakehouse.rest.support;
 
+import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -40,5 +41,20 @@ public final class Json {
     /** 反序列化为指定类型。 */
     public static <T> T read(String json, Class<T> type) {
         return MAPPER.readValue(json, type);
+    }
+
+    /**
+     * 把一份 JSON 文本读成无类型的树，用于「整份文档原样嵌进另一份报文」。
+     *
+     * <p>目前的唯一使用者是 Iceberg 侧：服务端存的是整份 {@code TableMetadata} 文档
+     * （{@code paimon_table.metadata_doc}），返回给客户端时要把它当作**对象**
+     * 嵌进 {@code LoadTableResult.metadata}，而不是当字符串。走一次解析—
+     * 再序列化看起来绕，但它保证了「引擎读到的字段与服务端存的那一份一致」——
+     * 若改成按建模过的字段重新拼一份，Iceberg 那些随版本增删的字段
+     * （{@code next-row-id} / {@code encryption-keys} / {@code read-restrictions}）
+     * 会在每一次读写之间被悄悄丢掉。
+     */
+    public static JsonNode readTree(String json) {
+        return MAPPER.readTree(json);
     }
 }

@@ -1,0 +1,119 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+	<modelVersion>4.0.0</modelVersion>
+
+	<parent>
+		<groupId>io.github.melin</groupId>
+		<artifactId>lakehouse-rest-spring-parent</artifactId>
+		<version>0.0.1-SNAPSHOT</version>
+		<!-- 嵌在父 POM 目录之下，默认 `../pom.xml` 就是父 POM，不必显式指路 -->
+	</parent>
+
+	<artifactId>lakehouse-rest-protocol-iceberg</artifactId>
+	<packaging>jar</packaging>
+	<name>lakehouse-rest-protocol-iceberg</name>
+	<description>LakeHouse Rest Catalog 协议面：catalog API 的 Iceberg 控制器、契约 DTO 与元数据物化</description>
+
+	<!--
+		装什么（catalog API `/v1/**` 的 Iceberg 侧，35 个端点里实现 26 个）：
+		  iceberg/web/      Namespace / Table / View 三个控制器
+		  iceberg/service/  IcebergTableService（load / create / commit / drop / rename /
+		                    register / unregister / metrics）、IcebergNamespaceService、
+		                    IcebergViewService（Iceberg 形态的视图）、IcebergProjections
+		                    （把 TableMetadata 派生快照 / refs / schema 历史投影行）、
+		                    IcebergCredentialService（凭据委托）、IcebergProtocol（装配钩子）
+		  iceberg/support/  元数据文件位置的推演、要求与更新的解析
+		  iceberg/dto/      这些端点各自的请求与响应契约
+
+		包名比其他服务端模块多一层 `.iceberg`：core / storage / server 共用一个包树
+		（`io.github.melin.lakehouse.rest.*`），两个协议面各占一层子树
+		（`rest.paimon.*` / `rest.iceberg.*`）。协议面注定有两个、互不依赖、各带一套格式依赖，
+		用一层子包把「面的边界」写进包名，比只写在 artifactId 里更难被绕过。
+
+		凭什么值得一个模块：**它是唯一允许 import org.apache.iceberg 的地方**。
+		Iceberg 的元数据代数（update 应用 / requirements 校验 / 整份 TableMetadata 的
+		序列化）与 Paimon 的（逐资源建行 + schema 文件 + 快照文件）完全不同，
+		两者不该在同一个编译单元里——各自带的 Jackson / Avro / Guava 也正好分开。
+
+		注意本模块**不做**协议分派：进来的请求已经由 prefix 定位到具体 catalog、
+		由 core 的装配层确认过格式，这里只处理 Iceberg 形状的契约。
+	-->
+	<dependencies>
+		<dependency>
+			<groupId>io.github.melin</groupId>
+			<artifactId>lakehouse-rest-core</artifactId>
+		</dependency>
+		<!--
+			存储层：StorageFileAccess 用来把 metadata.json 写进表目录。它对外只暴露
+			「路径 + 文本」，本模块因此看不到任何 Paimon 类型——这正是把它单独抽出来的理由。
+		-->
+		<dependency>
+			<groupId>io.github.melin</groupId>
+			<artifactId>lakehouse-rest-storage</artifactId>
+		</dependency>
+		<!--
+			Iceberg 的元数据 API：TableMetadata / TableMetadataParser / MetadataUpdate /
+			UpdateRequirement / SchemaParser / PartitionSpecParser / SortOrderParser。
+
+			为什么不自己实现 update 代数：TableUpdate 有 25 种、TableRequirement 有 8 种，
+			每种都有精确语义（add-snapshot 对 sequence-number、set-snapshot-ref 对 retention
+			的处置），而且**随上游版本漂移**——Iceberg 1.9/1.10 之间就新增了 next-row-id、
+			encryption-keys、read-restrictions。手写等于把上游的元数据代数重写一遍。
+
+			代价是带上 Jackson 2 / caffeine（avro 只在写 manifest 时才需要，本模块不写数据文件）。
+			caffeine 是运行时必需：SchemaParser 的类型树缓存用它，缺了会在第一次
+			解析 schema 时以 NoClassDefFoundError 炸掉（不是启动时）。
+		-->
+		<dependency>
+			<groupId>org.apache.iceberg</groupId>
+			<artifactId>iceberg-core</artifactId>
+		</dependency>
+	</dependencies>
+
+	<build>
+		<plugins>
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-enforcer-plugin</artifactId>
+				<executions>
+					<execution>
+						<id>single-face</id>
+						<goals>
+							<goal>enforce</goal>
+						</goals>
+						<configuration>
+							<rules>
+								<bannedDependencies>
+									<excludes>
+										<!--
+											不变量 2：两个协议面互不依赖。装配层按 prefix 选面，
+											面与面之间没有调用关系——一旦有，就说明有代码放错了层。
+											（协议面自己带 exclude 而不是由父 POM 统一声明，理由见
+											lakehouse-rest-spring-parent 的 enforcer 注释。）
+										-->
+										<exclude>io.github.melin:lakehouse-rest-protocol-paimon</exclude>
+										<!--
+											不变量 3 的对称面：Paimon 的实现只允许出现在 Paimon 面。
+											需要「以 catalog 身份读写仓库文件」时走 storage 的
+											StorageFileAccess，它对外只有路径与文本，不带任何 Paimon 类型。
+										-->
+										<exclude>org.apache.paimon:*</exclude>
+									</excludes>
+									<message>
+										lakehouse-rest-protocol-iceberg 不能依赖 Paimon 面或
+										Paimon 的实现。两个协议面互不依赖，是「两套依赖世界不共处
+										一个编译单元」这条设计的直接形式。见
+										docs/maven-module-design.md §3.1 的三条不变量与
+										docs/iceberg-rest-catalog-design.md §5.4。
+									</message>
+								</bannedDependencies>
+							</rules>
+						</configuration>
+					</execution>
+				</executions>
+			</plugin>
+		</plugins>
+	</build>
+
+</project>

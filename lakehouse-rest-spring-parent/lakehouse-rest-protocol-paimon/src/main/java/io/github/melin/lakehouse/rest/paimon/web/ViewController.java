@@ -1,6 +1,5 @@
 package io.github.melin.lakehouse.rest.paimon.web;
 
-import io.github.melin.lakehouse.rest.paimon.dto.TableDtos;
 import io.github.melin.lakehouse.rest.paimon.dto.ViewDtos;
 import io.github.melin.lakehouse.rest.paimon.service.ViewService;
 import lombok.RequiredArgsConstructor;
@@ -16,6 +15,11 @@ import org.springframework.web.bind.annotation.RestController;
 
 /**
  * SQL 视图端点。
+ *
+ * <p><b>{@code POST /v1/{prefix}/views/rename} 不在这里。</b>那条路径与 Iceberg 规格
+ * 逐字相同、请求体不同，两个面各写一个映射会让 Spring 以 {@code Ambiguous mapping}
+ * 启动失败，因此它上移到了 core 的 {@code CatalogRenameController}，
+ * 在那里按 catalog 格式分派回本面的 {@code PaimonProtocol}。
  */
 @RestController
 @RequestMapping("/v1/{prefix}")
@@ -80,13 +84,6 @@ public class ViewController {
                                          @PathVariable String database,
                                          @PathVariable String view) {
         viewService.drop(prefix, database, view);
-        return ResponseEntity.ok().build();
-    }
-
-    @PostMapping("/views/rename")
-    public ResponseEntity<Void> renameView(@PathVariable String prefix,
-                                           @RequestBody(required = false) TableDtos.RenameTableRequest request) {
-        viewService.rename(prefix, request);
         return ResponseEntity.ok().build();
     }
 }

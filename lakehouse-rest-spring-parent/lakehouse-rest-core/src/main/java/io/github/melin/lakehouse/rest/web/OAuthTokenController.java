@@ -54,13 +54,25 @@ public class OAuthTokenController {
     private final ClientCredentialsService clientCredentials;
 
     /**
-     * {@code POST /api/catalog/v1/oauth/tokens}。
+     * {@code POST /api/catalog/v1/oauth/tokens} 与 {@code POST /v1/oauth/tokens}。
+     *
+     * <p><b>两个路径是同一个端点的两个名字，不是两个端点。</b>
+     * {@code /api/catalog/v1/oauth/tokens} 是 Polaris 对齐的扩展路径（见类注释）；
+     * {@code /v1/oauth/tokens} 是 Iceberg 规格里的路径，而且它**不带 prefix**——
+     * Iceberg 客户端在拿到 {@code /v1/config} 之前就要用它换令牌（OAuth2 凭据流程
+     * 先换令牌、再发现 catalog），因此不可能有 prefix。
+     *
+     * <p>共用一个处理方法的理由：两者的请求体（RFC 6749 第 4.4 节）与响应体
+     * （第 5.1 节）完全一致，只是路径不同。分成两个方法就得把
+     * {@link #parameters} 那套「form-urlencoded 与 JSON 都接」的逻辑抄一遍——
+     * 而其中「一次只能读一种」的坑（见该方法注释）抄漏一次就是一个只在某个
+     * Content-Type 下复现的 bug。
      *
      * <p>{@code consumes} 放开到任意类型：规范要求 form-urlencoded，
      * 但用 {@code curl -d '{...}'} 或前端 {@code fetch} 手工发 JSON 是很自然的做法，
      * 拒绝它们只会让人以为端点写错了。两种都接，解析在 {@link #parameters} 里分支。
      */
-    @PostMapping(value = "/api/catalog/v1/oauth/tokens", consumes = MediaType.ALL_VALUE)
+    @PostMapping(value = {"/api/catalog/v1/oauth/tokens", "/v1/oauth/tokens"}, consumes = MediaType.ALL_VALUE)
     public ResponseEntity<Object> tokens(HttpServletRequest request) throws IOException {
         try {
             return issue(request);

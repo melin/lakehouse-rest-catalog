@@ -91,12 +91,18 @@ class ConsoleApiTests {
 
         assertEquals("lakehouse-rest-server", service.get("name").asString());
         assertEquals("paimon", service.get("defaultPrefix").asString());
+        // 新建 catalog 表单的预选格式由服务端下发，而不是前端恒选第一项：
+        // 部署改过默认格式时两者会不一致
+        assertEquals("PAIMON", service.get("defaultCatalogFormat").asString());
         assertFalse(service.get("authEnabled").asBoolean(), "auth is off in the test profile");
         assertEquals("default", service.get("credentialManagerType").asString());
         assertEquals("default", service.get("fileIoType").asString());
         assertTrue(service.get("maxPageSize").asInt() > 0);
 
         assertEquals(List.of("INTERNAL", "EXTERNAL"), strings(enums.get("catalogTypes")));
+        // 表格式与托管模式正交，两个列表都要下发：控制台的新建表单用它渲染格式选择，
+        // 顺序即建议的展示顺序（默认格式在前），因此这里断言顺序而不只是集合
+        assertEquals(List.of("PAIMON", "ICEBERG"), strings(enums.get("catalogFormats")));
         // 两个扩展存储类型必须在取值集合里：控制台的存储类型下拉框据此渲染
         assertEquals(Set.of("S3", "GCS", "AZURE", "OBS", "OSS", "FILE"),
                 new LinkedHashSet<>(strings(enums.get("storageTypes"))));

@@ -93,14 +93,18 @@ REST Management API**（RBAC 管理面）与一个 **Vue 3 管理控制台**；�
    的类型一律写普通静态嵌套类，见 `ManagementApiClient` 里五个摘要类型及其上方注释。
 10. **模块依赖方向由 maven-enforcer 守着，破方向即构建失败。** 三条不变量：
     `core` 不含任何表格式依赖（`org.apache.paimon:*` / `org.apache.iceberg:*` 一律禁止）；
-    两个协议面（`protocol-paimon` 与将来的 `protocol-iceberg`）**互不依赖**；
+    两个协议面（`protocol-paimon` 与 `protocol-iceberg`）**互不依赖**；
     `iceberg-core` 只准出现在 `protocol-iceberg`。
-    合法依赖图：`core ← storage ← protocol-paimon ← server`（箭头读作「被谁依赖」），
-    `spark` / `optimizer` 不参与这条链。两个容易踩的点：
+    合法依赖图：`core ← storage ← protocol-paimon / protocol-iceberg ← server`（箭头读作「被谁依赖」），
+    `spark` / `optimizer` 不参与这条链。三个容易踩的点：
     - **`searchTransitive` 的默认值是 `true`**（查整棵依赖树），`core` / `storage` /
       `protocol-paimon` 靠它拦住「传递依赖里混进格式库」。但 `server` 必须显式写
       `<searchTransitive>false</searchTransitive>`——可执行模块最终要**经由**
       `server → protocol-iceberg` 传递地拿到 `iceberg-core`，查整树会把自己误杀。
+    - **`storage` 的 `paimon-core` 必须 `<optional>true</optional>`。** 它是唯一允许依赖
+      Paimon 的非协议模块，而 `searchTransitive=true` 会把它传给 `protocol-iceberg`——
+      那个面自己的规则于是把自己误杀。它对外只暴露「路径 + 文本」，optional 才是它真正的
+      语义（见 `StorageFileAccess`）。
     - **「某模块要用 Paimon 类型」几乎总是分类问题，不是加依赖问题。** 往 `core` 加 Paimon
       依赖是最典型的方向性错误；正确做法是把那个类型挪到 `protocol-paimon`。
       具体的六处偏离（哪些类实际落在哪、为什么）见
@@ -112,9 +116,9 @@ REST Management API**（RBAC 管理面）与一个 **Vue 3 管理控制台**；�
 
 ```bash
 # ---- 构建 / 测试（JDK 17 或 21）----
-JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn -o -DskipTests clean install   # 全量（8 个模块，含 enforcer 校验）
+JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn -o -DskipTests clean install   # 全量（9 个模块，含 enforcer 校验）
 JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn -o -DskipTests -pl :lakehouse-rest-server -am clean package
-                                                            # 只要服务端 jar（-am 会连上游 core/storage/protocol-paimon 一起构建）
+                                                # 只要服务端 jar（-am 会连上游 core/storage/两个协议面一起构建）
 JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn -o test        # 全量测试
 
 # ---- 容器镜像（Dockerfile 只装 jar、不编译，见第 8 节）----
@@ -242,22 +246,23 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
 
 | 文档 | 什么时候读 |
 | --- | --- |
-| `catalog-api-endpoints.md` | Catalog API 的 60 个端点、基址、前缀、授权映射 |
+| `catalog-api-endpoints.md` | Catalog API 的端点、基址、前缀、授权映射；**两个协议面各一章**——Paimon 的 60 个与 Iceberg 的 26 个（含 9 个不声明的、各端点的成功码、错误模型） |
 | `management-api-overview.md` | 33 个 operation 落在哪几个控制器、易读错的语义 |
 | `management-api-contract.md` | 管理 API 字段与权限枚举**逐字契约**（生成物，勿手改） |
-| `data-model.md` | 改实体 / 看 22 张表划分、摘要列与审计列的理由、实体与仓储分在哪两个模块 |
-| `table-optimization.md` | 改表存储优化：三层配置合并、批次与调度游标、组批与提交、前后指标 |
-| `maven-module-design.md` | 改模块划分 / 加模块（如 `protocol-iceberg`）：依赖图、两条父 POM、三条 enforcer 不变量、落地记录（§8） |
+| `data-model.md` | 改实体 / 看 22 张表划分、摘要列与审计列的理由、实体与仓储分在哪两个模块、Iceberg 协议面新增的 9 个列（§1.1） |
+| `table-optimization.md` | 改表存储优化：三层配置合并、批次与调度游标、组批与提交、前后指标；**两种表格式共用一套策略表与批次表**，参数键按格式分派（§2.5 是 Iceberg 的对应物，§6.5 是执行侧差异） |
+| `maven-module-design.md` | 改模块划分 / 加模块（再加一个格式面就照 §12 那份清单走）：依赖图、两条父 POM、三条 enforcer 不变量、五段落地记录（§8–§12） |
 | `spark-sql-reference.md` | 语句级参考（第 10 节示例会被测试真跑） |
 | `spark-sql-extension.md` | 改 Spark 扩展：做法、两个约束、测试分层 |
 | `spark-paimon-rest-e2e.md` | Spark 经本服务端建表：连接配置、可执行 SQL、报错对照、三种非 Paimon 表（Format / Object / Lance）的读写边界（§4.4） |
-| `authorization.md` | 权限实体链、授权映射、失败关闭的取舍 |
+| `spark-iceberg-rest-e2e.md` | 让 Spark 通过本服务端建 **Iceberg** 表：`spark.sql.catalog.*` 配置（含 `rest.auth.type` 与 `scope=PRINCIPAL_ROLE:ALL` 两个坑）、可执行 SQL、与 Paimon 那套的差异对照、一期不做的 9 个端点会怎么撞上来。**第 0 节显式分层标注验证状态：协议层与官方 Java 客户端层已实测，Spark 侧未跑**，所以 SQL 是参考而非实测记录 |
+| `authorization.md` | 权限实体链、授权映射、失败关闭的取舍；**多级 namespace 的判定口径在 §2.6**（两条链存的形状不同，按点号拼成路径再比，逐段比会静默不命中） |
 | `console.md` | 改控制台 / 排查「页面空列表」：分层、端点契约表、机械校验、加页面清单 |
-| `console-table-detail.md` | 改表详情页：页签随表格式伸缩的数据来源（详细信息含字段/分区列表、表目录文件列表、「为什么没有权限页签」）、按需加载与非 Paimon 表不问快照端点、破坏性操作 |
-| `console-catalog-detail.md` | 改 Catalog 详情页 / 仓库文件浏览：三页签、下钻与路径防护、单文件下载、只读取舍、「配置」页的默认表属性（`table-default.*`）编辑与并发冲突处理；建表表单里的默认参数预填（§3.4）与为什么不给 Lance 表建表入口（§3.5） |
+| `console-table-detail.md` | 改表详情页：页签随**表格式**（表级 `schema.options.type`）伸缩的数据来源（详细信息含字段/分区列表、表目录文件列表、「为什么没有权限页签」）、按需加载与非 Paimon 表不问快照端点、破坏性操作 |
+| `console-catalog-detail.md` | 改 Catalog 详情页 / 仓库文件浏览：三页签、下钻与路径防护、单文件下载、只读取舍、「配置」页的默认表属性（`table-default.*`）编辑与并发冲突处理；建表表单里的默认参数预填（§3.4）与为什么不给 Lance 表建表入口（§3.5）；**「协议与能力」卡片**（§3.1.1：客户端基址、端点清单、不声明支持）以及 Iceberg catalog 下只剩「概览」与「文件列表」两页可用（§9） |
 | `console-auth.md` | 配控制台登录：三种登录方式、两个开关的边界、令牌链、安全考量 |
 | `polaris-capabilities-and-design.md` | 对比 Polaris、看整体设计与已知缺口 |
-| `iceberg-rest-catalog-design.md` | 让同一基址、同一份元数据同时服务原生 Iceberg REST 客户端：双协议方案、两套面的差异与代价、catalog 建时区分格式 |
+| `iceberg-rest-catalog-design.md` | 让同一基址、同一份元数据同时服务原生 Iceberg REST 客户端：双协议方案、两套面的差异与代价、catalog 建时区分格式；**已落地的实测记录与与方案不一致的十六处**（§11） |
 
 ---
 
@@ -312,7 +317,7 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
 
 | 层 | 命令 | 抓什么 |
 | --- | --- | --- |
-| 单元/集成 | `mvn -o test`（服务端 317 + Spark 96，共 413；Spark 侧 25 个跳过） | 行为回归。注意 Spark 模块的 `example/PaimonS3Test` 当前会在 BUILD FAILURE 停下（缺 `spark.sql.extensions`，与 S3 环境无关）；要单独看服务端结果用 `mvn -o test -pl :lakehouse-rest-server` |
+| 单元/集成 | `mvn -o test`（服务端 332 + Spark 96，共 428；Spark 侧 25 个跳过；optimizer 另有 25 个，`-pl :lakehouse-rest-optimizer` 单独跑） | 行为回归。注意 Spark 模块的 `example/PaimonS3Test` 当前会在 BUILD FAILURE 停下（缺 `spark.sql.extensions`，与 S3 环境无关）；要单独看服务端结果用 `mvn -o test -pl :lakehouse-rest-server` |
 | 端点多面 | `verify-console.py`、`verify-management-contract.py`、`verify-spark-sql-doc.py`、`verify-k8s-manifests.py` | **跨文件的机械一致性**：前端字段名 vs 服务端 record、文档表格 vs 规格、语法文件 vs PermissionDtos vs 客户端 |
 | 契约（桩） | `ManagementSqlExecutionTests`（真实 SparkSession + 桩服务端） | 扩展真被加载、真执行 |
 | 契约（真服务端） | `./scripts/e2e-spark-sql.sh` | 客户端与服务端的**实际**契约（桩只能证明客户端与自己的假设自洽） |
@@ -323,8 +328,13 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
 
 - **写了机械校验就要做变异测试**：故意把被校验的东西改错（DTO 字段改名、前端类型列表少一项），
   确认校验脚本**报得出来**。不做的校验往往是空跑。
-- 新增校验组要顺手把「总数」写进 `README.md` / `docs/console.md`（脚本有组数与项数断言，
-  文档里的数字也会被别的校验盯上）。
+- 新增校验组要顺手把「总数」写进 `README.md` / `docs/console.md`。**这条现在由机制兜着**
+  （`verify-console.py` 第 15 组断言这两处写的「N 组 M 项」与脚本实际一致，也断言那一组自己）——
+  在此之前它只是句人情话，真漏过一次：`docs/console.md` 写 37、`README.md` 写 38、实际 38。
+- **前端字段分层的改动要连 `build()` 一起看**：catalog 表单的字段拆成了
+  `BASIC_FIELDS` / `ADVANCED_FIELDS`（高级那张进折叠区），而 `build()` 读的是两者合并后的
+  `fields`。改这两张表时不要顺手让折叠状态参与提交——展开看一眼再收起就改变报文，
+  只能靠 diff 才发现。第 13 组盯着这一条。
 
 ---
 
@@ -362,6 +372,11 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
   `docs/spark-sql-reference.md` 第 10 节示例，**改坏示例会让构建失败**。
 - **生成物一律不要手改**：`sql/schema-mysql.sql`、`docs/management-api-contract.md`、
   `dto/Privilege.java`。要改就改生成器或规格再重跑。
+- **控制台里「表格式」有两个层级，别混**：catalog 级是 `catalogFormat`（`PAIMON` / `ICEBERG`，
+  `utils/catalogFormat.js`，创建后不可改），表级是 `schema.options.type`（`table` /
+  `format-table` / `object-table` / `lance-table`，`utils/tableKind.js`）。`ICEBERG`
+  **只属于前者**——它不在 `TABLE_KIND_LABELS` 里，拿它去比表级类型表会永远不匹配。
+  判别顺序是先 catalog 后表，见 `docs/console.md` §10。
 - **没有 CI**：上面所有校验都是手工/脚本触发的，「我没跑」＝「没人跑」。
 
 ---
