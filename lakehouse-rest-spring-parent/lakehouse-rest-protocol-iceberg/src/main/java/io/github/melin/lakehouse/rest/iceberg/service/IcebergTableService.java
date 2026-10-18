@@ -7,6 +7,9 @@ import io.github.melin.lakehouse.rest.domain.entity.DatabaseEntity;
 import io.github.melin.lakehouse.rest.domain.entity.TableEntity;
 import io.github.melin.lakehouse.rest.domain.repo.TableRepository;
 import io.github.melin.lakehouse.rest.domain.repo.TableSnapshotRepository;
+import io.github.melin.lakehouse.rest.event.CatalogEvent;
+import io.github.melin.lakehouse.rest.event.CatalogEventPublisher;
+import io.github.melin.lakehouse.rest.event.CatalogEventType;
 import io.github.melin.lakehouse.rest.iceberg.dto.IcebergDtos;
 import io.github.melin.lakehouse.rest.iceberg.support.IcebergMetadataFiles;
 import io.github.melin.lakehouse.rest.iceberg.support.IcebergUpdateCodec;
@@ -100,6 +103,7 @@ public class IcebergTableService {
     private final CatalogService catalogService;
     private final StorageFileAccess fileAccess;
     private final RestServerProperties properties;
+    private final CatalogEventPublisher events;
 
     // ------------------------------------------------------------------ 列举
 
@@ -228,6 +232,8 @@ public class IcebergTableService {
         table.markCreated(RequestContext.principal(), RequestContext.now());
         tableRepository.save(table);
         projections.rebuild(table, metadata);
+        events.publish(CatalogEventType.TABLE_CREATED, prefix, CatalogEvent.TARGET_TABLE,
+                NamespacePaths.toStorageName(levels) + "." + tableName, Map.of("format", "ICEBERG"));
 
         return new IcebergDtos.LoadTableResponse(metadataLocation, Json.readTree(document), null,
                 credentialService.delegated(catalog, table, delegation));
@@ -287,6 +293,9 @@ public class IcebergTableService {
         TableEntity refreshed = tableRepository.findById(table.getId())
                 .orElseThrow(() -> tableNotExist(levels, tableName));
         projections.rebuild(refreshed, updated);
+        events.publish(CatalogEventType.TABLE_COMMITTED, prefix, CatalogEvent.TARGET_TABLE,
+                NamespacePaths.toStorageName(levels) + "." + tableName,
+                Map.of("format", "ICEBERG", "updates", updates.size()));
 
         return new IcebergDtos.LoadTableResponse(newLocation, Json.readTree(document), null, null);
     }
@@ -327,6 +336,9 @@ public class IcebergTableService {
         if (purge && !table.isExternal()) {
             fileAccess.deleteDirectory(catalog.getId(), table.getPath());
         }
+        events.publish(CatalogEventType.TABLE_DROPPED, prefix, CatalogEvent.TARGET_TABLE,
+                NamespacePaths.toStorageName(levels) + "." + tableName,
+                Map.of("format", "ICEBERG", "purged", purge && !table.isExternal()));
     }
 
     /**
@@ -343,6 +355,9 @@ public class IcebergTableService {
         TableEntity table = requireIcebergTable(catalog, levels, tableName);
         projections.deleteAll(table.getId());
         tableRepository.delete(table);
+        events.publish(CatalogEventType.TABLE_DROPPED, prefix, CatalogEvent.TARGET_TABLE,
+                NamespacePaths.toStorageName(levels) + "." + tableName,
+                Map.of("format", "ICEBERG", "unregistered", true));
     }
 
     // ------------------------------------------------------------------ 重命名
@@ -379,6 +394,10 @@ public class IcebergTableService {
         table.setName(targetName);
         table.touch(RequestContext.principal(), RequestContext.now());
         tableRepository.save(table);
+        events.publish(CatalogEventType.TABLE_RENAMED, catalog.getPrefix(), CatalogEvent.TARGET_TABLE,
+                NamespacePaths.toStorageName(targetLevels) + "." + targetName,
+                Map.of("format", "ICEBERG",
+                        "from", NamespacePaths.toStorageName(sourceLevels) + "." + sourceName));
     }
 
     // ------------------------------------------------------------------ 登记
@@ -430,6 +449,9 @@ public class IcebergTableService {
         applyMetadata(table, metadataLocation, document, metadata);
         tableRepository.save(table);
         projections.rebuild(table, metadata);
+        events.publish(CatalogEventType.TABLE_CREATED, prefix, CatalogEvent.TARGET_TABLE,
+                NamespacePaths.toStorageName(levels) + "." + tableName,
+                Map.of("format", "ICEBERG", "registered", true));
 
         return new IcebergDtos.LoadTableResponse(metadataLocation, Json.readTree(document), null,
                 credentialService.delegated(catalog, table, delegation));

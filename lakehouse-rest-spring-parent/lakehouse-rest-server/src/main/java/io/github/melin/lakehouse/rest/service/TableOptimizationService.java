@@ -15,6 +15,9 @@ import io.github.melin.lakehouse.rest.dto.OptimizationDtos.CatalogSettings;
 import io.github.melin.lakehouse.rest.dto.OptimizationDtos.TablePolicy;
 import io.github.melin.lakehouse.rest.dto.OptimizationDtos.UpdateCatalogSettingsRequest;
 import io.github.melin.lakehouse.rest.dto.OptimizationDtos.UpdateTablePolicyRequest;
+import io.github.melin.lakehouse.rest.event.CatalogEvent;
+import io.github.melin.lakehouse.rest.event.CatalogEventPublisher;
+import io.github.melin.lakehouse.rest.event.CatalogEventType;
 import io.github.melin.lakehouse.rest.service.OptimizationJobService.BatchTable;
 import io.github.melin.lakehouse.rest.support.ApiException;
 import io.github.melin.lakehouse.rest.support.CatalogFormat;
@@ -62,6 +65,7 @@ public class TableOptimizationService {
     private final ManagementCatalogService catalogService;
     private final OptimizationConfigResolver configResolver;
     private final OptimizationJobService jobService;
+    private final CatalogEventPublisher events;
     private final Clock clock;
 
     // ------------------------------------------------------------------ 表策略
@@ -136,6 +140,9 @@ public class TableOptimizationService {
         }
         policy.touch(principal, now);
         policyRepository.save(policy);
+        events.publish(CatalogEventType.OPTIMIZATION_POLICY_CHANGED, prefix, CatalogEvent.TARGET_TABLE,
+                prefix + "." + ref.database().getName() + "." + tableName,
+                Map.of("scope", "table", "format", format.name(), "enabled", policy.isEnabled()));
         return toPolicy(prefix, ref.database().getName(), table, policy, format);
     }
 
@@ -205,6 +212,10 @@ public class TableOptimizationService {
         ManagementDtos.UpdateCatalogRequest update = new ManagementDtos.UpdateCatalogRequest(
                 catalog.getEntityVersion(), null, merged, catalog.getStorageConfig());
         catalogService.update(prefix, update);
+        events.publish(CatalogEventType.OPTIMIZATION_POLICY_CHANGED, prefix, CatalogEvent.TARGET_CATALOG,
+                prefix,
+                Map.of("scope", "catalog", "format", format.name(), "keys", touched.stream()
+                        .map(Action::wire).toList()));
         return settings(prefix);
     }
 

@@ -83,6 +83,9 @@ public class RestServerProperties {
     /** {@code paimon.rest.optimization.*}：表存储优化（见 {@link Optimization}）。 */
     private final Optimization optimization = new Optimization();
 
+    /** {@code paimon.rest.event.*}：目录事件框架的监听器开关（见 {@link Event}）。 */
+    private final Event event = new Event();
+
     /** Bearer 鉴权开关。关闭时所有请求以 {@code principal} 身份通过。 */
     @Getter
     @Setter
@@ -909,5 +912,23 @@ public class RestServerProperties {
          * （{@code AccessTokenService} 已具备签发能力），属于后续优化项。
          */
         private String catalogToken = "";
+    }
+
+    /**
+     * {@code paimon.rest.event.*}：目录事件框架的监听器开关。
+     *
+     * <p>发布器始终在工作（发布本身只是构造一个对象），开关管的是「有没有监听器接」。
+     * 两个都关掉时事件只存在概念上——这是留给「完全不要事件」的部署的退路，
+     * 而不是常态；Kafka / Webhook 接入时新增各自的监听器与开关，不动这一组。
+     */
+    @Getter
+    @Setter
+    public static class Event {
+
+        /** DB 监听器：事件写进 {@code audit_event}，与业务同事务。 */
+        private boolean dbEnabled = true;
+
+        /** 日志监听器：一行 INFO 摘要进应用日志。 */
+        private boolean logEnabled = true;
     }
 }

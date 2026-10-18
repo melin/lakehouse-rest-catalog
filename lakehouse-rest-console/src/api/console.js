@@ -52,4 +52,18 @@ export const consoleApi = {
   downloadTableFile: (tableId, path) => download('downloadTableFile', {
     params: { tableId, query: { path } },
   }),
+
+  /**
+   * 增量拉目录事件。响应是 `{ events, nextCursor, hasMore }`，事件按游标（自增 id）
+   * 升序；契约见 `docs/event-framework.md` §4——不提供往回翻页，
+   * 要看更早的历史就重置游标（省略 `since`）重新取最新一页。
+   *
+   * @param {object} [query]
+   * @param {number} [query.since] 游标：只回比它新的事件；省略表示首次拉取，
+   *   回当前最新一页（游标落在「现在」）。传 0 合法——表示「从流的开头拉」，
+   *   `client.js` 只跳过 `null` / 空串，不会把 0 吞掉。
+   * @param {string} [query.catalog] 可选的目录过滤；省略回全部目录
+   * @param {number} [query.limit] 页大小，默认 100、上限 1000
+   */
+  listEvents: (query = {}) => get('listEvents', { params: { query } }),
 }

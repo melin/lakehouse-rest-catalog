@@ -1,15 +1,16 @@
 # 数据模型
 
-服务端把 catalog 元数据与 RBAC 授权关系全部放进关系库，共 **22 张表、22 个 JPA 仓储接口**。
+服务端把 catalog 元数据与 RBAC 授权关系全部放进关系库，共 **23 张表、23 个 JPA 仓储接口**。
 本文件说明表的划分，以及三个容易看错或踩坑的设计点：摘要列、审计列、JSON 文档列。
 
 - 实体与仓储按模块分两处（模块划分见 [`maven-module-design.md`](maven-module-design.md) §8，
   目录层级见其 §9.1；下面两个路径里的 `lakehouse-rest-spring-parent/` 就是那层嵌套）：
-  - `lakehouse-rest-spring-parent/lakehouse-rest-core/.../domain/entity/` —— **19 个实体**（catalog 侧 12 + 管理侧 7），
-    另含 `AuditedEntity` 基类与 `JsonConverters`；同级 `domain/repo/` 有 **19 个仓储接口**
+  - `lakehouse-rest-spring-parent/lakehouse-rest-core/.../domain/entity/` —— **20 个实体**
+    （catalog 侧 12 + 管理侧 7 + 事件审计 1），
+    另含 `AuditedEntity` 基类与 `JsonConverters`；同级 `domain/repo/` 有 **20 个仓储接口**
   - `lakehouse-rest-spring-parent/lakehouse-rest-server/.../domain/entity/` —— **3 个表存储优化实体**
     （`TableOptimization` / `OptimizationJob` / `OptimizationJobItem`）；同级 `domain/repo/` 有 3 个仓储接口
-  - 合计仍是 22 个实体 + 22 个仓储接口。分家的依据是**谁读它**而不是谁写它：
+  - 合计仍是 23 个实体 + 23 个仓储接口。分家的依据是**谁读它**而不是谁写它：
     优化三表只有 server 侧的调度与控制器会读，留在 server；其余实体被协议层（`protocol-paimon`）
     的面复用，所以下沉到 core，否则协议层要反向依赖 server
 - **表名的 `paimon_` 前缀是历史遗留，与表格式无关。** 服务端早期只服务 Paimon 一种格式，
@@ -102,6 +103,18 @@
 | `paimon_table_optimization` | 表存储优化策略 | 与表 1:1（`uk_table_optimization`）：总开关、调度间隔、调度游标、三项动作各自的开关与**配置差异** |
 | `paimon_optimization_job` | 优化批次 | 一个批次 = 一次 k8s 提交；组批以 catalog 为界，一个批次含多张表 |
 | `paimon_optimization_job_item` | 批次内单表结果 | 批次 1:N；每张表的动作、状态、前后指标、错误原因 |
+
+## 2.2 事件审计（1 张）
+
+| 表 | 对应资源 | 说明 |
+| --- | --- | --- |
+| `audit_event` | 目录领域事件 | 表创建/删除/重命名、提交、授权变更、优化策略变更与任务终态的 append-only 事实记录；自增 `id` 兼作增量拉取的游标，`(catalog, id)` 联合索引支撑按目录增量拉 |
+
+两种表格式的事件在**同一张表、同一个流**里（`catalog` 只是查询参数）；`attributes_json`
+用 JSON 单列承载开放属性（理由见 [`event-framework.md`](event-framework.md) §2）。
+发布与消费链路、不发清单与增量契约都在 [`event-framework.md`](event-framework.md)，
+本文件只记「它在库里长什么样」。这条事件**不继承 `AuditedEntity`**——它是不可变事实，
+没有「最后修改人」可言（对比上面的业务表：那些表会被 UPDATE，所以要审计列）。
 
 三个设计点值得单独说明，理由都在
 [`table-optimization.md`](table-optimization.md) 里展开：

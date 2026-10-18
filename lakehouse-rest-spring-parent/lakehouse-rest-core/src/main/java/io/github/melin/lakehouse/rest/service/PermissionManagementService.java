@@ -10,6 +10,9 @@ import io.github.melin.lakehouse.rest.dto.PermissionDtos.PermissionColumns;
 import io.github.melin.lakehouse.rest.dto.PermissionDtos.PermissionList;
 import io.github.melin.lakehouse.rest.dto.PermissionDtos.PermissionResource;
 import io.github.melin.lakehouse.rest.dto.PermissionDtos.ResourceType;
+import io.github.melin.lakehouse.rest.event.CatalogEvent;
+import io.github.melin.lakehouse.rest.event.CatalogEventPublisher;
+import io.github.melin.lakehouse.rest.event.CatalogEventType;
 import io.github.melin.lakehouse.rest.support.ApiException;
 import io.github.melin.lakehouse.rest.support.Json;
 import io.github.melin.lakehouse.rest.support.Paging;
@@ -17,7 +20,9 @@ import java.time.Instant;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -53,6 +58,7 @@ public class PermissionManagementService {
 
     private final PermissionAssignmentRepository repository;
     private final CatalogRepository catalogRepository;
+    private final CatalogEventPublisher events;
 
     /** {@code GET /v1/{prefix}/permissions}：按可选过滤条件列出直授，稳定排序后分页。 */
     @Transactional(readOnly = true)
@@ -105,6 +111,8 @@ public class PermissionManagementService {
         entity.refreshLocatorHash();
         entity.touch(RequestContext.principal(), RequestContext.now());
         repository.save(entity);
+        events.publish(CatalogEventType.GRANT_CHANGED, catalogName, CatalogEvent.TARGET_GRANT,
+                grantTarget(parsed), grantAttributes(parsed, "grant"));
     }
 
     /**
@@ -120,7 +128,14 @@ public class PermissionManagementService {
         repository.findByCatalogIdAndResourceTypeAndLocatorHashAndAccessAndPrincipal(
                         catalogId, parsed.resourceType().name(), parsed.locatorHash(),
                         parsed.access().name(), parsed.principal())
-                .ifPresent(repository::delete);
+                .ifPresent(entity -> {
+                    repository.delete(entity);
+                    // 幂等的撤销「没找到也不报错」，但那种调用不进事件流：
+                    // 事件流里没有空操作，消费方才敢按事件做增量
+                    events.publish(CatalogEventType.GRANT_CHANGED, catalogName,
+                            CatalogEvent.TARGET_GRANT, grantTarget(parsed),
+                            grantAttributes(parsed, "revoke"));
+                });
     }
 
     // ------------------------------------------------------------------ 解析与校验
@@ -216,6 +231,33 @@ public class PermissionManagementService {
             return io.github.melin.lakehouse.rest.support.Digests.sha256Hex(database,
                     PermissionAssignmentEntity.LOCATOR_SEPARATOR, object);
         }
+    }
+
+    /** 事件的 target：资源定位符（catalog 级资源没有库表段，只有类型）。 */
+    private static String grantTarget(Parsed parsed) {
+        if (parsed.database().isEmpty() && parsed.object().isEmpty()) {
+            return parsed.resourceType().name();
+        }
+        if (parsed.object().isEmpty()) {
+            return parsed.resourceType().name() + " " + parsed.database();
+        }
+        return parsed.resourceType().name() + " " + parsed.database() + "." + parsed.object();
+    }
+
+    /** 事件的开放属性：谁被授了什么、授在哪、什么动作。 */
+    private static Map<String, Object> grantAttributes(Parsed parsed, String action) {
+        Map<String, Object> attributes = new LinkedHashMap<>();
+        attributes.put("action", action);
+        attributes.put("grantee", parsed.principal());
+        attributes.put("resourceType", parsed.resourceType().name());
+        if (!parsed.database().isEmpty()) {
+            attributes.put("database", parsed.database());
+        }
+        if (!parsed.object().isEmpty()) {
+            attributes.put("object", parsed.object());
+        }
+        attributes.put("access", parsed.access().name());
+        return attributes;
     }
 
     private static PermissionAssignment toAssignment(PermissionAssignmentEntity entity) {

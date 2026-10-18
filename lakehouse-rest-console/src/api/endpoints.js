@@ -29,6 +29,10 @@ export const ENDPOINTS = {
   // 单文件下载（`?path=` 必填，必须指到文件）：流式回给浏览器，仍走同一开关与路径防护。
   downloadCatalogFile: { method: 'GET', path: '/api/console/v1/catalogs/{catalogName}/files/download' },
   downloadTableFile: { method: 'GET', path: '/api/console/v1/tables/{tableId}/files/download' },
+  // 目录事件流：游标是 `audit_event` 的自增 id，`?since=` 只回比它新的事件，
+  // 省略表示首次拉取、回当前最新一页（增量契约见 `docs/event-framework.md` §4）。
+  // 两种表格式的事件在同一个流里，`?catalog=` 只是查询参数、不是两套 API。
+  listEvents: { method: 'GET', path: '/api/console/v1/events' },
   // 登录引导：服务端支持哪些认证方式、令牌端点在哪儿、手上这个令牌算不算数。
   auth: { method: 'GET', path: '/api/console/v1/auth' },
   // 用户名 + 密码换令牌：控制台的默认方式，账号在服务端配置里（默认 admin/admin）。

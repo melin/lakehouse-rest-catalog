@@ -54,6 +54,12 @@ public class BearerAuthInterceptor implements HandlerInterceptor {
     @Override
     public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) {
         String token = bearerToken(request);
+        // 请求关联 ID 先于主体名定下来：事件、审计与日志都按它串起同一次请求。
+        // 客户端带了 X-Request-Id 就透传（跨服务共用一个 id 才有意义），没有才生成。
+        String requestId = request.getHeader("X-Request-Id");
+        RequestContext.setRequestId(requestId == null || requestId.isBlank()
+                ? java.util.UUID.randomUUID().toString()
+                : requestId.trim());
 
         if (!requiresToken(request)) {
             // 不需要令牌时也要尽量认出令牌：静态令牌与已签发的访问令牌都能给出真实主体名，

@@ -115,6 +115,17 @@ const routes = [
     meta: { title: '优化任务', icon: 'Histogram', group: '治理（Management API）', nav: true },
   },
   {
+    // 目录事件流：两种表格式的事件在同一个流里（一张 audit_event 表、一个端点），
+    // 页面只做「看」——刷新是带游标的增量拉取（`?since=`，契约见
+    // docs/event-framework.md §4），不做往回翻页；要回看历史就「重置游标」
+    // 重新取最新一页。挂在控制台扩展命名空间（/api/console/v1/events）而不是
+    // 管理 API 下，所以分组单列为「审计」，与「这一页用的是哪套 API」的约定一致。
+    path: '/events',
+    name: 'events',
+    component: () => import('@/views/EventsView.vue'),
+    meta: { title: '事件', icon: 'Bell', group: '审计', nav: true },
+  },
+  {
     path: '/settings',
     name: 'settings',
     component: () => import('@/views/SettingsView.vue'),

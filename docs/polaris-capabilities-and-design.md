@@ -324,3 +324,137 @@ Jackson 2.15.2 抬到 2.21.x，并替换 netty 与 jersey，导致 Spark 侧出�
 12. **静态凭据的加密密钥不支持多代共存**。轮换 `paimon.rest.storage.credential-secret-key`
     会让库里已有的密文全部解不开，必须配合一次凭据重录。细节见
     [`../README.md`](../README.md) 第 6 节「实现说明与已知边界」第 20 条。
+
+---
+
+## 九、Polaris 1.x 功能盘点与采纳判断（2026-10 视角）
+
+前八节写于对标 0.9/1.0 的阶段，只覆盖「目录 + 鉴权 + 凭证下发」这条主线。Polaris 在
+2025-07 发布 1.0 后一路到 **1.8.0（2026-09-28）**，2026 年初已毕业为 Apache TLP，
+能力面扩到了策略、事件、联邦、外置授权几块。本节按「值不值得抄」重排一遍，
+事实依据为官方 1.8.0 发布说明、1.7 的策略文档与 1.5/1.8 的 delegation 文档。
+
+### 9.1 能力面与我们的现状
+
+| 层 | 能力 | Polaris 落点 | 本仓库现状 |
+| --- | --- | --- | --- |
+| 目录与协议 | 多 catalog、嵌套 namespace、internal/external | 基础形态 | ✅ 已有（`{prefix}` + `CatalogEntity`，external 表） |
+| | ETag 条件请求（`loadTable`） | 1.0 起 | ❌ 无 `If-None-Match` |
+| | 快照过滤（只要当前引用的快照） | 1.0 起 | ❌ 全量返回 |
+| | 通用表（Delta / Hudi 等非 Iceberg 表） | 1.3 起转正 | ❌ Iceberg 侧只有 Iceberg 表（Paimon 侧有表种类） |
+| | 外部 catalog 联邦（HMS / Glue / 外部 REST / BigQuery Metastore） | 1.4/1.5 | ❌ 无（只有「登记外部表」，不是联邦目录） |
+| 安全与治理 | RBAC 两层角色 | 基础形态 | ✅ 已对齐（并扩到 Paimon + Iceberg 双格式） |
+| | 凭证下发 + 刷新端点 + 作用域收窄 + STS 会话标签 | 1.0/1.4 | ⚠️ 有下发与缓存，**无刷新端点、无 STS、下发长期密钥**（§4 边界） |
+| | 自身 IdP / 外部 IdP 双模 | 1.0 起 | ⚠️ 只有 OAuth2 客户端凭据 + 静态令牌映射 |
+| | 外置授权（OPA / Ranger） | 1.3 / 1.5(Beta) | ❌ 无（判定在 `CatalogAccessRules` 一张表里） |
+| | 行过滤 / 列脱敏 | 仍属路线图 | ❌ 无（`auth` 端点返回空规则） |
+| 策略与运维 | 策略存储：4 类 `system.*` + 继承 + `applicable-policies` | 1.0 起，1.7 文档完整 | ⚠️ 等价语义散在「catalog 默认 + 表级覆盖」的开关里，无名、无版本、无来源 |
+| | 策略执行 | **不做**（存了不会跑） | ✅ 有（调度 + k8s Spark 任务 + 历史） |
+| 可观测与集成 | 事件框架（BEFORE/AFTER，多监听器，按类型过滤） | 1.0 / 1.5 | ❌ 无事件、无审计表 |
+| | 引擎回传查询指标（行数/字节/提交） | 1.3 起 | ❌ 无 |
+| | CLI / Python 客户端 / Helm / admin tool / 二进制分发 | 1.0—1.5 | ⚠️ 有 Helm 清单与校验脚本，无 CLI |
+
+两条结论先摆在这里：
+
+- **Polaris 缺执行器，我们缺声明层。** 它的策略是「惰性」的——官方文档与社区文章都明说
+  「stored policy is inert，既不调度也不执行」；而我们的优化任务恰好只会执行、不会表达意图。
+  两边的短板正好互补，所以最值得抄的是它的**策略声明层**，不是它的执行（它也没有）。
+- **它有而我们不必抄的，多是「平台化」能力**（联邦、通用表、realm 多租户）。这些能力的前提是
+  「做一个所有元数据的统一入口」，与本仓库「元数据 + 优化 + 权限」的定位不同，抄过来会改变产品边界。
+
+### 9.2 值得采纳（按价值排序）
+
+#### ① 策略声明层：把「开关」升级成可命名、可继承、可溯源的策略对象 —— P0
+
+Polaris 的形态：`POST /polaris/v1/{prefix}/namespaces/{ns}/policies` 建策略，
+`PUT .../policies/{name}/mappings` 挂到 catalog / namespace / table（含 view），
+`GET .../applicable-policies` 查「对这张表最终生效的是什么、来自哪一层」。四类内置类型：
+`system.data-compaction`、`system.metadata-compaction`、`system.orphan-file-removal`、
+`system.snapshot-expiry`，内容按 JSON-Schema 校验，带自动递增的版本号。
+
+我们缺的正是这三件事：
+
+| 现在的问题 | 具体表现 | 策略层怎么解 |
+| --- | --- | --- |
+| 批量运维靠人点 | 新建一个库有 50 张表，要逐表开三项优化；漏一张就一直不 compact | 策略挂在 namespace 上，新表天然继承 |
+| 生效值说不清 | 表级开关覆盖了 catalog 默认值，但库里只存了「最终值」，没有「从哪来」 | `applicable-policies` 返回 `appliedAt`（catalog / namespace / table）+ policy 版本 |
+| 例外无法回收 | 临时把某表调激进，事后要手工改回默认值 | 删掉表级映射即回落到上层，不需要「改回去」 |
+
+落地建议：
+
+- 表结构加两张（或复用现有的策略行 + 一张映射表）：`optimization_policy`
+  （name / type / content / version / inheritable）+ `optimization_policy_mapping`
+  （policy_id / target_type / target_path）。
+- 现有 `paimon_table_optimization` 的三组开关**保留**，作为「表级最后覆盖」；
+  读取顺序 = 表级显式值 > 最近一层策略 > catalog 默认值。
+- **任务明细里记 `policy_id` / `policy_version` / `applied_scope`**。没有这一列，
+  「这次为什么用 128 MB 而不是 256 MB」永远查不清；有了它，历史本身就是审计记录。
+- 继承语义选**整条替换**，不做字段级深合并。Polaris 就是这么定的（同类型只允许挂一条），
+  社区也有反面意见（建议深合并），但深合并会让「生效值」无法用一条记录解释，
+  排障时反而更难。要改单个参数就新写一条策略，语义显式。
+
+#### ② 事件框架：审计、缓存失效、外部同步共用一条出口 —— P1
+
+Polaris 在每次操作前后各发一个事件，`PolarisEvent` 带 `eventId` / `timestamp` / `user`
+（含激活的角色）/ `requestId` / OpenTelemetry 上下文；1.5 起支持多监听器与按事件类型过滤。
+
+我们没有事件（代码里没有 `ApplicationEventPublisher`，也没有审计表），
+现在只有实体上的 `createdBy` / `updatedBy` 两个字段——它能回答「谁最后改的」，
+回答不了「谁在什么时候删了这张表、删之前叫什么、当时带着什么权限」。
+
+最小实现（不必照抄它的二十几个事件名）：
+
+- 定义 6~8 个我们真正关心的领域事件：表创建/删除/重命名、提交、授权变更、
+  策略变更、优化任务终态。
+- 一张 `audit_event` 表（event_id / type / principal / request_id / target / 时间 / 属性 JSON），
+  写库与写日志走同一个 listener。
+- listener 可插拔：先 DB + 日志，再按需接 Kafka / Webhook。控制台的「刷新」也可以从
+  全量轮询改成「按事件增量拉」。
+
+#### ③ 凭据下发的三处加固 —— P1（刷新端点最优先）
+
+Polaris 有三件我们没做的事，各自对应一个具体故障：
+
+| 加固项 | Polaris 做法 | 我们现在的故障形态 |
+| --- | --- | --- |
+| 凭据刷新端点 | `loadTable` 响应里给 `client.refresh-credentials-endpoint`，客户端在过期前主动换 | 长查询跑到 TTL 之后开始 403；只能靠把 TTL 调长，等于放大泄露窗口 |
+| 作用域收窄 | storage-scoped credentials（只覆盖该表路径） | 下发的密钥覆盖整个 bucket，一张表的凭据能读全库 |
+| STS 会话标签 | 1.4 起带 session tags，CloudTrail 可按主体/表归因 | 云侧审计只能看到「服务端那把钥匙」，看不出是谁在读哪张表 |
+
+刷新端点的性价比最高：协议里已经留了位置（Iceberg REST 的 credential-refresh），
+客户端会调，服务端只需按同一套判权再签一次短 TTL 凭据。STS 与作用域收窄要云侧信任关系，
+属于外部集成，排在它后面。
+
+### 9.3 有条件采纳
+
+| 能力 | 采纳条件 | 解决的问题 |
+| --- | --- | --- |
+| `loadTable` 的 ETag / `If-None-Match` | 无（成本最低） | 引擎与控制台反复拉同一份 metadata；大表 metadata 几 MB 起 |
+| 快照过滤 | 大表快照数上百后 | 每次 load 都回全量快照列表，响应体与解析开销随历史线性涨 |
+| OPA / Ranger 外置授权 | 客户已有策略系统，且要求「策略即代码、可测试」 | 权限规则锁在 Java 表里，改一条要发版；无法与企业统一策略平台对齐 |
+| 外部 catalog 联邦 | 先只做**只读投影**一个外部 catalog | 客户已有 Glue/HMS，不想迁移；做双向同步则会与我们的元数据模型打架 |
+| CLI 的 `setup export/apply` | 多环境（dev/staging/prod）配置迁移需求出现时 | 主体、角色、授权、策略的跨环境复制目前只能手工点 |
+| 引擎回传查询指标 | 有成本归因 / 热度分析需求时（二期） | 不知道哪张表被谁读了多少，冷热分层与优化排期没有依据 |
+
+### 9.4 不建议采纳
+
+1. **不要学它「策略不执行」**。Polaris 的 policy 只表达意图，执行要靠外部服务；
+   我们已经有调度器与 Spark 任务，把执行留在这里是优势。抄声明层，不抄这个缺口。
+2. **不要照抄 policy 的 content schema**。它的四类 schema 是绑死 Iceberg procedure 参数的；
+   我们要同时覆盖 Paimon 与 Iceberg（键名与指标口径都不同），继续用「动作 + 键值对」的
+   现有形态更稳，策略层只负责「哪条规则、挂在哪、第几版」。
+3. **remote signing 不是「Polaris 有的能力」**。Iceberg REST 规格里有这个模式，
+   但 Polaris 1.8.0 的发布说明明确写着「remote signing (not implemented)」，
+   请求它会返回 400 并让你「去掉 header、自己在客户端配存储凭据」。若我们要做，
+   这是**差异化**而不是对齐，且要先摸清客户端支持面（Spark / Trino 各自的支持程度不同）。
+4. **通用表（Delta / Hudi）**：除非有明确的多格式客户，否则只增加元数据模型的分支成本。
+   Paimon 侧的表种类（`format-table` / `object-table` / `lance-table`）已经够用。
+5. **realm 级多租户**：我们的隔离边界是 catalog，再加一层 realm 会让
+   「catalog 名唯一性」「权限路径」「控制台切换」三处同时变复杂，收益不明显。
+
+### 9.5 一句话结论
+
+Polaris 这一年新增的能力里，真正该抄的只有**策略声明层**（外加事件与凭据刷新两个补丁）；
+它的联邦、通用表、多 realm 是「做平台」的路线，我们抄了会模糊定位。
+反过来，它缺的执行器、双格式支持、控制台，正是我们已经有的——
+所以对齐的方向是「把我们的执行能力用它的声明模型表达出来」，而不是「把它的功能清单实现一遍」。

@@ -367,4 +367,32 @@ public final class ConsoleDtos {
             boolean truncated,
             int maxEntries) {
     }
+
+    /**
+     * {@code GET /api/console/v1/events} 的响应：一页目录事件与下一个游标。
+     *
+     * <p><b>增量契约</b>（{@code docs/event-framework.md} §4）：客户端保存
+     * {@code nextCursor}，下一次带着它来，服务端只回比它新的事件；首次不带
+     * {@code since} 时回当前最新的一页——事件页要的是「接下来发生了什么」，
+     * 不是回放全部历史。
+     */
+    public record EventPage(List<Event> events, long nextCursor, boolean hasMore) {
+    }
+
+    /**
+     * 一条目录事件。固定列与 {@code audit_event} 表一致；{@code attributes}
+     * 是开放属性（按事件类型不同，见 {@code docs/event-framework.md} §1）。
+     */
+    public record Event(
+            long id,
+            String eventId,
+            String type,
+            String catalog,
+            String principal,
+            String requestId,
+            long occurredAt,
+            String targetType,
+            String target,
+            Map<String, Object> attributes) {
+    }
 }

@@ -16,6 +16,14 @@ public final class RequestContext {
 
     private static final ThreadLocal<String> PRINCIPAL = new ThreadLocal<>();
 
+    /**
+     * 请求关联 ID：与主体名同一生命周期（拦截器进、出各一次），事件与审计按它串起
+     * 同一次请求的多条记录。目录事件框架引入（{@code docs/event-framework.md} §3），
+     * 取值规则在 {@code BearerAuthInterceptor}——先信客户端带来的
+     * {@code X-Request-Id}，没有才生成，因此**跨服务调用可以透传同一个 id**。
+     */
+    private static final ThreadLocal<String> REQUEST_ID = new ThreadLocal<>();
+
     private RequestContext() {
     }
 
@@ -28,8 +36,18 @@ public final class RequestContext {
         return principal == null || principal.isBlank() ? AuditPrincipal.ANONYMOUS : principal;
     }
 
+    /** 当前请求的关联 ID；没有 HTTP 请求的路径（调度器、优化回调之外的线程）为 {@code null}。 */
+    public static String requestId() {
+        return REQUEST_ID.get();
+    }
+
+    public static void setRequestId(String requestId) {
+        REQUEST_ID.set(requestId);
+    }
+
     public static void clear() {
         PRINCIPAL.remove();
+        REQUEST_ID.remove();
     }
 
     public static long now() {

@@ -23,6 +23,9 @@ import io.github.melin.lakehouse.rest.paimon.support.Codecs;
 import io.github.melin.lakehouse.rest.paimon.support.SchemaSupport;
 import io.github.melin.lakehouse.rest.paimon.support.TableDefaults;
 import io.github.melin.lakehouse.rest.paimon.support.TableKinds;
+import io.github.melin.lakehouse.rest.event.CatalogEvent;
+import io.github.melin.lakehouse.rest.event.CatalogEventPublisher;
+import io.github.melin.lakehouse.rest.event.CatalogEventType;
 import io.github.melin.lakehouse.rest.service.CatalogService;
 import io.github.melin.lakehouse.rest.support.ApiException;
 import io.github.melin.lakehouse.rest.support.CatalogFormat;
@@ -86,6 +89,7 @@ public class TableService {
     private final CatalogService catalogService;
     private final RestServerProperties properties;
     private final TableMetadataService tableMetadataService;
+    private final CatalogEventPublisher events;
 
     // ------------------------------------------------------------------ 列举
 
@@ -224,6 +228,8 @@ public class TableService {
         // 落库之后再落仓库：schema/schema-0 是引擎后续写入该表的前提，
         // 缺失时的表现是引擎侧一句 Cannot get latest schema（见 TableMetadataService）
         tableMetadataService.materializeNewTable(table);
+        events.publish(CatalogEventType.TABLE_CREATED, prefix, CatalogEvent.TARGET_TABLE,
+                databaseName + "." + tableName, Map.of("format", "PAIMON"));
     }
 
     /**
@@ -260,6 +266,9 @@ public class TableService {
         table.markCreated(RequestContext.principal(), RequestContext.now());
         tableRepository.save(table);
         saveSchemaVersion(table, 0, schema);
+        events.publish(CatalogEventType.TABLE_CREATED, prefix, CatalogEvent.TARGET_TABLE,
+                databaseName + "." + tableName,
+                Map.of("format", "PAIMON", "registered", true));
     }
 
     @Transactional
@@ -270,6 +279,9 @@ public class TableService {
         tableRepository.delete(table);
         // 表目录是否一起删由 paimon.rest.table-metadata.purge-on-drop 决定，默认不删
         tableMetadataService.dropTableDirectory(table);
+        events.publish(CatalogEventType.TABLE_DROPPED, prefix, CatalogEvent.TARGET_TABLE,
+                databaseName + "." + tableName,
+                Map.of("format", "PAIMON", "external", table.isExternal()));
     }
 
     @Transactional
@@ -292,6 +304,9 @@ public class TableService {
         table.setName(destinationTable);
         table.touch(RequestContext.principal(), RequestContext.now());
         tableRepository.save(table);
+        events.publish(CatalogEventType.TABLE_RENAMED, prefix, CatalogEvent.TARGET_TABLE,
+                destinationDatabase + "." + destinationTable,
+                Map.of("format", "PAIMON", "from", sourceDatabase + "." + sourceTable));
     }
 
     /**
@@ -320,6 +335,9 @@ public class TableService {
 
         // 数据库里的 schemaId 与仓库里的 schema-<n> 用同一个号，见 TableMetadataService
         tableMetadataService.materializeSchemaVersion(table, schemaId);
+        events.publish(CatalogEventType.TABLE_COMMITTED, prefix, CatalogEvent.TARGET_TABLE,
+                databaseName + "." + tableName,
+                Map.of("format", "PAIMON", "change", "alter", "schemaId", schemaId));
     }
 
     /**
@@ -349,6 +367,9 @@ public class TableService {
 
         // 回滚也是一次向前的新版本（内容取历史版本），仓库里同样写成 schema-<newSchemaId>
         tableMetadataService.materializeSchemaVersion(table, newSchemaId);
+        events.publish(CatalogEventType.TABLE_COMMITTED, prefix, CatalogEvent.TARGET_TABLE,
+                databaseName + "." + tableName,
+                Map.of("format", "PAIMON", "change", "rollback-schema", "schemaId", newSchemaId));
     }
 
     // ------------------------------------------------------------------ 快照
@@ -444,6 +465,9 @@ public class TableService {
 
         // 先落库再落仓库，与 schema 同一顺序（理由见类注释）
         tableMetadataService.materializeSnapshot(table, snapshot.id(), snapshotDoc);
+        events.publish(CatalogEventType.TABLE_COMMITTED, prefix, CatalogEvent.TARGET_TABLE,
+                databaseName + "." + tableName,
+                Map.of("format", "PAIMON", "snapshotId", snapshot.id()));
         return new TableDtos.CommitTableResponse(true);
     }
 

@@ -109,7 +109,7 @@ class MysqlDdlGeneratorTests {
             .toAbsolutePath();
 
     /** 实体的表数量；新增实体时应同步上调，否则本测试会失败提醒。 */
-    private static final int EXPECTED_TABLES = 22;
+    private static final int EXPECTED_TABLES = 23;
 
     /** MySQL 一张表一行的最大字节数（存储层上限，与列长度上限是两件事）。 */
     private static final long MYSQL_ROW_SIZE_LIMIT = 65535L;

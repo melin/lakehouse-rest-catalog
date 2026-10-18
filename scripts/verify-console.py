@@ -39,7 +39,11 @@ spec/polaris-management-service.yml）。路径写错时前端只表现为「空
  14. 存储字段分层  catalog 表单的字段被拆成「基本 / 高级」两张表，高级那张进折叠区。
                   两条静默风险：拆表时漏一个字段（只是保存不进去，不报错）、
                   以及顺手让折叠状态参与提交内容（展开看一眼再收起，报文就变了）
- 15. 文档计数     文档里写的「N 组 M 项」与脚本实际一致——加校验组的人要顺手改文档，
+ 15. 事件页       事件流的增量契约要前后端钉在一起：端点路径、since/nextCursor 的
+                  消费、事件类型清单对 CatalogEventType 的 wire 值、目标类型显示名
+                  对 CatalogEvent 的 TARGET_* 常量、独立路由。前端另抄一份名单
+                  或丢了 since，页面都不报错——只是契约悄悄失效
+ 16. 文档计数     文档里写的「N 组 M 项」与脚本实际一致——加校验组的人要顺手改文档，
                   而这条约定此前没人执行（真漂过一次：docs/console.md 37、实际 38）
 
 用法：
@@ -172,6 +176,10 @@ EXTENSION_ENDPOINTS = {
     ("GET", "/api/management/v1/optimization/jobs/{jobId}"): "优化：批次详情（含表级明细）",
     ("POST", "/api/management/v1/optimization/jobs/{jobId}/retry"): "优化：重试失败的表（新建批次）",
     ("POST", "/api/management/v1/optimization/jobs/{jobId}/cancel"): "优化：取消批次",
+    # 目录事件流：游标增量拉取（`?since=` 只回比它新的事件），契约见
+    # docs/event-framework.md §4。两份规格都不涉及事件——这是本工程自己的
+    # 审计面，服务端实现见 ConsoleEventController。只读。
+    ("GET", "/api/console/v1/events"): "控制台目录事件流（游标增量拉取，只读）",
 }
 
 problems = []
@@ -1116,10 +1124,46 @@ check("收起态给出计数徽标与「可以不管它」的说明",
       "advancedBadge" in field_source and "全部留空即用服务端默认值" in field_source,
       "折叠头需要 计数（advancedBadge）+ 一句「全部留空即用服务端默认值」")
 
-# ------------------------------------------------------------------ 14. 文档计数
+# ------------------------------------------------------------------ 15. 事件页契约
 
 print()
-print("15. 文档计数（文档写的「N 组 M 项」必须与脚本实际一致）")
+print("15. 事件页（事件流的增量契约要前后端钉在一起）")
+
+# 起因：事件流的「刷新」是游标增量拉取而不是全量重拉——这个语义一旦在前端丢失
+# （比如有人把刷新改回不带 since 的请求），页面不会报错，只是每次刷新都把窗口
+# 重取一遍、增量契约（docs/event-framework.md §4）名存实亡。事件类型清单与目标
+# 类型显示名同样对着**服务端枚举/常量**比对：前端另抄一份名单，服务端加类型时
+# 的表现是新事件显示成 wire 原文——静默，且只有真发生那种事件才看得见。
+
+events_view = read(os.path.join(CONSOLE_DIR, "src/views/EventsView.vue"))
+event_type_source = read(os.path.join(CORE_JAVA, "event/CatalogEventType.java"))
+catalog_event_source = read(os.path.join(CORE_JAVA, "event/CatalogEvent.java"))
+
+check("endpoints.js 登记了 listEvents 且路径与端点一致",
+      endpoints.get("listEvents") == ("GET", "/api/console/v1/events"),
+      f"实际是 {endpoints.get('listEvents')}")
+
+check("EventsView 实现增量拉取（带 since 游标、消费 nextCursor）",
+      "listEvents" in events_view and "since" in events_view and "nextCursor" in events_view,
+      "刷新应带 since=游标 只取新事件；丢了 since 就是全量重拉，增量契约失效")
+
+check("事件类型清单覆盖 CatalogEventType 的全部 wire 值",
+      all(wire in events_view for wire in re.findall(r'\("([a-z._]+)"\)', event_type_source)),
+      "前端 TYPES 少了服务端新增的类型时，那种事件会显示成 wire 原文")
+
+check("目标类型显示名覆盖 CatalogEvent 的全部 TARGET_* 常量",
+      all(f"'{value}'" in events_view
+          for value in re.findall(r'TARGET_\w+ = "(\w+)"', catalog_event_source)),
+      "前端 TARGET_LABELS 漏了常量时，那一类目标会显示成原文")
+
+check("事件页有独立路由（/events，进侧边菜单）",
+      "'/events'" in router_source and "EventsView" in router_source,
+      "router/index.js 应声明 /events 路由并指向 EventsView")
+
+# ------------------------------------------------------------------ 16. 文档计数
+
+print()
+print("16. 文档计数（文档写的「N 组 M 项」必须与脚本实际一致）")
 
 # 这一组是**元校验**，起因是一次真实的漂移：docs/console.md 写「12 组 37 项」、
 # README 写「12 组 38 项」，而脚本实际是 38——两个数字都没人核对，因为脚本此前

@@ -10,6 +10,9 @@ import io.github.melin.lakehouse.rest.domain.repo.OptimizationJobItemRepository;
 import io.github.melin.lakehouse.rest.domain.repo.OptimizationJobRepository;
 import io.github.melin.lakehouse.rest.domain.repo.TableOptimizationRepository;
 import io.github.melin.lakehouse.rest.dto.OptimizationDtos;
+import io.github.melin.lakehouse.rest.event.CatalogEvent;
+import io.github.melin.lakehouse.rest.event.CatalogEventPublisher;
+import io.github.melin.lakehouse.rest.event.CatalogEventType;
 import io.github.melin.lakehouse.rest.dto.OptimizationDtos.ItemReportRequest;
 import io.github.melin.lakehouse.rest.dto.OptimizationDtos.JobItem;
 import io.github.melin.lakehouse.rest.dto.OptimizationDtos.Submission;
@@ -74,6 +77,7 @@ public class OptimizationJobService {
     private final OptimizationConfigResolver configResolver;
     private final OptimizationJobSubmitter submitter;
     private final RestServerProperties properties;
+    private final CatalogEventPublisher events;
     private final Clock clock;
 
     /** 入批的一张表：id、展示用的全名、这张表要执行的动作。 */
@@ -169,6 +173,7 @@ public class OptimizationJobService {
         job.setUpdatedAt(now);
         jobRepository.save(job);
         failOpenItems(jobId, error, now);
+        publishFinished(job, "submit-failed");
     }
 
     /**
@@ -201,6 +206,7 @@ public class OptimizationJobService {
         job.setUpdatedAt(now);
         jobRepository.save(job);
         log.info("optimization batch {} finished as {}", jobId, status);
+        publishFinished(job, "executor");
     }
 
     /** 超时收尾：与执行侧失败同一套处置，只是原因不同。 */
@@ -216,6 +222,7 @@ public class OptimizationJobService {
         job.setFinishedAt(now);
         job.setUpdatedAt(now);
         jobRepository.save(job);
+        publishFinished(job, "timeout");
     }
 
     /**
@@ -321,6 +328,7 @@ public class OptimizationJobService {
         job.setUpdatedAt(now);
         job.setUpdatedBy(principal);
         jobRepository.save(job);
+        publishFinished(job, "canceled");
         return job;
     }
 
@@ -514,6 +522,25 @@ public class OptimizationJobService {
         return catalogRepository.findById(catalogId)
                 .map(CatalogEntity::getPrefix)
                 .orElse(catalogId);
+    }
+
+    /**
+     * 批次到达终态后发一条 {@code optimization.job_finished} 事件。
+     *
+     * <p>只发一次的保障来自「先判终态再写」的调用方纪律之外，这里再兜一道：
+     * 事件只在 {@code status} 已是终态时发布，重复调用（调度与回调赛跑）不会发出
+     * 第二条。{@code cause} 区分四条到达路径（executor / submit-failed / timeout /
+     * canceled），同一终态可能由不同路径到达，排障时要分得开。
+     */
+    private void publishFinished(OptimizationJobEntity job, String cause) {
+        Job status = Job.parse(job.getStatus());
+        if (status == null || !status.terminal()) {
+            return;
+        }
+        events.publish(CatalogEventType.OPTIMIZATION_JOB_FINISHED, catalogName(job.getCatalogId()),
+                CatalogEvent.TARGET_JOB, job.getId(),
+                Map.of("jobId", job.getId(), "state", job.getStatus(), "cause", cause,
+                        "tables", job.getTableCount(), "trigger", job.getTriggerType()));
     }
 
     private static String truncate(String value, int limit) {

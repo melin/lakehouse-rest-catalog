@@ -21,6 +21,20 @@ CREATE DATABASE IF NOT EXISTS `paimon_catalog`
 
 USE `paimon_catalog`;
 
+    create table audit_event (
+        id bigint not null auto_increment,
+        occurred_at bigint not null,
+        target_type varchar(32) not null,
+        event_id varchar(64) not null,
+        request_id varchar(64),
+        type varchar(64) not null,
+        target varchar(1024) not null,
+        attributes_json text,
+        catalog varchar(255) not null,
+        principal varchar(255) not null,
+        primary key (id)
+    ) engine=InnoDB;
+
     create table paimon_branch (
         created_at bigint,
         snapshot_id bigint,
@@ -396,6 +410,12 @@ USE `paimon_catalog`;
         view_schema_doc mediumtext,
         primary key (id)
     ) engine=InnoDB;
+
+    create index ix_audit_event_catalog 
+       on audit_event (catalog, id);
+
+    create index ix_audit_event_type 
+       on audit_event (type);
 
     create index ix_branch_table 
        on paimon_branch (table_id);
