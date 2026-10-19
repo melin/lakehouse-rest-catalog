@@ -5,7 +5,8 @@ import io.github.melin.lakehouse.rest.dto.ManagementDtos.Catalog;
 import io.github.melin.lakehouse.rest.dto.ManagementDtos.Catalogs;
 import io.github.melin.lakehouse.rest.dto.ManagementDtos.CreateCatalogRequest;
 import io.github.melin.lakehouse.rest.dto.ManagementDtos.UpdateCatalogRequest;
-import io.github.melin.lakehouse.rest.dto.Privilege;
+import io.github.melin.lakehouse.rest.dto.PermissionDtos.Access;
+import io.github.melin.lakehouse.rest.dto.PermissionDtos.ResourceType;
 import io.github.melin.lakehouse.rest.service.AuthorizationService;
 import io.github.melin.lakehouse.rest.service.ManagementCatalogService;
 import java.util.ArrayList;
@@ -23,11 +24,13 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * 管理 API 的 catalog 端点。
+ * 管理面的 catalog 端点（服务端扩展）。
  *
- * <p>路径与 {@code spec/polaris-management-service.yml} 一致，基址为
- * {@code /api/management/v1}。与 catalog API（{@code /v1/**}）并存在同一进程，
- * 这一点与 Polaris 把管理服务与 catalog 服务放在同一个进程的做法相同。
+ * <p>官方 Paimon 管理 API 不含 catalog 生命周期（它把 catalog 看作部署配置），
+ * 这里保留路径与形状与 {@code spec/polaris-management-service.yml} 一致的一组端点，
+ * 基址为 {@code /api/management/v1}。**权限不在这条链上**：
+ * catalog 内「谁能读什么」由 {@code /v1/{prefix}/permissions} 的 access 决定，
+ * 本控制器只判读（{@code CATALOG_ALL:DESCRIBE}）与改/删（{@code CATALOG:ALTER|DROP}）。
  */
 @RestController
 @RequestMapping("/api/management/v1/catalogs")
@@ -41,7 +44,7 @@ public class ManagementCatalogController {
      * {@code GET /catalogs}。
      *
      * <p>开启授权时按调用者的可见范围过滤：服务管理员看到全部 catalog，
-     * 其余调用者只看到自己至少持有一个 catalog role 的 catalog。
+     * 其余调用者只看到自己至少持有一条赋权的 catalog。
      * 这样未授权调用方不会通过 catalog 列表探测到服务端有哪些 catalog。
      */
     @GetMapping
@@ -52,7 +55,7 @@ public class ManagementCatalogController {
         }
         List<Catalog> visible = new ArrayList<>();
         for (Catalog catalog : all.catalogs()) {
-            if (!authorizationService.catalogRoleIdsOf(RequestContext.principal(), catalog.name()).isEmpty()) {
+            if (authorizationService.hasAnyGrant(RequestContext.principal(), catalog.name())) {
                 visible.add(catalog);
             }
         }
@@ -67,11 +70,19 @@ public class ManagementCatalogController {
         return ResponseEntity.status(HttpStatus.CREATED).body(created);
     }
 
-    /** {@code GET /catalogs/{catalogName}}。 */
+    /**
+     * {@code GET /catalogs/{catalogName}}。
+     *
+     * <p>判 {@code CATALOG_ALL} 上的 {@code DESCRIBE}，而不是 {@code CATALOG} 上的：
+     * 官方 Access/Resource 对照表里 {@code CATALOG} 只有 {@code ALL / ALTER / DROP / GRANT /
+     * CREATEDATABASE}，**没有**任何读权限；{@code DESCRIBE} 只出现在
+     * {@code CATALOG_ALL / DATABASE / TABLE / VIEW / FUNCTION} 上。
+     * 而「能读这个 catalog 里的东西」正是本端点的语义，所以落在 {@code CATALOG_ALL}。
+     */
     @GetMapping("/{catalogName}")
     public Catalog get(@PathVariable String catalogName) {
-        authorizationService.requireCatalog(catalogName, Privilege.CATALOG_READ_PROPERTIES,
-                "read the catalog");
+        authorizationService.require(catalogName, ResourceType.CATALOG_ALL, List.of(), null,
+                Access.DESCRIBE, "read the catalog");
         return catalogService.get(catalogName);
     }
 
@@ -79,16 +90,14 @@ public class ManagementCatalogController {
     @PutMapping("/{catalogName}")
     public Catalog update(@PathVariable String catalogName,
                           @RequestBody UpdateCatalogRequest request) {
-        authorizationService.requireCatalog(catalogName, Privilege.CATALOG_WRITE_PROPERTIES,
-                "update the catalog");
+        authorizationService.requireCatalog(catalogName, Access.ALTER, "update the catalog");
         return catalogService.update(catalogName, request);
     }
 
     /** {@code DELETE /catalogs/{catalogName}}。 */
     @DeleteMapping("/{catalogName}")
     public ResponseEntity<Void> delete(@PathVariable String catalogName) {
-        authorizationService.requireCatalog(catalogName, Privilege.CATALOG_MANAGE_ACCESS,
-                "delete the catalog");
+        authorizationService.requireCatalog(catalogName, Access.DROP, "delete the catalog");
         catalogService.delete(catalogName);
         return ResponseEntity.noContent().build();
     }

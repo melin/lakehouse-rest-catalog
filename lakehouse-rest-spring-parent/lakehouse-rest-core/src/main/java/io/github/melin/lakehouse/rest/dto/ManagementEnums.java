@@ -63,38 +63,6 @@ public final class ManagementEnums {
         }
     }
 
-    /**
-     * 管理规格 {@code GrantResource.type}，即授权的资源类型判别值。
-     *
-     * <p>取值同时是 {@link Privilege#allowedFor(String)} 的键，因此这里的
-     * {@link #wireName()} 必须与规格 discriminator 的 mapping 键逐字一致。
-     */
-    public enum GrantType {
-        CATALOG("catalog"),
-        NAMESPACE("namespace"),
-        TABLE("table"),
-        VIEW("view"),
-        POLICY("policy"),
-        SEMANTIC_MODEL("semantic-model");
-
-        private final String wireName;
-
-        GrantType(String wireName) {
-            this.wireName = wireName;
-        }
-
-        public String wireName() {
-            return wireName;
-        }
-
-        /** 按规格取值解析，未知取值返回空。 */
-        public static Optional<GrantType> parse(String value) {
-            return Arrays.stream(values())
-                    .filter(type -> type.wireName.equals(value))
-                    .findFirst();
-        }
-    }
-
     private static <E extends Enum<E>> Optional<E> parse(Class<E> type, String value) {
         if (value == null || value.isBlank()) {
             return Optional.empty();

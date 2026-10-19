@@ -1,10 +1,12 @@
 package io.github.melin.lakehouse.rest.web;
 
+import io.github.melin.lakehouse.rest.dto.PermissionDtos.Access;
 import io.github.melin.lakehouse.rest.dto.PermissionDtos.PermissionAssignment;
 import io.github.melin.lakehouse.rest.dto.PermissionDtos.PermissionList;
-import io.github.melin.lakehouse.rest.dto.Privilege;
+import io.github.melin.lakehouse.rest.dto.PermissionDtos.ResourceType;
 import io.github.melin.lakehouse.rest.service.AuthorizationService;
 import io.github.melin.lakehouse.rest.service.PermissionManagementService;
+import java.util.List;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -21,11 +23,18 @@ import org.springframework.web.bind.annotation.RestController;
  *
  * <p>路径在 catalog API（{@code /v1/{prefix}/...}）之下，官方把它们归入
  * management API；本工程统一按 catalog API 的鉴权与授权链路处理。
- * 官方要求「创建、删除、查看权限需要调用者对相关资源具备 GRANT」——
- * 这里收敛为 catalog 级的 {@code CATALOG_MANAGE_ACCESS}（与 Polaris 管理 API 的
- * catalog role 授权端点同一要求）：权限端点的调用方是管理员与控制台，
- * 逐资源校验 GRANT 需要读懂请求体，放在路径映射表里做不到，而收敛到
- * catalog 级不产生越权（要求只会更严）。
+ *
+ * <p>官方要求「查看、授予、撤销权限需要调用者对相关资源具备 {@code GRANT}」，
+ * 三条端点因此分两种判法：
+ * <ul>
+ *   <li><b>列赋权</b>：目标是一整个 catalog 的赋权集合，要求
+ *       {@code CATALOG_ALL} 上的 {@code GRANT}；</li>
+ *   <li><b>授予 / 撤销</b>：目标资源在请求体里，路径映射表算不出作用域，
+ *       因此 {@code CatalogAccessRules} 把这两个端点标成 deferred，
+ *       由这里拿着 {@code request.resource()} 调
+ *       {@link AuthorizationService#requireGrantOn}——在 catalog 级持 {@code GRANT}
+ *       的人覆盖其下一切，在单表上持 {@code GRANT} 的人只能管那张表。</li>
+ * </ul>
  */
 @RestController
 @RequestMapping("/v1/{prefix}/permissions")
@@ -47,8 +56,8 @@ public class PermissionController {
                                @RequestParam(required = false) String access,
                                @RequestParam(required = false) Integer maxResults,
                                @RequestParam(required = false) String pageToken) {
-        authorizationService.requireCatalog(prefix, Privilege.CATALOG_MANAGE_ACCESS,
-                "list permissions");
+        authorizationService.require(prefix, ResourceType.CATALOG_ALL, List.of(), null,
+                Access.GRANT, "list permissions");
         return permissionManagementService.list(prefix, resourceType, database, table, view,
                 function, principal, access, maxResults, pageToken);
     }
@@ -57,8 +66,8 @@ public class PermissionController {
     @PostMapping("/grant")
     public ResponseEntity<Void> grant(@PathVariable String prefix,
                                       @RequestBody(required = false) PermissionAssignment request) {
-        authorizationService.requireCatalog(prefix, Privilege.CATALOG_MANAGE_ACCESS,
-                "grant a permission");
+        authorizationService.requireGrantOn(prefix,
+                request == null ? null : request.resource(), "grant a permission");
         permissionManagementService.grant(prefix, request);
         return ResponseEntity.status(HttpStatus.CREATED).build();
     }
@@ -67,8 +76,8 @@ public class PermissionController {
     @PostMapping("/revoke")
     public ResponseEntity<Void> revoke(@PathVariable String prefix,
                                        @RequestBody(required = false) PermissionAssignment request) {
-        authorizationService.requireCatalog(prefix, Privilege.CATALOG_MANAGE_ACCESS,
-                "revoke a permission");
+        authorizationService.requireGrantOn(prefix,
+                request == null ? null : request.resource(), "revoke a permission");
         permissionManagementService.revoke(prefix, request);
         return ResponseEntity.status(HttpStatus.CREATED).build();
     }

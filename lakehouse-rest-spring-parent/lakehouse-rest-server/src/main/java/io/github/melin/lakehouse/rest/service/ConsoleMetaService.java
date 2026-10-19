@@ -3,9 +3,9 @@ package io.github.melin.lakehouse.rest.service;
 import io.github.melin.lakehouse.rest.config.RestServerProperties;
 import io.github.melin.lakehouse.rest.dto.ConsoleDtos;
 import io.github.melin.lakehouse.rest.dto.ManagementEnums.CatalogType;
-import io.github.melin.lakehouse.rest.dto.ManagementEnums.GrantType;
 import io.github.melin.lakehouse.rest.dto.ManagementEnums.StorageType;
-import io.github.melin.lakehouse.rest.dto.Privilege;
+import io.github.melin.lakehouse.rest.dto.PermissionDtos.Access;
+import io.github.melin.lakehouse.rest.dto.PermissionDtos.ResourceType;
 import io.github.melin.lakehouse.rest.support.CatalogFormat;
 import io.github.melin.lakehouse.rest.support.CredentialCipher;
 import io.github.melin.lakehouse.rest.support.CredentialManagerType;
@@ -83,16 +83,17 @@ public class ConsoleMetaService {
 
     private ConsoleDtos.Enums enums() {
         FileIoType fileIoType = FileIoType.require(properties.getFileIo().getType());
-        Map<String, List<String>> privilegesByGrantType = new LinkedHashMap<>();
-        for (String resourceType : Privilege.resourceTypes()) {
-            List<String> privileges = new ArrayList<>();
-            for (Privilege privilege : Privilege.allowedFor(resourceType)) {
-                privileges.add(privilege.name());
+        // 资源类型 → 该层级允许授予的 access，取自 Paimon 官方 Access/Resource 对照表。
+        // 前端不再自带一份词表：它按这里的键渲染「资源类型」下拉，按值渲染「access」下拉。
+        Map<String, List<String>> accessesByResourceType = new LinkedHashMap<>();
+        for (ResourceType resourceType : ResourceType.values()) {
+            List<String> accesses = new ArrayList<>();
+            for (Access access : Access.allowedFor(resourceType)) {
+                accesses.add(access.name());
             }
-            // 集合本身来自不可变 LinkedHashSet，顺序稳定；这里排序是为了让控制台的
-            // 下拉框有一个可预期的顺序，而不是依赖静态初始化块的书写顺序
-            privileges.sort(String::compareTo);
-            privilegesByGrantType.put(resourceType, privileges);
+            // 集合来自 LinkedHashSet，顺序稳定；排序是为了让下拉框有可预期的顺序
+            accesses.sort(String::compareTo);
+            accessesByResourceType.put(resourceType.name(), accesses);
         }
 
         List<String> supported = new ArrayList<>();
@@ -110,8 +111,8 @@ public class ConsoleMetaService {
                 cipher.available(),
                 Arrays.stream(CredentialManagerType.values()).map(CredentialManagerType::wireName).toList(),
                 List.copyOf(FileIoType.wireNames()),
-                Arrays.stream(GrantType.values()).map(GrantType::wireName).toList(),
-                privilegesByGrantType);
+                Arrays.stream(ResourceType.values()).map(Enum::name).toList(),
+                accessesByResourceType);
     }
 
     private static <E extends Enum<E>> List<String> names(E[] values) {

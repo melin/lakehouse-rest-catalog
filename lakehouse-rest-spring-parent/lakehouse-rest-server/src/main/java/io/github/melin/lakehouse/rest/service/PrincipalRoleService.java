@@ -1,18 +1,13 @@
 package io.github.melin.lakehouse.rest.service;
 
 import io.github.melin.lakehouse.rest.config.RequestContext;
-import io.github.melin.lakehouse.rest.domain.entity.CatalogRoleAssignmentEntity;
-import io.github.melin.lakehouse.rest.domain.entity.CatalogRoleEntity;
 import io.github.melin.lakehouse.rest.domain.entity.PrincipalEntity;
 import io.github.melin.lakehouse.rest.domain.entity.PrincipalRoleAssignmentEntity;
 import io.github.melin.lakehouse.rest.domain.entity.PrincipalRoleEntity;
-import io.github.melin.lakehouse.rest.domain.repo.CatalogRoleAssignmentRepository;
 import io.github.melin.lakehouse.rest.domain.repo.PrincipalRepository;
 import io.github.melin.lakehouse.rest.domain.repo.PrincipalRoleAssignmentRepository;
 import io.github.melin.lakehouse.rest.domain.repo.PrincipalRoleRepository;
-import io.github.melin.lakehouse.rest.dto.ManagementDtos.CatalogRoles;
 import io.github.melin.lakehouse.rest.dto.ManagementDtos.CreatePrincipalRoleRequest;
-import io.github.melin.lakehouse.rest.dto.ManagementDtos.GrantCatalogRoleRequest;
 import io.github.melin.lakehouse.rest.dto.ManagementDtos.Principal;
 import io.github.melin.lakehouse.rest.dto.ManagementDtos.PrincipalRole;
 import io.github.melin.lakehouse.rest.dto.ManagementDtos.PrincipalRoles;
@@ -33,11 +28,17 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * principal role 的增删改查，以及它与主体、catalog role 两侧的关联。
+ * principal role 的增删改查，以及主体与它的成员关系。
  *
- * <p>对应管理规格的 {@code /principal-roles} 一族端点。principal role 处在
- * 「主体 ↔ principal role ↔ catalog role ↔ 权限」链条的中间：
- * 它本身不携带权限，只把 catalog role 转发给主体。
+ * <p><b>它只是主体分组。</b>官方权限模型里没有角色，授权对象是
+ * {@code (resource, access, principal)} 里的那个不透明 principal 字符串。
+ * 本服务把 principal role 映射成 principal 命名空间里的 {@code role:<name>}：
+ * 给 {@code role:analyst} 授的权，所有成员都会通过
+ * {@link AuthorizationService#principalCandidates} 命中。
+ *
+ * <p>因此这一层不承载任何权限数据——角色解散时只有成员关系消失，
+ * 授予该角色的赋权条目仍留在 {@code lakehouse_permission_assignment} 里
+ * （再建同名角色会重新生效，这一点写进了 {@code docs/authorization.md}）。
  */
 @Service
 @RequiredArgsConstructor
@@ -46,8 +47,6 @@ public class PrincipalRoleService {
     private final PrincipalRoleRepository principalRoleRepository;
     private final PrincipalRepository principalRepository;
     private final PrincipalRoleAssignmentRepository principalRoleAssignmentRepository;
-    private final CatalogRoleAssignmentRepository catalogRoleAssignmentRepository;
-    private final CatalogRoleService catalogRoleService;
     private final CatalogEventPublisher events;
 
     /** {@code GET /principal-roles}。 */
@@ -116,14 +115,14 @@ public class PrincipalRoleService {
     /**
      * {@code DELETE /principal-roles/{principalRoleName}}。
      *
-     * <p>级联清理两侧关联：主体持有的该角色分配、该角色在各 catalog 上的 catalog role 分配。
-     * 不清理 catalog role 与授权本身——它们归属 catalog，不随 principal role 消失。
+     * <p>只清理成员关系。授予 {@code role:<name>} 的赋权不删除：那是 catalog 里的
+     * 权限记录，删除角色不该顺手回收别人名下的授权；同名角色重建后成员会重新继承，
+     * 这是可预期的行为，文档里写明了。
      */
     @Transactional
     public void delete(String name) {
         PrincipalRoleEntity entity = require(name);
         principalRoleAssignmentRepository.deleteByPrincipalRoleId(entity.getId());
-        catalogRoleAssignmentRepository.deleteByPrincipalRoleId(entity.getId());
         principalRoleRepository.delete(entity);
         events.publish(CatalogEventType.PRINCIPAL_ROLE_DROPPED, "", CatalogEvent.TARGET_ROLE, name,
                 Map.of());
@@ -141,79 +140,6 @@ public class PrincipalRoleService {
                     .ifPresent(principals::add);
         }
         return new Principals(principals);
-    }
-
-    /**
-     * {@code GET /principal-roles/{principalRoleName}/catalog-roles/{catalogName}}。
-     *
-     * <p>只返回「该 principal role 在该 catalog 上被授予的」catalog role，
-     * 而不是该 catalog 的全部 catalog role——路径里的 catalogName 是过滤条件，
-     * 不是命名空间。
-     */
-    @Transactional(readOnly = true)
-    public CatalogRoles listCatalogRoles(String principalRoleName, String catalogName) {
-        PrincipalRoleEntity role = require(principalRoleName);
-        String catalogId = catalogRoleService.catalogIdOf(catalogName);
-        List<CatalogRoleEntity> roles = new ArrayList<>();
-        for (CatalogRoleAssignmentEntity assignment
-                : catalogRoleAssignmentRepository.findByPrincipalRoleId(role.getId())) {
-            catalogRoleService.findEntity(assignment.getCatalogRoleId())
-                    .filter(candidate -> candidate.getCatalogId().equals(catalogId))
-                    .ifPresent(roles::add);
-        }
-        roles.sort(java.util.Comparator.comparing(CatalogRoleEntity::getName));
-        return catalogRoleService.toCatalogRoles(roles);
-    }
-
-    /**
-     * {@code PUT /principal-roles/{principalRoleName}/catalog-roles/{catalogName}}：
-     * 把 catalog role 授予 principal role。
-     *
-     * <p>路径里只有 principal role 名与 catalog 名，被授予的 catalog role 名来自请求体
-     * {@code GrantCatalogRoleRequest.catalogRole.name}。
-     *
-     * <p>幂等：重复授予不报错。
-     */
-    @Transactional
-    public void grantCatalogRole(String principalRoleName, String catalogName,
-                                 GrantCatalogRoleRequest request) {
-        String catalogRoleName = request == null || request.catalogRole() == null
-                ? null : request.catalogRole().name();
-        if (catalogRoleName == null || catalogRoleName.isBlank()) {
-            throw ApiException.badRequest("catalogRole.name is required");
-        }
-        PrincipalRoleEntity role = require(principalRoleName);
-        CatalogRoleEntity catalogRole = catalogRoleService.require(catalogName, catalogRoleName);
-        if (catalogRoleAssignmentRepository.existsByPrincipalRoleIdAndCatalogRoleId(
-                role.getId(), catalogRole.getId())) {
-            return;
-        }
-        CatalogRoleAssignmentEntity assignment = new CatalogRoleAssignmentEntity();
-        assignment.setId(Paging.newId());
-        assignment.setPrincipalRoleId(role.getId());
-        assignment.setCatalogRoleId(catalogRole.getId());
-        assignment.markCreated(RequestContext.principal(), RequestContext.now());
-        catalogRoleAssignmentRepository.save(assignment);
-        events.publish(CatalogEventType.CATALOG_ROLE_BOUND, catalogName, CatalogEvent.TARGET_ROLE,
-                principalRoleName, Map.of("catalogRole", catalogRoleName));
-    }
-
-    /** {@code DELETE /principal-roles/{principalRoleName}/catalog-roles/{catalogName}/{catalogRoleName}}。 */
-    @Transactional
-    public void revokeCatalogRole(String principalRoleName, String catalogName, String catalogRoleName) {
-        PrincipalRoleEntity role = require(principalRoleName);
-        CatalogRoleEntity catalogRole = catalogRoleService.require(catalogName, catalogRoleName);
-        boolean assigned = catalogRoleAssignmentRepository.findByPrincipalRoleId(role.getId())
-                .stream().anyMatch(a -> a.getCatalogRoleId().equals(catalogRole.getId()));
-        if (!assigned) {
-            throw ApiException.assignmentNotExist(ResourceType.CATALOG_ROLE, catalogRoleName,
-                    "Catalog role " + catalogRoleName + " of catalog " + catalogName
-                            + " is not assigned to principal role " + principalRoleName);
-        }
-        catalogRoleAssignmentRepository
-                .deleteByPrincipalRoleIdAndCatalogRoleId(role.getId(), catalogRole.getId());
-        events.publish(CatalogEventType.CATALOG_ROLE_UNBOUND, catalogName, CatalogEvent.TARGET_ROLE,
-                principalRoleName, Map.of("catalogRole", catalogRoleName));
     }
 
     /** 按名称取 principal role，不存在则 404。 */
@@ -237,12 +163,26 @@ public class PrincipalRoleService {
         return new PrincipalRoles(roles);
     }
 
-    /** 该 principal role 在各 catalog 上持有的 catalog role 主键集合，供授权判定使用。 */
+    /** 该 principal role 的成员主体主键，供诊断与测试读取。 */
     @Transactional(readOnly = true)
-    public List<String> catalogRoleIdsOf(String principalRoleName) {
+    public List<String> principalIdsOf(String principalRoleName) {
         return principalRoleRepository.findByName(principalRoleName)
-                .map(role -> catalogRoleAssignmentRepository.findByPrincipalRoleId(role.getId())
-                        .stream().map(CatalogRoleAssignmentEntity::getCatalogRoleId).toList())
+                .map(role -> principalRoleAssignmentRepository.findByPrincipalRoleId(role.getId())
+                        .stream().map(PrincipalRoleAssignmentEntity::getPrincipalId).toList())
                 .orElse(List.of());
+    }
+
+    /** 主体在某角色上的成员实体，供 {@code PrincipalController} 判重。 */
+    @Transactional(readOnly = true)
+    public boolean isMember(String principalId, String principalRoleId) {
+        return principalRoleAssignmentRepository
+                .existsByPrincipalIdAndPrincipalRoleId(principalId, principalRoleId);
+    }
+
+    /** 主体实体，供成员关系端点复用。 */
+    @Transactional(readOnly = true)
+    public PrincipalEntity requirePrincipal(String name) {
+        return principalRepository.findByName(name)
+                .orElseThrow(() -> ApiException.managementNotExist(ResourceType.PRINCIPAL, name));
     }
 }

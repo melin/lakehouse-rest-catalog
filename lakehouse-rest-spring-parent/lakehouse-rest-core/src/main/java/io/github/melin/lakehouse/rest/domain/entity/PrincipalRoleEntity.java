@@ -15,10 +15,13 @@ import lombok.Setter;
 /**
  * principal role（主体角色）。
  *
- * <p>对应管理规格的 {@code PrincipalRole}。它是主体与 catalog role 之间的中转层：
- * 权限不下发给 principal role，而是先把 catalog role 授予 principal role，
- * 再把 principal role 授予主体。多对多关系分别落在
- * {@link PrincipalRoleAssignmentEntity} 与 {@link CatalogRoleAssignmentEntity}。
+ * <p>对应管理规格的 {@code PrincipalRole}，语义是**纯分组**：它自己不携带任何权限，
+ * 只把授予 {@code role:<name>} 的那条赋权转发给成员（见
+ * {@code AuthorizationService#principalCandidates}）。成员关系落在
+ * {@link PrincipalRoleAssignmentEntity}。
+ *
+ * <p>原先「principal role → catalog role → 权限」的中转层已随 catalog role 整体移除，
+ * 因此这里不再有指向 catalog role 的成员关系。
  *
  * <p>{@code federated} 标记该角色是否来自外部身份提供方（规格字段）。
  * 本服务不接入外部 IdP，因此该字段只作为标记保存与回显。

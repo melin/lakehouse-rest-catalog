@@ -71,32 +71,6 @@ USE `lakehouse_catalog`;
         primary key (id)
     ) engine=InnoDB;
 
-    create table lakehouse_catalog_role (
-        entity_version integer not null,
-        created_at bigint,
-        updated_at bigint,
-        catalog_id varchar(64) not null,
-        id varchar(64) not null,
-        created_by varchar(255),
-        name varchar(255) not null,
-        owner varchar(255),
-        updated_by varchar(255),
-        properties_json text,
-        primary key (id)
-    ) engine=InnoDB;
-
-    create table lakehouse_catalog_role_grant (
-        created_at bigint,
-        updated_at bigint,
-        catalog_role_id varchar(64) not null,
-        id varchar(64) not null,
-        principal_role_id varchar(64) not null,
-        created_by varchar(255),
-        owner varchar(255),
-        updated_by varchar(255),
-        primary key (id)
-    ) engine=InnoDB;
-
     create table lakehouse_consumer (
         next_snapshot bigint,
         updated_at bigint,
@@ -269,23 +243,6 @@ USE `lakehouse_catalog`;
         primary key (id)
     ) engine=InnoDB;
 
-    create table lakehouse_resource_grant (
-        created_at bigint,
-        updated_at bigint,
-        resource_type varchar(32) not null,
-        catalog_role_id varchar(64) not null,
-        id varchar(64) not null,
-        namespace_hash varchar(64) not null,
-        privilege varchar(64) not null,
-        namespace_json varchar(4096),
-        namespace_key varchar(4096) not null,
-        created_by varchar(255),
-        object_name varchar(255) not null,
-        owner varchar(255),
-        updated_by varchar(255),
-        primary key (id)
-    ) engine=InnoDB;
-
     create table lakehouse_semantic_view (
         created_at bigint,
         updated_at bigint,
@@ -430,15 +387,6 @@ USE `lakehouse_catalog`;
     alter table lakehouse_catalog 
        add constraint uk_catalog_prefix unique (prefix_value);
 
-    alter table lakehouse_catalog_role 
-       add constraint uk_catalog_role_name unique (catalog_id, name);
-
-    create index ix_catalog_role_grant_role 
-       on lakehouse_catalog_role_grant (catalog_role_id);
-
-    alter table lakehouse_catalog_role_grant 
-       add constraint uk_catalog_role_grant unique (principal_role_id, catalog_role_id);
-
     create index ix_consumer_table 
        on lakehouse_consumer (table_id);
 
@@ -498,12 +446,6 @@ USE `lakehouse_catalog`;
 
     alter table lakehouse_principal_role_grant 
        add constraint uk_principal_role_grant unique (principal_id, principal_role_id);
-
-    create index ix_resource_grant_role 
-       on lakehouse_resource_grant (catalog_role_id);
-
-    alter table lakehouse_resource_grant 
-       add constraint uk_resource_grant unique (catalog_role_id, resource_type, namespace_hash, object_name, privilege);
 
     create index ix_semantic_view_database 
        on lakehouse_semantic_view (database_id);

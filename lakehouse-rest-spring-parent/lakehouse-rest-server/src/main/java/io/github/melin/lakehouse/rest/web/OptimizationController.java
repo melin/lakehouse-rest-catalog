@@ -15,7 +15,7 @@ import io.github.melin.lakehouse.rest.dto.OptimizationDtos.TableHistory;
 import io.github.melin.lakehouse.rest.dto.OptimizationDtos.TablePolicy;
 import io.github.melin.lakehouse.rest.dto.OptimizationDtos.UpdateCatalogSettingsRequest;
 import io.github.melin.lakehouse.rest.dto.OptimizationDtos.UpdateTablePolicyRequest;
-import io.github.melin.lakehouse.rest.dto.Privilege;
+import io.github.melin.lakehouse.rest.dto.PermissionDtos.Access;
 import io.github.melin.lakehouse.rest.service.AuthorizationService;
 import io.github.melin.lakehouse.rest.service.OptimizationJobService;
 import io.github.melin.lakehouse.rest.service.TableOptimizationService;
@@ -74,7 +74,7 @@ public class OptimizationController {
     /** {@code GET /optimization/catalogs/{catalogName}/settings}。 */
     @GetMapping("/catalogs/{catalogName}/settings")
     public CatalogSettings settings(@PathVariable String catalogName) {
-        requireCatalog(catalogName, Privilege.CATALOG_READ_PROPERTIES, "read optimization settings");
+        requireCatalog(catalogName, Access.DESCRIBE, "read optimization settings");
         return optimizationService.settings(catalogName);
     }
 
@@ -82,7 +82,7 @@ public class OptimizationController {
     @PutMapping("/catalogs/{catalogName}/settings")
     public CatalogSettings updateSettings(@PathVariable String catalogName,
                                           @RequestBody UpdateCatalogSettingsRequest request) {
-        requireCatalog(catalogName, Privilege.CATALOG_WRITE_PROPERTIES, "update optimization settings");
+        requireCatalog(catalogName, Access.ALTER, "update optimization settings");
         return optimizationService.updateSettings(catalogName, request, RequestContext.principal());
     }
 
@@ -92,7 +92,7 @@ public class OptimizationController {
     @GetMapping("/tables/{catalogName}/{databaseName}/{tableName}/policy")
     public TablePolicy policy(@PathVariable String catalogName, @PathVariable String databaseName,
                               @PathVariable String tableName) {
-        requireCatalog(catalogName, Privilege.CATALOG_READ_PROPERTIES, "read the optimization policy");
+        requireCatalog(catalogName, Access.DESCRIBE, "read the optimization policy");
         return optimizationService.policy(catalogName, databaseName, tableName);
     }
 
@@ -101,7 +101,7 @@ public class OptimizationController {
     public TablePolicy updatePolicy(@PathVariable String catalogName, @PathVariable String databaseName,
                                     @PathVariable String tableName,
                                     @RequestBody UpdateTablePolicyRequest request) {
-        requireCatalog(catalogName, Privilege.CATALOG_WRITE_PROPERTIES, "update the optimization policy");
+        requireCatalog(catalogName, Access.ALTER, "update the optimization policy");
         return optimizationService.updatePolicy(catalogName, databaseName, tableName, request,
                 RequestContext.principal());
     }
@@ -111,7 +111,7 @@ public class OptimizationController {
     public ResponseEntity<Job> run(@PathVariable String catalogName, @PathVariable String databaseName,
                                    @PathVariable String tableName,
                                    @RequestBody(required = false) RunOptimizationRequest request) {
-        requireCatalog(catalogName, Privilege.CATALOG_WRITE_PROPERTIES, "run table optimization");
+        requireCatalog(catalogName, Access.ALTER, "run table optimization");
         List<String> actions = request == null ? null : request.actions();
         Job created = optimizationService.run(catalogName, databaseName, tableName, actions,
                 RequestContext.principal());
@@ -129,7 +129,7 @@ public class OptimizationController {
     @GetMapping("/tables/{catalogName}/{databaseName}/{tableName}/items")
     public TableHistory history(@PathVariable String catalogName, @PathVariable String databaseName,
                                 @PathVariable String tableName) {
-        requireCatalog(catalogName, Privilege.CATALOG_READ_PROPERTIES, "read the table optimization history");
+        requireCatalog(catalogName, Access.DESCRIBE, "read the table optimization history");
         return optimizationService.history(catalogName, databaseName, tableName);
     }
 
@@ -156,7 +156,7 @@ public class OptimizationController {
         }
         int size = limit == null ? MAX_JOB_LIST : limit;
         if (catalogName != null && !catalogName.isBlank()) {
-            requireCatalog(catalogName, Privilege.CATALOG_READ_PROPERTIES, "list optimization jobs");
+            requireCatalog(catalogName, Access.DESCRIBE, "list optimization jobs");
             return new Jobs(jobService.list(catalogName, status, actionFilter, size));
         }
         List<Job> visible = new ArrayList<>();
@@ -177,7 +177,7 @@ public class OptimizationController {
     @GetMapping("/jobs/{jobId}")
     public Job job(@PathVariable String jobId) {
         OptimizationJobEntity job = jobService.require(jobId);
-        requireCatalog(catalogNameOf(job.getCatalogId()), Privilege.CATALOG_READ_PROPERTIES,
+        requireCatalog(catalogNameOf(job.getCatalogId()), Access.DESCRIBE,
                 "read the optimization job");
         return jobService.detail(jobId, revealToken());
     }
@@ -186,7 +186,7 @@ public class OptimizationController {
     @PostMapping("/jobs/{jobId}/retry")
     public ResponseEntity<Job> retry(@PathVariable String jobId) {
         OptimizationJobEntity job = jobService.require(jobId);
-        requireCatalog(catalogNameOf(job.getCatalogId()), Privilege.CATALOG_WRITE_PROPERTIES,
+        requireCatalog(catalogNameOf(job.getCatalogId()), Access.ALTER,
                 "retry the optimization job");
         OptimizationJobEntity created = jobService.retry(jobId, RequestContext.principal());
         return ResponseEntity.status(HttpStatus.CREATED).body(jobService.detail(created.getId(), revealToken()));
@@ -196,7 +196,7 @@ public class OptimizationController {
     @PostMapping("/jobs/{jobId}/cancel")
     public Job cancel(@PathVariable String jobId) {
         OptimizationJobEntity job = jobService.require(jobId);
-        requireCatalog(catalogNameOf(job.getCatalogId()), Privilege.CATALOG_WRITE_PROPERTIES,
+        requireCatalog(catalogNameOf(job.getCatalogId()), Access.ALTER,
                 "cancel the optimization job");
         jobService.cancel(jobId, RequestContext.principal());
         return jobService.detail(jobId, revealToken());
@@ -238,11 +238,11 @@ public class OptimizationController {
 
     private boolean hasCatalogAccess(String catalogName) {
         return catalogName != null
-                && !authorizationService.catalogRoleIdsOf(RequestContext.principal(), catalogName).isEmpty();
+                && authorizationService.hasAnyGrant(RequestContext.principal(), catalogName);
     }
 
-    private void requireCatalog(String catalogName, Privilege privilege, String action) {
-        authorizationService.requireCatalog(catalogName, privilege, action);
+    private void requireCatalog(String catalogName, Access access, String action) {
+        authorizationService.requireCatalog(catalogName, access, action);
     }
 
     private String catalogNameOf(String catalogId) {

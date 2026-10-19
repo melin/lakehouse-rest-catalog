@@ -86,7 +86,7 @@ public enum CatalogEventType {
 
     // ------------------------------------------------------------------ GRANT
 
-    /** 授予权限（直授给主体，或授给 catalog role）。对标 {@code AFTER_ADD_GRANT_TO_CATALOG_ROLE}。 */
+    /** 授予权限（直授给主体或主体角色，见官方 12 项 access）。对标 {@code AFTER_ADD_GRANT_TO_CATALOG_ROLE}。 */
     GRANT_GRANTED(CatalogEventCategory.GRANT, "grant.granted"),
 
     /** 撤销权限。对标 {@code AFTER_REVOKE_GRANT_FROM_CATALOG_ROLE}。 */
@@ -125,23 +125,6 @@ public enum CatalogEventType {
 
     /** 删主体角色。对标 {@code AFTER_DELETE_PRINCIPAL_ROLE}。 */
     PRINCIPAL_ROLE_DROPPED(CatalogEventCategory.PRINCIPAL_ROLE, "principal_role.dropped"),
-
-    /** 把 catalog 角色绑到主体角色上。对标 {@code AFTER_ASSIGN_CATALOG_ROLE_TO_PRINCIPAL_ROLE}。 */
-    CATALOG_ROLE_BOUND(CatalogEventCategory.PRINCIPAL_ROLE, "principal_role.catalog_role_granted"),
-
-    /** 解绑。对标 {@code AFTER_REVOKE_CATALOG_ROLE_FROM_PRINCIPAL_ROLE}。 */
-    CATALOG_ROLE_UNBOUND(CatalogEventCategory.PRINCIPAL_ROLE, "principal_role.catalog_role_revoked"),
-
-    // ------------------------------------------------------------------ CATALOG_ROLE
-
-    /** 建 catalog 角色。对标 {@code AFTER_CREATE_CATALOG_ROLE}。 */
-    CATALOG_ROLE_CREATED(CatalogEventCategory.CATALOG_ROLE, "catalog_role.created"),
-
-    /** 改 catalog 角色。对标 {@code AFTER_UPDATE_CATALOG_ROLE}。 */
-    CATALOG_ROLE_UPDATED(CatalogEventCategory.CATALOG_ROLE, "catalog_role.updated"),
-
-    /** 删 catalog 角色。对标 {@code AFTER_DELETE_CATALOG_ROLE}。 */
-    CATALOG_ROLE_DROPPED(CatalogEventCategory.CATALOG_ROLE, "catalog_role.dropped"),
 
     // ------------------------------------------------------------------ POLICY
 

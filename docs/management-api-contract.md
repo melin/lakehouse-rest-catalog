@@ -1,4 +1,13 @@
-# Polaris Management API 契约基线
+# Polaris Management API 契约基线（存档）
+
+> **本文件已不是当前契约。** 管理接口已切换到 Paimon 官方的
+> REST Management API（`spec/paimon-rest-management-api.yaml`），权限项、资源类型
+> 与授权链路全部按官方定义落地，catalog role 整层移除。
+>
+> 保留本文件只为两件事：一是 catalog / principal / principal role 这三组**服务端扩展
+> 端点**的形状来源，二是历史对照。阅读服务端实际行为请以
+> `docs/authorization.md` 与 `docs/management-api-overview.md` 为准；
+> 本文件里出现的 catalog role、grants、64 项 privilege 都已不存在。
 
 本文档由 `spec/polaris-management-service.yml` 直接生成，用于实现与验收对照，
 表格内容与规格逐字一致，不含人工推断。生成方式见 `scripts/gen-management-contract.py`。

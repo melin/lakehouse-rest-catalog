@@ -15,8 +15,9 @@ import java.util.Map;
  * （{@code /catalogs/{name}/files}，见 {@link CatalogFileListing}）。
  *
  * <p>为什么不把这些取值直接写死在控制台里：控制台的表单要靠它们渲染下拉框
- * （存储类型、资源类型、可授予的权限），而权限与资源类型的对应关系由
- * {@link Privilege#allowedFor(String)} 从管理规格还原出来——前端复制一份必然漂移，
+ * （存储类型、资源类型、可授予的 access），而资源类型与 access 的对应关系由
+ * {@link PermissionDtos.Access#allowedFor(PermissionDtos.ResourceType)} 从官方
+ * Access/Resource 对照表还原出来——前端复制一份必然漂移，
  * 而且漂移的表现是「提交后才被服务端拒绝」，排查成本高。这里做成一处的导出。
  *
  * <p>元数据端点只暴露枚举取值与服务端自身的配置，不暴露任何主体、catalog 或凭据信息，
@@ -105,8 +106,20 @@ public final class ConsoleDtos {
             boolean staticCredentialsEnabled,
             List<String> credentialManagerTypes,
             List<String> fileIoTypes,
+            /**
+             * 官方 {@code PermissionResource} 的 8 个资源类型。
+             *
+             * <p>键名 `grantTypes` 是历史命名（Polaris 时代这里是 catalog / namespace /
+             * table / view / policy / semantic-model 六种授权类型的小写值）。
+             * 控制台的权限页仍按这个名字读，因此保留键名、只改内容。
+             */
             List<String> grantTypes,
-            /** 资源类型（{@code grantTypes} 的取值）→ 该层级允许授予的权限。 */
+            /**
+             * 资源类型（{@code grantTypes} 的取值）→ 该层级允许授予的 access。
+             *
+             * <p>键名同样是历史命名；内容已换成官方 Access/Resource 对照表，
+             * 与服务端入参校验用的 {@code Access.allowedFor} 同源。
+             */
             Map<String, List<String>> privilegesByGrantType) {
     }
 

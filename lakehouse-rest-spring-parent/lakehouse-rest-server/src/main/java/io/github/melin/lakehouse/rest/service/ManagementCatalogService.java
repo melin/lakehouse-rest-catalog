@@ -3,20 +3,15 @@ package io.github.melin.lakehouse.rest.service;
 import io.github.melin.lakehouse.rest.config.RequestContext;
 import io.github.melin.lakehouse.rest.config.RestServerProperties;
 import io.github.melin.lakehouse.rest.domain.entity.CatalogEntity;
-import io.github.melin.lakehouse.rest.domain.entity.CatalogRoleEntity;
-import io.github.melin.lakehouse.rest.domain.entity.ResourceGrantEntity;
+import io.github.melin.lakehouse.rest.domain.entity.PermissionAssignmentEntity;
 import io.github.melin.lakehouse.rest.domain.repo.CatalogRepository;
-import io.github.melin.lakehouse.rest.domain.repo.CatalogRoleAssignmentRepository;
-import io.github.melin.lakehouse.rest.domain.repo.CatalogRoleRepository;
-import io.github.melin.lakehouse.rest.domain.repo.ResourceGrantRepository;
+import io.github.melin.lakehouse.rest.domain.repo.PermissionAssignmentRepository;
 import io.github.melin.lakehouse.rest.dto.ManagementDtos.Catalog;
 import io.github.melin.lakehouse.rest.dto.ManagementDtos.Catalogs;
 import io.github.melin.lakehouse.rest.dto.ManagementDtos.CreateCatalogRequest;
 import io.github.melin.lakehouse.rest.dto.ManagementDtos.UpdateCatalogRequest;
 import io.github.melin.lakehouse.rest.dto.ManagementEnums.CatalogType;
-import io.github.melin.lakehouse.rest.dto.ManagementEnums.GrantType;
 import io.github.melin.lakehouse.rest.dto.ManagementEnums.StorageType;
-import io.github.melin.lakehouse.rest.dto.Privilege;
 import io.github.melin.lakehouse.rest.dto.StorageDtos.StorageConfigInfo;
 import io.github.melin.lakehouse.rest.event.CatalogEvent;
 import io.github.melin.lakehouse.rest.event.CatalogEventPublisher;
@@ -64,13 +59,8 @@ import org.springframework.transaction.annotation.Transactional;
 @Slf4j
 public class ManagementCatalogService {
 
-    /** 建 catalog 时预置的 catalog role 名，与 Polaris 默认角色同名。 */
-    public static final String DEFAULT_CATALOG_ROLE = "catalog_admin";
-
     private final CatalogRepository catalogRepository;
-    private final CatalogRoleRepository catalogRoleRepository;
-    private final CatalogRoleAssignmentRepository catalogRoleAssignmentRepository;
-    private final ResourceGrantRepository resourceGrantRepository;
+    private final PermissionAssignmentRepository permissionAssignmentRepository;
     private final DatabaseService databaseService;
     private final RestServerProperties properties;
     private final StorageRuntimePolicy storagePolicy;
@@ -121,7 +111,7 @@ public class ManagementCatalogService {
         entity.markCreated(RequestContext.principal(), RequestContext.now());
         CatalogEntity saved = catalogRepository.save(entity);
 
-        provisionDefaultCatalogRole(saved);
+        provisionBootstrapGrants(saved);
         events.publish(CatalogEventType.CATALOG_CREATED, name, CatalogEvent.TARGET_CATALOG, name,
                 Map.of("format", saved.getCatalogFormat(), "type", saved.getCatalogType()));
         return toDto(saved);
@@ -166,30 +156,27 @@ public class ManagementCatalogService {
     /**
      * {@code DELETE /catalogs/{catalogName}}。
      *
-     * <p>级联清理该 catalog 下的全部从属对象：database（及其表、分区、视图、函数、语义视图）、
-     * catalog role 及其授权与角色分配。规格没有 cascade 参数，这里按级联实现，
+     * <p>级联清理该 catalog 下的全部从属对象：database（及其表、分区、视图、函数、语义视图）
+     * 与该 catalog 的全部权限赋权。规格没有 cascade 参数，这里按级联实现，
      * 与 catalog API 的 {@code DELETE /databases/{database}} 保持一致。
      */
     @Transactional
     public void delete(String name) {
         CatalogEntity entity = require(name);
 
-        // 先删角色分配与授权，再删角色，最后删 catalog 内容
-        List<CatalogRoleEntity> roles = catalogRoleRepository.findByCatalogIdOrderByNameAsc(entity.getId());
-        for (CatalogRoleEntity role : roles) {
-            catalogRoleAssignmentRepository.deleteByCatalogRoleId(role.getId());
-            resourceGrantRepository.deleteByCatalogRoleId(role.getId());
-            catalogRoleRepository.delete(role);
-        }
+        // 赋权是 catalog 内的记录，随 catalog 一起消失；principal role 与主体不动
+        List<PermissionAssignmentEntity> grants =
+                permissionAssignmentRepository.findByCatalogId(entity.getId());
+        permissionAssignmentRepository.deleteByCatalogId(entity.getId());
         // 复用 catalog API 的库级级联删除，保证两条删除路径的语义一致
         int databases = databaseService.dropAll(entity.getPrefix());
         catalogRepository.delete(entity);
-        log.debug("deleted catalog {}: {} databases and {} catalog roles removed",
-                name, databases, roles.size());
+        log.debug("deleted catalog {}: {} databases and {} permission assignments removed",
+                name, databases, grants.size());
         // 级联删掉的库与表不再各发一条：一条 catalog.dropped 已经说明了范围，
         // 逐级补发只会让「一次删目录」在事件流里膨胀成几百条
         events.publish(CatalogEventType.CATALOG_DROPPED, name, CatalogEvent.TARGET_CATALOG, name,
-                Map.of("databases", databases, "catalogRoles", roles.size()));
+                Map.of("databases", databases, "permissions", grants.size()));
     }
 
     /** 按名称取 catalog，不存在则 404。供其他管理服务复用。 */
@@ -288,38 +275,44 @@ public class ManagementCatalogService {
     }
 
     /**
-     * 为新 catalog 预置 {@value #DEFAULT_CATALOG_ROLE} 角色并授予 catalog 级管理权限。
+     * 新建 catalog 时把「自举角色」授成该 catalog 的管理员。
      *
-     * <p>这是 Polaris 的既有做法（新建 catalog 会带一个默认管理角色），
-     * 也是授权体系的自举入口：没有它，任何人都无法在新建的 catalog 上授予权限。
-     * 仅在开启授权时有意义，因此关闭授权时不创建，避免给不使用的部署留下无用数据。
+     * <p>授权体系必须有个入口：没有任何赋权时，连服务管理员之外的第一个人都授不了权。
+     * 自举角色由 {@code lakehouse.rest.authorization.bootstrap-principal-role} 指定，
+     * 它是一串 principal（{@code role:<name>}），不依赖角色实体是否存在——
+     * 角色还没建时这条赋权是「悬空」的，等角色建好、有人加入，权限立刻生效。
+     *
+     * <p>给两条：{@code CATALOG/ALL} 管 catalog 实体本身（改属性、删 catalog、建库），
+     * {@code CATALOG_ALL/ALL} 管其下一切后代。两个作用域在官方模型里本就分开，
+     * 少给一条会出现「能建库却不能列表」这类半残状态。
+     *
+     * <p>仅在开启授权时写入；关闭授权时判定全放行，不需要这些数据。
      */
-    private void provisionDefaultCatalogRole(CatalogEntity catalog) {
+    private void provisionBootstrapGrants(CatalogEntity catalog) {
         if (!properties.getAuthorization().isEnabled()) {
             return;
         }
-        long now = RequestContext.now();
-        CatalogRoleEntity role = new CatalogRoleEntity();
-        role.setId(Paging.newId());
-        role.setCatalogId(catalog.getId());
-        role.setName(DEFAULT_CATALOG_ROLE);
-        role.setProperties(new LinkedHashMap<>());
-        role.markCreated(RequestContext.principal(), now);
-        CatalogRoleEntity savedRole = catalogRoleRepository.save(role);
-
-        for (Privilege privilege : List.of(Privilege.CATALOG_MANAGE_ACCESS, Privilege.CATALOG_MANAGE_CONTENT)) {
-            ResourceGrantEntity grant = new ResourceGrantEntity();
-            grant.setId(Paging.newId());
-            grant.setCatalogRoleId(savedRole.getId());
-            grant.setResourceType(GrantType.CATALOG.wireName());
-            grant.setNamespace(new ArrayList<>());
-            grant.setObjectName("");
-            grant.normalizeNamespace();
-            grant.setPrivilege(privilege.name());
-            grant.markCreated(RequestContext.principal(), now);
-            resourceGrantRepository.save(grant);
+        String roleName = properties.getAuthorization().getBootstrapPrincipalRole();
+        if (roleName == null || roleName.isBlank()) {
+            log.info("no bootstrap principal role configured; catalog {} starts without any grant,"
+                    + " only service admins can grant access on it", catalog.getPrefix());
+            return;
         }
-        log.info("provisioned default catalog role {} with CATALOG_MANAGE_ACCESS for catalog {}",
-                DEFAULT_CATALOG_ROLE, catalog.getPrefix());
+        String principal = "role:" + roleName;
+        long now = RequestContext.now();
+        for (String resourceType : List.of("CATALOG", "CATALOG_ALL")) {
+            PermissionAssignmentEntity grant = new PermissionAssignmentEntity();
+            grant.setId(Paging.newId());
+            grant.setCatalogId(catalog.getId());
+            grant.setResourceType(resourceType);
+            grant.setDatabaseName("");
+            grant.setObjectName("");
+            grant.setAccess("ALL");
+            grant.setPrincipal(principal);
+            grant.markCreated(RequestContext.principal(), now);
+            permissionAssignmentRepository.save(grant);
+        }
+        log.info("granted CATALOG/ALL and CATALOG_ALL/ALL on catalog {} to {}",
+                catalog.getPrefix(), principal);
     }
 }

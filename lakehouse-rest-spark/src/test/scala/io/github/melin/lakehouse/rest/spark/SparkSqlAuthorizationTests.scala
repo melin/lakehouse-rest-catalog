@@ -55,15 +55,15 @@ import java.util.UUID
  * 属于「用得了这个 catalog」的门槛。只读角色因此是「读元数据 + 读数据」而不是「只有读数据」。
  *
  * <p><b>装配走的是「权限管理」页那条链路。</b>授权语句是
- * {@code GRANT <access> ON <资源> TO ROLE <catalog role>}——官方权限模型，与页面同一套
+ * {@code GRANT <access> ON <资源> TO ROLE <名称>}——官方权限模型，与页面同一套
  * 语义与同一个端点（{@code /v1/{prefix}/permissions}）。`ROLE <名称>` 折成 principal
- * 字符串 {@code role:<名称>}，判定层再把它解析为「主体在该 catalog 下持有的同名
- * catalog role」（见 `PaimonPermissionModel.principalCandidates`）。因此角色脚手架
- * （主体 → principal role → catalog role）仍然要建，但资源授权不再挂在角色上——
- * 它只是**给 `role:` 这个名字一个实体**。
+ * 字符串 {@code role:<名称>}，判定层再把它解析为主体通过 principal role 成员关系
+ * 拿到的分组（见 `AuthorizationService#principalCandidates`）。principal role 因此
+ * **只是分组**：它自己不携带任何权限，资源赋权全在
+ * `lakehouse_permission_assignment` 那一条三元组上。
  *
- * <p><b>角色脚手架走管理 API，不走 SQL。</b>catalog role 的语句已经全部从语法里移除
- * （控制台也没有它的页面），装配只能调 {@link io.github.melin.lakehouse.rest.spark.client.ManagementApiClient}。
+ * <p><b>主体 → principal role 的装配走管理 API，不走 SQL。</b>
+ * 装配只能调 {@link io.github.melin.lakehouse.rest.spark.client.ManagementApiClient}。
  * 这恰好也让本类顺带守住一件事：管理 API 那条路在自己不受 SQL 支持之后仍然可用。
  *
  * <p><b>身份是怎么来的。</b>两个身份共用 {@link LiveSparkSession#instance} 这一个会话的

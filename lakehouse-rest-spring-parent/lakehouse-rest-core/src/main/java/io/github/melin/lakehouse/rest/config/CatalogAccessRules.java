@@ -1,7 +1,7 @@
 package io.github.melin.lakehouse.rest.config;
 
-import io.github.melin.lakehouse.rest.dto.ManagementEnums.GrantType;
-import io.github.melin.lakehouse.rest.dto.Privilege;
+import io.github.melin.lakehouse.rest.dto.PermissionDtos.Access;
+import io.github.melin.lakehouse.rest.dto.PermissionDtos.ResourceType;
 import io.github.melin.lakehouse.rest.support.NamespacePaths;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
@@ -10,11 +10,24 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * catalog API（{@code /v1/**}）端点 → 所需权限的映射表。
+ * catalog API（{@code /v1/**}）端点 → 所需 access 的映射表。
  *
- * <p>LakeHouse Catalog 规格本身不描述访问控制，这套映射取自 Polaris 的
- * catalog API 授权约定：把每个端点归到「行使哪项权限」上，让
- * {@link io.github.melin.lakehouse.rest.service.AuthorizationService} 用同一套 RBAC 判定。
+ * <p>取词表来自 Paimon REST Management API 的 12 项 access，资源类型用它的 8 个
+ * {@code PermissionResource.type}。每个端点归到「在哪个资源上行使哪项 access」，
+ * 交给 {@link io.github.melin.lakehouse.rest.service.AuthorizationService} 用
+ * {@code permission_assignment} 判定——不再有 Polaris 的 64 项权限。
+ *
+ * <p><b>两类目标的区分。</b>官方把 {@code CATALOG} 与 {@code CATALOG_ALL}、
+ * {@code DATABASE} 与 {@code DATABASE_ALL} 定义成不同作用域：
+ * <ul>
+ *   <li>「列 catalog 下的库」这类**集合操作**落在 {@code CATALOG_ALL} 上
+ *       （官方表里 {@code LIST} 只出现在 {@code CATALOG_ALL}，不在 {@code CATALOG}）；</li>
+ *   <li>「建库」落在 {@code CATALOG} 上（只有它允许 {@code CREATEDATABASE}）；</li>
+ *   <li>「建表 / 建视图 / 建函数」落在 {@code DATABASE} 上（官方表里这三项只出现在
+ *       {@code DATABASE} 与 {@code CATALOG_ALL}）。</li>
+ * </ul>
+ * 因此同一个「表集合」端点的读与写会落到两个不同的目标类型上，这是官方模型的形状，
+ * 不是笔误。
  *
  * <p><b>为什么用路径而不是逐个控制器加注解。</b>
  * catalog API 有 60 个端点，逐处标注会有两处风险：漏标（静默放行）和标注与实际
@@ -23,12 +36,13 @@ import java.util.Locale;
  *
  * <p><b>失败关闭。</b>授权开启时，落在 {@code /v1/**} 下、但既不在本表登记、
  * 也不属于 {@link #isPublic(String)} 的请求会被拒绝（403），而不是放行。
- * 这样新增端点若忘记登记会立刻报错，不会留下静默的越权入口。
  *
- * <p><b>规格没有对应权限的端点。</b>Paimon 比 Polaris 多出 function（用户自定义函数）
- * 与 semantic view 之外的若干子资源，规格的六个权限 enum 里没有 function 层级，
- * 这里把 function 归到其所在命名空间的权限上，不做虚构的权限取值。
- * 详见 {@code docs/management-api-contract.md} 的授权映射章节。
+ * <p><b>两个 deferred 端点。</b>{@code POST .../permissions/grant} 与
+ * {@code .../revoke} 的目标资源在请求体里，路径上只有 {@code GRANT} 这一层含义，
+ * 无法在这里算出作用域。它们被标记为 {@link Requirement#deferred()}，
+ * 由 {@code PermissionController} 拿着解析后的 {@code PermissionResource}
+ * 调用 {@code AuthorizationService#requireGrantOn} 完成判定——比固定在 catalog 级
+ * 更精确（在单表上持有 {@code GRANT} 的人也能管那张表的赋权）。
  */
 public final class CatalogAccessRules {
 
@@ -39,13 +53,18 @@ public final class CatalogAccessRules {
      * 一个端点的授权要求。
      *
      * @param catalog      catalog 名，即路径中的 {@code {prefix}}
-     * @param resourceType 资源类型判别值，决定授权的作用域层级
-     * @param namespace    多级命名空间；catalog 级要求传空列表
-     * @param objectName   对象名；catalog / namespace 级要求传 {@code null}
-     * @param privilege    要求的权限
+     * @param resourceType 目标资源类型
+     * @param namespace    多级命名空间；catalog 级为空列表
+     * @param objectName   对象名；catalog / 命名空间级为 {@code null}
+     * @param access       要求的 access；{@code null} 表示由控制器按请求体判定
      */
-    public record Requirement(String catalog, GrantType resourceType, List<String> namespace,
-                              String objectName, Privilege privilege) {
+    public record Requirement(String catalog, ResourceType resourceType, List<String> namespace,
+                              String objectName, Access access) {
+
+        /** 是否交给控制器判定（请求体里才有目标资源）。 */
+        public boolean deferred() {
+            return access == null;
+        }
     }
 
     private CatalogAccessRules() {
@@ -56,12 +75,7 @@ public final class CatalogAccessRules {
      *
      * <p>只有两处：{@code GET /v1/config} 与 {@code POST /v1/oauth/tokens}。
      * 两者都属于同一类——**认证凭据还没换到，就必须可达**。
-     * {@code /v1/config} 返回服务端能力清单，客户端在拿到凭据前就要读；OAuth 令牌端点
-     * 本身就是用来换凭据的，要求它自带令牌会形成死循环（这一点与
-     * {@code /api/catalog/v1/oauth/tokens} 完全相同，见 {@code OAuthTokenController}）。
-     * 两者都不含任何租户数据。
-     *
-     * <p>其余端点一律要求授权。
+     * 其余端点一律要求授权。
      */
     public static boolean isPublic(String requestUri) {
         if (requestUri == null) {
@@ -72,7 +86,7 @@ public final class CatalogAccessRules {
     }
 
     /**
-     * 解析端点所需的权限。
+     * 解析端点所需的 access。
      *
      * @param requestUri 请求路径（不含查询串）
      * @param method     HTTP 方法
@@ -121,19 +135,19 @@ public final class CatalogAccessRules {
         // ---------------------------------------------------------- 命名空间自身
         if (path.size() == 1) {
             return read
-                    ? at(catalog, GrantType.NAMESPACE, List.of(), null, Privilege.NAMESPACE_LIST)
-                    : at(catalog, GrantType.NAMESPACE, List.of(), null, Privilege.NAMESPACE_CREATE);
+                    ? at(catalog, ResourceType.CATALOG_ALL, List.of(), null, Access.LIST)
+                    : at(catalog, ResourceType.CATALOG, List.of(), null, Access.CREATEDATABASE);
         }
         String database = path.get(1);
         List<String> namespace = List.of(database);
         if (path.size() == 2) {
             if (read) {
-                return at(catalog, GrantType.NAMESPACE, namespace, null, Privilege.NAMESPACE_READ_PROPERTIES);
+                return at(catalog, ResourceType.DATABASE, namespace, null, Access.DESCRIBE);
             }
             if ("DELETE".equals(method)) {
-                return at(catalog, GrantType.NAMESPACE, namespace, null, Privilege.NAMESPACE_DROP);
+                return at(catalog, ResourceType.DATABASE, namespace, null, Access.DROP);
             }
-            return at(catalog, GrantType.NAMESPACE, namespace, null, Privilege.NAMESPACE_WRITE_PROPERTIES);
+            return at(catalog, ResourceType.DATABASE, namespace, null, Access.ALTER);
         }
 
         return switch (path.get(2)) {
@@ -147,28 +161,17 @@ public final class CatalogAccessRules {
     /** {@code /v1/{prefix}/tables……} 这类不带命名空间的全局端点。 */
     private static Requirement global(String catalog, List<String> path, String method, boolean read) {
         String head = path.get(0);
-        if (head.equals("functions")) {
-            // 没有 function 层级的权限取值，按命名空间粒度要求
-            return path.size() == 1 && read
-                    ? at(catalog, GrantType.CATALOG, List.of(), null, Privilege.NAMESPACE_LIST)
-                    : null;
-        }
         if (path.size() == 1) {
-            if (!read) {
-                return null;
-            }
-            return head.equals("tables")
-                    ? at(catalog, GrantType.CATALOG, List.of(), null, Privilege.TABLE_LIST)
-                    : at(catalog, GrantType.CATALOG, List.of(), null, Privilege.VIEW_LIST);
+            // 跨库列举：作用域是 catalog 的后代集合，官方表里 LIST 只在 CATALOG_ALL 上
+            return read ? at(catalog, ResourceType.CATALOG_ALL, List.of(), null, Access.LIST) : null;
         }
         if (path.size() == 2 && "rename".equals(path.get(1))) {
-            return head.equals("tables")
-                    ? at(catalog, GrantType.CATALOG, List.of(), null, Privilege.TABLE_WRITE_PROPERTIES)
-                    : at(catalog, GrantType.CATALOG, List.of(), null, Privilege.VIEW_WRITE_PROPERTIES);
+            // 改名的源与目标都在请求体里，路径上按 catalog 后代集合的 ALTER 收敛
+            return read ? null : at(catalog, ResourceType.CATALOG_ALL, List.of(), null, Access.ALTER);
         }
         if (path.size() == 3 && "tables".equals(head) && "id".equals(path.get(1)) && read) {
-            // 按 id 查表跨命名空间，因此只认 catalog 级授权
-            return at(catalog, GrantType.TABLE, List.of(), null, Privilege.TABLE_READ_PROPERTIES);
+            // 按 id 查表跨命名空间，只能按 catalog 后代集合判
+            return at(catalog, ResourceType.CATALOG_ALL, List.of(), null, Access.DESCRIBE);
         }
         return null;
     }
@@ -176,20 +179,19 @@ public final class CatalogAccessRules {
     /**
      * Paimon 官方权限端点：{@code /v1/{prefix}/permissions[/grant|/revoke]}。
      *
-     * <p>官方要求调用者对相关资源具备 {@code GRANT}，但 grant/revoke 的目标资源在
-     * 请求体里、路径映射表看不到，因此这里收敛为 catalog 级的
-     * {@code CATALOG_MANAGE_ACCESS}（与 {@code PermissionController} 内的显式校验一致，
-     * 且只可能更严）。GET 落在 grant/revoke 路径上返回 {@code null} → 拒绝，
+     * <p>列赋权要求调用者在 catalog 的后代集合上具备 {@code GRANT}；
+     * grant/revoke 的目标资源在请求体里，标为 deferred 交给控制器精确判定。
+     * GET 落在 grant/revoke 路径上返回 {@code null} → 拒绝，
      * 避免把写端点误当读端点探测。
      */
     private static Requirement permissions(String catalog, List<String> path, boolean read) {
         if (path.size() == 1) {
             return read
-                    ? at(catalog, GrantType.CATALOG, List.of(), null, Privilege.CATALOG_MANAGE_ACCESS)
+                    ? at(catalog, ResourceType.CATALOG_ALL, List.of(), null, Access.GRANT)
                     : null;
         }
         if (path.size() == 2 && ("grant".equals(path.get(1)) || "revoke".equals(path.get(1))) && !read) {
-            return at(catalog, GrantType.CATALOG, List.of(), null, Privilege.CATALOG_MANAGE_ACCESS);
+            return new Requirement(catalog, ResourceType.CATALOG_ALL, List.of(), null, null);
         }
         return null;
     }
@@ -202,53 +204,58 @@ public final class CatalogAccessRules {
 
         if (path.size() == 3) {
             if (family.equals("table-details")) {
-                return read ? at(catalog, GrantType.TABLE, namespace, null, Privilege.TABLE_LIST) : null;
+                return read ? at(catalog, ResourceType.TABLE, namespace, null, Access.LIST) : null;
             }
             if (family.equals("register")) {
-                return read ? null : at(catalog, GrantType.TABLE, namespace, null, Privilege.TABLE_CREATE);
+                // 登记一张已存在的数据目录，与建表同一档（都在库上）
+                return read ? null : at(catalog, ResourceType.DATABASE, namespace, null, Access.CREATETABLE);
             }
             return read
-                    ? at(catalog, GrantType.TABLE, namespace, null, Privilege.TABLE_LIST)
-                    : at(catalog, GrantType.TABLE, namespace, null, Privilege.TABLE_CREATE);
+                    ? at(catalog, ResourceType.TABLE, namespace, null, Access.LIST)
+                    : at(catalog, ResourceType.DATABASE, namespace, null, Access.CREATETABLE);
         }
 
         String table = path.get(3);
         if (path.size() == 4) {
             if (read) {
-                return at(catalog, GrantType.TABLE, namespace, table, Privilege.TABLE_READ_PROPERTIES);
+                return at(catalog, ResourceType.TABLE, namespace, table, Access.DESCRIBE);
             }
             if ("DELETE".equals(method)) {
-                return at(catalog, GrantType.TABLE, namespace, table, Privilege.TABLE_DROP);
+                return at(catalog, ResourceType.TABLE, namespace, table, Access.DROP);
             }
-            return at(catalog, GrantType.TABLE, namespace, table, Privilege.TABLE_WRITE_PROPERTIES);
+            return at(catalog, ResourceType.TABLE, namespace, table, Access.ALTER);
         }
 
         // 表以下还有一层子资源，语义仍以该表为对象
         String sub = path.get(4);
-        Privilege required = switch (sub) {
-            case "commit", "rollback" -> Privilege.TABLE_WRITE_DATA;
-            case "rollback-schema" -> Privilege.TABLE_WRITE_PROPERTIES;
-            case "token", "auth" -> Privilege.TABLE_READ_DATA;
-            case "partitions" -> partitionPrivilege(path.size() > 5 ? path.get(5) : "", read);
-            case "consumers" -> Privilege.TABLE_WRITE_DATA;
+        Access required = switch (sub) {
+            case "commit", "rollback" -> Access.UPDATE;
+            case "rollback-schema" -> Access.ALTER;
+            case "token", "auth" -> Access.SELECT;
+            case "partitions" -> partitionAccess(path.size() > 5 ? path.get(5) : "", method, read);
+            case "consumers" -> read ? Access.DESCRIBE : Access.ALTER;
             default -> null; // snapshot / snapshots / branches / tags
         };
         if (required == null) {
             if (sub.equals("branches") || sub.equals("tags") || sub.equals("snapshot") || sub.equals("snapshots")) {
-                required = read ? Privilege.TABLE_READ_PROPERTIES : Privilege.TABLE_WRITE_PROPERTIES;
+                required = read ? Access.DESCRIBE : Access.ALTER;
             } else {
                 return null;
             }
         }
-        return at(catalog, GrantType.TABLE, namespace, table, required);
+        return at(catalog, ResourceType.TABLE, namespace, table, required);
     }
 
-    /** 分区操作：读挂在 {@code TABLE_READ_DATA} 上，写挂在 {@code TABLE_WRITE_DATA} 上。 */
-    private static Privilege partitionPrivilege(String operation, boolean read) {
-        if (operation.startsWith("list") || read) {
-            return Privilege.TABLE_READ_DATA;
+    /** 分区操作：读挂 {@code SELECT}，写挂 {@code UPDATE}。 */
+    private static Access partitionAccess(String operation, String method, boolean read) {
+        if (operation.startsWith("list") || operation.startsWith("mark") || read) {
+            // list-by-* 只读；mark 只是打标记不改数据
+            return Access.SELECT;
         }
-        return Privilege.TABLE_WRITE_DATA;
+        if ("GET".equals(method)) {
+            return Access.SELECT;
+        }
+        return Access.UPDATE;
     }
 
     /** {@code /v1/{prefix}/databases/{database}/views……}。 */
@@ -257,47 +264,55 @@ public final class CatalogAccessRules {
         String family = path.get(2);
         if (path.size() == 3) {
             if (family.equals("view-details")) {
-                return read ? at(catalog, GrantType.VIEW, namespace, null, Privilege.VIEW_LIST) : null;
+                return read ? at(catalog, ResourceType.VIEW, namespace, null, Access.LIST) : null;
             }
             return read
-                    ? at(catalog, GrantType.VIEW, namespace, null, Privilege.VIEW_LIST)
-                    : at(catalog, GrantType.VIEW, namespace, null, Privilege.VIEW_CREATE);
+                    ? at(catalog, ResourceType.VIEW, namespace, null, Access.LIST)
+                    : at(catalog, ResourceType.DATABASE, namespace, null, Access.CREATEVIEW);
         }
         String view = path.get(3);
         if (read) {
-            return at(catalog, GrantType.VIEW, namespace, view, Privilege.VIEW_READ_PROPERTIES);
+            return at(catalog, ResourceType.VIEW, namespace, view, Access.DESCRIBE);
         }
         if ("DELETE".equals(method)) {
-            return at(catalog, GrantType.VIEW, namespace, view, Privilege.VIEW_DROP);
+            return at(catalog, ResourceType.VIEW, namespace, view, Access.DROP);
         }
-        return at(catalog, GrantType.VIEW, namespace, view, Privilege.VIEW_WRITE_PROPERTIES);
+        return at(catalog, ResourceType.VIEW, namespace, view, Access.ALTER);
     }
 
-    /** {@code /v1/{prefix}/databases/{database}/semantic-views……}，对应 {@code SEMANTIC_MODEL_*} 权限。 */
+    /**
+     * {@code /v1/{prefix}/databases/{database}/semantic-views……}。
+     *
+     * <p>语义视图是视图的一种（同一套 DDL 语义、同一套读写路径），而官方 12 项
+     * access 里没有单独的 semantic-model 层——原先为它单列的
+     * {@code SEMANTIC_MODEL_*} 六项权限已随 Polaris 词表整体移除。
+     * 因此这里映射到 {@code VIEW} 资源：授权口径与普通视图一致。
+     */
     private static Requirement semanticViews(String catalog, List<String> path, String method,
                                              boolean read) {
         List<String> namespace = List.of(path.get(1));
         if (path.size() == 3) {
-            if (!read) {
-                return at(catalog, GrantType.SEMANTIC_MODEL, namespace, null, Privilege.SEMANTIC_MODEL_CREATE);
-            }
-            return at(catalog, GrantType.SEMANTIC_MODEL, namespace, null, Privilege.SEMANTIC_MODEL_LIST);
+            return read
+                    ? at(catalog, ResourceType.VIEW, namespace, null, Access.LIST)
+                    : at(catalog, ResourceType.DATABASE, namespace, null, Access.CREATEVIEW);
         }
-        String model = path.get(3);
+        String view = path.get(3);
         if (read) {
-            return at(catalog, GrantType.SEMANTIC_MODEL, namespace, model, Privilege.SEMANTIC_MODEL_READ);
+            return at(catalog, ResourceType.VIEW, namespace, view, Access.DESCRIBE);
         }
         if ("DELETE".equals(method)) {
-            return at(catalog, GrantType.SEMANTIC_MODEL, namespace, model, Privilege.SEMANTIC_MODEL_DROP);
+            return at(catalog, ResourceType.VIEW, namespace, view, Access.DROP);
         }
-        return at(catalog, GrantType.SEMANTIC_MODEL, namespace, model, Privilege.SEMANTIC_MODEL_WRITE);
+        return at(catalog, ResourceType.VIEW, namespace, view, Access.ALTER);
     }
 
     /**
      * function 端点。
      *
-     * <p>管理规格的权限 enum 没有 function 层级，因此不虚构权限取值：
-     * 列举与读取要求命名空间的读权限，创建与修改要求命名空间的写权限。
+     * <p>官方词表里有独立的 {@code FUNCTION} 资源类型与 {@code CREATEFUNCTION}，
+     * 因此这里按对象级判定：列举是库上的 {@code LIST}，读取是函数的
+     * {@code DESCRIBE}，改是 {@code ALTER}，删是 {@code DROP}，
+     * 建是库上的 {@code CREATEFUNCTION}。
      */
     private static Requirement functions(String catalog, List<String> path, String method,
                                          boolean read, List<String> namespace) {
@@ -306,43 +321,35 @@ public final class CatalogAccessRules {
         }
         if (path.size() == 3) {
             if (path.get(2).equals("function-details")) {
-                return read ? at(catalog, GrantType.NAMESPACE, namespace, null, Privilege.NAMESPACE_LIST) : null;
+                return read ? at(catalog, ResourceType.FUNCTION, namespace, null, Access.LIST) : null;
             }
             return read
-                    ? at(catalog, GrantType.NAMESPACE, namespace, null, Privilege.NAMESPACE_LIST)
-                    : at(catalog, GrantType.NAMESPACE, namespace, null, Privilege.NAMESPACE_WRITE_PROPERTIES);
+                    ? at(catalog, ResourceType.FUNCTION, namespace, null, Access.LIST)
+                    : at(catalog, ResourceType.DATABASE, namespace, null, Access.CREATEFUNCTION);
         }
+        String function = path.get(3);
         if (read) {
-            return at(catalog, GrantType.NAMESPACE, namespace, null, Privilege.NAMESPACE_READ_PROPERTIES);
+            return at(catalog, ResourceType.FUNCTION, namespace, function, Access.DESCRIBE);
         }
-        return at(catalog, GrantType.NAMESPACE, namespace, null, Privilege.NAMESPACE_WRITE_PROPERTIES);
+        if ("DELETE".equals(method)) {
+            return at(catalog, ResourceType.FUNCTION, namespace, function, Access.DROP);
+        }
+        return at(catalog, ResourceType.FUNCTION, namespace, function, Access.ALTER);
     }
 
     /**
      * Iceberg 的命名空间端点：{@code /v1/{prefix}/namespaces……}。
      *
-     * <p>与 Paimon 的 {@code databases/**} 是**同一件事的两个名词**，因此权限映射也同构：
-     * 「namespace 自身」读写属性、「{@code .../tables}」管表、「{@code .../views}」管视图。
-     * 差别只有两处，都是 Iceberg 规格带来的：
-     *
-     * <ul>
-     *   <li>namespace 是**多级**的，路径段用分隔符拼接，因此要先切成层级才能与授权条目比对
-     *       （{@link NamespacePaths}）。多级 namespace 的层级在授权上就是嵌套作用域，
-     *       在 {@code accounting} 上授予的同级权限覆盖 {@code accounting.tax}——这与
-     *       {@code AuthorizationService} 的「更宽的授予覆盖更窄的资源」是同一条规则。</li>
-     *   <li>Iceberg 没有「POST 单个 namespace」这个端点（改属性走
-     *       {@code POST .../properties}），因此 {@code POST /namespaces/{ns}} 不登记，
-     *       落在它上面的请求按「未登记 → 403」处理。</li>
-     * </ul>
-     *
-     * <p>{@code functions} 与 {@code register-view} 是一期不做的端点，不登记——
+     * <p>与 Paimon 的 {@code databases/**} 是**同一件事的两个名词**，因此映射同构。
+     * 差别是 namespace 为多级，先按 {@link NamespacePaths} 切成层级再比。
+     * {@code functions} 与 {@code register-view} 是一期不做的端点，不登记——
      * 失败关闭保证它们不会因为「忘了登记」而变成静默的越权入口。
      */
     private static Requirement namespaces(String catalog, List<String> path, String method, boolean read) {
         if (path.size() == 1) {
             return read
-                    ? at(catalog, GrantType.CATALOG, List.of(), null, Privilege.NAMESPACE_LIST)
-                    : at(catalog, GrantType.CATALOG, List.of(), null, Privilege.NAMESPACE_CREATE);
+                    ? at(catalog, ResourceType.CATALOG_ALL, List.of(), null, Access.LIST)
+                    : at(catalog, ResourceType.CATALOG, List.of(), null, Access.CREATEDATABASE);
         }
         List<String> namespace = NamespacePaths.parse(path.get(1));
         if (namespace.isEmpty()) {
@@ -350,20 +357,20 @@ public final class CatalogAccessRules {
         }
         if (path.size() == 2) {
             if (read) {
-                return at(catalog, GrantType.NAMESPACE, namespace, null, Privilege.NAMESPACE_READ_PROPERTIES);
+                return at(catalog, ResourceType.DATABASE, namespace, null, Access.DESCRIBE);
             }
             return "DELETE".equals(method)
-                    ? at(catalog, GrantType.NAMESPACE, namespace, null, Privilege.NAMESPACE_DROP)
+                    ? at(catalog, ResourceType.DATABASE, namespace, null, Access.DROP)
                     : null;
         }
         return switch (path.get(2)) {
             case "properties" -> "POST".equals(method)
-                    ? at(catalog, GrantType.NAMESPACE, namespace, null, Privilege.NAMESPACE_WRITE_PROPERTIES)
+                    ? at(catalog, ResourceType.DATABASE, namespace, null, Access.ALTER)
                     : null;
             case "tables" -> namespaceTables(catalog, namespace, path, method, read);
             case "views" -> namespaceViews(catalog, namespace, path, method, read);
             case "register" -> "POST".equals(method)
-                    ? at(catalog, GrantType.TABLE, namespace, null, Privilege.TABLE_CREATE)
+                    ? at(catalog, ResourceType.DATABASE, namespace, null, Access.CREATETABLE)
                     : null;
             default -> null;
         };
@@ -374,30 +381,30 @@ public final class CatalogAccessRules {
                                                String method, boolean read) {
         if (path.size() == 3) {
             return read
-                    ? at(catalog, GrantType.TABLE, namespace, null, Privilege.TABLE_LIST)
-                    : at(catalog, GrantType.TABLE, namespace, null, Privilege.TABLE_CREATE);
+                    ? at(catalog, ResourceType.TABLE, namespace, null, Access.LIST)
+                    : at(catalog, ResourceType.DATABASE, namespace, null, Access.CREATETABLE);
         }
         String table = path.get(3);
         if (path.size() == 4) {
             if (read) {
-                return at(catalog, GrantType.TABLE, namespace, table, Privilege.TABLE_READ_PROPERTIES);
+                return at(catalog, ResourceType.TABLE, namespace, table, Access.DESCRIBE);
             }
             if ("DELETE".equals(method)) {
-                return at(catalog, GrantType.TABLE, namespace, table, Privilege.TABLE_DROP);
+                return at(catalog, ResourceType.TABLE, namespace, table, Access.DROP);
             }
-            return at(catalog, GrantType.TABLE, namespace, table, Privilege.TABLE_WRITE_PROPERTIES);
+            return at(catalog, ResourceType.TABLE, namespace, table, Access.ALTER);
         }
         String sub = path.get(4);
-        Privilege required = switch (sub) {
+        Access required = switch (sub) {
             // 上报统计属于「改这张表的数据状态」，与 Paimon 的 consumers 归到同一档
-            case "metrics", "tasks" -> Privilege.TABLE_WRITE_DATA;
+            case "metrics", "tasks" -> Access.UPDATE;
             // 凭据下发与 Paimon 的 token / auth 是同一件事
-            case "credentials", "plan" -> Privilege.TABLE_READ_DATA;
-            case "unregister" -> Privilege.TABLE_DROP;
-            case "sign" -> Privilege.TABLE_READ_PROPERTIES;
+            case "credentials", "plan" -> Access.SELECT;
+            case "unregister" -> Access.DROP;
+            case "sign" -> Access.DESCRIBE;
             default -> null;
         };
-        return required == null ? null : at(catalog, GrantType.TABLE, namespace, table, required);
+        return required == null ? null : at(catalog, ResourceType.TABLE, namespace, table, required);
     }
 
     /** {@code /v1/{prefix}/namespaces/{ns}/views……}（Iceberg 形态的视图）。 */
@@ -405,22 +412,22 @@ public final class CatalogAccessRules {
                                               String method, boolean read) {
         if (path.size() == 3) {
             return read
-                    ? at(catalog, GrantType.VIEW, namespace, null, Privilege.VIEW_LIST)
-                    : at(catalog, GrantType.VIEW, namespace, null, Privilege.VIEW_CREATE);
+                    ? at(catalog, ResourceType.VIEW, namespace, null, Access.LIST)
+                    : at(catalog, ResourceType.DATABASE, namespace, null, Access.CREATEVIEW);
         }
         String view = path.get(3);
         if (read) {
-            return at(catalog, GrantType.VIEW, namespace, view, Privilege.VIEW_READ_PROPERTIES);
+            return at(catalog, ResourceType.VIEW, namespace, view, Access.DESCRIBE);
         }
         if ("DELETE".equals(method)) {
-            return at(catalog, GrantType.VIEW, namespace, view, Privilege.VIEW_DROP);
+            return at(catalog, ResourceType.VIEW, namespace, view, Access.DROP);
         }
-        return at(catalog, GrantType.VIEW, namespace, view, Privilege.VIEW_WRITE_PROPERTIES);
+        return at(catalog, ResourceType.VIEW, namespace, view, Access.ALTER);
     }
 
-    private static Requirement at(String catalog, GrantType resourceType, List<String> namespace,
-                                  String objectName, Privilege privilege) {
-        return new Requirement(catalog, resourceType, namespace, objectName, privilege);
+    private static Requirement at(String catalog, ResourceType resourceType, List<String> namespace,
+                                  String objectName, Access access) {
+        return new Requirement(catalog, resourceType, namespace, objectName, access);
     }
 
     private static boolean isRead(String method) {

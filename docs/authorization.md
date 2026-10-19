@@ -1,11 +1,16 @@
 # 访问控制：模型、判定与 catalog API 授权映射
 
-本文说明本服务如何实现 Polaris Management API 的 RBAC 模型，以及这套模型如何作用到
-LakeHouse Catalog API（`/v1/**`）上。
+本文说明本服务如何实现 Paimon 官方 REST Management API 的权限模型，以及这套模型
+如何作用到 LakeHouse Catalog API（`/v1/**`）与管理面扩展端点（`/api/management/v1/**`）上。
 
-- 规格基线：`spec/polaris-management-service.yml`
-- 权限语义出处：<https://polaris.apache.org/in-dev/unreleased/managing-security/access-control/>
-- 契约细节（端点、权限枚举、请求体形状）：`docs/management-api-contract.md`
+- 规格基线：`spec/paimon-rest-management-api.yaml`（官方 `rest-management-open-api`）
+- 权限语义出处：<https://paimon.apache.org/docs/master/concepts/rest/management-api>
+- 历史对照：`docs/management-api-contract.md`（Polaris 规格存档，**不是当前契约**）
+
+> **只有一套权限模型。** Polaris 的 64 项 privilege、catalog role、
+> `lakehouse_resource_grant` 已全部移除。授权唯一的落库形态是
+> `lakehouse_permission_assignment` 上的三元组 `(resource, access, principal)`，
+> access 取值就是官方那 12 项。
 
 ---
 
@@ -16,7 +21,7 @@ LakeHouse Catalog API（`/v1/**`）上。
 | 层 | 回答的问题 | 实现 | 配置前缀 |
 | --- | --- | --- | --- |
 | 认证 | 调用者是谁 | `BearerAuthInterceptor` 取 `Authorization: Bearer <token>`，交给 `TokenAuthenticationService` 认证成主体名，写入 `RequestContext` | `lakehouse.rest.auth.*` |
-| 授权 | 这个主体能做什么 | 管理 API 在控制器内判定；catalog API 在 `AuthorizationInterceptor` 统一判定 | `lakehouse.rest.authorization.*` |
+| 授权 | 这个主体能做什么 | catalog API 在 `AuthorizationInterceptor` 统一判定；权限端点与 lifecycle 端点各自在控制器内判定 | `lakehouse.rest.authorization.*` |
 
 认证是**一条链**，令牌来自三个来源之一（顺序即尝试顺序）：
 
@@ -31,266 +36,230 @@ LakeHouse Catalog API（`/v1/**`）上。
 
 三种来源在 `TokenAuthenticationService` 合流，**下游只看主体名**：
 授权判定与审计字段都不需要知道令牌是配置里的字符串、控制台签的 JWT，还是 IdP 签的 JWT。
-加一种认证方式只改那一个类。完整设计见 [`console-auth.md`](console-auth.md)。
 
 > **控制台账号与主体的边界。** 配置里的控制台账号**不是主体**：它是「开门的钥匙」，
 > 账号名默认直接当主体名用（可用 `console.password.principals` 映射成别的主体名）。
 > 因此用 `admin/admin` 登录成功之后**什么也看不到是正常的**——除非 `admin`
 > 被列进 `service-admins` 或被授予了某个 principal role。
 > 服务端会为这种「账号在授权链路里查不到」的情况在启动日志里告警。
-> 另外控制台门禁（`console.required`）只挡住浏览器界面，
-> **不改变本文件描述的授权判定**，也不是安全边界（见
-> [`console-auth.md` §2.1](console-auth.md#21-两个开关门禁不是安全边界)）。
 
 `lakehouse.rest.auth.enabled=false`（默认）时，数据面（`/v1/**`、`/api/catalog/v1/**`、
-`/api/management/v1/**`）的请求都以 `lakehouse.rest.auth.principal`（默认 `anonymous`）通过，
-便于本地开发与既有部署平滑升级。
-
-**一个例外**：控制台自己另有一层门禁 `console.required`（默认 `true`），
-它让 `/api/console/v1/**` 在 `auth.enabled=false` 时**也**要求令牌。
-这一层不参与授权判定——它只是把浏览器拦在登录页，`/api/management/v1/**` 依旧匿名可调。
+`/api/management/v1/**`）的请求都以 `lakehouse.rest.auth.principal`（默认 `anonymous`）通过。
 
 ---
 
 ## 2. 授权模型
 
-### 2.1 实体链路
+### 2.1 唯一的三元组
 
 ```
-principal ──(N:M)── principal role ──(N:M)── catalog role ──(1:N)── 资源授权
-                                   （catalog role 归属于某个具体 catalog）
+(resource, access, principal)  ──落库──>  lakehouse_permission_assignment
 ```
 
-- **principal**：服务主体。创建时一次性返回 `clientId` 与明文 `clientSecret`，服务端只保存摘要。
-- **principal role**：服务级角色，与 catalog 无关，可跨 catalog 复用。
-- **catalog role**：归属于某个 catalog 的角色（`/catalogs/{catalogName}/catalog-roles`）。
-- 两处都是**多对多**：一个主体可持有多个 principal role；一个 principal role 可绑定多个
-  catalog role；一个 catalog role 也可被多个 principal role 绑定。
+没有中间层。**principal role 是纯分组**：它自己不携带任何权限，
+只把授予 `role:<name>` 的那条赋权转发给成员。这一点决定了判定只有一条路径——
+「找到主体的候选 principal 串 → 取这些串上的赋权 → 看有没有一条覆盖目标资源」。
 
-授权只加在 catalog role 上，这是关键取舍：权限的最小管理单元是 catalog role，
-主体的权限集合由它持有的角色链推导而来，而不是直接挂在主体上。
+对比改造前的模型：
 
-### 2.2 授权的载体
-
-每条授权记录形如「某个 catalog role 在某个资源上拥有某项权限」：
-
-| `type` | 作用域 | 定位字段 |
+| | 改造前（Polaris） | 现在（官方） |
 | --- | --- | --- |
-| `catalog` | 该 catalog 下的全部资源 | 无 |
-| `namespace` | 该命名空间及其子树 | `namespace[]`（多级就是一串层级，见 §2.6） |
-| `table` / `view` / `policy` / `semantic-model` | 仅该对象 | `namespace[]` + `{tableName,viewName,policyName,semanticModelName}` |
+| 授权表 | catalog role 授权 + 资源授权（3 张表） | `lakehouse_permission_assignment`（1 张） |
+| 权限词表 | 64 项 privilege + 蕴含展开 | 12 项 access + 只认 `ALL` |
+| 主体解析 | principal → principal role → catalog role | principal → 裸名 / `user:` / `role:` |
+| 判定 | 展开后再比 | 相等，或授予的是 `ALL` |
 
-对象级定位字段名按类型不同，这是规格的设计（见 `management-api-contract.md` 第 3 节）。
+### 2.2 12 项 access
 
-### 2.3 判定过程
+`ALL / CREATEDATABASE / DESCRIBE / ALTER / DROP / CREATETABLE / CREATEFUNCTION /
+CREATEVIEW / LIST / SELECT / UPDATE / GRANT`
 
-对一个「主体 + 资源 + 要求的权限」三元组：
+创建类权限用**不带下划线**的持久化名（`CREATETABLE`，不是 `CREATE_TABLE`），与官方逐字一致。
 
-1. 由主体解析出全部 principal role，再由这些角色解析出**目标 catalog 下**的全部 catalog role；
-2. 取这些 catalog role 持有的全部授权记录；
-3. 按资源层级筛选与目标资源相关的授权——catalog 级覆盖其下所有资源，namespace 级覆盖该
-   命名空间子树，对象级只覆盖该对象；
-4. 把筛选出的权限做**蕴含展开**后判断是否覆盖所需权限。
-
-第 4 步的蕴含关系由 `PrivilegeModel` 编码，规则逐条标注了 Polaris 文档原文出处；
-**文档没有明说的不做推断**。
-
-其中两点值得单独说明：
-
-- **`*_FULL_METADATA` 按权限名前缀推导，不按规格的层级枚举取全集。**
-  规格的 6 个权限 enum 表达的是「该层级*可以授予*哪些权限」，而不是「该层级的
-  FULL_METADATA *蕴含*哪些权限」。规格的每个层级枚举里都列有 `CATALOG_MANAGE_ACCESS`，
-  Namespace 级还列有 `CATALOG_MANAGE_CONTENT` 与 `CATALOG_MANAGE_METADATA`。若把
-  `TABLE_FULL_METADATA` 直接展开成 Table 级枚举全集，一个只应写表的角色就会获得授权管理
-  能力，属于权限提升。因此按「`TABLE_FULL_METADATA` ⇒ 名称以 `TABLE_` 开头的权限」推导，
-  从而自然排除全部 `CATALOG_*` 权限。
-- **`TABLE_FULL_METADATA` 不含数据权限。** 文档明确 `TABLE_READ_DATA` 与
-  `TABLE_WRITE_DATA` 需单独授予，因此这两项从展开结果中排除。
-
-### 2.4 服务管理员
-
-管理规格的权限枚举里没有「管理主体与 principal role」这一层权限，说明 Polaris 把这类操作
-交给服务管理员而不是权限判定。因此本实现用名单表达：
-
-- `lakehouse.rest.authorization.service-admins`（默认 `[root]`）：名单内的主体可管理 principal 与
-  principal role，并可在任意 catalog 上操作角色与授权；
-- `lakehouse.rest.authorization.bootstrap-principal`（默认 `root`）与
-  `bootstrap-principal-role`（默认 `service_admin`）：启动时预置的引导链
-  「主体 → 角色 → 各 catalog 的 `catalog_admin`」。
-
-没有这条引导链，全新部署里没有任何主体能创建第一个主体，授权体系无法自举。
-`credential-rotation-required` 的语义由客户端在首次登录后轮换凭据来配合，服务端只负责
-在创建时标记。
-
-### 2.5 第二路来源：Paimon 官方权限模型的 principal 直授
-
-除 RBAC 链外，本服务端还实现了 Paimon 官方 REST Management API 的权限端点
-（`GET /v1/{prefix}/permissions`、`POST .../grant`、`POST .../revoke`，见
-`PermissionController`）：授权直接面向 principal 不透明字符串（`user:alice`、
-`role:sales_writer`），资源用 8 种官方定位器表达（`CATALOG / CATALOG_ALL / DATABASE /
-DATABASE_ALL / TABLE / COLUMN / VIEW / FUNCTION`），access 用官方 12 项词表
-（SELECT / UPDATE / ALTER / DROP / DESCRIBE / CREATETABLE / ...），
-落库为 `lakehouse_permission_assignment`。
-
-**这一路也是控制台与服务端的 SQL 层共用的那一套**：控制台「权限管理」页、
-Spark SQL 的资源授权语句（`GRANT <access> ON <资源> TO <授权对象>`，
-见 [`spark-sql-reference.md`](spark-sql-reference.md) 第 7 节）都打这几个端点，
-因此页面与 SQL 的语义一致，不存在「两条表达方式」的翻译层。
-
-判定时（`AuthorizationService.effectivePrivileges`）两路来源取**并集**：
-
-- **principal 匹配约定**（官方把解析留给服务端）：认证主体名 `alice` 匹配 `alice`
-  与 `user:alice`；`role:<name>` 匹配主体在该 catalog 下持有的**同名 catalog role**——
-  这是两条链路唯一的交汇点；`group:*` 无成员关系可解析，明确不匹配（宁可不生效，不放大）。
-  注意这里的先后关系：`role:` 授权写不写是**这一路**的事，能不能生效取决于**另一路**有没有
-  同名 catalog role；而 catalog role 既没有控制台页面、也没有 SQL 语句，只能由管理 API 建
-  （见 §4）。因此纯 SQL / 控制台场景里，`user:<名>` 才是稳妥的授权对象。
-- **access → 内部权限的翻译**在 `PaimonPermissionModel`：例如 TABLE 的 SELECT →
-  `TABLE_READ_DATA`、UPDATE → `TABLE_WRITE_DATA`；DATABASE 的 CREATETABLE →
-  `TABLE_CREATE`（建表判定正落在 TABLE 层）、DESCRIBE → 命名空间与表的元数据读。
-  翻译后的条目走与 RBAC 完全相同的作用域覆盖判定与蕴含展开。
-- `*_ALL` 是显式作用域：`DATABASE_ALL` / `CATALOG_ALL` 翻译成 namespace / catalog 级授权，
-  天然覆盖此后新建的后代。
-- 过期（`expireTime`）的条目保留在列表里，但不再参与判定。
-- 词表校验有一处与官方对照表不同的**刻意放宽**：TABLE 层也接受 DESCRIBE
-  （映射 `TABLE_READ_PROPERTIES`），控制台的表级授权需要「Describe」这一项。
-
-管理权限端点本身要求 catalog 级 `CATALOG_MANAGE_ACCESS`——官方要求对相关资源具备 GRANT，
-但 grant/revoke 的目标资源在请求体里、路径映射表看不到，收敛到 catalog 级只会更严、不产生越权。
-
-### 2.6 多级 namespace（Iceberg）：两种形状必须按「拼起来的路径」比
-
-Iceberg 的 namespace 是**多级**的（`["accounting","tax"]`），Paimon 的 database 是单级字符串。
-两条授权链存的形状因此不同：
-
-| 来源 | 存法 | `accounting.tax` 这个 namespace 长什么样 |
-| --- | --- | --- |
-| RBAC（Polaris 链） | `namespace_json` 层级数组（另有 `namespace_key`：`0x1F` 拼接，只用于等值定位与唯一约束，**不参与前缀比较**） | `["accounting","tax"]`（两段） |
-| 直授（Paimon 官方权限模型） | `lakehouse_permission_assignment.database_name` 一个字符串 | `["accounting.tax"]`（**一段**） |
-
-**判定时不能逐段比较。** 逐段比会让「直授 `accounting.tax`、访问 `["accounting","tax"]`」
-永远不命中：两边段数不同，第一段 `accounting.tax` 与 `accounting` 就已经不等。
-这种失效是静默的——权限页显示已授权、客户端一直收 403，两端都不报错。
-
-`AuthorizationService.coversScope` 因此把两边的层级都按
-`NamespacePaths.STORAGE_SEPARATOR`（点号）拼成一个字符串再比：
+**不做蕴含推断。** 官方只定义 `ALL` 一个聚合值（「All accesses applicable to the
+resource」），没有给出 `ALTER` 含 `SELECT` 这种关系。判定因此是：
 
 ```java
-private boolean isPrefix(List<String> prefix, List<String> candidate) {
-    String head = joinNamespace(prefix);       // ["accounting","tax"] -> "accounting.tax"
-    String tail = joinNamespace(candidate);
-    if (head.isEmpty()) return true;           // 空前缀 = catalog 级
-    return tail.equals(head) || tail.startsWith(head + NAMESPACE_SEPARATOR);
+granted.equals(required.name()) || Access.ALL.name().equals(granted)
+```
+
+自己发明蕴含关系会造出规格里并不存在的授权语义，而且失效方向是**放大**权限。
+
+### 2.3 8 种 ResourceType 与作用域覆盖
+
+官方把两个 `_ALL` 明确写成**后代作用域**（`CatalogAllResource`: covering database,
+table, view, and function descendants；`DatabaseAllResource`: covering table, view,
+and function descendants of one database），其余类型只覆盖自身：
+
+| 赋权的作用域 | 覆盖什么 | 不覆盖什么 |
+| --- | --- | --- |
+| `CATALOG` | catalog 实体（改属性、删 catalog、建库） | 库、表、视图、函数 |
+| `CATALOG_ALL` | catalog 下的库、表、视图、函数 | **catalog 实体本身** |
+| `DATABASE` | 该库本身 + 该库的集合操作（列库内的表/视图/函数） | 库里的具体表 |
+| `DATABASE_ALL` | 该库的后代 | **库实体本身** |
+| `TABLE` / `VIEW` / `FUNCTION` | 同名对象 | 任何别的东西 |
+| `COLUMN` | 列级目标 | 表级判定（见下） |
+
+两个 `_ALL` 不含容器本身是官方描述的直接结果。代价要说清楚：
+「改 catalog 属性」要 `CATALOG:ALTER`、「建库」要 `CATALOG:CREATEDATABASE`、
+「改库属性」要 `DATABASE:ALTER`。引导角色因此**同时**持有 `CATALOG/ALL` 与
+`CATALOG_ALL/ALL` 两条——少一条就会在某一类端点上 403。
+
+**列级赋权不参与表级判定。** `COLUMN:SELECT` 只覆盖 `COLUMN` 目标；
+否则「只授权了 a、b 两列」会被判成「整表可读」，这是权限提升。
+`AuthorizationTests.columnGrantDoesNotAuthorizeTheWholeTable` 把这条钉住。
+
+各类型允许授予的 access 来自官方对照表（`PermissionDtos.Access.allowedFor`），
+服务端按它做入参校验：`CREATETABLE` 授到 `TABLE` 上会得到 400。
+
+### 2.4 主体解析
+
+`principal` 在官方语义里是**不透明字符串**，解析是服务端职责。本服务的约定是三条候选串：
+
+1. 裸名 `alice`；
+2. `user:alice`（与裸名等价，两种写法都能命中）；
+3. `role:<principal role 名>`——主体通过成员关系拿到的分组。
+
+`group:*` 没有成员关系可解析，明确不匹配（宁可不生效，不放大）。
+
+### 2.5 自举与服务管理员
+
+官方 12 项 access 里没有「管理主体、角色、catalog」这一类，它把这三者的生命周期归给
+服务端实现。本服务用两部分表达：
+
+- `lakehouse.rest.authorization.service-admins`（默认 `[root]`）：名单内的主体直接放行，
+  用于 `/api/management/v1/**` 上主体、principal role、catalog 的生命周期操作；
+- `lakehouse.rest.authorization.bootstrap-principal-role`（默认 `service_admin`）：
+  启动时把 `role:<该名>` 授成 `CATALOG/ALL` + `CATALOG_ALL/ALL`（幂等）。
+
+没有这条引导链，全新部署里没有任何主体能在 `catalog API` 上做成第一件事。
+
+### 2.6 多级 namespace（Iceberg）：按「拼起来的路径」比
+
+Iceberg 的 namespace 是**多级**的（`["accounting","tax"]`），Paimon 的 database 是单级字符串；
+落库只有 `database_name` 一个字符串列，多级按 `NamespacePaths.STORAGE_SEPARATOR`（点号）拼。
+
+**判定时不能逐段比较。** 逐段比会让「授 `accounting.tax`、访问 `["accounting","tax"]`」
+永远不命中：两边段数不同，第一段就已经不等。这种失效是静默的——权限页显示已授权、
+客户端一直 403，两端都不报错。因此 `covers` 把两边都拼成一个字符串再比：
+
+```java
+private boolean isPathPrefix(String prefix, String candidate) {
+    if (prefix.isEmpty()) return true;                                   // 空前缀 = catalog 级
+    return candidate.equals(prefix) || candidate.startsWith(prefix + "."); // 边界落在点号上
 }
 ```
 
 三条语义随之确定，`PermissionManagementTests.namespaceGrantMatchesMultiLevelNamespace` 逐条钉住：
 
-1. **授在上级即覆盖全部下级。** 授 `accounting` 覆盖 `accounting.tax`、`accounting.tax.cn`。
-2. **不反向覆盖。** 授 `accounting.tax` 不覆盖 `accounting`。
-3. **边界落在分隔符上。** 授 `sales` 不覆盖 `salesforce`（只比 `startsWith("sales" + ".")`）。
-
-> **为什么不在翻译层切层级。** `PaimonPermissionModel.map()` 把 `db` 原样放进 `namespace[]`，
-> 不按点号拆成多段。在翻译层拆只能拿到 `database_name` 这一个字符串，拆了就再也
-> 分不清「原始库里就带点号」和「多级 namespace」——而 Paimon 的库名**允许**含点号。
-> 这个错误同样是静默的（授权照存，只是永不命中），所以把「怎么比」收敛到判定这一处。
-
-catalog API 侧对应 Iceberg 形态的路径（`/v1/{prefix}/namespaces/{namespace}/...`）由
-`CatalogAccessRules.namespaces(...)` 登记，`{namespace}` 路径段用 `NamespacePaths.parse(...)`
-切成层级后，同样落到 `GrantType.NAMESPACE` 判定。路径段里的分隔符两个都认：规格默认的
-`0x1F`（URL 编码 `%1F`）以及点号——**对外不声明**点号分隔符，但解析时接受，
-理由是服务端自己存的就是点号拼接形式，控制台与手工 `curl` 用点号最自然。
+1. `DATABASE_ALL` 授在 `sales` 覆盖 `sales.2026` 这条路径上的表；
+2. 不反向覆盖：授 `accounting.tax` 不覆盖 `accounting`；
+3. 边界落在点号上：授 `sales` 不覆盖 `salesforce`。
 
 ---
 
 ## 3. catalog API 的授权映射
 
-管理 API 的路径本身不含被操作对象（主体名、角色名都在请求体里），而 catalog API 的路径
-已经包含全部定位信息。因此两处的判定位置不同：
+catalog API 的「路径 → 所需 access」映射集中在 `CatalogAccessRules` 一张表里，
+而不是分散到各控制器的注解上。这样做的理由是**未登记的路径会被拒绝，而不是被放行**：
 
-| API | 判定位置 | 原因 |
+- 拦截器解析出 `Requirement` 后调用判定；解析不出映射时直接 403，
+  并在消息里说明该端点没有登记授权规则；
+- 忘记给新端点登记，会在第一次调用时立刻暴露为 403，而不是静默放行；
+- `CatalogEndpointAuthorizationTests` 从运行时的 `RequestMappingHandlerMapping` 枚举
+  全部 `/v1/{prefix}/**` 端点，逐一核对是否已登记映射，新增端点未登记会让构建失败。
+
+### 3.1 Paimon 形态（`databases/**`）
+
+| 端点形态 | 资源类型 | access |
 | --- | --- | --- |
-| `/api/management/v1/**` | 控制器内 | 实体名来自请求体，拦截器在此时拿不到 |
-| `/v1/**` | `AuthorizationInterceptor` 统一判定 | 路径中已含 prefix、database、table 等全部定位信息 |
+| `GET /v1/config`、`POST /v1/oauth/tokens` | — | 豁免（凭据还没换到，必须可达） |
+| `GET /databases` | `CATALOG_ALL` | `LIST` |
+| `POST /databases` | `CATALOG` | `CREATEDATABASE` |
+| `GET /databases/{db}` | `DATABASE` | `DESCRIBE` |
+| `POST /databases/{db}` | `DATABASE` | `ALTER` |
+| `DELETE /databases/{db}` | `DATABASE` | `DROP` |
+| `GET .../tables`、`.../table-details` | `TABLE` | `LIST` |
+| `POST .../tables`、`.../register` | `DATABASE` | `CREATETABLE` |
+| `GET .../tables/{t}` | `TABLE` | `DESCRIBE` |
+| `POST .../tables/{t}` | `TABLE` | `ALTER` |
+| `DELETE .../tables/{t}` | `TABLE` | `DROP` |
+| `.../tables/{t}/commit`、`/rollback` | `TABLE` | `UPDATE` |
+| `.../tables/{t}/rollback-schema` | `TABLE` | `ALTER` |
+| `.../tables/{t}/token`、`/auth` | `TABLE` | `SELECT` |
+| `.../partitions/list*`、`/mark*` | `TABLE` | `SELECT` |
+| `.../partitions/drop` 等写操作 | `TABLE` | `UPDATE` |
+| `.../branches`、`.../tags`、`.../snapshot(s)`、`.../consumers` | `TABLE` | 读 `DESCRIBE` / 写 `ALTER` |
+| `.../views/**` | `VIEW` | 列举 `LIST`、读 `DESCRIBE`、改 `ALTER`、删 `DROP`；建走 `DATABASE:CREATEVIEW` |
+| `.../semantic-views/**` | `VIEW` | 同上（见 §3.3） |
+| `.../functions/**` | `FUNCTION` | 列举 `LIST`、读 `DESCRIBE`、改 `ALTER`、删 `DROP`；建走 `DATABASE:CREATEFUNCTION` |
+| `GET /tables`（跨库列举） | `CATALOG_ALL` | `LIST` |
+| `POST /tables/rename` | `CATALOG_ALL` | `ALTER` |
+| `GET /tables/id/{id}` | `CATALOG_ALL` | `DESCRIBE` |
+| `GET /permissions` | `CATALOG_ALL` | `GRANT` |
+| `POST /permissions/grant`、`/revoke` | 请求体里的资源 | `GRANT`（deferred，见 §3.4） |
 
-catalog API 的「路径 → 所需权限」映射集中在 `CatalogAccessRules` 一张表里，而不是分散到
-各控制器的注解上。这样做的理由是**未登记的路径会被拒绝，而不是被放行**：
+「同一个表集合路径，读与写落在不同资源类型」不是笔误：官方对照表里 `LIST` 只在
+`CATALOG_ALL` / `DATABASE` / `TABLE` 上，`CREATEDATABASE` 只在 `CATALOG` 上，
+`CREATETABLE` / `CREATEVIEW` / `CREATEFUNCTION` 只在 `DATABASE` 与 `CATALOG_ALL` 上。
 
-- 拦截器解析出 `Requirement` 后调用授权判定；解析不出映射时直接返回 403，并在消息中说明
-  「该端点没有登记授权规则」；
-- 忘记给新端点登记映射，会在第一次调用时立刻暴露为 403，而不是静默放行；
-- 测试 `CatalogEndpointAuthorizationTests` 从运行时的 `RequestMappingHandlerMapping` 里枚举
-  全部 `/v1/{prefix}/**` 端点，逐一核对是否已登记映射，新增端点若未登记会让构建失败。
+### 3.2 Iceberg 形态（`namespaces/**`）
 
-映射的粒度选择（摘要）：
+与 `databases/**` 是**同一件事的两个名词**，映射同构；差别是 namespace 为多级，
+先按 `NamespacePaths.parse` 切成层级，再按 §2.6 的「拼起来比」。
 
-| 端点形态 | 要求的权限 |
-| --- | --- |
-| `GET /v1/config` | 无（唯一的公开端点） |
-| `GET /databases` | `NAMESPACE_LIST` |
-| `POST /databases` | `NAMESPACE_CREATE` |
-| `GET /databases/{db}` | `NAMESPACE_READ_PROPERTIES` |
-| `DELETE /databases/{db}` | `NAMESPACE_DROP` |
-| `POST /databases/{db}` | `NAMESPACE_WRITE_PROPERTIES` |
-| `GET .../tables` | `TABLE_LIST` |
-| `POST .../tables`、`.../register` | `TABLE_CREATE` |
-| `GET .../tables/{t}` | `TABLE_READ_PROPERTIES` |
-| `POST .../tables/{t}` | `TABLE_WRITE_PROPERTIES` |
-| `DELETE .../tables/{t}` | `TABLE_DROP` |
-| `.../tables/{t}/commit`、`/rollback` | `TABLE_WRITE_DATA` |
-| `.../tables/{t}/token`、`/auth` | `TABLE_READ_DATA` |
-| `.../partitions/list*` | `TABLE_READ_DATA` |
-| `.../partitions/drop`、`/mark` | `TABLE_WRITE_DATA` |
-| `.../branches`、`.../tags`、`.../snapshot(s)` | 读 `TABLE_READ_PROPERTIES`、写 `TABLE_WRITE_PROPERTIES` |
-| `.../views/**` | `VIEW_*` |
-| `.../semantic-views/**` | `SEMANTIC_MODEL_*` |
-| `GET /tables`（跨命名空间列举） | `TABLE_LIST`，作用域为 catalog 级 |
-| `POST /tables/rename` | `TABLE_WRITE_PROPERTIES` |
-| `GET /tables/id/{id}` | `TABLE_READ_PROPERTIES`，作用域为 catalog 级 |
+| 端点形态 | 资源类型 | access |
+| --- | --- | --- |
+| `GET /namespaces` | `CATALOG_ALL` | `LIST` |
+| `POST /namespaces` | `CATALOG` | `CREATEDATABASE` |
+| `GET/HEAD /namespaces/{ns}` | `DATABASE` | `DESCRIBE` |
+| `POST /namespaces/{ns}/properties` | `DATABASE` | `ALTER` |
+| `DELETE /namespaces/{ns}` | `DATABASE` | `DROP` |
+| `GET /namespaces/{ns}/tables` | `TABLE` | `LIST` |
+| `POST /namespaces/{ns}/tables`、`.../register` | `DATABASE` | `CREATETABLE` |
+| `GET/HEAD /namespaces/{ns}/tables/{t}` | `TABLE` | `DESCRIBE` |
+| `POST .../tables/{t}` | `TABLE` | `ALTER` |
+| `DELETE .../tables/{t}`、`.../unregister` | `TABLE` | `DROP` |
+| `POST .../tables/{t}/metrics`、`/tasks` | `TABLE` | `UPDATE`（上报统计＝改这张表的数据状态） |
+| `GET .../tables/{t}/credentials`、`/plan` | `TABLE` | `SELECT`（与 Paimon 的 `/token` 同一件事） |
+| `GET .../tables/{t}/sign` | `TABLE` | `DESCRIBE` |
+| `.../namespaces/{ns}/views/**` | `VIEW` | 同 Paimon 视图 |
 
-Iceberg 形态的路径单独一组（`/v1/{prefix}/namespaces/{namespace}/...`，`{namespace}` 是
-多级拼接的单个路径段，见 §2.6）：
+`POST /namespaces` 的父级在请求体里，路径只有一段，作用域只能定在 `CATALOG`；
+`POST /namespaces/{ns}`（更新 namespace 本身）Iceberg 没有这个端点，因此不登记——
+落到「未登记即拒绝」并说明原因，不是漏登记。
 
-| 端点形态 | 要求的权限 |
-| --- | --- |
-| `GET /namespaces`、`GET /namespaces?parent=` | `NAMESPACE_LIST`，作用域为 catalog 级 |
-| `POST /namespaces` | `NAMESPACE_CREATE`，作用域为 catalog 级 |
-| `GET /namespaces/{ns}`、`HEAD /namespaces/{ns}` | `NAMESPACE_READ_PROPERTIES` |
-| `POST /namespaces/{ns}/properties` | `NAMESPACE_WRITE_PROPERTIES` |
-| `DELETE /namespaces/{ns}` | `NAMESPACE_DROP` |
-| `GET /namespaces/{ns}/tables` | `TABLE_LIST` |
-| `POST /namespaces/{ns}/tables`、`.../register` | `TABLE_CREATE` |
-| `GET/HEAD /namespaces/{ns}/tables/{t}` | `TABLE_READ_PROPERTIES` |
-| `POST .../tables/{t}` | `TABLE_WRITE_PROPERTIES` |
-| `DELETE .../tables/{t}`、`.../tables/{t}/unregister` | `TABLE_DROP`（注销也是从目录里摘掉，与删除同档） |
-| `POST .../tables/{t}/metrics` | `TABLE_WRITE_DATA`（上报统计＝改这张表的数据状态，与 Paimon 的 consumers 同档） |
-| `GET .../tables/{t}/credentials` | `TABLE_READ_DATA`（与 Paimon 的 `/token`、`/auth` 是同一件事） |
-| `.../namespaces/{ns}/views/**` | `VIEW_*`（与 Paimon 视图同权限层级） |
+`functions` 与 `register-view` 是一期不做的端点，同样不登记。
 
-**`POST /namespaces` 的父级在请求体里，因此只认 catalog 级。** 建多级 namespace 时客户端发的是
-`{"namespace": ["accounting","tax"], ...}`，路径只有 `/namespaces` 一段——作用域只能定在 catalog 级。
-这与 §3 那条「按 id 查表只认 catalog 级授权」是同一类取舍：路径里没有定位信息时，
-就退到能确定的最宽一层，不做凭猜测的收窄。
+### 3.3 语义视图按 `VIEW` 授权
 
-**`POST /namespaces/{ns}` 不登记**：Iceberg 没有「更新单个 namespace」这个端点，改属性走
-`POST .../properties`。因此该路径落到「无授权规则」，返回 403 并说明未登记——
-这正是 §3 开头那条「未登记即拒绝」在起作用，不是漏登记。
+`SEMANTIC_MODEL_*` 六项权限已随 Polaris 词表整体移除，官方 12 项里没有 semantic-model
+这一层。语义视图的读写路径与普通视图同构，因此映射到 `VIEW` 资源：
+授权口径与视图完全一致。**功能本身保留**（`/v1/{prefix}/databases/{db}/semantic-views`）。
 
-**`functions` 与 `register-view` 是一期不做的端点，同样不登记。** 失败关闭保证它们不会因为
-「忘了登记」而变成静默入口；等它们实现时要一并补映射，`CatalogEndpointAuthorizationTests`
-会在那之前就把「有 handler 没映射」报出来。
+### 3.4 deferred 端点：目标资源在请求体里
 
-两处需要说明的取舍：
+`POST .../permissions/grant` 与 `/revoke` 的路径上只有「这是授权操作」这一层含义，
+被授权的资源在请求体里，映射表算不出作用域。这两个端点被标成 `deferred`，
+拦截器放行，由 `PermissionController` 拿着解析后的 `PermissionResource` 调
+`AuthorizationService.requireGrantOn`：
 
-- **函数端点使用 `NAMESPACE_*` 权限。** 规格没有为函数单独定义权限层级，因此不发明新的权限
-  取值，按命名空间级权限判定。
-- **按 id 查表只认 catalog 级授权。** 该端点跨命名空间定位表，路径里没有 `{database}`，
-  无法确定命名空间作用域，因此只接受 catalog 级（或更宽）的授权。
+- 在 `CATALOG_ALL` 上持 `GRANT` 的人覆盖其下一切；
+- 在单表上持 `GRANT` 的人只能管那张表的赋权。
 
-### 3.1 403 与 404 的优先级
+比「一律要求 catalog 级 `GRANT`」更精确，也没有放宽：作用域判定与其它 access 完全同一条路径。
 
-授权判定在 catalog 不存在时**先行放行**，让后续流程返回 404。理由是：如果把「资源不存在」
-也判成 403，调用者将无法区分「我没有权限」和「这个 catalog 根本不存在」，排查成本会显著上升。
+### 3.5 管理面扩展端点的读权限
+
+`GET /api/management/v1/catalogs/{name}` 判 `CATALOG_ALL:DESCRIBE`，而不是
+`CATALOG:DESCRIBE`——官方对照表里 `CATALOG` 只有 `ALL / ALTER / DROP / GRANT /
+CREATEDATABASE`，**没有任何读权限**，而「能读这个 catalog 里的东西」正是该端点的语义。
+改/删 catalog 仍判 `CATALOG:ALTER|DROP`。
+
+### 3.6 403 与 404 的优先级
+
+判定在 catalog 不存在时**先行放行**，让后续流程返回 404。理由是：如果把「资源不存在」
+也判成 403，调用者将无法区分「我没有权限」和「这个 catalog 根本不存在」。
 catalog 存在但主体无权时仍返回 403。
 
 ---
@@ -302,7 +271,7 @@ catalog 存在但主体无权时仍返回 403。
 | `lakehouse.rest.auth.enabled` | `false` | 是否要求 `Authorization: Bearer <token>` |
 | `lakehouse.rest.auth.principal` | `anonymous` | 认证关闭或未带令牌时使用的主体名 |
 | `lakehouse.rest.auth.tokens` | 空 | 允许的静态令牌列表 |
-| `lakehouse.rest.auth.token-principals` | 空 | 静态令牌 → 主体名映射；未登记的令牌退化为「令牌即主体名」（审计列超长的记摘要，见 §6 第 8 条） |
+| `lakehouse.rest.auth.token-principals` | 空 | 静态令牌 → 主体名映射；未登记的令牌退化为「令牌即主体名」（审计列超长的记摘要，见 §6 第 7 条） |
 | `lakehouse.rest.auth.access-token.ttl` | `1h` | 控制台签发的访问令牌有效期 |
 | `lakehouse.rest.auth.access-token.issuer` | `paimon-rest` | 访问令牌的 `iss` |
 | `lakehouse.rest.auth.access-token.signing-key` | 空 | HS256 签名密钥（Base64，≥32 字节）；留空则每次启动随机生成 |
@@ -312,20 +281,19 @@ catalog 存在但主体无权时仍返回 403。
 | `lakehouse.rest.auth.console.password.principals` | 空 | 账号名 → 主体名映射；不填则两者同名 |
 | `lakehouse.rest.auth.console.client-credentials.enabled` | `true` | 是否允许用主体凭据换令牌 |
 | `lakehouse.rest.auth.console.oidc.*` | 关闭 | 外部身份提供方登录；见 [`console-auth.md`](console-auth.md) |
-| `lakehouse.rest.authorization.enabled` | `false` | 是否对管理 API 与 catalog API 启用 RBAC 判定 |
+| `lakehouse.rest.authorization.enabled` | `false` | 是否启用授权判定 |
 | `lakehouse.rest.authorization.service-admins` | `[root]` | 服务管理员主体名单 |
 | `lakehouse.rest.authorization.bootstrap-principal` | `root` | 启动时预置的引导主体；留空则不预置 |
-| `lakehouse.rest.authorization.bootstrap-principal-role` | `service_admin` | 启动时预置的引导角色链 |
+| `lakehouse.rest.authorization.bootstrap-principal-role` | `service_admin` | 引导角色名；启动时把 `role:<该名>` 授成 `CATALOG/ALL` + `CATALOG_ALL/ALL` |
 
-`authorization.enabled=false` 时不做 RBAC 判定，认证仍然生效——即所有请求以读取到的
+`authorization.enabled=false` 时不做判定，认证仍然生效——即所有请求以读取到的
 主体名通过，便于在既有部署上先只做认证。
 
 ---
 
 ## 5. 走通一次授权
 
-以下流程基于 `scripts/e2e-spark-sql.sh` 与 `scripts/management-sweep.sh` 使用的配置，
-服务端以 `root` 为服务管理员启动。
+服务端以 `root` 为服务管理员启动（`authorization.enabled=true`）。
 
 ```bash
 M=http://127.0.0.1:8080/api/management/v1
@@ -336,86 +304,66 @@ J='Content-Type: application/json'
 curl -s -X POST -H "$AUTH" -H "$J" \
   -d '{"principal":{"name":"etl","properties":{"team":"data"}}}' "$M/principals"
 
-# 2) 建 principal role 与 catalog role
+# 2) 分个组（可选）。principal role 只是分组，自己不带权限
 curl -s -X POST -H "$AUTH" -H "$J" \
   -d '{"principalRole":{"name":"etl_reader"}}' "$M/principal-roles"
-curl -s -X POST -H "$AUTH" -H "$J" \
-  -d '{"catalogRole":{"name":"reader"}}' "$M/catalogs/paimon/catalog-roles"
-
-# 3) 装角色：主体 → principal role → catalog role
 curl -s -X PUT -H "$AUTH" -H "$J" \
   -d '{"principalRole":{"name":"etl_reader"}}' "$M/principals/etl/principal-roles"
-curl -s -X PUT -H "$AUTH" -H "$J" \
-  -d '{"catalogRole":{"name":"reader"}}' \
-  "$M/principal-roles/etl_reader/catalog-roles/paimon"
 
-# 4) 授权：命名空间级读 + 表级读数据
-curl -s -X PUT -H "$AUTH" -H "$J" \
-  -d '{"grant":{"type":"namespace","namespace":["default"],"privilege":"NAMESPACE_LIST"}}' \
-  "$M/catalogs/paimon/catalog-roles/reader/grants"
-curl -s -X PUT -H "$AUTH" -H "$J" \
-  -d '{"grant":{"type":"table","namespace":["default"],"tableName":"orders",
-                "privilege":"TABLE_READ_DATA"}}' \
-  "$M/catalogs/paimon/catalog-roles/reader/grants"
+# 3) 授权：给 role:etl_reader 授「default 库下全部后代可读」
+curl -s -X POST -H "$AUTH" -H "$J" \
+  -d '{"resource":{"type":"DATABASE_ALL","database":"default"},
+       "access":"SELECT","principal":"role:etl_reader"}' \
+  "http://127.0.0.1:8080/v1/paimon/permissions/grant"
 
-# 5) 核对
-curl -s -H "$AUTH" "$M/catalogs/paimon/catalog-roles/reader/grants"
+# 4) 核对
+curl -s -H "$AUTH" "http://127.0.0.1:8080/v1/paimon/permissions?principal=role:etl_reader"
 
-# 6) 用该主体的凭据访问 catalog API。两条路都行：
-#    a) 刚建主体时拿到的一次性 clientId / clientSecret → 换一个访问令牌（推荐）
+# 5) 用该主体访问 catalog API（取数据令牌要 TABLE:SELECT）
 TOKEN=$(curl -s -X POST http://127.0.0.1:8080/api/catalog/v1/oauth/tokens \
   -d grant_type=client_credentials \
   -d client_id="$CLIENT_ID" -d client_secret="$CLIENT_SECRET" | jq -r .access_token)
-curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "$J" \
-  -d '{"name":"sales","options":{}}' "http://127.0.0.1:8080/v1/paimon/databases"
-#    b) 或者把长期令牌登记进 lakehouse.rest.auth.tokens / token-principals 再用（给机器用）
-curl -s -X POST -H "Authorization: Bearer etl-token" -H "$J" \
-  -d '{"name":"sales","options":{}}' "http://127.0.0.1:8080/v1/paimon/databases"
-# -> 403：reader 只有 NAMESPACE_LIST，没有 NAMESPACE_CREATE
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "http://127.0.0.1:8080/v1/paimon/databases/default/tables/orders/token"
+# -> 200
+
+# 6) 但建表不在 DATABASE_ALL 的词表里，要单独授 DATABASE:CREATETABLE
+curl -s -X POST -H "$AUTH" -H "$J" \
+  -d '{"resource":{"type":"DATABASE","database":"default"},
+       "access":"CREATETABLE","principal":"role:etl_reader"}' \
+  "http://127.0.0.1:8080/v1/paimon/permissions/grant"
 ```
 
-上面第 `1)`～`3)` 步里，**建主体、建 principal role、把 principal role 装到主体上**在 Spark SQL
-里都有对应语句（见 `docs/spark-sql-extension.md` 与 `docs/spark-sql-reference.md`）；
-**建 catalog role 与把它装到 principal role 上没有**——catalog role 的建档、装配、清点共 7 条
-语法已经从 SQL 里移除（控制台也没有它的页面），这两步只能用本节的 curl（或
-`ManagementApiClient`）。
-
-> **两条链在 SQL 侧的分工。** 上面第 `4)` 步授权的是 Polaris 那条链（授权挂在 catalog role
-> 上）。**它在 SQL 侧一条语句都没有**：写侧（`... TO CATALOG ROLE r`）早已删除，唯一的只读口子
-> `SHOW GRANTS FOR CATALOG ROLE ...` 也随 catalog role 语句一并移除，改动与清点都走本节的 curl。
-> 要在 SQL 里直接授权，用官方权限模型那条链——
-> `GRANT LIST, DESCRIBE, SELECT ON CATALOG_ALL paimon TO USER alice`，
-> 与「权限管理」页同一个端点。最终判定取两路的**并集**，谁也不会覆盖谁。
+同一件事在 Spark SQL 里也有对应语句
+（`GRANT SELECT ON DATABASE_ALL default TO ROLE etl_reader`，
+见 [`spark-sql-reference.md`](spark-sql-reference.md) 第 7 节）——
+页面、curl、SQL 打的是同一批端点，没有翻译层。
 
 ### 5.1 从引擎侧验一遍：两个身份跑真 SQL
 
 上面的 curl 验的是**服务端自己的判定**。同一件事在引擎侧还有一层要验：请求是 Paimon 的
 `SparkCatalog` 发出来的，403 会不会被客户端改写成别的错、被拒绝的写入有没有落数据，
-只有真 SQL 才知道。`SparkSqlAuthorizationTests` 做的就是这件事——同一个 catalog、同一张表，
-令牌 `alice` 建库建表加读写，令牌 `bob` 只能读，且断言拒绝报文点名了**缺失的那一项权限**
-（`TABLE_CREATE` / `TABLE_WRITE_DATA` / `NAMESPACE_CREATE`）、被拒之后数据没变。
+只有真 SQL 才知道。`SparkSqlAuthorizationTests` 做的就是这件事——同一个 catalog、
+同一张表，令牌 `alice` 建库建表加读写，令牌 `bob` 只能读，且断言拒绝报文点名了
+**缺失的那一项 access**（`CREATETABLE` / `UPDATE` / `CREATEDATABASE`）、被拒之后数据没变。
 
-跑法与所需的两个令牌见 `docs/spark-paimon-rest-e2e.md` §6.1。两个身份共用一份 SparkContext、
-只换 `spark.sql.catalog.<catalog>.token`；另外只读身份也必须有读元数据的能力
-——`SparkCatalog` 懒加载时会去读默认命名空间 `default` 的属性（对应官方的 `DESCRIBE`，
-翻译后是 `NAMESPACE_READ_PROPERTIES`），这不是「读数据」的权限。
+跑法与所需的两个令牌见 [`spark-paimon-rest-e2e.md`](spark-paimon-rest-e2e.md) §6.1。
+两个身份共用一份 SparkContext、只换 `spark.sql.catalog.<catalog>.token`；
+只读身份也必须有读元数据的能力——`SparkCatalog` 懒加载时会去读默认命名空间 `default`
+的属性（对应 `DESCRIBE`），这不是「读数据」的权限。
 
-**Iceberg 面同样是这两条用例，只是换了 catalog 与一套 catalog role**
-（`SparkSqlAuthorizationTests` 里 `icebergCatalog.*` 两个方法）。做法照抄不是省事：
-catalog role 是 catalog 内的实体，跨格式借用会得到「角色不在此 catalog 下」，
-而这种错与「没授权」在报文里长得几乎一样。有一处**只能从这一侧看出来的差异**：
+**Iceberg 面同样是这组用例，只是换了 catalog**（`SparkSqlAuthorizationTests` 里
+`icebergCatalog.*` 三个方法）。有一处**只能从这一侧看出来的差异**：
 
 | 动作 | Paimon 的闸门 | Iceberg 的闸门 |
 | --- | --- | --- |
-| 写数据 | `POST …/tables/{t}/commit` → `TABLE_WRITE_DATA`（`UPDATE`） | ① `POST …/tables/{t}/metrics` → `TABLE_WRITE_DATA`（`UPDATE`）<br>② `POST …/tables/{t}` → `TABLE_WRITE_PROPERTIES`（`ALTER`） |
-| 改 schema / 属性 | 各自的端点 | 同一个 `POST …/tables/{t}` → `TABLE_WRITE_PROPERTIES` |
+| 写数据 | `POST …/tables/{t}/commit` → `UPDATE` | ① `POST …/tables/{t}/metrics` → `UPDATE`<br>② `POST …/tables/{t}` → `ALTER` |
+| 改 schema / 属性 | 各自的端点 | 同一个 `POST …/tables/{t}` → `ALTER` |
 
-也就是说**在 Iceberg 面「能写数据」= `UPDATE` + `ALTER`**，比 Paimon 多一项。原因是
-Iceberg 没有独立的提交端点：数据提交与属性变更都是 `POST /namespaces/{ns}/tables/{t}` 上的
-`updates` 数组，判定发生在解析请求体之前，服务端分不清这次是哪一类。想只给「能写数据、
-不能改属性」在当前端点粒度上做不到——这是协议形状决定的，不是映射写粗了。
-用例对这一点留了容错（拒绝报文点名两者之一即通过，见 `assertDeniedEither`）：
-两个都是真闸门，但哪一个先冒到异常链上与 Iceberg 的容错顺序有关。
+也就是说**在 Iceberg 面「能写数据」= `UPDATE` + `ALTER`**，比 Paimon 多一项。
+原因是 Iceberg 没有独立的提交端点：数据提交与属性变更都是
+`POST /namespaces/{ns}/tables/{t}` 上的 `updates` 数组，判定发生在解析请求体之前。
+用例对这一点留了容错（拒绝报文点名两者之一即通过），两个都是真闸门。
 
 ---
 
@@ -425,44 +373,31 @@ Iceberg 没有独立的提交端点：数据提交与属性变更都是 `POST /n
 
 1. **静态令牌的映射是静态配置。** `token-principals` 决定「静态令牌 → 主体名」，
    改映射要重启。但**新建主体不受此限**：创建时会一次性返回 `clientId` 与明文
-   `clientSecret`，用它们走 `POST /api/catalog/v1/oauth/tokens` 换一个访问令牌即可立即
-   调用管理 API（见 [`console-auth.md`](console-auth.md)）。静态令牌这条路才是给
-   「凭据写死在引擎配置里、之后不再变更」的机器用的。
+   `clientSecret`，用它们换一个访问令牌即可立即调用管理 API。
 2. **访问令牌无法即时撤销。** 服务端不保存会话，令牌在 `access-token.ttl` 内一直有效；
    要立刻失效只能轮换 `access-token.signing-key`（会作废所有人的令牌）。
-3. **`CATALOG_MANAGE_METADATA` 的蕴含未展开。** Polaris 文档只说它「enables full management of
-   the catalog, catalog roles, namespaces, and tables」，未像 `CATALOG_MANAGE_CONTENT` 那样逐项
-   列举，因此只把它作为被蕴含项，不再向下展开。
-4. **`CATALOG_FULL_METADATA` 未实现。** 文档提到该权限，但规格的权限 enum 中没有这个取值。
-   规格补上后在此处加规则即可。
+3. **两个 `_ALL` 不含容器本身。** 这是官方描述的直译。想「一条授权管全部」做不到，
+   因为 `CATALOG_ALL` / `DATABASE_ALL` 的词表里没有 `CREATEDATABASE` /
+   `CREATETABLE` / `DESCRIBE` 这些容器级取值。要建库、建表、读 catalog 详情，
+   必须额外授 `CATALOG:*` / `DATABASE:*`。
+4. **没有 access 蕴含关系。** 只有 `ALL` 是聚合值。因此 `ALTER` 不给 `SELECT`、
+   `DESCRIBE` 不给 `SELECT`——这是官方词表的形状，不是漏写。
 5. **行过滤与列脱敏策略未实现。** `auth` 端点返回空的过滤表达式与脱敏映射，只做列存在性校验。
-6. **授权不校验被授权对象是否存在。** 可以对尚未创建的表授予 `TABLE_READ_DATA`，授权记录先于
-   对象存在是允许的（这也是先建授权再把表接管的正常顺序）。
-7. **无权限缓存。** 每次请求按主体查授权链路，权限变更即时生效，代价是热点路径上的若干次查询。
-8. **审计列里超过 255 字符的主体名记的是摘要。** 授权判定用的是原始主体名（长度不限），
+6. **授权不校验被授权对象是否存在。** 可以对尚未创建的表授予 `SELECT`。
+7. **审计列里超过 255 字符的主体名记的是摘要。** 判定用的是原始主体名（长度不限），
    落库到 `owner` / `created_by` / `updated_by` 时才归一化：放得下的原样存，
-   放不下的记 `sha256:<前 12 位>`。这条边界的起因是「认不出的令牌会退化为令牌即主体名」，
-   而控制台访问令牌长 272 个字符，直接入库会让写入以
-   `Data too long for column 'created_by'` 失败。配 `token-principals`
-   把令牌映射成真正的名字才是正解，见 [`console-auth.md`](console-auth.md)。
-9. **语义模型授权的延迟语义未实现。** 文档标注为 deferred 的源表 / 视图权限校验与读时传播
-   检查不在本层表达。
-10. **层级里含点号的 namespace 与两级 namespace 无法区分。** 多级 namespace 落库时按点号拼接
+   放不下的记 `sha256:<前 12 位>`。起因是「认不出的令牌会退化为令牌即主体名」，
+   而控制台访问令牌长 272 个字符。
+8. **层级里含点号的 namespace 与两级 namespace 无法区分。** 多级 namespace 落库时按点号拼接
    （`["a","b"]` → `a.b`），因此一个 level 字面就叫 `a.b` 的 namespace 与两级的 `a`/`b`
-   在库里是同一行。Iceberg 客户端实际不生成含点号的 level，为它把列内容改成读者看不懂的
-   转义形式代价更高；要彻底消除只能把 `lakehouse_database.name` 换成层级 JSON 列。
-   详见 [`iceberg-rest-catalog-design.md` §8](iceberg-rest-catalog-design.md) 的风险 10。
-11. **权限页的 namespace 候选是「按层递归列举」的结果，有上限。** Iceberg 没有「列举全部
-   namespace」的端点，只能从根开始逐层 `?parent=` 递归（`listAllNamespaces`），
-   深度上限 4 层、条数上限 500 条。超出的 namespace **不会出现在下拉框里**，
-   但手工填写路径仍可授权——候选列表是便利性，不是权限边界。
-   深度上限同时意味着：授在 4 级以下的 namespace 只能用路径手填。
-12. **Iceberg 面分不开「写数据」与「改属性」。** 两者共用
-   `POST /v1/{prefix}/namespaces/{ns}/tables/{t}` 这一个提交端点，判定只能要求
-   `TABLE_WRITE_PROPERTIES`（官方词表里由 `ALTER` 给出），因此「能写数据」在 Iceberg 面
-   必须同时给 `UPDATE`（`…/metrics` 上报要 `TABLE_WRITE_DATA`）与 `ALTER`。
-   Paimon 面没这个问题：提交走 `/tables/{t}/commit`，只认 `TABLE_WRITE_DATA`。
-   要再细分只能等服务端解析 `updates` 数组后按操作类型二次判定，而那时请求已经过了
-   授权这一层——属于协议提供的粒度，不是本层的疏漏。`SparkSqlAuthorizationTests`
-   对两侧各跑一遍，把这条差异钉在测试里。
-
+   在库里是同一行。详见 [`iceberg-rest-catalog-design.md` §8](iceberg-rest-catalog-design.md)。
+9. **权限页的 namespace 候选是「按层递归列举」的结果，有上限。** Iceberg 没有「列举全部
+   namespace」的端点，只能从根开始逐层 `?parent=` 递归，深度上限 4 层、条数上限 500 条。
+   超出的 namespace 不会出现在下拉框里，但手工填写路径仍可授权——候选列表是便利性，
+   不是权限边界。
+10. **Iceberg 面分不开「写数据」与「改属性」。** 两者共用
+    `POST /v1/{prefix}/namespaces/{ns}/tables/{t}`，判定只能要求 `ALTER`，
+    因此「能写数据」必须同时给 `UPDATE`（`…/metrics`）与 `ALTER`。
+11. **列级赋权不参与表级判定，也没有列级端点。** 服务端存了列范围
+    （`columns_json`），但列级判定只对 `COLUMN` 目标生效；而 Paimon / Iceberg 的
+    协议面都没有「按列读」的端点，所以这条能力目前只用于表达「授了哪几列」。

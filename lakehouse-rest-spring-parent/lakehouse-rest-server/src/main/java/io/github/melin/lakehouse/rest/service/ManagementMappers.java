@@ -1,9 +1,7 @@
 package io.github.melin.lakehouse.rest.service;
 
-import io.github.melin.lakehouse.rest.domain.entity.CatalogRoleEntity;
 import io.github.melin.lakehouse.rest.domain.entity.PrincipalEntity;
 import io.github.melin.lakehouse.rest.domain.entity.PrincipalRoleEntity;
-import io.github.melin.lakehouse.rest.dto.ManagementDtos.CatalogRole;
 import io.github.melin.lakehouse.rest.dto.ManagementDtos.Principal;
 import io.github.melin.lakehouse.rest.dto.ManagementDtos.PrincipalRole;
 import java.util.LinkedHashMap;
@@ -36,16 +34,6 @@ public final class ManagementMappers {
         return new PrincipalRole(
                 entity.getName(),
                 entity.isFederated(),
-                new LinkedHashMap<>(entity.getProperties()),
-                entity.getCreatedAt(),
-                entity.getUpdatedAt(),
-                entity.getEntityVersion());
-    }
-
-    /** 实体 → 规格 {@code CatalogRole}。 */
-    public static CatalogRole toDto(CatalogRoleEntity entity) {
-        return new CatalogRole(
-                entity.getName(),
                 new LinkedHashMap<>(entity.getProperties()),
                 entity.getCreatedAt(),
                 entity.getUpdatedAt(),

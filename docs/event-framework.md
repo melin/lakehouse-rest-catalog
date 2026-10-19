@@ -33,11 +33,11 @@ Polaris 的 `PolarisEventType` 有 15 个类别、一百多个常量，是 **CRU
 | `VIEW` | ✅ `VIEW` | create / replace（= 更新）/ drop / rename；`LOAD` 不收 |
 | `POLICY` | ✅ `POLICY` | 我们只有优化策略（upsert），因此一条 `optimization.policy_updated`，没有 attach/detach |
 | `PRINCIPAL` | ✅ `PRINCIPAL` | 增删改 + 凭据轮换/重置 + 角色授予/收回 |
-| `PRINCIPAL_ROLE` | ✅ `PRINCIPAL_ROLE` | 增删改 + 与 catalog role 的绑定/解绑 |
-| `CATALOG_ROLE` | ✅ `CATALOG_ROLE` | 只留角色自身的增删改 |
+| `PRINCIPAL_ROLE` | ✅ `PRINCIPAL_ROLE` | 增删改（它只是分组，没有「绑定 catalog role」这一步了） |
+| `CATALOG_ROLE` | ❌ | catalog role 整层移除，没有对应物 |
 | `CREDENTIAL` | ❌ | `LOAD_CREDENTIALS` 是读路径：每次下发都发事件等于把审计表变成凭据访问日志 |
 | `TRANSACTION` / `NOTIFICATION` / `CONFIG` / `TASK_EXECUTION` / `RATE_LIMITING` | ❌ | 我们没有这些对象（优化批次的对齐见 §1.3） |
-| （无） | ✅ `GRANT` | Polaris 把授权挂在 `CATALOG_ROLE` 下；我们两种权限模型并存（Paimon 直授 / catalog role），审计上是同一件事，单列一类 |
+| （无） | ✅ `GRANT` | Polaris 把授权挂在 `CATALOG_ROLE` 下；我们只有官方那一套三元组赋权，审计上更该单列一类 |
 | （无） | ✅ `OPTIMIZATION` | 本地扩展：优化策略与批次终态（Polaris 无对应物） |
 
 ### 1.2 类型清单
@@ -82,11 +82,11 @@ Polaris 的 `PolarisEventType` 有 15 个类别、一百多个常量，是 **CRU
 
 | wire 值 | 含义 | 发布点 |
 | --- | --- | --- |
-| `grant.granted` | 授予权限 | Paimon 直授 `PermissionManagementService.grant`、catalog role 授权 `ResourceGrantService.add`（幂等命中不发） |
-| `grant.revoked` | 撤销权限 | 同上两个服务的 `revoke`（**没删掉任何一条时不发**） |
+| `grant.granted` | 授予权限 | `PermissionManagementService.grant`（幂等命中不发） |
+| `grant.revoked` | 撤销权限 | `PermissionManagementService.revoke`（**没删掉任何一条时不发**） |
 
-两种收权方靠属性区分：`granteeType=PRINCIPAL`（直授主体）或 `CATALOG_ROLE`，
-其余属性一致（`grantee` / `resourceType` / `database` / `object` / `access`）。
+收权方一律是 principal 字符串，属性里带 `grantee` / `resourceType` / `database` /
+`object` / `access`。`role:<名>` 形式的收权方表示「这条赋权由该分组的成员共享」。
 
 **PRINCIPAL**（7）
 
@@ -96,18 +96,11 @@ Polaris 的 `PolarisEventType` 有 15 个类别、一百多个常量，是 **CRU
 | `principal.credentials_rotated` / `principal.credentials_reset` | 轮换 / 重置凭据（**不含 clientId 与密钥**） |
 | `principal.role_granted` / `principal.role_revoked` | 把主体角色授予 / 收回主体 |
 
-**PRINCIPAL_ROLE**（5）
+**PRINCIPAL_ROLE**（3）
 
 | wire 值 | 含义 |
 | --- | --- |
 | `principal_role.created` / `principal_role.updated` / `principal_role.dropped` | 主体角色的增删改 |
-| `principal_role.catalog_role_granted` / `principal_role.catalog_role_revoked` | 与 catalog role 绑定 / 解绑 |
-
-**CATALOG_ROLE**（3）
-
-| wire 值 | 含义 |
-| --- | --- |
-| `catalog_role.created` / `catalog_role.updated` / `catalog_role.dropped` | catalog 角色自身的增删改（授权见 `GRANT`） |
 
 **POLICY**（1）
 

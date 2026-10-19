@@ -31,10 +31,12 @@ import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilde
 /**
  * 管理 API（{@code /api/management/v1}）的 HTTP 层集成测试。
  *
- * <p>逐条覆盖 {@code spec/polaris-management-service.yml} 的 33 个 operation，
- * 并校验规格声明的状态码（创建 201、删除 204、版本冲突 409、资源缺失 404、
- * 参数不合法 400）。路径与动词属于契约的一部分，只能在 HTTP 层验证，
- * 因此本类走 MockMvc 而不是直接调用服务层。
+ * <p>catalog / principal / principal role 的生命周期是**服务端扩展**：官方 Paimon
+ * management API 只规范了权限端点（{@code /v1/{prefix}/permissions}，由
+ * {@link PermissionManagementTests} 覆盖），catalog role 那套 RBAC 已整体移除。
+ * 本类逐条覆盖这些扩展端点，并校验它们声明的状态码（创建 201、删除 204、
+ * 版本冲突 409、资源缺失 404、参数不合法 400）。路径与动词属于契约的一部分，
+ * 只能在 HTTP 层验证，因此本类走 MockMvc 而不是直接调用服务层。
  *
  * <p>测试自建 catalog {@value #CATALOG} 并在结束时删除，避免与 catalog API 的测试数据互相影响。
  *
@@ -88,10 +90,6 @@ class ManagementApiTests {
 
     private String roleBody(String name) {
         return "{\"principalRole\":{\"name\":\"" + name + "\"}}";
-    }
-
-    private String catalogRoleBody(String name) {
-        return "{\"catalogRole\":{\"name\":\"" + name + "\"}}";
     }
 
     // ------------------------------------------------------------------ catalog
@@ -249,113 +247,14 @@ class ManagementApiTests {
         assertEquals("mgmt-alice", principals.get("principals").get(0).get("name").asString());
     }
 
-    // ------------------------------------------------------------------ catalog role 与授权
-
-    @Test
-    @Order(4)
-    void catalogRoleLifecycleAndGrants() throws Exception {
-        // 25 GET /catalogs/{c}/catalog-roles
-        assertTrue(json(200, "GET", M + "/catalogs/" + CATALOG + "/catalog-roles", null)
-                .get("roles").isArray());
-        json(404, "GET", M + "/catalogs/does-not-exist/catalog-roles", null);
-
-        // 26 POST /catalogs/{c}/catalog-roles
-        JsonNode created = json(201, "POST", M + "/catalogs/" + CATALOG + "/catalog-roles",
-                "{\"catalogRole\":{\"name\":\"mgmt_reader\",\"properties\":{\"scope\":\"read\"}}}");
-        assertEquals("mgmt_reader", created.get("name").asString());
-        json(409, "POST", M + "/catalogs/" + CATALOG + "/catalog-roles", catalogRoleBody("mgmt_reader"));
-        json(201, "POST", M + "/catalogs/" + CATALOG + "/catalog-roles", catalogRoleBody("mgmt_writer"));
-
-        // 27 GET /catalogs/{c}/catalog-roles/{r}
-        JsonNode fetched = json(200, "GET",
-                M + "/catalogs/" + CATALOG + "/catalog-roles/mgmt_reader", null);
-        json(404, "GET", M + "/catalogs/" + CATALOG + "/catalog-roles/ghost", null);
-
-        // 28 PUT /catalogs/{c}/catalog-roles/{r}
-        int version = fetched.get("entityVersion").asInt();
-        json(200, "PUT", M + "/catalogs/" + CATALOG + "/catalog-roles/mgmt_reader",
-                "{\"currentEntityVersion\":" + version + ",\"properties\":{\"scope\":\"read-only\"}}");
-        json(409, "PUT", M + "/catalogs/" + CATALOG + "/catalog-roles/mgmt_reader",
-                "{\"currentEntityVersion\":9999,\"properties\":{}}");
-
-        String grants = M + "/catalogs/" + CATALOG + "/catalog-roles/mgmt_reader/grants";
-        // 32 PUT grants：新增（catalog / namespace / table 三种层级）
-        json(201, "PUT", grants, "{\"grant\":{\"type\":\"catalog\",\"privilege\":\"CATALOG_MANAGE_ACCESS\"}}");
-        json(201, "PUT", grants, """
-                {"grant":{"type":"namespace","namespace":["silver"],"privilege":"NAMESPACE_LIST"}}""");
-        json(201, "PUT", grants, """
-                {"grant":{"type":"table","namespace":["silver","sales"],"tableName":"orders",
-                          "privilege":"TABLE_READ_PROPERTIES"}}""");
-        // 幂等
-        json(201, "PUT", grants, """
-                {"grant":{"type":"table","namespace":["silver","sales"],"tableName":"orders",
-                          "privilege":"TABLE_READ_PROPERTIES"}}""");
-        // 参数错误
-        json(400, "PUT", grants, "{\"grant\":{\"type\":\"column\",\"privilege\":\"TABLE_LIST\"}}");
-        json(400, "PUT", grants, """
-                {"grant":{"type":"table","namespace":["a"],"tableName":"t","privilege":"POLICY_READ"}}""");
-        json(400, "PUT", grants, """
-                {"grant":{"type":"table","namespace":["a"],"privilege":"TABLE_LIST"}}""");
-        json(400, "PUT", grants, "{}");
-
-        // 31 GET grants
-        JsonNode listed = json(200, "GET", grants, null);
-        assertEquals(3, listed.get("grants").size());
-        boolean hasTableGrant = false;
-        for (JsonNode grant : listed.get("grants")) {
-            if ("table".equals(grant.get("type").asString())) {
-                hasTableGrant = true;
-                // 对象名字段随类型变化：table 用 tableName 而非统一的 objectName
-                assertEquals("orders", grant.get("tableName").asString());
-                assertEquals("silver", grant.get("namespace").get(0).asString());
-            }
-        }
-        assertTrue(hasTableGrant, "列表应含 table 级授权");
-
-        // 33 POST grants：撤销
-        json(201, "POST", grants, """
-                {"grant":{"type":"table","namespace":["silver","sales"],"tableName":"orders",
-                          "privilege":"TABLE_READ_PROPERTIES"}}""");
-        assertEquals(2, json(200, "GET", grants, null).get("grants").size());
-        json(404, "POST", grants, """
-                {"grant":{"type":"view","namespace":["silver"],"viewName":"v","privilege":"VIEW_LIST"}}""");
-
-        // 23 PUT /principal-roles/{pr}/catalog-roles/{c}
-        String assign = M + "/principal-roles/mgmt_engineer/catalog-roles/" + CATALOG;
-        json(201, "PUT", assign, catalogRoleBody("mgmt_reader"));
-        json(201, "PUT", assign, catalogRoleBody("mgmt_reader"));
-        json(404, "PUT", assign, catalogRoleBody("ghost"));
-
-        // 22 GET /principal-roles/{pr}/catalog-roles/{c}：只回该 principal role 被授予的角色
-        JsonNode assigned = json(200, "GET", assign, null);
-        assertEquals(1, assigned.get("roles").size());
-        assertEquals("mgmt_reader", assigned.get("roles").get(0).get("name").asString());
-
-        // 30 GET /catalogs/{c}/catalog-roles/{r}/principal-roles
-        JsonNode owners = json(200, "GET",
-                M + "/catalogs/" + CATALOG + "/catalog-roles/mgmt_reader/principal-roles", null);
-        assertEquals(1, owners.get("roles").size());
-        assertEquals("mgmt_engineer", owners.get("roles").get(0).get("name").asString());
-    }
-
     // ------------------------------------------------------------------ 删除与级联
 
     @Test
     @Order(5)
     void deletionSemantics() throws Exception {
-        // 24 DELETE /principal-roles/{pr}/catalog-roles/{c}/{r}
-        String assign = M + "/principal-roles/mgmt_engineer/catalog-roles/" + CATALOG;
-        json(204, "DELETE", assign + "/mgmt_reader", null);
-        json(404, "DELETE", assign + "/mgmt_reader", null);
-
         // 15 DELETE /principals/{p}/principal-roles/{r}
         json(204, "DELETE", M + "/principals/mgmt-alice/principal-roles/mgmt_engineer", null);
         json(404, "DELETE", M + "/principals/mgmt-alice/principal-roles/mgmt_engineer", null);
-
-        // 29 DELETE /catalogs/{c}/catalog-roles/{r}
-        json(204, "DELETE", M + "/catalogs/" + CATALOG + "/catalog-roles/mgmt_writer", null);
-        json(204, "DELETE", M + "/catalogs/" + CATALOG + "/catalog-roles/mgmt_reader", null);
-        json(404, "DELETE", M + "/catalogs/" + CATALOG + "/catalog-roles/mgmt_reader", null);
 
         // 20 DELETE /principal-roles/{r}
         json(204, "DELETE", M + "/principal-roles/mgmt_engineer", null);
@@ -368,14 +267,16 @@ class ManagementApiTests {
 
     @Test
     @Order(6)
-    void deletingCatalogCascadesDatabasesAndRoles() throws Exception {
-        // 先在待删 catalog 下建库、建角色，验证级联
+    void deletingCatalogCascadesDatabasesAndPermissions() throws Exception {
+        // 先在待删 catalog 下建库、授一条权，验证级联
         json(200, "POST", "/v1/" + CATALOG + "/databases", "{\"name\":\"cascade_db\"}");
-        json(201, "POST", M + "/catalogs/" + CATALOG + "/catalog-roles", catalogRoleBody("cascade_role"));
-        json(201, "PUT", M + "/catalogs/" + CATALOG + "/catalog-roles/cascade_role/grants",
-                "{\"grant\":{\"type\":\"catalog\",\"privilege\":\"CATALOG_READ_PROPERTIES\"}}");
+        json(201, "POST", "/v1/" + CATALOG + "/permissions/grant",
+                "{\"resource\":{\"type\":\"CATALOG_ALL\"},\"access\":\"LIST\","
+                        + "\"principal\":\"user:cascade\"}");
+        assertEquals(1, json(200, "GET", "/v1/" + CATALOG + "/permissions?principal=user:cascade", null)
+                .get("assignments").size());
 
-        // 5 DELETE /catalogs/{catalogName}
+        // 5 DELETE /catalogs/{catalogName}：赋权以 catalog 为作用域，随 catalog 一起消失
         json(204, "DELETE", M + "/catalogs/" + CATALOG, null);
         json(404, "GET", M + "/catalogs/" + CATALOG, null);
         // 库随 catalog 一起消失

@@ -1,16 +1,16 @@
 # 数据模型
 
-服务端把 catalog 元数据与 RBAC 授权关系全部放进关系库，共 **23 张表、23 个 JPA 仓储接口**。
+服务端把 catalog 元数据与授权关系全部放进关系库，共 **20 张表、20 个 JPA 仓储接口**。
 本文件说明表的划分，以及三个容易看错或踩坑的设计点：摘要列、审计列、JSON 文档列。
 
 - 实体与仓储按模块分两处（模块划分见 [`maven-module-design.md`](maven-module-design.md) §8，
   目录层级见其 §9.1；下面两个路径里的 `lakehouse-rest-spring-parent/` 就是那层嵌套）：
-  - `lakehouse-rest-spring-parent/lakehouse-rest-core/.../domain/entity/` —— **20 个实体**
-    （catalog 侧 12 + 管理侧 7 + 事件审计 1），
-    另含 `AuditedEntity` 基类与 `JsonConverters`；同级 `domain/repo/` 有 **20 个仓储接口**
+  - `lakehouse-rest-spring-parent/lakehouse-rest-core/.../domain/entity/` —— **17 个实体**
+    （catalog 侧 12 + 管理侧 4 + 事件审计 1），
+    另含 `AuditedEntity` 基类与 `JsonConverters`；同级 `domain/repo/` 有 **17 个仓储接口**
   - `lakehouse-rest-spring-parent/lakehouse-rest-server/.../domain/entity/` —— **3 个表存储优化实体**
     （`TableOptimization` / `OptimizationJob` / `OptimizationJobItem`）；同级 `domain/repo/` 有 3 个仓储接口
-  - 合计仍是 23 个实体 + 23 个仓储接口。分家的依据是**谁读它**而不是谁写它：
+  - 合计 20 个实体 + 20 个仓储接口。分家的依据是**谁读它**而不是谁写它：
     优化三表只有 server 侧的调度与控制器会读，留在 server；其余实体被协议层（`protocol-paimon`）
     的面复用，所以下沉到 core，否则协议层要反向依赖 server
 - **表名统一用 `lakehouse_` 前缀**（2026-10 由 `paimon_` 迁来，见 **§6**）。服务端早期只服务
@@ -76,22 +76,19 @@
 在 Iceberg 侧不写：分区由 manifest 决定（REST catalog 不逐分区登记）、Iceberg 没有消费位点、
 没有语义视图，`FunctionMetadata` 的只读投影是二期。
 
-## 2. 管理侧（7 张，RBAC + Paimon 原生权限）
+## 2. 管理侧（4 张）
 
 | 表 | 对应资源 | 说明 |
 | --- | --- | --- |
 | `lakehouse_principal` | principal | 主体；只保存密钥摘要，明文仅在创建 / 轮换时返回一次 |
-| `lakehouse_principal_role` | principal role | 服务级角色，与 catalog 无关 |
-| `lakehouse_catalog_role` | catalog role | 归属于某个 catalog 的角色 |
+| `lakehouse_principal_role` | principal role | 纯分组，自己不携带任何权限 |
 | `lakehouse_principal_role_grant` | 主体 ↔ principal role | 多对多关联 |
-| `lakehouse_catalog_role_grant` | principal role ↔ catalog role | 多对多关联 |
-| `lakehouse_resource_grant` | catalog role 的资源授权 | 权限取值 + 资源类型 + 命名空间 + 对象名 |
-| `lakehouse_permission_assignment` | Paimon 原生权限的 principal 直授 | 官方词表 access + 资源定位符 + principal 原文 + 过期时间；与 `lakehouse_resource_grant` 是并行的两套授权来源 |
+| `lakehouse_permission_assignment` | **唯一的授权表** | 官方三元组 `(resource, access, principal)`：8 种资源定位符 + 12 项 access + principal 原文 + 过期时间 + 列范围 |
 
-两级角色都是多对多，链路为「主体 → principal role → catalog role → 资源授权」。
-`lakehouse_permission_assignment` 是第二路授权来源：授权直接面向 principal 字符串
-（`user:alice` / `role:sales_writer`），判定时与 RBAC 链取并集，
-见 [`authorization.md`](authorization.md) §2.5。
+**改造前这里有 7 张表**（另含 `lakehouse_catalog_role` / `lakehouse_catalog_role_grant` /
+`lakehouse_resource_grant`，即 Polaris 的 RBAC 链），已随 catalog role 整层移除。
+授权现在只有一条链路：主体凭成员关系得到 `role:<名>` 候选串，再与裸名、`user:<名>`
+一起参与判定，见 [`authorization.md`](authorization.md) §2.4。
 
 ## 2.1 表存储优化（3 张）
 
@@ -138,13 +135,14 @@
 
 ## 3. 为什么有两个摘要列
 
-`lakehouse_partition.spec_hash` 与 `lakehouse_resource_grant.namespace_hash` 是各自「键」字段的
-SHA-256 定长摘要，唯一约束落在摘要上而不是原文上。原因是 MySQL 的索引键上限是
-**3072 字节**（utf8mb4 下 768 个字符）：
+`lakehouse_partition.spec_hash` 与 `lakehouse_permission_assignment.locator_hash` 是各自
+「键」字段的 SHA-256 定长摘要，唯一约束落在摘要上而不是原文上。
+原因是 MySQL 的索引键上限是 **3072 字节**（utf8mb4 下 768 个字符）：
 
 - `spec_key` 声明为 1024 字符 → 与 `table_id` 相加远超上限；
-- `namespace_key` 是命名空间路径的拼接，而规格对层级数没有上限，长度本就无界；
-- 这两者与 `catalog_role_id` / `object_name` 等列合起来更放不下。
+- `locator_hash` 的原文是 `database_name` 与 `object_name` 的拼接，而标识符长度没有上界
+  （Iceberg 的 namespace 层级数也没有上限）；
+- 这两者与 `catalog_id` / `access` / `principal` 等列合起来更放不下。
 
 直接建索引会被 MySQL 拒绝：
 
@@ -152,7 +150,7 @@ SHA-256 定长摘要，唯一约束落在摘要上而不是原文上。原因是
 ERROR 1071 (42000): Specified key was too long; max key length is 3072 bytes
 ```
 
-改法是「原文入库 + 摘要入索引」：`spec_key` / `namespace_key` 保留，供等值查询使用；
+改法是「原文入库 + 摘要入索引」：`spec_key` / `database_name` / `object_name` 保留，供等值查询使用；
 唯一约束改用定长 64 字符的摘要，索引长度与值的实际长度解耦，唯一性语义不变。
 摘要在 `@PrePersist` / `@PreUpdate` 里由原文重算（见 `Digests`），因此不依赖调用方是否记得规范化。
 
@@ -229,7 +227,7 @@ schema、函数定义、分区 spec 等结构以 JSON 文本存进单列，实�
 
 1. **前缀已经在说谎**。表里既存 Paimon 也存 Iceberg（`catalog_format` 分派），
    `lakehouse_table` 里躺着 `table_kind='ICEBERG'` 的行（通用表方案落地后还会多一类）。
-2. **表数还少**。23 张表、23 个实体、一个库。每加一张表就多一处要改的点，
+2. **表数还少**。23 张表、23 个实体、一个库（当时的口径）。每加一张表就多一处要改的点，
    而 `generic-table-design.md` 已经预告了下一步要动这张表。
 3. **没有外部契约**。客户端（Spark / Flink / 控制台 / PyIceberg）全部走 REST，不直连库；
    表名只在服务端内部、DDL、文档与运维脚本里出现。真正被打破的是**运维侧**
@@ -253,6 +251,10 @@ parquet/orc/lance/vortex 目录表，名字与内容彻底脱钩，那时再改�
 下一个人一定会问「为什么它特殊」。
 
 ### 6.3 落地了什么
+
+> 下表记录的是**迁移当时**的状态（23 张表）。之后删掉 catalog role 整层，
+> 表数降到 20（见 §2），`paimon_catalog_role` / `paimon_catalog_role_grant` /
+> `paimon_resource_grant` 三行已不存在。
 
 | 位置 | 改动 |
 | --- | --- |

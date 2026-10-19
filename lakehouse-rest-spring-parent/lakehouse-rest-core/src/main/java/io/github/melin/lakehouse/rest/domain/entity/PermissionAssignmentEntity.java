@@ -13,23 +13,25 @@ import lombok.Getter;
 import lombok.Setter;
 
 /**
- * Paimon 原生权限模型的落库形态：「某 principal 在某资源上拥有某 access」。
+ * Paimon 权限模型的落库形态：「某 principal 在某资源上拥有某 access」。
  *
- * <p>与 {@link ResourceGrantEntity}（Polaris 模型，授权挂在 catalog role 上）是**两套并行的
- * 存储**，对应官方 REST Management API 的 permission 端点。principal 是官方语义下的
- * 不透明字符串（{@code user:alice} / {@code role:sales_writer}），本服务端只存原文、
- * 不外键到主体表——官方规格明说 principal 的解析是服务端职责，且「实现可以把
- * wire 定位器解析成内部持久化 id，内部 id 不对外暴露」，但本工程的主体名与
- * principal 字符串的关系是「命名约定」而非「外键引用」：令牌认证出的主体名
- * 直接按约定匹配（见 {@code PaimonPermissionModel}），管理面删掉一个主体时
+ * <p><b>这是唯一的授权表。</b>形状与官方 REST Management API 的三元组
+ * {@code (resource, access, principal)} 一致，access 取值就是官方那 12 项。
+ * 原先并存的 {@code lakehouse_catalog_role} 与 {@code lakehouse_resource_grant}
+ * （Polaris 的 RBAC 链）已整体移除，判定层因此只剩这一个真相源。
+ *
+ * <p>principal 是官方语义下的不透明字符串（{@code user:alice} /
+ * {@code role:sales_writer}），本服务端只存原文、不外键到主体表——官方规格明说
+ * principal 的解析是服务端职责，且「实现可以把 wire 定位符解析成内部持久化 id，
+ * 内部 id 不对外暴露」。主体名与 principal 字符串的关系是「命名约定」而非
+ * 「外键引用」：令牌认证出的主体名按约定匹配（见
+ * {@code AuthorizationService#principalCandidates}），管理面删掉一个主体时
  * 这里的赋权随之失效（匹配不上），不需要级联清理。
  *
- * <p>落库形态与官方三元组身份 {@code (resource, access, principal)} 一致：
- * resource 用 {@code resourceType + databaseName + objectName} 三个字段等价表达
+ * <p>resource 用 {@code resourceType + databaseName + objectName} 三个字段等价表达
  * （catalog 级两者为空串，COLUMN 挂在其表上）。唯一约束落在
- * {@code locatorHash}（database 与 object 的拼接摘要）而不是两列原文上，
- * 理由与 {@link ResourceGrantEntity} 相同：标识符长度没有上界，
- * MySQL 的索引键上限是 3072 字节。
+ * {@code locatorHash}（database 与 object 的拼接摘要）而不是两列原文上：
+ * 标识符长度没有上界，MySQL 的索引键上限是 3072 字节。
  */
 @Entity
 @Table(name = "lakehouse_permission_assignment",
@@ -94,8 +96,7 @@ public class PermissionAssignmentEntity extends AuditedEntity {
     }
 
     /**
-     * 摘要放进生命周期回调：与 {@link ResourceGrantEntity#refreshNamespaceHash()} 同理，
-     * 不依赖调用方是否记得先刷新，落库前摘要一定与定位符一致。
+     * 摘要放进生命周期回调：不依赖调用方是否记得先刷新，落库前摘要一定与定位符一致。
      */
     @PrePersist
     @PreUpdate

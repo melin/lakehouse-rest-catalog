@@ -2,8 +2,8 @@
  * 控制台调用的**全部**服务端端点，集中在这一处声明。
  *
  * <p>为什么不把路径散在各个视图里：控制台是用字符串拼 URL 的，
- * 而服务端的路径属于契约的一部分（catalog API 见
- * `static/rest-catalog-open-api.yaml`，管理 API 见 `spec/polaris-management-service.yml`）。
+ * 而服务端的路径属于契约的一部分（catalog API 与权限管理见
+ * `spec/rest-catalog-open-api.yaml` / `spec/paimon-rest-management-api.yaml`）。
  * 路径写错时前端的表现是 404 空列表，看不出是前端拼错了还是服务端改了，
  * 因此把它们收成一张表，交给 `scripts/verify-console.py` 与服务端路由逐条比对——
  * 前端引用了服务端不存在的路径，或者服务端路由改名后前端没跟上，都能在离线状态下查出来。
@@ -89,8 +89,8 @@ export const ENDPOINTS = {
   listPartitions: { method: 'GET', path: '/v1/{prefix}/databases/{database}/tables/{table}/partitions' },
 
   // ------------------------------------------------------------------ catalog API：权限（Paimon 官方 management API）
-  // 授权直接面向 principal（`user:alice` / `role:sales_writer`），与 Polaris 规格
-  // 的 catalog role 授权是两套并行模型。grant / revoke 的资源定位在请求体里。
+  // 授权只有这一套模型：三元组 `(resource, access, principal)`，access 取官方 12 项。
+  // grant / revoke 的资源定位在请求体里，因此不做成路径参数。
   listPermissions: { method: 'GET', path: '/v1/{prefix}/permissions' },
   grantPermission: { method: 'POST', path: '/v1/{prefix}/permissions/grant' },
   revokePermission: { method: 'POST', path: '/v1/{prefix}/permissions/revoke' },
@@ -168,21 +168,14 @@ export const ENDPOINTS = {
   revokePrincipalRole: { method: 'DELETE', path: '/api/management/v1/principals/{principalName}/principal-roles/{principalRoleName}' },
 
   // ------------------------------------------------------------------ 管理 API：principal role
+  // 纯分组。它自己不带任何权限：授予 `role:<name>` 的赋权由服务端按成员关系转发给成员，
+  // 因此这里没有「给角色挂 catalog 角色」这一组端点——catalog role 已整体移除。
   listPrincipalRoles: { method: 'GET', path: '/api/management/v1/principal-roles' },
   createPrincipalRole: { method: 'POST', path: '/api/management/v1/principal-roles' },
   getPrincipalRole: { method: 'GET', path: '/api/management/v1/principal-roles/{principalRoleName}' },
   updatePrincipalRole: { method: 'PUT', path: '/api/management/v1/principal-roles/{principalRoleName}' },
   deletePrincipalRole: { method: 'DELETE', path: '/api/management/v1/principal-roles/{principalRoleName}' },
   listPrincipalsOfPrincipalRole: { method: 'GET', path: '/api/management/v1/principal-roles/{principalRoleName}/principals' },
-  listCatalogRolesOfPrincipalRole: { method: 'GET', path: '/api/management/v1/principal-roles/{principalRoleName}/catalog-roles/{catalogName}' },
-  grantCatalogRole: { method: 'PUT', path: '/api/management/v1/principal-roles/{principalRoleName}/catalog-roles/{catalogName}' },
-  revokeCatalogRole: { method: 'DELETE', path: '/api/management/v1/principal-roles/{principalRoleName}/catalog-roles/{catalogName}/{catalogRoleName}' },
-
-  // ------------------------------------------------------------------ 管理 API：catalog role
-  // 控制台只读角色清单（授权表单的 `role:` 候选、角色装配时的角色下拉）。
-  // 角色的建档、改名、删除与「角色携带的授权」没有控制台入口：那部分属于 Polaris 的
-  // RBAC 面，交给管理 API 与 Spark SQL（`lakehouse-rest-spark` 的 CREATE ROLE / GRANT）。
-  listCatalogRoles: { method: 'GET', path: '/api/management/v1/catalogs/{catalogName}/catalog-roles' },
 
   // ------------------------------------------------------------------ 管理 API：表存储优化
   // 挂管理 API 而不是 catalog API：优化策略与批次是**服务端自己的资源**，

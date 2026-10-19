@@ -15,7 +15,7 @@
     `/polaris-management-service.yml` 下载）
 - 规格规模：Catalog API **60 个端点、144 个 schema**
   （端点清单见 [`docs/catalog-api-endpoints.md`](docs/catalog-api-endpoints.md)）；
-  Management API **33 个 operation、17 条路径**
+  Management API 的 **3 个权限端点**（官方）+ 扩展端点（catalog / principal / 角色 / 优化）
   （概览见 [`docs/management-api-overview.md`](docs/management-api-overview.md)）
 - 元数据存储：**MySQL 8.0**（建表语句由实体生成，见 `sql/schema-mysql.sql`；
   23 张表的划分与设计取舍见 [`docs/data-model.md`](docs/data-model.md)），
@@ -134,7 +134,7 @@ k8s 资源名的 `paimon-` 前缀**故意不改**：它不是产品名，是历�
 | 文档 | 读它的时机 |
 | --- | --- |
 | [`catalog-api-endpoints.md`](docs/catalog-api-endpoints.md) | 要查 Catalog API 有哪些端点——Paimon 的 60 个与 Iceberg 的 26 个按资源分组，含基址、前缀与授权映射说明 |
-| [`management-api-overview.md`](docs/management-api-overview.md) | 要读 Management API——33 个 operation 落在哪几个控制器上、几处容易读错的语义 |
+| [`management-api-overview.md`](docs/management-api-overview.md) | 要读 Management API——官方权限端点与扩展端点各落在哪几个控制器上、几处容易读错的语义 |
 | [`management-api-contract.md`](docs/management-api-contract.md) | 要查管理 API 的端点、字段、权限枚举——由规格生成，逐字对照 |
 | [`data-model.md`](docs/data-model.md) | 要改实体或看表结构——23 张表的划分、摘要列与审计列的设计理由、实体与仓储分在哪两个模块、`lakehouse_` 前缀（原 `paimon_`）的来历与 §6 的迁移方案（原子 rename、回滚、验收） |
 | [`spark-sql-reference.md`](docs/spark-sql-reference.md) | 要用 SQL 管理主体与授权——语句级参考，含完整示例 |
@@ -147,7 +147,7 @@ k8s 资源名的 `paimon-` 前缀**故意不改**：它不是产品名，是历�
 | [`console-catalog-detail.md`](docs/console-catalog-detail.md) | 要改 Catalog 详情页或仓库文件浏览——三个页签、下钻与路径防护、只读的取舍、「配置」页的默认表属性（`table-default.*`）编辑与并发冲突处理；建表表单里的默认参数预填与为什么不给 Lance 表建表入口 |
 | [`console-auth.md`](docs/console-auth.md) | 要给浏览器访问控制台配登录——三种登录方式、两个开关的边界、令牌与认证链、安全考量 |
 | [`polaris-capabilities-and-design.md`](docs/polaris-capabilities-and-design.md) | 要对比 Polaris 或看整体设计——核心能力提取、映射关系、已知缺口 |
-| [`event-framework.md`](docs/event-framework.md) | 要加一种事件、接一个 listener 或理解事件流的边界——10 类 38 个领域事件与触发点、与 Polaris 事件枚举的逐类映射、audit_event 表、发布监听链路、按监听器的类别/类型订阅（`lakehouse.rest.event-listener.*`）、增量拉取契约（`?since=` 游标 + `?category=`）与不发清单 |
+| [`event-framework.md`](docs/event-framework.md) | 要加一种事件、接一个 listener 或理解事件流的边界——9 类 33 个领域事件与触发点、与 Polaris 事件枚举的逐类映射、audit_event 表、发布监听链路、按监听器的类别/类型订阅（`lakehouse.rest.event-listener.*`）、增量拉取契约（`?since=` 游标 + `?category=`）与不发清单 |
 | [`iceberg-rest-catalog-design.md`](docs/iceberg-rest-catalog-design.md) | 要看「同一份元数据同时服务 Paimon 与 Iceberg」怎么做的——双协议方案：创建时区分格式、22 张表复用只加 9 列、路径冲突与错误模型、能力边界与效果图（`outputs/iceberg-rest-catalog/mockup.html`），以及**已落地的实测记录与与方案不一致的几处**（§11） |
 | [`generic-table-design.md`](docs/generic-table-design.md) | 要把 parquet / orc / lance / vortex 目录也纳入目录服务，或评审「通用表」方案——**设计稿，未实现**：Polaris Generic Table 的事实基线、四种格式的能力矩阵、复用 `lakehouse_table` 加 `table_kind` 的三方案对比、4 个端点与权限映射、凭据下发为什么是唯一的数据面控制点、Spark 侧按格式分派（`FileTable` 子类 / `ServiceLoader<TableProvider>`）、影响面与风险 |
 | [`unity-catalog-design.md`](docs/unity-catalog-design.md) | 要判断 Unity Catalog 的哪些能力该抄、哪些不该抄——**设计稿，未实现**：UC OSS 0.7 的事实基线与版本时间线、与本项目的十二面对照、六项可借鉴（External Volume / managed location / 延迟清理 / 批量权限 / 观测端点 / 提交错误语义）、十项明确不借鉴及逐条理由、表与端点设计、四期落地与测试计划 |
@@ -346,7 +346,7 @@ lakehouse-rest-spark/
 
 两份 API 与元数据的清单不在本文展开：Catalog API 的
 [Paimon 60 个与 Iceberg 26 个端点](docs/catalog-api-endpoints.md)、Management API 的
-[33 个 operation 概览](docs/management-api-overview.md)（逐字契约见
+[操作概览](docs/management-api-overview.md)（逐字契约见
 [`management-api-contract.md`](docs/management-api-contract.md)）、以及
 [23 张表的数据模型与设计取舍](docs/data-model.md)。
 
@@ -844,7 +844,7 @@ java -jar lakehouse-rest-spring-parent/lakehouse-rest-server/target/lakehouse-re
 # 脚本会创建并清理 database sales，因此要求目标实例为初始状态
 BASE=http://127.0.0.1:8080 ./scripts/api-sweep.sh
 
-# Management API：覆盖规格中全部 33 个 operation
+# Management API：覆盖全部扩展端点与 3 个权限端点
 BASE=http://127.0.0.1:8080 ./scripts/management-sweep.sh
 
 # Iceberg 协议面：不需要服务端实例——它是静态三方比对

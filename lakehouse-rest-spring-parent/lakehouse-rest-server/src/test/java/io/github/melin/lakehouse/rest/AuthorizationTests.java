@@ -2,6 +2,7 @@ package io.github.melin.lakehouse.rest;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -9,12 +10,16 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 
 import io.github.melin.lakehouse.rest.config.RequestContext;
-import io.github.melin.lakehouse.rest.dto.ManagementEnums.GrantType;
-import io.github.melin.lakehouse.rest.dto.Privilege;
+import io.github.melin.lakehouse.rest.domain.entity.CatalogEntity;
+import io.github.melin.lakehouse.rest.domain.entity.PermissionAssignmentEntity;
+import io.github.melin.lakehouse.rest.domain.repo.CatalogRepository;
+import io.github.melin.lakehouse.rest.domain.repo.PermissionAssignmentRepository;
+import io.github.melin.lakehouse.rest.dto.PermissionDtos.Access;
+import io.github.melin.lakehouse.rest.dto.PermissionDtos.ResourceType;
 import io.github.melin.lakehouse.rest.service.AuthorizationService;
-import io.github.melin.lakehouse.rest.service.PrivilegeModel;
+import io.github.melin.lakehouse.rest.support.ApiException;
+import io.github.melin.lakehouse.rest.support.Paging;
 import java.util.List;
-import java.util.Set;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -30,21 +35,19 @@ import tools.jackson.databind.json.JsonMapper;
 import tools.jackson.databind.node.JsonNodeFactory;
 
 /**
- * RBAC 授权体系的行为测试。
+ * 授权体系的行为测试（单一权限模型）。
  *
- * <p>与 {@link ManagementApiTests} 不同，本类在
- * {@code lakehouse.rest.authorization.enabled=true} 下运行，验证三件事：
+ * <p>在 {@code lakehouse.rest.authorization.enabled=true} 下验证四件事：
  *
  * <ol>
- *   <li>管理端点确实按调用者身份拒绝请求（而不是只在文档里声明 403）；
- *   <li>「主体 → principal role → catalog role → 资源授权」这条链路真的能放行请求；
- *   <li>{@link PrivilegeModel} 的蕴含与作用域覆盖规则符合预期——
- *       尤其是 {@code *_FULL_METADATA} 不能顺带把 {@code CATALOG_*} 权限放大出去。
+ *   <li>管理端点确实按调用者身份拒绝请求（而不是只在文档里声明 403）；</li>
+ *   <li>「principal → 赋权」这条链路真的能放行请求，且撤销立即生效；</li>
+ *   <li>principal role 作为分组，把授予 {@code role:<name>} 的赋权转发给成员；</li>
+ *   <li>作用域覆盖符合官方语义：{@code CATALOG_ALL} 覆盖后代、{@code CATALOG}
+ *       只覆盖实体本身、对象级只覆盖同名对象、列级赋权不放行整表。</li>
  * </ol>
  *
  * <p>使用独立的 H2 库，避免与其它测试类共享内存库导致状态互相污染。
- * {@code test} profile 负责把数据源从默认的 MySQL 换成内存 H2
- * （见 {@code src/test/resources/application-test.yml}），本类再覆盖库名以进一步隔离。
  */
 @SpringBootTest(properties = {
         "lakehouse.rest.authorization.enabled=true",
@@ -64,6 +67,12 @@ class AuthorizationTests {
 
     @Autowired
     private AuthorizationService authorizationService;
+
+    @Autowired
+    private PermissionAssignmentRepository permissionAssignmentRepository;
+
+    @Autowired
+    private CatalogRepository catalogRepository;
 
     private final JsonMapper mapper = JsonMapper.builder().build();
 
@@ -98,42 +107,70 @@ class AuthorizationTests {
         return call(expected, request, principal);
     }
 
-    /** 把「catalog role → principal role → principal」整条链路一次性接好。 */
-    private void wireRoleChain(String catalogRole, List<String> grantBodies,
-                               String principalRole, String principal) throws Exception {
-        as(ROOT, 201, "POST", M + "/catalogs/" + CATALOG + "/catalog-roles",
-                "{\"catalogRole\":{\"name\":\"" + catalogRole + "\"}}");
-        for (String grant : grantBodies) {
-            as(ROOT, 201, "PUT",
-                    M + "/catalogs/" + CATALOG + "/catalog-roles/" + catalogRole + "/grants", grant);
+    /** 授予一条赋权：{@code (resource, access, principal)}。 */
+    private void grant(String resourceJson, String access, String principal) throws Exception {
+        as(ROOT, 201, "POST", "/v1/" + CATALOG + "/permissions/grant",
+                "{\"resource\":" + resourceJson + ",\"access\":\"" + access
+                        + "\",\"principal\":\"" + principal + "\"}");
+    }
+
+    /**
+     * 建主体，已存在则跳过。
+     *
+     * <p>本类的用例共享一个 H2 库且不做清理，多个用例都要用同一个探针主体，
+     * 于是第二个用例建主体会拿到 409。这里显式容忍它——比给每个用例起一个新名字
+     * 更能表达「同一主体在不同场景下的授权行为」。
+     */
+    private void ensurePrincipal(String name) throws Exception {
+        MockHttpServletRequestBuilder request = post(M + "/principals")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"principal\":{\"name\":\"" + name + "\"}}")
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + ROOT);
+        int status = mockMvc.perform(request).andReturn().getResponse().getStatus();
+        assertTrue(status == 201 || status == 409, "unexpected status creating principal: " + status);
+    }
+
+    private void revoke(String resourceJson, String access, String principal) throws Exception {
+        as(ROOT, 201, "POST", "/v1/" + CATALOG + "/permissions/revoke",
+                "{\"resource\":" + resourceJson + ",\"access\":\"" + access
+                        + "\",\"principal\":\"" + principal + "\"}");
+    }
+
+    /** 以某个主体身份执行一次判定，断言被拒。 */
+    private void assertForbidden(String principal, ResourceType type, List<String> namespace,
+                                 String object, Access access) {
+        RequestContext.setPrincipal(principal);
+        try {
+            assertThrows(ApiException.class, () -> authorizationService.require(
+                    CATALOG, type, namespace, object, access, "test"));
+        } finally {
+            RequestContext.clear();
         }
-        as(ROOT, 201, "POST", M + "/principal-roles",
-                "{\"principalRole\":{\"name\":\"" + principalRole + "\"}}");
-        as(ROOT, 201, "PUT",
-                M + "/principal-roles/" + principalRole + "/catalog-roles/" + CATALOG,
-                "{\"catalogRole\":{\"name\":\"" + catalogRole + "\"}}");
-        as(ROOT, 201, "PUT", M + "/principals/" + principal + "/principal-roles",
-                "{\"principalRole\":{\"name\":\"" + principalRole + "\"}}");
+    }
+
+    private void assertAllowed(String principal, ResourceType type, List<String> namespace,
+                               String object, Access access) {
+        RequestContext.setPrincipal(principal);
+        try {
+            authorizationService.require(CATALOG, type, namespace, object, access, "test");
+        } finally {
+            RequestContext.clear();
+        }
     }
 
     // ------------------------------------------------------------------ 自举
 
     @Test
-    void bootstrapChainGivesRootCatalogAccess() throws Exception {
-        // 引导主体已创建且是服务管理员
+    void bootstrapGrantsGiveRootCatalogAccess() {
         assertTrue(authorizationService.isServiceAdmin(ROOT));
 
-        // 引导链路：root → service_admin → catalog_admin → CATALOG_MANAGE_ACCESS
-        List<String> catalogRoleIds = authorizationService.catalogRoleIdsOf(ROOT, CATALOG);
-        assertFalse(catalogRoleIds.isEmpty(), "root 应当通过引导链路持有 catalog role");
-
-        Set<Privilege> effective = authorizationService.effectivePrivileges(
-                ROOT, CATALOG, GrantType.CATALOG, List.of(), null);
-        assertTrue(effective.contains(Privilege.CATALOG_MANAGE_ACCESS), "root 应能管理授权");
-        assertTrue(effective.contains(Privilege.CATALOG_MANAGE_CONTENT));
-
-        // root 可以列主体
-        as(ROOT, 200, "GET", M + "/principals", null);
+        // 引导链路：root → service_admin → CATALOG/ALL + CATALOG_ALL/ALL
+        List<PermissionAssignmentEntity> assignments =
+                authorizationService.effectiveAssignments(ROOT, CATALOG);
+        assertTrue(assignments.stream().anyMatch(a -> a.getResourceType().equals("CATALOG")
+                && a.getAccess().equals("ALL")), "root 应通过引导角色拿到 CATALOG/ALL");
+        assertTrue(assignments.stream().anyMatch(a -> a.getResourceType().equals("CATALOG_ALL")
+                && a.getAccess().equals("ALL")), "root 应通过引导角色拿到 CATALOG_ALL/ALL");
     }
 
     @Test
@@ -143,123 +180,134 @@ class AuthorizationTests {
         // 携带了令牌但该主体不是服务管理员
         as("nobody", 403, "GET", M + "/principals", null);
         // 未在管理面登记的主体没有任何授权
-        assertTrue(authorizationService.catalogRoleIdsOf("nobody", CATALOG).isEmpty());
+        assertTrue(authorizationService.effectiveAssignments("nobody", CATALOG).isEmpty());
     }
+
+    // ------------------------------------------------------------------ 授予与撤销
 
     @Test
     void grantsActuallyEnableAccessAndRevocationRemovesIt() throws Exception {
-        as(ROOT, 201, "POST", M + "/principals",
-                "{\"principal\":{\"name\":\"" + BOB + "\"}}");
+        ensurePrincipal(BOB);
 
-        // 尚无任何授权：读 catalog 被拒
+        // 尚无任何授权：读 catalog 被拒，也不能管理主体
         as(BOB, 403, "GET", M + "/catalogs/" + CATALOG, null);
-        // 也不能管理主体
         as(BOB, 403, "GET", M + "/principals", null);
-        // 更不能给自己授权
-        as(BOB, 403, "PUT", M + "/catalogs/" + CATALOG + "/catalog-roles/x/grants",
-                "{\"grant\":{\"type\":\"catalog\",\"privilege\":\"CATALOG_MANAGE_ACCESS\"}}");
 
-        // 接上链路后即可读 catalog
-        wireRoleChain("authz_reader", List.of(
-                "{\"grant\":{\"type\":\"catalog\",\"privilege\":\"CATALOG_READ_PROPERTIES\"}}"),
-                "authz_pr", BOB);
+        // 读 catalog 详情按 CATALOG_ALL 上的 DESCRIBE 判：官方对照表里 CATALOG 作用域
+        // 只有 ALL / ALTER / DROP / GRANT / CREATEDATABASE，没有任何读权限
+        grant("{\"type\":\"CATALOG_ALL\"}", "DESCRIBE", BOB);
         as(BOB, 200, "GET", M + "/catalogs/" + CATALOG, null);
-        // 只有 READ_PROPERTIES，仍不能写
+        // 后代作用域不覆盖容器本身：改 catalog 属性要 CATALOG 上的 ALTER
         as(BOB, 403, "PUT", M + "/catalogs/" + CATALOG,
                 "{\"currentEntityVersion\":0,\"properties\":{}}");
-        // 但仍不是服务管理员
+        // 也不是服务管理员
         as(BOB, 403, "GET", M + "/principals", null);
 
-        // 撤销授权后立刻失去访问
-        as(ROOT, 201, "POST",
-                M + "/catalogs/" + CATALOG + "/catalog-roles/authz_reader/grants",
-                "{\"grant\":{\"type\":\"catalog\",\"privilege\":\"CATALOG_READ_PROPERTIES\"}}");
+        revoke("{\"type\":\"CATALOG_ALL\"}", "DESCRIBE", BOB);
         as(BOB, 403, "GET", M + "/catalogs/" + CATALOG, null);
     }
 
-    // ------------------------------------------------------------------ 蕴含与作用域
+    @Test
+    void principalRoleForwardsItsGrantsToMembers() throws Exception {
+        ensurePrincipal(BOB);
+        as(ROOT, 201, "POST", M + "/principal-roles",
+                "{\"principalRole\":{\"name\":\"authz-analyst\"}}");
+        as(ROOT, 201, "PUT", M + "/principals/" + BOB + "/principal-roles",
+                "{\"principalRole\":{\"name\":\"authz-analyst\"}}");
+
+        // 授给 role:<name>，成员通过解析拿到。这里用 CATALOG_ALL 上的 LIST：
+        // 它是「列 catalog 下的库」这一集合操作的正式口径
+        grant("{\"type\":\"CATALOG_ALL\"}", "LIST", "role:authz-analyst");
+        as(BOB, 200, "GET", "/v1/" + CATALOG + "/databases", null);
+
+        // 退出角色后立即失去
+        as(ROOT, 204, "DELETE", M + "/principals/" + BOB
+                + "/principal-roles/authz-analyst", null);
+        as(BOB, 403, "GET", "/v1/" + CATALOG + "/databases", null);
+    }
+
+    // ------------------------------------------------------------------ 作用域
 
     @Test
-    void fullMetadataDoesNotEscalateToCatalogWidePrivileges() {
-        // TABLE_FULL_METADATA 应当覆盖 Table 级元数据权限，但不得包含数据权限与 CATALOG_* 权限。
-        // 规格的 TablePrivilege 枚举里列有 CATALOG_MANAGE_ACCESS，若照搬该枚举做展开，
-        // 一个只写表的角色就会获得授权管理能力。
-        Set<Privilege> expanded = PrivilegeModel.expand(Privilege.TABLE_FULL_METADATA);
-        assertTrue(expanded.contains(Privilege.TABLE_LIST));
-        assertTrue(expanded.contains(Privilege.TABLE_DROP));
-        assertTrue(expanded.contains(Privilege.TABLE_WRITE_PROPERTIES));
-        assertTrue(expanded.contains(Privilege.TABLE_MANAGE_STRUCTURE));
-
-        assertFalse(expanded.contains(Privilege.TABLE_READ_DATA),
-                "TABLE_READ_DATA 需单独授予");
-        assertFalse(expanded.contains(Privilege.TABLE_WRITE_DATA),
-                "TABLE_WRITE_DATA 需单独授予");
-        assertFalse(expanded.contains(Privilege.CATALOG_MANAGE_ACCESS),
-                "表级元数据权限不得升级为授权管理能力");
-        assertFalse(expanded.contains(Privilege.CATALOG_MANAGE_CONTENT));
-        assertFalse(expanded.contains(Privilege.CATALOG_MANAGE_METADATA));
-
-        // 同理，namespace 级不得升级为 catalog 级
-        Set<Privilege> namespaceFull = PrivilegeModel.expand(Privilege.NAMESPACE_FULL_METADATA);
-        assertTrue(namespaceFull.contains(Privilege.NAMESPACE_CREATE));
-        assertFalse(namespaceFull.contains(Privilege.CATALOG_MANAGE_CONTENT));
-        assertFalse(namespaceFull.contains(Privilege.CATALOG_MANAGE_ACCESS));
+    void catalogScopeDoesNotCoverDescendants() throws Exception {
+        // CATALOG 只覆盖 catalog 实体；表操作要求 CATALOG_ALL 或更窄的作用域
+        grant("{\"type\":\"CATALOG\"}", "ALL", BOB);
+        assertAllowed(BOB, ResourceType.CATALOG, List.of(), null, Access.DROP);
+        assertForbidden(BOB, ResourceType.TABLE, List.of("default"), "t1", Access.SELECT);
+        revoke("{\"type\":\"CATALOG\"}", "ALL", BOB);
     }
 
     @Test
-    void catalogManageContentCoversTheDocumentedSet() {
-        Set<Privilege> expanded = PrivilegeModel.expand(Privilege.CATALOG_MANAGE_CONTENT);
-        // 文档明列的被蕴含项
-        assertTrue(expanded.contains(Privilege.CATALOG_MANAGE_METADATA));
-        assertTrue(expanded.contains(Privilege.CATALOG_READ_PROPERTIES));
-        assertTrue(expanded.contains(Privilege.CATALOG_WRITE_PROPERTIES));
-        assertTrue(expanded.contains(Privilege.TABLE_READ_DATA));
-        assertTrue(expanded.contains(Privilege.TABLE_WRITE_DATA));
-        // 经 FULL_METADATA 传递展开而来
-        assertTrue(expanded.contains(Privilege.TABLE_LIST));
-        assertTrue(expanded.contains(Privilege.NAMESPACE_CREATE));
-        assertTrue(expanded.contains(Privilege.VIEW_LIST));
-        // 但文档未把 CATALOG_MANAGE_ACCESS 列为组成部分
-        assertFalse(expanded.contains(Privilege.CATALOG_MANAGE_ACCESS));
+    void databaseAllCoversDescendantsAndDatabaseCoversCollections() throws Exception {
+        grant("{\"type\":\"DATABASE_ALL\",\"database\":\"default\"}", "SELECT", BOB);
+        // 后代表被覆盖
+        assertAllowed(BOB, ResourceType.TABLE, List.of("default"), "t1", Access.SELECT);
+        // 别的库不被覆盖
+        assertForbidden(BOB, ResourceType.TABLE, List.of("other"), "t1", Access.SELECT);
+        // SELECT 不会升级成 ALTER
+        assertForbidden(BOB, ResourceType.TABLE, List.of("default"), "t1", Access.ALTER);
+
+        // DATABASE 覆盖「该库的集合操作」，但不覆盖具体表
+        grant("{\"type\":\"DATABASE\",\"database\":\"default\"}", "LIST", BOB);
+        assertAllowed(BOB, ResourceType.TABLE, List.of("default"), null, Access.LIST);
+        assertForbidden(BOB, ResourceType.TABLE, List.of("default"), "t1", Access.LIST);
+
+        revoke("{\"type\":\"DATABASE_ALL\",\"database\":\"default\"}", "SELECT", BOB);
+        revoke("{\"type\":\"DATABASE\",\"database\":\"default\"}", "LIST", BOB);
     }
 
     @Test
-    void namespaceScopeCoversDescendantsOnly() {
-        Set<Privilege> onParent = authorizationService.effectivePrivileges(
-                ROOT, CATALOG, GrantType.NAMESPACE, List.of("default"), null);
-        assertTrue(onParent.contains(Privilege.CATALOG_MANAGE_ACCESS));
-
-        // 更深的命名空间同样被 catalog 级授权覆盖（引导角色授予的是 catalog 作用域）
-        Set<Privilege> onChild = authorizationService.effectivePrivileges(
-                ROOT, CATALOG, GrantType.NAMESPACE, List.of("default", "nested"), null);
-        assertTrue(onChild.contains(Privilege.CATALOG_MANAGE_ACCESS),
-                "catalog 级授权应覆盖其下所有命名空间");
-
-        // 前缀不匹配的命名空间不被覆盖——用一个只有 namespace 级授权的角色来验证
-        Set<Privilege> otherCatalog = authorizationService.effectivePrivileges(
-                ROOT, "not-a-catalog", GrantType.NAMESPACE, List.of("whatever"), null);
-        assertTrue(otherCatalog.isEmpty(), "不存在的 catalog 上不应有有效权限");
+    void tableScopeCoversOnlyTheNamedTable() throws Exception {
+        grant("{\"type\":\"TABLE\",\"database\":\"default\",\"table\":\"t1\"}", "SELECT", BOB);
+        assertAllowed(BOB, ResourceType.TABLE, List.of("default"), "t1", Access.SELECT);
+        assertForbidden(BOB, ResourceType.TABLE, List.of("default"), "t2", Access.SELECT);
+        revoke("{\"type\":\"TABLE\",\"database\":\"default\",\"table\":\"t1\"}", "SELECT", BOB);
     }
 
     @Test
-    void satisfiesHonoursImplication() {
-        assertTrue(PrivilegeModel.satisfies(Set.of(Privilege.CATALOG_MANAGE_CONTENT),
-                Privilege.TABLE_LIST));
-        assertTrue(PrivilegeModel.satisfies(Set.of(Privilege.TABLE_FULL_METADATA),
-                Privilege.TABLE_READ_PROPERTIES));
-        assertFalse(PrivilegeModel.satisfies(Set.of(Privilege.TABLE_FULL_METADATA),
-                Privilege.TABLE_READ_DATA));
-        assertTrue(PrivilegeModel.satisfies(Set.of(Privilege.TABLE_READ_DATA),
-                Privilege.TABLE_READ_DATA), "权限应当蕴含自身");
+    void columnGrantDoesNotAuthorizeTheWholeTable() throws Exception {
+        // COLUMN 赋权必须带列范围（官方规格：columns 只在 COLUMN 上出现且恰好一种非空）
+        String columnResource = "{\"type\":\"COLUMN\",\"database\":\"default\",\"table\":\"t1\"}";
+        as(ROOT, 201, "POST", "/v1/" + CATALOG + "/permissions/grant",
+                "{\"resource\":" + columnResource + ",\"access\":\"SELECT\",\"principal\":\"" + BOB
+                        + "\",\"columns\":{\"columnNames\":[\"a\",\"b\"]}}");
+
+        // 列白名单不能当作整表可读：表级 SELECT 仍然拒绝
+        assertForbidden(BOB, ResourceType.TABLE, List.of("default"), "t1", Access.SELECT);
+        // 列级判定本身是通过的——这正是「授了两列」与「授了整表」的区别所在
+        assertAllowed(BOB, ResourceType.COLUMN, List.of("default"), "t1", Access.SELECT);
+
+        revoke(columnResource, "SELECT", BOB);
     }
 
     @Test
-    void serviceAdminBypassesPrivilegeChecks() {
+    void expiredAssignmentIsIgnored() {
+        CatalogEntity catalog = catalogRepository.findByPrefix(CATALOG).orElseThrow();
+        PermissionAssignmentEntity expired = new PermissionAssignmentEntity();
+        expired.setId(Paging.newId());
+        expired.setCatalogId(catalog.getId());
+        expired.setResourceType("CATALOG_ALL");
+        expired.setDatabaseName("");
+        expired.setObjectName("");
+        expired.setAccess("ALTER");
+        expired.setPrincipal(BOB);
+        expired.setExpireTime(System.currentTimeMillis() - 60_000);
+        expired.markCreated(ROOT, System.currentTimeMillis() - 120_000);
+        permissionAssignmentRepository.save(expired);
+
+        assertForbidden(BOB, ResourceType.DATABASE, List.of("default"), null, Access.ALTER);
+        assertFalse(authorizationService.effectiveAssignments(BOB, CATALOG).stream()
+                        .anyMatch(a -> a.getAccess().equals("ALTER")),
+                "过期赋权不应出现在有效集合里");
+    }
+
+    @Test
+    void serviceAdminBypassesAccessChecks() {
         RequestContext.setPrincipal(ROOT);
         try {
             // 服务管理员在任意 catalog 上都直接放行
-            authorizationService.require("totally-unknown-catalog", GrantType.CATALOG,
-                    List.of(), null, Privilege.CATALOG_MANAGE_ACCESS, "do anything");
+            authorizationService.require("totally-unknown-catalog", ResourceType.CATALOG,
+                    List.of(), null, Access.GRANT, "do anything");
         } finally {
             RequestContext.clear();
         }

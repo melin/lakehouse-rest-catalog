@@ -155,7 +155,7 @@ ok 204 "DELETE /catalogs/gcs-demo" -X DELETE "$M/catalogs/gcs-demo"
 ok 204 "DELETE /catalogs/obs-demo" -X DELETE "$M/catalogs/obs-demo"
 ok 204 "DELETE /catalogs/oss-demo" -X DELETE "$M/catalogs/oss-demo"
 
-echo "========== 2. principals（8 个 operation） =========="
+echo "========== 2. principals（10 个 operation） =========="
 ok 201 "POST   /principals (alice)" -X POST -H "$J" \
   -d '{"principal":{"name":"alice","properties":{"dept":"data"}}}' "$M/principals"
 SECRET=$(field "['credentials']['clientSecret']")
@@ -181,7 +181,7 @@ ok 200 "POST   /principals/bob/reset（指定 clientId/secret）" -X POST -H "$J
   -d '{"clientId":"bob-fixed-id","clientSecret":"bob-fixed-secret"}' "$M/principals/bob/reset"
 ok 404 "POST   /principals/nope/reset -> 404" -X POST -H "$J" -d '{}' "$M/principals/nope/reset"
 
-echo "========== 3. principal roles（9 个 operation） =========="
+echo "========== 3. principal roles（6 个 operation） =========="
 ok 201 "POST   /principal-roles (data_engineer)" -X POST -H "$J" \
   -d '{"principalRole":{"name":"data_engineer","properties":{"tier":"1"}}}' "$M/principal-roles"
 ok 409 "POST   /principal-roles 重复 -> 409" -X POST -H "$J" \
@@ -207,82 +207,40 @@ ok 404 "PUT    未知角色 -> 404" -X PUT -H "$J" \
 ok 200 "GET    /principals/alice/principal-roles" "$M/principals/alice/principal-roles"
 ok 200 "GET    /principal-roles/data_engineer/principals（应含 alice）" "$M/principal-roles/data_engineer/principals"
 
-echo "========== 5. catalog roles（catalog 内 11 个 operation 的上半） =========="
-ok 201 "POST   /catalogs/mgmt/catalog-roles (catalog_reader)" -X POST -H "$J" \
-  -d '{"catalogRole":{"name":"catalog_reader","properties":{"scope":"read"}}}' "$M/catalogs/mgmt/catalog-roles"
-ok 409 "POST   重复 -> 409" -X POST -H "$J" \
-  -d '{"catalogRole":{"name":"catalog_reader"}}' "$M/catalogs/mgmt/catalog-roles"
-ok 201 "POST   /catalogs/mgmt/catalog-roles (catalog_writer)" -X POST -H "$J" \
-  -d '{"catalogRole":{"name":"catalog_writer"}}' "$M/catalogs/mgmt/catalog-roles"
-ok 200 "GET    /catalogs/mgmt/catalog-roles" "$M/catalogs/mgmt/catalog-roles"
-ok 404 "GET    /catalogs/nope/catalog-roles -> 404" "$M/catalogs/nope/catalog-roles"
-ok 200 "GET    /catalogs/mgmt/catalog-roles/catalog_reader" "$M/catalogs/mgmt/catalog-roles/catalog_reader"
-ok 404 "GET    未知 catalog role -> 404" "$M/catalogs/mgmt/catalog-roles/ghost"
-CRVER=$(fetch "$M/catalogs/mgmt/catalog-roles/catalog_reader" "['entityVersion']")
-ok 200 "PUT    /catalogs/mgmt/catalog-roles/catalog_reader" -X PUT -H "$J" \
-  -d "{\"currentEntityVersion\":$CRVER,\"properties\":{\"scope\":\"read-only\"}}" \
-  "$M/catalogs/mgmt/catalog-roles/catalog_reader"
-ok 409 "PUT    版本不符 -> 409" -X PUT -H "$J" \
-  -d '{"currentEntityVersion":9999,"properties":{}}' "$M/catalogs/mgmt/catalog-roles/catalog_reader"
+echo "========== 5. 权限端点（官方 /v1/{prefix}/permissions） =========="
+P="$B/v1/mgmt/permissions"
+ok 201 "POST   grant CATALOG_ALL/SELECT -> role:data_engineer" -X POST -H "$J" \
+  -d '{"resource":{"type":"CATALOG_ALL"},"access":"SELECT","principal":"role:data_engineer"}' "$P/grant"
+ok 201 "POST   重复授予（幂等覆盖）" -X POST -H "$J" \
+  -d '{"resource":{"type":"CATALOG_ALL"},"access":"SELECT","principal":"role:data_engineer"}' "$P/grant"
+ok 201 "POST   grant DATABASE/CREATETABLE" -X POST -H "$J" \
+  -d '{"resource":{"type":"DATABASE","database":"silver"},"access":"CREATETABLE","principal":"user:alice"}' \
+  "$P/grant"
+ok 201 "POST   grant TABLE/UPDATE" -X POST -H "$J" \
+  -d '{"resource":{"type":"TABLE","database":"silver","table":"orders"},"access":"UPDATE","principal":"user:alice"}' \
+  "$P/grant"
+ok 200 "GET    ?principal=role:data_engineer" "$P?principal=role:data_engineer"
+ok 200 "GET    ?resourceType=DATABASE" "$P?resourceType=DATABASE"
+ok 400 "POST   access 与资源类型不匹配 -> 400" -X POST -H "$J" \
+  -d '{"resource":{"type":"TABLE","database":"a","table":"t"},"access":"CREATETABLE","principal":"user:x"}' \
+  "$P/grant"
+ok 400 "POST   DATABASE_ALL 没有 DESCRIBE -> 400" -X POST -H "$J" \
+  -d '{"resource":{"type":"DATABASE_ALL","database":"a"},"access":"DESCRIBE","principal":"user:x"}' \
+  "$P/grant"
+ok 400 "POST   缺 principal -> 400" -X POST -H "$J" \
+  -d '{"resource":{"type":"CATALOG_ALL"},"access":"SELECT"}' "$P/grant"
+ok 201 "POST   revoke TABLE/UPDATE" -X POST -H "$J" \
+  -d '{"resource":{"type":"TABLE","database":"silver","table":"orders"},"access":"UPDATE","principal":"user:alice"}' \
+  "$P/revoke"
+ok 201 "POST   revoke 不存在的授权（幂等）" -X POST -H "$J" \
+  -d '{"resource":{"type":"VIEW","database":"silver","view":"v"},"access":"SELECT","principal":"user:alice"}' \
+  "$P/revoke"
 
-echo "========== 6. 授权三形态（catalog / namespace / table） =========="
-ok 201 "PUT    grants 新增 catalog 级授权" -X PUT -H "$J" \
-  -d '{"grant":{"type":"catalog","privilege":"CATALOG_MANAGE_ACCESS"}}' \
-  "$M/catalogs/mgmt/catalog-roles/catalog_reader/grants"
-ok 201 "PUT    grants 新增 namespace 级授权" -X PUT -H "$J" \
-  -d '{"grant":{"type":"namespace","namespace":["silver"],"privilege":"NAMESPACE_LIST"}}' \
-  "$M/catalogs/mgmt/catalog-roles/catalog_reader/grants"
-ok 201 "PUT    grants 新增 table 级授权" -X PUT -H "$J" \
-  -d '{"grant":{"type":"table","namespace":["silver","sales"],"tableName":"orders","privilege":"TABLE_READ_PROPERTIES"}}' \
-  "$M/catalogs/mgmt/catalog-roles/catalog_reader/grants"
-ok 201 "PUT    grants 重复新增（幂等）" -X PUT -H "$J" \
-  -d '{"grant":{"type":"table","namespace":["silver","sales"],"tableName":"orders","privilege":"TABLE_READ_PROPERTIES"}}' \
-  "$M/catalogs/mgmt/catalog-roles/catalog_reader/grants"
-ok 200 "GET    grants 列表" "$M/catalogs/mgmt/catalog-roles/catalog_reader/grants"
-ok 400 "PUT    grant.type 未知 -> 400" -X PUT -H "$J" \
-  -d '{"grant":{"type":"column","privilege":"TABLE_LIST"}}' \
-  "$M/catalogs/mgmt/catalog-roles/catalog_reader/grants"
-ok 400 "PUT    权限层级不匹配 -> 400" -X PUT -H "$J" \
-  -d '{"grant":{"type":"table","namespace":["a"],"tableName":"t","privilege":"POLICY_READ"}}' \
-  "$M/catalogs/mgmt/catalog-roles/catalog_reader/grants"
-ok 400 "PUT    table 缺 tableName -> 400" -X PUT -H "$J" \
-  -d '{"grant":{"type":"table","namespace":["a"],"privilege":"TABLE_LIST"}}' \
-  "$M/catalogs/mgmt/catalog-roles/catalog_reader/grants"
-ok 201 "POST   grants 撤销 table 级授权" -X POST -H "$J" \
-  -d '{"grant":{"type":"table","namespace":["silver","sales"],"tableName":"orders","privilege":"TABLE_READ_PROPERTIES"}}' \
-  "$M/catalogs/mgmt/catalog-roles/catalog_reader/grants"
-ok 404 "POST   撤销不存在的授权 -> 404" -X POST -H "$J" \
-  -d '{"grant":{"type":"view","namespace":["silver"],"viewName":"v","privilege":"VIEW_LIST"}}' \
-  "$M/catalogs/mgmt/catalog-roles/catalog_reader/grants"
-
-echo "========== 7. principal role ← catalog role 授予 =========="
-ok 201 "PUT    /principal-roles/data_engineer/catalog-roles/mgmt" -X PUT -H "$J" \
-  -d '{"catalogRole":{"name":"catalog_reader"}}' \
-  "$M/principal-roles/data_engineer/catalog-roles/mgmt"
-ok 201 "PUT    重复授予（幂等）" -X PUT -H "$J" \
-  -d '{"catalogRole":{"name":"catalog_reader"}}' \
-  "$M/principal-roles/data_engineer/catalog-roles/mgmt"
-ok 404 "PUT    未知 catalog role -> 404" -X PUT -H "$J" \
-  -d '{"catalogRole":{"name":"ghost"}}' \
-  "$M/principal-roles/data_engineer/catalog-roles/mgmt"
-ok 200 "GET    /principal-roles/data_engineer/catalog-roles/mgmt" \
-  "$M/principal-roles/data_engineer/catalog-roles/mgmt"
-ok 200 "GET    /catalogs/mgmt/catalog-roles/catalog_reader/principal-roles" \
-  "$M/catalogs/mgmt/catalog-roles/catalog_reader/principal-roles"
-ok 204 "DELETE /principal-roles/data_engineer/catalog-roles/mgmt/catalog_reader" -X DELETE \
-  "$M/principal-roles/data_engineer/catalog-roles/mgmt/catalog_reader"
-ok 404 "DELETE 重复撤销 -> 404" -X DELETE \
-  "$M/principal-roles/data_engineer/catalog-roles/mgmt/catalog_reader"
-
-echo "========== 8. 清理（删除 204 语义） =========="
+echo "========== 6. 清理（删除 204 语义） =========="
 ok 204 "DELETE /principals/alice/principal-roles/data_engineer" -X DELETE \
   "$M/principals/alice/principal-roles/data_engineer"
 ok 404 "DELETE 重复撤销 -> 404" -X DELETE \
   "$M/principals/alice/principal-roles/data_engineer"
-ok 204 "DELETE /catalogs/mgmt/catalog-roles/catalog_writer" -X DELETE \
-  "$M/catalogs/mgmt/catalog-roles/catalog_writer"
-ok 204 "DELETE /catalogs/mgmt/catalog-roles/catalog_reader" -X DELETE \
-  "$M/catalogs/mgmt/catalog-roles/catalog_reader"
 ok 204 "DELETE /principal-roles/data_engineer" -X DELETE "$M/principal-roles/data_engineer"
 ok 204 "DELETE /principal-roles/service_admin" -X DELETE "$M/principal-roles/service_admin"
 ok 204 "DELETE /principals/alice" -X DELETE "$M/principals/alice"
@@ -290,7 +248,7 @@ ok 204 "DELETE /principals/bob" -X DELETE "$M/principals/bob"
 ok 204 "DELETE /catalogs/mgmt（级联，规格 204）" -X DELETE "$M/catalogs/mgmt"
 ok 404 "GET    /catalogs/mgmt（已删除）-> 404" "$M/catalogs/mgmt"
 
-echo "========== 9. 两套 API 并存 =========="
+echo "========== 7. 两套 API 并存 =========="
 ok 200 "GET    /v1/config（管理 API 不影响 catalog API）" "$B/v1/config"
 ok 200 "GET    /rest-catalog-open-api.yaml" "$B/rest-catalog-open-api.yaml"
 ok 200 "GET    /polaris-management-service.yml" "$B/polaris-management-service.yml"

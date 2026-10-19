@@ -1,25 +1,19 @@
 package io.github.melin.lakehouse.rest.config;
 
 import io.github.melin.lakehouse.rest.domain.entity.CatalogEntity;
-import io.github.melin.lakehouse.rest.domain.entity.CatalogRoleAssignmentEntity;
-import io.github.melin.lakehouse.rest.domain.entity.CatalogRoleEntity;
 import io.github.melin.lakehouse.rest.domain.entity.DatabaseEntity;
 import io.github.melin.lakehouse.rest.domain.entity.PrincipalEntity;
 import io.github.melin.lakehouse.rest.domain.entity.PrincipalRoleAssignmentEntity;
+import io.github.melin.lakehouse.rest.domain.entity.PermissionAssignmentEntity;
 import io.github.melin.lakehouse.rest.domain.entity.PrincipalRoleEntity;
-import io.github.melin.lakehouse.rest.domain.entity.ResourceGrantEntity;
 import io.github.melin.lakehouse.rest.domain.repo.CatalogRepository;
-import io.github.melin.lakehouse.rest.domain.repo.CatalogRoleAssignmentRepository;
-import io.github.melin.lakehouse.rest.domain.repo.CatalogRoleRepository;
 import io.github.melin.lakehouse.rest.domain.repo.DatabaseRepository;
 import io.github.melin.lakehouse.rest.domain.repo.PrincipalRepository;
 import io.github.melin.lakehouse.rest.domain.repo.PrincipalRoleAssignmentRepository;
 import io.github.melin.lakehouse.rest.domain.repo.PrincipalRoleRepository;
-import io.github.melin.lakehouse.rest.domain.repo.ResourceGrantRepository;
-import io.github.melin.lakehouse.rest.dto.ManagementEnums.GrantType;
-import io.github.melin.lakehouse.rest.dto.Privilege;
-import io.github.melin.lakehouse.rest.service.ManagementCatalogService;
+import io.github.melin.lakehouse.rest.domain.repo.PermissionAssignmentRepository;
 import io.github.melin.lakehouse.rest.support.CatalogFormat;
+import io.github.melin.lakehouse.rest.support.Digests;
 import io.github.melin.lakehouse.rest.support.Paging;
 import io.github.melin.lakehouse.rest.support.Paths;
 import io.github.melin.lakehouse.rest.support.Secrets;
@@ -57,9 +51,7 @@ public class DataInitializer implements ApplicationRunner {
     private final PrincipalRepository principalRepository;
     private final PrincipalRoleRepository principalRoleRepository;
     private final PrincipalRoleAssignmentRepository principalRoleAssignmentRepository;
-    private final CatalogRoleRepository catalogRoleRepository;
-    private final CatalogRoleAssignmentRepository catalogRoleAssignmentRepository;
-    private final ResourceGrantRepository resourceGrantRepository;
+    private final PermissionAssignmentRepository permissionAssignmentRepository;
 
     @Override
     @Transactional
@@ -332,10 +324,11 @@ public class DataInitializer implements ApplicationRunner {
      *
      * <p>关闭授权时什么都不做，避免给不使用的部署留下无用数据。
      *
-     * <p>开启授权时需要一条最小可用链路，否则全新部署没有任何主体能创建第一个主体：
-     * 引导主体 → {@code service_admin}（principal role）→ 各 catalog 的
-     * {@code catalog_admin}（catalog role，由 {@code ManagementCatalogService} 在
-     * 建 catalog 时预置）→ {@code CATALOG_MANAGE_ACCESS}。
+     * <p>开启授权时需要一条最小可用链路，否则全新部署没有任何人能授出第一条赋权：
+     * 引导主体 → principal role（对外表现为 {@code role:<name>}）→
+     * 该 catalog 上的 {@code CATALOG/ALL} 与 {@code CATALOG_ALL/ALL}。
+     * 两条缺一不可：前者管 catalog 实体（建库、改属性、删 catalog），
+     * 后者管其下全部后代（表、视图、函数、赋权）。
      *
      * <p>这里还负责给出一个容易踩坑的配置组合告警：鉴权关闭 + 授权开启时，
      * 任何令牌都会被当成主体名，调用方可以任意冒用身份。
@@ -385,6 +378,8 @@ public class DataInitializer implements ApplicationRunner {
 
         String roleName = authorization.getBootstrapPrincipalRole();
         if (roleName == null || roleName.isBlank()) {
+            log.info("no bootstrap principal role configured; the bootstrap principal has no grant"
+                    + " on catalog {} until a service admin grants one", catalog.getPrefix());
             return;
         }
         PrincipalRoleEntity role = principalRoleRepository.findByName(roleName).orElse(null);
@@ -408,59 +403,39 @@ public class DataInitializer implements ApplicationRunner {
             principalRoleAssignmentRepository.save(assignment);
         }
 
-        // 把 service_admin 接到每个 catalog 的默认管理角色上
-        String catalogAdmin = ManagementCatalogService.DEFAULT_CATALOG_ROLE;
-        for (CatalogRoleEntity catalogRole
-                : catalogRoleRepository.findByCatalogIdOrderByNameAsc(catalog.getId())) {
-            if (!catalogAdmin.equals(catalogRole.getName())) {
+        grantCatalogAdmin(catalog, roleName, now);
+    }
+
+    /**
+     * 把自举角色授成某个 catalog 的管理员（幂等）。
+     *
+     * <p>授的是 principal 字符串 {@code role:<name>}，不依赖角色实体是否已存在——
+     * 这是官方模型的特点：principal 是不透明标识，解析归服务端。角色解散后重建，
+     * 这些赋权会重新生效。
+     */
+    private void grantCatalogAdmin(CatalogEntity catalog, String roleName, long now) {
+        String principal = "role:" + roleName;
+        String locator = Digests.sha256Hex("", PermissionAssignmentEntity.LOCATOR_SEPARATOR, "");
+        for (String resourceType : List.of("CATALOG", "CATALOG_ALL")) {
+            boolean exists = permissionAssignmentRepository
+                    .findByCatalogIdAndResourceTypeAndLocatorHashAndAccessAndPrincipal(
+                            catalog.getId(), resourceType, locator, "ALL", principal)
+                    .isPresent();
+            if (exists) {
                 continue;
             }
-            if (catalogRoleAssignmentRepository.existsByPrincipalRoleIdAndCatalogRoleId(
-                    role.getId(), catalogRole.getId())) {
-                continue;
-            }
-            CatalogRoleAssignmentEntity assignment = new CatalogRoleAssignmentEntity();
-            assignment.setId(Paging.newId());
-            assignment.setPrincipalRoleId(role.getId());
-            assignment.setCatalogRoleId(catalogRole.getId());
-            assignment.markCreated(SYSTEM_PRINCIPAL, now);
-            catalogRoleAssignmentRepository.save(assignment);
-            log.info("granted catalog role {} of catalog {} to principal role {}",
-                    catalogAdmin, catalog.getPrefix(), roleName);
+            PermissionAssignmentEntity grant = new PermissionAssignmentEntity();
+            grant.setId(Paging.newId());
+            grant.setCatalogId(catalog.getId());
+            grant.setResourceType(resourceType);
+            grant.setDatabaseName("");
+            grant.setObjectName("");
+            grant.setAccess("ALL");
+            grant.setPrincipal(principal);
+            grant.markCreated(SYSTEM_PRINCIPAL, now);
+            permissionAssignmentRepository.save(grant);
         }
-
-        // 若初始 catalog 未带默认管理角色（例如先于本功能创建），此处补齐，保证自举链路完整
-        if (catalogRoleRepository.findByCatalogIdAndName(catalog.getId(), catalogAdmin).isEmpty()) {
-            CatalogRoleEntity createdRole = new CatalogRoleEntity();
-            createdRole.setId(Paging.newId());
-            createdRole.setCatalogId(catalog.getId());
-            createdRole.setName(catalogAdmin);
-            createdRole.setProperties(new LinkedHashMap<>());
-            createdRole.markCreated(SYSTEM_PRINCIPAL, now);
-            createdRole = catalogRoleRepository.save(createdRole);
-
-            for (Privilege privilege : List.of(
-                    Privilege.CATALOG_MANAGE_ACCESS, Privilege.CATALOG_MANAGE_CONTENT)) {
-                ResourceGrantEntity grant = new ResourceGrantEntity();
-                grant.setId(Paging.newId());
-                grant.setCatalogRoleId(createdRole.getId());
-                grant.setResourceType(GrantType.CATALOG.wireName());
-                grant.setNamespace(new ArrayList<>());
-                grant.setObjectName("");
-                grant.normalizeNamespace();
-                grant.setPrivilege(privilege.name());
-                grant.markCreated(SYSTEM_PRINCIPAL, now);
-                resourceGrantRepository.save(grant);
-            }
-
-            CatalogRoleAssignmentEntity assignment = new CatalogRoleAssignmentEntity();
-            assignment.setId(Paging.newId());
-            assignment.setPrincipalRoleId(role.getId());
-            assignment.setCatalogRoleId(createdRole.getId());
-            assignment.markCreated(SYSTEM_PRINCIPAL, now);
-            catalogRoleAssignmentRepository.save(assignment);
-            log.info("provisioned default catalog role {} for pre-existing catalog {}",
-                    catalogAdmin, catalog.getPrefix());
-        }
+        log.info("granted CATALOG/ALL and CATALOG_ALL/ALL on catalog {} to {}",
+                catalog.getPrefix(), principal);
     }
 }

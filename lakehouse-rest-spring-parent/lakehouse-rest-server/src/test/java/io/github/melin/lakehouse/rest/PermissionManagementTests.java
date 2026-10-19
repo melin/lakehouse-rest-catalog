@@ -2,16 +2,19 @@ package io.github.melin.lakehouse.rest;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 
-import io.github.melin.lakehouse.rest.dto.ManagementEnums.GrantType;
-import io.github.melin.lakehouse.rest.dto.Privilege;
+import io.github.melin.lakehouse.rest.config.RequestContext;
+import io.github.melin.lakehouse.rest.dto.PermissionDtos.Access;
+import io.github.melin.lakehouse.rest.dto.PermissionDtos.ResourceType;
 import io.github.melin.lakehouse.rest.service.AuthorizationService;
+import io.github.melin.lakehouse.rest.support.ApiException;
 import java.util.List;
-import java.util.Set;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -29,10 +32,14 @@ import tools.jackson.databind.node.JsonNodeFactory;
 /**
  * Paimon 原生权限端点（{@code /v1/{prefix}/permissions}）与直授判定的行为测试。
  *
- * <p>与 {@link AuthorizationTests}（Polaris RBAC 链）互补，这里验证第二路授权来源：
- * 赋权三元组的增删查、官方词表的入参校验、撤销幂等、重复授予覆盖过期时间，
- * 以及直授真的能打通 catalog API 的权限判定（{@code user:} 与 {@code role:} 两种
- * principal 形式各一条链路）。
+ * <p>验证的是一条链路，而不是两条：官方三元组 {@code (resource, access, principal)}
+ * 是**唯一**的授权来源（catalog role 与资源授权表已整体移除），因此这里既测
+ * 端点的增删查、官方词表的入参校验、撤销幂等、重复授予覆盖过期时间，
+ * 也测这些赋权真的能打通 catalog API 的判定。
+ *
+ * <p>判定调 {@link AuthorizationService#require} 而不是某个「有效权限集合」方法：
+ * 官方只定义 {@code ALL} 一个聚合值，没有可展开的蕴含关系，
+ * 所以能观察到的本来就只有「某个 access 在某资源上是否放行」这一个布尔量。
  *
  * <p>使用独立的 H2 库，避免与其它测试类共享内存库导致状态互相污染。
  */
@@ -45,6 +52,7 @@ import tools.jackson.databind.node.JsonNodeFactory;
 class PermissionManagementTests {
 
     private static final String BASE = "/v1/paimon/permissions";
+    private static final String CATALOG = "paimon";
     private static final String M = "/api/management/v1";
     private static final String ROOT = "root";
 
@@ -72,6 +80,7 @@ class PermissionManagementTests {
         MockHttpServletRequestBuilder request = switch (method) {
             case "POST" -> post(path);
             case "PUT" -> put(path);
+            case "DELETE" -> delete(path);
             default -> get(path);
         };
         request.header(HttpHeaders.AUTHORIZATION, "Bearer " + ROOT);
@@ -96,6 +105,31 @@ class PermissionManagementTests {
 
     private JsonNode listAll() throws Exception {
         return asRoot(200, "GET", BASE, null);
+    }
+
+    /** 以某个主体身份跑一次单点判定。 */
+    private boolean allows(String principal, ResourceType type, List<String> namespace,
+                           String object, Access access) {
+        RequestContext.setPrincipal(principal);
+        try {
+            authorizationService.require(CATALOG, type, namespace, object, access, "test");
+            return true;
+        } finally {
+            RequestContext.clear();
+        }
+    }
+
+    private void assertGranted(String principal, ResourceType type, List<String> namespace,
+                               String object, Access access) {
+        assertTrue(allows(principal, type, namespace, object, access),
+                "期望放行：" + principal + " " + access + " on " + type + " " + namespace + " " + object);
+    }
+
+    private void assertDenied(String principal, ResourceType type, List<String> namespace,
+                              String object, Access access) {
+        assertThrows(ApiException.class,
+                () -> allows(principal, type, namespace, object, access),
+                "期望被拒：" + principal + " " + access + " on " + type + " " + namespace + " " + object);
     }
 
     // ------------------------------------------------------------------ 端点行为
@@ -179,6 +213,10 @@ class PermissionManagementTests {
         asRoot(400, "POST", BASE + "/grant",
                 "{\"resource\":" + tableResource("sales", "orders")
                         + ",\"access\":\"CREATETABLE\",\"principal\":\"user:alice\"}");
+        // DATABASE_ALL 上没有 DESCRIBE（官方对照表）
+        asRoot(400, "POST", BASE + "/grant",
+                "{\"resource\":{\"type\":\"DATABASE_ALL\",\"database\":\"sales\"},"
+                        + "\"access\":\"DESCRIBE\",\"principal\":\"user:alice\"}");
         // 缺 principal
         asRoot(400, "POST", BASE + "/grant",
                 "{\"resource\":" + tableResource("sales", "orders") + ",\"access\":\"SELECT\"}");
@@ -225,104 +263,78 @@ class PermissionManagementTests {
                 + ",\"access\":\"SELECT\",\"principal\":\"user:alice\"}";
         grant(identity);
 
-        // user: 形式的直授对从未进入 RBAC 链的主体生效
-        Set<Privilege> effective = authorizationService.effectivePrivileges(
-                "alice", "paimon", GrantType.TABLE, List.of("sales"), "orders");
-        assertTrue(effective.contains(Privilege.TABLE_READ_DATA),
-                "user:alice 的 SELECT 直授应转化为 alice 的 TABLE_READ_DATA");
-        assertFalse(effective.contains(Privilege.TABLE_WRITE_DATA),
-                "SELECT 不应放大为写权限");
+        // user: 形式的直授对从未进入任何角色链的主体生效
+        assertGranted("alice", ResourceType.TABLE, List.of("sales"), "orders", Access.SELECT);
+        // SELECT 不放大为写：官方只定义 ALL 一个聚合值，没有 ALTER 含 SELECT 这类蕴含
+        assertDenied("alice", ResourceType.TABLE, List.of("sales"), "orders", Access.UPDATE);
 
-        // 裸名等价：官方 principal 是不透明字符串，服务端按约定同时接受裸名
-        Set<Privilege> viaBareName = authorizationService.effectivePrivileges(
-                "bob", "paimon", GrantType.TABLE, List.of("sales"), "orders");
-        assertTrue(viaBareName.isEmpty());
+        // 未授予的主体什么都不得到
+        assertDenied("bob", ResourceType.TABLE, List.of("sales"), "orders", Access.SELECT);
 
         // 撤销后立即失效
         revoke(identity);
-        assertTrue(authorizationService.effectivePrivileges(
-                        "alice", "paimon", GrantType.TABLE, List.of("sales"), "orders").isEmpty(),
-                "撤销直授后 alice 不应再有权限");
+        assertDenied("alice", ResourceType.TABLE, List.of("sales"), "orders", Access.SELECT);
     }
 
     @Test
-    void databaseLevelGrantCoversTableOperations() throws Exception {
-        grant("{\"resource\":{\"type\":\"DATABASE\",\"database\":\"sales\"},"
-                + "\"access\":\"CREATETABLE\",\"principal\":\"user:alice\"}");
+    void databaseLevelGrantCoversCollectionOperations() throws Exception {
+        String identity = "{\"resource\":{\"type\":\"DATABASE\",\"database\":\"sales\"},"
+                + "\"access\":\"CREATETABLE\",\"principal\":\"user:alice\"}";
+        grant(identity);
 
-        // 建表判定落在 TABLE 层（CatalogAccessRules），DATABASE 级 CREATETABLE 应覆盖它
-        Set<Privilege> effective = authorizationService.effectivePrivileges(
-                "alice", "paimon", GrantType.TABLE, List.of("sales"), null);
-        assertTrue(effective.contains(Privilege.TABLE_CREATE),
-                "DATABASE 级 CREATETABLE 应覆盖库内建表判定");
+        // 建表判定落在 DATABASE 资源 + 空对象名（见 CatalogAccessRules 对
+        // POST /databases/{db}/tables 的登记），DATABASE 级 CREATETABLE 应覆盖它
+        assertGranted("alice", ResourceType.TABLE, List.of("sales"), null, Access.CREATETABLE);
 
         // 其它库不被覆盖
-        assertTrue(authorizationService.effectivePrivileges(
-                "alice", "paimon", GrantType.TABLE, List.of("other"), null).isEmpty());
+        assertDenied("alice", ResourceType.TABLE, List.of("other"), null, Access.CREATETABLE);
+        // 也不覆盖具体的某张表——那是 TABLE 级目标
+        assertDenied("alice", ResourceType.TABLE, List.of("sales"), "orders", Access.CREATETABLE);
 
-        revoke("{\"resource\":{\"type\":\"DATABASE\",\"database\":\"sales\"},"
-                + "\"access\":\"CREATETABLE\",\"principal\":\"user:alice\"}");
+        revoke(identity);
     }
 
     @Test
     void namespaceGrantMatchesMultiLevelNamespace() throws Exception {
-        // 直授把库名存成一列字符串，而 Iceberg 协议面把路径切成层级数组。
+        // 赋权把库名存成一列字符串，而 Iceberg 协议面把路径切成层级数组。
         // 「授 `accounting.tax` 覆盖 ["accounting","tax"]」这条如果断了，表现是
         // **权限页显示已授权、Iceberg 客户端却一直 403**——两处都不报错。
         grant("{\"resource\":{\"type\":\"DATABASE\",\"database\":\"accounting.tax\"},"
                 + "\"access\":\"DESCRIBE\",\"principal\":\"user:iceberg_two_levels\"}");
 
-        assertTrue(namespacePrivileges("iceberg_two_levels", List.of("accounting", "tax"))
-                        .contains(Privilege.NAMESPACE_READ_PROPERTIES),
-                "单段 `accounting.tax` 必须覆盖 Iceberg 的两级 namespace");
-        assertTrue(namespacePrivileges("iceberg_two_levels", List.of("accounting", "tax", "2026"))
-                        .contains(Privilege.NAMESPACE_READ_PROPERTIES),
-                "namespace 级授权按前缀覆盖后代");
-        assertFalse(namespacePrivileges("iceberg_two_levels", List.of("accounting"))
-                        .contains(Privilege.NAMESPACE_READ_PROPERTIES),
-                "两级授权不该反过来覆盖到上级");
+        assertGranted("iceberg_two_levels", ResourceType.DATABASE, List.of("accounting", "tax"),
+                null, Access.DESCRIBE);
+        // 单段授权不该反向覆盖上级
+        assertDenied("iceberg_two_levels", ResourceType.DATABASE, List.of("accounting"),
+                null, Access.DESCRIBE);
 
-        // 前缀必须落在层级边界上：单段 `sales` 不能覆盖 `salesforce`
-        grant("{\"resource\":{\"type\":\"DATABASE\",\"database\":\"sales\"},"
-                + "\"access\":\"DESCRIBE\",\"principal\":\"user:iceberg_prefix\"}");
-        assertFalse(namespacePrivileges("iceberg_prefix", List.of("salesforce"))
-                        .contains(Privilege.NAMESPACE_READ_PROPERTIES),
-                "`sales` 不该被当成 `salesforce` 的前缀");
-        assertTrue(namespacePrivileges("iceberg_prefix", List.of("sales", "2026"))
-                        .contains(Privilege.NAMESPACE_READ_PROPERTIES),
-                "`sales` 仍应是 `sales.2026` 的前缀");
-    }
-
-    /** 主体在一组 namespace 层级上的有效权限（走直授判定链）。 */
-    private Set<Privilege> namespacePrivileges(String principal, List<String> levels) {
-        return authorizationService.effectivePrivileges(
-                principal, "paimon", GrantType.NAMESPACE, levels, null);
+        // 前缀必须落在层级边界上：`sales` 不能覆盖 `salesforce`
+        grant("{\"resource\":{\"type\":\"DATABASE_ALL\",\"database\":\"sales\"},"
+                + "\"access\":\"SELECT\",\"principal\":\"user:iceberg_prefix\"}");
+        assertGranted("iceberg_prefix", ResourceType.TABLE, List.of("sales", "2026"),
+                "orders", Access.SELECT);
+        assertDenied("iceberg_prefix", ResourceType.TABLE, List.of("salesforce"),
+                "orders", Access.SELECT);
     }
 
     @Test
-    void roleGrantResolvesThroughCatalogRoleName() throws Exception {
-        // 准备 RBAC 链：bob → principal role → catalog role perm_sales_writer
-        asRoot(201, "POST", M + "/catalogs/paimon/catalog-roles",
-                "{\"catalogRole\":{\"name\":\"perm_sales_writer\"}}");
+    void roleGrantResolvesThroughPrincipalRole() throws Exception {
+        // principal role 是纯分组：它自己不带权限，只把授予 role:<name> 的赋权转发给成员
         asRoot(201, "POST", M + "/principal-roles", "{\"principalRole\":{\"name\":\"perm_pr\"}}");
-        asRoot(201, "PUT", M + "/principal-roles/perm_pr/catalog-roles/paimon",
-                "{\"catalogRole\":{\"name\":\"perm_sales_writer\"}}");
         asRoot(201, "POST", M + "/principals", "{\"principal\":{\"name\":\"perm-bob\"}}");
         asRoot(201, "PUT", M + "/principals/perm-bob/principal-roles",
                 "{\"principalRole\":{\"name\":\"perm_pr\"}}");
 
-        // 直授给 role:perm_sales_writer——与 catalog role 同名，按命名约定解析
         grant("{\"resource\":" + tableResource("sales", "orders")
-                + ",\"access\":\"SELECT\",\"principal\":\"role:perm_sales_writer\"}");
+                + ",\"access\":\"SELECT\",\"principal\":\"role:perm_pr\"}");
 
-        Set<Privilege> effective = authorizationService.effectivePrivileges(
-                "perm-bob", "paimon", GrantType.TABLE, List.of("sales"), "orders");
-        assertTrue(effective.contains(Privilege.TABLE_READ_DATA),
-                "role: 形式的直授应经同名 catalog role 生效");
-
+        assertGranted("perm-bob", ResourceType.TABLE, List.of("sales"), "orders", Access.SELECT);
         // 不持有该角色的主体不受影响
-        assertTrue(authorizationService.effectivePrivileges(
-                "perm-nobody", "paimon", GrantType.TABLE, List.of("sales"), "orders").isEmpty());
+        assertDenied("perm-nobody", ResourceType.TABLE, List.of("sales"), "orders", Access.SELECT);
+
+        // 退出角色后立即失去
+        asRoot(204, "DELETE", M + "/principals/perm-bob/principal-roles/perm_pr", null);
+        assertDenied("perm-bob", ResourceType.TABLE, List.of("sales"), "orders", Access.SELECT);
     }
 
     @Test
@@ -331,9 +343,7 @@ class PermissionManagementTests {
                 + ",\"access\":\"SELECT\",\"principal\":\"user:carol\","
                 + "\"expireTime\":\"2020-01-01T00:00:00Z\"}");
 
-        assertTrue(authorizationService.effectivePrivileges(
-                        "carol", "paimon", GrantType.TABLE, List.of("sales"), "orders").isEmpty(),
-                "过期的直授不应再产生有效权限");
+        assertDenied("carol", ResourceType.TABLE, List.of("sales"), "orders", Access.SELECT);
         // 列表仍反映落库内容（过期与否由判定层处理）
         assertEquals(1, countAssignments("user:carol", "orders"));
     }

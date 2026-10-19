@@ -418,9 +418,9 @@ public class RestServerProperties {
         /**
          * 服务管理员主体名。
          *
-         * <p>管理规格的权限 enum 里没有「管理主体与服务级角色」这一层权限，
-         * 说明 Polaris 把这类操作交给服务管理员而非权限判定，因此这里用名单表达。
-         * 名单内的主体可以管理 principal、principal role，并可在任意 catalog 上操作角色与授权。
+         * <p>官方管理 API 把主体、catalog 的生命周期明确归给服务端，12 项 access
+         * 里没有对应取值，因此这里用名单表达。名单内的主体可以管理 principal 与
+         * principal role，并在任意 catalog 上放行全部授权判定（含 {@code GRANT}）。
          */
         private List<String> serviceAdmins = new ArrayList<>(List.of("root"));
 
@@ -432,7 +432,11 @@ public class RestServerProperties {
          */
         private String bootstrapPrincipal = "root";
 
-        /** 启动时预置的引导角色链：service_admin → 各 catalog 的 catalog_admin。 */
+        /**
+         * 启动时预置的引导角色：该角色会获得预置 catalog 上的
+         * {@code CATALOG/ALL} 与 {@code CATALOG_ALL/ALL}，即该 catalog 的管理员。
+         * 留空则只建引导主体、不授任何权。
+         */
         private String bootstrapPrincipalRole = "service_admin";
     }
 

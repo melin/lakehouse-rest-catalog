@@ -1,13 +1,10 @@
 package io.github.melin.lakehouse.rest.web;
 
-import io.github.melin.lakehouse.rest.dto.ManagementDtos.CatalogRoles;
 import io.github.melin.lakehouse.rest.dto.ManagementDtos.CreatePrincipalRoleRequest;
-import io.github.melin.lakehouse.rest.dto.ManagementDtos.GrantCatalogRoleRequest;
 import io.github.melin.lakehouse.rest.dto.ManagementDtos.PrincipalRole;
 import io.github.melin.lakehouse.rest.dto.ManagementDtos.PrincipalRoles;
 import io.github.melin.lakehouse.rest.dto.ManagementDtos.Principals;
 import io.github.melin.lakehouse.rest.dto.ManagementDtos.UpdatePrincipalRoleRequest;
-import io.github.melin.lakehouse.rest.dto.Privilege;
 import io.github.melin.lakehouse.rest.service.AuthorizationService;
 import io.github.melin.lakehouse.rest.service.PrincipalRoleService;
 import lombok.RequiredArgsConstructor;
@@ -23,11 +20,12 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * 管理 API 的 principal role 端点，共 9 个 operation。
+ * 管理面的 principal role 端点，共 7 个 operation（服务端扩展，非官方契约）。
  *
- * <p>principal role 自身的管理按服务管理员处理（同 {@link PrincipalController} 的理由）；
- * 但「把 catalog role 授予 principal role」这一步会修改某个 catalog 的授权关系，
- * 因此要求调用者在**该 catalog** 上具备 {@code CATALOG_MANAGE_ACCESS}。
+ * <p>官方管理 API 没有角色概念：授权对象是 principal 字符串，成员关系由服务端解析。
+ * 本服务把 principal role 当作「主体分组」，对外表现为 {@code role:<name>}。
+ * 它自身不携带权限，因此整组按服务管理员处理；「谁能对什么资源做什么」全部走
+ * {@code /v1/{prefix}/permissions}。
  */
 @RestController
 @RequestMapping("/api/management/v1/principal-roles")
@@ -80,37 +78,5 @@ public class PrincipalRoleController {
     public Principals listPrincipals(@PathVariable String principalRoleName) {
         authorizationService.requireServiceAdmin("read the principals of a principal role");
         return principalRoleService.listPrincipals(principalRoleName);
-    }
-
-    /** {@code GET /principal-roles/{principalRoleName}/catalog-roles/{catalogName}}。 */
-    @GetMapping("/{principalRoleName}/catalog-roles/{catalogName}")
-    public CatalogRoles listCatalogRoles(@PathVariable String principalRoleName,
-                                        @PathVariable String catalogName) {
-        authorizationService.requireCatalog(catalogName, Privilege.CATALOG_MANAGE_ACCESS,
-                "read the catalog roles of a principal role");
-        return principalRoleService.listCatalogRoles(principalRoleName, catalogName);
-    }
-
-    /** {@code PUT /principal-roles/{principalRoleName}/catalog-roles/{catalogName}}。 */
-    @PutMapping("/{principalRoleName}/catalog-roles/{catalogName}")
-    public ResponseEntity<Void> grantCatalogRole(
-            @PathVariable String principalRoleName,
-            @PathVariable String catalogName,
-            @RequestBody(required = false) GrantCatalogRoleRequest request) {
-        authorizationService.requireCatalog(catalogName, Privilege.CATALOG_MANAGE_ACCESS,
-                "assign a catalog role");
-        principalRoleService.grantCatalogRole(principalRoleName, catalogName, request);
-        return ResponseEntity.status(HttpStatus.CREATED).build();
-    }
-
-    /** {@code DELETE /principal-roles/{principalRoleName}/catalog-roles/{catalogName}/{catalogRoleName}}。 */
-    @DeleteMapping("/{principalRoleName}/catalog-roles/{catalogName}/{catalogRoleName}")
-    public ResponseEntity<Void> revokeCatalogRole(@PathVariable String principalRoleName,
-                                                 @PathVariable String catalogName,
-                                                 @PathVariable String catalogRoleName) {
-        authorizationService.requireCatalog(catalogName, Privilege.CATALOG_MANAGE_ACCESS,
-                "remove a catalog role");
-        principalRoleService.revokeCatalogRole(principalRoleName, catalogName, catalogRoleName);
-        return ResponseEntity.noContent().build();
     }
 }

@@ -513,7 +513,7 @@ public class OptimizationJobService {
      *
      * <p>两个理由，都不是风格问题：优化任务要拿这个名字去建 REST catalog 连接
      * （id 对它毫无意义，那是本服务内部的主键）；控制台的过滤条件与权限判定
-     * （{@code catalogRoleIdsOf}）也都按名字走。对外给 id 会让调用方被迫再做一次
+     * （{@code AuthorizationService#hasAnyGrant}）也都按名字走。对外给 id 会让调用方被迫再做一次
      * id → name 的转换，而这个转换表只有本服务有。
      *
      * <p>catalog 被删除时回落成 id：批次是历史事实，不该因为 catalog 没了就查不出来。

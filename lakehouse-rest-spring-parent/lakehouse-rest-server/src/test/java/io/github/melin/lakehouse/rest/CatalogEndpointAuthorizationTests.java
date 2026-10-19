@@ -2,8 +2,9 @@ package io.github.melin.lakehouse.rest;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -12,9 +13,11 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 
 import io.github.melin.lakehouse.rest.config.CatalogAccessRules;
-import io.github.melin.lakehouse.rest.dto.ManagementEnums.GrantType;
-import io.github.melin.lakehouse.rest.dto.Privilege;
+import io.github.melin.lakehouse.rest.config.RequestContext;
+import io.github.melin.lakehouse.rest.dto.PermissionDtos.Access;
+import io.github.melin.lakehouse.rest.dto.PermissionDtos.ResourceType;
 import io.github.melin.lakehouse.rest.service.AuthorizationService;
+import io.github.melin.lakehouse.rest.support.ApiException;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -36,8 +39,8 @@ import org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandl
 /**
  * catalog API（{@code /v1/**}）的授权拦截行为测试。
  *
- * <p>与 {@link AuthorizationTests} 的分工：那一类验证 RBAC 判定本身（链路、蕴含、作用域覆盖），
- * 本类验证判定被真正接到了 catalog 端点上——即
+ * <p>与 {@link AuthorizationTests} 的分工：那一类验证判定本身（作用域覆盖、{@code ALL} 聚合、
+ * 过期与撤销），本类验证判定被真正接到了 catalog 端点上——即
  * {@link CatalogAccessRules} 的映射表与控制器实际暴露的端点集合一致。
  *
  * <p><b>端点清单不手写。</b>{@link #catalogEndpoints()} 直接从
@@ -45,6 +48,10 @@ import org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandl
  * 因此新增端点若忘记在映射表登记，
  * {@link #everyCatalogEndpointPassesWithSufficientPrivileges()} 会立刻失败。
  * 这正是把授权做成集中映射表而非逐处注解的目的。
+ *
+ * <p><b>授权只有一条路径。</b>catalog role 已整体移除，本类不再需要「catalog role →
+ * principal role → principal」三段装配，一条
+ * {@code POST /v1/{prefix}/permissions/grant} 就够；access 用的是官方那 12 项。
  *
  * <p>使用独立的 H2 库，避免与其它测试类共享内存库导致状态互相污染。
  * {@code test} profile 负责把数据源从默认的 MySQL 换成内存 H2
@@ -165,35 +172,44 @@ class CatalogEndpointAuthorizationTests {
         };
     }
 
-    /** 把「catalog role → principal role → principal」整条链路一次性接好。 */
-    private void wireRoleChain(String catalogRole, List<String> grantBodies,
-                               String principalRole, String principal) throws Exception {
-        perform(ROOT, 201, "POST", M + "/catalogs/" + CATALOG + "/catalog-roles",
-                "{\"catalogRole\":{\"name\":\"" + catalogRole + "\"}}");
-        for (String grant : grantBodies) {
-            perform(ROOT, 201, "PUT",
-                    M + "/catalogs/" + CATALOG + "/catalog-roles/" + catalogRole + "/grants", grant);
-        }
-        perform(ROOT, 201, "POST", M + "/principal-roles",
-                "{\"principalRole\":{\"name\":\"" + principalRole + "\"}}");
-        perform(ROOT, 201, "PUT",
-                M + "/principal-roles/" + principalRole + "/catalog-roles/" + CATALOG,
-                "{\"catalogRole\":{\"name\":\"" + catalogRole + "\"}}");
-        perform(ROOT, 201, "PUT", M + "/principals/" + principal + "/principal-roles",
-                "{\"principalRole\":{\"name\":\"" + principalRole + "\"}}");
-    }
-
     private void createPrincipal(String name) throws Exception {
         perform(ROOT, 201, "POST", M + "/principals", "{\"principal\":{\"name\":\"" + name + "\"}}");
     }
 
-    private String catalogGrant(String privilege) {
-        return "{\"grant\":{\"type\":\"catalog\",\"privilege\":\"" + privilege + "\"}}";
+    /**
+     * 授予一条赋权。{@code resourceJson} 是官方 {@code PermissionResource} 片段，
+     * 例如 {@code {"type":"DATABASE_ALL","database":"sales"}}。
+     */
+    private void grant(String principal, String resourceJson, String access) throws Exception {
+        perform(ROOT, 201, "POST", "/v1/" + CATALOG + "/permissions/grant",
+                "{\"resource\":" + resourceJson + ",\"access\":\"" + access
+                        + "\",\"principal\":\"" + principal + "\"}");
     }
 
-    private String namespaceGrant(String privilege, String namespace) {
-        return "{\"grant\":{\"type\":\"namespace\",\"namespace\":[\"" + namespace
-                + "\"],\"privilege\":\"" + privilege + "\"}}";
+    /** 以某个主体身份跑一次判定，期望被拒。 */
+    private void assertForbidden(String principal, ResourceType type, List<String> namespace,
+                                 String object, Access access) {
+        assertThrows(ApiException.class,
+                () -> allows(principal, type, namespace, object, access),
+                "期望被拒：" + principal + " " + access + " on " + type + " " + namespace + " " + object);
+    }
+
+    private void assertAllowed(String principal, ResourceType type, List<String> namespace,
+                               String object, Access access) {
+        assertTrue(allows(principal, type, namespace, object, access),
+                "期望放行：" + principal + " " + access + " on " + type + " " + namespace + " " + object);
+    }
+
+    /** 用 {@link RequestContext} 临时冒充某个主体，跑完立刻清空，避免污染其它用例。 */
+    private boolean allows(String principal, ResourceType type, List<String> namespace,
+                           String object, Access access) {
+        RequestContext.setPrincipal(principal);
+        try {
+            authorizationService.require(CATALOG, type, namespace, object, access, "test");
+            return true;
+        } finally {
+            RequestContext.clear();
+        }
     }
 
     // ------------------------------------------------------------------ 映射表完整性
@@ -201,15 +217,13 @@ class CatalogEndpointAuthorizationTests {
     @Test
     void everyCatalogEndpointPassesWithSufficientPrivileges() throws Exception {
         createPrincipal(WRITER);
-        // CATALOG_MANAGE_CONTENT 按文档展开后覆盖 catalog / namespace / table / view 四层，
-        // 但不含 SEMANTIC_MODEL_*，因此语义模型端点需要单独授予；
-        // 权限端点（/v1/{prefix}/permissions）按官方语义要求 GRANT，对应 CATALOG_MANAGE_ACCESS，
-        // 也需要单独授予——这是 /v1 下第一组要求该权限的端点
-        wireRoleChain("authz_catalog_writer", List.of(
-                catalogGrant("CATALOG_MANAGE_CONTENT"),
-                catalogGrant("CATALOG_MANAGE_ACCESS"),
-                catalogGrant("SEMANTIC_MODEL_FULL_METADATA")),
-                "authz_writer_pr", WRITER);
+        // 两条都得给，不是冗余：
+        //   CATALOG_ALL 覆盖 catalog 的后代（库、表、视图、函数）；
+        //   CATALOG     覆盖 catalog 实体本身——建库（CREATEDATABASE）只在这个作用域上，
+        //               官方对照表里 CATALOG_ALL 没有 CREATEDATABASE。
+        // 一条 ALL 就能满足其作用域内的全部 access，因此不需要逐条授予。
+        grant(WRITER, "{\"type\":\"CATALOG_ALL\"}", "ALL");
+        grant(WRITER, "{\"type\":\"CATALOG\"}", "ALL");
 
         List<Endpoint> endpoints = catalogEndpoints();
         assertTrue(endpoints.size() >= 55,
@@ -253,104 +267,133 @@ class CatalogEndpointAuthorizationTests {
     }
 
     @Test
-    void readPrivilegesDoNotAllowWrites() throws Exception {
+    void listAccessDoesNotAllowWrites() throws Exception {
         createPrincipal(READER);
-        wireRoleChain("authz_catalog_reader", List.of(
-                catalogGrant("NAMESPACE_LIST"),
-                catalogGrant("TABLE_LIST"),
-                catalogGrant("TABLE_READ_PROPERTIES")),
-                "authz_reader_pr", READER);
+        // 只有列举权限：能看到有哪些库、哪些表，但建不了、也读不到数据。
+        // 官方词表里没有「读元数据就顺带能读数据」这种蕴含，SELECT 必须单独给。
+        grant(READER, "{\"type\":\"CATALOG_ALL\"}", "LIST");
 
         // 允许：列举命名空间
         perform(READER, 200, "GET", "/v1/" + CATALOG + "/databases", null);
         // 允许：列举表（命名空间不存在，因此 404 而非 403）
         assertEquals(404, status(READER, "GET", "/v1/" + CATALOG + "/databases/" + NAMESPACE_A + "/tables"));
 
-        // 拒绝：创建命名空间（需要 NAMESPACE_CREATE）
+        // 拒绝：创建命名空间（要求 CATALOG 上的 CREATEDATABASE）
         assertEquals(403, status(READER, "POST", "/v1/" + CATALOG + "/databases"));
-        // 拒绝：创建表（需要 TABLE_CREATE）
+        // 拒绝：创建表（要求 DATABASE 上的 CREATETABLE）
         assertEquals(403, status(READER, "POST",
                 "/v1/" + CATALOG + "/databases/" + NAMESPACE_A + "/tables"));
-        // 拒绝：读取数据（TABLE_READ_DATA 按文档需单独授予，不被 FULL_METADATA 蕴含）
+        // 拒绝：取数据令牌（要求 TABLE 上的 SELECT，LIST 不含它）
         assertEquals(403, status(READER, "GET",
                 "/v1/" + CATALOG + "/databases/" + NAMESPACE_A + "/tables/authz_probe/token"));
-        // 拒绝：语义模型（未授予 SEMANTIC_MODEL_*）
+        // 拒绝：读语义视图（按 VIEW 资源判定，要求 DESCRIBE）
         assertEquals(403, status(READER, "GET",
                 "/v1/" + CATALOG + "/databases/" + NAMESPACE_A + "/semantic-views/authz_probe"));
     }
 
     @Test
-    void namespaceScopedGrantOnlyCoversItsOwnSubtree() throws Exception {
+    void databaseScopedGrantOnlyCoversItsOwnSubtree() throws Exception {
         createPrincipal(SCOPED);
-        wireRoleChain("authz_ns_scoped", List.of(
-                namespaceGrant("TABLE_FULL_METADATA", NAMESPACE_A)),
-                "authz_scoped_pr", SCOPED);
+        // DATABASE_ALL 是官方的「显式后代作用域」：覆盖该库及其下全部对象。
+        // 选 SELECT 而不是 DESCRIBE 是因为官方对照表里 DATABASE_ALL 没有 DESCRIBE，
+        // 而 SELECT 恰好能在 token 端点上观察到——那正是「读数据」的入口。
+        grant(SCOPED, "{\"type\":\"DATABASE_ALL\",\"database\":\"" + NAMESPACE_A + "\"}", "SELECT");
 
         // 被授权命名空间内：通过授权检查，继而因表不存在返回 404
         int insideStatus = status(SCOPED, "GET",
-                "/v1/" + CATALOG + "/databases/" + NAMESPACE_A + "/tables/authz_probe");
-        assertNotEquals(403, insideStatus, "命名空间内的读表不应被拒绝");
-        assertEquals(404, insideStatus, "表不存在应返回 404");
+                "/v1/" + CATALOG + "/databases/" + NAMESPACE_A + "/tables/authz_probe/token");
+        assertEquals(404, insideStatus, "库内取令牌应通过授权，表不存在则 404");
 
         // 另一个命名空间：拒绝
         assertEquals(403, status(SCOPED, "GET",
-                "/v1/" + CATALOG + "/databases/" + NAMESPACE_B + "/tables/authz_probe"));
+                "/v1/" + CATALOG + "/databases/" + NAMESPACE_B + "/tables/authz_probe/token"));
 
         // 服务层判定与之一致
-        assertTrue(authorizationService.effectivePrivileges(SCOPED, CATALOG, GrantType.TABLE,
-                List.of(NAMESPACE_A), "authz_probe").contains(Privilege.TABLE_READ_PROPERTIES));
-        assertTrue(authorizationService.effectivePrivileges(SCOPED, CATALOG, GrantType.TABLE,
-                List.of(NAMESPACE_B), "authz_probe").isEmpty(),
-                "前缀不匹配的命名空间不应被覆盖");
+        assertAllowed(SCOPED, ResourceType.TABLE, List.of(NAMESPACE_A), "authz_probe", Access.SELECT);
+        assertForbidden(SCOPED, ResourceType.TABLE, List.of(NAMESPACE_B), "authz_probe", Access.SELECT);
+        // 前缀必须落在点号边界上：`authz_ns_a` 不能覆盖 `authz_ns_a2`
+        assertForbidden(SCOPED, ResourceType.TABLE, List.of(NAMESPACE_A + "2"), "authz_probe", Access.SELECT);
+        // SELECT 不放大成 DESCRIBE / UPDATE
+        assertForbidden(SCOPED, ResourceType.TABLE, List.of(NAMESPACE_A), "authz_probe", Access.UPDATE);
     }
 
     // ------------------------------------------------------------------ 映射表自身的单元校验
 
     @Test
     void mappingTableResolvesRepresentativeEndpoints() {
-        assertEquals(GrantType.CATALOG,
-                CatalogAccessRules.resolve("/v1/paimon/tables", "GET").resourceType());
-        assertEquals(Privilege.TABLE_LIST,
-                CatalogAccessRules.resolve("/v1/paimon/tables", "GET").privilege());
+        CatalogAccessRules.Requirement listTables =
+                CatalogAccessRules.resolve("/v1/paimon/tables", "GET");
+        // 跨库列举：官方表里 LIST 只出现在 CATALOG_ALL 上
+        assertEquals(ResourceType.CATALOG_ALL, listTables.resourceType());
+        assertEquals(Access.LIST, listTables.access());
+
+        // 同一个「库集合」路径，读与写落在不同目标类型：LIST 在 CATALOG_ALL，
+        // CREATEDATABASE 只在 CATALOG 上——这是官方模型的形状
+        assertEquals(ResourceType.CATALOG_ALL,
+                CatalogAccessRules.resolve("/v1/paimon/databases", "GET").resourceType());
+        CatalogAccessRules.Requirement createDatabase =
+                CatalogAccessRules.resolve("/v1/paimon/databases", "POST");
+        assertEquals(ResourceType.CATALOG, createDatabase.resourceType());
+        assertEquals(Access.CREATEDATABASE, createDatabase.access());
 
         CatalogAccessRules.Requirement readTable =
                 CatalogAccessRules.resolve("/v1/paimon/databases/db/tables/t", "GET");
-        assertEquals(GrantType.TABLE, readTable.resourceType());
+        assertEquals(ResourceType.TABLE, readTable.resourceType());
         assertEquals(List.of("db"), readTable.namespace());
         assertEquals("t", readTable.objectName());
-        assertEquals(Privilege.TABLE_READ_PROPERTIES, readTable.privilege());
+        assertEquals(Access.DESCRIBE, readTable.access());
 
-        // 删除表需要 TABLE_DROP，修改需要 TABLE_WRITE_PROPERTIES
-        assertEquals(Privilege.TABLE_DROP,
-                CatalogAccessRules.resolve("/v1/paimon/databases/db/tables/t", "DELETE").privilege());
-        assertEquals(Privilege.TABLE_WRITE_PROPERTIES,
-                CatalogAccessRules.resolve("/v1/paimon/databases/db/tables/t", "POST").privilege());
+        // 删除表要求 DROP，改表要求 ALTER
+        assertEquals(Access.DROP,
+                CatalogAccessRules.resolve("/v1/paimon/databases/db/tables/t", "DELETE").access());
+        assertEquals(Access.ALTER,
+                CatalogAccessRules.resolve("/v1/paimon/databases/db/tables/t", "POST").access());
 
         // commit 走数据写权限
-        assertEquals(Privilege.TABLE_WRITE_DATA,
-                CatalogAccessRules.resolve("/v1/paimon/databases/db/tables/t/commit", "POST").privilege());
+        assertEquals(Access.UPDATE,
+                CatalogAccessRules.resolve("/v1/paimon/databases/db/tables/t/commit", "POST").access());
         // token 走数据读权限
-        assertEquals(Privilege.TABLE_READ_DATA,
-                CatalogAccessRules.resolve("/v1/paimon/databases/db/tables/t/token", "GET").privilege());
+        assertEquals(Access.SELECT,
+                CatalogAccessRules.resolve("/v1/paimon/databases/db/tables/t/token", "GET").access());
         // 分区列表是读，分区 drop 是写
-        assertEquals(Privilege.TABLE_READ_DATA, CatalogAccessRules
-                .resolve("/v1/paimon/databases/db/tables/t/partitions/list-by-names", "POST").privilege());
-        assertEquals(Privilege.TABLE_WRITE_DATA, CatalogAccessRules
-                .resolve("/v1/paimon/databases/db/tables/t/partitions/drop", "POST").privilege());
+        assertEquals(Access.SELECT, CatalogAccessRules
+                .resolve("/v1/paimon/databases/db/tables/t/partitions/list-by-names", "POST").access());
+        assertEquals(Access.UPDATE, CatalogAccessRules
+                .resolve("/v1/paimon/databases/db/tables/t/partitions/drop", "POST").access());
         // 分支与标签仍是表级元数据
-        assertEquals(Privilege.TABLE_READ_PROPERTIES, CatalogAccessRules
-                .resolve("/v1/paimon/databases/db/tables/t/branches", "GET").privilege());
-        assertEquals(Privilege.TABLE_WRITE_PROPERTIES, CatalogAccessRules
-                .resolve("/v1/paimon/databases/db/tables/t/tags/old", "DELETE").privilege());
-        // 语义模型
-        assertEquals(Privilege.SEMANTIC_MODEL_READ, CatalogAccessRules
-                .resolve("/v1/paimon/databases/db/semantic-views/sv", "GET").privilege());
-        // function 没有对应权限层级，落在命名空间权限上
-        assertEquals(GrantType.NAMESPACE, CatalogAccessRules
-                .resolve("/v1/paimon/databases/db/functions", "GET").resourceType());
-        // 按 id 查表只认 catalog 级授权
-        assertEquals(GrantType.TABLE, CatalogAccessRules
-                .resolve("/v1/paimon/tables/id/12345", "GET").resourceType());
+        assertEquals(Access.DESCRIBE, CatalogAccessRules
+                .resolve("/v1/paimon/databases/db/tables/t/branches", "GET").access());
+        assertEquals(Access.ALTER, CatalogAccessRules
+                .resolve("/v1/paimon/databases/db/tables/t/tags/old", "DELETE").access());
+
+        // 语义视图按 VIEW 资源授权：官方 12 项 access 里没有 semantic-model 这一层
+        assertEquals(ResourceType.VIEW, CatalogAccessRules
+                .resolve("/v1/paimon/databases/db/semantic-views/sv", "GET").resourceType());
+        assertEquals(Access.DESCRIBE, CatalogAccessRules
+                .resolve("/v1/paimon/databases/db/semantic-views/sv", "GET").access());
+
+        // function 有独立的资源类型与 CREATEFUNCTION
+        CatalogAccessRules.Requirement listFunctions =
+                CatalogAccessRules.resolve("/v1/paimon/databases/db/functions", "GET");
+        assertEquals(ResourceType.FUNCTION, listFunctions.resourceType());
+        assertEquals(Access.LIST, listFunctions.access());
+        assertEquals(Access.CREATEFUNCTION, CatalogAccessRules
+                .resolve("/v1/paimon/databases/db/functions", "POST").access());
+
+        // 按 id 查表跨命名空间，只能按 catalog 后代集合判
+        assertEquals(ResourceType.CATALOG_ALL,
+                CatalogAccessRules.resolve("/v1/paimon/tables/id/12345", "GET").resourceType());
+
+        // 权限端点：列赋权要求 CATALOG_ALL 上的 GRANT；授予/撤销是 deferred
+        assertEquals(Access.GRANT,
+                CatalogAccessRules.resolve("/v1/paimon/permissions", "GET").access());
+        CatalogAccessRules.Requirement grantEndpoint =
+                CatalogAccessRules.resolve("/v1/paimon/permissions/grant", "POST");
+        assertNotNull(grantEndpoint);
+        assertTrue(grantEndpoint.deferred(), "grant 的目标资源在请求体里，必须标为 deferred");
+        assertNull(grantEndpoint.access());
+        // 把写端点当读端点探测：不登记 → 拒绝
+        assertNull(CatalogAccessRules.resolve("/v1/paimon/permissions/grant", "GET"));
 
         // 非 catalog API 与豁免路径
         assertNull(CatalogAccessRules.resolve("/api/management/v1/catalogs", "GET"));

@@ -6,14 +6,20 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 管理 API 的请求与响应模型，字段名与
- * {@code spec/polaris-management-service.yml} 的 schema 一一对应。
+ * 管理面的 catalog / 主体 / principal role 模型，字段形状沿用
+ * {@code spec/polaris-management-service.yml}（该规格只作**形状来源**，不再是契约）。
+ *
+ * <p>权限与授权不在这份文件里：官方 Paimon REST Management API 只定义
+ * labels / permissions / policies 三族端点，主体与 catalog 的生命周期归服务端，
+ * 因此 catalog 与主体留在 {@code /api/management/v1} 作为服务端扩展，
+ * 而「谁能对什么做什么」统一由 {@link PermissionDtos} 的
+ * {@code (resource, access, principal)} 表达。
  *
  * <p>用 record 而非可变类：这些对象只在控制器与服务层之间传递，没有原地修改的需求，
  * record 自动获得 {@code equals} / {@code hashCode}，便于测试断言。
  *
  * <p>可变长度与自由结构的部分（{@code properties}、{@code credentials}）保留为 Map，
- * 与规格的 {@code object} 类型一致。
+ * 与外层契约的 {@code object} 类型一致。
  */
 public final class ManagementDtos {
 
@@ -128,53 +134,11 @@ public final class ManagementDtos {
     public record GrantPrincipalRoleRequest(PrincipalRole principalRole) {
     }
 
-    // ------------------------------------------------------------------ catalog role
-
-    /** {@code CatalogRoles}。 */
-    public record CatalogRoles(List<CatalogRole> roles) {
-    }
-
-    /** {@code CatalogRole}。 */
-    public record CatalogRole(String name,
-                              Map<String, String> properties,
-                              Long createTimestamp,
-                              Long lastUpdateTimestamp,
-                              Integer entityVersion) {
-    }
-
-    /** {@code CreateCatalogRoleRequest}。 */
-    public record CreateCatalogRoleRequest(CatalogRole catalogRole) {
-    }
-
-    /** {@code UpdateCatalogRoleRequest}。 */
-    public record UpdateCatalogRoleRequest(Integer currentEntityVersion, Map<String, String> properties) {
-    }
-
-    /** {@code GrantCatalogRoleRequest}：把 catalog role 授予某个 principal role。 */
-    public record GrantCatalogRoleRequest(CatalogRole catalogRole) {
-    }
-
-    // ------------------------------------------------------------------ grants
-
-    /**
-     * {@code AddGrantRequest} / {@code RevokeGrantRequest}。
-     *
-     * <p>{@code grant} 保持为 {@code Map}：规格中 {@code GrantResource} 是以
-     * {@code type} 判别的多态联合（discriminator mapping 指向 6 个 schema），
-     * 服务端按 {@code type} 分派到 {@link GrantDtos.GrantSpec}，
-     * 不把多态解析绑死在具体 JSON 库上——与 catalog 侧对
-     * {@code SchemaChange} 等联合的处理方式一致。
-     */
-    public record AddGrantRequest(Map<String, Object> grant) {
-    }
-
-    /** {@code RevokeGrantRequest}。 */
-    public record RevokeGrantRequest(Map<String, Object> grant) {
-    }
-
-    /** {@code GrantResources}：响应中的授权列表，元素形状随 {@code type} 变化。 */
-    public record GrantResources(List<Map<String, Object>> grants) {
-    }
+    // ------------------------------------------------------------------ 权限
+    //
+    // 权限不在这里建模：官方 management API 把「资源 + access + principal」定义在
+    // `PermissionDtos` 里，端点挂在 catalog 前缀下（`/v1/{prefix}/permissions`）。
+    // 这里曾有一套 Polaris 形状的 catalog role / grant 模型，已随 catalog role 一并移除。
 
     /** catalog 类型的判别值，供校验错误信息复用。 */
     public static CatalogType parseCatalogType(String value) {

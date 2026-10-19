@@ -132,7 +132,7 @@ open http://127.0.0.1:8080/console/        # 默认账号密码 admin/admin
 
 # ---- 端到端验收（都要先有一个运行中的实例）----
 BASE=http://127.0.0.1:8080 ./scripts/api-sweep.sh            # Catalog API 全部 60 个 operation
-BASE=http://127.0.0.1:8080 ./scripts/management-sweep.sh     # Management API 全部 33 个 operation
+BASE=http://127.0.0.1:8080 ./scripts/management-sweep.sh     # 管理面扩展端点 + 权限端点
 ./scripts/e2e-spark-sql.sh                                   # 自起 h2 实例，跑 Spark 四件套
 BASE=... CLIENT_ID=... CLIENT_SECRET=... STATIC_TOKEN=... ./scripts/sweep-console-auth.sh
 cd lakehouse-rest-console && BASE=... CLIENT_ID=... CLIENT_SECRET=... npm run check:login
@@ -247,7 +247,7 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
 | 文档 | 什么时候读 |
 | --- | --- |
 | `catalog-api-endpoints.md` | Catalog API 的端点、基址、前缀、授权映射；**两个协议面各一章**——Paimon 的 60 个与 Iceberg 的 26 个（含 9 个不声明的、各端点的成功码、错误模型） |
-| `management-api-overview.md` | 33 个 operation 落在哪几个控制器、易读错的语义 |
+| `management-api-overview.md` | 官方权限端点与扩展端点落在哪几个控制器、易读错的语义 |
 | `management-api-contract.md` | 管理 API 字段与权限枚举**逐字契约**（生成物，勿手改） |
 | `data-model.md` | 改实体 / 看 22 张表划分、摘要列与审计列的理由、实体与仓储分在哪两个模块、Iceberg 协议面新增的 9 个列（§1.1） |
 | `table-optimization.md` | 改表存储优化：三层配置合并、批次与调度游标、组批与提交、前后指标；**两种表格式共用一套策略表与批次表**，参数键按格式分派（§2.5 是 Iceberg 的对应物，§6.5 是执行侧差异） |
@@ -439,7 +439,7 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
 - 全局说明：[`README.md`](README.md)（工程结构、配置项、测试清单、部署、已知边界 21 条）
 - 模块划分：[`docs/maven-module-design.md`](docs/maven-module-design.md)（依赖图、两条父 POM、enforcer 不变量、落地记录 §8）
 - 设计对照：[`docs/polaris-capabilities-and-design.md`](docs/polaris-capabilities-and-design.md)
-- 事件框架：[`docs/event-framework.md`](docs/event-framework.md)（10 类 38 个领域事件、与 Polaris 枚举的映射、发布点清单与不发清单、按监听器的类别/类型订阅、增量拉取契约；加事件或接 listener 先读它）
+- 事件框架：[`docs/event-framework.md`](docs/event-framework.md)（9 类 33 个领域事件、与 Polaris 枚举的映射、发布点清单与不发清单、按监听器的类别/类型订阅、增量拉取契约；加事件或接 listener 先读它）
 - 通用表（设计稿）：[`docs/generic-table-design.md`](docs/generic-table-design.md)（parquet / orc / lance / vortex 纳入目录：格式能力矩阵、`table_kind` 方案取舍、端点与权限、Spark 接入、影响面与风险；**未实现**）
 - Unity Catalog 借鉴（设计稿）：[`docs/unity-catalog-design.md`](docs/unity-catalog-design.md)（UC OSS 0.7 事实基线、逐面对照、六项可借鉴与十项不借鉴及理由、卷/托管位置/延迟清理/批量权限/观测端点的设计、四期落地；**未实现**）
 - 数据模型：[`docs/data-model.md`](docs/data-model.md)

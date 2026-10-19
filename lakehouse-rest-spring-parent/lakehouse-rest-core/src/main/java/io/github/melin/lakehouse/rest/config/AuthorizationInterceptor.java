@@ -20,7 +20,7 @@ import org.springframework.web.servlet.HandlerInterceptor;
  * 只有 {@link CatalogAccessRules#isPublic(String)} 明示豁免的端点可以匿名访问。
  *
  * <p>管理 API（{@code /api/management/v1/**}）不经过本拦截器：那些端点的授权要求
- * 依赖请求体里的实体名（例如要授予的是哪个 catalog role），由控制器在拿到参数后判定。
+ * 依赖请求体里的实体（catalog、principal），由控制器在拿到参数后判定。
  */
 @Component
 @RequiredArgsConstructor
@@ -50,8 +50,13 @@ public class AuthorizationInterceptor implements HandlerInterceptor {
             throw ApiException.forbidden("The caller does not have permission to " + action
                     + ": no authorization rule is registered for this endpoint");
         }
+        if (requirement.deferred()) {
+            // 目标资源在请求体里（permissions/grant、permissions/revoke），
+            // 由控制器拿着解析后的 PermissionResource 调 requireGrantOn 判定
+            return true;
+        }
         authorizationService.require(requirement.catalog(), requirement.resourceType(),
-                requirement.namespace(), requirement.objectName(), requirement.privilege(), action);
+                requirement.namespace(), requirement.objectName(), requirement.access(), action);
         return true;
     }
 }

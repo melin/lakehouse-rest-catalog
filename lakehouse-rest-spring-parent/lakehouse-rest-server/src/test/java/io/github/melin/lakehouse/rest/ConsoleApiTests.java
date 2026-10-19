@@ -114,39 +114,48 @@ class ConsoleApiTests {
         assertTrue(strings(enums.get("credentialManagerTypes")).containsAll(List.of("default", "noop")));
         assertTrue(strings(enums.get("fileIoTypes")).containsAll(List.of("default", "local", "obs", "oss")));
 
-        // 资源类型的判别值来自管理规格的 discriminator mapping，顺序与规格 definition 一致
+        // 资源类型 = 官方 PermissionResource 的 8 个 discriminator 取值。
+        // 字段名 `grantTypes` 是历史命名（原先指 Polaris 的授权类型小写值），
+        // 控制台仍按这个名字读，因此这里只改内容不改键名。
         assertEquals(
-                List.of("catalog", "namespace", "table", "view", "policy", "semantic-model"),
+                List.of("CATALOG", "CATALOG_ALL", "DATABASE", "DATABASE_ALL",
+                        "TABLE", "COLUMN", "VIEW", "FUNCTION"),
                 strings(enums.get("grantTypes")));
     }
 
     /**
-     * 权限分组必须与服务端 {@code Privilege.allowedFor} 还原出的规格约束一致。
+     * 「资源类型 → 允许授予的 access」必须与服务端判定用的 {@code Access.allowedFor}
+     * 出自同一张表。若控制台拿到的分组与判定用的分组不同源，用户会看到能选、
+     * 但提交必被拒的 access。
      *
-     * <p>抽查两组边界：{@code view} 层级不含命名空间类权限，{@code catalog} 层级含
-     * {@code CATALOG_MANAGE_ACCESS}。若控制台拿到的分组与判定用的分组不同源，
-     * 用户会看到能选、但提交必被拒的权限项。
+     * <p>抽查四组边界，覆盖官方对照表里最容易写错的四处：
+     * {@code CATALOG} 没有 {@code DESCRIBE}、{@code DATABASE_ALL} 没有
+     * {@code CREATETABLE}、{@code COLUMN} 只有 {@code SELECT}、{@code VIEW} 没有
+     * 命名空间级的 {@code LIST}。
      */
     @Test
-    void metaPrivilegesFollowManagementSpec() throws Exception {
-        JsonNode privileges = getJson(META, 200).get("enums").get("privilegesByGrantType");
-        assertNotNull(privileges);
+    void metaAccessesFollowOfficialMatrix() throws Exception {
+        JsonNode accesses = getJson(META, 200).get("enums").get("privilegesByGrantType");
+        assertNotNull(accesses);
 
-        JsonNode catalog = privileges.get("catalog");
-        JsonNode view = privileges.get("view");
-        assertNotNull(catalog, "catalog group is missing");
-        assertNotNull(view, "view group is missing");
+        List<String> catalog = strings(accesses.get("CATALOG"));
+        List<String> catalogAll = strings(accesses.get("CATALOG_ALL"));
+        List<String> databaseAll = strings(accesses.get("DATABASE_ALL"));
+        List<String> column = strings(accesses.get("COLUMN"));
+        List<String> view = strings(accesses.get("VIEW"));
 
-        List<String> catalogPrivileges = strings(catalog);
-        List<String> viewPrivileges = strings(view);
-
-        assertTrue(catalogPrivileges.contains("CATALOG_MANAGE_ACCESS"));
-        assertTrue(catalogPrivileges.contains("TABLE_MANAGE_STRUCTURE"));
-        assertTrue(viewPrivileges.contains("VIEW_READ_PROPERTIES"));
-        assertFalse(viewPrivileges.contains("NAMESPACE_CREATE"),
-                "view 层级不该出现命名空间权限");
-        assertFalse(viewPrivileges.contains("TABLE_CREATE"),
-                "view 层级不该出现表权限");
+        assertTrue(catalog.contains("CREATEDATABASE"));
+        assertFalse(catalog.contains("DESCRIBE"),
+                "官方对照表里 CATALOG 没有任何读权限");
+        assertTrue(catalogAll.contains("LIST"));
+        assertFalse(catalogAll.contains("CREATEDATABASE"),
+                "建库只在 CATALOG 上允许");
+        assertFalse(databaseAll.contains("CREATETABLE"),
+                "DATABASE_ALL 的词表里没有 CREATETABLE");
+        assertEquals(List.of("SELECT"), column);
+        assertTrue(view.contains("DESCRIBE"));
+        assertFalse(view.contains("LIST"),
+                "VIEW 层没有 LIST，列举是 DATABASE 上集合操作");
     }
 
     // ------------------------------------------------------------------ 登录引导
