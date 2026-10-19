@@ -38,39 +38,43 @@ import lombok.Setter;
         indexes = {
                 @Index(name = "ix_table_optimization_catalog", columnList = "catalog_id"),
                 @Index(name = "ix_table_optimization_due", columnList = "enabled_flag,next_run_at")
-        })
+        },
+        comment = "表级存储优化策略（总开关 + 三项动作的差异配置）")
 @Getter
 @Setter
 public class TableOptimizationEntity extends AuditedEntity {
 
     @Id
-    @Column(name = "id", length = 64, nullable = false)
+    @Column(name = "id", length = 64, nullable = false, comment = "主键")
     private String id;
 
-    @Column(name = "table_id", length = 64, nullable = false)
+    @Column(name = "table_id", length = 64, nullable = false, comment = "所属表 id，一表一行")
     private String tableId;
 
     /** 冗余的 catalog 归属，组批与按 catalog 过滤都读它。 */
-    @Column(name = "catalog_id", length = 64, nullable = false)
+    @Column(name = "catalog_id", length = 64, nullable = false,
+            comment = "冗余的 catalog 归属，组批与按 catalog 过滤都读它")
     private String catalogId;
 
     /** 总开关。关掉表示三项动作全部停止，但已配置的参数保留。 */
-    @Column(name = "enabled_flag", nullable = false)
+    @Column(name = "enabled_flag", nullable = false,
+            comment = "总开关；关掉后三项动作全部停止，已配置参数保留")
     private boolean enabled;
 
     /** 调度间隔（秒）：这张表多久参与一次组批。 */
-    @Column(name = "schedule_interval_seconds", nullable = false)
+    @Column(name = "schedule_interval_seconds", nullable = false,
+            comment = "调度间隔（秒），即这张表多久参与一次组批")
     private int scheduleIntervalSeconds = 3600;
 
     /** 下次到期时间（epoch 毫秒）。 */
-    @Column(name = "next_run_at")
+    @Column(name = "next_run_at", comment = "下次到期时刻（epoch 毫秒），兼作分布式抢占的 CAS 条件")
     private Long nextRunAt;
 
     /** 最近一次把这张表纳入的批次 id。 */
-    @Column(name = "last_job_id", length = 64)
+    @Column(name = "last_job_id", length = 64, comment = "最近一次把这张表纳入的批次 id")
     private String lastJobId;
 
-    @Column(name = "compaction_enabled_flag", nullable = false)
+    @Column(name = "compaction_enabled_flag", nullable = false, comment = "compaction 开关")
     private boolean compactionEnabled = true;
 
     /**
@@ -89,22 +93,25 @@ public class TableOptimizationEntity extends AuditedEntity {
      * {@code varchar(8192)} 再踩一次。
      */
     @Convert(converter = StringMap.class)
-    @Column(name = "compaction_config_json", length = 65535)
+    @Column(name = "compaction_config_json", length = 65535,
+            comment = "compaction 的参数差异（只存用户显式改过的键）")
     private Map<String, String> compactionConfig = new LinkedHashMap<>();
 
-    @Column(name = "snapshot_expire_enabled_flag", nullable = false)
+    @Column(name = "snapshot_expire_enabled_flag", nullable = false, comment = "snapshot expire 开关")
     private boolean snapshotExpireEnabled = true;
 
     /** Snapshot Expire 的参数差异；类型取 {@code text}，理由见 {@link #compactionConfig}。 */
     @Convert(converter = StringMap.class)
-    @Column(name = "snapshot_expire_config_json", length = 65535)
+    @Column(name = "snapshot_expire_config_json", length = 65535,
+            comment = "snapshot expire 的参数差异（只存显式改过的键）")
     private Map<String, String> snapshotExpireConfig = new LinkedHashMap<>();
 
-    @Column(name = "orphan_remove_enabled_flag", nullable = false)
+    @Column(name = "orphan_remove_enabled_flag", nullable = false, comment = "孤儿文件清理开关")
     private boolean orphanRemoveEnabled;
 
     /** 孤儿文件清理的参数差异；类型取 {@code text}，理由见 {@link #compactionConfig}。 */
     @Convert(converter = StringMap.class)
-    @Column(name = "orphan_remove_config_json", length = 65535)
+    @Column(name = "orphan_remove_config_json", length = 65535,
+            comment = "孤儿文件清理的参数差异（只存显式改过的键）")
     private Map<String, String> orphanRemoveConfig = new LinkedHashMap<>();
 }

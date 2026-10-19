@@ -19,18 +19,19 @@ import lombok.Setter;
 @Table(name = "lakehouse_principal_role_grant",
         uniqueConstraints = @UniqueConstraint(name = "uk_principal_role_grant",
                 columnNames = {"principal_id", "principal_role_id"}),
-        indexes = @Index(name = "ix_principal_role_grant_role", columnList = "principal_role_id"))
+        indexes = @Index(name = "ix_principal_role_grant_role", columnList = "principal_role_id"),
+        comment = "主体与主体角色的成员关系（多对多）")
 @Getter
 @Setter
 public class PrincipalRoleAssignmentEntity extends AuditedEntity {
 
     @Id
-    @Column(name = "id", length = 64, nullable = false)
+    @Column(name = "id", length = 64, nullable = false, comment = "主键")
     private String id;
 
-    @Column(name = "principal_id", length = 64, nullable = false)
+    @Column(name = "principal_id", length = 64, nullable = false, comment = "主体 id")
     private String principalId;
 
-    @Column(name = "principal_role_id", length = 64, nullable = false)
+    @Column(name = "principal_role_id", length = 64, nullable = false, comment = "主体角色 id")
     private String principalRoleId;
 }

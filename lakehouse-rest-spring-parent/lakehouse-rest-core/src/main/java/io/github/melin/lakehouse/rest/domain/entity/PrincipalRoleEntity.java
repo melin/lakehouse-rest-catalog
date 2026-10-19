@@ -28,25 +28,27 @@ import lombok.Setter;
  */
 @Entity
 @Table(name = "lakehouse_principal_role",
-        uniqueConstraints = @UniqueConstraint(name = "uk_principal_role_name", columnNames = "name"))
+        uniqueConstraints = @UniqueConstraint(name = "uk_principal_role_name", columnNames = "name"),
+        comment = "主体角色：纯分组，自身不携带权限")
 @Getter
 @Setter
 public class PrincipalRoleEntity extends AuditedEntity {
 
     @Id
-    @Column(name = "id", length = 64, nullable = false)
+    @Column(name = "id", length = 64, nullable = false, comment = "主键")
     private String id;
 
-    @Column(name = "name", length = 255, nullable = false)
+    @Column(name = "name", length = 255, nullable = false, comment = "角色名，全局唯一")
     private String name;
 
-    @Column(name = "federated", nullable = false)
+    @Column(name = "federated", nullable = false,
+            comment = "是否来自外部身份提供方（本服务只作标记保存与回显）")
     private boolean federated;
 
     @Convert(converter = StringMap.class)
-    @Column(name = "properties_json", length = 65535)
+    @Column(name = "properties_json", length = 65535, comment = "角色属性（JSON 对象）")
     private Map<String, String> properties = new LinkedHashMap<>();
 
-    @Column(name = "entity_version", nullable = false)
+    @Column(name = "entity_version", nullable = false, comment = "乐观并发版本号，每次变更自增")
     private int entityVersion;
 }

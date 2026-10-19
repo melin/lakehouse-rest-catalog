@@ -26,32 +26,37 @@ import org.hibernate.annotations.ColumnDefault;
  */
 @Entity
 @Table(name = "lakehouse_catalog",
-        uniqueConstraints = @UniqueConstraint(name = "uk_catalog_prefix", columnNames = "prefix_value"))
+        uniqueConstraints = @UniqueConstraint(name = "uk_catalog_prefix", columnNames = "prefix_value"),
+        comment = "catalog 实例，REST 路径中的 {prefix} 即其对外标识")
 @Getter
 @Setter
 public class CatalogEntity extends AuditedEntity {
 
     @Id
-    @Column(name = "id", length = 64, nullable = false)
+    @Column(name = "id", length = 64, nullable = false, comment = "主键")
     private String id;
 
     /** 对外暴露的 prefix，客户端后续所有路径都以它开头。 */
-    @Column(name = "prefix_value", length = 255, nullable = false)
+    @Column(name = "prefix_value", length = 255, nullable = false,
+            comment = "对外 prefix，客户端后续所有 REST 路径都以它开头（全局唯一）")
     private String prefix;
 
-    @Column(name = "warehouse", length = 1024)
+    @Column(name = "warehouse", length = 1024, comment = "默认仓库根路径")
     private String warehouse;
 
     @Convert(converter = StringMap.class)
-    @Column(name = "defaults_json", length = 65535)
+    @Column(name = "defaults_json", length = 65535,
+            comment = "下发给客户端的默认配置（合并顺序的第一层，可被客户端覆盖）")
     private Map<String, String> defaults = new LinkedHashMap<>();
 
     @Convert(converter = StringMap.class)
-    @Column(name = "overrides_json", length = 65535)
+    @Column(name = "overrides_json", length = 65535,
+            comment = "强制覆盖的配置（合并顺序的最后一层，优先级最高）")
     private Map<String, String> overrides = new LinkedHashMap<>();
 
     /** INTERNAL：元数据由本服务托管；EXTERNAL：外部同步、只读。 */
-    @Column(name = "catalog_type", length = 32)
+    @Column(name = "catalog_type", length = 32,
+            comment = "INTERNAL：元数据由本服务托管；EXTERNAL：外部同步、只读")
     private String catalogType = "INTERNAL";
 
     /**
@@ -77,7 +82,8 @@ public class CatalogEntity extends AuditedEntity {
      * {@code alter table lakehouse_catalog add column catalog_format varchar(32) not null default 'PAIMON';}
      * （带默认值的加列，MySQL 会把存量行一并回填）。
      */
-    @Column(name = "catalog_format", length = 32, nullable = false)
+    @Column(name = "catalog_format", length = 32, nullable = false,
+            comment = "REST 协议格式 PAIMON / ICEBERG，创建后不可变")
     @ColumnDefault("'PAIMON'")
     private String catalogFormat = "PAIMON";
 
@@ -89,7 +95,7 @@ public class CatalogEntity extends AuditedEntity {
      * 由 {@code /api/management/v1/catalogs} 读写。
      */
     @Convert(converter = StringMap.class)
-    @Column(name = "properties_json", length = 65535)
+    @Column(name = "properties_json", length = 65535, comment = "管理 API 视角下的 catalog 通用属性")
     private Map<String, String> properties = new LinkedHashMap<>();
 
     /**
@@ -101,19 +107,22 @@ public class CatalogEntity extends AuditedEntity {
      * 也便于管理员用肉眼核对。读取时一律以本字段为准。
      */
     @Convert(converter = JsonConverters.StorageConfig.class)
-    @Column(name = "storage_config_json", length = 65535)
+    @Column(name = "storage_config_json", length = 65535, comment = "存储配置完整形态，存储配置的唯一真相源")
     private StorageConfigInfo storageConfig;
 
     /** {@code StorageConfigInfo.storageType} 的投影：存储实现类型。 */
-    @Column(name = "storage_type", length = 32)
+    @Column(name = "storage_type", length = 32,
+            comment = "存储实现类型（storage_config_json 的投影，读取以真相源为准）")
     private String storageType = "FILE";
 
     /** {@code StorageConfigInfo.allowedLocations} 的投影。 */
     @Convert(converter = StringList.class)
-    @Column(name = "allowed_locations_json", length = 65535)
+    @Column(name = "allowed_locations_json", length = 65535,
+            comment = "允许使用的存储位置白名单（storage_config_json 的投影）")
     private List<String> allowedLocations = new ArrayList<>();
 
     /** 乐观并发版本号，对应管理规格的 {@code entityVersion}。 */
-    @Column(name = "entity_version", nullable = false)
+    @Column(name = "entity_version", nullable = false,
+            comment = "乐观并发版本号，对应管理 API 的 entityVersion")
     private int entityVersion;
 }

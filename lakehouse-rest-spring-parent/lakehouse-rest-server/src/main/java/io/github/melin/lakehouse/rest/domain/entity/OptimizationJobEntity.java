@@ -34,67 +34,73 @@ import lombok.Setter;
         indexes = {
                 @Index(name = "ix_optimization_job_catalog", columnList = "catalog_id"),
                 @Index(name = "ix_optimization_job_status", columnList = "status_value")
-        })
+        },
+        comment = "存储优化批次：一次 Spark 任务覆盖的一组表")
 @Getter
 @Setter
 public class OptimizationJobEntity extends AuditedEntity {
 
     @Id
-    @Column(name = "id", length = 64, nullable = false)
+    @Column(name = "id", length = 64, nullable = false, comment = "主键")
     private String id;
 
-    @Column(name = "catalog_id", length = 64, nullable = false)
+    @Column(name = "catalog_id", length = 64, nullable = false, comment = "所属 catalog id")
     private String catalogId;
 
     /** {@code SCHEDULED}：调度器出批；{@code MANUAL}：用户在控制台点「立即优化」。 */
-    @Column(name = "trigger_type", length = 16, nullable = false)
+    @Column(name = "trigger_type", length = 16, nullable = false,
+            comment = "触发方式：SCHEDULED（调度出批）/ MANUAL（控制台立即优化）")
     private String triggerType;
 
     /** 批次覆盖的动作集合，逗号分隔（{@code compact,expire,orphan}）。 */
-    @Column(name = "actions", length = 64, nullable = false)
+    @Column(name = "actions", length = 64, nullable = false,
+            comment = "批次覆盖的动作集合，逗号分隔（compact,expire,orphan）")
     private String actions;
 
-    @Column(name = "status_value", length = 24, nullable = false)
+    @Column(name = "status_value", length = 24, nullable = false,
+            comment = "批次状态：PENDING / SUBMITTING / RUNNING / 终态")
     private String status;
 
-    @Column(name = "table_count", nullable = false)
+    @Column(name = "table_count", nullable = false, comment = "批次覆盖的表数")
     private int tableCount;
 
     /** 提交方式标识（{@code k8s} / {@code log}），与提交器实现的 {@code name()} 一致。 */
-    @Column(name = "submitter", length = 32)
+    @Column(name = "submitter", length = 32, comment = "提交方式标识（k8s / log）")
     private String submitter;
 
     /** 回调凭据：优化任务用它拉明细、上报结果。 */
-    @Column(name = "callback_token", length = 64, nullable = false)
+    @Column(name = "callback_token", length = 64, nullable = false,
+            comment = "批次级回调凭据，随批次终态失效")
     private String callbackToken;
 
-    @Column(name = "k8s_namespace", length = 128)
+    @Column(name = "k8s_namespace", length = 128, comment = "k8s 命名空间")
     private String namespace;
 
     /** k8s 侧资源名（Job 或 SparkApplication 的名称），用于跟踪与取消。 */
-    @Column(name = "k8s_resource", length = 256)
+    @Column(name = "k8s_resource", length = 256,
+            comment = "k8s 侧资源名（Job 或 SparkApplication），用于跟踪与取消")
     private String resource;
 
-    @Column(name = "spark_app_id", length = 128)
+    @Column(name = "spark_app_id", length = 128, comment = "Spark 应用 id")
     private String sparkAppId;
 
-    @Column(name = "submitted_at")
+    @Column(name = "submitted_at", comment = "提交时刻（epoch 毫秒）")
     private Long submittedAt;
 
-    @Column(name = "started_at")
+    @Column(name = "started_at", comment = "开始执行时刻（epoch 毫秒）")
     private Long startedAt;
 
-    @Column(name = "finished_at")
+    @Column(name = "finished_at", comment = "进入终态的时刻（epoch 毫秒）")
     private Long finishedAt;
 
     /** 超时时刻；超过它仍未终态的批次会被判失败并清理资源。 */
-    @Column(name = "deadline_at")
+    @Column(name = "deadline_at", comment = "超时时刻，超过仍未终态则判失败并清理资源")
     private Long deadlineAt;
 
-    @Column(name = "error_message", length = 1000)
+    @Column(name = "error_message", length = 1000, comment = "失败原因")
     private String errorMessage;
 
     /** 重试来源批次：只重跑失败表的批次会指向原批次。 */
-    @Column(name = "retry_of", length = 64)
+    @Column(name = "retry_of", length = 64, comment = "重试来源批次 id（只重跑失败表时指向原批次）")
     private String retryOf;
 }

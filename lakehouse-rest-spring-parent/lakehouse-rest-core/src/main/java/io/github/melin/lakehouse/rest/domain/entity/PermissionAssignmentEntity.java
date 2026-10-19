@@ -40,7 +40,8 @@ import lombok.Setter;
         indexes = {
                 @Index(name = "ix_permission_assignment_catalog", columnList = "catalog_id"),
                 @Index(name = "ix_permission_assignment_principal", columnList = "principal"),
-        })
+        },
+        comment = "唯一授权表：principal 在某个资源上的某项 access")
 @Getter
 @Setter
 public class PermissionAssignmentEntity extends AuditedEntity {
@@ -49,45 +50,51 @@ public class PermissionAssignmentEntity extends AuditedEntity {
     public static final String LOCATOR_SEPARATOR = "\u001f";
 
     @Id
-    @Column(name = "id", length = 64, nullable = false)
+    @Column(name = "id", length = 64, nullable = false, comment = "主键")
     private String id;
 
-    @Column(name = "catalog_id", length = 64, nullable = false)
+    @Column(name = "catalog_id", length = 64, nullable = false, comment = "所属 catalog id，赋权的作用域")
     private String catalogId;
 
     /** 官方 {@code PermissionResource.type}：CATALOG / CATALOG_ALL / DATABASE / ... 。 */
-    @Column(name = "resource_type", length = 32, nullable = false)
+    @Column(name = "resource_type", length = 32, nullable = false,
+            comment = "官方资源类型：CATALOG / CATALOG_ALL / DATABASE / ...")
     private String resourceType;
 
     /** database 定位符；catalog 级为空串。 */
-    @Column(name = "database_name", length = 255, nullable = false)
+    @Column(name = "database_name", length = 255, nullable = false,
+            comment = "database 定位符；catalog 级为空串")
     private String databaseName = "";
 
     /** 对象定位符（表 / 视图 / 函数名）；catalog 与 database 级为空串。 */
-    @Column(name = "object_name", length = 255, nullable = false)
+    @Column(name = "object_name", length = 255, nullable = false,
+            comment = "对象名（表/视图/函数）；catalog 与 database 级为空串")
     private String objectName = "";
 
     /** 官方 access 词表：SELECT / UPDATE / ALTER / ... 。 */
-    @Column(name = "access", length = 32, nullable = false)
+    @Column(name = "access", length = 32, nullable = false,
+            comment = "官方 access 词表取值：SELECT / UPDATE / ALTER / ...")
     private String access;
 
     /** principal 原文，官方上限 128 字符，入库前已校验。 */
-    @Column(name = "principal", length = 128, nullable = false)
+    @Column(name = "principal", length = 128, nullable = false,
+            comment = "收权方 principal 原文（user:alice / role:sales_writer）")
     private String principal;
 
     /** 过期时间（epoch 毫秒）；null 表示永不过期。 */
-    @Column(name = "expire_time")
+    @Column(name = "expire_time", comment = "过期时刻（epoch 毫秒）；为空表示永不过期")
     private Long expireTime;
 
     /**
      * COLUMN 赋权的列范围 JSON（{@code columnNames} / {@code excludedColumnNames}）；
      * 非 COLUMN 赋权为 null。列范围不属于赋权身份，重复授予整体替换。
      */
-    @Column(name = "columns_json", length = 4096)
+    @Column(name = "columns_json", length = 4096, comment = "COLUMN 赋权的列范围 JSON；非 COLUMN 赋权为空")
     private String columnsJson;
 
     /** {@code databaseName + objectName} 的定长摘要，承担唯一约束；见 {@link Digests}。 */
-    @Column(name = "locator_hash", length = Digests.HEX_LENGTH, nullable = false)
+    @Column(name = "locator_hash", length = Digests.HEX_LENGTH, nullable = false,
+            comment = "database_name 与 object_name 拼接后的 SHA-256 摘要，唯一约束落在它上面")
     private String locatorHash = "";
 
     /** 依据当前定位符重算摘要。 */

@@ -23,49 +23,50 @@ import lombok.Setter;
         indexes = {
                 @Index(name = "ix_table_catalog", columnList = "catalog_id"),
                 @Index(name = "ix_table_database", columnList = "database_id")
-        })
+        },
+        comment = "表实体（Paimon 表与 Iceberg 表共用）")
 @Getter
 @Setter
 public class TableEntity extends AuditedEntity {
 
     @Id
-    @Column(name = "id", length = 64, nullable = false)
+    @Column(name = "id", length = 64, nullable = false, comment = "主键，即规格的 GetTableResponse.id")
     private String id;
 
-    @Column(name = "catalog_id", length = 64, nullable = false)
+    @Column(name = "catalog_id", length = 64, nullable = false, comment = "所属 catalog id")
     private String catalogId;
 
-    @Column(name = "database_id", length = 64, nullable = false)
+    @Column(name = "database_id", length = 64, nullable = false, comment = "所属库 id")
     private String databaseId;
 
-    @Column(name = "name", length = 512, nullable = false)
+    @Column(name = "name", length = 512, nullable = false, comment = "表名，库内唯一")
     private String name;
 
     /** 表的物理根路径。 */
-    @Column(name = "path_value", length = 1024)
+    @Column(name = "path_value", length = 1024, comment = "表的物理根路径")
     private String path;
 
     /** 外部注册（register）而来的表标记为 true。 */
-    @Column(name = "external_flag", nullable = false)
+    @Column(name = "external_flag", nullable = false, comment = "是否为 register 注册进来的外部表")
     private boolean external;
 
     /** 当前 schema 版本号，从 0 递增。 */
-    @Column(name = "schema_id", nullable = false)
+    @Column(name = "schema_id", nullable = false, comment = "当前 schema 版本号，从 0 递增")
     private long schemaId;
 
     /** 当前 schema 的 JSON 文档。 */
-    @Column(name = "schema_doc", length = 1048576)
+    @Column(name = "schema_doc", length = 1048576, comment = "当前 schema 的 JSON 文档")
     private String schemaDoc;
 
     /** 表类型，取自 schema options 的 {@code type}，默认 PAIMON。 */
-    @Column(name = "table_type", length = 64)
+    @Column(name = "table_type", length = 64, comment = "表类型，取自 schema options 的 type，默认 PAIMON")
     private String tableType = "PAIMON";
 
     /** 最新快照 id / uuid，未提交过快照时为 null。 */
-    @Column(name = "latest_snapshot_id")
+    @Column(name = "latest_snapshot_id", comment = "最新快照 id；未提交过快照时为空")
     private Long latestSnapshotId;
 
-    @Column(name = "latest_snapshot_uuid", length = 64)
+    @Column(name = "latest_snapshot_uuid", length = 64, comment = "最新快照 uuid")
     private String latestSnapshotUuid;
 
     // ------------------------------------------------------- Iceberg 侧的四列
@@ -90,7 +91,8 @@ public class TableEntity extends AuditedEntity {
      * snapshot-log 与 metadata-log，用 {@code varchar(8192)} 这种「看起来够大」的值
      * 会在某张大表上以 {@code Data too long} 炸掉——而且是在提交成功、数据已落盘之后。
      */
-    @Column(name = "metadata_doc", length = 1048576)
+    @Column(name = "metadata_doc", length = 1048576,
+            comment = "Iceberg TableMetadata 原文 JSON，Iceberg 表的唯一真相源")
     private String metadataDoc;
 
     /**
@@ -102,14 +104,15 @@ public class TableEntity extends AuditedEntity {
      * 影响 0 行说明期间被别人提交过，回 409（与优化批次
      * {@code update ... where id = ? and next_run_at = ?} 抢占是同一个手法）。
      */
-    @Column(name = "metadata_location", length = 1024)
+    @Column(name = "metadata_location", length = 1024,
+            comment = "当前元数据文件路径，同时是提交时乐观并发的 CAS 条件")
     private String metadataLocation;
 
     /** Iceberg 的 {@code table-uuid}：表的身份，跨重命名与改位置保持不变。 */
-    @Column(name = "table_uuid", length = 64)
+    @Column(name = "table_uuid", length = 64, comment = "Iceberg table-uuid，跨重命名与改位置保持不变")
     private String tableUuid;
 
     /** Iceberg 的 {@code format-version}（1 / 2 / 3）；Paimon 表为 {@code null}。 */
-    @Column(name = "format_version")
+    @Column(name = "format_version", comment = "Iceberg format-version（1/2/3）；Paimon 表为空")
     private Integer formatVersion;
 }

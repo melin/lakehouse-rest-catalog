@@ -188,7 +188,7 @@ JAVA_HOME=/path/to/jdk-21 mvn -o -DskipTests install
 # 只要服务端可执行 jar：-am 会一并构建它依赖的 core / storage / 两个协议面
 JAVA_HOME=/path/to/jdk-21 mvn -o -DskipTests -pl :lakehouse-rest-server -am clean package
 
-# 运行全部测试（服务端 344 + Spark 107，共 451 个用例；Spark 侧有 1 个示例用例
+# 运行全部测试（服务端 346 + Spark 107，共 453 个用例；Spark 侧有 1 个示例用例
 # 在本地缺 spark.sql.extensions 时会失败，见第 7 节）
 JAVA_HOME=/path/to/jdk-21 mvn test
 
@@ -765,7 +765,7 @@ Azure 只下发定位元数据是个明确的缺口：Polaris 的 `polaris.stora
 
 ## 7. 测试
 
-### 单元与集成测试（451 个用例）
+### 单元与集成测试（453 个用例）
 
 ```bash
 JAVA_HOME=/path/to/jdk-21 mvn test

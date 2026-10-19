@@ -28,36 +28,37 @@ import lombok.Setter;
         uniqueConstraints = {
                 @UniqueConstraint(name = "uk_principal_name", columnNames = "name"),
                 @UniqueConstraint(name = "uk_principal_client_id", columnNames = "client_id")
-        })
+        },
+        comment = "管理主体（访问服务的身份）")
 @Getter
 @Setter
 public class PrincipalEntity extends AuditedEntity {
 
     @Id
-    @Column(name = "id", length = 64, nullable = false)
+    @Column(name = "id", length = 64, nullable = false, comment = "主键")
     private String id;
 
-    @Column(name = "name", length = 255, nullable = false)
+    @Column(name = "name", length = 255, nullable = false, comment = "主体名，全局唯一")
     private String name;
 
-    @Column(name = "client_id", length = 255)
+    @Column(name = "client_id", length = 255, comment = "OAuth2 client id，全局唯一")
     private String clientId;
 
     /** 密钥摘要（{@code SHA-256(salt || secret)} 的十六进制），不存明文。 */
-    @Column(name = "secret_hash", length = 128)
+    @Column(name = "secret_hash", length = 128, comment = "密钥摘要 SHA-256(salt || secret)，不存明文")
     private String secretHash;
 
-    @Column(name = "secret_salt", length = 64)
+    @Column(name = "secret_salt", length = 64, comment = "密钥盐，与 secret_hash 配套")
     private String secretSalt;
 
-    @Column(name = "credential_rotation_required", nullable = false)
+    @Column(name = "credential_rotation_required", nullable = false, comment = "是否要求下次使用时轮换凭据")
     private boolean credentialRotationRequired;
 
     @Convert(converter = StringMap.class)
-    @Column(name = "properties_json", length = 65535)
+    @Column(name = "properties_json", length = 65535, comment = "主体属性（JSON 对象）")
     private Map<String, String> properties = new LinkedHashMap<>();
 
     /** 乐观并发版本号，对应规格的 {@code entityVersion}。每次变更自增。 */
-    @Column(name = "entity_version", nullable = false)
+    @Column(name = "entity_version", nullable = false, comment = "乐观并发版本号，每次变更自增")
     private int entityVersion;
 }

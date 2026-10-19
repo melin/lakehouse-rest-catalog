@@ -124,15 +124,24 @@ class MysqlDdlGeneratorTests {
     /** 每行的固定开销：InnoDB 记录头与 trx id/roll ptr、null 位图、变长列的长度前缀。 */
     private static final long ROW_OVERHEAD_BYTES = 64L;
 
-    /** 一条建表语句：表名 + 括号内的所有定义。 */
+    /**
+     * 一条建表语句：表名 + 括号内的所有定义。
+     *
+     * <p>表注释（{@code @Table(comment = ...)} 的产物）排在 {@code engine=InnoDB} 之前，
+     * 形如 {@code ) comment='...' engine=InnoDB}，因此这里要把注释段跳过去，
+     * 否则整张表都匹配不上——断言会退化成「没解析到任何建表语句」。
+     */
     private static final Pattern TABLE_BLOCK = Pattern.compile(
-            "create table\\s+(\\w+)\\s*\\((.*?)\\)\\s*engine=InnoDB",
+            "create table\\s+(\\w+)\\s*\\((.*?)\\)\\s*(?:comment\\s*=\\s*'[^']*'\\s*)?engine=InnoDB",
             Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
 
     /** 行首的「列名 + 类型」，其余修饰（not null 等）不关心。 */
     private static final Pattern COLUMN_DEFINITION = Pattern.compile("(\\S+)\\s+(\\S+)");
 
     private static final Pattern VARCHAR = Pattern.compile("varchar\\((\\d+)\\)");
+
+    /** 表级注释：{@code comment='...'}（出现在 {@code engine=InnoDB} 之前）。 */
+    private static final Pattern TABLE_COMMENT = Pattern.compile("comment\\s*=\\s*'[^']*'");
 
     @Autowired
     private EntityManagerFactory entityManagerFactory;
@@ -161,6 +170,51 @@ class MysqlDdlGeneratorTests {
                 "生成的 DDL 不是 MySQL 方言（缺少 ENGINE=InnoDB）：" + OUTPUT);
         assertTrue(ddl.toLowerCase().contains("mediumtext"),
                 "生成的 DDL 不是 MySQL 方言（超长文本列应为 mediumtext）：" + OUTPUT);
+    }
+
+    /**
+     * 每张表、每一列都必须带注释。
+     *
+     * <p><b>为什么这条要当成断言。</b>注释来自实体的 {@code @Table(comment = ...)} /
+     * {@code @Column(comment = ...)}，是这份 DDL 里唯一由人写给读者看的东西：库里
+     * 没有注释的表就是「一串看不出用途的列」，而 {@code show create table} 是排查线上
+     * 数据问题的第一条命令。漏写注释不会让任何构建失败，只会安静地少一行说明，
+     * 因此把它挡在生成侧。
+     *
+     * <p>约束子句（{@code primary key} 等）没有注释，按 {@link #isConstraintClause} 排除。
+     */
+    @Test
+    void everyTableAndColumnIsCommented() throws IOException {
+        String ddl = Files.readString(OUTPUT, StandardCharsets.UTF_8);
+        Matcher tables = TABLE_BLOCK.matcher(ddl);
+        List<String> tablesWithoutComment = new ArrayList<>();
+        List<String> columnsWithoutComment = new ArrayList<>();
+        int examined = 0;
+        while (tables.find()) {
+            examined++;
+            String table = tables.group(1);
+            if (!TABLE_COMMENT.matcher(tables.group(0)).find()) {
+                tablesWithoutComment.add(table);
+            }
+            for (String raw : tables.group(2).split("\n")) {
+                String definition = raw.strip();
+                if (definition.endsWith(",")) {
+                    definition = definition.substring(0, definition.length() - 1).strip();
+                }
+                if (definition.isEmpty() || isConstraintClause(definition)) {
+                    continue;
+                }
+                if (!definition.contains(" comment '")) {
+                    columnsWithoutComment.add(table + "." + definition.split("\\s+")[0]);
+                }
+            }
+        }
+
+        assertTrue(examined > 0, "没解析到任何建表语句，断言会变成空转：" + OUTPUT);
+        assertTrue(tablesWithoutComment.isEmpty(),
+                "下列表没有注释，请在实体的 @Table 上补 comment：" + tablesWithoutComment);
+        assertTrue(columnsWithoutComment.isEmpty(),
+                "下列列没有注释，请在实体的 @Column 上补 comment：" + columnsWithoutComment);
     }
 
     /**

@@ -31,50 +31,53 @@ import lombok.Setter;
 @Entity
 @Table(name = "lakehouse_partition",
         uniqueConstraints = @UniqueConstraint(name = "uk_partition", columnNames = {"table_id", "spec_hash"}),
-        indexes = @Index(name = "ix_partition_table", columnList = "table_id"))
+        indexes = @Index(name = "ix_partition_table", columnList = "table_id"),
+        comment = "表分区及其统计信息")
 @Getter
 @Setter
 public class PartitionEntity extends AuditedEntity {
 
     @Id
-    @Column(name = "id", length = 64, nullable = false)
+    @Column(name = "id", length = 64, nullable = false, comment = "主键")
     private String id;
 
-    @Column(name = "table_id", length = 64, nullable = false)
+    @Column(name = "table_id", length = 64, nullable = false, comment = "所属表 id")
     private String tableId;
 
     /** 规范化后的 spec 文本，用于按分区等值定位。 */
-    @Column(name = "spec_key", length = 1024, nullable = false)
+    @Column(name = "spec_key", length = 1024, nullable = false,
+            comment = "规范化后的分区 spec 文本，用于按分区等值定位")
     private String specKey;
 
     /** {@code specKey} 的定长摘要，承担唯一约束；见 {@link Digests}。 */
-    @Column(name = "spec_hash", length = Digests.HEX_LENGTH, nullable = false)
+    @Column(name = "spec_hash", length = Digests.HEX_LENGTH, nullable = false,
+            comment = "spec_key 的 SHA-256 摘要，唯一约束落在它上面")
     private String specHash = "";
 
     @Convert(converter = ObjectMap.class)
-    @Column(name = "spec_json", length = 65535)
+    @Column(name = "spec_json", length = 65535, comment = "分区字段映射的完整 JSON")
     private Map<String, Object> spec = new LinkedHashMap<>();
 
-    @Column(name = "record_count")
+    @Column(name = "record_count", comment = "分区内记录数")
     private Long recordCount;
 
-    @Column(name = "file_size_in_bytes")
+    @Column(name = "file_size_in_bytes", comment = "分区内文件总字节数")
     private Long fileSizeInBytes;
 
-    @Column(name = "file_count")
+    @Column(name = "file_count", comment = "分区内文件数")
     private Long fileCount;
 
-    @Column(name = "last_file_creation_time")
+    @Column(name = "last_file_creation_time", comment = "分区内最近一次文件创建时刻（epoch 毫秒）")
     private Long lastFileCreationTime;
 
-    @Column(name = "total_buckets")
+    @Column(name = "total_buckets", comment = "桶总数")
     private Integer totalBuckets;
 
-    @Column(name = "done_flag", nullable = false)
+    @Column(name = "done_flag", nullable = false, comment = "分区是否已提交完成")
     private boolean done;
 
     @Convert(converter = StringMap.class)
-    @Column(name = "options_json", length = 65535)
+    @Column(name = "options_json", length = 65535, comment = "分区选项（JSON 对象，如自定义路径）")
     private Map<String, String> options = new LinkedHashMap<>();
 
     /**

@@ -20,25 +20,31 @@ import lombok.Setter;
  * 任何调用方传什么进来都不会越过列宽。列宽显式写出来（而不依赖 Hibernate 的默认值），
  * 是为了让「实体声明」与 {@code sql/schema-mysql.sql} 里的 {@code varchar(255)}
  * 之间的对应关系在代码里看得见。
+ *
+ * <p>各列带 {@code comment}，它们是 {@code sql/schema-mysql.sql} 里列注释的来源：
+ * DDL 由 Hibernate 从实体生成，注释只有写在实体上才不会在下次生成时丢失。
  */
 @MappedSuperclass
 @Getter
 @Setter
 public abstract class AuditedEntity {
 
-    @Column(name = "owner", length = AuditPrincipal.MAX_LENGTH)
+    @Column(name = "owner", length = AuditPrincipal.MAX_LENGTH,
+            comment = "记录归属主体（展示与过滤用，不参与授权判定）")
     private String owner;
 
-    @Column(name = "created_at")
+    @Column(name = "created_at", comment = "创建时刻（epoch 毫秒）")
     private Long createdAt;
 
-    @Column(name = "created_by", length = AuditPrincipal.MAX_LENGTH)
+    @Column(name = "created_by", length = AuditPrincipal.MAX_LENGTH,
+            comment = "创建者主体名（写入前已按列宽归一化）")
     private String createdBy;
 
-    @Column(name = "updated_at")
+    @Column(name = "updated_at", comment = "最后更新时刻（epoch 毫秒）")
     private Long updatedAt;
 
-    @Column(name = "updated_by", length = AuditPrincipal.MAX_LENGTH)
+    @Column(name = "updated_by", length = AuditPrincipal.MAX_LENGTH,
+            comment = "最后更新者主体名（写入前已按列宽归一化）")
     private String updatedBy;
 
     /** 记录创建审计信息。 */
