@@ -230,7 +230,7 @@ deploy/kubernetes/      kustomize 清单（有独立 README）
 spec/                   两份 OpenAPI 规格的仓库副本（运行时可从 /<name> 下载）
 sql/                    MySQL 建表语句（生成物）
 scripts/                验收 / 生成 / 校验 / 镜像构建脚本
-docs/                   16 份设计文档
+docs/                   20 份设计文档
 ```
 
 服务端四模块的**类数**：core 86 · storage 8 · protocol-paimon 35 · server 39（共 168）。
@@ -254,8 +254,11 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
 | `catalog-api-endpoints.md` | Catalog API 的端点、基址、前缀、授权映射；**两个协议面各一章**——Paimon 的 60 个与 Iceberg 的 26 个（含 9 个不声明的、各端点的成功码、错误模型） |
 | `management-api-overview.md` | 官方权限端点与扩展端点落在哪几个控制器、易读错的语义 |
 | `management-api-contract.md` | 管理 API 字段与权限枚举**逐字契约**（生成物，勿手改） |
-| `data-model.md` | 改实体 / 看 22 张表划分、摘要列与审计列的理由、实体与仓储分在哪两个模块、Iceberg 协议面新增的 9 个列（§1.1） |
+| `data-model.md` | 改实体 / 看 20 张表划分、摘要列与审计列的理由、实体与仓储分在哪两个模块、Iceberg 协议面新增的 9 个列（§1.1） |
 | `table-optimization.md` | 改表存储优化：三层配置合并、批次与调度游标、组批与提交、前后指标；**两种表格式共用一套策略表与批次表**，参数键按格式分派（§2.5 是 Iceberg 的对应物，§6.5 是执行侧差异） |
+| `event-framework.md` | 加事件 / 接 listener：9 类 33 个领域事件与触发点、与 Polaris 枚举的映射、`audit_event` 表、发布监听链路、按监听器的类别/类型订阅、增量拉取契约（`?since=` / `?category=`）与不发清单 |
+| `generic-table-design.md` | parquet / orc / lance / vortex 纳入目录（**设计稿，未实现**）：格式能力矩阵、`table_kind` 方案取舍、端点与权限、Spark 接入、影响面与风险 |
+| `metrics-design.md` | 加指标 / 接 Prometheus / 排查「指标太贵」：**设计稿，未实现**——Polaris telemetry 的事实基线（四类来源、realm 基数闸门、SLO 桶、Iceberg 用量报告与运维指标的区别）、`lakehouse.*` 指标目录与基数预算（<1500）、标签黑名单与 catalog 折叠规则、切面替代逐端点 `@Timed`、管理端口暴露与 ServiceMonitor、告警/看板示例、`verify-metrics-doc.py` 一致性校验 |
 | `maven-module-design.md` | 改模块划分 / 加模块（再加一个格式面就照 §12 那份清单走）：依赖图、两条父 POM、三条 enforcer 不变量、五段落地记录（§8–§12） |
 | `spark-sql-reference.md` | 语句级参考（第 10 节示例会被测试真跑） |
 | `spark-sql-extension.md` | 改 Spark 扩展：做法、两个约束、测试分层 |
@@ -446,6 +449,6 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
 - 设计对照：[`docs/polaris-capabilities-and-design.md`](docs/polaris-capabilities-and-design.md)
 - 事件框架：[`docs/event-framework.md`](docs/event-framework.md)（9 类 33 个领域事件、与 Polaris 枚举的映射、发布点清单与不发清单、按监听器的类别/类型订阅、增量拉取契约；加事件或接 listener 先读它）
 - 通用表（设计稿）：[`docs/generic-table-design.md`](docs/generic-table-design.md)（parquet / orc / lance / vortex 纳入目录：格式能力矩阵、`table_kind` 方案取舍、端点与权限、Spark 接入、影响面与风险；**未实现**）
-- Unity Catalog 借鉴（设计稿）：[`docs/unity-catalog-design.md`](docs/unity-catalog-design.md)（UC OSS 0.7 事实基线、逐面对照、六项可借鉴与十项不借鉴及理由、卷/托管位置/延迟清理/批量权限/观测端点的设计、四期落地；**未实现**）
+- 指标（设计稿）：[`docs/metrics-design.md`](docs/metrics-design.md)（Polaris telemetry 基线、`lakehouse.*` 指标目录与基数预算、标签闸门、管理端口与 ServiceMonitor；**未实现**）
 - 数据模型：[`docs/data-model.md`](docs/data-model.md)
 - 控制台：[`docs/console.md`](docs/console.md)、[`docs/console-auth.md`](docs/console-auth.md)

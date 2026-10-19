@@ -18,11 +18,12 @@
   Management API 的 **3 个权限端点**（官方）+ 扩展端点（catalog / principal / 角色 / 优化）
   （概览见 [`docs/management-api-overview.md`](docs/management-api-overview.md)）
 - 元数据存储：**MySQL 8.0**（建表语句由实体生成，见 `sql/schema-mysql.sql`；
-  23 张表的划分与设计取舍见 [`docs/data-model.md`](docs/data-model.md)），
+  20 张表的划分与设计取舍见 [`docs/data-model.md`](docs/data-model.md)），
   通过 JPA 访问；另有 H2 内存库与 PostgreSQL 两个 profile 可选
-- 模块：**8 个 Maven 模块**——服务端拆为 `core`（与格式无关的地基）/ `storage`（FileIO）/
-  `protocol-paimon`（Catalog API）/ `server`（可执行）四个，另有 Spark SQL 语法扩展（Scala）、
-  表存储优化任务（Spark，由服务端投到 k8s）与两个父 POM，见第 1 节
+- 模块：**12 个 Maven 模块**——服务端拆为 `core`（与格式无关的地基）/ `storage`（FileIO）/
+  `protocol-paimon`（Catalog API）/ `protocol-iceberg`（Iceberg REST）/ `server`（可执行）五个，
+  Spark SQL 扩展再拆 `common` + `3.5` + `4.1` 三个，另有表存储优化任务、两个父 POM 与根聚合 POM；
+  Web 控制台是 Vite 工程，不走 Maven。目录见第 1 节
 - 表格式：**Paimon 表**与三种不受快照管理的表——**Format 表**（目录里的既有文件）、
   **Object 表**（对象元数据，列由 Paimon 固定）、**Lance 表**；类型写在
   `schema.options.type` 里，建表时的归一化与边界见第 6 节第 23 条。后三种的位置就是
@@ -136,14 +137,14 @@ k8s 资源名的 `paimon-` 前缀**故意不改**：它不是产品名，是历�
 （StatefulSet 与 PVC 引用）。见
 [`maven-module-design.md`](docs/maven-module-design.md) §8.6。
 
-`docs/` 里十八份文档的分工：
+`docs/` 里二十份文档的分工：
 
 | 文档 | 读它的时机 |
 | --- | --- |
 | [`catalog-api-endpoints.md`](docs/catalog-api-endpoints.md) | 要查 Catalog API 有哪些端点——Paimon 的 60 个与 Iceberg 的 26 个按资源分组，含基址、前缀与授权映射说明 |
 | [`management-api-overview.md`](docs/management-api-overview.md) | 要读 Management API——官方权限端点与扩展端点各落在哪几个控制器上、几处容易读错的语义 |
 | [`management-api-contract.md`](docs/management-api-contract.md) | 要查管理 API 的端点、字段、权限枚举——由规格生成，逐字对照 |
-| [`data-model.md`](docs/data-model.md) | 要改实体或看表结构——23 张表的划分、摘要列与审计列的设计理由、实体与仓储分在哪两个模块、`lakehouse_` 前缀（原 `paimon_`）的来历与 §6 的迁移方案（原子 rename、回滚、验收） |
+| [`data-model.md`](docs/data-model.md) | 要改实体或看表结构——20 张表的划分、摘要列与审计列的设计理由、实体与仓储分在哪两个模块、`lakehouse_` 前缀（原 `paimon_`）的来历与 §6 的迁移方案（原子 rename、回滚、验收） |
 | [`spark-sql-reference.md`](docs/spark-sql-reference.md) | 要用 SQL 管理主体与授权——语句级参考，含完整示例 |
 | [`spark-sql-extension.md`](docs/spark-sql-extension.md) | 要改这个 Spark 扩展——语法扩展的做法、两个必须知道的约束、测试分层 |
 | [`spark-paimon-rest-e2e.md`](docs/spark-paimon-rest-e2e.md) | 要让 Spark 通过本服务端建 Paimon 表——连接配置、可执行的 SQL、报错对照表 |
@@ -157,7 +158,7 @@ k8s 资源名的 `paimon-` 前缀**故意不改**：它不是产品名，是历�
 | [`event-framework.md`](docs/event-framework.md) | 要加一种事件、接一个 listener 或理解事件流的边界——9 类 33 个领域事件与触发点、与 Polaris 事件枚举的逐类映射、audit_event 表、发布监听链路、按监听器的类别/类型订阅（`lakehouse.rest.event-listener.*`）、增量拉取契约（`?since=` 游标 + `?category=`）与不发清单 |
 | [`iceberg-rest-catalog-design.md`](docs/iceberg-rest-catalog-design.md) | 要看「同一份元数据同时服务 Paimon 与 Iceberg」怎么做的——双协议方案：创建时区分格式、22 张表复用只加 9 列、路径冲突与错误模型、能力边界与效果图（`outputs/iceberg-rest-catalog/mockup.html`），以及**已落地的实测记录与与方案不一致的几处**（§11） |
 | [`generic-table-design.md`](docs/generic-table-design.md) | 要把 parquet / orc / lance / vortex 目录也纳入目录服务，或评审「通用表」方案——**设计稿，未实现**：Polaris Generic Table 的事实基线、四种格式的能力矩阵、复用 `lakehouse_table` 加 `table_kind` 的三方案对比、4 个端点与权限映射、凭据下发为什么是唯一的数据面控制点、Spark 侧按格式分派（`FileTable` 子类 / `ServiceLoader<TableProvider>`）、影响面与风险 |
-| [`unity-catalog-design.md`](docs/unity-catalog-design.md) | 要判断 Unity Catalog 的哪些能力该抄、哪些不该抄——**设计稿，未实现**：UC OSS 0.7 的事实基线与版本时间线、与本项目的十二面对照、六项可借鉴（External Volume / managed location / 延迟清理 / 批量权限 / 观测端点 / 提交错误语义）、十项明确不借鉴及逐条理由、表与端点设计、四期落地与测试计划 |
+| [`metrics-design.md`](docs/metrics-design.md) | 要加指标、接 Prometheus 或判断「这个指标该不该打标签」——**设计稿，未实现**：Polaris telemetry 的事实基线（HTTP / API / 持久化 / 缓存四类来源，`realm_id` 基数闸门与「超限即停记」、SLO 显式桶、Iceberg 客户端用量报告与运维指标的区别）、`lakehouse.*` 指标目录与 <1500 的基数预算、标签黑名单与 catalog 折叠成 `__other__`、切面替代逐端点 `@Timed`、管理端口 8081 + ServiceMonitor、告警与看板、`verify-metrics-doc.py` 一致性校验 |
 | [`maven-module-design.md`](docs/maven-module-design.md) | 要改模块布局或 artifact 名——`lakehouse-rest-*` 命名定案、两个父 POM / 两个依赖世界、三条用 enforcer 守住的依赖不变量、改名清单与「哪四处故意不改」（§8.6），以及**已落地**的实测记录（§8，含与设计不一致的六处及原因） |
 | [`table-optimization.md`](docs/table-optimization.md) | 要改表存储优化或排查优化任务——三个动作的语义、批次与并发两道闸门、k8s 提交与状态跟踪、控制台两处页面 |
 
