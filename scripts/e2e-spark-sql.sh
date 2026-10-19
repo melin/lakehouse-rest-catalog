@@ -125,7 +125,7 @@ echo "== 跑 Spark SQL 端到端验收 =="
 #                                     只读身份的关键操作被 403 拒绝（Iceberg 侧写数据要
 #                                     UPDATE + ALTER，见 docs/spark-iceberg-rest-e2e.md §1.5）
 #   SparkSqlDocExamplesTests        : 执行参考文档第 10 节的示例，防止示例被改坏
-"$MVN" -o -pl :lakehouse-rest-spark test \
+"$MVN" -o -pl :lakehouse-rest-spark-3.5 test \
   -Dtest=ManagementSqlLiveServerTests,PaimonTableDdlTests,NonPaimonTableSqlTests,IcebergTableDdlTests,SparkSqlAuthorizationTests,SparkSqlDocExamplesTests \
   -DfailIfNoTests=false \
   -De2e.management.url="$BASE/api/management/v1" \

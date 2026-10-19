@@ -50,8 +50,8 @@ REST Management API**（RBAC 管理面）与一个 **Vue 3 管理控制台**；�
    （`Could not deserialize ATN with version 3 (expected 4)`）。改 `spark.version` 时
    同步核对根 `pom.xml` 的 `antlr.runtime.version`。
 4. **两个父 POM ＝ 两个依赖世界。根聚合器刻意不继承 `spring-boot-starter-parent`。**
-   根 `pom.xml`（`lakehouse-rest-parent`）是**纯聚合器**，同时是 `lakehouse-rest-spark` 与
-   `lakehouse-rest-optimizer` 的父 POM；服务端那套（core / storage / protocol-paimon / server）
+   根 `pom.xml`（`lakehouse-rest-parent`）是**纯聚合器**，同时是 `lakehouse-rest-spark-parent`
+   （Spark 侧聚合，其下再有 common / 3.5 / 4.1 三个模块）与 `lakehouse-rest-optimizer` 的父 POM；服务端那套（core / storage / protocol-paimon / server）
    挂在 `lakehouse-rest-spring-parent` 下，**由它**继承 Boot 父 POM。合并的后果：Boot 的
    `dependencyManagement` 会把 Spark 侧的 Jackson 2.15.2 抬到 2.21.x、替换 netty/jersey，
    Spark 模块直接坏。**不要把 Boot 提为根聚合器的父。**
@@ -66,7 +66,7 @@ REST Management API**（RBAC 管理面）与一个 **Vue 3 管理控制台**；�
      `[groupId]:artifactId` 或**相对路径**，裸名字按后者解析。模块挪进 `spring-parent/` 之后
      `-pl lakehouse-rest-server` 直接报
      `Could not find the selected project in the reactor`。带冒号的写法只看坐标、
-     与目录层级无关，所以 `-pl :lakehouse-rest-spark` 也照样写（Spark 目录确实还在根下）。
+     与目录层级无关，所以 `-pl :lakehouse-rest-spark-3.5` 也照样写（Spark 目录确实还在根下）。
    - **共享依赖放 `spring-parent` 的 `<dependencies>`，但 `paimon-core` 不进。**
      服务端共用 webmvc / data-jpa / validation / lombok，写在 `spring-parent` 里；
      `paimon-core` 一旦也写进去，`core` 会连带拿到 Paimon，enforcer 立刻红（见第 10 条）。
@@ -76,7 +76,7 @@ REST Management API**（RBAC 管理面）与一个 **Vue 3 管理控制台**；�
 6. **构建服务端 jar（含控制台）用 `clean package`，不要裸 `package`。** 控制台产物按内容哈希命名，
    `maven-resources-plugin` 只覆写不删除 → `target/classes/static/console` 累积历次旧产物
    （jar 里出现多个 `index-*.js`）。服务端 POM 已把一次 `clean` 绑到 `initialize` 兜底。
-7. **测试分模块跑，不要用 `-Dtest=` 一次性筛全仓。** `lakehouse-rest-spark` 里没有匹配的测试类时，
+7. **测试分模块跑，不要用 `-Dtest=` 一次性筛全仓。** 两个 Spark 版本模块里没有匹配的测试类时，
    surefire 报 `No tests matching pattern` 并让整个构建 **BUILD FAILURE**（像回归，其实不是）。
    限单模块 + `-Dsurefire.failIfNoSpecifiedTests=false`：
    ```bash
@@ -212,13 +212,18 @@ lakehouse-rest-spring-parent/   服务端世界的父 POM（继承 Boot 4.1.1）
                         console/（前端构建产物，见第 8 节陷阱 1）
 
 lakehouse-rest-console/    Vue 3 + Vite（Element Plus），构建产物直接落进服务端 classpath
-lakehouse-rest-spark/      Scala 2.12 + Spark 3.5 + ANTLR 的语法扩展（16 条管理语句）：
-                        ManagementSql.g4（语法）→ PaimonRestSqlParser.scala（注入
-                        ParserInterface）→ ManagementAstBuilder.scala（语法树 → 命令）→
-                        ManagementCommands.scala（13 个 RunnableCommand → HTTP）；
-                        client/ 为 JDK HttpClient + Jackson 2 的 REST 客户端；
-                        **另有旧包名 `io.github.melin.paimonrest.spark` 下的一个空壳**，
-                        只为兼容既有部署写死的 `spark.sql.extensions`（见第 7 节）
+lakehouse-rest-spark/      语法扩展（16 条管理语句），一份源码、两个版本产物：
+                        shared/src/main/antlr4/  ManagementSql.g4（语法，两版共用）
+                        shared/src/main/scala/   AbstractLakehouseRestSqlParser.scala（注入
+                        ParserInterface 的共享部分）→ ManagementAstBuilder.scala（语法树 →
+                        命令）→ ManagementCommands.scala（13 个 RunnableCommand → HTTP）
+                        shared/src/test/         共享测试（两个版本各跑一遍）
+                        lakehouse-rest-spark-common/   client/：JDK HttpClient + Jackson 2
+                        lakehouse-rest-spark-3.5/  Spark 3.5 / Scala 2.12 / ANTLR 4.9.3
+                        lakehouse-rest-spark-4.1/  Spark 4.1 / Scala 2.13 / ANTLR 4.13.1
+                        两个版本模块各自只有一个 LakehouseRestSqlParser（4.1 侧补
+                        parseRoutineParam），其余代码全部来自 shared/
+                        旧包名 `io.github.melin.paimonrest.spark` 下的兼容空壳已删除（见第 7 节）
 lakehouse-rest-optimizer/  表优化执行体（被 k8s 提交起来跑，不经服务端 classpath）：
                         PaimonProcedures、TableOptimizerJob、OptimizerOptions、OptimizationApiClient
 deploy/kubernetes/      kustomize 清单（有独立 README）
@@ -306,7 +311,7 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
 | --- | --- |
 | **加 Catalog API 端点** | ① 控制器 + DTO 都进 `lakehouse-rest-protocol-paimon`（`web/` 与 `dto/`），字段名与规格逐字一致；② `lakehouse-rest-core` 的 `config/CatalogAccessRules.java` 登记路径 → 权限（漏了构建红）；③ 测试 `PaimonRestCatalogApiTests` 之类 + `CatalogEndpointAuthorizationTests`（**测试目前全在 `lakehouse-rest-spring-parent/lakehouse-rest-server/src/test/`**，见 `maven-module-design.md` §8.6）；④ 更新 `docs/catalog-api-endpoints.md` |
 | **改 JPA 实体 / 加表** | ① 改 `domain/entity`——**先判断放哪个模块**：catalog 侧 12 实体、RBAC 管理侧 7 实体与事件审计 1 实体在 `lakehouse-rest-core`（被协议面复用，下沉避免协议层反向依赖 server），表存储优化 3 实体在 `lakehouse-rest-server`；继承 `AuditedEntity` 才有审计列；② `./scripts/gen-mysql-ddl.sh` 重生成 `sql/schema-mysql.sql`（**必须**）；③ 摘要列（SHA-256）或唯一约束变化时同步 `docs/data-model.md` |
-| **改管理 API / 权限** | ① 实现落在 `lakehouse-rest-server`（`web/` + `service/` + `dto/ManagementDtos`），词表类在 `lakehouse-rest-core`（`dto/ManagementEnums`、`dto/Privilege`）→ 改规格副本与实现后 `python3 scripts/gen-management-contract.py`；② 权限枚举变了 → `scripts/gen-management-privileges.py` 重生成 `dto/Privilege.java`；官方权限词表（access / ResourceType）变了 → 跑 `verify-spark-sql-doc.py`（比对语法/PermissionDtos/客户端三方）；③ 管理语句跟随改动时进 `lakehouse-rest-spark`（语法 + AstBuilder + Command 三处） |
+| **改管理 API / 权限** | ① 实现落在 `lakehouse-rest-server`（`web/` + `service/` + `dto/ManagementDtos`），词表类在 `lakehouse-rest-core`（`dto/ManagementEnums`、`dto/Privilege`）→ 改规格副本与实现后 `python3 scripts/gen-management-contract.py`；② 权限枚举变了 → `scripts/gen-management-privileges.py` 重生成 `dto/Privilege.java`；官方权限词表（access / ResourceType）变了 → 跑 `verify-spark-sql-doc.py`（比对语法/PermissionDtos/客户端三方）；③ 管理语句跟随改动时进 `lakehouse-rest-spark/shared`（语法 + AstBuilder + Command 三处；两个版本模块编译同一份源码，改一处即两边生效） |
 | **跨模块搬类 / 加模块** | ① **先算依赖图再动手**——凭「看起来该属于这里」搬会把方向搬反，本仓实测出现过 46 条反向边；工具在 `outputs/maven-module-refactor/module-graph.py`（分类表 `RULES`、允许方向 `ALLOWED`）；② 包名不动 → 不需要改任何 `import`，`mvn -o -DskipTests clean install` 编译通过＝搬对了，enforcer 红＝方向搬反；③ 同步 `docs/maven-module-design.md`（§8 落地记录）与本文第 3 节的类数 |
 | **改控制台** | ① 按 `docs/console.md` §5.3 清单做（endpoints.js → api/*.js → views/ → router → 构建）；② `./scripts/build-console.sh` 重新构建（**产物必须一起提交**，见第 8 节陷阱 1）；③ 页面渲染不写进服务端测试，服务端侧只覆盖托管机制（`ConsoleApiTests`） |
 | **改配置项** | ① `lakehouse-rest-core` 的 `config/RestServerProperties.java` 加字段 + javadoc（默认值、留空含义、非法取值行为）；② `lakehouse-rest-server` 的 `application.yml` 加注释示例；③ `README.md` §5 配置表加一行。涉及存储凭据时，`docs/polaris-capabilities-and-design.md` 的「下发优先级」表也加一级 |
@@ -358,9 +363,9 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
   ——旧布局下 `rest.dto.TableDtos` 与 `rest.dto.CommonDtos` 同包，源码里直呼其名、不写 import；
   分包后这类引用会整片失效，症状是编译器报「程序包 X 不存在」或「找不到符号」。详见设计文档 §11。
 - **改包名属于「对外契约」级改动：唯一被写进用户配置的名字是 `spark.sql.extensions` 的值。**
-  所以 `lakehouse-rest-spark` 里保留了一个旧包名下的空壳
-  `io.github.melin.paimonrest.spark.ManagementSparkExtensions`（只继承新实现、不覆盖方法），
-  让既有部署不改配置也能升级。注意留的是**最初**那个名字：中间用过的
+  曾经为此在 Spark 模块里保留了一个旧包名下的空壳
+  `io.github.melin.paimonrest.spark.ManagementSparkExtensions`（只继承新实现、不覆盖方法）；
+  该空壳已按约定删除（确认没有部署再用旧名字之后）。注意当初留的是**最初**那个名字：中间用过的
   `io.github.melin.lakehouse.rest` 从未提交、从未发布，不为它留壳——壳的数量等于历史的对外
   名字数，不是改过的次数。**对全仓做包名批量替换时必须把壳排除**，否则旧部署会静默失效——
   症状是 Spark 会话初始化时的 `ClassNotFoundException`，离「改过包名」很远。

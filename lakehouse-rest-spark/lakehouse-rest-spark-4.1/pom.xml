@@ -1,0 +1,242 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+	<modelVersion>4.0.0</modelVersion>
+
+	<parent>
+		<groupId>io.github.melin</groupId>
+		<artifactId>lakehouse-rest-spark-parent</artifactId>
+		<version>0.0.1-SNAPSHOT</version>
+	</parent>
+
+	<artifactId>lakehouse-rest-spark-4.1</artifactId>
+	<packaging>jar</packaging>
+	<name>lakehouse-rest-spark-4.1</name>
+	<description>Spark 4.1 / Scala 2.13 的 Spark SQL 管理语法扩展</description>
+
+	<!--
+		与 -3.5 同构：代码在 ../shared/ 下共用，本模块只负责「用 4.1 的工具链把它编出来」。
+		依赖清单与 -3.5 逐条对应（为什么每条都要，见那边的注释），差别只有下面五个属性
+		与一个版本差异类。改依赖时两个模块要一起改——它们必须是同一份清单的两次编译，
+		否则两个版本的行为会悄悄分叉。
+	-->
+
+	<properties>
+		<!--
+			这四个与 -3.5 是一组：Spark 版本、Scala 版本、Scala 二进制版本、ANTLR。
+			4.1 用 Scala 2.13.17（与 spark-sql_2.13:4.1.2 的 scala-library 一致），
+			ANTLR 用 4.13.1（Spark 4.1.2 自带的 antlr4-runtime 版本）。
+			两者写错都只在运行期暴露，见父 POM 的说明。
+		-->
+		<spark.version>4.1.2</spark.version>
+		<scala.version>2.13.17</scala.version>
+		<scala.binary.version>2.13</scala.binary.version>
+		<antlr.runtime.version>4.13.1</antlr.runtime.version>
+
+		<!--
+			Iceberg 有 4.1 的 bundle，直接对齐。
+		-->
+		<iceberg.spark.artifact>iceberg-spark-runtime-4.1_2.13</iceberg.spark.artifact>
+
+		<!--
+			**必须覆盖根 POM 的 Jackson 钉版。**
+
+			根 POM 的 dependencyManagement 把 `jackson-databind` 钉在 2.15.2——那是
+			Spark 3.5 的版本，写成全局钉版是为了让 3.5 侧的 JSON 编解码与发行版逐字一致。
+			这个钉版对 4.1 是错的：Spark 4.1.2 用 Jackson 2.21.2，其
+			`jackson-module-scala` 在初始化时会校验 databind 的主次版本：
+
+			  Scala module 2.21.2 requires Jackson Databind version >= 2.21.0 and < 2.22.0
+			  - Found jackson-databind version 2.15.2
+			    at org.apache.spark.rdd.RDDOperationScope$.<clinit>
+
+			症状是**会话能建起来、普通 SELECT 也能过**，但任何走 ParseException 或
+			RDDOperationScope 的路径都炸（本模块实测是 4 个用例），离「Jackson 被降级」
+			很远。因此这里把它覆盖成 4.1 的版本，而不是去改根 POM——根 POM 还要服务 3.5。
+		-->
+		<jackson2.version>2.21.2</jackson2.version>
+
+		<!--
+			Paimon 2.0.0 **没有** Spark 4.1 的 bundle，只有 `paimon-spark-4.0_2.13`。
+			这里用它（同属 Spark 4 的 API 面），并在测试里让 Paimon 相关的用例
+			依赖真实是否可用——见 docs/maven-module-design.md 的「Spark 4.1 的已知边界」。
+			Paimon 发布 4.1 bundle 后只改这一行。
+		-->
+		<paimon.spark.artifact>paimon-spark-4.0_2.13</paimon.spark.artifact>
+	</properties>
+
+	<dependencies>
+		<dependency>
+			<groupId>org.scala-lang</groupId>
+			<artifactId>scala-library</artifactId>
+			<scope>provided</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.apache.spark</groupId>
+			<artifactId>spark-sql_${scala.binary.version}</artifactId>
+			<scope>provided</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.apache.spark</groupId>
+			<artifactId>spark-catalyst_${scala.binary.version}</artifactId>
+			<scope>provided</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.antlr</groupId>
+			<artifactId>antlr4-runtime</artifactId>
+			<scope>provided</scope>
+		</dependency>
+
+		<dependency>
+			<groupId>io.github.melin</groupId>
+			<artifactId>lakehouse-rest-spark-common</artifactId>
+		</dependency>
+
+		<dependency>
+			<groupId>org.junit.jupiter</groupId>
+			<artifactId>junit-jupiter</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.junit.platform</groupId>
+			<artifactId>junit-platform-launcher</artifactId>
+			<scope>test</scope>
+		</dependency>
+
+		<dependency>
+			<groupId>org.apache.paimon</groupId>
+			<artifactId>${paimon.spark.artifact}</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.apache.paimon</groupId>
+			<artifactId>paimon-s3</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.apache.iceberg</groupId>
+			<artifactId>${iceberg.spark.artifact}</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.apache.spark</groupId>
+			<artifactId>spark-hive_${scala.binary.version}</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.slf4j</groupId>
+			<artifactId>slf4j-api</artifactId>
+			<version>2.0.18</version>
+			<scope>provided</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.slf4j</groupId>
+			<artifactId>slf4j-simple</artifactId>
+			<version>2.0.18</version>
+			<scope>test</scope>
+		</dependency>
+	</dependencies>
+
+	<build>
+		<plugins>
+			<plugin>
+				<groupId>org.antlr</groupId>
+				<artifactId>antlr4-maven-plugin</artifactId>
+				<executions>
+					<execution>
+						<id>antlr</id>
+						<phase>generate-sources</phase>
+						<goals>
+							<goal>antlr4</goal>
+						</goals>
+					</execution>
+				</executions>
+				<configuration>
+					<sourceDirectory>${project.basedir}/../shared/src/main/antlr4</sourceDirectory>
+					<visitor>true</visitor>
+					<listener>false</listener>
+				</configuration>
+			</plugin>
+
+			<plugin>
+				<groupId>org.codehaus.mojo</groupId>
+				<artifactId>build-helper-maven-plugin</artifactId>
+				<executions>
+					<execution>
+						<id>add-shared-sources</id>
+						<phase>generate-sources</phase>
+						<goals>
+							<goal>add-source</goal>
+						</goals>
+						<configuration>
+							<sources>
+								<source>${project.basedir}/../shared/src/main/scala</source>
+							</sources>
+						</configuration>
+					</execution>
+					<execution>
+						<id>add-shared-test-sources</id>
+						<phase>generate-test-sources</phase>
+						<goals>
+							<goal>add-test-source</goal>
+						</goals>
+						<configuration>
+							<sources>
+								<source>${project.basedir}/../shared/src/test/scala</source>
+							</sources>
+						</configuration>
+					</execution>
+					<execution>
+						<id>add-shared-test-resources</id>
+						<phase>generate-test-resources</phase>
+						<goals>
+							<goal>add-test-resource</goal>
+						</goals>
+						<configuration>
+							<resources>
+								<resource>
+									<directory>${project.basedir}/../shared/src/test/resources</directory>
+								</resource>
+							</resources>
+						</configuration>
+					</execution>
+				</executions>
+			</plugin>
+
+			<plugin>
+				<groupId>net.alchim31.maven</groupId>
+				<artifactId>scala-maven-plugin</artifactId>
+				<configuration>
+					<args>
+						<arg>-deprecation</arg>
+						<arg>-feature</arg>
+						<!--
+							共享源码用 `scala.collection.JavaConverters._`：这个名字在 2.12 是标准
+							写法，2.13 只是把它改名成 `scala.jdk.CollectionConverters`（旧的仍保留）。
+							两个版本编译同一份源码时只能用旧名字，否则 3.5 编不过。因此这里只静音
+							这一条警告——不是关掉 deprecation，其它弃用照常报。
+						-->
+						<arg>-Wconf:cat=deprecation&amp;msg=JavaConverters:s</arg>
+					</args>
+				</configuration>
+				<executions>
+					<execution>
+						<id>scala-compile</id>
+						<phase>compile</phase>
+						<goals>
+							<goal>compile</goal>
+						</goals>
+					</execution>
+					<execution>
+						<id>scala-test-compile</id>
+						<phase>test-compile</phase>
+						<goals>
+							<goal>testCompile</goal>
+						</goals>
+					</execution>
+				</executions>
+			</plugin>
+		</plugins>
+	</build>
+
+</project>

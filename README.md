@@ -54,6 +54,10 @@ paimon-rest/
 │   └── lakehouse-rest-server/        可执行服务端：Management API + 控制台 API + 优化调度，最终 jar 在这里
 ├── lakehouse-rest-console/     Web 管理控制台（Vue 3 + Vite，产物构建进服务端，见第 9 节）
 ├── lakehouse-rest-spark/       Spark SQL 语法扩展：用 SQL 管理主体、角色与授权
+│   ├── shared/                 两个 Spark 版本共用的源码（语法 + Scala 层 + 测试）
+│   ├── lakehouse-rest-spark-common/  REST 客户端：纯 Java，无 Spark 依赖
+│   ├── lakehouse-rest-spark-3.5/     Spark 3.5.9 / Scala 2.12 / ANTLR 4.9.3
+│   └── lakehouse-rest-spark-4.1/     Spark 4.1.2 / Scala 2.13 / ANTLR 4.13.1
 ├── lakehouse-rest-optimizer/   表存储优化任务（Spark，由服务端投到 k8s 运行）
 ├── deploy/kubernetes/       Kubernetes 部署清单（kustomize 组装，见其目录下的 README）
 ├── spec/                    OpenAPI 规格副本（两套协议面各一份）
@@ -70,8 +74,8 @@ paimon-rest/
 
 **模块划分的取舍：两个父 POM ＝ 两个依赖世界。**
 
-根 `pom.xml`（`lakehouse-rest-parent`）是**纯聚合器**，同时充当 `lakehouse-rest-spark` 与
-`lakehouse-rest-optimizer` 的父 POM，**刻意不继承** `spring-boot-starter-parent`：
+根 `pom.xml`（`lakehouse-rest-parent`）是**纯聚合器**，同时充当 `lakehouse-rest-spark-parent`
+与 `lakehouse-rest-optimizer` 的父 POM，**刻意不继承** `spring-boot-starter-parent`：
 Spark 自带的 Jackson 2.15.2 会被 Boot 的 `dependencyManagement` 抬到 2.21.x，
 netty 与 jersey 也会被替换，导致 Spark 侧出现难以定位的版本冲突。
 
@@ -92,11 +96,14 @@ Spark 侧是 Scala 2.12 / Spark 3.5 / Jackson 2 / ANTLR 4.9.3。
 是构建期断言。完整依赖图与规则细节见
 [`maven-module-design.md`](docs/maven-module-design.md)。
 
-Maven 坐标与包名：`groupId` 为 `io.github.melin`，九个 artifact 是
+Maven 坐标与包名：`groupId` 为 `io.github.melin`，十二个 artifact 是
 `lakehouse-rest-parent`（聚合）、`lakehouse-rest-spring-parent`（服务端父 POM）、
 `lakehouse-rest-core`、`lakehouse-rest-storage`、`lakehouse-rest-protocol-paimon`、
-`lakehouse-rest-protocol-iceberg`、`lakehouse-rest-server`、`lakehouse-rest-spark`、
-`lakehouse-rest-optimizer`。
+`lakehouse-rest-protocol-iceberg`、`lakehouse-rest-server`、
+`lakehouse-rest-spark-parent`（Spark 侧聚合）、`lakehouse-rest-spark-common`、
+`lakehouse-rest-spark-3.5`、`lakehouse-rest-spark-4.1`、`lakehouse-rest-optimizer`。
+两个 Spark 版本模块都产出「语法扩展 + 客户端」可用的 jar：一个是给 Spark 3.5 的，
+一个是给 Spark 4.1 的，装哪个由集群版本决定（见第 5 节）。
 包前缀为 `io.github.melin.lakehouse.rest`（三轮改定：`io.github.melin.paimonrest` →
 `io.github.melin.lakehouse.rest` → 本名 → 各协议面再加一层格式子包，主前缀与 artifactId 的
 `lakehouse` 对齐），Spark 模块在其下再用 `.spark` 子包（如
@@ -114,9 +121,9 @@ Maven 坐标与包名：`groupId` 为 `io.github.melin`，九个 artifact 是
 
 **这一处改名会打到用户，因此留了兼容壳。** `spark.sql.extensions` 填的是全限定类名，
 包名一改，既有部署的 Spark 会话会在初始化时报 `ClassNotFoundException`——错误离「升级了
-服务端依赖」很远，不容易查。于是 Spark 模块里保留了**最初**包名下的同名空壳
-（`lakehouse-rest-spark/src/main/scala/io/github/melin/paimonrest/spark/ManagementSparkExtensions.scala`，
-只继承新实现、不覆盖任何方法），旧配置照旧可用；**新部署请写新包名**。
+服务端依赖」很远，不容易查。于是 Spark 模块里曾保留**最初**包名下的同名空壳（只继承新实现、不覆盖任何方法）。
+该空壳已按当初的约定删除——它只是过渡，确认没有部署再用旧名字之后就不再保留；
+**新部署请写新包名** `io.github.melin.lakehouse.rest.spark.ManagementSparkExtensions`。
 中间那个 `io.github.melin.lakehouse.rest` 从未提交、也就从未发布，所以没有为它另留一个壳——
 壳的数量等于「历史的对外名字数」，不是「改过几次」。
 其余位置都不涉及外部契约：配置前缀已从 `paimon.rest.*` 直接改到 `lakehouse.rest.*`（尚无部署
@@ -309,12 +316,17 @@ lakehouse-rest-spring-parent/
     service/      管理服务、控制台 meta、凭据与存储策略、优化调度
     config/       数据源 profile、启动预置（DataInitializer）
 
-lakehouse-rest-spark/
-  antlr4/…/ManagementSql.g4   管理语句语法（16 条语句、15 条规则）
-  client/                     REST 客户端（JDK HttpClient + Jackson 2）
-  …/ManagementCommands.scala  13 个 RunnableCommand：语句 → HTTP 调用
-  …/ManagementAstBuilder.scala 语法树 → 命令
-  …/PaimonRestSqlParser.scala  注入 Spark 的解析器：先试管理语法，失败即交回
+lakehouse-rest-spark/        一份源码、两个版本产物（Spark 3.5 与 4.1）
+  shared/src/main/antlr4/…/ManagementSql.g4   管理语句语法（16 条语句、15 条规则）
+  shared/src/main/scala/…                      Spark 层共享源码（两个版本各编一遍）
+    ManagementCommands.scala                   13 个 RunnableCommand：语句 → HTTP 调用
+    ManagementAstBuilder.scala                 语法树 → 命令
+    AbstractLakehouseRestSqlParser.scala           解析器共享部分：先试管理语法，失败即交回
+    ManagementSparkExtensions.scala             会话注入点与配置读取
+  shared/src/test/…                            共享测试（两个版本各跑一遍）
+  lakehouse-rest-spark-common/src/main/java/…/client/   REST 客户端（JDK HttpClient + Jackson 2）
+  lakehouse-rest-spark-3.5/…/LakehouseRestSqlParser.scala  3.5 侧：无版本特有成员
+  lakehouse-rest-spark-4.1/…/LakehouseRestSqlParser.scala  4.1 侧：补 parseRoutineParam
 ```
 
 关键设计：

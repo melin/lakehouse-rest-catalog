@@ -28,10 +28,14 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DOC = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "docs/spark-sql-reference.md")
 
-GRAMMAR = os.path.join(ROOT, "lakehouse-rest-spark/src/main/antlr4/io/github/melin/lakehouse/rest/spark/parser/ManagementSql.g4")
-COMMANDS = os.path.join(ROOT, "lakehouse-rest-spark/src/main/scala/io/github/melin/lakehouse/rest/spark/ManagementCommands.scala")
-EXTENSIONS = os.path.join(ROOT, "lakehouse-rest-spark/src/main/scala/io/github/melin/lakehouse/rest/spark/ManagementSparkExtensions.scala")
-CLIENT = os.path.join(ROOT, "lakehouse-rest-spark/src/main/java/io/github/melin/lakehouse/rest/spark/client/ManagementApiClient.java")
+# 三个源码位置都在 -spark 的共享目录里（两个 Spark 版本模块编译同一份源码），
+# 客户端在 -common 模块。路径改过一次（从单模块拆成 common + 两个版本模块），
+# 这里写死新路径：脚本是离线校验，读不到文件时会直接报错，不会静默放过。
+SPARK = os.path.join(ROOT, "lakehouse-rest-spark")
+GRAMMAR = os.path.join(SPARK, "shared/src/main/antlr4/io/github/melin/lakehouse/rest/spark/parser/ManagementSql.g4")
+COMMANDS = os.path.join(SPARK, "shared/src/main/scala/io/github/melin/lakehouse/rest/spark/ManagementCommands.scala")
+EXTENSIONS = os.path.join(SPARK, "shared/src/main/scala/io/github/melin/lakehouse/rest/spark/ManagementSparkExtensions.scala")
+CLIENT = os.path.join(SPARK, "lakehouse-rest-spark-common/src/main/java/io/github/melin/lakehouse/rest/spark/client/ManagementApiClient.java")
 # 参考文档里的资源定位器与 access 词表来自服务端的官方权限模型，实现就是这份 DTO
 # 拆模块后 PermissionDtos 落在 core（它与格式无关，两套协议面都要用权限词表）。
 PERMISSIONS = os.path.join(

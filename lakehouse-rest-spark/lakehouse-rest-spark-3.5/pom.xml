@@ -1,0 +1,280 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+	<modelVersion>4.0.0</modelVersion>
+
+	<parent>
+		<groupId>io.github.melin</groupId>
+		<artifactId>lakehouse-rest-spark-parent</artifactId>
+		<version>0.0.1-SNAPSHOT</version>
+	</parent>
+
+	<artifactId>lakehouse-rest-spark-3.5</artifactId>
+	<packaging>jar</packaging>
+	<name>lakehouse-rest-spark-3.5</name>
+	<description>Spark 3.5 / Scala 2.12 的 Spark SQL 管理语法扩展</description>
+
+	<!--
+		为什么需要自带的语法：Spark 3.5 的 SqlBase.g4 是封闭的。
+		它没有类似 `.*? #unsupported` 的兜底分支（statement 的最后一条可选
+		分支是 unsupportedHiveNativeCommands），因此形如 `CREATE PRINCIPAL x`
+		的语句在词法/语法阶段就会失败，无法靠 visitor 拦下来。
+		扩展点 ParserInterface 也不提供「往已有语法里加规则」的能力。
+
+		因此扩展自带一份仅描述管理语句的小语法（shared/src/main/antlr4 下的
+		ManagementSql.g4），在 ParserInterface.parsePlan 里优先用自己的解析器识别
+		管理语句，识别失败则原样交回 Spark 原生解析器，从而在不动 Spark 语法的前提下
+		扩展可执行的 SQL 集合。
+
+		本模块几乎所有代码都在 ../shared/ 下（两个版本共用），这里只有：
+		  - 版本属性（Spark / Scala / ANTLR / 引擎 bundle 的构件名）
+		  - src/main/scala 下一个 LakehouseRestSqlParser：补 3.5 侧没有的版本差异
+		  - src/test/scala 下一个测试委托桩的版本实现
+	-->
+
+	<dependencies>
+		<!-- Spark 与 Scala 由集群提供，编译期需要、运行期不打进包 -->
+		<dependency>
+			<groupId>org.scala-lang</groupId>
+			<artifactId>scala-library</artifactId>
+			<scope>provided</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.apache.spark</groupId>
+			<artifactId>spark-sql_${scala.binary.version}</artifactId>
+			<scope>provided</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.apache.spark</groupId>
+			<artifactId>spark-catalyst_${scala.binary.version}</artifactId>
+			<scope>provided</scope>
+		</dependency>
+
+		<!--
+			ANTLR 运行时由 Spark 提供（Spark 3.5.9 自带 antlr4-runtime 4.9.3）。
+			这里声明只为编译期可用；版本由父 POM 统一钉住并与 Spark 对齐——
+			写高了受损的不是本扩展，而是整个会话的 SQL 解析（详见父 POM 的说明）。
+		-->
+		<dependency>
+			<groupId>org.antlr</groupId>
+			<artifactId>antlr4-runtime</artifactId>
+			<scope>provided</scope>
+		</dependency>
+
+		<!--
+			共享的 REST 客户端。compile 作用域：运行期要靠它发请求。
+			部署时这一个 jar 与版本 jar 一起放进 classpath（见 docs/spark-sql-extension.md）。
+		-->
+		<dependency>
+			<groupId>io.github.melin</groupId>
+			<artifactId>lakehouse-rest-spark-common</artifactId>
+		</dependency>
+
+		<dependency>
+			<groupId>org.junit.jupiter</groupId>
+			<artifactId>junit-jupiter</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.junit.platform</groupId>
+			<artifactId>junit-platform-launcher</artifactId>
+			<scope>test</scope>
+		</dependency>
+
+		<!--
+			Paimon 的 Spark bundle：**只用于测试**。
+
+			为什么必须引入：扩展自己不碰 Paimon，但 `CREATE TABLE ... USING paimon`
+			这类语句要由 Paimon 的 catalog 实现来执行。要验证「Spark SQL 能通过我们的
+			REST 契约建出 Paimon 表」，就必须有真实的 Paimon 目录在类路径上——
+			用桩替代等于把被测对象换掉，验证不到契约。
+
+			bundle 自带 paimon-core、文件系统实现，并把 Jackson/Guava/netty 等
+			依赖 shade 到 `org.apache.paimon.shade.*`，因此不会与本模块的
+			Jackson 2.15.2、Spark 自带的 ANTLR 4.9.3 冲突。
+
+			运行期不打进产物：scope 是 test，发布 jar 里没有它。
+		-->
+		<dependency>
+			<groupId>org.apache.paimon</groupId>
+			<artifactId>${paimon.spark.artifact}</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<!--
+			S3 的 FileIO 实现（Paimon 的 `paimon-s3` 插件）。
+
+			上面那个 bundle 只有本地文件系统与 Hadoop 回退，catalog 的 warehouse 落在
+			`s3://` 上时，客户端会以
+			`UnsupportedSchemeException: Could not find a file io implementation for
+			scheme 's3' in the classpath` 失败——这是**引擎侧**的依赖，与我们的服务端无关：
+			生产上这份 jar 要放进 `spark/jars`，测试期则靠这里声明。
+
+			同样是 test scope：发布产物里没有它，本模块运行时也不需要它。
+			体积很大（约 96 MB，内含 shade 过的 hadoop-aws），原因见父 POM 的说明。
+		-->
+		<dependency>
+			<groupId>org.apache.paimon</groupId>
+			<artifactId>paimon-s3</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<!--
+			Iceberg 的 Spark bundle：**只用于测试**。
+
+			与上面 Paimon 那条同一个理由——`CREATE TABLE ... USING iceberg` 由 Iceberg
+			自己的 Spark catalog（`org.apache.iceberg.spark.SparkCatalog` + `type=rest`）
+			执行，它按 Iceberg REST 规格发请求。用桩替换服务端就只能证明「我们与自己的
+			假设自洽」，证明不了「Iceberg 客户端真的接受我们的响应」。
+
+			**它必须与我们服务端用的 iceberg-core 同版本**（根 POM 的 iceberg.version）：
+			客户端生成元数据、服务端校验并落库，两边对 metadata.json 的代数理解不一致时，
+			症状是客户端解析响应失败，而不是服务端报错。
+
+			bundle 是 shaded 的（parquet / orc / avro / jackson 都在
+			`org.apache.iceberg.shaded.*` 下），不会顶掉 Spark 自带的同名依赖；
+			它同时包含 `IcebergSparkSessionExtensions`（`ALTER TABLE ... CREATE BRANCH`
+			这类 Iceberg 专有 DDL 由它提供）。
+
+			运行期不打进产物：scope 是 test，发布 jar 里没有它。
+		-->
+		<dependency>
+			<groupId>org.apache.iceberg</groupId>
+			<artifactId>${iceberg.spark.artifact}</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<!--
+			Paimon 的 Spark 扩展初始化时会引用 spark-hive 中的 HiveUDFExpressionBuilder。
+			提交到集群时 spark-hive 由发行版提供，直接跑 JUnit 时没有，因此测试期引入。
+		-->
+		<dependency>
+			<groupId>org.apache.spark</groupId>
+			<artifactId>spark-hive_${scala.binary.version}</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<!--
+			本地跑 SparkSession 时的日志实现。Spark 自带 log4j2，
+			本模块只用来在测试里压低 Spark 的启动日志噪声。
+
+			紧随其后的 slf4j-simple 是 2.x，走的是 slf4j 2 的 SPI
+			（`org.slf4j.spi.SLF4JServiceProvider`）。但传递依赖里还有一份
+			slf4j-api 1.7.32（由 paimon-spark 带来）——1.7 只认
+			`org.slf4j.impl.StaticLoggerBinder`，与 2.x 的实现互不匹配，
+			结果是**一个绑定都装不上**，全局退化成 NOP：
+			测试期 Spark 的一切日志（包括任务失败的真实异常）都被丢弃。
+
+			这里显式钉住 2.0.18，且用 provided 而不是 test：
+			provided 同时进主编译类路径与测试运行时——用 test 会让
+			slf4j-api 从主编译类路径上消失（`ManagementCommands` 引用了
+			`org.slf4j.Logger`，会直接编译失败），用默认作用域又会把它打进产物。
+			直接声明的依赖在版本仲裁里优先于传递依赖，所以这一条就能把 1.7.32 顶掉。
+			不要删——删掉不会报错，只会让测试再次「什么都看不到」。
+		-->
+		<dependency>
+			<groupId>org.slf4j</groupId>
+			<artifactId>slf4j-api</artifactId>
+			<version>2.0.18</version>
+			<scope>provided</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.slf4j</groupId>
+			<artifactId>slf4j-simple</artifactId>
+			<version>2.0.18</version>
+			<scope>test</scope>
+		</dependency>
+	</dependencies>
+
+	<build>
+		<plugins>
+			<!-- 1) 从共享语法生成词法/语法分析器（包名由目录层级推出，见父 POM）。 -->
+			<plugin>
+				<groupId>org.antlr</groupId>
+				<artifactId>antlr4-maven-plugin</artifactId>
+				<executions>
+					<execution>
+						<id>antlr</id>
+						<phase>generate-sources</phase>
+						<goals>
+							<goal>antlr4</goal>
+						</goals>
+					</execution>
+				</executions>
+				<configuration>
+					<sourceDirectory>${project.basedir}/../shared/src/main/antlr4</sourceDirectory>
+					<visitor>true</visitor>
+					<listener>false</listener>
+				</configuration>
+			</plugin>
+
+			<!--
+				2) 把 shared/ 挂进源码根。挂的是**相对本模块 basedir** 的路径，
+				不用继承来的属性：这里只差一层目录，写死比多一层间接更容易核对。
+			-->
+			<plugin>
+				<groupId>org.codehaus.mojo</groupId>
+				<artifactId>build-helper-maven-plugin</artifactId>
+				<executions>
+					<execution>
+						<id>add-shared-sources</id>
+						<phase>generate-sources</phase>
+						<goals>
+							<goal>add-source</goal>
+						</goals>
+						<configuration>
+							<sources>
+								<source>${project.basedir}/../shared/src/main/scala</source>
+							</sources>
+						</configuration>
+					</execution>
+					<execution>
+						<id>add-shared-test-sources</id>
+						<phase>generate-test-sources</phase>
+						<goals>
+							<goal>add-test-source</goal>
+						</goals>
+						<configuration>
+							<sources>
+								<source>${project.basedir}/../shared/src/test/scala</source>
+							</sources>
+						</configuration>
+					</execution>
+					<execution>
+						<id>add-shared-test-resources</id>
+						<phase>generate-test-resources</phase>
+						<goals>
+							<goal>add-test-resource</goal>
+						</goals>
+						<configuration>
+							<resources>
+								<resource>
+									<directory>${project.basedir}/../shared/src/test/resources</directory>
+								</resource>
+							</resources>
+						</configuration>
+					</execution>
+				</executions>
+			</plugin>
+
+			<!-- 3) 编译 Scala：主源码与测试源码各一次。 -->
+			<plugin>
+				<groupId>net.alchim31.maven</groupId>
+				<artifactId>scala-maven-plugin</artifactId>
+				<executions>
+					<execution>
+						<id>scala-compile</id>
+						<phase>compile</phase>
+						<goals>
+							<goal>compile</goal>
+						</goals>
+					</execution>
+					<execution>
+						<id>scala-test-compile</id>
+						<phase>test-compile</phase>
+						<goals>
+							<goal>testCompile</goal>
+						</goals>
+					</execution>
+				</executions>
+			</plugin>
+		</plugins>
+	</build>
+
+</project>

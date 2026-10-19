@@ -16,7 +16,19 @@ SHOW PERMISSIONS IN CATALOG paimon FOR USER svc_etl;
 
 ## 1. 启用
 
-前置：`lakehouse-rest-spark` 的 jar 在 Spark 的 classpath 上，管理服务可达。
+前置：**对应版本**的扩展 jar 与共享客户端 jar 都在 Spark 的 classpath 上，管理服务可达。
+
+扩展按 Spark 版本分两个产物，装错版本的症状是会话初始化失败（Scala 二进制不兼容）
+或 SQL 解析器类初始化报 `Could not deserialize ATN`：
+
+| 集群 | 扩展 jar | 配套 jar |
+| --- | --- | --- |
+| Spark 3.5.x / Scala 2.12 | `lakehouse-rest-spark-3.5` | `lakehouse-rest-spark-common` |
+| Spark 4.1.x / Scala 2.13 | `lakehouse-rest-spark-4.1` | `lakehouse-rest-spark-common` |
+
+两个 jar 都要带：`-common` 是 REST 客户端（纯 Java，两版共用一份），版本 jar 里只有
+语法扩展本身。它们各自的依赖都是 `provided`（Spark / Scala / ANTLR 由集群提供），
+因此不需要再拷别的东西。
 
 ```bash
 spark-sql \
@@ -172,7 +184,7 @@ Spark 3.5 的 `SqlBase.g4` 是**封闭**的：它的 `statement` 规则没有类
 官方扩展点 `ParserInterface` 也不提供「往已有语法里加规则」的能力。
 
 因此本模块自带一份只描述管理语句的小语法
-（`lakehouse-rest-spark/src/main/antlr4/io/github/melin/lakehouse/rest/spark/parser/ManagementSql.g4`），
+（`lakehouse-rest-spark/shared/src/main/antlr4/io/github/melin/lakehouse/rest/spark/parser/ManagementSql.g4`），
 在 `ParserInterface.parsePlan` 里**先试自己的解析器**：
 
 - 解析成功 → 执行管理操作；

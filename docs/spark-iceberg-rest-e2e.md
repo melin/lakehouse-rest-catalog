@@ -433,7 +433,7 @@ curl -s "http://localhost:8080/v1/config?warehouse=iceberg_demo" | jq -r '.endpo
 只跑本文这一层（先起一个服务端，见 `spark-paimon-rest-e2e.md` §6 的启动命令）：
 
 ```bash
-mvn -o -pl :lakehouse-rest-spark test -Dtest=IcebergTableDdlTests \
+mvn -o -pl :lakehouse-rest-spark-3.5 test -Dtest=IcebergTableDdlTests \
   -De2e.management.url=http://127.0.0.1:18080/api/management/v1 \
   -De2e.management.token=root
 ```

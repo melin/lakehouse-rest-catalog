@@ -10,274 +10,216 @@
 		<relativePath>../pom.xml</relativePath>
 	</parent>
 
-	<artifactId>lakehouse-rest-spark</artifactId>
-	<packaging>jar</packaging>
-	<name>lakehouse-rest-spark</name>
-	<description>Spark SQL 语法扩展：用 SQL 管理 LakeHouse Catalog 的主体、角色与授权</description>
+	<artifactId>lakehouse-rest-spark-parent</artifactId>
+	<packaging>pom</packaging>
+	<name>lakehouse-rest-spark-parent</name>
+	<description>Spark SQL 管理语法扩展：一份共享源码，按 Spark 3.5 / 4.1 各出一个发行模块</description>
 
 	<!--
-		为什么需要自带的语法：Spark 3.5 的 SqlBase.g4 是封闭的。
-		它没有类似 `.*? #unsupported` 的兜底分支（statement 的最后一条可选
-		分支是 unsupportedHiveNativeCommands），因此形如 `CREATE PRINCIPAL x`
-		的语句在词法/语法阶段就会失败，无法靠 visitor 拦下来。
-		扩展点 ParserInterface 也不提供「往已有语法里加规则」的能力。
+		为什么要按 Spark 版本拆成两个模块。
 
-		因此本模块自带一份仅描述管理语句的小语法（ManagementSql.g4），
-		在 ParserInterface.parsePlan 里优先用自己的解析器识别管理语句，
-		识别失败则原样交回 Spark 原生解析器，从而在不动 Spark 语法的前提下
-		扩展可执行的 SQL 集合。
+		同一条管理语句的扩展代码，在 3.5 与 4.1 上没法用同一份 class：
+		  - Scala 二进制版本不同（3.5 → 2.12，4.1 → 2.13），跨版本字节码不兼容；
+		  - ANTLR 运行时不同（3.5 → 4.9.3，4.1 → 4.13.1），而 ATN 的序列化版本是
+		    由**生成代码的版本**写死的：用 4.9.3 生成的词法分析器在 4.13.1 运行时上
+		    会以「Could not deserialize ATN with version 3 (expected 4)」失败；
+		  - ParserInterface 的抽象成员有增减（见 AbstractLakehouseRestSqlParser 的注释）。
+
+		因此「一份源码、两个产物」：源码只有一份（shared/ 与 -common/），
+		两个版本模块各自用**自己的** Scala / ANTLR / Spark 编译它。这样改一处语法或
+		一条命令，两个版本同时生效，不会出现「3.5 改了、4.1 忘了」的漂移。
+
+		三个子模块的职责：
+		  lakehouse-rest-spark-common   REST 客户端（纯 Java + java.net.http，零 Spark 依赖）
+		  lakehouse-rest-spark-3.5      Spark 3.5.9 / Scala 2.12.18 / ANTLR 4.9.3
+		  lakehouse-rest-spark-4.1      Spark 4.1.2 / Scala 2.13.17 / ANTLR 4.13.1
+
+		shared/ 不是 Maven 模块（没有 pom），它是两个版本模块共用的**源码目录**，
+		由各自的 build-helper 加进源码根：
+		  shared/src/main/antlr4   语法（唯一一份）
+		  shared/src/main/scala    Spark 层共享源码（唯一一份）
+		  shared/src/test/*        测试（唯一一份，两个版本各跑一遍）
+
+		刻意不把 Scala 源码放进 -common：那会让它必须选一个 Scala 版本，
+		而 2.12 编出来的 class 在 2.13 的会话里加载不了（NoSuchMethodError 之类的
+		症状离「模块拆错了」很远）。-common 只放与 Spark 完全无关的 Java 代码。
 	-->
 
-	<dependencies>
-		<!-- Spark 与 Scala 由集群提供，编译期需要、运行期不打进包 -->
-		<dependency>
-			<groupId>org.scala-lang</groupId>
-			<artifactId>scala-library</artifactId>
-			<scope>provided</scope>
-		</dependency>
-		<dependency>
-			<groupId>org.apache.spark</groupId>
-			<artifactId>spark-sql_${scala.binary.version}</artifactId>
-			<scope>provided</scope>
-		</dependency>
-		<dependency>
-			<groupId>org.apache.spark</groupId>
-			<artifactId>spark-catalyst_${scala.binary.version}</artifactId>
-			<scope>provided</scope>
-		</dependency>
+	<modules>
+		<module>lakehouse-rest-spark-common</module>
+		<module>lakehouse-rest-spark-3.5</module>
+		<module>lakehouse-rest-spark-4.1</module>
+	</modules>
+
+	<properties>
+		<!--
+			默认值 = Spark 3.5 那一套。3.5 模块直接用，4.1 模块整组覆盖：
+
+			  spark.version / scala.version / scala.binary.version / antlr.runtime.version
+			  paimon.spark.artifact / iceberg.spark.artifact
+
+			**这六个必须一起改**：Spark 版本、Scala 二进制版本、引擎 bundle 的构件名
+			本来就是绑定的，只改一半的症状是「编译过、运行期 NoClassDefFoundError」。
+		-->
+		<spark.version>3.5.9</spark.version>
+		<scala.version>2.12.18</scala.version>
+		<scala.binary.version>2.12</scala.binary.version>
+		<!--
+			ANTLR 必须**精确**等于目标 Spark 发行版里的 antlr4-runtime 版本。
+			Spark 3.5.9 的 spark-sql-api 依赖 antlr4-runtime 4.9.3，其自带的
+			SqlBaseLexer/SqlBaseParser 是用 4.9.3 生成的（ATN 序列化版本 3）。
+			如果这里写更高的版本（例如 4.13.x，其 ATN 序列化版本为 4），运行时会把
+			Spark 自己的 antlr4-runtime 顶掉，于是 Spark 连普通 SQL 都解析不了：
+
+			  InvalidClassException: org.antlr.v4.runtime.atn.ATN;
+			  Could not deserialize ATN with version 3 (expected 4)
+			    at org.apache.spark.sql.catalyst.parser.SqlBaseLexer.<clinit>
+
+			也就是说 ANTLR 版本写错，受损的不是本扩展，而是整个会话的 SQL 解析。
+			升级 spark.version 时必须同步核对这个值。
+		-->
+		<antlr.runtime.version>4.9.3</antlr.runtime.version>
 
 		<!--
-			ANTLR 运行时由 Spark 提供（Spark 3.5.9 自带 antlr4-runtime 4.9.3）。
-			这里声明只为编译期可用；版本由父 POM 统一钉住并与 Spark 对齐。
+			引擎 bundle 的构件名带「Spark 版本 + Scala 二进制版本」后缀，因此不能写死。
+			用属性承载完整构件名，两个版本模块各写一行覆盖，dependencyManagement 里
+			只引用属性——这样新增一个 Spark 版本时只需要多一个模块、多一组属性值。
 		-->
-		<dependency>
-			<groupId>org.antlr</groupId>
-			<artifactId>antlr4-runtime</artifactId>
-			<scope>provided</scope>
-		</dependency>
+		<paimon.spark.artifact>paimon-spark-3.5_2.12</paimon.spark.artifact>
+		<iceberg.spark.artifact>iceberg-spark-runtime-3.5_2.12</iceberg.spark.artifact>
+	</properties>
 
-		<!--
-			JSON 编解码用 Spark 自带的 Jackson 2（同名同版本由 Spark 提供）。
-			REST 客户端刻意只用 java.net.http，不引入额外的 HTTP 库。
-		-->
-		<dependency>
-			<groupId>com.fasterxml.jackson.core</groupId>
-			<artifactId>jackson-databind</artifactId>
-			<scope>provided</scope>
-		</dependency>
+	<dependencyManagement>
+		<dependencies>
+			<!--
+				版本模块依赖共享客户端；版本跟随本 POM，因此各模块不必重复写。
+			-->
+			<dependency>
+				<groupId>io.github.melin</groupId>
+				<artifactId>lakehouse-rest-spark-common</artifactId>
+				<version>${project.version}</version>
+			</dependency>
 
-		<dependency>
-			<groupId>org.junit.jupiter</groupId>
-			<artifactId>junit-jupiter</artifactId>
-			<scope>test</scope>
-		</dependency>
-		<dependency>
-			<groupId>org.junit.platform</groupId>
-			<artifactId>junit-platform-launcher</artifactId>
-			<scope>test</scope>
-		</dependency>
+			<!--
+				测试期的引擎 bundle。构件名由上面两个属性给出，模块里只写 groupId/artifactId
+				之外的 scope——版本仍由根 POM 的 paimon.version / iceberg.version 管，
+				那两个值必须与服务端世界保持一致（见根 POM 的注释）。
 
-		<!--
-			Paimon 的 Spark bundle：**只用于测试**。
-
-			为什么必须引入：本模块自己不碰 Paimon，但 `CREATE TABLE ... USING paimon`
-			这类语句要由 Paimon 的 catalog 实现来执行。要验证「Spark SQL 能通过我们的
-			REST 契约建出 Paimon 表」，就必须有真实的 Paimon 目录在类路径上——
-			用桩替代等于把被测对象换掉，验证不到契约。
-
-			bundle 自带 paimon-core、文件系统实现，并把 Jackson/Guava/netty 等
-			依赖 shade 到 `org.apache.paimon.shade.*`，因此不会与本模块的
-			Jackson 2.15.2、Spark 自带的 ANTLR 4.9.3 冲突。
-
-			运行期不打进产物：scope 是 test，发布 jar 里没有它。
-		-->
-		<dependency>
-			<groupId>org.apache.paimon</groupId>
-			<artifactId>paimon-spark-3.5_${scala.binary.version}</artifactId>
-			<scope>test</scope>
-		</dependency>
-		<!--
-			S3 的 FileIO 实现（Paimon 的 `paimon-s3` 插件）。
-
-			上面那个 bundle 只有本地文件系统与 Hadoop 回退，catalog 的 warehouse 落在
-			`s3://` 上时，客户端会以
-			`UnsupportedSchemeException: Could not find a file io implementation for
-			scheme 's3' in the classpath` 失败——这是**引擎侧**的依赖，与我们的服务端无关：
-			生产上这份 jar 要放进 `spark/jars`，测试期则靠这里声明。
-
-			同样是 test scope：发布产物里没有它，本模块运行时也不需要它。
-			体积很大（约 96 MB，内含 shade 过的 hadoop-aws），原因见父 POM 的说明。
-		-->
-		<dependency>
-			<groupId>org.apache.paimon</groupId>
-			<artifactId>paimon-s3</artifactId>
-			<scope>test</scope>
-		</dependency>
-		<!--
-			Iceberg 的 Spark bundle：**只用于测试**。
-
-			与上面 Paimon 那条同一个理由——`CREATE TABLE ... USING iceberg` 由 Iceberg
-			自己的 Spark catalog（`org.apache.iceberg.spark.SparkCatalog` + `type=rest`）
-			执行，它按 Iceberg REST 规格发请求。用桩替换服务端就只能证明「我们与自己的
-			假设自洽」，证明不了「Iceberg 客户端真的接受我们的响应」。
-
-			**它必须与我们服务端用的 iceberg-core 同版本**（根 POM 的 iceberg.version）：
-			客户端生成元数据、服务端校验并落库，两边对 metadata.json 的代数理解不一致时，
-			症状是客户端解析响应失败，而不是服务端报错。
-
-			bundle 是 shaded 的（parquet / orc / avro / jackson 都在
-			`org.apache.iceberg.shaded.*` 下），不会顶掉 Spark 自带的同名依赖；
-			它同时包含 `IcebergSparkSessionExtensions`（`ALTER TABLE ... CREATE BRANCH`
-			这类 Iceberg 专有 DDL 由它提供）。
-
-			运行期不打进产物：scope 是 test，发布 jar 里没有它。
-		-->
-		<dependency>
-			<groupId>org.apache.iceberg</groupId>
-			<artifactId>iceberg-spark-runtime-3.5_${scala.binary.version}</artifactId>
-			<scope>test</scope>
-		</dependency>
-		<!--
-			Paimon 的 Spark 扩展初始化时会引用 spark-hive 中的 HiveUDFExpressionBuilder。
-			提交到集群时 spark-hive 由发行版提供，直接跑 JUnit 时没有，因此测试期引入。
-		-->
-		<dependency>
-			<groupId>org.apache.spark</groupId>
-			<artifactId>spark-hive_${scala.binary.version}</artifactId>
-			<scope>test</scope>
-		</dependency>
-		<!--
-			本地跑 SparkSession 时的日志实现。Spark 自带 log4j2，
-			本模块只用来在测试里压低 Spark 的启动日志噪声。
-
-			紧随其后的 slf4j-simple 是 2.x，走的是 slf4j 2 的 SPI
-			（`org.slf4j.spi.SLF4JServiceProvider`）。但传递依赖里还有一份
-			slf4j-api 1.7.32（由 paimon-spark 带来）——1.7 只认
-			`org.slf4j.impl.StaticLoggerBinder`，与 2.x 的实现互不匹配，
-			结果是**一个绑定都装不上**，全局退化成 NOP：
-			测试期 Spark 的一切日志（包括任务失败的真实异常）都被丢弃。
-
-			这里显式钉住 2.0.18，且用 provided 而不是 test：
-			provided 同时进主编译类路径与测试运行时——用 test 会让
-			slf4j-api 从主编译类路径上消失（`ManagementCommands` 引用了
-			`org.slf4j.Logger`，会直接编译失败），用默认作用域又会把它打进产物。
-			直接声明的依赖在版本仲裁里优先于传递依赖，所以这一条就能把 1.7.32 顶掉。
-			不要删——删掉不会报错，只会让测试再次「什么都看不到」。
-		-->
-		<dependency>
-			<groupId>org.slf4j</groupId>
-			<artifactId>slf4j-api</artifactId>
-			<version>2.0.18</version>
-			<scope>provided</scope>
-		</dependency>
-		<dependency>
-			<groupId>org.slf4j</groupId>
-			<artifactId>slf4j-simple</artifactId>
-			<version>2.0.18</version>
-			<scope>test</scope>
-		</dependency>
-	</dependencies>
+				为什么测试必须引真实 bundle：`CREATE TABLE ... USING paimon` 由 Paimon 的
+				catalog 实现执行，`... USING iceberg` 由 Iceberg 的 Spark catalog 执行。
+				用桩替换服务端只能证明「我们与自己的假设自洽」，证明不了「它们的客户端
+				真的接受我们的响应」。
+			-->
+			<dependency>
+				<groupId>org.apache.paimon</groupId>
+				<artifactId>${paimon.spark.artifact}</artifactId>
+				<version>${paimon.version}</version>
+			</dependency>
+			<dependency>
+				<groupId>org.apache.iceberg</groupId>
+				<artifactId>${iceberg.spark.artifact}</artifactId>
+				<version>${iceberg.version}</version>
+			</dependency>
+		</dependencies>
+	</dependencyManagement>
 
 	<build>
-		<plugins>
-			<!--
-				1) 从 ManagementSql.g4 生成词法/语法分析器。
+		<pluginManagement>
+			<plugins>
+				<!--
+					从 shared/src/main/antlr4 生成词法/语法分析器。
 
-				版本必须与父 POM 的 antlr.runtime.version 一致，也必须与目标 Spark
-				发行版自带的 antlr4-runtime 一致（详见父 POM 的说明）。代码生成版本
-				偏高时，生成的 ATN 序列化版本会高于运行时期望值，结果是**Spark 自己**
-				的 SQL 解析器在类初始化阶段就失败。
-			-->
-			<plugin>
-				<groupId>org.antlr</groupId>
-				<artifactId>antlr4-maven-plugin</artifactId>
-				<version>${antlr.runtime.version}</version>
-				<executions>
-					<execution>
-						<id>antlr</id>
-						<phase>generate-sources</phase>
-						<goals>
-							<goal>antlr4</goal>
-						</goals>
-					</execution>
-				</executions>
-				<configuration>
-					<visitor>true</visitor>
-					<listener>false</listener>
-				</configuration>
-			</plugin>
+					生成物落在 target/generated-sources/antlr4 下，包名由**相对于
+					sourceDirectory 的目录层级**推出，因此共享目录必须保持
+					`io/github/melin/lakehouse/rest/spark/parser/ManagementSql.g4` 这个形状。
 
-			<!--
-				2) 先 javac 编译 src/main/java 与 ANTLR 生成代码，
-				   再由 scala-maven-plugin 编译 src/main/scala。
-				sendJavaToScalac=false 明确「Java 先于 Scala」，
-				避免 scalac 重复编译 Java 源导致两套 class 相互覆盖。
-			-->
-			<plugin>
-				<groupId>net.alchim31.maven</groupId>
-				<artifactId>scala-maven-plugin</artifactId>
-				<version>4.9.10</version>
-				<executions>
-					<execution>
-						<id>scala-compile</id>
-						<phase>compile</phase>
-						<goals>
-							<goal>compile</goal>
-						</goals>
-					</execution>
-					<execution>
-						<id>scala-test-compile</id>
-						<phase>test-compile</phase>
-						<goals>
-							<goal>testCompile</goal>
-						</goals>
-					</execution>
-				</executions>
-				<configuration>
-					<scalaVersion>${scala.version}</scalaVersion>
-					<sendJavaToScalac>false</sendJavaToScalac>
-					<args>
-						<arg>-deprecation</arg>
-						<arg>-feature</arg>
-					</args>
-				</configuration>
-			</plugin>
+					版本跟 antlr.runtime.version 绑定，且两个版本模块各生成一份：
+					生成代码与运行时必须是同一个 ANTLR 版本（见上面 ATN 序列化版本的说明）。
+				-->
+				<plugin>
+					<groupId>org.antlr</groupId>
+					<artifactId>antlr4-maven-plugin</artifactId>
+					<version>${antlr.runtime.version}</version>
+					<configuration>
+						<visitor>true</visitor>
+						<listener>false</listener>
+					</configuration>
+				</plugin>
 
-			<!--
-				3) 测试：Spark 3.5 在 Java 17 上需要开放若干 JDK 内部包，
-				   这些参数通常由 spark-submit 注入，直接跑 JUnit 时要自己声明。
+				<!--
+					先 javac 编译 src/main/java 与 ANTLR 生成代码，再由 scala-maven-plugin
+					编译 src/main/scala。sendJavaToScalac=false 明确「Java 先于 Scala」，
+					避免 scalac 重复编译 Java 源导致两套 class 相互覆盖。
+				-->
+				<plugin>
+					<groupId>net.alchim31.maven</groupId>
+					<artifactId>scala-maven-plugin</artifactId>
+					<version>4.9.10</version>
+					<configuration>
+						<scalaVersion>${scala.version}</scalaVersion>
+						<sendJavaToScalac>false</sendJavaToScalac>
+						<args>
+							<arg>-deprecation</arg>
+							<arg>-feature</arg>
+						</args>
+					</configuration>
+				</plugin>
 
-				   还有一道 JDK 上限：本模块的测试只能在 17 / 21 上跑，不能用 24 及以上。
-				   JDK 24 永久移除了 Security Manager（JEP 486），Hadoop 的
-				   UserGroupInformation.getCurrentUser() 会抛
-				   "getSubject is not supported"，且没有任何 JVM 参数可绕过
-				   （-Djava.security.manager=allow 会让 JVM 启动即失败）。
-				   这个上限无法在这里用配置表达，因此由测试侧的 SparkJdkRequirement
-				   在建会话前拦下并说明。
-			-->
-			<plugin>
-				<groupId>org.apache.maven.plugins</groupId>
-				<artifactId>maven-surefire-plugin</artifactId>
-				<configuration>
-					<argLine>
-						-Djava.awt.headless=true
-						--add-opens=java.base/java.lang=ALL-UNNAMED
-						--add-opens=java.base/java.lang.invoke=ALL-UNNAMED
-						--add-opens=java.base/java.lang.reflect=ALL-UNNAMED
-						--add-opens=java.base/java.io=ALL-UNNAMED
-						--add-opens=java.base/java.net=ALL-UNNAMED
-						--add-opens=java.base/java.nio=ALL-UNNAMED
-						--add-opens=java.base/java.util=ALL-UNNAMED
-						--add-opens=java.base/java.util.concurrent=ALL-UNNAMED
-						--add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED
-						--add-opens=java.base/sun.nio.ch=ALL-UNNAMED
-						--add-opens=java.base/sun.nio.cs=ALL-UNNAMED
-						--add-opens=java.base/sun.security.action=ALL-UNNAMED
-						--add-opens=java.base/sun.util.calendar=ALL-UNNAMED
-					</argLine>
-				</configuration>
-			</plugin>
-		</plugins>
+				<!--
+					把 shared/ 的源码目录挂进编译：这两个模块自己几乎没有 .scala 文件，
+					内容都在共享目录里。挂载点写在各自模块的 POM 里（路径要相对该模块
+					的 basedir，写成继承属性反而更难读）。
+				-->
+				<plugin>
+					<groupId>org.codehaus.mojo</groupId>
+					<artifactId>build-helper-maven-plugin</artifactId>
+					<version>3.6.2</version>
+				</plugin>
+
+				<!--
+					Spark 在 Java 17 上需要开放若干 JDK 内部包，这些参数通常由
+					spark-submit 注入，直接跑 JUnit 时要自己声明。
+
+					还有一道 JDK 上限：测试只能在 17 / 21 上跑，不能用 24 及以上。
+					JDK 24 永久移除了 Security Manager（JEP 486），Hadoop 的
+					UserGroupInformation.getCurrentUser() 会抛
+					"getSubject is not supported"，且没有任何 JVM 参数可绕过
+					（-Djava.security.manager=allow 会让 JVM 启动即失败）。
+					这个上限无法用配置表达，由测试侧的 SparkJdkRequirement 拦下并说明。
+				-->
+				<plugin>
+					<groupId>org.apache.maven.plugins</groupId>
+					<artifactId>maven-surefire-plugin</artifactId>
+					<version>3.5.6</version>
+					<configuration>
+						<!--
+							把本模块的编译目标版本交给测试：共享测试里有一条断言「会话的 Spark 版本
+							必须等于本产物编译时对齐的版本」，两个版本模块跑的是同一份源码，写死
+							3.5 会在 4.1 上必然失败。期望值只在这里出现一次（来自属性）。
+						-->
+						<systemPropertyVariables>
+							<expected.spark.version>${spark.version}</expected.spark.version>
+						</systemPropertyVariables>
+						<argLine>
+							-Djava.awt.headless=true
+							--add-opens=java.base/java.lang=ALL-UNNAMED
+							--add-opens=java.base/java.lang.invoke=ALL-UNNAMED
+							--add-opens=java.base/java.lang.reflect=ALL-UNNAMED
+							--add-opens=java.base/java.io=ALL-UNNAMED
+							--add-opens=java.base/java.net=ALL-UNNAMED
+							--add-opens=java.base/java.nio=ALL-UNNAMED
+							--add-opens=java.base/java.util=ALL-UNNAMED
+							--add-opens=java.base/java.util.concurrent=ALL-UNNAMED
+							--add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED
+							--add-opens=java.base/sun.nio.ch=ALL-UNNAMED
+							--add-opens=java.base/sun.nio.cs=ALL-UNNAMED
+							--add-opens=java.base/sun.security.action=ALL-UNNAMED
+							--add-opens=java.base/sun.util.calendar=ALL-UNNAMED
+						</argLine>
+					</configuration>
+				</plugin>
+			</plugins>
+		</pluginManagement>
 	</build>
 
 </project>

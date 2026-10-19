@@ -21,11 +21,14 @@
 		    （后续迭代再加 lakehouse-rest-protocol-iceberg）
 
 		  集群世界（Spark 由集群提供）—— 与上面共用本 POM 作父：
-		    lakehouse-rest-spark             基于 SparkSessionExtensions 的 SQL 语法扩展
+		    lakehouse-rest-spark-parent      Spark 侧的聚合：一份源码、按 3.5 / 4.1 出两个产物
+		      ├── lakehouse-rest-spark-common   REST 客户端（纯 Java，两版共用）
+		      ├── lakehouse-rest-spark-3.5      Spark 3.5 / Scala 2.12
+		      └── lakehouse-rest-spark-4.1      Spark 4.1 / Scala 2.13
 		    lakehouse-rest-optimizer         表存储优化任务：由服务端作为 k8s Job 提交
 
 		聚合与继承在这里刻意分开：
-		  - 本 POM 只是聚合器，同时是 lakehouse-rest-spark 与 lakehouse-rest-optimizer 的父 POM；
+		  - 本 POM 只是聚合器，同时是 lakehouse-rest-spark-parent 与 lakehouse-rest-optimizer 的父 POM；
 		  - 服务端四个模块的父 POM 是 lakehouse-rest-spring-parent（它继承
 		    spring-boot-starter-parent）。**那四个模块的目录就嵌在 spring-parent/ 里面**，
 		    所以那边只需要本 POM 当聚合器、不需要再指点父 POM 的位置；
@@ -37,8 +40,10 @@
 		轻则类路径与集群不一致，重则在提交任务时 NoSuchMethodError。
 		两个模块的依赖世界本来就不同，因此不共用父 POM，只共用聚合。
 
-		lakehouse-rest-optimizer 与 lakehouse-rest-spark 属同一个依赖世界（Spark 由集群提供、
-		Jackson 2 对齐发行版），因此与后者共用父 POM 是安全的。
+		lakehouse-rest-optimizer 与 lakehouse-rest-spark-* 属同一个依赖世界（Spark 由集群提供、
+		Jackson 对齐发行版），因此共用父 POM 是安全的。注意 Jackson 的钉版是 2.15.2
+		（Spark 3.5 的版本），4.1 模块在自己的 POM 里覆盖了它——见
+		docs/maven-module-design.md §13.1。
 
 		模块清单与依赖方向见 docs/maven-module-design.md；三条不变量
 		（core 无格式依赖 · 两个协议面互不依赖 · iceberg-core 只在本格式面）

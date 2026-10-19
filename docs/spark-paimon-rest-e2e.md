@@ -500,7 +500,7 @@ java -jar lakehouse-rest-spring-parent/lakehouse-rest-server/target/lakehouse-re
   --lakehouse.rest.authorization.bootstrap-principal=root
 
 # 对着它跑建表与写入用例
-mvn -o -pl :lakehouse-rest-spark test -Dtest=PaimonTableDdlTests \
+mvn -o -pl :lakehouse-rest-spark-3.5 test -Dtest=PaimonTableDdlTests \
   -De2e.management.url=http://127.0.0.1:18080/api/management/v1 \
   -De2e.management.token=root
 ```
@@ -536,7 +536,7 @@ java -jar lakehouse-rest-spring-parent/lakehouse-rest-server/target/lakehouse-re
   --lakehouse.rest.authorization.service-admins[0]=root \
   --lakehouse.rest.authorization.bootstrap-principal=root
 
-mvn -o -pl :lakehouse-rest-spark test -Dtest=SparkSqlAuthorizationTests -DfailIfNoTests=false \
+mvn -o -pl :lakehouse-rest-spark-3.5 test -Dtest=SparkSqlAuthorizationTests -DfailIfNoTests=false \
   -De2e.management.url=http://127.0.0.1:18080/api/management/v1 \
   -De2e.management.token=root
 ```

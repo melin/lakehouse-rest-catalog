@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+	<modelVersion>4.0.0</modelVersion>
+
+	<parent>
+		<groupId>io.github.melin</groupId>
+		<artifactId>lakehouse-rest-spark-parent</artifactId>
+		<version>0.0.1-SNAPSHOT</version>
+	</parent>
+
+	<artifactId>lakehouse-rest-spark-common</artifactId>
+	<packaging>jar</packaging>
+	<name>lakehouse-rest-spark-common</name>
+	<description>管理 API 的 REST 客户端：纯 Java，两个 Spark 版本模块共用</description>
+
+	<!--
+		这个模块里**只有**与 Spark 无关的代码：管理 API 的 HTTP 客户端与异常类型。
+
+		为什么单独成模块：它是唯一能真正共用一份 class 的部分——不碰 Spark、
+		不碰 Scala、不碰 ANTLR，因此一份 jar 可以同时给 Scala 2.12（Spark 3.5）
+		与 2.13（Spark 4.1）用。
+
+		反过来，凡是 `import org.apache.spark.*` 或 `import scala.*` 的代码都**不能**
+		放这里：Scala 的二进制版本不同（2.12 / 2.13），同一份 class 在另一个版本上
+		加载即失败。那部分放在 ../shared/src/main/scala，由两个版本模块各自编译。
+
+		客户端刻意只用 java.net.http，不引入第三方 HTTP 库：Spark 的 classpath 上
+		已经有一份 Jackson（版本随发行版），HTTP 再引一个库只会多一处版本竞争。
+	-->
+
+	<dependencies>
+		<!--
+			JSON 编解码用 Spark 自带的 Jackson 2（同名同版本由 Spark 提供）。
+			provided：本模块编译期需要它，但不随产物分发——运行时由集群上的
+			Spark 提供，版本由那边决定，我们不去改写。
+		-->
+		<dependency>
+			<groupId>com.fasterxml.jackson.core</groupId>
+			<artifactId>jackson-databind</artifactId>
+			<scope>provided</scope>
+		</dependency>
+	</dependencies>
+
+</project>

@@ -21,8 +21,8 @@ Paimon 与 Iceberg」的协议方案。本文件解决它的前置问题：**代
 | 命名族 | **`lakehouse-rest-*`**，groupId 仍是 `io.github.melin` |
 | 骨架模块 | `lakehouse-rest-parent`（聚合）、`lakehouse-rest-spring-parent`（服务端世界的父）、`-core`、`-storage`、`-server` |
 | 协议面模块 | `lakehouse-rest-protocol-paimon`、`lakehouse-rest-protocol-iceberg` —— **格式名只允许出现在协议面模块的 artifactId 里**（§2.2） |
-| 集群侧模块 | `lakehouse-rest-spark`、`lakehouse-rest-optimizer`（职责不变，只改前缀） |
-| Maven 项目数 | 4（1 聚合 + 3 jar）→ **8**（阶段 0–3：2 个 pom + 6 个 jar）→ **9**（`-protocol-iceberg` 已落地，见 §12） |
+| 集群侧模块 | `lakehouse-rest-optimizer`；Spark 侧自 §13 起拆成 `lakehouse-rest-spark-parent` + `-common` + `-3.5` + `-4.1`（一份源码、两个版本产物） |
+| Maven 项目数 | 4（1 聚合 + 3 jar）→ **8**（阶段 0–3：2 个 pom + 6 个 jar）→ **9**（`-protocol-iceberg`，§12）→ **12**（Spark 侧拆版本，§13） |
 | Java 包名 | `io.github.melin.lakehouse.rest`。阶段 0–3 **不动它**（拆分不需要改包名，见 §4.3(2)）；阶段 4 按 §4.3(2) 预告的配方改成 `paimon.rest` 并给 Spark 扩展留了兼容壳（§9.2）；第二次改到当前名（§10） |
 | Spring 配置前缀 | **本已判定不改，后改为 `lakehouse.rest.*`**（一次性对齐，不是迁移：这份配置从未离开本仓库）。理由与实施见 §4.3(1) |
 | k8s 资源名 / 库名 / 表前缀 | **不改**。它们绑的是已部署的实例与已有数据，不是构建产物（§4.3(3)(4)） |
@@ -87,7 +87,11 @@ io.github.melin:lakehouse-rest-parent                     pom   聚合器 + 集�
 │   ├── lakehouse-rest-protocol-paimon                    jar   Paimon 协议面（60 端点）
 │   ├── lakehouse-rest-protocol-iceberg                   jar   Iceberg 协议面（35 端点里的一期 26 个）
 │   └── lakehouse-rest-server                             jar   可执行：装配 / 管理 API / 控制台宿主
-├── lakehouse-rest-spark                                  jar   Spark SQL 扩展
+├── lakehouse-rest-spark-parent                           pom   Spark 侧的聚合（复用根 POM 的依赖世界）
+│   ├── lakehouse-rest-spark-common                       jar   管理 API 的 REST 客户端（纯 Java）
+│   ├── lakehouse-rest-spark-3.5                          jar   Spark 3.5 / Scala 2.12 / ANTLR 4.9.3
+│   └── lakehouse-rest-spark-4.1                          jar   Spark 4.1 / Scala 2.13 / ANTLR 4.13.1
+│       （shared/ 不是模块：两个版本模块共用的源码目录，见 §13）
 └── lakehouse-rest-optimizer                              jar   k8s 优化任务
 ```
 
@@ -921,13 +925,119 @@ enforcer 抓出 `paimon-core` 的传递泄露；HTTP 用例抓出 server 漏写�
 
 ---
 
+## 13. 落地记录之六：Spark 侧按版本拆分（3.5 / 4.1）
+
+### 13.1 为什么必须拆
+
+目标很直接：同一套管理语法要能同时装在 Spark 3.5 与 4.1 的集群上。三处约束决定了
+「一个 jar 通吃」不可行，任何一处单独存在就已经足够：
+
+| 约束 | Spark 3.5.9 | Spark 4.1.2 | 后果 |
+| --- | --- | --- | --- |
+| Scala 二进制版本 | 2.12.18 | 2.13.17 | class 文件互不兼容；`scala.collection.Seq` 在两边是不同类型 |
+| ANTLR 运行时 | 4.9.3 | 4.13.1 | **生成代码的版本**决定 ATN 序列化版本（3 vs 4），跨版本反序列化直接抛异常 |
+| `ParserInterface` 抽象成员 | 7 个 | 8 个（多 `parseRoutineParam`） | 共享类里实现它 → 3.5 报「不是父类型的成员」；不实现 → 4.1 报「需要抽象类」 |
+
+另外还有一条只能靠实测发现的：**Jackson**。根 POM 的 dependencyManagement 把
+`jackson-databind` 钉在 2.15.2（Spark 3.5 的版本）。这个钉版对 4.1 是错的——
+Spark 4.1 用 2.21.2，其 `jackson-module-scala` 初始化时校验 databind 的主次版本，
+不匹配的表现是「会话能建、普通 SELECT 能过，但任何走 `ParseException` /
+`RDDOperationScope` 的路径都炸」。修法是在 4.1 模块里覆盖 `jackson2.version`，
+而不是去改根 POM（根 POM 还要服务 3.5）。
+
+### 13.2 结构与职责
+
+```
+lakehouse-rest-spark/
+├── pom.xml                                  lakehouse-rest-spark-parent（pom，聚合 + 共享构建配置）
+├── shared/                                  不是模块：两个版本模块共用的源码目录
+│   ├── src/main/antlr4/…/ManagementSql.g4   语法（唯一一份）
+│   ├── src/main/scala/…                     Spark 层共享源码（唯一一份）
+│   └── src/test/{scala,resources}           测试（唯一一份，两个版本各跑一遍）
+├── lakehouse-rest-spark-common/             jar   REST 客户端（纯 Java + java.net.http）
+├── lakehouse-rest-spark-3.5/                jar   Spark 3.5.9 / Scala 2.12.18 / ANTLR 4.9.3
+└── lakehouse-rest-spark-4.1/                jar   Spark 4.1.2 / Scala 2.13.17 / ANTLR 4.13.1
+```
+
+| 模块 | 放什么 | 为什么不能放到别处 |
+| --- | --- | --- |
+| `-common` | `ManagementApiClient`、`ManagementApiException` | 唯一能真正共用一份 class 的部分：不碰 Spark / Scala / ANTLR |
+| `-3.5` / `-4.1` | 版本属性、一个 `LakehouseRestSqlParser`、一个测试委托桩 | 其余全部来自 `shared/`；这两个类的差异就是 13.3 那两行 |
+| `shared/` | 语法 + Scala 层 + 测试 | Scala 代码没法进 `-common`：2.12 编出的 class 在 2.13 的会话里加载不了 |
+
+`shared/` 挂进编译靠 `build-helper-maven-plugin` 的三个 execution（main 源、test 源、
+test 资源），路径写 `${project.basedir}/../shared/...`——相对各自的模块目录，比继承一个
+属性更容易核对。语法则由 `antlr4-maven-plugin` 的 `<sourceDirectory>` 直接指过去，
+**每个模块各自生成一份**：生成代码必须与本模块的 ANTLR 运行时同版本（见 13.1 第二行）。
+
+### 13.3 版本差异只有两处
+
+| 文件 | 3.5 | 4.1 |
+| --- | --- | --- |
+| `LakehouseRestSqlParser.scala` | 只接出两个构造方式 | 多 `override def parseRoutineParam` |
+| `SparkParserDelegate.scala`（测试） | 空类体 | 多实现 `parseRoutineParam` |
+
+**做法是「共享抽象基类 + 版本具体子类」。** 共享侧叫 `AbstractLakehouseRestSqlParser`，
+实现两个版本**都有**的 7 个方法；具体子类在两个版本里同名（`LakehouseRestSqlParser`）且暴露
+同样的两个构造方式，所以共享代码和测试照常 `new LakehouseRestSqlParser(...)`，不需要工厂或反射。
+测试桩同理：`ParserDelegateStub`（抽象）在共享测试里，`SparkParserDelegate` 在各自模块里。
+
+这一点是这次拆分里唯一有设计取舍的地方：另一条路是把整个 `LakehouseRestSqlParser`
+复制成两份，代价是 100 行注释每次改动要写两遍，而它恰恰是最需要写清楚「为什么先试自己的
+语法」的地方。抽象基类的代价是多一层继承，但漂移风险降到零。
+
+### 13.4 构建与测试
+
+```bash
+# 两个版本各自全量（含共享测试）
+mvn -o -pl :lakehouse-rest-spark-3.5 -am test
+mvn -o -pl :lakehouse-rest-spark-4.1 -am test
+
+# 整个 Spark 侧（common + 两版）：-f 指向聚合 POM 才会带上它的 modules
+mvn -o -f lakehouse-rest-spark/pom.xml -DskipTests install
+```
+
+`-pl` 必须写**版本模块**的坐标；`-pl :lakehouse-rest-spark` 现在指向聚合 POM，
+只会构建那个 POM 本身——既不编代码也不跑测试（`-pl` 选中的是「这个项目」，
+不会顺着 `<modules>` 往下走；要连子模块一起构建就用上面的 `-f`）。
+`-am` 也不能省：`-common` 是编译期依赖，不带 `-am` 时 Maven 会去 `~/.m2` 取上一次装的
+`-common`（改了客户端却没重装时，症状是「改了没生效」）。
+
+脚本与文档里所有 `-pl :lakehouse-rest-spark` 已同步成 `-3.5`（`scripts/e2e-spark-sql.sh`
+与 `docs/spark-*-e2e.md`）；`scripts/verify-spark-sql-doc.py` 的三个源码路径也改到
+`shared/` 与 `-common/`，它读不到文件会直接报错，不会静默放过。
+
+### 13.5 实测
+
+| 模块 | 用例 | 结果 |
+| --- | --- | --- |
+| `-3.5` | 107 | 0 失败 / 37 跳过（需要 e2e 参数的实时服务端用例） |
+| `-4.1` | 107 | 0 失败 / 37 跳过（同上） |
+
+同一份测试源码在两版上各跑一遍，是这次拆分顺带得到的收益：**「语法改一处、两边都验」**，
+不需要靠人工记得在另一个版本上再跑一次。
+
+### 13.6 4.1 侧的已知边界
+
+1. **Paimon 还没有 Spark 4.1 的 bundle。** Paimon 2.0.0 只发布到 `paimon-spark-4.0_2.13`，
+   4.1 模块用它（同属 Spark 4 的 API 面）。因此 4.1 上真正建 Paimon 表的用例
+   （`PaimonTableDdlTests` 等 6 个类）需要 `-De2e.management.url` 起真服务端才跑，
+   本次只验证到「扩展加载 + 解析 + 对桩执行」这一层。Paimon 发布 4.1 bundle 后改
+   `-4.1/pom.xml` 的 `paimon.spark.artifact` 一行即可。
+2. **JDK 上限照旧**：两个版本都只能在 JDK 17 / 21 上跑测试（JDK 24 移除了 Security
+   Manager，Hadoop 的 `getSubject` 会失败），由 `SparkJdkRequirement` 在建会话前拦下。
+3. **`spark-hive` 仍是测试期依赖**：Paimon 的 Spark 扩展初始化时会引用
+   `HiveUDFExpressionBuilder`，集群上由发行版提供。
+
+---
+
 ## 附：一页速览
 
 ```
 改名（必做，小）：paimon-rest-* → lakehouse-rest-*   （坐标 / 目录 / 镜像名 / 脚本 / 文档）   ✅ 阶段 0
 命名分层       ：骨架中立 · 协议面带格式名 · k8s 名与表前缀不动
 模块           ：parent → spring-parent → { core · storage · protocol-paimon · protocol-iceberg · server }  ✅ 阶段 1–5
-                 parent → { spark · optimizer }                                              ✅ 阶段 1–3
+                 parent → { spark-parent → { common · 3.5 · 4.1 } · optimizer }               ✅ §13
 三条不变量     ：core 无格式依赖 · 两面互不依赖 · iceberg-core 只在 protocol-iceberg           ✅ enforcer 守
 顺序           ：先改名 → 再拆模块 → Iceberg 代码从第一天落进 protocol-iceberg
 目录           ：四个模块嵌在 spring-parent/ 下（`-pl` 要写 :artifactId）                       ✅ 阶段 4（§9）
