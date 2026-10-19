@@ -111,8 +111,8 @@ public class PermissionManagementService {
         entity.refreshLocatorHash();
         entity.touch(RequestContext.principal(), RequestContext.now());
         repository.save(entity);
-        events.publish(CatalogEventType.GRANT_CHANGED, catalogName, CatalogEvent.TARGET_GRANT,
-                grantTarget(parsed), grantAttributes(parsed, "grant"));
+        events.publish(CatalogEventType.GRANT_GRANTED, catalogName, CatalogEvent.TARGET_GRANT,
+                grantTarget(parsed), grantAttributes(parsed));
     }
 
     /**
@@ -132,9 +132,9 @@ public class PermissionManagementService {
                     repository.delete(entity);
                     // 幂等的撤销「没找到也不报错」，但那种调用不进事件流：
                     // 事件流里没有空操作，消费方才敢按事件做增量
-                    events.publish(CatalogEventType.GRANT_CHANGED, catalogName,
+                    events.publish(CatalogEventType.GRANT_REVOKED, catalogName,
                             CatalogEvent.TARGET_GRANT, grantTarget(parsed),
-                            grantAttributes(parsed, "revoke"));
+                            grantAttributes(parsed));
                 });
     }
 
@@ -244,10 +244,15 @@ public class PermissionManagementService {
         return parsed.resourceType().name() + " " + parsed.database() + "." + parsed.object();
     }
 
-    /** 事件的开放属性：谁被授了什么、授在哪、什么动作。 */
-    private static Map<String, Object> grantAttributes(Parsed parsed, String action) {
+    /**
+     * 事件的开放属性：谁被授了什么、授在哪。
+     *
+     * <p>没有 {@code action} 键——授予还是撤销已经由事件类型（{@code grant.granted} /
+     * {@code grant.revoked}）表达，属性里再写一遍就是同一事实的第二个来源。
+     */
+    private static Map<String, Object> grantAttributes(Parsed parsed) {
         Map<String, Object> attributes = new LinkedHashMap<>();
-        attributes.put("action", action);
+        attributes.put("granteeType", "PRINCIPAL");
         attributes.put("grantee", parsed.principal());
         attributes.put("resourceType", parsed.resourceType().name());
         if (!parsed.database().isEmpty()) {

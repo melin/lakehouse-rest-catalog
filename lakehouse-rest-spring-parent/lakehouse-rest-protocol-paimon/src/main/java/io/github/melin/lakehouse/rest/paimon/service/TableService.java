@@ -266,9 +266,9 @@ public class TableService {
         table.markCreated(RequestContext.principal(), RequestContext.now());
         tableRepository.save(table);
         saveSchemaVersion(table, 0, schema);
-        events.publish(CatalogEventType.TABLE_CREATED, prefix, CatalogEvent.TARGET_TABLE,
+        events.publish(CatalogEventType.TABLE_REGISTERED, prefix, CatalogEvent.TARGET_TABLE,
                 databaseName + "." + tableName,
-                Map.of("format", "PAIMON", "registered", true));
+                Map.of("format", "PAIMON"));
     }
 
     @Transactional

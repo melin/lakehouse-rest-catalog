@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import io.github.melin.lakehouse.rest.config.RequestContext;
 import io.github.melin.lakehouse.rest.dto.CommonDtos;
@@ -40,7 +41,7 @@ import tools.jackson.databind.json.JsonMapper;
  *       不进事件流（docs/event-framework.md §3 规则 3）。断了这条，
  *       消费方按事件做增量就会拿到幻影事件。</li>
  *   <li><b>增量游标契约</b>——首页游标落在「现在」，带 {@code since} 只回更新的，
- *       {@code limit} 截断时给 {@code hasMore}，catalog 过滤在服务端做。</li>
+ *       {@code limit} 截断时给 {@code hasMore}，catalog 与 category 过滤在服务端做。</li>
  * </ol>
  *
  * <p>触发直接走服务层（与 {@link PaimonRestCatalogApiTests} 同一取向），
@@ -106,6 +107,8 @@ class ConsoleEventTests {
         assertEquals("evt-user", created.get("principal").asString());
         assertEquals("evt-req-create", created.get("requestId").asString());
         assertEquals("TABLE", created.get("targetType").asString());
+        assertEquals("TABLE", created.get("category").asString(),
+                "category 是 type 的规范化冗余列，服务端过滤按它走");
 
         JsonNode renamed = findLatest(all, "table.renamed", database + ".evt_orders_renamed");
         assertEquals(database + ".evt_orders", renamed.get("attributes").get("from").asString(),
@@ -127,27 +130,59 @@ class ConsoleEventTests {
         withContext("evt-admin", "evt-req-revoke", () -> permissions.revoke(PREFIX, assignment));
 
         JsonNode all = fetchEvents("?limit=1000");
-        assertEquals(2, countByTarget(all, "grant.changed", "TABLE evt_grant_db.evt_granted"),
-                "授予与撤销各产生一条事件");
-        // 找的是最新一条（撤销），主体与请求 ID 来自请求上下文
-        JsonNode latest = findLatest(all, "grant.changed", "TABLE evt_grant_db.evt_granted");
-        assertEquals("revoke", latest.get("attributes").get("action").asString());
-        assertEquals("evt-admin", latest.get("principal").asString());
-        // 授予那条：属性里带「授给了谁、授的什么、授在哪」
-        JsonNode grant = findByAttribute(all, "grant.changed", "TABLE evt_grant_db.evt_granted",
-                "action", "grant");
+        // 授予与撤销是两种类型（不是一条带 action 属性的 changed）：消费方判断
+        // 「有人被授权」只需要订阅一个类型，不用再读报文里的 action
+        JsonNode grant = findLatest(all, "grant.granted", "TABLE evt_grant_db.evt_granted");
         assertEquals(principal, grant.get("attributes").get("grantee").asString());
+        assertEquals("PRINCIPAL", grant.get("attributes").get("granteeType").asString(),
+                "直授的收权方是主体；catalog role 那条链路用同一类型、不同 granteeType");
         assertEquals("SELECT", grant.get("attributes").get("access").asString());
         assertEquals("TABLE", grant.get("attributes").get("resourceType").asString());
-        JsonNode revoke = latest;
+        assertEquals("GRANT", grant.get("category").asString());
+        assertEquals("evt-admin", grant.get("principal").asString());
+        assertFalse(grant.get("attributes").has("action"),
+                "动作已由事件类型表达，属性里不再重复一份");
+
+        JsonNode revoke = findLatest(all, "grant.revoked", "TABLE evt_grant_db.evt_granted");
         long cursor = revoke.get("id").asLong();
 
         // 幂等撤销（赋权已不存在）不进事件流
         withContext("evt-admin", "evt-req-revoke-miss", () -> permissions.revoke(PREFIX, assignment));
         JsonNode after = fetchEvents("?limit=1000");
-        assertEquals(2, countByTarget(after, "grant.changed", "TABLE evt_grant_db.evt_granted"),
-                "撤销不存在的赋权是空操作，不应产生事件");
+        assertEquals(1, countByTarget(after, "grant.granted", "TABLE evt_grant_db.evt_granted"));
+        assertEquals(1, countByTarget(after, "grant.revoked", "TABLE evt_grant_db.evt_granted"),
+                "撤销不存在的赋权是空操作，不应产生第二条撤销事件");
         assertTrue(latestId(after) >= cursor);
+    }
+
+    /**
+     * 类别过滤在服务端做（{@code ?category=}），未知类别回 400 而不是空页。
+     *
+     * <p>「空页」与「这一类还没发生过」在页面上长得一模一样，是最难排查的一种静默失败。
+     */
+    @Test
+    void categoryFilterNarrowsTheStreamAndRejectsUnknownValues() throws Exception {
+        String database = "evt_category_db";
+        createDatabase(database);
+        PermissionAssignment assignment = new PermissionAssignment(
+                new PermissionResource("DATABASE", database, null, null, null),
+                "CREATETABLE", "user:evt-category", null, null);
+        withContext("evt-admin", "evt-req-category", () -> permissions.grant(PREFIX, assignment));
+
+        JsonNode grants = fetchEvents("?category=GRANT&limit=1000");
+        assertTrue(grants.get("events").size() >= 1, "至少应有刚发出的授权事件");
+        for (JsonNode event : grants.get("events")) {
+            assertEquals("GRANT", event.get("category").asString());
+        }
+
+        // 大小写不敏感：控制台传的是枚举名，人手工敲的小写也要认
+        JsonNode namespaces = fetchEvents("?category=namespace&limit=1000");
+        JsonNode created = findLatest(namespaces, "namespace.created", database);
+        assertEquals("NAMESPACE", created.get("category").asString());
+
+        mockMvc.perform(get(EVENTS + "?category=nosuch")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + TOKEN))
+                .andExpect(status().isBadRequest());
     }
 
     // ------------------------------------------------------------------ 游标契约
@@ -228,21 +263,6 @@ class ConsoleEventTests {
             }
         }
         return count;
-    }
-
-    /** 在一页事件里找「指定类型 + 目标 + 某属性值」的第一条；找不到即断言失败。 */
-    private JsonNode findByAttribute(JsonNode page, String type, String target,
-                                     String attribute, String value) {
-        for (JsonNode event : page.get("events")) {
-            if (type.equals(event.get("type").asString()) && target.equals(event.get("target").asString())
-                    && event.get("attributes").has(attribute)
-                    && value.equals(event.get("attributes").get(attribute).asString())) {
-                return event;
-            }
-        }
-        assertTrue(false, () -> "event not found: " + type + " on " + target
-                + " with " + attribute + "=" + value);
-        return null;
     }
 
     private long latestId(JsonNode page) {

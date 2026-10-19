@@ -18,6 +18,9 @@ import io.github.melin.lakehouse.rest.dto.ManagementEnums.GrantType;
 import io.github.melin.lakehouse.rest.dto.ManagementEnums.StorageType;
 import io.github.melin.lakehouse.rest.dto.Privilege;
 import io.github.melin.lakehouse.rest.dto.StorageDtos.StorageConfigInfo;
+import io.github.melin.lakehouse.rest.event.CatalogEvent;
+import io.github.melin.lakehouse.rest.event.CatalogEventPublisher;
+import io.github.melin.lakehouse.rest.event.CatalogEventType;
 import io.github.melin.lakehouse.rest.paimon.service.DatabaseService;
 import io.github.melin.lakehouse.rest.support.ApiException;
 import io.github.melin.lakehouse.rest.support.CatalogFormat;
@@ -29,6 +32,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -71,6 +75,7 @@ public class ManagementCatalogService {
     private final RestServerProperties properties;
     private final StorageRuntimePolicy storagePolicy;
     private final CredentialCipher cipher;
+    private final CatalogEventPublisher events;
 
     /** {@code GET /catalogs}。 */
     @Transactional(readOnly = true)
@@ -117,6 +122,8 @@ public class ManagementCatalogService {
         CatalogEntity saved = catalogRepository.save(entity);
 
         provisionDefaultCatalogRole(saved);
+        events.publish(CatalogEventType.CATALOG_CREATED, name, CatalogEvent.TARGET_CATALOG, name,
+                Map.of("format", saved.getCatalogFormat(), "type", saved.getCatalogType()));
         return toDto(saved);
     }
 
@@ -148,7 +155,12 @@ public class ManagementCatalogService {
         }
         entity.setEntityVersion(entity.getEntityVersion() + 1);
         entity.touch(RequestContext.principal(), RequestContext.now());
-        return toDto(catalogRepository.save(entity));
+        CatalogEntity saved = catalogRepository.save(entity);
+        // 只记「改了哪个对象的哪一版」：属性里可能有密钥类内容（applyStorage 写的是
+        // 加密后的凭据），审计表不该是第二份凭据备份
+        events.publish(CatalogEventType.CATALOG_UPDATED, name, CatalogEvent.TARGET_CATALOG, name,
+                Map.of("format", saved.getCatalogFormat(), "entityVersion", saved.getEntityVersion()));
+        return toDto(saved);
     }
 
     /**
@@ -174,6 +186,10 @@ public class ManagementCatalogService {
         catalogRepository.delete(entity);
         log.debug("deleted catalog {}: {} databases and {} catalog roles removed",
                 name, databases, roles.size());
+        // 级联删掉的库与表不再各发一条：一条 catalog.dropped 已经说明了范围，
+        // 逐级补发只会让「一次删目录」在事件流里膨胀成几百条
+        events.publish(CatalogEventType.CATALOG_DROPPED, name, CatalogEvent.TARGET_CATALOG, name,
+                Map.of("databases", databases, "catalogRoles", roles.size()));
     }
 
     /** 按名称取 catalog，不存在则 404。供其他管理服务复用。 */

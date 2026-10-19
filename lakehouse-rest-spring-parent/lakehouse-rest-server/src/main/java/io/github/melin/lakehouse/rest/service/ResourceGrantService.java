@@ -9,10 +9,15 @@ import io.github.melin.lakehouse.rest.dto.ManagementDtos.AddGrantRequest;
 import io.github.melin.lakehouse.rest.dto.ManagementDtos.GrantResources;
 import io.github.melin.lakehouse.rest.dto.ManagementDtos.RevokeGrantRequest;
 import io.github.melin.lakehouse.rest.dto.ManagementEnums.GrantType;
+import io.github.melin.lakehouse.rest.event.CatalogEvent;
+import io.github.melin.lakehouse.rest.event.CatalogEventPublisher;
+import io.github.melin.lakehouse.rest.event.CatalogEventType;
 import io.github.melin.lakehouse.rest.support.ApiException;
 import io.github.melin.lakehouse.rest.support.Paging;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -22,6 +27,10 @@ import org.springframework.transaction.annotation.Transactional;
  *
  * <p>这是 RBAC 链条的终点——权限最终以「catalog role + 资源 + 权限」三元组落在这里。
  * 请求体中的 {@code grant} 是规格的多态联合，由 {@link GrantSpec} 负责解析与还原。
+ *
+ * <p>授权变更发 {@code grant.granted} / {@code grant.revoked}（类别 {@code GRANT}），
+ * 与 Paimon 侧直授主体的事件同型——两种权限模型的授权在审计上是同一件事，
+ * 用属性 {@code granteeType} 区分收权方是 catalog role 还是主体。
  */
 @Service
 @RequiredArgsConstructor
@@ -29,6 +38,7 @@ public class ResourceGrantService {
 
     private final ResourceGrantRepository resourceGrantRepository;
     private final CatalogRoleService catalogRoleService;
+    private final CatalogEventPublisher events;
 
     /** {@code GET .../grants}：列出该 catalog role 持有的全部授权。 */
     @Transactional(readOnly = true)
@@ -66,6 +76,8 @@ public class ResourceGrantService {
         entity.normalizeNamespace();
         entity.markCreated(RequestContext.principal(), RequestContext.now());
         resourceGrantRepository.save(entity);
+        events.publish(CatalogEventType.GRANT_GRANTED, catalogName, CatalogEvent.TARGET_GRANT,
+                grantTarget(spec), grantAttributes(catalogRoleName, spec));
         return 1;
     }
 
@@ -92,6 +104,8 @@ public class ResourceGrantService {
                     io.github.melin.lakehouse.rest.support.ResourceType.GRANT, describe(spec));
         }
         resourceGrantRepository.deleteAll(matches);
+        events.publish(CatalogEventType.GRANT_REVOKED, catalogName, CatalogEvent.TARGET_GRANT,
+                grantTarget(spec), grantAttributes(catalogRoleName, spec));
     }
 
     /** 实体的授权集合，供授权判定使用。 */
@@ -147,5 +161,31 @@ public class ResourceGrantService {
             builder.append('.').append(spec.objectName());
         }
         return builder.toString();
+    }
+
+    /** 事件里的定位符：{@code TABLE db.t}、{@code NAMESPACE db}、{@code CATALOG}。 */
+    private static String grantTarget(GrantSpec spec) {
+        StringBuilder builder = new StringBuilder(spec.type().wireName());
+        String path = String.join(".", spec.namespace());
+        if (spec.objectName() != null && !spec.objectName().isEmpty()) {
+            path = path.isEmpty() ? spec.objectName() : path + "." + spec.objectName();
+        }
+        return path.isEmpty() ? builder.toString() : builder.append(' ').append(path).toString();
+    }
+
+    /** 授权的完整描述：收权方是 catalog role（另一种模型收权方是主体，见属性 {@code granteeType}）。 */
+    private static Map<String, Object> grantAttributes(String catalogRoleName, GrantSpec spec) {
+        Map<String, Object> attributes = new LinkedHashMap<>();
+        attributes.put("granteeType", "CATALOG_ROLE");
+        attributes.put("grantee", catalogRoleName);
+        attributes.put("resourceType", spec.type().wireName());
+        if (!spec.namespace().isEmpty()) {
+            attributes.put("database", String.join(".", spec.namespace()));
+        }
+        if (spec.objectName() != null && !spec.objectName().isEmpty()) {
+            attributes.put("object", spec.objectName());
+        }
+        attributes.put("access", spec.privilege().name());
+        return attributes;
     }
 }

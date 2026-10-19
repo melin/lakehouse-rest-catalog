@@ -24,16 +24,19 @@ public class ConsoleEventController {
     private final ConsoleEventService events;
 
     /**
-     * {@code GET /api/console/v1/events?since=<id>&catalog=<name>&limit=<n>}。
+     * {@code GET /api/console/v1/events?since=<id>&catalog=<name>&category=<name>&limit=<n>}。
      *
-     * @param since   游标：只回比它新的事件；省略表示首次拉取，回当前最新一页
-     * @param catalog 可选的目录过滤；省略回全部目录
-     * @param limit   页大小，默认 100、上限 1000
+     * @param since    游标：只回比它新的事件；省略表示首次拉取，回当前最新一页
+     * @param catalog  可选的目录过滤；省略回全部目录
+     * @param category 可选的类别过滤（{@code TABLE} / {@code GRANT} …，大小写不敏感）；
+     *                 未知取值回 400 而不是空页
+     * @param limit    页大小，默认 100、上限 1000
      */
     @GetMapping("/events")
     public ConsoleDtos.EventPage events(@RequestParam(required = false) Long since,
                                         @RequestParam(required = false) String catalog,
+                                        @RequestParam(required = false) String category,
                                         @RequestParam(required = false) Integer limit) {
-        return events.events(catalog, since, limit);
+        return events.events(catalog, category, since, limit);
     }
 }

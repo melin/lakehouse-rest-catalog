@@ -3,13 +3,17 @@ package io.github.melin.lakehouse.rest.service;
 import io.github.melin.lakehouse.rest.domain.entity.AuditEventEntity;
 import io.github.melin.lakehouse.rest.domain.repo.AuditEventRepository;
 import io.github.melin.lakehouse.rest.dto.ConsoleDtos;
+import io.github.melin.lakehouse.rest.event.CatalogEventCategory;
+import io.github.melin.lakehouse.rest.support.ApiException;
+import jakarta.persistence.criteria.Predicate;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
-import java.util.Optional;
+import java.util.Locale;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.PageRequest;
-import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
+import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -20,6 +24,11 @@ import org.springframework.transaction.annotation.Transactional;
  * 首次不带 {@code since} 回当前最新一页（内部倒序取再反转成升序，游标落在「现在」），
  * 之后带 {@code since} 只回比它新的事件。不提供往回翻页——事件页要的是
  * 「接下来发生了什么」；要回放历史就重置游标从头来。
+ *
+ * <p><b>过滤条件在服务端做。</b>catalog 与 category 都是查询参数，两者可以同时给；
+ * 谓词动态拼（见 {@link #filter}），因为「目录 × 类别 × 有无游标」的组合写派生方法
+ * 要八条。类别取值按枚举校验——写错回 400 而不是静默返回空页：空页会被读成
+ * 「这一类事件还没发生过」。
  *
  * <p>两种表格式的事件在同一张表、同一个流里，catalog 过滤只是查询参数，
  * 不是两套 API。
@@ -34,49 +43,79 @@ public class ConsoleEventService {
     private final AuditEventRepository repository;
 
     @Transactional(readOnly = true)
-    public ConsoleDtos.EventPage events(String catalog, Long since, Integer limit) {
+    public ConsoleDtos.EventPage events(String catalog, String category, Long since, Integer limit) {
         int size = limit == null ? DEFAULT_LIMIT : Math.min(Math.max(limit, 1), MAX_LIMIT);
-        String name = catalog == null || catalog.isBlank() ? null : catalog.trim();
-        Pageable page = PageRequest.of(0, size);
+        Specification<AuditEventEntity> filter = filter(catalog, category);
 
         if (since == null) {
-            return latestPage(name, size);
+            return latestPage(filter, size);
         }
-        List<AuditEventEntity> rows = name == null
-                ? repository.findByIdGreaterThanOrderByIdAsc(since, page)
-                : repository.findByCatalogAndIdGreaterThanOrderByIdAsc(name, since, page);
+        List<AuditEventEntity> rows = repository.findAll(
+                filter.and((root, query, cb) -> cb.greaterThan(root.get("id"), since)),
+                PageRequest.of(0, size, Sort.by(Sort.Direction.ASC, "id"))).getContent();
         long cursor = rows.isEmpty() ? since : rows.get(rows.size() - 1).getId();
         return new ConsoleDtos.EventPage(toEvents(rows), cursor, rows.size() >= size);
     }
 
     /**
      * 首页：倒序取最新 {@code size} 条再反转。游标落在最新一条的 {@code id}
-     * （表为空时是 0，客户端下次带 {@code since=0} 拉到的仍是「之后的」事件）。
+     * （结果为空时是 0，客户端下次带 {@code since=0} 拉到的仍是「之后的」事件）。
      */
-    private ConsoleDtos.EventPage latestPage(String catalog, int size) {
-        Optional<AuditEventEntity> top = catalog == null
-                ? repository.findTopByOrderByIdDesc()
-                : topOfCatalog(catalog);
-        if (top.isEmpty()) {
+    private ConsoleDtos.EventPage latestPage(Specification<AuditEventEntity> filter, int size) {
+        List<AuditEventEntity> rows = new ArrayList<>(repository.findAll(filter,
+                PageRequest.of(0, size, Sort.by(Sort.Direction.DESC, "id"))).getContent());
+        if (rows.isEmpty()) {
             return new ConsoleDtos.EventPage(List.of(), 0L, false);
         }
-        List<AuditEventEntity> rows = new ArrayList<>(catalog == null
-                ? repository.findAllByOrderByIdDesc(PageRequest.of(0, size))
-                : repository.findByCatalogOrderByIdDesc(catalog, PageRequest.of(0, size)));
+        long cursor = rows.get(0).getId();
         Collections.reverse(rows);
-        return new ConsoleDtos.EventPage(toEvents(rows), top.get().getId(), rows.size() >= size);
+        return new ConsoleDtos.EventPage(toEvents(rows), cursor, rows.size() >= size);
     }
 
-    private Optional<AuditEventEntity> topOfCatalog(String catalog) {
-        List<AuditEventEntity> rows = repository.findByCatalogOrderByIdDesc(catalog, PageRequest.of(0, 1));
-        return rows.isEmpty() ? Optional.empty() : Optional.of(rows.get(0));
+    /** 可选过滤：{@code catalog} 精确匹配、{@code category} 按枚举规范化后匹配。 */
+    private static Specification<AuditEventEntity> filter(String catalog, String category) {
+        String catalogName = blankToNull(catalog);
+        String categoryName = categoryOf(category);
+        return (root, query, cb) -> {
+            List<Predicate> predicates = new ArrayList<>(2);
+            if (catalogName != null) {
+                predicates.add(cb.equal(root.get("catalog"), catalogName));
+            }
+            if (categoryName != null) {
+                predicates.add(cb.equal(root.get("category"), categoryName));
+            }
+            return predicates.isEmpty()
+                    ? cb.conjunction()
+                    : cb.and(predicates.toArray(new Predicate[0]));
+        };
+    }
+
+    /**
+     * 类别参数 → 枚举名。大小写不敏感（{@code table} 与 {@code TABLE} 都收），
+     * 取不到就 400——这类错误静默成空页最难排查。
+     */
+    private static String categoryOf(String category) {
+        String value = blankToNull(category);
+        if (value == null) {
+            return null;
+        }
+        try {
+            return CatalogEventCategory.valueOf(value.toUpperCase(Locale.ROOT)).name();
+        } catch (IllegalArgumentException exception) {
+            throw ApiException.badRequest("Unknown event category: " + category + "; expected one of "
+                    + java.util.Arrays.toString(CatalogEventCategory.values()));
+        }
+    }
+
+    private static String blankToNull(String value) {
+        return value == null || value.isBlank() ? null : value.trim();
     }
 
     private static List<ConsoleDtos.Event> toEvents(List<AuditEventEntity> rows) {
         return rows.stream()
                 .map(row -> new ConsoleDtos.Event(row.getId(), row.getEventId(), row.getType(),
-                        row.getCatalog(), row.getPrincipal(), row.getRequestId(), row.getOccurredAt(),
-                        row.getTargetType(), row.getTarget(),
+                        row.getCategory(), row.getCatalog(), row.getPrincipal(), row.getRequestId(),
+                        row.getOccurredAt(), row.getTargetType(), row.getTarget(),
                         row.getAttributes() == null ? java.util.Map.of() : row.getAttributes()))
                 .toList();
     }

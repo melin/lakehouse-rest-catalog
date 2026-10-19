@@ -2,7 +2,6 @@ package io.github.melin.lakehouse.rest.event;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 /**
@@ -12,10 +11,12 @@ import org.springframework.stereotype.Component;
  * 运维在不上控制台、不查库的情况下也能从应用日志里看到「谁动了目录」。
  * 一行一条、固定字段顺序，便于 grok / 采集器解析；attributes 只挑
  * {@code format} 与 {@code state} 两个最常用的键进日志，完整的看库。
+ *
+ * <p>典型用法是让日志只订阅关心的一小撮（{@code
+ * paimon.rest.event-listener.log.enabled-event-categories=TABLE,GRANT}）：日志是全量的，
+ * 把凭据重置、策略调整这类低频事件挡在外面能少一半噪音。
  */
 @Component
-@ConditionalOnProperty(prefix = "paimon.rest.event", name = "log-enabled",
-        havingValue = "true", matchIfMissing = true)
 public class LoggingEventListener implements CatalogEventListener {
 
     private static final Logger log = LoggerFactory.getLogger("catalog.event");

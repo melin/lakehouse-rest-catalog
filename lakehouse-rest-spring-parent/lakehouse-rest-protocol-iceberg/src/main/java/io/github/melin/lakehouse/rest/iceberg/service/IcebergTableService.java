@@ -355,9 +355,9 @@ public class IcebergTableService {
         TableEntity table = requireIcebergTable(catalog, levels, tableName);
         projections.deleteAll(table.getId());
         tableRepository.delete(table);
-        events.publish(CatalogEventType.TABLE_DROPPED, prefix, CatalogEvent.TARGET_TABLE,
+        events.publish(CatalogEventType.TABLE_UNREGISTERED, prefix, CatalogEvent.TARGET_TABLE,
                 NamespacePaths.toStorageName(levels) + "." + tableName,
-                Map.of("format", "ICEBERG", "unregistered", true));
+                Map.of("format", "ICEBERG"));
     }
 
     // ------------------------------------------------------------------ 重命名
@@ -449,9 +449,9 @@ public class IcebergTableService {
         applyMetadata(table, metadataLocation, document, metadata);
         tableRepository.save(table);
         projections.rebuild(table, metadata);
-        events.publish(CatalogEventType.TABLE_CREATED, prefix, CatalogEvent.TARGET_TABLE,
+        events.publish(CatalogEventType.TABLE_REGISTERED, prefix, CatalogEvent.TARGET_TABLE,
                 NamespacePaths.toStorageName(levels) + "." + tableName,
-                Map.of("format", "ICEBERG", "registered", true));
+                Map.of("format", "ICEBERG"));
 
         return new IcebergDtos.LoadTableResponse(metadataLocation, Json.readTree(document), null,
                 credentialService.delegated(catalog, table, delegation));

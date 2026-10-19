@@ -18,6 +18,9 @@ import io.github.melin.lakehouse.rest.dto.ManagementDtos.PrincipalRole;
 import io.github.melin.lakehouse.rest.dto.ManagementDtos.PrincipalRoles;
 import io.github.melin.lakehouse.rest.dto.ManagementDtos.Principals;
 import io.github.melin.lakehouse.rest.dto.ManagementDtos.UpdatePrincipalRoleRequest;
+import io.github.melin.lakehouse.rest.event.CatalogEvent;
+import io.github.melin.lakehouse.rest.event.CatalogEventPublisher;
+import io.github.melin.lakehouse.rest.event.CatalogEventType;
 import io.github.melin.lakehouse.rest.support.ApiException;
 import io.github.melin.lakehouse.rest.support.Paging;
 import io.github.melin.lakehouse.rest.support.ResourceType;
@@ -45,6 +48,7 @@ public class PrincipalRoleService {
     private final PrincipalRoleAssignmentRepository principalRoleAssignmentRepository;
     private final CatalogRoleAssignmentRepository catalogRoleAssignmentRepository;
     private final CatalogRoleService catalogRoleService;
+    private final CatalogEventPublisher events;
 
     /** {@code GET /principal-roles}。 */
     @Transactional(readOnly = true)
@@ -74,7 +78,10 @@ public class PrincipalRoleService {
         Map<String, String> properties = request.principalRole().properties();
         entity.setProperties(properties == null ? new LinkedHashMap<>() : new LinkedHashMap<>(properties));
         entity.markCreated(RequestContext.principal(), RequestContext.now());
-        return ManagementMappers.toDto(principalRoleRepository.save(entity));
+        PrincipalRoleEntity saved = principalRoleRepository.save(entity);
+        events.publish(CatalogEventType.PRINCIPAL_ROLE_CREATED, "", CatalogEvent.TARGET_ROLE, name,
+                Map.of("federated", saved.isFederated()));
+        return ManagementMappers.toDto(saved);
     }
 
     /** {@code GET /principal-roles/{principalRoleName}}。 */
@@ -100,7 +107,10 @@ public class PrincipalRoleService {
         entity.setProperties(new LinkedHashMap<>(request.properties()));
         entity.setEntityVersion(entity.getEntityVersion() + 1);
         entity.touch(RequestContext.principal(), RequestContext.now());
-        return ManagementMappers.toDto(principalRoleRepository.save(entity));
+        PrincipalRoleEntity saved = principalRoleRepository.save(entity);
+        events.publish(CatalogEventType.PRINCIPAL_ROLE_UPDATED, "", CatalogEvent.TARGET_ROLE, name,
+                Map.of("entityVersion", saved.getEntityVersion()));
+        return ManagementMappers.toDto(saved);
     }
 
     /**
@@ -115,6 +125,8 @@ public class PrincipalRoleService {
         principalRoleAssignmentRepository.deleteByPrincipalRoleId(entity.getId());
         catalogRoleAssignmentRepository.deleteByPrincipalRoleId(entity.getId());
         principalRoleRepository.delete(entity);
+        events.publish(CatalogEventType.PRINCIPAL_ROLE_DROPPED, "", CatalogEvent.TARGET_ROLE, name,
+                Map.of());
     }
 
     /** {@code GET /principal-roles/{principalRoleName}/principals}。 */
@@ -182,6 +194,8 @@ public class PrincipalRoleService {
         assignment.setCatalogRoleId(catalogRole.getId());
         assignment.markCreated(RequestContext.principal(), RequestContext.now());
         catalogRoleAssignmentRepository.save(assignment);
+        events.publish(CatalogEventType.CATALOG_ROLE_BOUND, catalogName, CatalogEvent.TARGET_ROLE,
+                principalRoleName, Map.of("catalogRole", catalogRoleName));
     }
 
     /** {@code DELETE /principal-roles/{principalRoleName}/catalog-roles/{catalogName}/{catalogRoleName}}。 */
@@ -198,6 +212,8 @@ public class PrincipalRoleService {
         }
         catalogRoleAssignmentRepository
                 .deleteByPrincipalRoleIdAndCatalogRoleId(role.getId(), catalogRole.getId());
+        events.publish(CatalogEventType.CATALOG_ROLE_UNBOUND, catalogName, CatalogEvent.TARGET_ROLE,
+                principalRoleName, Map.of("catalogRole", catalogRoleName));
     }
 
     /** 按名称取 principal role，不存在则 404。 */

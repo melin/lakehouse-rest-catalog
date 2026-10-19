@@ -108,10 +108,12 @@
 
 | 表 | 对应资源 | 说明 |
 | --- | --- | --- |
-| `audit_event` | 目录领域事件 | 表创建/删除/重命名、提交、授权变更、优化策略变更与任务终态的 append-only 事实记录；自增 `id` 兼作增量拉取的游标，`(catalog, id)` 联合索引支撑按目录增量拉 |
+| `audit_event` | 目录领域事件 | 10 类 38 个领域事件（catalog / 库 / 表 / 视图 / 授权 / 主体与角色 / 优化）的 append-only 事实记录；自增 `id` 兼作增量拉取的游标，`(catalog, id)` 与 `(category, id)` 两条联合索引分别支撑按目录、按类别增量拉 |
 
 两种表格式的事件在**同一张表、同一个流**里（`catalog` 只是查询参数）；`attributes_json`
-用 JSON 单列承载开放属性（理由见 [`event-framework.md`](event-framework.md) §2）。
+用 JSON 单列承载开放属性，`category` 是 `type` 的冗余列（存下来让「只看权限变更」
+这类过滤走索引，同步点只有 `AuditEventEntity.of` 一处；理由见
+[`event-framework.md`](event-framework.md) §2）。
 发布与消费链路、不发清单与增量契约都在 [`event-framework.md`](event-framework.md)，
 本文件只记「它在库里长什么样」。这条事件**不继承 `AuditedEntity`**——它是不可变事实，
 没有「最后修改人」可言（对比上面的业务表：那些表会被 UPDATE，所以要审计列）。

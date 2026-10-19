@@ -2,7 +2,6 @@ package io.github.melin.lakehouse.rest.event;
 
 import io.github.melin.lakehouse.rest.domain.entity.AuditEventEntity;
 import io.github.melin.lakehouse.rest.domain.repo.AuditEventRepository;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 /**
@@ -16,10 +15,11 @@ import org.springframework.stereotype.Component;
  * <p>监听器自己不做 try/catch：与业务同事务的写入失败本来就该让变更失败
  * （存储打挂时宁可让请求 500，也不能装作记下来了）；发布器外层的兜底对它不起
  * 「吞掉」作用——同一事务标记回滚后业务照样失败。
+ *
+ * <p>启用开关是 {@code paimon.rest.event-listener.types}（写 {@code db}），
+ * 订阅哪些类别/类型见 {@link EventListenerSettings}。
  */
 @Component
-@ConditionalOnProperty(prefix = "paimon.rest.event", name = "db-enabled",
-        havingValue = "true", matchIfMissing = true)
 public class AuditEventPersistListener implements CatalogEventListener {
 
     private final AuditEventRepository repository;

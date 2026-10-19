@@ -9,6 +9,9 @@ import io.github.melin.lakehouse.rest.domain.repo.DatabaseRepository;
 import io.github.melin.lakehouse.rest.domain.repo.ViewRepository;
 import io.github.melin.lakehouse.rest.dto.CommonDtos;
 import io.github.melin.lakehouse.rest.dto.TypeDtos;
+import io.github.melin.lakehouse.rest.event.CatalogEvent;
+import io.github.melin.lakehouse.rest.event.CatalogEventPublisher;
+import io.github.melin.lakehouse.rest.event.CatalogEventType;
 import io.github.melin.lakehouse.rest.paimon.dto.TableDtos;
 import io.github.melin.lakehouse.rest.paimon.dto.ViewDtos;
 import io.github.melin.lakehouse.rest.paimon.support.Codecs;
@@ -43,6 +46,7 @@ public class ViewService {
     private final TableLookup tableLookup;
     private final CatalogService catalogService;
     private final RestServerProperties properties;
+    private final CatalogEventPublisher events;
 
     // ------------------------------------------------------------------ 列举
 
@@ -126,6 +130,8 @@ public class ViewService {
         view.setViewSchemaDoc(Codecs.write(schema));
         view.markCreated(RequestContext.principal(), RequestContext.now());
         viewRepository.save(view);
+        events.publish(CatalogEventType.VIEW_CREATED, prefix, CatalogEvent.TARGET_VIEW,
+                databaseName + "." + name, Map.of("format", "PAIMON"));
     }
 
     @Transactional(readOnly = true)
@@ -146,11 +152,16 @@ public class ViewService {
         view.setViewSchemaDoc(Codecs.write(schema));
         view.touch(RequestContext.principal(), RequestContext.now());
         viewRepository.save(view);
+        events.publish(CatalogEventType.VIEW_UPDATED, prefix, CatalogEvent.TARGET_VIEW,
+                databaseName + "." + viewName,
+                Map.of("format", "PAIMON", "changes", changes.size()));
     }
 
     @Transactional
     public void drop(String prefix, String databaseName, String viewName) {
         viewRepository.delete(require(prefix, databaseName, viewName));
+        events.publish(CatalogEventType.VIEW_DROPPED, prefix, CatalogEvent.TARGET_VIEW,
+                databaseName + "." + viewName, Map.of("format", "PAIMON"));
     }
 
     @Transactional
@@ -172,6 +183,9 @@ public class ViewService {
         view.setName(destinationView);
         view.touch(RequestContext.principal(), RequestContext.now());
         viewRepository.save(view);
+        events.publish(CatalogEventType.VIEW_RENAMED, prefix, CatalogEvent.TARGET_VIEW,
+                destinationDatabase + "." + destinationView,
+                Map.of("format", "PAIMON", "from", sourceDatabase + "." + sourceView));
     }
 
     // ------------------------------------------------------------------ 变更

@@ -24,6 +24,7 @@ USE `paimon_catalog`;
     create table audit_event (
         id bigint not null auto_increment,
         occurred_at bigint not null,
+        category varchar(32) not null,
         target_type varchar(32) not null,
         event_id varchar(64) not null,
         request_id varchar(64),
@@ -416,6 +417,9 @@ USE `paimon_catalog`;
 
     create index ix_audit_event_type 
        on audit_event (type);
+
+    create index ix_audit_event_category 
+       on audit_event (category, id);
 
     create index ix_branch_table 
        on paimon_branch (table_id);

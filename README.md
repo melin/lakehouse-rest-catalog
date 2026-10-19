@@ -144,7 +144,7 @@ k8s 资源名与数据库表名的 `paimon-` / `paimon_` 前缀同样**故意不
 | [`console-catalog-detail.md`](docs/console-catalog-detail.md) | 要改 Catalog 详情页或仓库文件浏览——三个页签、下钻与路径防护、只读的取舍、「配置」页的默认表属性（`table-default.*`）编辑与并发冲突处理；建表表单里的默认参数预填与为什么不给 Lance 表建表入口 |
 | [`console-auth.md`](docs/console-auth.md) | 要给浏览器访问控制台配登录——三种登录方式、两个开关的边界、令牌与认证链、安全考量 |
 | [`polaris-capabilities-and-design.md`](docs/polaris-capabilities-and-design.md) | 要对比 Polaris 或看整体设计——核心能力提取、映射关系、已知缺口 |
-| [`event-framework.md`](docs/event-framework.md) | 要加一种事件、接一个 listener 或理解事件流的边界——七类领域事件与触发点、audit_event 表、发布监听链路、增量拉取契约（`?since=` 游标）与不发清单 |
+| [`event-framework.md`](docs/event-framework.md) | 要加一种事件、接一个 listener 或理解事件流的边界——10 类 38 个领域事件与触发点、与 Polaris 事件枚举的逐类映射、audit_event 表、发布监听链路、按监听器的类别/类型订阅（`paimon.rest.event-listener.*`）、增量拉取契约（`?since=` 游标 + `?category=`）与不发清单 |
 | [`iceberg-rest-catalog-design.md`](docs/iceberg-rest-catalog-design.md) | 要看「同一份元数据同时服务 Paimon 与 Iceberg」怎么做的——双协议方案：创建时区分格式、22 张表复用只加 9 列、路径冲突与错误模型、能力边界与效果图（`outputs/iceberg-rest-catalog/mockup.html`），以及**已落地的实测记录与与方案不一致的几处**（§11） |
 | [`maven-module-design.md`](docs/maven-module-design.md) | 要改模块布局或 artifact 名——`lakehouse-rest-*` 命名定案、两个父 POM / 两个依赖世界、三条用 enforcer 守住的依赖不变量、改名清单与「哪四处故意不改」（§8.6），以及**已落地**的实测记录（§8，含与设计不一致的六处及原因） |
 | [`table-optimization.md`](docs/table-optimization.md) | 要改表存储优化或排查优化任务——三个动作的语义、批次与并发两道闸门、k8s 提交与状态跟踪、控制台两处页面 |
@@ -183,7 +183,7 @@ JAVA_HOME=/path/to/jdk-21 mvn -o -DskipTests install
 # 只要服务端可执行 jar：-am 会一并构建它依赖的 core / storage / 两个协议面
 JAVA_HOME=/path/to/jdk-21 mvn -o -DskipTests -pl :lakehouse-rest-server -am clean package
 
-# 运行全部测试（服务端 336 + Spark 107，共 443 个用例；Spark 侧有 1 个示例用例
+# 运行全部测试（服务端 344 + Spark 107，共 451 个用例；Spark 侧有 1 个示例用例
 # 在本地缺 spark.sql.extensions 时会失败，见第 7 节）
 JAVA_HOME=/path/to/jdk-21 mvn test
 
@@ -760,7 +760,7 @@ Azure 只下发定位元数据是个明确的缺口：Polaris 的 `polaris.stora
 
 ## 7. 测试
 
-### 单元与集成测试（439 个用例）
+### 单元与集成测试（451 个用例）
 
 ```bash
 JAVA_HOME=/path/to/jdk-21 mvn test
@@ -769,7 +769,7 @@ JAVA_HOME=/path/to/jdk-21 mvn test
 测试连的是内存 H2（`test` profile，见 `src/test/resources/application-test.yml`），
 **不依赖本机是否有 MySQL**。
 
-服务端（336 个）：
+服务端（344 个）：
 
 | 测试类 | 覆盖 |
 | --- | --- |
@@ -793,7 +793,8 @@ JAVA_HOME=/path/to/jdk-21 mvn test
 | `ConsoleAuthEndpointTests` | 控制台登录在 HTTP 层的端到端：豁免端点可达而受保护端点拒绝匿名、**用户名密码登录成功/失败/缺参/限速与默认 `admin/admin`**、令牌签发与使用、错误密钥 401 与 `WWW-Authenticate`、**clientId 与用户名两种「不存在」的报文都与「密码不对」一字不差**、`invalid_scope` / `unsupported_grant_type`、Basic 与 JSON 体、失败限速、静态令牌映射、伪造 JWT 与畸形头。这一层才会暴露接线错误——排除列表写错、响应字段名写成驼峰、令牌端点自己反被鉴权挡住 |
 | `CatalogFileBrowserTests` | 仓库文件浏览的服务语义：下钻一层、目录优先排序、冗余分隔符与 `.` 归一化、`..` 与绝对路径 / 带 scheme 拒绝、目录不存在 404、指向文件 400、未知 catalog 404、无 warehouse 400、超出上限标 `truncated`、关开关 501；表目录为根的三条（表级下钻、出不了表目录、未知表 404）；名称前缀过滤的四条（过滤与回显、过滤先于截断、只比本层条目名、含 `/` 拒 400，含表级过滤）；下载的三条（流里字节数与元数据一致、目录与仓库根 400、关开关 501） |
 | `CatalogFileEndpointTests` | 四条端点的**接口形状**：URL、`path` / `prefix` 查询参数、状态码、响应字段名；下载钉 `Content-Disposition` 与 `Content-Length` 与实际字节一致；前缀过滤钉回显与 `total` 口径。与服务语义分开是因为这些错误各自独立——服务能把目录列对不代表端点拼对了，反过来同理 |
-| `ConsoleEventTests` | 目录事件流（`GET /api/console/v1/events`）：表生命周期（建 / 改名 / 删）与授权变更（授 / 撤）都落成事件且 principal / requestId 来自请求上下文、属性带格式标识；**幂等撤销（未命中）不进事件流**（事件流里没有空操作）；增量游标契约——首页游标落在「现在」、带 `since` 只回更新的、`limit` 截断给 `hasMore`、catalog 过滤按 catalog 名（传库名拿到空页） |
+| `ConsoleEventTests` | 目录事件流（`GET /api/console/v1/events`）：表生命周期（建 / 改名 / 删）与授权变更（授 / 撤）都落成事件且 principal / requestId 来自请求上下文、属性带格式标识；**幂等撤销（未命中）不进事件流**（事件流里没有空操作）；增量游标契约——首页游标落在「现在」、带 `since` 只回更新的、`limit` 截断给 `hasMore`、catalog 过滤按 catalog 名（传库名拿到空页）；**类别过滤**（`?category=` 只回该类事件、大小写不敏感、未知取值 400 而不是空页） |
+| `EventListenerSettingsTests` | 监听器订阅配置（`paimon.rest.event-listener.types` / `<name>.enabled-event-categories`）：不配 = 全订阅、`types` 只启用名单内的监听器、类别与类型同时配取并集、单配某一类不影响其他监听器；监听器名 / 类别名 / wire 值写错都在启动期抛错（配置错的后果是「该记的没记」，运行期发现通常已经丢了审计） |
 | `ConsoleAuthMethodVisibilityTests` | 登录方式的可见性：**没开启的方式不出现在登录引导里**——关掉 `console.client-credentials.enabled` 就不下发 `client-credentials`，`auth.tokens` 为空就不下发 `static-token`，而默认开启的用户名密码照旧（对照组，防「无脑返回空列表」） |
 | `AccessTokenServiceTests` | 访问令牌的签发与验证：claims、TTL 边界、换钥、篡改、换 issuer、无 `exp`、`alg:none`、签名密钥格式错必须启动失败、随机钥不共享 |
 | `JwtTests` | 纯 JDK 的 JWT 编解码与验签：HS256 / RS256 / ES256 往返、**ES256 的原始签名转 DER**、`alg:none` 与未知算法、结构拒绝、`aud` 单值与数组 |
@@ -810,7 +811,7 @@ Spark 子模块（107 个，其中 6 个类共 35 个用例需要显式指向服
 > `example/` 下的 `PaimonS3Test` **当前跑不过**，与 S3 环境无关：它在加载 Spark
 > catalog 时被 Paimon 的 `requiredSparkConfsCheck` 挡下（会话里没有
 > `spark.sql.extensions`），报错发生在任何 REST 调用之前。因此 `mvn test` 会停在
-> Spark 模块的 BUILD FAILURE，而服务端模块（336 个）是绿的。
+> Spark 模块的 BUILD FAILURE，而服务端模块（344 个）是绿的。
 
 | 测试类 | 覆盖 |
 | --- | --- |
@@ -1138,9 +1139,9 @@ http://localhost:8080/console/
   用 `./scripts/build-console.sh` 一条命令完成构建与校验。
 - **路径不靠人工比对。** 全部端点收在 `lakehouse-rest-console/src/api/endpoints.js` 一张表里，
   由 `scripts/verify-console.py` 与三份 OpenAPI 规格（Paimon / Iceberg / 管理 API）机械比对
-  （16 组 70 项：端点存在性、引用完整性、五处基址一致、产物新鲜度、对话框状态、下拉候选来源、
+  （16 组 72 项：端点存在性、引用完整性、五处基址一致、产物新鲜度、对话框状态、下拉候选来源、
   静态凭据字段与服务端的一致性、两种格式的优化参数键、**catalog 表格式**、**Iceberg 目录浏览的契约形状**、
-  **存储字段分层**、**事件页的增量契约**，最后由一组「文档计数」盯住这个数字本身与脚本一致）；
+  **存储字段分层**、**事件页的增量契约与类别筛选**，最后由一组「文档计数」盯住这个数字本身与脚本一致）；
   服务端侧 `ConsoleApiTests` 守住静态资源托管与 SPA 深链回退。
 - **表格式（Paimon / Iceberg）在创建 Catalog 时就选定，之后不可改。** 新建弹窗里用
   **选项卡片**而不是下拉：每个选项要能读出「客户端走哪段路径」与一句话影响面；

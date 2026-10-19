@@ -13,6 +13,9 @@ import io.github.melin.lakehouse.rest.dto.ManagementDtos.CreateCatalogRoleReques
 import io.github.melin.lakehouse.rest.dto.ManagementDtos.PrincipalRole;
 import io.github.melin.lakehouse.rest.dto.ManagementDtos.PrincipalRoles;
 import io.github.melin.lakehouse.rest.dto.ManagementDtos.UpdateCatalogRoleRequest;
+import io.github.melin.lakehouse.rest.event.CatalogEvent;
+import io.github.melin.lakehouse.rest.event.CatalogEventPublisher;
+import io.github.melin.lakehouse.rest.event.CatalogEventType;
 import io.github.melin.lakehouse.rest.support.ApiException;
 import io.github.melin.lakehouse.rest.support.Paging;
 import io.github.melin.lakehouse.rest.support.ResourceType;
@@ -41,6 +44,7 @@ public class CatalogRoleService {
     private final CatalogRoleAssignmentRepository catalogRoleAssignmentRepository;
     private final PrincipalRoleRepository principalRoleRepository;
     private final ManagementCatalogService managementCatalogService;
+    private final CatalogEventPublisher events;
 
     /** {@code GET /catalogs/{catalogName}/catalog-roles}。 */
     @Transactional(readOnly = true)
@@ -68,7 +72,10 @@ public class CatalogRoleService {
         Map<String, String> properties = request.catalogRole().properties();
         entity.setProperties(properties == null ? new LinkedHashMap<>() : new LinkedHashMap<>(properties));
         entity.markCreated(RequestContext.principal(), RequestContext.now());
-        return ManagementMappers.toDto(catalogRoleRepository.save(entity));
+        CatalogRoleEntity saved = catalogRoleRepository.save(entity);
+        events.publish(CatalogEventType.CATALOG_ROLE_CREATED, catalogName, CatalogEvent.TARGET_ROLE,
+                name, Map.of());
+        return ManagementMappers.toDto(saved);
     }
 
     /** {@code GET /catalogs/{catalogName}/catalog-roles/{catalogRoleName}}。 */
@@ -95,7 +102,10 @@ public class CatalogRoleService {
         entity.setProperties(new LinkedHashMap<>(request.properties()));
         entity.setEntityVersion(entity.getEntityVersion() + 1);
         entity.touch(RequestContext.principal(), RequestContext.now());
-        return ManagementMappers.toDto(catalogRoleRepository.save(entity));
+        CatalogRoleEntity saved = catalogRoleRepository.save(entity);
+        events.publish(CatalogEventType.CATALOG_ROLE_UPDATED, catalogName, CatalogEvent.TARGET_ROLE,
+                catalogRoleName, Map.of("entityVersion", saved.getEntityVersion()));
+        return ManagementMappers.toDto(saved);
     }
 
     /**
@@ -108,6 +118,8 @@ public class CatalogRoleService {
         CatalogRoleEntity entity = require(catalogName, catalogRoleName);
         catalogRoleAssignmentRepository.deleteByCatalogRoleId(entity.getId());
         catalogRoleRepository.delete(entity);
+        events.publish(CatalogEventType.CATALOG_ROLE_DROPPED, catalogName, CatalogEvent.TARGET_ROLE,
+                catalogRoleName, Map.of());
     }
 
     /**

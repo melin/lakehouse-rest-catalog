@@ -11,6 +11,9 @@ import io.github.melin.lakehouse.rest.domain.repo.PartitionRepository;
 import io.github.melin.lakehouse.rest.domain.repo.SemanticViewRepository;
 import io.github.melin.lakehouse.rest.domain.repo.TableRepository;
 import io.github.melin.lakehouse.rest.domain.repo.ViewRepository;
+import io.github.melin.lakehouse.rest.event.CatalogEvent;
+import io.github.melin.lakehouse.rest.event.CatalogEventPublisher;
+import io.github.melin.lakehouse.rest.event.CatalogEventType;
 import io.github.melin.lakehouse.rest.paimon.dto.DatabaseDtos;
 import io.github.melin.lakehouse.rest.service.CatalogService;
 import io.github.melin.lakehouse.rest.support.ApiException;
@@ -50,6 +53,7 @@ public class DatabaseService {
     private final ConsumerRepository consumerRepository;
     private final CatalogService catalogService;
     private final RestServerProperties properties;
+    private final CatalogEventPublisher events;
 
     @Transactional(readOnly = true)
     public DatabaseDtos.ListDatabasesResponse list(String prefix, Integer maxResults, String pageToken) {
@@ -82,6 +86,8 @@ public class DatabaseService {
         database.setLocation(Paths.databaseLocation(catalog.getWarehouse(), request.name()));
         database.markCreated(RequestContext.principal(), RequestContext.now());
         databaseRepository.save(database);
+        events.publish(CatalogEventType.NAMESPACE_CREATED, prefix, CatalogEvent.TARGET_NAMESPACE,
+                request.name(), Map.of("format", "PAIMON"));
     }
 
     @Transactional(readOnly = true)
@@ -97,7 +103,10 @@ public class DatabaseService {
      */
     @Transactional
     public void drop(String prefix, String name) {
-        cascadeDelete(require(prefix, name));
+        DatabaseEntity database = require(prefix, name);
+        cascadeDelete(database);
+        events.publish(CatalogEventType.NAMESPACE_DROPPED, prefix, CatalogEvent.TARGET_NAMESPACE,
+                name, Map.of("format", "PAIMON"));
     }
 
     /**
@@ -105,6 +114,9 @@ public class DatabaseService {
      *
      * <p>供管理 API 删除 catalog 时级联使用，与 {@link #drop(String, String)} 走同一段清理逻辑，
      * 保证两条删除路径不会产生不一致的残留。
+     *
+     * <p>不逐库发 {@code namespace.dropped}：调用方已经发了一条 {@code catalog.dropped}，
+     * 一次删目录在事件流里膨胀成几百条只会淹没真正要看的那条。
      *
      * @return 被删除的 database 数量
      */
@@ -167,6 +179,12 @@ public class DatabaseService {
         database.setOptions(options);
         database.touch(RequestContext.principal(), RequestContext.now());
         databaseRepository.save(database);
+        // removals 全是「本来就不存在」的键时 options 没变，不发事件（§3 规则 3）
+        if (!removed.isEmpty() || !updated.isEmpty()) {
+            events.publish(CatalogEventType.NAMESPACE_UPDATED, prefix,
+                    CatalogEvent.TARGET_NAMESPACE, name,
+                    Map.of("format", "PAIMON", "updated", updated, "removed", removed));
+        }
         return new DatabaseDtos.AlterDatabaseResponse(removed, updated, missing);
     }
 

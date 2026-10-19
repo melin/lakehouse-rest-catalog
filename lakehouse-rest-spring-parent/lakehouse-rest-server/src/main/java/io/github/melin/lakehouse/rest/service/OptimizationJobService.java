@@ -525,7 +525,12 @@ public class OptimizationJobService {
     }
 
     /**
-     * 批次到达终态后发一条 {@code optimization.job_finished} 事件。
+     * 批次到达终态后按终态发一条事件：{@code job_succeeded} / {@code job_partially_succeeded} /
+     * {@code job_failed} / {@code job_canceled}。
+     *
+     * <p><b>为什么按终态分型而不是一条 {@code job_finished} 带 state 属性。</b>消费方最常做的
+     * 一件事是「失败就告警」，分型之后这条规则是订阅一个类型，而不用在报文里再判一次
+     * {@code state}；反过来「所有批次终态都要」也有现成的类别（{@code OPTIMIZATION}）可用。
      *
      * <p>只发一次的保障来自「先判终态再写」的调用方纪律之外，这里再兜一道：
      * 事件只在 {@code status} 已是终态时发布，重复调用（调度与回调赛跑）不会发出
@@ -537,7 +542,13 @@ public class OptimizationJobService {
         if (status == null || !status.terminal()) {
             return;
         }
-        events.publish(CatalogEventType.OPTIMIZATION_JOB_FINISHED, catalogName(job.getCatalogId()),
+        CatalogEventType type = switch (status) {
+            case SUCCESS -> CatalogEventType.OPTIMIZATION_JOB_SUCCEEDED;
+            case PARTIAL_SUCCESS -> CatalogEventType.OPTIMIZATION_JOB_PARTIALLY_SUCCEEDED;
+            case CANCELED -> CatalogEventType.OPTIMIZATION_JOB_CANCELED;
+            default -> CatalogEventType.OPTIMIZATION_JOB_FAILED;
+        };
+        events.publish(type, catalogName(job.getCatalogId()),
                 CatalogEvent.TARGET_JOB, job.getId(),
                 Map.of("jobId", job.getId(), "state", job.getStatus(), "cause", cause,
                         "tables", job.getTableCount(), "trigger", job.getTriggerType()));

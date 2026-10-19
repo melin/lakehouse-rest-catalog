@@ -2,7 +2,7 @@
   <div class="pc-page">
     <PageHeader
       title="事件"
-      subtitle="目录的事件流：表创建/删除/重命名、提交、授权变更、优化策略变更与任务终态都记进同一张 audit_event 表，Paimon 与 Iceberg 两种表格式在同一个流里。这里的「刷新」是带游标的增量拉取，只取上次之后新发生的事件。"
+      subtitle="目录的事件流：catalog / 库 / 表 / 视图 / 授权 / 主体与角色 / 优化策略与批次终态都记进同一张 audit_event 表，Paimon 与 Iceberg 两种表格式在同一个流里。这里的「刷新」是带游标的增量拉取，只取上次之后新发生的事件。"
     >
       <template #actions>
         <el-button size="small" :loading="loading" @click="refresh">
@@ -28,9 +28,15 @@
             :value="catalog.name"
           />
         </el-select>
+        <el-select v-model="filter.category" size="small" class="pc-evt-filter" placeholder="类别">
+          <el-option label="全部类别" value="" />
+          <el-option v-for="item in CATEGORIES" :key="item.value" :label="item.label" :value="item.value" />
+        </el-select>
         <el-select v-model="filter.type" size="small" class="pc-evt-filter" placeholder="事件类型">
           <el-option label="全部类型" value="" />
-          <el-option v-for="item in TYPES" :key="item.value" :label="item.label" :value="item.value" />
+          <el-option-group v-for="group in TYPE_GROUPS" :key="group.label" :label="group.label">
+            <el-option v-for="item in group.items" :key="item.value" :label="item.label" :value="item.value" />
+          </el-option-group>
         </el-select>
         <TipNote>
           <b>增量契约</b>（docs/event-framework.md §4）：首次进入显示当前最新的一页，
@@ -39,8 +45,8 @@
           服务端不提供往回翻页；要看更早的历史，点「重置游标」重新取最新一页
           （窗口是最近 {{ LIMIT }} 条，不是全部历史）。
           <br /><br />
-          「目录」筛选在服务端做（查询参数），「事件类型」筛选在浏览器里做——
-          事件流本身只有一个 type 字段，不值得为它再发一次请求。
+          「目录」与「类别」筛选在服务端做（查询参数），换挡会重置游标；
+          「事件类型」筛选在浏览器里做——类型是类别的细分，本地筛不必再发一次请求。
         </TipNote>
         <span class="pc-spacer" />
         <span class="pc-dim">游标 #{{ cursor === null ? '—' : cursor }}</span>
@@ -67,6 +73,8 @@
                   </dd>
                   <dt>类型</dt>
                   <dd><span class="pc-mono">{{ row.type }}</span></dd>
+                  <dt>类别</dt>
+                  <dd><span class="pc-mono">{{ row.category }}</span></dd>
                 </dl>
                 <SectionTitle title="属性" />
                 <JsonBlock :value="row.attributes" />
@@ -169,23 +177,87 @@ const LIMIT = 200
 /** 显示列表的封顶条数：增量一直插到最前面，不裁的话无限刷新会无限涨。 */
 const MAX_ROWS = 1000
 
-/** 七类事件的展示元数据。服务端新增类型时这里是空档——表格仍会如实显示 wire 值。 */
-const TYPES = [
-  { value: 'table.created', label: '表创建', tag: 'success' },
-  { value: 'table.dropped', label: '表删除', tag: 'danger' },
-  { value: 'table.renamed', label: '表重命名', tag: 'warning' },
-  { value: 'table.committed', label: '表提交', tag: 'primary' },
-  { value: 'grant.changed', label: '授权变更', tag: 'warning' },
-  { value: 'optimization.policy_changed', label: '优化策略变更', tag: 'info' },
-  { value: 'optimization.job_finished', label: '优化任务终态', tag: 'info' },
+/**
+ * 事件类别：与服务端 `CatalogEventCategory` 一一对应，也是服务端过滤参数 `category`
+ * 的取值（键带引号，verify-console 逐字比对）。
+ */
+const CATEGORIES = [
+  { value: 'CATALOG', label: '目录' },
+  { value: 'NAMESPACE', label: '库 / Namespace' },
+  { value: 'TABLE', label: '表' },
+  { value: 'VIEW', label: '视图' },
+  { value: 'GRANT', label: '授权' },
+  { value: 'POLICY', label: '策略' },
+  { value: 'PRINCIPAL', label: '主体' },
+  { value: 'PRINCIPAL_ROLE', label: '主体角色' },
+  { value: 'CATALOG_ROLE', label: 'Catalog 角色' },
+  { value: 'OPTIMIZATION', label: '优化' },
 ]
+
+/**
+ * 事件类型的展示元数据，与服务端 `CatalogEventType` 的 wire 值一一对应
+ * （verify-console 会拿枚举逐条比对：漏一条的那种事件就显示成 wire 原文）。
+ *
+ * `category` 用于把类型下拉按类别分组，也是「换类别时清掉不匹配的类型筛选」的依据。
+ */
+const TYPES = [
+  { value: 'catalog.created', label: '创建目录', tag: 'success', category: 'CATALOG' },
+  { value: 'catalog.updated', label: '修改目录', tag: 'warning', category: 'CATALOG' },
+  { value: 'catalog.dropped', label: '删除目录', tag: 'danger', category: 'CATALOG' },
+  { value: 'namespace.created', label: '建库', tag: 'success', category: 'NAMESPACE' },
+  { value: 'namespace.updated', label: '改库属性', tag: 'warning', category: 'NAMESPACE' },
+  { value: 'namespace.dropped', label: '删库', tag: 'danger', category: 'NAMESPACE' },
+  { value: 'table.created', label: '建表', tag: 'success', category: 'TABLE' },
+  { value: 'table.registered', label: '注册表', tag: 'info', category: 'TABLE' },
+  { value: 'table.committed', label: '表提交', tag: 'primary', category: 'TABLE' },
+  { value: 'table.renamed', label: '表重命名', tag: 'warning', category: 'TABLE' },
+  { value: 'table.unregistered', label: '注销表', tag: 'info', category: 'TABLE' },
+  { value: 'table.dropped', label: '删表', tag: 'danger', category: 'TABLE' },
+  { value: 'view.created', label: '建视图', tag: 'success', category: 'VIEW' },
+  { value: 'view.updated', label: '改视图', tag: 'warning', category: 'VIEW' },
+  { value: 'view.renamed', label: '视图重命名', tag: 'warning', category: 'VIEW' },
+  { value: 'view.dropped', label: '删视图', tag: 'danger', category: 'VIEW' },
+  { value: 'grant.granted', label: '授予权限', tag: 'primary', category: 'GRANT' },
+  { value: 'grant.revoked', label: '撤销权限', tag: 'warning', category: 'GRANT' },
+  { value: 'principal.created', label: '建主体', tag: 'success', category: 'PRINCIPAL' },
+  { value: 'principal.updated', label: '改主体', tag: 'warning', category: 'PRINCIPAL' },
+  { value: 'principal.credentials_rotated', label: '轮换凭据', tag: 'warning', category: 'PRINCIPAL' },
+  { value: 'principal.credentials_reset', label: '重置凭据', tag: 'warning', category: 'PRINCIPAL' },
+  { value: 'principal.role_granted', label: '授予角色', tag: 'primary', category: 'PRINCIPAL' },
+  { value: 'principal.role_revoked', label: '收回角色', tag: 'warning', category: 'PRINCIPAL' },
+  { value: 'principal.dropped', label: '删主体', tag: 'danger', category: 'PRINCIPAL' },
+  { value: 'principal_role.created', label: '建主体角色', tag: 'success', category: 'PRINCIPAL_ROLE' },
+  { value: 'principal_role.updated', label: '改主体角色', tag: 'warning', category: 'PRINCIPAL_ROLE' },
+  { value: 'principal_role.catalog_role_granted', label: '绑定 Catalog 角色', tag: 'primary', category: 'PRINCIPAL_ROLE' },
+  { value: 'principal_role.catalog_role_revoked', label: '解绑 Catalog 角色', tag: 'warning', category: 'PRINCIPAL_ROLE' },
+  { value: 'principal_role.dropped', label: '删主体角色', tag: 'danger', category: 'PRINCIPAL_ROLE' },
+  { value: 'catalog_role.created', label: '建 Catalog 角色', tag: 'success', category: 'CATALOG_ROLE' },
+  { value: 'catalog_role.updated', label: '改 Catalog 角色', tag: 'warning', category: 'CATALOG_ROLE' },
+  { value: 'catalog_role.dropped', label: '删 Catalog 角色', tag: 'danger', category: 'CATALOG_ROLE' },
+  { value: 'optimization.policy_updated', label: '优化策略变更', tag: 'info', category: 'POLICY' },
+  { value: 'optimization.job_succeeded', label: '优化成功', tag: 'success', category: 'OPTIMIZATION' },
+  { value: 'optimization.job_partially_succeeded', label: '优化部分成功', tag: 'warning', category: 'OPTIMIZATION' },
+  { value: 'optimization.job_failed', label: '优化失败', tag: 'danger', category: 'OPTIMIZATION' },
+  { value: 'optimization.job_canceled', label: '优化取消', tag: 'info', category: 'OPTIMIZATION' },
+]
+
+/** 类型下拉按类别分组：38 个类型平铺成一列太长，分组后是「先想类别、再想动作」。 */
+const TYPE_GROUPS = computed(() => CATEGORIES
+  .map((category) => ({
+    label: category.label,
+    items: TYPES.filter((item) => item.category === category.value),
+  }))
+  .filter((group) => group.items.length))
 
 /** 目标类型的显示名。与 `CatalogEvent` 的 TARGET_* 常量对应（键带引号，verify-console 逐字比对）。 */
 const TARGET_LABELS = {
   'TABLE': '表',
   'NAMESPACE': 'Namespace',
   'CATALOG': 'Catalog',
+  'VIEW': '视图',
   'GRANT': '授权',
+  'PRINCIPAL': '主体',
+  'ROLE': '角色',
   'JOB': '任务',
 }
 
@@ -198,7 +270,7 @@ const rows = ref([])
 /** 增量游标（audit_event.id）。null 表示还没建立游标——下一次拉取按「首次」走。 */
 const cursor = ref(null)
 
-const filter = reactive({ catalog: '', type: '' })
+const filter = reactive({ catalog: '', category: '', type: '' })
 
 const filteredRows = computed(() => rows.value.filter((event) => {
   if (filter.type && event.type !== filter.type) return false
@@ -208,7 +280,7 @@ const filteredRows = computed(() => rows.value.filter((event) => {
 const { page, pageSize, paged: pagedRows } = useLocalPaging(filteredRows)
 
 function typeOf(value) {
-  return TYPES.find((item) => item.value === value) || { label: value, tag: 'info' }
+  return TYPES.find((item) => item.value === value) || { label: value, tag: 'info', category: undefined }
 }
 
 function targetLabel(value) {
@@ -229,7 +301,11 @@ async function initialLoad() {
   loading.value = true
   error.value = ''
   try {
-    const payload = await consoleApi.listEvents({ catalog: filter.catalog, limit: LIMIT })
+    const payload = await consoleApi.listEvents({
+      catalog: filter.catalog,
+      category: filter.category,
+      limit: LIMIT,
+    })
     rows.value = [...payload.events].reverse()
     cursor.value = payload.nextCursor
     loaded.value = true
@@ -254,7 +330,12 @@ async function refresh() {
     let since = cursor.value
     let added = []
     for (let round = 0; round < 10; round += 1) {
-      const payload = await consoleApi.listEvents({ catalog: filter.catalog, since, limit: LIMIT })
+      const payload = await consoleApi.listEvents({
+        catalog: filter.catalog,
+        category: filter.category,
+        since,
+        limit: LIMIT,
+      })
       added = added.concat(payload.events)
       since = payload.nextCursor
       if (!payload.hasMore) break
@@ -279,10 +360,19 @@ async function resetCursor() {
   await initialLoad()
 }
 
-// catalog 是服务端过滤条件，换挡必须重置游标（见组件注释）；类型过滤是本地的，不动流。
-// 换挡重拉走 initialLoad 而不是 resetCursor：换目录要的是「这个目录现在最新的一页」，
-// 不是清屏等结果。分页归位交给 useLocalPaging（它监听数据整体替换）。
+// catalog 与 category 都是服务端过滤条件，换挡必须重置游标（见组件注释）；
+// 类型过滤是本地的，不动流。换挡重拉走 initialLoad 而不是 resetCursor：换筛选
+// 要的是「这个范围内现在最新的一页」，不是清屏等结果。分页归位交给 useLocalPaging。
 watch(() => filter.catalog, () => {
+  initialLoad()
+})
+
+// 换类别时把不匹配的类型筛选清掉：留着它只会得到一张空表，而看的人会以为
+// 「这个类别下没有事件」
+watch(() => filter.category, (category) => {
+  if (filter.type && typeOf(filter.type).category !== category) {
+    filter.type = ''
+  }
   initialLoad()
 })
 

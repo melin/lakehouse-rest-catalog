@@ -24,6 +24,11 @@ import org.springframework.stereotype.Service;
  * <p><b>逐个监听器单独兜底。</b>一个监听器抛异常只记 ERROR，其余监听器照常收到
  * 事件，业务请求不受影响——事件是业务的旁观者，不是参与者。唯一例外是 DB 监听器
  * 与业务同事务：事务回滚时它写的事件一起消失，这是设计要的性质（§3 规则 1）。
+ *
+ * <p><b>订阅过滤在这里统一做。</b>部署可以用 {@code paimon.rest.event-listener.types}
+ * 只启用部分监听器、用 {@code <name>.enabled-event-categories} 让某个监听器只收一类事件
+ * （例如日志只记 TABLE 与 GRANT）。监听器实现因此不需要各自解析配置，新加的实现自动
+ * 获得同样的开关——见 {@link EventListenerSettings}。
  */
 @Service
 public class CatalogEventPublisher {
@@ -31,9 +36,11 @@ public class CatalogEventPublisher {
     private static final Logger log = LoggerFactory.getLogger(CatalogEventPublisher.class);
 
     private final List<CatalogEventListener> listeners;
+    private final EventListenerSettings settings;
 
-    public CatalogEventPublisher(List<CatalogEventListener> listeners) {
+    public CatalogEventPublisher(List<CatalogEventListener> listeners, EventListenerSettings settings) {
         this.listeners = listeners == null ? List.of() : List.copyOf(listeners);
+        this.settings = settings;
     }
 
     /**
@@ -50,6 +57,12 @@ public class CatalogEventPublisher {
                 RequestContext.principal(), RequestContext.requestId(), RequestContext.now(),
                 targetType, target == null ? "" : target, attributes);
         for (CatalogEventListener listener : listeners) {
+            // 订阅过滤在这里而不是在各监听器里：监听器只管「收到事件做什么」，
+            // 「该不该收到」是部署配置（types / enabled-event-categories），
+            // 放在发布器上，新加的监听器自动获得同样的开关，不用自己实现一遍
+            if (!settings.enabled(listener.name()) || !settings.accepts(listener.name(), type)) {
+                continue;
+            }
             try {
                 listener.onEvent(event);
             } catch (RuntimeException exception) {

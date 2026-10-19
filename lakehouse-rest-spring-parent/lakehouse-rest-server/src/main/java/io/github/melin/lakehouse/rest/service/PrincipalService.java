@@ -16,6 +16,9 @@ import io.github.melin.lakehouse.rest.dto.ManagementDtos.PrincipalWithCredential
 import io.github.melin.lakehouse.rest.dto.ManagementDtos.Principals;
 import io.github.melin.lakehouse.rest.dto.ManagementDtos.ResetPrincipalRequest;
 import io.github.melin.lakehouse.rest.dto.ManagementDtos.UpdatePrincipalRequest;
+import io.github.melin.lakehouse.rest.event.CatalogEvent;
+import io.github.melin.lakehouse.rest.event.CatalogEventPublisher;
+import io.github.melin.lakehouse.rest.event.CatalogEventType;
 import io.github.melin.lakehouse.rest.support.ApiException;
 import io.github.melin.lakehouse.rest.support.Paging;
 import io.github.melin.lakehouse.rest.support.ResourceType;
@@ -36,6 +39,9 @@ import org.springframework.transaction.annotation.Transactional;
  * <p>对应管理规格的 {@code /principals} 一族端点。凭据语义：
  * 创建、{@code rotate}、{@code reset} 三个操作会返回明文 {@code clientSecret}，
  * 其余任何响应都不含密钥，库中只存摘要。
+ *
+ * <p><b>主体是 realm 级资源，不属于任何 catalog</b>：事件里的 {@code catalog} 列
+ * 留空串，控制台在「全部 Catalog」下能看见、按目录筛时看不见——这正是它的语义。
  */
 @Service
 @RequiredArgsConstructor
@@ -45,6 +51,7 @@ public class PrincipalService {
     private final PrincipalRepository principalRepository;
     private final PrincipalRoleRepository principalRoleRepository;
     private final PrincipalRoleAssignmentRepository principalRoleAssignmentRepository;
+    private final CatalogEventPublisher events;
 
     /** {@code GET /principals}。 */
     @Transactional(readOnly = true)
@@ -83,6 +90,8 @@ public class PrincipalService {
         applyCredential(entity, clientId, secret);
 
         PrincipalEntity saved = principalRepository.save(entity);
+        events.publish(CatalogEventType.PRINCIPAL_CREATED, "", CatalogEvent.TARGET_PRINCIPAL, name,
+                Map.of("rotationRequired", saved.isCredentialRotationRequired()));
         return withCredentials(saved, secret);
     }
 
@@ -109,7 +118,10 @@ public class PrincipalService {
         entity.setProperties(new LinkedHashMap<>(request.properties()));
         entity.setEntityVersion(entity.getEntityVersion() + 1);
         entity.touch(RequestContext.principal(), RequestContext.now());
-        return toDto(principalRepository.save(entity));
+        PrincipalEntity saved = principalRepository.save(entity);
+        events.publish(CatalogEventType.PRINCIPAL_UPDATED, "", CatalogEvent.TARGET_PRINCIPAL, name,
+                Map.of("entityVersion", saved.getEntityVersion()));
+        return toDto(saved);
     }
 
     /**
@@ -123,6 +135,8 @@ public class PrincipalService {
         PrincipalEntity entity = require(name);
         principalRoleAssignmentRepository.deleteByPrincipalId(entity.getId());
         principalRepository.delete(entity);
+        events.publish(CatalogEventType.PRINCIPAL_DROPPED, "", CatalogEvent.TARGET_PRINCIPAL, name,
+                Map.of());
     }
 
     /** {@code POST /principals/{principalName}/rotate}：换密钥，保留 clientId。 */
@@ -135,6 +149,10 @@ public class PrincipalService {
         entity.setCredentialRotationRequired(false);
         entity.setEntityVersion(entity.getEntityVersion() + 1);
         entity.touch(RequestContext.principal(), RequestContext.now());
+        // 属性里不放 clientId / secret：轮换这件事本身要留痕，但审计表不该成为
+        // 第二份凭据来源
+        events.publish(CatalogEventType.PRINCIPAL_CREDENTIALS_ROTATED, "",
+                CatalogEvent.TARGET_PRINCIPAL, name, Map.of());
         return withCredentials(principalRepository.save(entity), secret);
     }
 
@@ -158,6 +176,8 @@ public class PrincipalService {
         entity.setCredentialRotationRequired(false);
         entity.setEntityVersion(entity.getEntityVersion() + 1);
         entity.touch(RequestContext.principal(), RequestContext.now());
+        events.publish(CatalogEventType.PRINCIPAL_CREDENTIALS_RESET, "",
+                CatalogEvent.TARGET_PRINCIPAL, name, Map.of());
         return withCredentials(principalRepository.save(entity), secret);
     }
 
@@ -201,6 +221,8 @@ public class PrincipalService {
         assignment.setPrincipalRoleId(role.getId());
         assignment.markCreated(RequestContext.principal(), RequestContext.now());
         principalRoleAssignmentRepository.save(assignment);
+        events.publish(CatalogEventType.PRINCIPAL_ROLE_ASSIGNED, "",
+                CatalogEvent.TARGET_PRINCIPAL, principalName, Map.of("role", principalRoleName));
     }
 
     /** {@code DELETE /principals/{principalName}/principal-roles/{principalRoleName}}。 */
@@ -216,6 +238,8 @@ public class PrincipalService {
         }
         principalRoleAssignmentRepository
                 .deleteByPrincipalIdAndPrincipalRoleId(principal.getId(), role.getId());
+        events.publish(CatalogEventType.PRINCIPAL_ROLE_REVOKED, "",
+                CatalogEvent.TARGET_PRINCIPAL, principalName, Map.of("role", principalRoleName));
     }
 
     /** 按名称取主体，不存在则 404。 */

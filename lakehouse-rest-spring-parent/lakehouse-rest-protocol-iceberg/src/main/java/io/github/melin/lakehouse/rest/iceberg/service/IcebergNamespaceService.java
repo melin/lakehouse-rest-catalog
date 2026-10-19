@@ -9,6 +9,9 @@ import io.github.melin.lakehouse.rest.domain.repo.FunctionRepository;
 import io.github.melin.lakehouse.rest.domain.repo.SemanticViewRepository;
 import io.github.melin.lakehouse.rest.domain.repo.TableRepository;
 import io.github.melin.lakehouse.rest.domain.repo.ViewRepository;
+import io.github.melin.lakehouse.rest.event.CatalogEvent;
+import io.github.melin.lakehouse.rest.event.CatalogEventPublisher;
+import io.github.melin.lakehouse.rest.event.CatalogEventType;
 import io.github.melin.lakehouse.rest.iceberg.dto.IcebergDtos;
 import io.github.melin.lakehouse.rest.service.CatalogService;
 import io.github.melin.lakehouse.rest.support.ApiException;
@@ -52,6 +55,7 @@ public class IcebergNamespaceService {
     private final SemanticViewRepository semanticViewRepository;
     private final CatalogService catalogService;
     private final RestServerProperties properties;
+    private final CatalogEventPublisher events;
 
     // ------------------------------------------------------------------ 列举
 
@@ -118,6 +122,8 @@ public class IcebergNamespaceService {
         database.setLocation(Paths.databaseLocation(catalog.getWarehouse(), name));
         database.markCreated(RequestContext.principal(), RequestContext.now());
         databaseRepository.save(database);
+        events.publish(CatalogEventType.NAMESPACE_CREATED, prefix, CatalogEvent.TARGET_NAMESPACE,
+                name, Map.of("format", "ICEBERG", "levels", levels.size()));
         return new IcebergDtos.CreateNamespaceResponse(levels, optionsOf(database));
     }
 
@@ -172,6 +178,11 @@ public class IcebergNamespaceService {
         database.setOptions(options);
         database.touch(RequestContext.principal(), RequestContext.now());
         databaseRepository.save(database);
+        if (!updated.isEmpty() || !removed.isEmpty()) {
+            events.publish(CatalogEventType.NAMESPACE_UPDATED, prefix,
+                    CatalogEvent.TARGET_NAMESPACE, database.getName(),
+                    Map.of("format", "ICEBERG", "updated", updated, "removed", removed));
+        }
         return new IcebergDtos.UpdateNamespacePropertiesResponse(updated, removed, missing);
     }
 
@@ -197,6 +208,8 @@ public class IcebergNamespaceService {
                     "NamespaceNotEmptyException");
         }
         databaseRepository.delete(database);
+        events.publish(CatalogEventType.NAMESPACE_DROPPED, prefix, CatalogEvent.TARGET_NAMESPACE,
+                database.getName(), Map.of("format", "ICEBERG"));
     }
 
     /** 该 namespace 下第一个非空的从属对象类型；全空返回 {@code null}。 */

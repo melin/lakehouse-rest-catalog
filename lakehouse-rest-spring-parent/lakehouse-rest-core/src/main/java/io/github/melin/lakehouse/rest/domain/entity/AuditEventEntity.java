@@ -24,12 +24,17 @@ import lombok.Setter;
  * <p><b>{@code id} 是增量拉取的游标，不是 {@code eventId}。</b>UUID 无序，
  * 按它分页不稳定；自增号的顺序即写入顺序。{@code (catalog, id)} 的联合索引
  * 支撑「按目录增量拉」这条最高频的查询。
+ *
+ * <p>{@code category} 是 {@code type} 的冗余列（由事件类型决定），存下来是为了让
+ * 「只看权限变更」这类过滤走索引，而不是在 SQL 里列一长串 wire 值做 {@code IN}。
+ * 冗余的代价是两者必须同步——同步点在 {@link #of}，只有这一个入口。
  */
 @Entity
 @Table(name = "audit_event",
         indexes = {
                 @Index(name = "ix_audit_event_catalog", columnList = "catalog, id"),
-                @Index(name = "ix_audit_event_type", columnList = "type")
+                @Index(name = "ix_audit_event_type", columnList = "type"),
+                @Index(name = "ix_audit_event_category", columnList = "category, id")
         })
 @Getter
 @Setter
@@ -45,6 +50,10 @@ public class AuditEventEntity {
 
     @Column(name = "type", length = 64, nullable = false)
     private String type;
+
+    /** 事件类别（{@code TABLE} / {@code GRANT} …），由 {@code type} 决定，见类注释。 */
+    @Column(name = "category", length = 32, nullable = false)
+    private String category;
 
     @Column(name = "catalog", length = 255, nullable = false)
     private String catalog;
@@ -73,6 +82,7 @@ public class AuditEventEntity {
         AuditEventEntity entity = new AuditEventEntity();
         entity.setEventId(event.eventId());
         entity.setType(event.type().wire());
+        entity.setCategory(event.category().name());
         entity.setCatalog(event.catalog());
         entity.setPrincipal(io.github.melin.lakehouse.rest.support.AuditPrincipal.of(event.principal()));
         entity.setRequestId(event.requestId());

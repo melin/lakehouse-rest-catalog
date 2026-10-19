@@ -1137,6 +1137,7 @@ print("15. 事件页（事件流的增量契约要前后端钉在一起）")
 
 events_view = read(os.path.join(CONSOLE_DIR, "src/views/EventsView.vue"))
 event_type_source = read(os.path.join(CORE_JAVA, "event/CatalogEventType.java"))
+event_category_source = read(os.path.join(CORE_JAVA, "event/CatalogEventCategory.java"))
 catalog_event_source = read(os.path.join(CORE_JAVA, "event/CatalogEvent.java"))
 
 check("endpoints.js 登记了 listEvents 且路径与端点一致",
@@ -1147,9 +1148,22 @@ check("EventsView 实现增量拉取（带 since 游标、消费 nextCursor）",
       "listEvents" in events_view and "since" in events_view and "nextCursor" in events_view,
       "刷新应带 since=游标 只取新事件；丢了 since 就是全量重拉，增量契约失效")
 
+# 枚举里的 wire 值写在构造参数第二位上：`X(CatalogEventCategory.TABLE, "table.created")`，
+# 个别常量换行书写，所以匹配要允许空白跨越换行
+wire_types = re.findall(r'CatalogEventCategory\.[A-Z_]+,\s*"([a-z._]+)"', event_type_source)
 check("事件类型清单覆盖 CatalogEventType 的全部 wire 值",
-      all(wire in events_view for wire in re.findall(r'\("([a-z._]+)"\)', event_type_source)),
+      bool(wire_types) and all(wire in events_view for wire in wire_types),
       "前端 TYPES 少了服务端新增的类型时，那种事件会显示成 wire 原文")
+
+# 类别是监听器订阅的粒度，也是事件页的筛选项：前端少一个类别 = 那个筛选项永远筛不出东西
+categories = re.findall(r"^ {4}([A-Z][A-Z_]{2,})\s*,?\s*$", event_category_source, re.M)
+check("事件类别清单覆盖 CatalogEventCategory 的全部取值",
+      bool(categories) and all(f"'{category}'" in events_view for category in categories),
+      "前端 CATEGORIES 少了服务端新增的类别时，该类事件只能靠类型筛")
+
+check("类别筛选走服务端参数（category 随游标一起发出）",
+      "category: filter.category" in events_view,
+      "类别是服务端过滤条件；只在前端筛会让「换类别」仍沿用旧游标的整页数据")
 
 check("目标类型显示名覆盖 CatalogEvent 的全部 TARGET_* 常量",
       all(f"'{value}'" in events_view

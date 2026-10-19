@@ -350,7 +350,7 @@ Jackson 2.15.2 抬到 2.21.x，并替换 netty 与 jersey，导致 Spark 侧出�
 | | 行过滤 / 列脱敏 | 仍属路线图 | ❌ 无（`auth` 端点返回空规则） |
 | 策略与运维 | 策略存储：4 类 `system.*` + 继承 + `applicable-policies` | 1.0 起，1.7 文档完整 | ⚠️ 等价语义散在「catalog 默认 + 表级覆盖」的开关里，无名、无版本、无来源 |
 | | 策略执行 | **不做**（存了不会跑） | ✅ 有（调度 + k8s Spark 任务 + 历史） |
-| 可观测与集成 | 事件框架（BEFORE/AFTER，多监听器，按类型过滤） | 1.0 / 1.5 | ❌ 无事件、无审计表 |
+| 可观测与集成 | 事件框架（BEFORE/AFTER，多监听器，按类型过滤） | 1.0 / 1.5 | ✅ 已实现（只发 AFTER，10 类 38 型，按类别/类型订阅） |
 | | 引擎回传查询指标（行数/字节/提交） | 1.3 起 | ❌ 无 |
 | | CLI / Python 客户端 / Helm / admin tool / 二进制分发 | 1.0—1.5 | ⚠️ 有 Helm 清单与校验脚本，无 CLI |
 
@@ -393,23 +393,25 @@ Polaris 的形态：`POST /polaris/v1/{prefix}/namespaces/{ns}/policies` 建策�
   社区也有反面意见（建议深合并），但深合并会让「生效值」无法用一条记录解释，
   排障时反而更难。要改单个参数就新写一条策略，语义显式。
 
-#### ② 事件框架：审计、缓存失效、外部同步共用一条出口 —— P1
+#### ② 事件框架：审计、缓存失效、外部同步共用一条出口 —— P1（**已实现**）
 
 Polaris 在每次操作前后各发一个事件，`PolarisEvent` 带 `eventId` / `timestamp` / `user`
-（含激活的角色）/ `requestId` / OpenTelemetry 上下文；1.5 起支持多监听器与按事件类型过滤。
+（含激活的角色）/ `requestId` / OpenTelemetry 上下文；1.5 起支持多监听器与按事件类型 /
+类别过滤。
 
 我们没有事件（代码里没有 `ApplicationEventPublisher`，也没有审计表），
 现在只有实体上的 `createdBy` / `updatedBy` 两个字段——它能回答「谁最后改的」，
 回答不了「谁在什么时候删了这张表、删之前叫什么、当时带着什么权限」。
 
-最小实现（不必照抄它的二十几个事件名）：
+已按下面的形状落地（设计与清单见 [`event-framework.md`](event-framework.md)）：
 
-- 定义 6~8 个我们真正关心的领域事件：表创建/删除/重命名、提交、授权变更、
-  策略变更、优化任务终态。
-- 一张 `audit_event` 表（event_id / type / principal / request_id / target / 时间 / 属性 JSON），
-  写库与写日志走同一个 listener。
-- listener 可插拔：先 DB + 日志，再按需接 Kafka / Webhook。控制台的「刷新」也可以从
-  全量轮询改成「按事件增量拉」。
+- 10 类 38 个领域事件，覆盖 catalog / 库 / 表 / 视图 / 授权 / 主体与角色 / 优化；
+  **只发 AFTER**，丢掉 Polaris 的 BEFORE 与 GET/LIST 读事件。
+- 一张 `audit_event` 表（event_id / type / category / principal / request_id / target /
+  时间 / 属性 JSON），写库与写日志是两个 listener。
+- listener 可插拔，配置形状照搬 Polaris：`paimon.rest.event-listener.types` +
+  `<name>.enabled-event-categories` / `.enabled-event-types`（启动期校验）。
+- 控制台的「刷新」已从全量轮询改成按游标增量拉（`?since=` + `?category=`）。
 
 #### ③ 凭据下发的三处加固 —— P1（刷新端点最优先）
 

@@ -29,10 +29,18 @@ public record CatalogEvent(
     public static final String TARGET_TABLE = "TABLE";
     public static final String TARGET_NAMESPACE = "NAMESPACE";
     public static final String TARGET_CATALOG = "CATALOG";
+    public static final String TARGET_VIEW = "VIEW";
     public static final String TARGET_GRANT = "GRANT";
+    public static final String TARGET_PRINCIPAL = "PRINCIPAL";
+    public static final String TARGET_ROLE = "ROLE";
     public static final String TARGET_JOB = "JOB";
 
     public CatalogEvent {
         attributes = attributes == null ? Map.of() : Map.copyOf(attributes);
+    }
+
+    /** 类别由类型决定，不单独存字段——两处声明早晚会不一致。 */
+    public CatalogEventCategory category() {
+        return type.category();
     }
 }

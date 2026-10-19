@@ -6,6 +6,9 @@ import io.github.melin.lakehouse.rest.domain.entity.CatalogEntity;
 import io.github.melin.lakehouse.rest.domain.entity.DatabaseEntity;
 import io.github.melin.lakehouse.rest.domain.entity.ViewEntity;
 import io.github.melin.lakehouse.rest.domain.repo.ViewRepository;
+import io.github.melin.lakehouse.rest.event.CatalogEvent;
+import io.github.melin.lakehouse.rest.event.CatalogEventPublisher;
+import io.github.melin.lakehouse.rest.event.CatalogEventType;
 import io.github.melin.lakehouse.rest.iceberg.dto.IcebergDtos;
 import io.github.melin.lakehouse.rest.iceberg.support.IcebergMetadataFiles;
 import io.github.melin.lakehouse.rest.iceberg.support.IcebergUpdateCodec;
@@ -82,6 +85,7 @@ public class IcebergViewService {
     private final CatalogService catalogService;
     private final StorageFileAccess fileAccess;
     private final RestServerProperties properties;
+    private final CatalogEventPublisher events;
 
     // ------------------------------------------------------------------ 列举
 
@@ -188,6 +192,8 @@ public class IcebergViewService {
         view.setViewSchemaDoc(document);
         view.markCreated(RequestContext.principal(), RequestContext.now());
         viewRepository.save(view);
+        events.publish(CatalogEventType.VIEW_CREATED, prefix, CatalogEvent.TARGET_VIEW,
+                NamespacePaths.toStorageName(levels) + "." + viewName, Map.of("format", "ICEBERG"));
 
         return new IcebergDtos.LoadViewResponse(metadataLocation, Json.readTree(document), null);
     }
@@ -243,6 +249,9 @@ public class IcebergViewService {
                             + expectedLocation + "); refresh the view and retry",
                     "CommitFailedException");
         }
+        events.publish(CatalogEventType.VIEW_UPDATED, prefix, CatalogEvent.TARGET_VIEW,
+                NamespacePaths.toStorageName(levels) + "." + viewName,
+                Map.of("format", "ICEBERG", "updates", updates.size()));
         return new IcebergDtos.LoadViewResponse(newLocation, Json.readTree(document), null);
     }
 
@@ -263,6 +272,8 @@ public class IcebergViewService {
         CatalogEntity catalog = resolve(prefix);
         ViewEntity view = requireIcebergView(catalog, levels, viewName);
         viewRepository.delete(view);
+        events.publish(CatalogEventType.VIEW_DROPPED, prefix, CatalogEvent.TARGET_VIEW,
+                NamespacePaths.toStorageName(levels) + "." + viewName, Map.of("format", "ICEBERG"));
     }
 
     // ------------------------------------------------------------------ 重命名
@@ -299,6 +310,10 @@ public class IcebergViewService {
         view.setName(targetName);
         view.touch(RequestContext.principal(), RequestContext.now());
         viewRepository.save(view);
+        events.publish(CatalogEventType.VIEW_RENAMED, catalog.getPrefix(), CatalogEvent.TARGET_VIEW,
+                NamespacePaths.toStorageName(targetLevels) + "." + targetName,
+                Map.of("format", "ICEBERG",
+                        "from", NamespacePaths.toStorageName(sourceLevels) + "." + sourceName));
     }
 
     // ------------------------------------------------------------------ 内部

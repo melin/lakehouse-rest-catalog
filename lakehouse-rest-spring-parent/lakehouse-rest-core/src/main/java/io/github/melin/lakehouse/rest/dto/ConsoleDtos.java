@@ -387,6 +387,8 @@ public final class ConsoleDtos {
             long id,
             String eventId,
             String type,
+            /** 事件类别（{@code TABLE} / {@code GRANT} …）：由 type 决定，列表页的类别筛选按它走。 */
+            String category,
             String catalog,
             String principal,
             String requestId,

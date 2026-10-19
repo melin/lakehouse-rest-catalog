@@ -140,7 +140,7 @@ public class TableOptimizationService {
         }
         policy.touch(principal, now);
         policyRepository.save(policy);
-        events.publish(CatalogEventType.OPTIMIZATION_POLICY_CHANGED, prefix, CatalogEvent.TARGET_TABLE,
+        events.publish(CatalogEventType.OPTIMIZATION_POLICY_UPDATED, prefix, CatalogEvent.TARGET_TABLE,
                 prefix + "." + ref.database().getName() + "." + tableName,
                 Map.of("scope", "table", "format", format.name(), "enabled", policy.isEnabled()));
         return toPolicy(prefix, ref.database().getName(), table, policy, format);
@@ -212,7 +212,7 @@ public class TableOptimizationService {
         ManagementDtos.UpdateCatalogRequest update = new ManagementDtos.UpdateCatalogRequest(
                 catalog.getEntityVersion(), null, merged, catalog.getStorageConfig());
         catalogService.update(prefix, update);
-        events.publish(CatalogEventType.OPTIMIZATION_POLICY_CHANGED, prefix, CatalogEvent.TARGET_CATALOG,
+        events.publish(CatalogEventType.OPTIMIZATION_POLICY_UPDATED, prefix, CatalogEvent.TARGET_CATALOG,
                 prefix,
                 Map.of("scope", "catalog", "format", format.name(), "keys", touched.stream()
                         .map(Action::wire).toList()));
