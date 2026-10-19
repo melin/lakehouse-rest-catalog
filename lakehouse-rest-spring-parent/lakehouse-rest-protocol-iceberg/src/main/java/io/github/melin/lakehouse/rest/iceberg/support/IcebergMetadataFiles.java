@@ -47,7 +47,7 @@ public final class IcebergMetadataFiles {
     /**
      * 推演出下一份表元数据文件的位置。
      *
-     * @param tableLocation    表的根位置（{@code paimon_table.path_value}）
+     * @param tableLocation    表的根位置（{@code lakehouse_table.path_value}）
      * @param previousLocation 当前元数据文件的位置；建表时为 {@code null}
      */
     public static String nextTableMetadataLocation(String tableLocation, String previousLocation) {

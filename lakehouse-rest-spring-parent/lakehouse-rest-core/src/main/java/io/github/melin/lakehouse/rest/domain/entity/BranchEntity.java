@@ -17,7 +17,7 @@ import lombok.Setter;
  * 表分支：指向某个快照的命名历史线，供流式写入与多路消费使用。
  */
 @Entity
-@Table(name = "paimon_branch",
+@Table(name = "lakehouse_branch",
         uniqueConstraints = @UniqueConstraint(name = "uk_branch", columnNames = {"table_id", "name"}),
         indexes = @Index(name = "ix_branch_table", columnList = "table_id"))
 @Getter

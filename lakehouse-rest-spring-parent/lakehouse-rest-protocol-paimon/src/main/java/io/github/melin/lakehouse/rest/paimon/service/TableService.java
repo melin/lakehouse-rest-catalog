@@ -48,7 +48,7 @@ import tools.jackson.databind.JsonNode;
 /**
  * 表生命周期：创建 / 注册 / 查询 / 变更 / 重命名 / 删除，以及快照与 schema 版本管理。
  *
- * <p>schema 每次变更都会写入 {@code paimon_table_schema} 形成历史版本，
+ * <p>schema 每次变更都会写入 {@code lakehouse_table_schema} 形成历史版本，
  * 表实体上的 {@code schemaId} 指向当前版本，因此 {@code rollback-schema} 可以直接改回历史版本。
  * 快照按 {@code snapshot_id} 单调递增存放，{@code rollback} 会丢弃目标之后的所有快照。
  *

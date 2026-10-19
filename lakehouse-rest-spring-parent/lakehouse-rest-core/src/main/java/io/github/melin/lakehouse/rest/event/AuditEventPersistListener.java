@@ -5,7 +5,7 @@ import io.github.melin.lakehouse.rest.domain.repo.AuditEventRepository;
 import org.springframework.stereotype.Component;
 
 /**
- * DB 监听器：把事件写进 {@code audit_event}，与触发它的业务变更同事务。
+ * DB 监听器：把事件写进 {@code lakehouse_audit_event}，与触发它的业务变更同事务。
  *
  * <p><b>同事务是刻意的，不是实现偷懒。</b>发布点都在业务 Service 的事务方法里，
  * 这里的 insert 加入同一个事务：业务回滚，事件一起消失——事件流里没有「发生了

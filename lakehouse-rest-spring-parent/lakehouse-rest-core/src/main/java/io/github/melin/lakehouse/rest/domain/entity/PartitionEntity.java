@@ -29,7 +29,7 @@ import lombok.Setter;
  * 直接索引会被 {@code ERROR 1071: Specified key was too long} 拒绝。
  */
 @Entity
-@Table(name = "paimon_partition",
+@Table(name = "lakehouse_partition",
         uniqueConstraints = @UniqueConstraint(name = "uk_partition", columnNames = {"table_id", "spec_hash"}),
         indexes = @Index(name = "ix_partition_table", columnList = "table_id"))
 @Getter

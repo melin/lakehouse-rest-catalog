@@ -183,7 +183,7 @@ public class ConsoleAuthController {
      * 主体是否被标记为「凭据待轮换」。
      *
      * <p>查不到主体时返回 false：OIDC 登录者可能只存在于 IdP 而不在
-     * {@code paimon_principal} 表里，那种情况下没有「待轮换」可言。
+     * {@code lakehouse_principal} 表里，那种情况下没有「待轮换」可言。
      */
     private boolean rotationRequired(String principal) {
         return principalRepository.findByName(principal)

@@ -7,7 +7,7 @@
 # 但 PostgreSQL 实例上的行为没有实机验证过，请自行确认后再用于生产。
 spring:
   datasource:
-    url: jdbc:postgresql://127.0.0.1:5432/paimon_catalog
+    url: jdbc:postgresql://127.0.0.1:5432/lakehouse_catalog
     driver-class-name: org.postgresql.Driver
     username: paimon
     password: paimon

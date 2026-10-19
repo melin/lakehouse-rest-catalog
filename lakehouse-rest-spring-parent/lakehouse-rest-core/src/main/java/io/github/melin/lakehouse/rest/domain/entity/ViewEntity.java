@@ -16,7 +16,7 @@ import lombok.Setter;
  * 以 JSON 文档形式存放。
  */
 @Entity
-@Table(name = "paimon_view",
+@Table(name = "lakehouse_view",
         uniqueConstraints = @UniqueConstraint(name = "uk_view", columnNames = {"catalog_id", "database_id", "name"}),
         indexes = @Index(name = "ix_view_database", columnList = "database_id"))
 @Getter
@@ -44,7 +44,7 @@ public class ViewEntity extends AuditedEntity {
      * {@code <location>/metadata/00001-<uuid>.metadata.json}。
      *
      * <p>Paimon 视图不写元数据文件（它是纯目录条目），这一列为 {@code null}。
-     * 与 {@code paimon_table.metadata_location} 同一个角色：既是「引擎该去读哪个文件」的
+     * 与 {@code lakehouse_table.metadata_location} 同一个角色：既是「引擎该去读哪个文件」的
      * 指针，也是乐观并发的 CAS 条件。
      */
     @Column(name = "metadata_location", length = 1024)

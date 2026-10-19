@@ -153,7 +153,7 @@
           <p>
             <strong>OIDC 登录时</strong>，服务端按 <code>oidc.principal-claim</code>
             （默认 <code>sub</code>）取主体名。取到的值要能与
-            <code>paimon_principal.name</code> 或
+            <code>lakehouse_principal.name</code> 或
             <code>authorization.service-admins</code> 里的名字对上，
             否则登录成功但什么也看不到。
           </p>

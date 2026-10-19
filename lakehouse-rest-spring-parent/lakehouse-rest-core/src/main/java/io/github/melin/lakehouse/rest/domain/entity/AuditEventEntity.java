@@ -30,7 +30,7 @@ import lombok.Setter;
  * 冗余的代价是两者必须同步——同步点在 {@link #of}，只有这一个入口。
  */
 @Entity
-@Table(name = "audit_event",
+@Table(name = "lakehouse_audit_event",
         indexes = {
                 @Index(name = "ix_audit_event_catalog", columnList = "catalog, id"),
                 @Index(name = "ix_audit_event_type", columnList = "type"),

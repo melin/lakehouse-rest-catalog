@@ -20,7 +20,7 @@ import org.springframework.web.bind.annotation.RestController;
  * Iceberg 形态的视图端点。
  *
  * <p>与 Paimon 面的 {@code /v1/{prefix}/databases/{db}/views…} 是**同一张表的两套契约**：
- * 两边都落在 {@code paimon_view} 上，但 Iceberg 侧的 {@code view_schema_doc} 存的是
+ * 两边都落在 {@code lakehouse_view} 上，但 Iceberg 侧的 {@code view_schema_doc} 存的是
  * 整份 {@code ViewMetadata}（见 {@code IcebergViewService}），因此两边各自解析、
  * 互不认对方的行——一个通过 Paimon 面建的视图在 Iceberg 面会 404，
  * 反之亦然，且在报错里说清原因。

@@ -32,7 +32,7 @@ import org.springframework.transaction.annotation.Transactional;
  * Iceberg 的 namespace（命名空间）端点。
  *
  * <p><b>namespace ↔ database 是同一个东西的两个名词。</b>Iceberg 侧的多级 namespace
- * 直接落进 {@code paimon_database.name}（点号拼接，见
+ * 直接落进 {@code lakehouse_database.name}（点号拼接，见
  * {@link NamespacePaths}），因此本类与 Paimon 面的 {@code DatabaseService} 做的是
  * 同一件事，只是对外名词与层级形状不同。两者**不共用实现**：协议面之间不能互相依赖
  * （enforcer 守着），而且共用会立刻带进「谁的行为是对的」这类争论——
@@ -66,7 +66,7 @@ public class IcebergNamespaceService {
      * 因此「某层的直接子级」只能取全量再筛。这是本方案明确接受的取舍
      * （见设计文档 §4.6）：收益是零改动就能表达多级 namespace，
      * 代价是 namespace 数量很大时这一条列举不够快。真到那一步的解法是给
-     * {@code paimon_database} 加一列 {@code parent_key}，而不是改存储形态。
+     * {@code lakehouse_database} 加一列 {@code parent_key}，而不是改存储形态。
      */
     @Transactional(readOnly = true)
     public IcebergDtos.ListNamespacesResponse list(String prefix, List<String> parent,

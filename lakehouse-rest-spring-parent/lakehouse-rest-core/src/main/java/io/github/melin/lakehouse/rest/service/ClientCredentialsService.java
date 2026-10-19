@@ -14,7 +14,7 @@ import org.springframework.stereotype.Service;
  * OAuth 2.0 客户端凭据流程（控制台的默认登录方式）。
  *
  * <p>凭据是<b>主体的 clientId 与 clientSecret</b>，与引擎调用管理 API 时用的是
- * 同一份数据（{@code paimon_principal} 表）。这里做到三件事：
+ * 同一份数据（{@code lakehouse_principal} 表）。这里做到三件事：
  * 校验凭据、把 clientId 翻译成主体名、让 {@link AccessTokenService} 签发令牌。
  *
  * <p><b>为什么不另设一套「控制台登录账号」。</b>那样做等于把同一件事说两遍：

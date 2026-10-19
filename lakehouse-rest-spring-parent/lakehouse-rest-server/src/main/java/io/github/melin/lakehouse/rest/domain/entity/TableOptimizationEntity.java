@@ -25,7 +25,7 @@ import lombok.Setter;
  * （{@code OptimizationOptions#resolve}）。
  *
  * <p>{@code catalog_id} 是冗余列：组批按 catalog 分组，调度扫描一次就要按它归并，
- * 走 {@code table_id} 反查两张表既慢又没必要。它与 {@code paimon_table.catalog_id}
+ * 走 {@code table_id} 反查两张表既慢又没必要。它与 {@code lakehouse_table.catalog_id}
  * 由写入方保持一致。
  *
  * <p>{@code next_run_at} 是调度游标，也是**分布式抢占的落点**：出批前用
@@ -33,7 +33,7 @@ import lombok.Setter;
  * 更新行数为 1 的表才进这一批。多副本部署下靠这条条件更新互斥，不引入额外锁。
  */
 @Entity
-@Table(name = "paimon_table_optimization",
+@Table(name = "lakehouse_table_optimization",
         uniqueConstraints = @UniqueConstraint(name = "uk_table_optimization", columnNames = "table_id"),
         indexes = {
                 @Index(name = "ix_table_optimization_catalog", columnList = "catalog_id"),

@@ -17,7 +17,7 @@ import lombok.Setter;
  * database（命名空间）。表、视图、函数都归属于它。
  */
 @Entity
-@Table(name = "paimon_database",
+@Table(name = "lakehouse_database",
         uniqueConstraints = @UniqueConstraint(name = "uk_database", columnNames = {"catalog_id", "name"}),
         indexes = @Index(name = "ix_database_catalog", columnList = "catalog_id"))
 @Getter

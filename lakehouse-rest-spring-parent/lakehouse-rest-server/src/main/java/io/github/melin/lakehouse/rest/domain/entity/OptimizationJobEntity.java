@@ -30,7 +30,7 @@ import lombok.Setter;
  * 引入签发/校验两套代码换不到额外收益。
  */
 @Entity
-@Table(name = "paimon_optimization_job",
+@Table(name = "lakehouse_optimization_job",
         indexes = {
                 @Index(name = "ix_optimization_job_catalog", columnList = "catalog_id"),
                 @Index(name = "ix_optimization_job_status", columnList = "status_value")

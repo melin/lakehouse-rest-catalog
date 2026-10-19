@@ -32,7 +32,7 @@ import lombok.Setter;
  * MySQL 的索引键上限是 3072 字节。
  */
 @Entity
-@Table(name = "paimon_permission_assignment",
+@Table(name = "lakehouse_permission_assignment",
         uniqueConstraints = @UniqueConstraint(name = "uk_permission_assignment",
                 columnNames = {"catalog_id", "resource_type", "locator_hash", "access", "principal"}),
         indexes = {

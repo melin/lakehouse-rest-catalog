@@ -24,7 +24,7 @@ import tools.jackson.databind.JsonNode;
  * 抄一份并**承诺它不变**。
  *
  * <p>这条纪律同时也解释了为什么 {@code metadata} 回程也是 {@link JsonNode}：
- * 服务端存的是整份文档原文（{@code paimon_table.metadata_doc}），
+ * 服务端存的是整份文档原文（{@code lakehouse_table.metadata_doc}），
  * 原样嵌回去才是「引擎读到的与服务端存的是同一份」。
  */
 public final class IcebergDtos {

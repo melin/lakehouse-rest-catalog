@@ -44,7 +44,7 @@ export const consoleAuthApi = {
    * 这个端点的调用方不只有本控制台，用 `curl -d` 或任何 OAuth 库发出来的
    * 都是表单。前端跟着规范走，就不会出现「只有控制台能调通」的端点。
    *
-   * @param {string} clientId     主体名（`paimon_principal.client_id`）
+   * @param {string} clientId     主体名（`lakehouse_principal.client_id`）
    * @param {string} clientSecret 主体密钥
    * @param {string} [scope]      留空表示服务端默认的 `PRINCIPAL_ROLE:ALL`
    */

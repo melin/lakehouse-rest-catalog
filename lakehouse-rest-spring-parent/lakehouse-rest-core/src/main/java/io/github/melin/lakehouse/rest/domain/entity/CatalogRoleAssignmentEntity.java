@@ -18,7 +18,7 @@ import lombok.Setter;
  * 路径中的 {@code catalogName} 用于校验一致性。
  */
 @Entity
-@Table(name = "paimon_catalog_role_grant",
+@Table(name = "lakehouse_catalog_role_grant",
         uniqueConstraints = @UniqueConstraint(name = "uk_catalog_role_grant",
                 columnNames = {"principal_role_id", "catalog_role_id"}),
         indexes = @Index(name = "ix_catalog_role_grant_role", columnList = "catalog_role_id"))

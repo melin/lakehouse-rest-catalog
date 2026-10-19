@@ -8,10 +8,10 @@ import java.util.List;
  * Iceberg 多级 namespace 与「库里那一列」之间的编解码。
  *
  * <p>Iceberg 的 namespace 是**多级**的（{@code ["accounting","tax"]}），而
- * {@code paimon_database.name} 是单级字符串。两边的最简对应是**点号拼接**：
+ * {@code lakehouse_database.name} 是单级字符串。两边的最简对应是**点号拼接**：
  * {@code ["accounting","tax"]} ↔ {@code accounting.tax}。选点号而不是别的字符，
  * 是为了与 Spark SQL 的 {@code catalog.db.table} 三段名、以及
- * {@code paimon_resource_grant.namespace_key}（本来就是「命名空间路径的拼接」）
+ * {@code lakehouse_resource_grant.namespace_key}（本来就是「命名空间路径的拼接」）
  * 口径一致——控制台与 SQL 里都直接可读。
  *
  * <p><b>路径里的分隔符有两个来源，都要认。</b>

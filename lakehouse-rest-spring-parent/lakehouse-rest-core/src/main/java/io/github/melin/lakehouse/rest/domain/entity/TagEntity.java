@@ -13,7 +13,7 @@ import lombok.Setter;
  * 标签：给快照起的不可变名称，常用于长期保留某个可回滚的版本。
  */
 @Entity
-@Table(name = "paimon_tag",
+@Table(name = "lakehouse_tag",
         uniqueConstraints = @UniqueConstraint(name = "uk_tag", columnNames = {"table_id", "tag_name"}),
         indexes = @Index(name = "ix_tag_table", columnList = "table_id"))
 @Getter

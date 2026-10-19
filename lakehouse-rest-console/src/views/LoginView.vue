@@ -172,7 +172,7 @@
                 v-model="form.clientId"
                 size="large"
                 autocomplete="username"
-                placeholder="paimon_principal.client_id"
+                placeholder="lakehouse_principal.client_id"
                 :prefix-icon="User"
                 @keyup.enter="submitCredentials"
               />

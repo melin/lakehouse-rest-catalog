@@ -42,7 +42,7 @@ data:
         # 主机名是 MySQL 那个 headless Service 的名字。同一命名空间内可直接解析，
         # 不需要带 .paimon-rest.svc.cluster.local 后缀——写全了反而会让清单
         # 在换命名空间时失效。
-        url: jdbc:mysql://paimon-mysql:3306/paimon_catalog?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+        url: jdbc:mysql://paimon-mysql:3306/lakehouse_catalog?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
         username: root
         # 密码不落在这个文件里。由 Secret 注入环境变量 DB_PASSWORD 再引用：
         # ConfigMap 会以明文出现在 etcd、`kubectl get cm -o yaml` 与版本库里，

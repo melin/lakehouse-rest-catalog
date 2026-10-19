@@ -265,7 +265,7 @@ public class TableOptimizationService {
      * <p>不直接复用 Paimon 协议面的 {@code TableLookup}：它经 {@code DatabaseService.require}
      * 走 {@code resolveForFormat(prefix, PAIMON)}，对 Iceberg catalog 会以一个「这不是 Paimon
      * catalog」的 404 结束——而优化策略、立即执行、历史这三个端点对两种格式都要回答。
-     * 定位本身与格式无关（两种格式的表都落在 {@code paimon_database} / {@code paimon_table}
+     * 定位本身与格式无关（两种格式的表都落在 {@code lakehouse_database} / {@code lakehouse_table}
      * 两张表里，Iceberg 只是 {@code table_type} 不同、多级 namespace 用点号拼在库名上），
      * 因此这里按 catalog_id + 库名 + 表名直接查。
      *

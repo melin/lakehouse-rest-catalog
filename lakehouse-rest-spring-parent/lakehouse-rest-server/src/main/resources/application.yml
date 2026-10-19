@@ -16,7 +16,7 @@ spring:
   # 需要即用即丢的实例（本地调试、端到端脚本）时换用 h2 profile：
   #   java -jar lakehouse-rest-spring-parent/lakehouse-rest-server/target/lakehouse-rest-server-0.0.1-SNAPSHOT.jar --spring.profiles.active=h2
   datasource:
-    url: jdbc:mysql://172.18.6.181:3306/paimon_catalog?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+    url: jdbc:mysql://172.18.6.181:3306/lakehouse_catalog?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
     driver-class-name: com.mysql.cj.jdbc.Driver
     username: root
     password: "Root2024!@"
@@ -155,7 +155,7 @@ lakehouse:
         # 方式二（默认）：OAuth 2.0 客户端凭据流程。
         # 控制台把用户填的 clientId / clientSecret POST 到
         # /api/catalog/v1/oauth/tokens，换回一个 Bearer 令牌。
-        # 凭据校验走 paimon_principal 表，与引擎调用管理 API 用的是同一份数据。
+        # 凭据校验走 lakehouse_principal 表，与引擎调用管理 API 用的是同一份数据。
         client-credentials:
           enabled: true
           # 令牌端点是这套鉴权里唯一能匿名反复调用的地方，失败限速防的是
@@ -180,7 +180,7 @@ lakehouse:
           # http://localhost:8080/console/auth/callback
           redirect-uri: ""
           scope: openid profile email
-          # 从哪个 claim 取主体名。取到的值需要与 paimon_principal.name 或
+          # 从哪个 claim 取主体名。取到的值需要与 lakehouse_principal.name 或
           # authorization.service-admins 里的名字对得上，否则登录成功但什么也看不到
           principal-claim: sub
           # 期望的 aud。留空不校验；同一 issuer 下还有别的应用时应当填上

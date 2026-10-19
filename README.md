@@ -63,7 +63,7 @@ paimon-rest/
 ```
 
 **两个协议面在同一个进程、同一个 `/v1` 基址、同一套元数据库上服务。**
-一个 catalog 只有一种格式（`paimon_catalog.catalog_format`，创建时定下、不可变），
+一个 catalog 只有一种格式（`lakehouse_catalog.catalog_format`，创建时定下、不可变），
 因此「路径 → `{prefix}` → catalog → 格式 → 协议处理链」这条链上唯一需要判断的地方
 就是 core 的协议分派；两个面本身互不认识，也不互相依赖（见第 3 节与
 [`iceberg-rest-catalog-design.md`](docs/iceberg-rest-catalog-design.md)）。
@@ -121,11 +121,12 @@ Maven 坐标与包名：`groupId` 为 `io.github.melin`，九个 artifact 是
 壳的数量等于「历史的对外名字数」，不是「改过几次」。
 其余位置都不涉及外部契约：配置前缀已从 `paimon.rest.*` 直接改到 `lakehouse.rest.*`（尚无部署
 写过旧键，属于一次性对齐而不是迁移，见
-[`maven-module-design.md`](docs/maven-module-design.md) §4.3(1)）；k8s 资源名与数据库表名
-没跟着改，理由见下一段。
+[`maven-module-design.md`](docs/maven-module-design.md) §4.3(1)）；k8s 资源名
+没跟着改，理由见下一段；数据库表名已从 `paimon_` 改成 `lakehouse_`（见
+[`data-model.md`](docs/data-model.md) §6）。
 
-k8s 资源名与数据库表名的 `paimon-` / `paimon_` 前缀同样**故意不改**：
-它们不是产品名，是历史标识，改了要动存量部署与存量数据。见
+k8s 资源名的 `paimon-` 前缀**故意不改**：它不是产品名，是历史标识，改了要动存量部署
+（StatefulSet 与 PVC 引用）。见
 [`maven-module-design.md`](docs/maven-module-design.md) §8.6。
 
 `docs/` 里十八份文档的分工：
@@ -135,7 +136,7 @@ k8s 资源名与数据库表名的 `paimon-` / `paimon_` 前缀同样**故意不
 | [`catalog-api-endpoints.md`](docs/catalog-api-endpoints.md) | 要查 Catalog API 有哪些端点——Paimon 的 60 个与 Iceberg 的 26 个按资源分组，含基址、前缀与授权映射说明 |
 | [`management-api-overview.md`](docs/management-api-overview.md) | 要读 Management API——33 个 operation 落在哪几个控制器上、几处容易读错的语义 |
 | [`management-api-contract.md`](docs/management-api-contract.md) | 要查管理 API 的端点、字段、权限枚举——由规格生成，逐字对照 |
-| [`data-model.md`](docs/data-model.md) | 要改实体或看表结构——22 张表的划分、摘要列与审计列的设计理由、实体与仓储分在哪两个模块、`paimon_` 前缀为什么与表格式无关 |
+| [`data-model.md`](docs/data-model.md) | 要改实体或看表结构——23 张表的划分、摘要列与审计列的设计理由、实体与仓储分在哪两个模块、`lakehouse_` 前缀（原 `paimon_`）的来历与 §6 的迁移方案（原子 rename、回滚、验收） |
 | [`spark-sql-reference.md`](docs/spark-sql-reference.md) | 要用 SQL 管理主体与授权——语句级参考，含完整示例 |
 | [`spark-sql-extension.md`](docs/spark-sql-extension.md) | 要改这个 Spark 扩展——语法扩展的做法、两个必须知道的约束、测试分层 |
 | [`spark-paimon-rest-e2e.md`](docs/spark-paimon-rest-e2e.md) | 要让 Spark 通过本服务端建 Paimon 表——连接配置、可执行的 SQL、报错对照表 |
@@ -148,6 +149,8 @@ k8s 资源名与数据库表名的 `paimon-` / `paimon_` 前缀同样**故意不
 | [`polaris-capabilities-and-design.md`](docs/polaris-capabilities-and-design.md) | 要对比 Polaris 或看整体设计——核心能力提取、映射关系、已知缺口 |
 | [`event-framework.md`](docs/event-framework.md) | 要加一种事件、接一个 listener 或理解事件流的边界——10 类 38 个领域事件与触发点、与 Polaris 事件枚举的逐类映射、audit_event 表、发布监听链路、按监听器的类别/类型订阅（`lakehouse.rest.event-listener.*`）、增量拉取契约（`?since=` 游标 + `?category=`）与不发清单 |
 | [`iceberg-rest-catalog-design.md`](docs/iceberg-rest-catalog-design.md) | 要看「同一份元数据同时服务 Paimon 与 Iceberg」怎么做的——双协议方案：创建时区分格式、22 张表复用只加 9 列、路径冲突与错误模型、能力边界与效果图（`outputs/iceberg-rest-catalog/mockup.html`），以及**已落地的实测记录与与方案不一致的几处**（§11） |
+| [`generic-table-design.md`](docs/generic-table-design.md) | 要把 parquet / orc / lance / vortex 目录也纳入目录服务，或评审「通用表」方案——**设计稿，未实现**：Polaris Generic Table 的事实基线、四种格式的能力矩阵、复用 `lakehouse_table` 加 `table_kind` 的三方案对比、4 个端点与权限映射、凭据下发为什么是唯一的数据面控制点、Spark 侧按格式分派（`FileTable` 子类 / `ServiceLoader<TableProvider>`）、影响面与风险 |
+| [`unity-catalog-design.md`](docs/unity-catalog-design.md) | 要判断 Unity Catalog 的哪些能力该抄、哪些不该抄——**设计稿，未实现**：UC OSS 0.7 的事实基线与版本时间线、与本项目的十二面对照、六项可借鉴（External Volume / managed location / 延迟清理 / 批量权限 / 观测端点 / 提交错误语义）、十项明确不借鉴及逐条理由、表与端点设计、四期落地与测试计划 |
 | [`maven-module-design.md`](docs/maven-module-design.md) | 要改模块布局或 artifact 名——`lakehouse-rest-*` 命名定案、两个父 POM / 两个依赖世界、三条用 enforcer 守住的依赖不变量、改名清单与「哪四处故意不改」（§8.6），以及**已落地**的实测记录（§8，含与设计不一致的六处及原因） |
 | [`table-optimization.md`](docs/table-optimization.md) | 要改表存储优化或排查优化任务——三个动作的语义、批次与并发两道闸门、k8s 提交与状态跟踪、控制台两处页面 |
 
@@ -166,11 +169,11 @@ k8s 资源名与数据库表名的 `paimon-` / `paimon_` 前缀同样**故意不
 mysql -h 127.0.0.1 -u root -p < sql/schema-mysql.sql
 ```
 
-`sql/schema-mysql.sql` 由 `scripts/gen-mysql-ddl.sh` 从 JPA 实体生成（22 张表、21 个唯一约束、
-23 个索引），**不要手工修改**——下次生成会覆盖。它会建出 `paimon_catalog` 库并切过去，
+`sql/schema-mysql.sql` 由 `scripts/gen-mysql-ddl.sh` 从 JPA 实体生成（23 张表、21 个唯一约束、
+26 个索引），**不要手工修改**——下次生成会覆盖。它会建出 `lakehouse_catalog` 库并切过去，
 库名与 `application.yml` 里的 `spring.datasource.url` 必须一致（用 `DB_NAME=... ` 重新生成可改）。
 
-连接信息默认是 `127.0.0.1:3306`、库 `paimon_catalog`、账号 `paimon/paimon`，
+连接信息默认是 `127.0.0.1:3306`、库 `lakehouse_catalog`、账号 `paimon/paimon`，
 可用 `SPRING_DATASOURCE_URL` / `--spring.datasource.username` 等覆盖。
 
 启动时的 `ddl-auto` 是 **`validate`**：库结构与实体不一致会直接启动失败，
@@ -345,7 +348,7 @@ lakehouse-rest-spark/
 [Paimon 60 个与 Iceberg 26 个端点](docs/catalog-api-endpoints.md)、Management API 的
 [33 个 operation 概览](docs/management-api-overview.md)（逐字契约见
 [`management-api-contract.md`](docs/management-api-contract.md)）、以及
-[22 张表的数据模型与设计取舍](docs/data-model.md)。
+[23 张表的数据模型与设计取舍](docs/data-model.md)。
 
 ---
 
@@ -714,7 +717,7 @@ Azure 只下发定位元数据是个明确的缺口：Polaris 的 `polaris.stora
       少发一个字段的后果是客户端一路正常，直到用户真的发起一次多表提交才炸，
       而那时错误现场离原因已经很远（客户端报的是
       `Server does not support endpoint: …`，看着像服务端坏了一半）。
-    - **一个 catalog 只有一种格式，且创建后不可改**（`paimon_catalog.catalog_format`，
+    - **一个 catalog 只有一种格式，且创建后不可改**（`lakehouse_catalog.catalog_format`，
       非空 + 库级默认 `'PAIMON'`）。管理 API 的 `PUT` 改了它一律 400，
       理由是改格式会让既有表在同一份元数据上突然按另一套语义解释。
       由此推出一个**明确不支持**的用法：**同一个仓库目录不能既当 Paimon 又当 Iceberg 用**——

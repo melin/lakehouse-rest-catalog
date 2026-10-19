@@ -176,7 +176,7 @@ Polaris 规格的 `AwsStorageConfigInfo` 里**没有** per-catalog 的 `accessKe
 
 ### 6. 元数据模型按「当前值 + 历史版本」组织
 
-- 表 schema：实体上保存当前版本，`paimon_table_schema` 保存全部历史版本，支撑 `rollback-schema`。
+- 表 schema：实体上保存当前版本，`lakehouse_table_schema` 保存全部历史版本，支撑 `rollback-schema`。
 - 快照：按 `snapshot_id` 单调存放，`rollback` 丢弃目标之后的记录并回移表指针。
 - 分区：以规范化 spec 键唯一标识，统计遵循规格的「负值为未测量、覆盖与累加语义不同」约定。
   唯一约束落在 spec 键的**摘要**上而非原文上，原因见第八节第 11 点。
@@ -314,8 +314,8 @@ Jackson 2.15.2 抬到 2.21.x，并替换 netty 与 jersey，导致 Spark 侧出�
     因此调用者在无权限时拿到的是 `403` 而非规格里不存在的 `200`。
     逐行对照见 `docs/management-api-contract.md` §4.5。
 11. **无上界的关键字段以摘要参与唯一约束**。MySQL 的索引键上限是 3072 字节
-    （utf8mb4 下 768 字符），而 `paimon_partition.spec_key`（1024 字符，与 `table_id` 相加）
-    与 `paimon_resource_grant.namespace_key`（命名空间路径拼接，规格未限制层级数）
+    （utf8mb4 下 768 字符），而 `lakehouse_partition.spec_key`（1024 字符，与 `table_id` 相加）
+    与 `lakehouse_resource_grant.namespace_key`（命名空间路径拼接，规格未限制层级数）
     放不进唯一索引，建表会被 `ERROR 1071: Specified key was too long` 拒绝。
     做法是原文入库供等值查询、SHA-256 定长摘要（`spec_hash` / `namespace_hash`）参与唯一约束，
     索引长度与值的实际长度解耦而唯一性语义不变。摘要在 `@PrePersist` / `@PreUpdate`
@@ -385,7 +385,7 @@ Polaris 的形态：`POST /polaris/v1/{prefix}/namespaces/{ns}/policies` 建策�
 - 表结构加两张（或复用现有的策略行 + 一张映射表）：`optimization_policy`
   （name / type / content / version / inheritable）+ `optimization_policy_mapping`
   （policy_id / target_type / target_path）。
-- 现有 `paimon_table_optimization` 的三组开关**保留**，作为「表级最后覆盖」；
+- 现有 `lakehouse_table_optimization` 的三组开关**保留**，作为「表级最后覆盖」；
   读取顺序 = 表级显式值 > 最近一层策略 > catalog 默认值。
 - **任务明细里记 `policy_id` / `policy_version` / `applied_scope`**。没有这一列，
   「这次为什么用 128 MB 而不是 256 MB」永远查不清；有了它，历史本身就是审计记录。

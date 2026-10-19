@@ -24,7 +24,7 @@ import lombok.Setter;
  * 因此本表只存 {@code secretHash}，不存明文。
  */
 @Entity
-@Table(name = "paimon_principal",
+@Table(name = "lakehouse_principal",
         uniqueConstraints = {
                 @UniqueConstraint(name = "uk_principal_name", columnNames = "name"),
                 @UniqueConstraint(name = "uk_principal_client_id", columnNames = "client_id")

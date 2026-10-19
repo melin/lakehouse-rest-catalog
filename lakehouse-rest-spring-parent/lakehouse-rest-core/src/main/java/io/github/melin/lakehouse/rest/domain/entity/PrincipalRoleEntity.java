@@ -24,7 +24,7 @@ import lombok.Setter;
  * 本服务不接入外部 IdP，因此该字段只作为标记保存与回显。
  */
 @Entity
-@Table(name = "paimon_principal_role",
+@Table(name = "lakehouse_principal_role",
         uniqueConstraints = @UniqueConstraint(name = "uk_principal_role_name", columnNames = "name"))
 @Getter
 @Setter

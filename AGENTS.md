@@ -364,8 +364,9 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
   `io.github.melin.lakehouse.rest` 从未提交、从未发布，不为它留壳——壳的数量等于历史的对外
   名字数，不是改过的次数。**对全仓做包名批量替换时必须把壳排除**，否则旧部署会静默失效——
   症状是 Spark 会话初始化时的 `ClassNotFoundException`，离「改过包名」很远。
-  同类的「不能随意改」的名字还有 `lakehouse.rest.*` 配置前缀、k8s 资源名、`paimon_` 表前缀，
-  见 `docs/maven-module-design.md` §4.3 与 §8.6。
+  同类的「不能随意改」的名字还有 `lakehouse.rest.*` 配置前缀、k8s 资源名，
+  见 `docs/maven-module-design.md` §4.3 与 §8.6。（数据库表名已从 `paimon_` 统一成
+  `lakehouse_`，现在是 `lakehouse_*`；迁移脚本在 `sql/migrate-table-prefix.sql`。）
 - **错误走 `ApiException`**，由 `GlobalExceptionHandler` 统一成规格要的报错形状；
   不要在控制器里手写响应体。
 - **文档里的代码块要与代码同步**——`SparkSqlDocExamplesTests` 会真跑
@@ -411,7 +412,7 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
 - **不要在输出、日志、提交信息、测试用例里回显真实的数据库口令或 AK/SK。**
   `application.yml` 的 `spring.datasource` 里带着一套可直接连的 MySQL 地址与明文口令
   （本地调试配置，已被 git 跟踪）。演示配置就写占位符
-  （`jdbc:mysql://127.0.0.1:3306/paimon_catalog`、`paimon/paimon`），不要复制原值，也不要贴进回复。
+  （`jdbc:mysql://127.0.0.1:3306/lakehouse_catalog`、`paimon/paimon`），不要复制原值，也不要贴进回复。
 - **静态凭据（`secretAccessKey`）只写**：任何响应、日志、控制台展示都不许回显明文；
   读路径一律走 `StorageConfigs.withoutSecrets(...)`。新增读路径时检查这条。
 - **未配置 `lakehouse.rest.storage.credential-secret-key` 时必须 fail-closed**：
@@ -439,5 +440,7 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
 - 模块划分：[`docs/maven-module-design.md`](docs/maven-module-design.md)（依赖图、两条父 POM、enforcer 不变量、落地记录 §8）
 - 设计对照：[`docs/polaris-capabilities-and-design.md`](docs/polaris-capabilities-and-design.md)
 - 事件框架：[`docs/event-framework.md`](docs/event-framework.md)（10 类 38 个领域事件、与 Polaris 枚举的映射、发布点清单与不发清单、按监听器的类别/类型订阅、增量拉取契约；加事件或接 listener 先读它）
+- 通用表（设计稿）：[`docs/generic-table-design.md`](docs/generic-table-design.md)（parquet / orc / lance / vortex 纳入目录：格式能力矩阵、`table_kind` 方案取舍、端点与权限、Spark 接入、影响面与风险；**未实现**）
+- Unity Catalog 借鉴（设计稿）：[`docs/unity-catalog-design.md`](docs/unity-catalog-design.md)（UC OSS 0.7 事实基线、逐面对照、六项可借鉴与十项不借鉴及理由、卷/托管位置/延迟清理/批量权限/观测端点的设计、四期落地；**未实现**）
 - 数据模型：[`docs/data-model.md`](docs/data-model.md)
 - 控制台：[`docs/console.md`](docs/console.md)、[`docs/console-auth.md`](docs/console-auth.md)

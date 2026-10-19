@@ -21,7 +21,7 @@ import lombok.Setter;
  * 记录数、文件数与文件体积等聚合统计，这里合并存放。
  */
 @Entity
-@Table(name = "paimon_snapshot",
+@Table(name = "lakehouse_snapshot",
         uniqueConstraints = @UniqueConstraint(name = "uk_snapshot", columnNames = {"table_id", "snapshot_id"}),
         indexes = @Index(name = "ix_snapshot_table", columnList = "table_id"))
 @Getter

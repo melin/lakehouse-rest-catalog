@@ -74,7 +74,7 @@ import tools.jackson.databind.JsonNode;
 public class IcebergTableService {
 
     /**
-     * {@code paimon_table.table_type} 里表示 Iceberg 表的取值。
+     * {@code lakehouse_table.table_type} 里表示 Iceberg 表的取值。
      *
      * <p>与 Paimon 侧的 {@code PAIMON} / {@code format-table} / {@code object-table} 同一列。
      * 复用这一列的直接收益是 {@code GET /databases/{db}/table-details?tableType=ICEBERG}
@@ -575,7 +575,7 @@ public class IcebergTableService {
      *
      * <p>{@code schema_doc} 存的是 **Iceberg 形状**的 schema JSON（{@code SchemaParser} 的产物），
      * 而不是 Paimon 的 schema 文档：同一列按格式承载各自的形状，与
-     * {@code paimon_view.view_schema_doc} 在 Iceberg 侧存 {@code ViewMetadata} 是同一个手法。
+     * {@code lakehouse_view.view_schema_doc} 在 Iceberg 侧存 {@code ViewMetadata} 是同一个手法。
      * 读取方（控制台）按 catalog 格式选解析器。
      */
     private void applyMetadata(TableEntity table, String metadataLocation, String document,

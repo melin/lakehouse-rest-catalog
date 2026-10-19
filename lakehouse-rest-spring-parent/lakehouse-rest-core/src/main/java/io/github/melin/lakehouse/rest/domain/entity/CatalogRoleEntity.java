@@ -25,7 +25,7 @@ import lombok.Setter;
  * 一致。
  */
 @Entity
-@Table(name = "paimon_catalog_role",
+@Table(name = "lakehouse_catalog_role",
         uniqueConstraints = @UniqueConstraint(name = "uk_catalog_role_name",
                 columnNames = {"catalog_id", "name"}))
 @Getter

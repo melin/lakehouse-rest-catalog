@@ -16,7 +16,7 @@ import org.springframework.stereotype.Component;
  * <p><b>为什么需要这一层。</b>对象存储的长期密钥与主体凭据不同：主体的
  * {@code clientSecret} 只需要「验证」，因此库里存的是摘要（见 {@link Secrets}）；
  * 而静态凭据要**原样下发给引擎**，服务端必须能还原明文。既然可还原，
- * 就不能让它以明文躺在 {@code paimon_catalog.storage_config_json} 里——
+ * 就不能让它以明文躺在 {@code lakehouse_catalog.storage_config_json} 里——
  * 一次数据库备份外泄就等价于对象存储被拿走。
  *
  * <p><b>密钥来源与失败方向。</b>密钥来自 {@code lakehouse.rest.storage.credential-secret-key}

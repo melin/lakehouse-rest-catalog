@@ -380,7 +380,7 @@ public final class ConsoleDtos {
     }
 
     /**
-     * 一条目录事件。固定列与 {@code audit_event} 表一致；{@code attributes}
+     * 一条目录事件。固定列与 {@code lakehouse_audit_event} 表一致；{@code attributes}
      * 是开放属性（按事件类型不同，见 {@code docs/event-framework.md} §1）。
      */
     public record Event(

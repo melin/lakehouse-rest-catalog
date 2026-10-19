@@ -18,7 +18,7 @@ set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 OUT=${OUT:-$ROOT/sql/schema-mysql.sql}
 # 建库语句里的库名，需要与 spring.datasource.url 中的库名一致
-DB_NAME=${DB_NAME:-paimon_catalog}
+DB_NAME=${DB_NAME:-lakehouse_catalog}
 export JAVA_HOME=${JAVA_HOME:-/Library/Java/JavaVirtualMachines/jdk-21.jdk/Contents/Home}
 MVN=${MVN:-mvn}
 MVN_ARGS=${MVN_ARGS:-}

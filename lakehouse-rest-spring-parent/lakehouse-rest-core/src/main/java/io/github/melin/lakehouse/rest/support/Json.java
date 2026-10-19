@@ -47,7 +47,7 @@ public final class Json {
      * 把一份 JSON 文本读成无类型的树，用于「整份文档原样嵌进另一份报文」。
      *
      * <p>目前的唯一使用者是 Iceberg 侧：服务端存的是整份 {@code TableMetadata} 文档
-     * （{@code paimon_table.metadata_doc}），返回给客户端时要把它当作**对象**
+     * （{@code lakehouse_table.metadata_doc}），返回给客户端时要把它当作**对象**
      * 嵌进 {@code LoadTableResult.metadata}，而不是当字符串。走一次解析—
      * 再序列化看起来绕，但它保证了「引擎读到的字段与服务端存的那一份一致」——
      * 若改成按建模过的字段重新拼一份，Iceberg 那些随版本增删的字段

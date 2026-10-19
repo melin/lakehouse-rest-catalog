@@ -67,7 +67,7 @@ Paimon 与 Iceberg」的协议方案。本文件解决它的前置问题：**代
 | 候选 | 评价 |
 | --- | --- |
 | **`lakehouse-rest-*`** | **采用。**「湖仓」是 Paimon 与 Iceberg 的共同上位词；`lakehouse-rest-server` 读起来就是「湖仓 REST catalog 服务端」，语义不欠不溢 |
-| `lakehouse-catalog-*` | 备选。少一个 `rest`，但 `catalog` 在本仓里是**资源实体**（`paimon_catalog` 表、`CatalogService`），拿它当产品名会与实体名抢词 |
+| `lakehouse-catalog-*` | 备选。少一个 `rest`，但 `catalog` 在本仓里是**资源实体**（`lakehouse_catalog` 表、`CatalogService`），拿它当产品名会与实体名抢词 |
 | `table-format-*` / `openlake-*` | 语义正确但偏长偏泛，且读不出「这是个服务端」 |
 | `catalog-rest-*` | 拒绝：`rest-catalog` 是**协议名**不是产品名，`rest-catalog-server` 等于「REST 目录服务的服务器」 |
 | `paimon-iceberg-*` | 反例：把两个格式都写进名字，第三种格式到来时作废——正是要避免的模式 |
@@ -336,11 +336,16 @@ public interface CatalogProtocolFace {
 保持 `paimon-rest`**，新增的字段（如镜像名）跟随新坐标，并在 `deploy/kubernetes/README.md`
 里写一句「资源名不是产品名，是历史标识」。
 
-**（4）数据库库名 `paimon_catalog` 与 22 张表的 `paimon_` 前缀**
+**（4）数据库库名与表前缀 `paimon_`**
 
-见 [`data-model.md`](data-model.md)。表名是存储细节；本次已经要加 9 个列，把 `RENAME TABLE`
-混进同一批迁移会让迁移不可回滚，而收益为零。要做就在 `data-model.md` 里补一句
-「`paimon_` 前缀是历史遗留，与表格式无关」——这比改 22 张表便宜得多。
+当时判定「不动」：表名是存储细节，而阶段 5 正在加 9 个列，把 `RENAME TABLE` 混进同一批迁移
+会让迁移不可回滚。
+
+**后来单独做了一轮**（见 [`data-model.md`](data-model.md) §6）：表名统一成 `lakehouse_`
+（23 张，含补上前缀的 `audit_event`），库名同步为 `lakehouse_catalog`。理由是加 Iceberg
+之后前缀已经在说谎，而当时表数还少、客户端全走 REST 不直连库，是唯一的便宜窗口。
+迁移脚本在 `sql/migrate-table-prefix.sql`（一条原子 `RENAME TABLE`）与
+`sql/rollback-table-prefix.sql`。**不再改的地方**：k8s 资源名 `paimon-rest-*`（§4.3(3)）。
 
 ### 4.4 坐标迁移需要 relocation 吗
 
@@ -389,7 +394,8 @@ WARN 并被自动重定向，这是 Maven 为这种情况准备的原生机制�
 `paimon.rest` 而不是一步到位，是因为当时把「包名」与「配置前缀」当成同一条要保留的
 历史线——事后看，`paimon` 在包名里并不承载任何对外契约（当时认为真正承载契约的是
 `paimon.rest.*` 配置键与 `paimon_` 表名），分开判断才对。配置前缀后来也一并迁到
-`lakehouse.rest`（§4.3(1)），只剩 `paimon_` 表名这类绑着存量数据、真的不能动的名字。
+`lakehouse.rest`（§4.3(1)），表名也随后统一成 `lakehouse_`（§4.3(4)），
+现在这一层只剩「最初包名的空壳」与 k8s 资源名还需要保留旧名字。
 
 阶段 0 与阶段 1 之间可以插入任意长的间隔——阶段 0 单独就满足了「artifactId 避免 paimon」
 这个要求，且不依赖任何后续决策。
@@ -538,7 +544,7 @@ enforcer 会拦下来，但更好的做法是别让这种事有机会发生。
 | 1 | Paimon 升到 2.1.0 | 需要先迁移 `SchemaManager` 的用法；两处 `paimon.version` 一起改 |
 | 2 | 测试分区 | 29 个测试类全留在 `server`：它们是 Spring 集成测试，需要完整应用上下文，而 server 依赖其余三个模块、测试类路径天然能看到所有类。真正划算的分区是把 `JwtTests` / `CredentialCipherTests` / `StorageConfigDtosTests` 这类**纯单元测试**随被测类下移——但那要在三个模块各配一份 surefire，收益不大 |
 | 3 | ~~`TableKinds` 与其「表种类」词表~~ | 当初的理由是「Iceberg 面落地时它也**要产出**这个值（控制台页签靠它伸缩），届时需要把**枚举值**提到 core」。**阶段 5 落地后结论变了**：Iceberg catalog 里的表没有 Paimon 那套「表种类」，`protocol-iceberg` 一处都不引用 `TableKinds`，因此这条不必做。控制台改为先按 catalog 格式分流、再读表级 `options.type`（`docs/console.md` §10） |
-| 4 | 表前缀 `paimon_` | 见 §4.3(4)：本次已在 `data-model.md` 补了一句「历史遗留、与表格式无关」，不做 RENAME |
+| 4 | 表前缀 `paimon_` | **已执行**（§4.3(4)）：统一成 `lakehouse_`，库名 `lakehouse_catalog`，脚本在 `sql/migrate-table-prefix.sql` |
 | 5 | 类名与包名里的 `Paimon` | `PaimonPermissionModel`、`PaimonRestServerApplication`、`io.github.melin.lakehouse.rest` 全部保留 |
 
 ### 8.7 文档回填清单
@@ -727,7 +733,7 @@ optimizer 的 `Main-Class` 跟着改了，但它不是外部契约——镜像�
 | `io.github.melin.paimonrest.spark.ManagementSparkExtensions` | 用户的 `spark.sql.extensions` | **留壳**（§9.2） |
 | `lakehouse.rest.*`（曾为 `paimon.rest.*`） | 用户的 `application.yml` | **已改**（§4.3(1)）：尚无部署持有旧键，一次性对齐 |
 | k8s 资源名 / namespace `paimon-rest*` | 集群里的对象 | **不动**（§4.3(3)） |
-| `paimon_` 表前缀、`paimon_catalog` | 存量数据库 | **不动**（§4.3(4)） |
+| `lakehouse_` 表前缀、`lakehouse_catalog` | 本服务自己的元数据库 | **已改**（§4.3(4)）：客户端全走 REST，不直连库 |
 | `io.github.melin.paimon.rest.*` | 只有本仓库自己（且从未提交） | **直接改**（本节） |
 
 包名能改而配置键当初判定不能，差别就在最后一行：包名在提交之前**没有别人见过它**，配置键
@@ -931,8 +937,9 @@ Java 包        ：paimonrest → paimon.rest → io.github.melin.lakehouse.rest
                  Paimon 面独占 rest.paimon.{web,service,dto,support}，Iceberg 面对称   ✅ §11 / §12
                  拆包必查「同包直呼」的引用——它们不写 import，编译器才会告诉你      （§11.2）
 对外名字的分层 ：能不能改看「谁写它」——spark.sql.extensions 要留壳；spark.paimon.rest.* 客户端键
-                 与 k8s 资源名 / paimon_ 表前缀都不动；Spring 配置前缀已对齐 lakehouse.rest（§4.3(1)）
-不改的两处     ：k8s 资源名 · paimon_ 表前缀（§4.3(3)(4)）；Spark 客户端键另计（§4.3(1)）
+                 与 k8s 资源名都不动；Spring 配置前缀已对齐 lakehouse.rest（§4.3(1)），
+                 表前缀已对齐 lakehouse_（§4.3(4)）
+不改的两处     ：k8s 资源名 · Spark 客户端键（§4.3(1)(3)）；表前缀已改（§4.3(4)）
 实测规模       ：core 86 · storage 8 · protocol-paimon 35 · server 39（共 168 个类）
 实际落点的差异 ：见 §8.2（六处，均由搬迁前的依赖图算出）
 ```

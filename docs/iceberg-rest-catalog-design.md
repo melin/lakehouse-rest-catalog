@@ -25,7 +25,7 @@ Iceberg 侧的能力清单以 Apache Iceberg 官方规格为准
 | 问题 | 定案 |
 | --- | --- |
 | 要不要拆成两个服务 | **不拆**。一个进程、一个 `/v1` 基址、一套元数据库 |
-| 怎么区分 | `paimon_catalog` 新增**格式判别列** `catalog_format`（`PAIMON` / `ICEBERG`），创建时必选、**不可变** |
+| 怎么区分 | `lakehouse_catalog` 新增**格式判别列** `catalog_format`（`PAIMON` / `ICEBERG`），创建时必选、**不可变** |
 | 数据表怎么统一 | **加 9 个列、0 张新表**。22 张表全部复用（§4.1 逐表列出） |
 | 协议怎么分派 | 路径 → `{prefix}` → catalog → `catalog_format` → 协议处理链。两套规格的路径**几乎不重叠**，只有 2 条真冲突（§2.1） |
 | 元数据真相源 | DB 存整份格式原生文档（Iceberg：`TableMetadata` JSON；Paimon：schema 文档 + 快照行），仓库里**同步物化**成引擎能读的文件 |
@@ -135,7 +135,7 @@ Spark 的 Iceberg 客户端会把响应体反序列化成 `ErrorResponse`，拿�
 
 ### 3.1 一个列，不是一张表
 
-`paimon_catalog` 新增一列：
+`lakehouse_catalog` 新增一列：
 
 ```sql
 catalog_format varchar(32) NOT NULL DEFAULT 'PAIMON'   -- PAIMON | ICEBERG
@@ -197,38 +197,38 @@ client 会以为是自己的 prefix 写错了，而真正的原因是**格式不
 
 | 表 | Paimon 侧语义 | Iceberg 侧语义 | 改动 |
 | --- | --- | --- | --- |
-| `paimon_catalog` | catalog | catalog + **格式判别** | **+1 列** `catalog_format` |
-| `paimon_database` | database | **namespace**（多级，§4.6） | **0** |
-| `paimon_table` | 表（schema、路径、表格式） | 表（**location、metadata-location、table-uuid、format-version**） | **+4 列** |
-| `paimon_table_schema` | schema 历史版本 | **`schemas[]` 逐个 schema-id 一行** | **0** |
-| `paimon_snapshot` | 快照 + 聚合统计 | **`snapshots[]`**（manifest-list、sequence-number、parent） | **+3 列** |
-| `paimon_branch` | 分支 | **`refs` 里 `type=branch`**（不含 `main`） | **0** |
-| `paimon_tag` | 标签 | **`refs` 里 `type=tag`** | **0** |
-| `paimon_partition` | 分区（spec + 统计 + done 标记） | 不适用（分区由 manifest 决定，REST catalog 不需要逐分区登记） | **0**（Iceberg 表不写） |
-| `paimon_view` | 视图（字段 / 查询语句 / 方言） | 视图（`ViewMetadata`：versions / version-log） | **+1 列** |
-| `paimon_function` | 函数（入参/出参/定义体） | Iceberg 也有 `FunctionMetadata` | **0**（二期做只读投影） |
-| `paimon_consumer` | 流式消费位点 | 不适用（Iceberg 无消费位点） | **0**（页签隐藏） |
-| `paimon_semantic_view` | 语义视图 | 不适用 | **0**（页签隐藏） |
+| `lakehouse_catalog` | catalog | catalog + **格式判别** | **+1 列** `catalog_format` |
+| `lakehouse_database` | database | **namespace**（多级，§4.6） | **0** |
+| `lakehouse_table` | 表（schema、路径、表格式） | 表（**location、metadata-location、table-uuid、format-version**） | **+4 列** |
+| `lakehouse_table_schema` | schema 历史版本 | **`schemas[]` 逐个 schema-id 一行** | **0** |
+| `lakehouse_snapshot` | 快照 + 聚合统计 | **`snapshots[]`**（manifest-list、sequence-number、parent） | **+3 列** |
+| `lakehouse_branch` | 分支 | **`refs` 里 `type=branch`**（不含 `main`） | **0** |
+| `lakehouse_tag` | 标签 | **`refs` 里 `type=tag`** | **0** |
+| `lakehouse_partition` | 分区（spec + 统计 + done 标记） | 不适用（分区由 manifest 决定，REST catalog 不需要逐分区登记） | **0**（Iceberg 表不写） |
+| `lakehouse_view` | 视图（字段 / 查询语句 / 方言） | 视图（`ViewMetadata`：versions / version-log） | **+1 列** |
+| `lakehouse_function` | 函数（入参/出参/定义体） | Iceberg 也有 `FunctionMetadata` | **0**（二期做只读投影） |
+| `lakehouse_consumer` | 流式消费位点 | 不适用（Iceberg 无消费位点） | **0**（页签隐藏） |
+| `lakehouse_semantic_view` | 语义视图 | 不适用 | **0**（页签隐藏） |
 | 管理侧 7 张（principal / role / grant…） | RBAC + Paimon 原生权限 | **同一套 RBAC**：`ResourceGrant(namespace, objectName)` 的形状本来就与 Iceberg 的 namespace/table 一一对应 | **0** |
 | 优化 3 张 | 策略 / 批次 / 明细 | Compaction → `rewrite_data_files`、Snapshot Expire → `expire_snapshots`、Orphan Remove → `remove_orphan_files` | **0** |
 
 **合计 +9 列、0 张新表。**
 
-这张表里最值钱的四行是 `paimon_table_schema`、`paimon_snapshot`、
-`paimon_branch` / `paimon_tag`：**两边的资源模型在这三处本来就是同构的**——
+这张表里最值钱的四行是 `lakehouse_table_schema`、`lakehouse_snapshot`、
+`lakehouse_branch` / `lakehouse_tag`：**两边的资源模型在这三处本来就是同构的**——
 Iceberg 的 `schemas[]` ↔ schema 版本表、`snapshots[]` ↔ 快照表、
 `refs{type: branch|tag}` ↔ 分支表 + 标签表。这不是巧合：Iceberg 的 ref 与
 Paimon 的 branch/tag 都源自「给某个快照起名字」这一件事。
 
 ### 4.2 要加的 9 个列
 
-**`paimon_catalog`（1）**
+**`lakehouse_catalog`（1）**
 
 | 列 | 类型（实体声明） | 说明 |
 | --- | --- | --- |
 | `catalog_format` | `varchar(32)`，默认 `PAIMON` | 协议判别列；见 §3 |
 
-**`paimon_table`（4）**
+**`lakehouse_table`（4）**
 
 | 列 | 类型 | 说明 |
 | --- | --- | --- |
@@ -237,12 +237,12 @@ Paimon 的 branch/tag 都源自「给某个快照起名字」这一件事。
 | `table_uuid` | `varchar(64)` | Iceberg `table-uuid` |
 | `format_version` | `int` | Iceberg `format-version`（1/2/3）；Paimon 表为 `null` |
 
-`paimon_table` 的既有列在 Iceberg 侧**全部有对应**，因此一个都不改：
+`lakehouse_table` 的既有列在 Iceberg 侧**全部有对应**，因此一个都不改：
 `path_value` ↔ Iceberg `location`（表目录）、`schema_id` + `schema_doc` ↔
 `current-schema-id` + 当前 schema、`table_type` ↔ `ICEBERG`（与 `format-table` /
 `object-table` 同一列，`GET .../table-details?tableType=` 因此照旧能按格式过滤）。
 
-**`paimon_snapshot`（3）**
+**`lakehouse_snapshot`（3）**
 
 | 列 | 类型 | 说明 |
 | --- | --- | --- |
@@ -262,7 +262,7 @@ Paimon 的 branch/tag 都源自「给某个快照起名字」这一件事。
 
 这一列映射让控制台「详细信息」的四张统计卡片对 Iceberg 表**零改动就能出数**。
 
-**`paimon_view`（1）**
+**`lakehouse_view`（1）**
 
 | 列 | 类型 | 说明 |
 | --- | --- | --- |
@@ -275,7 +275,7 @@ Paimon 的「字段 + 查询语句 + 各方言语句」表达的是同一件事�
 
 上一轮刚被 `ERROR 1118: Row size too large` 打中过一次
 （见 [`data-model.md` §3.1](data-model.md)），新增列必须按同一口径核一遍。
-`paimon_table` 加完四列后的实测估算（utf8mb4，`varchar(N)` 计 `4N`、
+`lakehouse_table` 加完四列后的实测估算（utf8mb4，`varchar(N)` 计 `4N`、
 `text` 家族只计 9~12 字节指针）：
 
 | | 加列前 | 加列后 |
@@ -295,7 +295,7 @@ Iceberg 的 `TableMetadata` 是一份**整体快照**（每次 commit 生成一�
 
 > **`metadata_doc` 是唯一真相源；行（快照/标签/分支）是它的派生投影。**
 
-这不是新发明：`paimon_catalog.storage_config_json` 就是真相源，而
+这不是新发明：`lakehouse_catalog.storage_config_json` 就是真相源，而
 `storage_type` / `allowed_locations_json` 是它的投影列，`data-model.md` 里
 写得很明白——「读取时一律以本字段为准」。Iceberg 侧照抄这一套：
 
@@ -323,7 +323,7 @@ DB 里的文档与投影行。次序不能随便选：
 服务端**必须逐条校验**，而在自己这侧再加一道 CAS：
 
 ```sql
-update paimon_table set metadata_location = :new, metadata_doc = :doc, ...
+update lakehouse_table set metadata_location = :new, metadata_doc = :doc, ...
  where id = :id and metadata_location = :expected
 ```
 
@@ -335,7 +335,7 @@ update paimon_table set metadata_location = :new, metadata_doc = :doc, ...
 ### 4.6 namespace 的层级与分隔符
 
 Iceberg 的 namespace 是**多级**的（`["accounting","tax"]`），Paimon 的
-database 是单级字符串。`paimon_database.name` 是 `varchar(512)` 且
+database 是单级字符串。`lakehouse_database.name` 是 `varchar(512)` 且
 唯一约束是 `(catalog_id, name)`——**多级 namespace 直接拼成点号串存进去即可，
 列结构不用动**：`["accounting","tax"]` ↔ `accounting.tax`。
 
@@ -346,14 +346,14 @@ database 是单级字符串。`paimon_database.name` 是 `varchar(512)` 且
    反过来（对外声明 `.`）也能让 URL 更好读，但那要求把 `.` 当分隔符解，
    而 Iceberg 允许单个 level 里含点号，会引入歧义；默认值最安全。
 2. **库里存点号拼接形式**：与 Spark SQL 的 `catalog.db.table` 三段名、
-   与 `paimon_resource_grant.namespace_key`（本来就是「命名空间路径的拼接」）
+   与 `lakehouse_resource_grant.namespace_key`（本来就是「命名空间路径的拼接」）
    口径一致，控制台与 SQL 里都直接可读。
 3. **控制台一期平铺**：库列表里显示 `accounting.tax` 一行（与库里的存储形态一致），
    不做层级树的展开/折叠——层级树是二期的事，一期的收益是**零改动就能看见多级库**。
 
 ### 4.7 优化功能顺带通了（已落地）
 
-`paimon_table_optimization` 与表 1:1、`paimon_optimization_job_item` 按表记账，
+`lakehouse_table_optimization` 与表 1:1、`lakehouse_optimization_job_item` 按表记账，
 这套结构对 Iceberg 表同样成立，只是三项动作在 optimizer 侧换成 Iceberg procedures
 （`rewrite_data_files` / `expire_snapshots` / `remove_orphan_files`）。
 落地时**没有新建表、也没有加列**：策略表的三组 `*_enabled_flag` + `*_config_json` 存的是
@@ -642,7 +642,7 @@ Iceberg 的 `delete namespace` 级联删表（规格要求 namespace 非空时�
 | 13 | §9：「双客户端端到端，Iceberg 侧新建 `docs/spark-iceberg-rest-e2e.md`——落一份实测记录」 | 文档已建，**三层现在都是实测的**：协议层 `IcebergRestCatalogApiTests`（10 个用例）、客户端协商层 `IcebergClientEndToEndTests`（3 个，官方 `RESTCatalog` 走真 HTTP）、引擎层 `IcebergTableDdlTests`（10 个，真 `SparkSession` + 真服务端 + 真仓库） | 三层要分开验，因为失败的形状不同：协议层看报文，协商层看客户端认不认（能力清单、错误体、更新代数），引擎层看 **SQL 翻译与数据文件读写**——`SparkCatalog` 不实现协议，它把 SQL 翻成 `Catalog` 调用，所以前两层绿了之后引擎层仍可能红。补引擎层时跑出四条文档原先没写的边界，都已登记进 `spark-iceberg-rest-e2e.md`：CTAS 走 staged create 因而被 `transactions/commit` 的缺失挡住（§2.1）、`RENAME TO` 的目标不能带 catalog 前缀（§2.6）、元数据表不能用四段名查（§2.2）、decimal 类型在服务端返回时已被规范化成字符串。方法没变：先跑、再写，跑不出来的不写成实测 |
 | 14 | §9：「错误模型契约测试」 | 已落，并且**两个方向都比** | 不只验 Iceberg 路径的 404 是嵌套形状，也验「Iceberg 路径落在 Paimon catalog 上」的消息点出 `PAIMON catalog`（`IcebergRestCatalogApiTests`）。方向对了才说明形状是按**请求所属的面**选的，而不是按 catalog 的格式选的 |
 | 15 | §4.7：「`OptimizationOptions.KNOWN_KEYS` 需要补 Iceberg 专属参数」 | **不往一张表里加键**，改成按格式分派：`OptimizationOptions` 加一个 format 重载，Iceberg 的键表独立成 `IcebergOptimizationOptions` | 键表合并会让两种格式的参数互相可见——界面上会冒出「Paimon 表也能填 `delete-file-threshold`」这种既存不下去、也不会报错的字段，而控制台的参数定义又是从「键是否存在」推的。分开之后 `verify-console.py` 第 11 组多了一条断言：`iceberg_frontend_keys != paimon_frontend_keys`（防复制粘贴），两侧的键集合还各自与服务端常量逐字比对 |
-| 16 | §3.4/§5.5 隐含「权限管理与格式无关」，但没说判定怎么比 | `AuthorizationService.coversScope` 对 namespace **按点号拼成路径再比**（`NamespacePaths.STORAGE_SEPARATOR`），不逐段比 | 两条授权链存的形状不同：RBAC 存层级数组 `["accounting","tax"]`，Paimon 直授存一个字符串 `["accounting.tax"]`（`paimon_database.name` 的形状）。逐段比会让「授 `accounting.tax`、访问 `["accounting","tax"]`」**永远不命中**，且两端都不报错——页面显示已授权、客户端一直 403。反向的「在翻译层切层级」也不行：那会把**本来就含点号**的 Paimon 库名切坏。因此「怎么比」收敛到判定这一处，`PermissionManagementTests.namespaceGrantMatchesMultiLevelNamespace` 钉住覆盖后代 / 不反向覆盖 / `sales` 不命中 `salesforce` 三条 |
+| 16 | §3.4/§5.5 隐含「权限管理与格式无关」，但没说判定怎么比 | `AuthorizationService.coversScope` 对 namespace **按点号拼成路径再比**（`NamespacePaths.STORAGE_SEPARATOR`），不逐段比 | 两条授权链存的形状不同：RBAC 存层级数组 `["accounting","tax"]`，Paimon 直授存一个字符串 `["accounting.tax"]`（`lakehouse_database.name` 的形状）。逐段比会让「授 `accounting.tax`、访问 `["accounting","tax"]`」**永远不命中**，且两端都不报错——页面显示已授权、客户端一直 403。反向的「在翻译层切层级」也不行：那会把**本来就含点号**的 Paimon 库名切坏。因此「怎么比」收敛到判定这一处，`PermissionManagementTests.namespaceGrantMatchesMultiLevelNamespace` 钉住覆盖后代 / 不反向覆盖 / `sales` 不命中 `salesforce` 三条 |
 
 ### 11.2 落地后新增的四条机器守卫
 

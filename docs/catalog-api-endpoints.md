@@ -8,7 +8,7 @@ LakeHouse Catalog API 在本服务端的全部端点，按资源分组列出。
 | **Paimon**（本文档第 1–10 节） | Apache Paimon `docs/static/rest-catalog-open-api.yaml`（副本 `spec/rest-catalog-open-api.yaml`，运行时可从 `/rest-catalog-open-api.yaml` 下载） | **60 个**（规格全部实现）、144 个 schema |
 | **Iceberg**（本文档末尾） | Apache Iceberg `rest-catalog-open-api.yaml`（副本 `spec/rest-catalog-open-api-iceberg.yaml`） | **26 个**（规格共 35 个「路径 × 方法」组合，9 个不声明） |
 
-一个 catalog 只有一种格式（`paimon_catalog.catalog_format`，创建时定下、**不可变**），
+一个 catalog 只有一种格式（`lakehouse_catalog.catalog_format`，创建时定下、**不可变**），
 两套路径因此互不重叠地落在各自的 prefix 上。走错面的请求会拿到**指名原因的 404**
 （例如「prefix `sales` 是 ICEBERG catalog，Paimon REST 路径需要 PAIMON catalog」），
 而不是一句「没有这个东西」——否则客户端会以为是自己把库名写错了，
@@ -245,7 +245,7 @@ SQL 侧同样是 `WITH ('type' = 'format-table')`。本服务端认四种取值�
 也会在开了 `purge-on-drop` 时被连目录一起删掉。缘由与实测见
 [`spark-paimon-rest-e2e.md` §4.4](spark-paimon-rest-e2e.md#44-三种非-paimon-表format--object--lance-的能力边界)。
 
-`paimon_table.table_type` 列存的就是这个取值，`GET .../table-details?tableType=` 因此能按
+`lakehouse_table.table_type` 列存的就是这个取值，`GET .../table-details?tableType=` 因此能按
 格式过滤（Paimon 表的历史值是 `PAIMON`）；控制台据此伸缩页签，见
 [`console-table-detail.md` §1.1](console-table-detail.md#11-页签随表格式伸缩)。
 
@@ -328,7 +328,7 @@ POST /v1/paimon/databases/ods/tables
 | DELETE | `/v1/{prefix}/namespaces/{namespace}` | 204；**非空时 409 `NamespaceNotEmptyException`** |
 | POST | `/v1/{prefix}/namespaces/{namespace}/properties` | 200（`updated` / `removed` / `missing` 三份清单） |
 
-namespace ↔ `paimon_database` 是同一个东西的两个名词：Iceberg 的多级 namespace
+namespace ↔ `lakehouse_database` 是同一个东西的两个名词：Iceberg 的多级 namespace
 按点号拼进 `name` 列，所以 `["accounting","tax"]` 在库里是 `accounting.tax`，
 与控制台、与 Spark SQL 的三段名读法一致。
 
@@ -388,7 +388,7 @@ namespace ↔ `paimon_database` 是同一个东西的两个名词：Iceberg 的�
 | DELETE | `/v1/{prefix}/namespaces/{namespace}/views/{view}` | 204 |
 | POST | `/v1/{prefix}/views/rename` | **204** |
 
-视图与 Paimon 视图共用 `paimon_view` 表，但 `view_schema_doc` 存的是整份
+视图与 Paimon 视图共用 `lakehouse_view` 表，但 `view_schema_doc` 存的是整份
 `ViewMetadata`（Iceberg 形状），因此两边互不认对方的行——一个通过 Paimon 面建的视图
 在 Iceberg 面会 404，反之亦然，且在报错里说清原因（而不是一句「视图不存在」）。
 

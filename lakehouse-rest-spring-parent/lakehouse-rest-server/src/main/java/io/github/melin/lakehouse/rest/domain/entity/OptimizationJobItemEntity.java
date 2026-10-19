@@ -32,7 +32,7 @@ import lombok.Setter;
  * 计入失败会让「批次成功率」这类指标失去意义。
  */
 @Entity
-@Table(name = "paimon_optimization_job_item",
+@Table(name = "lakehouse_optimization_job_item",
         indexes = {
                 @Index(name = "ix_optimization_item_job", columnList = "job_id"),
                 @Index(name = "ix_optimization_item_table", columnList = "table_id")

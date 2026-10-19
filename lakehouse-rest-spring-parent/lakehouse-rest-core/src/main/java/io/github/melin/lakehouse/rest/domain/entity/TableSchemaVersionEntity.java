@@ -13,7 +13,7 @@ import lombok.Setter;
  * 表 schema 的历史版本，用于 {@code rollback-schema}。
  */
 @Entity
-@Table(name = "paimon_table_schema",
+@Table(name = "lakehouse_table_schema",
         uniqueConstraints = @UniqueConstraint(name = "uk_table_schema", columnNames = {"table_id", "schema_id"}),
         indexes = @Index(name = "ix_table_schema_table", columnList = "table_id"))
 @Getter

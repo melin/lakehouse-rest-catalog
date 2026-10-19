@@ -20,7 +20,7 @@ import org.springframework.transaction.annotation.Transactional;
 /**
  * 控制台的事件增量拉取。
  *
- * <p>契约见 {@code docs/event-framework.md} §4：游标是 {@code audit_event.id}，
+ * <p>契约见 {@code docs/event-framework.md} §4：游标是 {@code lakehouse_audit_event.id}，
  * 首次不带 {@code since} 回当前最新一页（内部倒序取再反转成升序，游标落在「现在」），
  * 之后带 {@code since} 只回比它新的事件。不提供往回翻页——事件页要的是
  * 「接下来发生了什么」；要回放历史就重置游标从头来。

@@ -35,11 +35,11 @@ import org.springframework.transaction.annotation.Transactional;
  * 而本工程的控制台（表列表、快照页签、标签/分支页签、统计卡片）是围绕「逐资源建行」
  * 写的。让控制台为了 Iceberg 表去解析几十 MB 的 JSON 是不可行的——那意味着每次翻页
  * 都要把文档搬进内存。因此照抄本工程已有的那一套
- * （{@code paimon_catalog.storage_config_json} 是真相源、{@code storage_type} 与
+ * （{@code lakehouse_catalog.storage_config_json} 是真相源、{@code storage_type} 与
  * {@code allowed_locations_json} 是它的投影，读取时一律以真相源为准）：
  *
  * <blockquote>
- * <b>{@code paimon_table.metadata_doc} 是唯一真相源；快照 / refs / schema 三类行是它的派生投影。</b>
+ * <b>{@code lakehouse_table.metadata_doc} 是唯一真相源；快照 / refs / schema 三类行是它的派生投影。</b>
  * </blockquote>
  *
  * <p><b>派生是「对账」而不是「追加」。</b>每次提交都按文档的当前内容与库里已有的行做一次
@@ -110,7 +110,7 @@ public class IcebergProjections {
     // ------------------------------------------------------------------ schema
 
     /**
-     * {@code paimon_table_schema} ← {@code metadata.schemas[]}，逐个 schema-id 一行。
+     * {@code lakehouse_table_schema} ← {@code metadata.schemas[]}，逐个 schema-id 一行。
      *
      * <p>schema 的数量是个位数量级（一次 {@code add-schema} 加一个），
      * 因此这里用「全量对账」而不是增量：读全部、比对、只写差异。代价可忽略，
@@ -154,7 +154,7 @@ public class IcebergProjections {
     // ------------------------------------------------------------------ 快照
 
     /**
-     * {@code paimon_snapshot} ← {@code metadata.snapshots[]}。
+     * {@code lakehouse_snapshot} ← {@code metadata.snapshots[]}。
      *
      * <p>列的映射关系（设计文档 §4.2 那张表）：
      *
@@ -235,7 +235,7 @@ public class IcebergProjections {
     // ------------------------------------------------------------------ refs
 
     /**
-     * {@code paimon_branch} / {@code paimon_tag} ← {@code metadata.refs}，按 {@code type} 分。
+     * {@code lakehouse_branch} / {@code lakehouse_tag} ← {@code metadata.refs}，按 {@code type} 分。
      *
      * <p><b>{@code main} 不进分支表。</b>它是 Iceberg 的默认分支，每个表都有；
      * 写进来会让控制台的分支页签永远多一行「main」，而那一行的「删除」按钮

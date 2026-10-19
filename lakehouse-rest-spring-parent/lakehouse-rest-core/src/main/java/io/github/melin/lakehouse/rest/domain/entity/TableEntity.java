@@ -18,7 +18,7 @@ import lombok.Setter;
  * {@link TableSchemaVersionEntity}，以支持 {@code rollback-schema}。
  */
 @Entity
-@Table(name = "paimon_table",
+@Table(name = "lakehouse_table",
         uniqueConstraints = @UniqueConstraint(name = "uk_table", columnNames = {"catalog_id", "database_id", "name"}),
         indexes = {
                 @Index(name = "ix_table_catalog", columnList = "catalog_id"),
@@ -81,9 +81,9 @@ public class TableEntity extends AuditedEntity {
      *
      * <p>Iceberg 的元数据是一份**整体快照**（每次 commit 生成一份新的 JSON），
      * 而 Paimon 侧是逐资源建行。这里照抄本工程已有的那一套
-     * （{@code paimon_catalog.storage_config_json} 是真相源、{@code storage_type} 与
+     * （{@code lakehouse_catalog.storage_config_json} 是真相源、{@code storage_type} 与
      * {@code allowed_locations_json} 是它的投影，见 {@code docs/data-model.md}）：
-     * <b>文档是真相源，{@code paimon_snapshot} / {@code paimon_branch} / {@code paimon_tag}
+     * <b>文档是真相源，{@code lakehouse_snapshot} / {@code lakehouse_branch} / {@code lakehouse_tag}
      * 里的行是它的派生投影。</b>
      *
      * <p>列类型必须是 mediumtext（{@code length = 1048576}）。大表的 metadata 含
@@ -98,7 +98,7 @@ public class TableEntity extends AuditedEntity {
      *
      * <p>两个身份：给引擎的「去读哪个文件」的指针，以及**乐观并发的 CAS 条件**。
      * 提交时的落库语句形如
-     * {@code update paimon_table set metadata_location = :new, ... where id = :id and metadata_location = :expected}；
+     * {@code update lakehouse_table set metadata_location = :new, ... where id = :id and metadata_location = :expected}；
      * 影响 0 行说明期间被别人提交过，回 409（与优化批次
      * {@code update ... where id = ? and next_run_at = ?} 抢占是同一个手法）。
      */

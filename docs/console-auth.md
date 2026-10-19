@@ -23,7 +23,7 @@
 | | 账号从哪来 | 令牌 | 问题 |
 | --- | --- | --- | --- |
 | 第一版 | 服务端配置的用户名 + 密码 | 存在服务端内存里的**会话** | 内存会话多实例不互认、重启全体掉线；与 Polaris 生态接不上 |
-| 第二版 | 主体（`paimon_principal`）的 `client_id` / `client_secret`，或外部 IdP | **自包含 JWT** | 装好之后进不去：控制台默认要求登录，而一个主体都还没有 |
+| 第二版 | 主体（`lakehouse_principal`）的 `client_id` / `client_secret`，或外部 IdP | **自包含 JWT** | 装好之后进不去：控制台默认要求登录，而一个主体都还没有 |
 | 本版 | 上面两种都保留，**另加**服务端配置的账号密码（默认 `admin/admin`） | 同上，一个 Bearer 令牌 | 默认密码是明文配置，必须改（启动时告警） |
 
 第三行是这次改动的全部：**把「装好就能进控制台」这条路补回来，但不恢复任何服务端会话**。
@@ -218,7 +218,7 @@ lakehouse:
             window: 1m
 ```
 
-- **账号不是主体。** 主体（`paimon_principal`）是授权链路的一端，有 `client_id` /
+- **账号不是主体。** 主体（`lakehouse_principal`）是授权链路的一端，有 `client_id` /
   `client_secret`；这里的账号只是「开门的钥匙」，不进授权链路。
 - **默认同名。** 没配 `principals` 映射时，主体名就是用户名。因此 `admin` 这个账号
   会以主体名 `admin` 去查授权链路——**它不等于管理员**：除非
@@ -384,7 +384,7 @@ IdP 的令牌响应里可能同时有 `id_token` 与 `access_token`。控制台*
 `lakehouse.rest.auth.console.oidc.principal-claim`（默认 `sub`）。取到的值要与下列之一对得上，
 否则**登录成功但什么也看不到**：
 
-- `paimon_principal.name`（`service-admins` 之外的普通用户），或
+- `lakehouse_principal.name`（`service-admins` 之外的普通用户），或
 - `lakehouse.rest.authorization.service-admins` 里的名字（服务管理员）。
 
 这一条是最常见的配置陷阱，启动日志会就此告警。

@@ -18,7 +18,7 @@ import lombok.Setter;
  * 按定义名保存在 JSON 文档中。
  */
 @Entity
-@Table(name = "paimon_function",
+@Table(name = "lakehouse_function",
         uniqueConstraints = @UniqueConstraint(name = "uk_function", columnNames = {"catalog_id", "database_id", "name"}),
         indexes = @Index(name = "ix_function_database", columnList = "database_id"))
 @Getter

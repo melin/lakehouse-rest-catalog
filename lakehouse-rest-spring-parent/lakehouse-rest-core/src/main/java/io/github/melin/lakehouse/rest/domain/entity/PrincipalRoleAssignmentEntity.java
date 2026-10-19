@@ -16,7 +16,7 @@ import lombok.Setter;
  * principal 与 principal role 之间多对多，因此关系独立成表而不是放在任一侧。
  */
 @Entity
-@Table(name = "paimon_principal_role_grant",
+@Table(name = "lakehouse_principal_role_grant",
         uniqueConstraints = @UniqueConstraint(name = "uk_principal_role_grant",
                 columnNames = {"principal_id", "principal_role_id"}),
         indexes = @Index(name = "ix_principal_role_grant_role", columnList = "principal_role_id"))

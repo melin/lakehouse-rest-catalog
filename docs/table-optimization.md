@@ -51,7 +51,7 @@
 | Paimon 原生 | `CALL sys.expire_snapshots(older_than => ..., retain_max => ..., retain_min => ...)` |
 | 可配参数 | `保留时间`（快照保留时长，默认 24 h——DLF 截图里是 1 h，但 1 h 对可回溯性太激进，默认取保守值）；`最少保留个数`（默认 10）；`执行间隔`（默认 24 h，对齐 AWS 的 deletion run rate） |
 | 安全性 | Paimon expire 自身会尊重 consumer 位点与标签引用，不会删被挂住的快照；服务端仍在 item 上记录 `删除快照数 / 释放空间` |
-| 展示 | 配置卡下方放「快照现状」卡（吸收 DLF）：当前 snapshot 个数、最早 snapshot 的 ID / 提交时间 / 提交类型 / 表总行数——数据源就是已有的 `paimon_snapshot` 表 |
+| 展示 | 配置卡下方放「快照现状」卡（吸收 DLF）：当前 snapshot 个数、最早 snapshot 的 ID / 提交时间 / 提交类型 / 表总行数——数据源就是已有的 `lakehouse_snapshot` 表 |
 
 ### 2.3 Orphan File Remove（孤儿文件清理）
 
@@ -71,7 +71,7 @@
 ### 2.5 Iceberg 的对应物
 
 三项动作在 Iceberg 里都有官方 procedure，语义与 Paimon 一一对应，因此**没有新增任务信息表**：
-`paimon_table_optimization`（策略）、`optimization_job` / `optimization_job_item`（批次与明细）
+`lakehouse_table_optimization`（策略）、`optimization_job` / `optimization_job_item`（批次与明细）
 原样复用——它们存的本来就是「动作 + 键值对参数」和「动作 + 指标」，格式差异只体现在键名与指标口径上。
 
 | 项 | Paimon | Iceberg |
@@ -124,7 +124,7 @@ Iceberg 的 `rewrite_data_files` 只有 `strategy => 'binpack' | 'sort'`，Z-Ord
         │
         ▼
 ┌─────────────────────────┐   每分钟扫描（服务端调度器）
-│ paimon_table_optimization│ ──────────────────────────┐
+│ lakehouse_table_optimization│ ──────────────────────────┐
 └─────────────────────────┘                            ▼
                                         ┌──────────────────────────┐
                                         │ 组批：到期且可入批的策略      │
@@ -197,7 +197,7 @@ Iceberg 的 `rewrite_data_files` 只有 `strategy => 'binpack' | 'sort'`，Z-Ord
 
 沿用既有约定：实体继承 `AuditedEntity`（审计列），复杂结构 `@Convert` + `JsonConverters`，乐观并发 `entityVersion`；改实体后重跑 `scripts/gen-mysql-ddl.sh` 并同步 `docs/data-model.md`。
 
-**`paimon_table_optimization`（策略，与表 1:1）**
+**`lakehouse_table_optimization`（策略，与表 1:1）**
 
 | 列 | 说明 |
 | --- | --- |
@@ -209,7 +209,7 @@ Iceberg 的 `rewrite_data_files` 只有 `strategy => 'binpack' | 'sort'`，Z-Ord
 | `schedule_interval_seconds` | 调度间隔（扫描该表的周期，默认 3600，对齐 DLF 的 compaction 间隔） |
 | `next_run_at` / `last_job_id` | 下次到期时间 / 最近一次批次 |
 
-**`paimon_optimization_job`（批次）**
+**`lakehouse_optimization_job`（批次）**
 
 | 列 | 说明 |
 | --- | --- |
@@ -222,7 +222,7 @@ Iceberg 的 `rewrite_data_files` 只有 `strategy => 'binpack' | 'sort'`，Z-Ord
 | `submitted_at` / `started_at` / `finished_at` / `deadline_at` | 时间线与超时判定 |
 | `error_message` | 失败原因（含 pod 日志尾部摘录） |
 
-**`paimon_optimization_job_item`（表级明细，批次 1:N）**
+**`lakehouse_optimization_job_item`（表级明细，批次 1:N）**
 
 | 列 | 说明 |
 | --- | --- |
@@ -371,7 +371,7 @@ P1/P2 的服务端部分由 `OptimizationApiTests`（9 个用例）覆盖：策�
 
 ## 9. 开放问题
 
-1. ~~**服务端多副本时的调度互斥**~~ → **已按候选方案落地**：`paimon_table_optimization.next_run_at`
+1. ~~**服务端多副本时的调度互斥**~~ → **已按候选方案落地**：`lakehouse_table_optimization.next_run_at`
    上的条件更新（`UPDATE ... WHERE id = ? AND next_run_at = ?`）即分布式抢占，不引入额外锁或选举组件。
    配套的一条规则是判断并发配额**先于**抢占——拿不到执行配额就不动游标，否则这一轮的调度机会
    会被白白吃掉（下一拍这张表还在，但已经「假装跑过」了）。`OptimizationApiTests` 里有对应断言。

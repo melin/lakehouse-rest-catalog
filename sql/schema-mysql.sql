@@ -16,12 +16,12 @@
 --     而命名空间路径与分区 spec 的长度没有上界，直接用原文建唯一索引会被
 --     ERROR 1071 拒绝。原文字段仍然保留，供等值查询使用。
 --
-CREATE DATABASE IF NOT EXISTS `paimon_catalog`
+CREATE DATABASE IF NOT EXISTS `lakehouse_catalog`
   DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
-USE `paimon_catalog`;
+USE `lakehouse_catalog`;
 
-    create table audit_event (
+    create table lakehouse_audit_event (
         id bigint not null auto_increment,
         occurred_at bigint not null,
         category varchar(32) not null,
@@ -36,7 +36,7 @@ USE `paimon_catalog`;
         primary key (id)
     ) engine=InnoDB;
 
-    create table paimon_branch (
+    create table lakehouse_branch (
         created_at bigint,
         snapshot_id bigint,
         updated_at bigint,
@@ -50,7 +50,7 @@ USE `paimon_catalog`;
         primary key (id)
     ) engine=InnoDB;
 
-    create table paimon_catalog (
+    create table lakehouse_catalog (
         entity_version integer not null,
         created_at bigint,
         updated_at bigint,
@@ -71,7 +71,7 @@ USE `paimon_catalog`;
         primary key (id)
     ) engine=InnoDB;
 
-    create table paimon_catalog_role (
+    create table lakehouse_catalog_role (
         entity_version integer not null,
         created_at bigint,
         updated_at bigint,
@@ -85,7 +85,7 @@ USE `paimon_catalog`;
         primary key (id)
     ) engine=InnoDB;
 
-    create table paimon_catalog_role_grant (
+    create table lakehouse_catalog_role_grant (
         created_at bigint,
         updated_at bigint,
         catalog_role_id varchar(64) not null,
@@ -97,7 +97,7 @@ USE `paimon_catalog`;
         primary key (id)
     ) engine=InnoDB;
 
-    create table paimon_consumer (
+    create table lakehouse_consumer (
         next_snapshot bigint,
         updated_at bigint,
         id varchar(64) not null,
@@ -106,7 +106,7 @@ USE `paimon_catalog`;
         primary key (id)
     ) engine=InnoDB;
 
-    create table paimon_database (
+    create table lakehouse_database (
         created_at bigint,
         updated_at bigint,
         catalog_id varchar(64) not null,
@@ -121,7 +121,7 @@ USE `paimon_catalog`;
         primary key (id)
     ) engine=InnoDB;
 
-    create table paimon_function (
+    create table lakehouse_function (
         deterministic_flag bit,
         created_at bigint,
         updated_at bigint,
@@ -140,7 +140,7 @@ USE `paimon_catalog`;
         primary key (id)
     ) engine=InnoDB;
 
-    create table paimon_optimization_job (
+    create table lakehouse_optimization_job (
         table_count integer not null,
         created_at bigint,
         deadline_at bigint,
@@ -166,7 +166,7 @@ USE `paimon_catalog`;
         primary key (id)
     ) engine=InnoDB;
 
-    create table paimon_optimization_job_item (
+    create table lakehouse_optimization_job_item (
         created_at bigint,
         finished_at bigint,
         reported_at bigint,
@@ -186,7 +186,7 @@ USE `paimon_catalog`;
         primary key (id)
     ) engine=InnoDB;
 
-    create table paimon_partition (
+    create table lakehouse_partition (
         done_flag bit not null,
         total_buckets integer,
         created_at bigint,
@@ -207,7 +207,7 @@ USE `paimon_catalog`;
         primary key (id)
     ) engine=InnoDB;
 
-    create table paimon_permission_assignment (
+    create table lakehouse_permission_assignment (
         created_at bigint,
         expire_time bigint,
         updated_at bigint,
@@ -226,7 +226,7 @@ USE `paimon_catalog`;
         primary key (id)
     ) engine=InnoDB;
 
-    create table paimon_principal (
+    create table lakehouse_principal (
         credential_rotation_required bit not null,
         entity_version integer not null,
         created_at bigint,
@@ -243,7 +243,7 @@ USE `paimon_catalog`;
         primary key (id)
     ) engine=InnoDB;
 
-    create table paimon_principal_role (
+    create table lakehouse_principal_role (
         entity_version integer not null,
         federated bit not null,
         created_at bigint,
@@ -257,7 +257,7 @@ USE `paimon_catalog`;
         primary key (id)
     ) engine=InnoDB;
 
-    create table paimon_principal_role_grant (
+    create table lakehouse_principal_role_grant (
         created_at bigint,
         updated_at bigint,
         id varchar(64) not null,
@@ -269,7 +269,7 @@ USE `paimon_catalog`;
         primary key (id)
     ) engine=InnoDB;
 
-    create table paimon_resource_grant (
+    create table lakehouse_resource_grant (
         created_at bigint,
         updated_at bigint,
         resource_type varchar(32) not null,
@@ -286,7 +286,7 @@ USE `paimon_catalog`;
         primary key (id)
     ) engine=InnoDB;
 
-    create table paimon_semantic_view (
+    create table lakehouse_semantic_view (
         created_at bigint,
         updated_at bigint,
         catalog_id varchar(64) not null,
@@ -301,7 +301,7 @@ USE `paimon_catalog`;
         primary key (id)
     ) engine=InnoDB;
 
-    create table paimon_snapshot (
+    create table lakehouse_snapshot (
         version_number integer,
         changelog_record_count bigint,
         delta_record_count bigint,
@@ -332,7 +332,7 @@ USE `paimon_catalog`;
         primary key (id)
     ) engine=InnoDB;
 
-    create table paimon_table (
+    create table lakehouse_table (
         external_flag bit not null,
         format_version integer,
         created_at bigint,
@@ -356,7 +356,7 @@ USE `paimon_catalog`;
         primary key (id)
     ) engine=InnoDB;
 
-    create table paimon_table_optimization (
+    create table lakehouse_table_optimization (
         compaction_enabled_flag bit not null,
         enabled_flag bit not null,
         orphan_remove_enabled_flag bit not null,
@@ -378,7 +378,7 @@ USE `paimon_catalog`;
         primary key (id)
     ) engine=InnoDB;
 
-    create table paimon_table_schema (
+    create table lakehouse_table_schema (
         created_at bigint not null,
         schema_id bigint not null,
         id varchar(64) not null,
@@ -387,7 +387,7 @@ USE `paimon_catalog`;
         primary key (id)
     ) engine=InnoDB;
 
-    create table paimon_tag (
+    create table lakehouse_tag (
         snapshot_id bigint not null,
         tag_create_time bigint,
         id varchar(64) not null,
@@ -397,7 +397,7 @@ USE `paimon_catalog`;
         primary key (id)
     ) engine=InnoDB;
 
-    create table paimon_view (
+    create table lakehouse_view (
         created_at bigint,
         updated_at bigint,
         catalog_id varchar(64) not null,
@@ -413,142 +413,142 @@ USE `paimon_catalog`;
     ) engine=InnoDB;
 
     create index ix_audit_event_catalog 
-       on audit_event (catalog, id);
+       on lakehouse_audit_event (catalog, id);
 
     create index ix_audit_event_type 
-       on audit_event (type);
+       on lakehouse_audit_event (type);
 
     create index ix_audit_event_category 
-       on audit_event (category, id);
+       on lakehouse_audit_event (category, id);
 
     create index ix_branch_table 
-       on paimon_branch (table_id);
+       on lakehouse_branch (table_id);
 
-    alter table paimon_branch 
+    alter table lakehouse_branch 
        add constraint uk_branch unique (table_id, name);
 
-    alter table paimon_catalog 
+    alter table lakehouse_catalog 
        add constraint uk_catalog_prefix unique (prefix_value);
 
-    alter table paimon_catalog_role 
+    alter table lakehouse_catalog_role 
        add constraint uk_catalog_role_name unique (catalog_id, name);
 
     create index ix_catalog_role_grant_role 
-       on paimon_catalog_role_grant (catalog_role_id);
+       on lakehouse_catalog_role_grant (catalog_role_id);
 
-    alter table paimon_catalog_role_grant 
+    alter table lakehouse_catalog_role_grant 
        add constraint uk_catalog_role_grant unique (principal_role_id, catalog_role_id);
 
     create index ix_consumer_table 
-       on paimon_consumer (table_id);
+       on lakehouse_consumer (table_id);
 
-    alter table paimon_consumer 
+    alter table lakehouse_consumer 
        add constraint uk_consumer unique (table_id, consumer_id);
 
     create index ix_database_catalog 
-       on paimon_database (catalog_id);
+       on lakehouse_database (catalog_id);
 
-    alter table paimon_database 
+    alter table lakehouse_database 
        add constraint uk_database unique (catalog_id, name);
 
     create index ix_function_database 
-       on paimon_function (database_id);
+       on lakehouse_function (database_id);
 
-    alter table paimon_function 
+    alter table lakehouse_function 
        add constraint uk_function unique (catalog_id, database_id, name);
 
     create index ix_optimization_job_catalog 
-       on paimon_optimization_job (catalog_id);
+       on lakehouse_optimization_job (catalog_id);
 
     create index ix_optimization_job_status 
-       on paimon_optimization_job (status_value);
+       on lakehouse_optimization_job (status_value);
 
     create index ix_optimization_item_job 
-       on paimon_optimization_job_item (job_id);
+       on lakehouse_optimization_job_item (job_id);
 
     create index ix_optimization_item_table 
-       on paimon_optimization_job_item (table_id);
+       on lakehouse_optimization_job_item (table_id);
 
     create index ix_partition_table 
-       on paimon_partition (table_id);
+       on lakehouse_partition (table_id);
 
-    alter table paimon_partition 
+    alter table lakehouse_partition 
        add constraint uk_partition unique (table_id, spec_hash);
 
     create index ix_permission_assignment_catalog 
-       on paimon_permission_assignment (catalog_id);
+       on lakehouse_permission_assignment (catalog_id);
 
     create index ix_permission_assignment_principal 
-       on paimon_permission_assignment (principal);
+       on lakehouse_permission_assignment (principal);
 
-    alter table paimon_permission_assignment 
+    alter table lakehouse_permission_assignment 
        add constraint uk_permission_assignment unique (catalog_id, resource_type, locator_hash, access, principal);
 
-    alter table paimon_principal 
+    alter table lakehouse_principal 
        add constraint uk_principal_name unique (name);
 
-    alter table paimon_principal 
+    alter table lakehouse_principal 
        add constraint uk_principal_client_id unique (client_id);
 
-    alter table paimon_principal_role 
+    alter table lakehouse_principal_role 
        add constraint uk_principal_role_name unique (name);
 
     create index ix_principal_role_grant_role 
-       on paimon_principal_role_grant (principal_role_id);
+       on lakehouse_principal_role_grant (principal_role_id);
 
-    alter table paimon_principal_role_grant 
+    alter table lakehouse_principal_role_grant 
        add constraint uk_principal_role_grant unique (principal_id, principal_role_id);
 
     create index ix_resource_grant_role 
-       on paimon_resource_grant (catalog_role_id);
+       on lakehouse_resource_grant (catalog_role_id);
 
-    alter table paimon_resource_grant 
+    alter table lakehouse_resource_grant 
        add constraint uk_resource_grant unique (catalog_role_id, resource_type, namespace_hash, object_name, privilege);
 
     create index ix_semantic_view_database 
-       on paimon_semantic_view (database_id);
+       on lakehouse_semantic_view (database_id);
 
-    alter table paimon_semantic_view 
+    alter table lakehouse_semantic_view 
        add constraint uk_semantic_view unique (catalog_id, database_id, name);
 
     create index ix_snapshot_table 
-       on paimon_snapshot (table_id);
+       on lakehouse_snapshot (table_id);
 
-    alter table paimon_snapshot 
+    alter table lakehouse_snapshot 
        add constraint uk_snapshot unique (table_id, snapshot_id);
 
     create index ix_table_catalog 
-       on paimon_table (catalog_id);
+       on lakehouse_table (catalog_id);
 
     create index ix_table_database 
-       on paimon_table (database_id);
+       on lakehouse_table (database_id);
 
-    alter table paimon_table 
+    alter table lakehouse_table 
        add constraint uk_table unique (catalog_id, database_id, name);
 
     create index ix_table_optimization_catalog 
-       on paimon_table_optimization (catalog_id);
+       on lakehouse_table_optimization (catalog_id);
 
     create index ix_table_optimization_due 
-       on paimon_table_optimization (enabled_flag, next_run_at);
+       on lakehouse_table_optimization (enabled_flag, next_run_at);
 
-    alter table paimon_table_optimization 
+    alter table lakehouse_table_optimization 
        add constraint uk_table_optimization unique (table_id);
 
     create index ix_table_schema_table 
-       on paimon_table_schema (table_id);
+       on lakehouse_table_schema (table_id);
 
-    alter table paimon_table_schema 
+    alter table lakehouse_table_schema 
        add constraint uk_table_schema unique (table_id, schema_id);
 
     create index ix_tag_table 
-       on paimon_tag (table_id);
+       on lakehouse_tag (table_id);
 
-    alter table paimon_tag 
+    alter table lakehouse_tag 
        add constraint uk_tag unique (table_id, tag_name);
 
     create index ix_view_database 
-       on paimon_view (database_id);
+       on lakehouse_view (database_id);
 
-    alter table paimon_view 
+    alter table lakehouse_view 
        add constraint uk_view unique (catalog_id, database_id, name);

@@ -13,7 +13,7 @@ import lombok.Setter;
  * 流式消费进度：记录某个消费者下一次应读取的快照 id。
  */
 @Entity
-@Table(name = "paimon_consumer",
+@Table(name = "lakehouse_consumer",
         uniqueConstraints = @UniqueConstraint(name = "uk_consumer", columnNames = {"table_id", "consumer_id"}),
         indexes = @Index(name = "ix_consumer_table", columnList = "table_id"))
 @Getter

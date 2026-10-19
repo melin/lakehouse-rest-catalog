@@ -130,7 +130,7 @@ principal ──(N:M)── principal role ──(N:M)── catalog role ──
 `role:sales_writer`），资源用 8 种官方定位器表达（`CATALOG / CATALOG_ALL / DATABASE /
 DATABASE_ALL / TABLE / COLUMN / VIEW / FUNCTION`），access 用官方 12 项词表
 （SELECT / UPDATE / ALTER / DROP / DESCRIBE / CREATETABLE / ...），
-落库为 `paimon_permission_assignment`。
+落库为 `lakehouse_permission_assignment`。
 
 **这一路也是控制台与服务端的 SQL 层共用的那一套**：控制台「权限管理」页、
 Spark SQL 的资源授权语句（`GRANT <access> ON <资源> TO <授权对象>`，
@@ -166,7 +166,7 @@ Iceberg 的 namespace 是**多级**的（`["accounting","tax"]`），Paimon 的 
 | 来源 | 存法 | `accounting.tax` 这个 namespace 长什么样 |
 | --- | --- | --- |
 | RBAC（Polaris 链） | `namespace_json` 层级数组（另有 `namespace_key`：`0x1F` 拼接，只用于等值定位与唯一约束，**不参与前缀比较**） | `["accounting","tax"]`（两段） |
-| 直授（Paimon 官方权限模型） | `paimon_permission_assignment.database_name` 一个字符串 | `["accounting.tax"]`（**一段**） |
+| 直授（Paimon 官方权限模型） | `lakehouse_permission_assignment.database_name` 一个字符串 | `["accounting.tax"]`（**一段**） |
 
 **判定时不能逐段比较。** 逐段比会让「直授 `accounting.tax`、访问 `["accounting","tax"]`」
 永远不命中：两边段数不同，第一段 `accounting.tax` 与 `accounting` 就已经不等。
@@ -450,7 +450,7 @@ Iceberg 没有独立的提交端点：数据提交与属性变更都是 `POST /n
 10. **层级里含点号的 namespace 与两级 namespace 无法区分。** 多级 namespace 落库时按点号拼接
    （`["a","b"]` → `a.b`），因此一个 level 字面就叫 `a.b` 的 namespace 与两级的 `a`/`b`
    在库里是同一行。Iceberg 客户端实际不生成含点号的 level，为它把列内容改成读者看不懂的
-   转义形式代价更高；要彻底消除只能把 `paimon_database.name` 换成层级 JSON 列。
+   转义形式代价更高；要彻底消除只能把 `lakehouse_database.name` 换成层级 JSON 列。
    详见 [`iceberg-rest-catalog-design.md` §8](iceberg-rest-catalog-design.md) 的风险 10。
 11. **权限页的 namespace 候选是「按层递归列举」的结果，有上限。** Iceberg 没有「列举全部
    namespace」的端点，只能从根开始逐层 `?parent=` 递归（`listAllNamespaces`），

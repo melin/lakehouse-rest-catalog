@@ -43,7 +43,7 @@ import org.springframework.test.context.DynamicPropertySource;
  *
  * <p><b>H2 上看不见、只有真库才报的那类错误，在生成侧补一条断言。</b>MySQL 的表行大小
  * 上限（65535 字节）是存储层的约束：方言生成不报、在 H2 上跑测试也不报，只有在真库
- * 执行建表时才炸——{@code paimon_table_optimization} 的三个 {@code varchar(8192)}
+ * 执行建表时才炸——{@code lakehouse_table_optimization} 的三个 {@code varchar(8192)}
  * 配置列就是这么漏出去的（算术见 {@link #everyTableFitsTheMysqlRowSizeLimit()}）。
  * 其余「真库才有的行为」（外键、字符集、索引键长度）仍需实机步骤验证。
  *
@@ -171,7 +171,7 @@ class MysqlDdlGeneratorTests {
      *
      * <p><b>为什么必须在生成侧拦。</b>这是存储层的约束：Hibernate 生成 DDL 时不检查，
      * 在 H2 上跑测试也检查不到——工程全绿，只有在真库上执行才炸，而那时建表脚本已经
-     * 交付出去了（{@code paimon_table_optimization} 就是这么漏出去的）。本断言只解析
+     * 交付出去了（{@code lakehouse_table_optimization} 就是这么漏出去的）。本断言只解析
      * 自己刚生成的文本，不新增环境依赖。
      *
      * <p>计入规则见 {@link #columnBytes(String)}，另加每行固定开销

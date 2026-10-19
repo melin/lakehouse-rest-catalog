@@ -16,7 +16,7 @@ import lombok.Setter;
  * 其 {@code content} 整篇保存、不做解析，单个定义上限 1 MiB UTF-8 字节。
  */
 @Entity
-@Table(name = "paimon_semantic_view",
+@Table(name = "lakehouse_semantic_view",
         uniqueConstraints = @UniqueConstraint(name = "uk_semantic_view",
                 columnNames = {"catalog_id", "database_id", "name"}),
         indexes = @Index(name = "ix_semantic_view_database", columnList = "database_id"))

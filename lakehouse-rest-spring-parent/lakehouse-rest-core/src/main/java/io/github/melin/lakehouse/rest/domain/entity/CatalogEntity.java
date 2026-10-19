@@ -25,7 +25,7 @@ import org.hibernate.annotations.ColumnDefault;
  * （defaults → 客户端属性 → overrides，后者优先）。
  */
 @Entity
-@Table(name = "paimon_catalog",
+@Table(name = "lakehouse_catalog",
         uniqueConstraints = @UniqueConstraint(name = "uk_catalog_prefix", columnNames = "prefix_value"))
 @Getter
 @Setter
@@ -74,7 +74,7 @@ public class CatalogEntity extends AuditedEntity {
      * 整套请求走错协议面。库级默认值让「手工 INSERT、旧脚本、运维直接改库」这些
      * 绕开 JPA 的写入也落到 {@code PAIMON}——那正是本特性引入前它们唯一能表达的东西。
      * 升级已有库时用
-     * {@code alter table paimon_catalog add column catalog_format varchar(32) not null default 'PAIMON';}
+     * {@code alter table lakehouse_catalog add column catalog_format varchar(32) not null default 'PAIMON';}
      * （带默认值的加列，MySQL 会把存量行一并回填）。
      */
     @Column(name = "catalog_format", length = 32, nullable = false)

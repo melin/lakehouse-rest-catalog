@@ -41,7 +41,7 @@ import tools.jackson.databind.JsonNode;
 /**
  * Iceberg 视图的生命周期：列举 / 装载 / 建视图 / 提交 / 删除 / 重命名。
  *
- * <p><b>视图与表在存储上共用一张 {@code paimon_view}，但元数据代数完全不同。</b>
+ * <p><b>视图与表在存储上共用一张 {@code lakehouse_view}，但元数据代数完全不同。</b>
  * 表是「一轮 update 作用在一份 {@code TableMetadata} 上」，视图是「一轮 update 作用在
  * 一份 {@code ViewMetadata} 上」：视图没有快照、没有分区、没有数据文件，
  * 只有一串 {@code versions[]}（每个版本是「一段 SQL + 一个 schema」的组合）、
@@ -52,10 +52,10 @@ import tools.jackson.databind.JsonNode;
  * <p><b>{@code view_schema_doc} 复用为 {@code ViewMetadata} JSON。</b>
  * Iceberg 的 {@code versions[]} 与 Paimon 视图的「字段 + 默认查询语句 + 各方言语句」
  * 表达的是同一件事（这段视图怎么算出来），因此同一列按格式承载各自的形状，
- * 读取方（控制台）按 catalog 格式选解析器——与 {@code paimon_table.schema_doc}
+ * 读取方（控制台）按 catalog 格式选解析器——与 {@code lakehouse_table.schema_doc}
  * 在 Iceberg 侧存 Iceberg 形状的 schema 是同一个手法。
- * 收益很直接：**视图不需要任何投影行**。{@code paimon_table_schema} /
- * {@code paimon_snapshot} / {@code paimon_branch} 的主键都是 {@code table_id}，
+ * 收益很直接：**视图不需要任何投影行**。{@code lakehouse_table_schema} /
+ * {@code lakehouse_snapshot} / {@code lakehouse_branch} 的主键都是 {@code table_id}，
  * 视图没有对应的从属表，控制台读视图读的就是这一份文档。
  *
  * <p><b>与表不同的三处取舍，都写在这里：</b>
@@ -349,7 +349,7 @@ public class IcebergViewService {
     /**
      * 这个视图能否被 Iceberg 面服务：有元数据文件位置才算。
      *
-     * <p>判据比表侧更简单（表侧还要认 {@code table_type}）：{@code paimon_view}
+     * <p>判据比表侧更简单（表侧还要认 {@code table_type}）：{@code lakehouse_view}
      * 没有格式列，而 Paimon 面的视图**从不写元数据文件**，因此
      * {@code metadata_location} 为空就一定是 Paimon 形状的目录条目。
      */

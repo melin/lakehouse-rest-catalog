@@ -38,7 +38,7 @@ import lombok.Setter;
  * {@code ERROR 1071: Specified key was too long} 拒绝。
  */
 @Entity
-@Table(name = "paimon_resource_grant",
+@Table(name = "lakehouse_resource_grant",
         uniqueConstraints = @UniqueConstraint(name = "uk_resource_grant",
                 columnNames = {"catalog_role_id", "resource_type", "namespace_hash",
                         "object_name", "privilege"}),

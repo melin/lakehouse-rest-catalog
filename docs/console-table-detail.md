@@ -111,7 +111,7 @@ HTTP 或 `lakehouse-rest-spark` 的 SQL。理由是表结构变更属于一次�
 **四张卡片的数从哪来。** 记录数取快照自己的 `totalRecordCount`（提交方每次都会送），
 另外三个数**不在快照里**：Paimon 的快照只记清单指针与记录数，文件数与体积另由提交请求随带的
 `statistics`（各分区在本次提交里的增量）给出。服务端把这份增量累计到上一个快照的累计值上，
-存进 `paimon_snapshot` 的 `file_count` / `file_size_in_bytes` / `last_file_creation_time`，
+存进 `lakehouse_snapshot` 的 `file_count` / `file_size_in_bytes` / `last_file_creation_time`，
 再由 `getTableSnapshot` 回给页面。三条由此而来的性质：
 
 - **没送 `statistics` 就没有数**（此时卡片显示 `—`，页脚改成「快照未带文件统计」）。

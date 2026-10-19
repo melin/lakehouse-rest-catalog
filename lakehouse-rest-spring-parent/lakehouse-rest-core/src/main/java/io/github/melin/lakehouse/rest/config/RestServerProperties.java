@@ -288,7 +288,7 @@ public class RestServerProperties {
          *
          * <p>控制台把用户填的 clientId / clientSecret 发到本服务端的令牌端点
          * （{@code POST /api/catalog/v1/oauth/tokens}），换回一个 Bearer 令牌。
-         * 服务端按 {@code paimon_principal} 表校验这对凭据，与引擎调用管理 API 时
+         * 服务端按 {@code lakehouse_principal} 表校验这对凭据，与引擎调用管理 API 时
          * 用的是同一份数据。
          */
         @Getter
@@ -367,7 +367,7 @@ public class RestServerProperties {
              * 从哪个 claim 取主体名。
              *
              * <p>默认 {@code sub}。要让授权链路认得出人，这个 claim 的取值需要
-             * 与 {@code paimon_principal.name} 或
+             * 与 {@code lakehouse_principal.name} 或
              * {@code lakehouse.rest.authorization.service-admins} 中的名字对得上，
              * 否则登录成功但没有任何权限——现象是「每个页面都 403」。
              */
