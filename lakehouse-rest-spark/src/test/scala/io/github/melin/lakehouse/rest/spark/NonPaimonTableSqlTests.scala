@@ -362,7 +362,7 @@ class NonPaimonTableSqlTests {
    * 在仓库根下造一个空目录，当作「对象存储里已经存在的目录」。
    *
    * <p>仓库根从服务端给表分配的路径反推（{@code <warehouse>/<db>.db/<table>}，
-   * 见 {@code paimon.rest.path-template}），于是不必在测试里写死仓库位置，
+   * 见 {@code lakehouse.rest.path-template}），于是不必在测试里写死仓库位置，
    * 也不会把对象目录放到仓库外去。
    */
   private def scratchObjectDir(): String = {

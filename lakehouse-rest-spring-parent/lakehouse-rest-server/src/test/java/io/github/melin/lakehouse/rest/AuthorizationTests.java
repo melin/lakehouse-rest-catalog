@@ -33,7 +33,7 @@ import tools.jackson.databind.node.JsonNodeFactory;
  * RBAC 授权体系的行为测试。
  *
  * <p>与 {@link ManagementApiTests} 不同，本类在
- * {@code paimon.rest.authorization.enabled=true} 下运行，验证三件事：
+ * {@code lakehouse.rest.authorization.enabled=true} 下运行，验证三件事：
  *
  * <ol>
  *   <li>管理端点确实按调用者身份拒绝请求（而不是只在文档里声明 403）；
@@ -47,7 +47,7 @@ import tools.jackson.databind.node.JsonNodeFactory;
  * （见 {@code src/test/resources/application-test.yml}），本类再覆盖库名以进一步隔离。
  */
 @SpringBootTest(properties = {
-        "paimon.rest.authorization.enabled=true",
+        "lakehouse.rest.authorization.enabled=true",
         "spring.datasource.url=jdbc:h2:mem:paimon-authz;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE"
 })
 @ActiveProfiles("test")

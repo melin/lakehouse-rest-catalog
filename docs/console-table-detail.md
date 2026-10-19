@@ -185,7 +185,7 @@ Object 表的列由 Paimon 固定（`ObjectTable.SCHEMA` 的六列），主键 /
   操作列的**下载**（仅文件行有）：同样是把已有字节搬出去的只读操作，
   走 `.../tables/{tableId}/files/download?path=`，流式不缓冲、出不了表目录，
   细节见 [`console-catalog-detail.md` §4.1](console-catalog-detail.md#41-单文件下载)。
-- **截断而不是报错。** 目录条目超过 `paimon.rest.file-browser.max-entries` 时
+- **截断而不是报错。** 目录条目超过 `lakehouse.rest.file-browser.max-entries` 时
   返回前 N 条并带 `truncated` 标记，页面顶部给出黄条说明；目录优先排序保证了
   被截掉的只会是尾部文件。
 
@@ -213,7 +213,7 @@ Polaris 的 RBAC 面退出控制台（管理面留在管理 API 与 Spark SQL）
 两个只读工具：
 
 - **数据访问令牌**（`getTableToken`）：服务端按 catalog 的存储配置下发临时凭据。
-  以 `paimon.rest.credential-manager.type=noop` 运行时返回 501，页面如实显示
+  以 `lakehouse.rest.credential-manager.type=noop` 运行时返回 501，页面如实显示
   ——那种部署下由引擎自带的云凭据链负责鉴权。
 - **查询级授权规则**（`authTableQuery`）：传入要查询的列，服务端按调用主体的授权
   返回行过滤表达式与列脱敏规则。两者都在引擎侧生效，控制台只负责展示服务端给出了什么。

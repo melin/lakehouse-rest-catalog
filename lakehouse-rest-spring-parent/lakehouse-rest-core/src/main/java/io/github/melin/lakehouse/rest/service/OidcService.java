@@ -21,7 +21,7 @@ import org.springframework.stereotype.Service;
 /**
  * OIDC 令牌的验证与发现文档。
  *
- * <p>对应 {@code paimon.rest.auth.console.oidc.*}。本服务不认识任何用户，
+ * <p>对应 {@code lakehouse.rest.auth.console.oidc.*}。本服务不认识任何用户，
  * 也不签发令牌——那些都是外部身份提供方（Keycloak / Auth0 / Okta）的事。
  * 它只回答一个问题：<b>这个令牌是不是该提供方签发的，且属于谁</b>。
  *

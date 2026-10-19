@@ -195,7 +195,7 @@ not counting BLOBs, is 65535. ... You have to change some columns to TEXT or BLO
 
 - **不截断**：截断会把凭据的前 255 个字符原样写进元数据库，
   而元数据是能被列表接口读出来的。
-- 超长时启动日志告警一次，给出的解法是配 `paimon.rest.auth.token-principals`
+- 超长时启动日志告警一次，给出的解法是配 `lakehouse.rest.auth.token-principals`
   把令牌映射成真正的名字。
 - 归一化放在实体层而非 `RequestContext`：授权判定读的是**未归一化**的主体名，两者互不影响。
 - **刻意不通过加宽这三列来解决**：它们会被接口原样返回，加宽等于让凭据明文入库并可被读回；
@@ -215,6 +215,6 @@ schema、函数定义、分区 spec 等结构以 JSON 文本存进单列，实�
 写库前用 AES-GCM 加密成 `v1:<base64(iv ‖ 密文+tag)>` 再塞进这段 JSON，
 因此直接查库看到的是密文，而接口层还会再抹一次（`StorageConfigs.withoutSecrets`）
 ——两处都是必要的，只做一处等于没做。加密密钥不落库，来自
-`paimon.rest.storage.credential-secret-key`，所以**换密钥等于换密文**：
+`lakehouse.rest.storage.credential-secret-key`，所以**换密钥等于换密文**：
 旧密文解不开会明确报 500，需要重新提交一次凭据
 （见 [`../README.md`](../README.md) 第 6 节「实现说明与已知边界」第 20 条）。

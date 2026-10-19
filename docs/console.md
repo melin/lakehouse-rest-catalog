@@ -37,9 +37,9 @@ open http://127.0.0.1:8080/console/
 ./scripts/build-console.sh          # 装依赖（按需）→ 构建 → 校验一致性
 ```
 
-首次进入控制台**默认要求登录**（`paimon.rest.auth.console.required=true`）：
+首次进入控制台**默认要求登录**（`lakehouse.rest.auth.console.required=true`）：
 登录页第一个页签是用户名密码，默认账号密码 `admin/admin`，直接用它进去即可。
-服务端另外开了 `paimon.rest.auth.enabled=true` 时，`/v1/**` 与管理 API 也要求令牌，
+服务端另外开了 `lakehouse.rest.auth.enabled=true` 时，`/v1/**` 与管理 API 也要求令牌，
 此时登录后拿到的那份令牌会自动带上——不需要再去「连接设置」手填。
 见 [§6](#6-鉴权登录与连接设置)。
 
@@ -516,7 +516,7 @@ EXTENSION_ENDPOINTS = {
 每加一条都要写理由，且必须在控制台里真的被调用，否则脚本报「过期条目」。
 
 `verify-console.py` 是**静态**的：它证明前端写下的路径与规格一致，证明不了登录链路真的通。
-登录另有两层对着**运行中的实例**跑的验收（都需要以 `--paimon.rest.auth.enabled=true` 启动）：
+登录另有两层对着**运行中的实例**跑的验收（都需要以 `--lakehouse.rest.auth.enabled=true` 启动）：
 
 ```bash
 # HTTP 层：真实报文、错误码、限速、用户名密码登录、静态令牌、SPA 深链回退——63 项
@@ -562,8 +562,8 @@ BASE=http://127.0.0.1:8080 CLIENT_ID=<clientId> CLIENT_SECRET=<secret> \
 
 | 配置项 | 默认 | 管什么 |
 | --- | --- | --- |
-| `paimon.rest.auth.console.required` | `true` | 浏览器打开控制台要不要先登录；只作用于控制台界面与 `/api/console/v1/**` |
-| `paimon.rest.auth.enabled` | `false` | `/v1/**`、`/api/catalog/v1/**`、`/api/management/v1/**` 要不要带令牌 |
+| `lakehouse.rest.auth.console.required` | `true` | 浏览器打开控制台要不要先登录；只作用于控制台界面与 `/api/console/v1/**` |
+| `lakehouse.rest.auth.enabled` | `false` | `/v1/**`、`/api/catalog/v1/**`、`/api/management/v1/**` 要不要带令牌 |
 
 **默认部署的真实状态**：浏览器被拦在登录页，但数据接口匿名可调
 （`curl /v1/config` 返回 200）。这层门禁解决的是「误入的人看到一堆管理表单」，
@@ -591,7 +591,7 @@ BASE=http://127.0.0.1:8080 CLIENT_ID=<clientId> CLIENT_SECRET=<secret> \
 「登录成功但什么也看不到」告警）。
 
 三者产出的都是一个 Bearer 令牌，此后走同一条通道。第四个入口是
-`paimon.rest.auth.tokens` 里的静态令牌（给机器用，**配置了才出现**，排在最后一页签）。
+`lakehouse.rest.auth.tokens` 里的静态令牌（给机器用，**配置了才出现**，排在最后一页签）。
 
 **登录页不判断有哪些登录方式。** 支持哪种、令牌端点在哪儿、控制台要不要登录，
 全部由 `GET /api/console/v1/auth` 在运行时下发——控制台是构建期打包的静态资源，
@@ -620,7 +620,7 @@ OIDC 登录期间还会在 `sessionStorage` 里放三个短命键
 ### 6.1 登出只是忘掉本机令牌
 
 服务端**没有会话表**：令牌是自包含的 JWT，签出去之后在
-`paimon.rest.auth.access-token.ttl`（默认 1 小时）内一直有效，没有可以作废它的接口。
+`lakehouse.rest.auth.access-token.ttl`（默认 1 小时）内一直有效，没有可以作废它的接口。
 因此 `auth.logout()` 不通知服务端，只清掉本机那份令牌。
 
 这一点在界面上如实说明（顶栏按钮的提示、设置页的说明文字），
@@ -818,7 +818,7 @@ ls lakehouse-rest-spring-parent/lakehouse-rest-server/target/classes/static/cons
   `/api/console/v1/tables/{tableId}/files` 只做列目录：不提供删除、上传、建目录。
   另有对应的**单文件下载**（`.../files/download?path=<文件路径>`，流式响应、不缓冲），
   下载同样是只读——把已有的字节搬出去，不产生任何写入；对目录是 400（列它去）。
-  全部关掉用 `paimon.rest.file-browser.enabled=false`（端点返回 501，消息里带这个键）。
+  全部关掉用 `lakehouse.rest.file-browser.enabled=false`（端点返回 501，消息里带这个键）。
   它们走的授权面与其余 console 端点相同——只过认证拦截器，不做资源级判定；
   这与 `/api/console/v1/meta` 一致，而它们暴露的是**存储布局**（表目录下有哪些文件），
   比 meta 敏感，因此关掉它们的开关是给「只想开控制台看元数据」的部署准备的。

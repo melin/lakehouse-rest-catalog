@@ -8,9 +8,9 @@
 - 面向「为什么这么设计」→ 看 [§2](#2-结论与取舍) 与 [§10](#10-安全考量)
 - 面向「出问题了查哪儿」→ 看 [§8](#8-认证链一个令牌来自哪里) 与 [§12](#12-已知边界)
 
-> **一句话说清两个开关。** `paimon.rest.auth.console.required`（默认 `true`）要求**浏览器**
+> **一句话说清两个开关。** `lakehouse.rest.auth.console.required`（默认 `true`）要求**浏览器**
 > 先登录才能打开控制台，只作用于控制台界面与 `/api/console/v1/**`；
-> `paimon.rest.auth.enabled`（默认 `false`）要求 `/v1/**`、`/api/catalog/v1/**`、
+> `lakehouse.rest.auth.enabled`（默认 `false`）要求 `/v1/**`、`/api/catalog/v1/**`、
 > `/api/management/v1/**` 带令牌。**只开门禁时数据接口仍然匿名可调，它不是安全边界**——
 > 详见 [§2.1](#21-两个开关门禁不是安全边界)。
 
@@ -29,7 +29,7 @@
 第三行是这次改动的全部：**把「装好就能进控制台」这条路补回来，但不恢复任何服务端会话**。
 具体地说：
 
-- 用户名 + 密码的账号来自**配置文件**（`paimon.rest.auth.console.password.users`），
+- 用户名 + 密码的账号来自**配置文件**（`lakehouse.rest.auth.console.password.users`），
   不是数据库。它回答「**谁能打开控制台**」，授权链路回答「**进来之后能做什么**」——
   两者可以同名，也可以用 `password.principals` 映射成不同名。
 - 换回来的仍然是 `AccessTokenService` 签发的自包含 JWT，与客户端凭据那条**完全一样**。
@@ -57,7 +57,7 @@
 （见 [§7](#7-登录引导服务端说了算)）。三条路径最终产出的都是「一个 Bearer 令牌」，
 此后走同一条通道——控制台的其余代码不知道、也不需要知道令牌是怎么来的。
 
-第四个降级入口是 `paimon.rest.auth.tokens` 里的**静态令牌**（给机器用）。
+第四个降级入口是 `lakehouse.rest.auth.tokens` 里的**静态令牌**（给机器用）。
 它没有独立的 `enabled` 开关——**配置里登记了令牌，登录页才会出现这一页签**；
 没配就不显示，因为它本来也不是给人用的正常路径。出现时它排在最后一位。
 
@@ -71,8 +71,8 @@
 
 | 配置项 | 默认 | 管什么 | 关掉会怎样 |
 | --- | --- | --- | --- |
-| `paimon.rest.auth.console.required` | `true` | **控制台界面**与 `/api/console/v1/**` | 浏览器不用登录就能打开控制台；数据接口是否受保护不受它影响 |
-| `paimon.rest.auth.enabled` | `false` | `/v1/**`、`/api/catalog/v1/**`、`/api/management/v1/**` | 数据接口匿名可调 |
+| `lakehouse.rest.auth.console.required` | `true` | **控制台界面**与 `/api/console/v1/**` | 浏览器不用登录就能打开控制台；数据接口是否受保护不受它影响 |
+| `lakehouse.rest.auth.enabled` | `false` | `/v1/**`、`/api/catalog/v1/**`、`/api/management/v1/**` | 数据接口匿名可调 |
 
 因此**默认部署（`console.required=true` + `auth.enabled=false`）的真实状态**是：
 
@@ -198,10 +198,10 @@ RFC 6749 的 `{error, error_description}`——调用方只有控制台，
 
 ### 4.3 账号与主体的边界
 
-账号配在 `paimon.rest.auth.console.password.users`，默认只有一个 `admin: admin`：
+账号配在 `lakehouse.rest.auth.console.password.users`，默认只有一个 `admin: admin`：
 
 ```yaml
-paimon:
+lakehouse:
   rest:
     auth:
       console:
@@ -222,7 +222,7 @@ paimon:
   `client_secret`；这里的账号只是「开门的钥匙」，不进授权链路。
 - **默认同名。** 没配 `principals` 映射时，主体名就是用户名。因此 `admin` 这个账号
   会以主体名 `admin` 去查授权链路——**它不等于管理员**：除非
-  `paimon.rest.authorization.service-admins` 里有它，或者它被授予了某个 principal role，
+  `lakehouse.rest.authorization.service-admins` 里有它，或者它被授予了某个 principal role，
   否则登录成功但什么也看不到。
 - **`principals` 映射是给这种情况用的**：控制台开门用的 id 与授权用的主体名不一致
   （例如 SSO 里是邮箱）。办法与静态令牌的 `token-principals` 完全相同。
@@ -376,16 +376,16 @@ IdP 的令牌响应里可能同时有 `id_token` 与 `access_token`。控制台*
 
 `access_token` 不保证是 JWT（不少 IdP 发的是不透明串），受众也常是另一个资源标识。
 
-> 因此服务端的 `paimon.rest.auth.console.oidc.audience` **应当填 IdP 里的 client-id**。
+> 因此服务端的 `lakehouse.rest.auth.console.oidc.audience` **应当填 IdP 里的 client-id**。
 > 留空则不校验受众——同一 issuer 下还有别的应用时，那意味着别的应用的令牌也能进来。
 
 ### 6.4 主体名从哪儿来
 
-`paimon.rest.auth.console.oidc.principal-claim`（默认 `sub`）。取到的值要与下列之一对得上，
+`lakehouse.rest.auth.console.oidc.principal-claim`（默认 `sub`）。取到的值要与下列之一对得上，
 否则**登录成功但什么也看不到**：
 
 - `paimon_principal.name`（`service-admins` 之外的普通用户），或
-- `paimon.rest.authorization.service-admins` 里的名字（服务管理员）。
+- `lakehouse.rest.authorization.service-admins` 里的名字（服务管理员）。
 
 这一条是最常见的配置陷阱，启动日志会就此告警。
 
@@ -453,7 +453,7 @@ IdP 的令牌响应里可能同时有 `id_token` 与 `access_token`。控制台*
 
 `TokenAuthenticationService` 按顺序问三个来源，任一条认出令牌就停下：
 
-1. **静态令牌**（`paimon.rest.auth.tokens`）——字符串包含判断，零解析成本。
+1. **静态令牌**（`lakehouse.rest.auth.tokens`）——字符串包含判断，零解析成本。
 2. **控制台访问令牌**——本服务端签的 JWT，一次 HMAC 验签。
 3. **OIDC 令牌**——IdP 签的 JWT，可能是 RSA 验签，还可能要刷新 JWKS（最贵）。
 
@@ -498,7 +498,7 @@ return properties.getAuth().getConsole().isRequired()
 ## 9. 配置
 
 ```yaml
-paimon:
+lakehouse:
   rest:
     auth:
       # 数据面（/v1/**、/api/catalog/v1/**、/api/management/v1/**）是否要求令牌。
@@ -609,9 +609,9 @@ paimon:
 | 协议层 | `scripts/sweep-console-auth.sh` | 对运行中的实例发真实 HTTP：引导、用户名密码登录、换令牌、凭据校验、静态令牌、SPA 深链回退；断言实际报文而不只是状态码 | 63 项 |
 | 前端集成 | `npm run check:login`（在 `lakehouse-rest-console/`） | 跑 `src/store/auth.js` 与 `src/api/*` 的**真实代码**：请求体字段名与编码、令牌落盘的键、`Authorization` 的附加、登出、失败回滚 | 59 项 |
 
-后两层都需要一个**开了鉴权**的实例（`--paimon.rest.auth.enabled=true`）。
+后两层都需要一个**开了鉴权**的实例（`--lakehouse.rest.auth.enabled=true`）。
 `CLIENT_ID` / `CLIENT_SECRET` 取自启动日志里 `created bootstrap principal` 那行——
-**注意那行只在 `paimon.rest.authorization.enabled=true` 时才会出现**；没开授权时库中
+**注意那行只在 `lakehouse.rest.authorization.enabled=true` 时才会出现**；没开授权时库中
 一个主体也没有，先用默认账号密码登录、再调管理 API 建一个即可：
 
 ```bash

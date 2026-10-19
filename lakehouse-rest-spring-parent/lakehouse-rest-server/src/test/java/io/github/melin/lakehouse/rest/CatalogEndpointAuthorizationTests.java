@@ -51,7 +51,7 @@ import org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandl
  * （见 {@code src/test/resources/application-test.yml}），本类再覆盖库名以进一步隔离。
  */
 @SpringBootTest(properties = {
-        "paimon.rest.authorization.enabled=true",
+        "lakehouse.rest.authorization.enabled=true",
         "spring.datasource.url=jdbc:h2:mem:paimon-catalog-authz;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE"
 })
 @ActiveProfiles("test")

@@ -581,7 +581,7 @@ check("能力开关从 meta 一路传到表单的 prop",
       "\n".join(name for name, ok in wiring.items() if not ok))
 
 check("能力关着时表单给出可操作的提示（而不是把字段藏起来）",
-      "paimon.rest.storage.credential-secret-key" in fields_vue
+      "lakehouse.rest.storage.credential-secret-key" in fields_vue
       and "openssl rand -base64 32" in fields_vue,
       "StorageConfigFields.vue 应说明该开哪个配置项以及生成密钥的命令")
 

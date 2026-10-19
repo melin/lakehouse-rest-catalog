@@ -9,7 +9,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.mock.env.MockEnvironment;
 
 /**
- * 监听器订阅配置（{@code paimon.rest.event-listener.*}）的语义测试。
+ * 监听器订阅配置（{@code lakehouse.rest.event-listener.*}）的语义测试。
  *
  * <p>这些行为一旦错了，表现是「事件少了」而不是「报错」——所以每条都要钉住，
  * 尤其是三条容易被误读的：

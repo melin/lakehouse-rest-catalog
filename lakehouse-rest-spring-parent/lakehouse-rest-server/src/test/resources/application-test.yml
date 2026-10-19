@@ -29,7 +29,7 @@ spring:
 #
 # ${java.io.tmpdir} 由 Spring 从系统属性解析：仓库路径要随机器变化，
 # 而 application-test.yml 是静态文件，写死一个绝对路径在别的机器上会失败。
-paimon:
+lakehouse:
   rest:
     default-warehouse: "file://${java.io.tmpdir}/lakehouse-rest-server-tests/warehouse"
     initial-catalog:

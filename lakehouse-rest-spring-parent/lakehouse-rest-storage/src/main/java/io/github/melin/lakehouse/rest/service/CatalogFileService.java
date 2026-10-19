@@ -244,7 +244,7 @@ public class CatalogFileService {
      * 打开仓库里某个文件供下载（根 = catalog 的 {@code warehouse}）。
      *
      * <p>下载与 {@link #list} 同一条路径防护（相对路径、拒 {@code ..} 与绝对路径）、
-     * 同一个开关（{@code paimon.rest.file-browser.enabled}）、同一个授权面。
+     * 同一个开关（{@code lakehouse.rest.file-browser.enabled}）、同一个授权面。
      * 只读不变：下载是「把已有的字节搬出去」，不是写。
      */
     public FileDownload openFile(String catalogName, String path) {
@@ -423,7 +423,7 @@ public class CatalogFileService {
     private int requireEnabled() {
         if (!properties.getFileBrowser().isEnabled()) {
             throw ApiException.notImplemented("the catalog file browser is disabled in this deployment"
-                    + " (paimon.rest.file-browser.enabled=false); the warehouse itself is untouched,"
+                    + " (lakehouse.rest.file-browser.enabled=false); the warehouse itself is untouched,"
                     + " only this view is off");
         }
         return properties.getFileBrowser().getMaxEntries();

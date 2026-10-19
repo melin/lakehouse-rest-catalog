@@ -32,7 +32,7 @@ export const consoleAuthApi = {
    * `invalid username or password`，因此这里不做任何「是不是用户名写错了」的判断——
    * 前端区分它们就等于把服务端刻意抹掉的差别又露出来了。
    *
-   * @param {string} username 服务端 `paimon.rest.auth.console.password.users` 里的用户名
+   * @param {string} username 服务端 `lakehouse.rest.auth.console.password.users` 里的用户名
    * @param {string} password 明文密码
    */
   passwordLogin: (username, password) => post('passwordLogin', { body: { username, password } }),

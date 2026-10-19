@@ -25,7 +25,7 @@ import org.springframework.stereotype.Service;
  * 事件，业务请求不受影响——事件是业务的旁观者，不是参与者。唯一例外是 DB 监听器
  * 与业务同事务：事务回滚时它写的事件一起消失，这是设计要的性质（§3 规则 1）。
  *
- * <p><b>订阅过滤在这里统一做。</b>部署可以用 {@code paimon.rest.event-listener.types}
+ * <p><b>订阅过滤在这里统一做。</b>部署可以用 {@code lakehouse.rest.event-listener.types}
  * 只启用部分监听器、用 {@code <name>.enabled-event-categories} 让某个监听器只收一类事件
  * （例如日志只记 TABLE 与 GRANT）。监听器实现因此不需要各自解析配置，新加的实现自动
  * 获得同样的开关——见 {@link EventListenerSettings}。

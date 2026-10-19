@@ -9,7 +9,7 @@ import io.github.melin.lakehouse.rest.support.VendedStorageCredential;
  *
  * <p>对应 Polaris 的 {@code PolarisCredentialManager}：按 catalog 的存储配置，
  * 决定把什么交给引擎去访问该仓库。实现按
- * {@code paimon.rest.credential-manager.type} 选用，见 {@link StorageRuntimePolicy}。
+ * {@code lakehouse.rest.credential-manager.type} 选用，见 {@link StorageRuntimePolicy}。
  *
  * <p>入参是 {@code StorageConfigInfo} 而不是表实体：凭据取决于「这个 catalog
  * 用哪种存储、什么地址、哪个具名存储」，与具体是哪张表无关。

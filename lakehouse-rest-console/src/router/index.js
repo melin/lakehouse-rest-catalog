@@ -21,7 +21,7 @@ const routes = [
     meta: { title: '登录', public: true },
   },
   {
-    // SSO 的回跳地址。必须与服务端 `paimon.rest.auth.console.oidc.redirect-uri`
+    // SSO 的回跳地址。必须与服务端 `lakehouse.rest.auth.console.oidc.redirect-uri`
     // 以及 IdP 侧登记的地址逐字一致（`api/oidc.js` 的 CALLBACK_PATH 同此）。
     // 它也是 public：此时手上还没有令牌，套上管理布局会先发出一批注定 401 的请求
     path: '/auth/callback',

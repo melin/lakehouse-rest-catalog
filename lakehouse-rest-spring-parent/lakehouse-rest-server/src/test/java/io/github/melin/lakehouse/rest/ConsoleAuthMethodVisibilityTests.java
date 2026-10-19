@@ -34,7 +34,7 @@ import org.springframework.test.web.servlet.MvcResult;
  */
 @SpringBootTest(properties = {
         // 关掉客户端凭据：登录页不该再出现「主体凭据」页签
-        "paimon.rest.auth.console.client-credentials.enabled=false"})
+        "lakehouse.rest.auth.console.client-credentials.enabled=false"})
 @ActiveProfiles("test")
 @AutoConfigureMockMvc
 class ConsoleAuthMethodVisibilityTests {
@@ -74,7 +74,7 @@ class ConsoleAuthMethodVisibilityTests {
     void staticTokenIsHiddenUntilItIsConfigured() throws Exception {
         List<String> methods = strings(mapper.readTree(json()).get("methods"));
         assertFalse(methods.contains("static-token"),
-                () -> "paimon.rest.auth.tokens 为空时，降级入口不该出现在登录页上；methods=" + methods);
+                () -> "lakehouse.rest.auth.tokens 为空时，降级入口不该出现在登录页上；methods=" + methods);
     }
 
     /** 按 UTF-8 读响应体；非 200 时把响应内容带进断言消息，省一次重跑。 */

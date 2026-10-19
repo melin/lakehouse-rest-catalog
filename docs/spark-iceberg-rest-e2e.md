@@ -115,22 +115,22 @@ spark.sql.catalog.lakehouse.warehouse=iceberg_demo
 | 配置 | 为什么 |
 | --- | --- |
 | `uri` 不带 `/v1` | `ResourcePaths` 把 `v1` 与 prefix 拼在 URI 之后。写成 `http://host:8080/v1` 会得到 `/v1/v1/config`，报 404 |
-| `warehouse` 填 catalog 名 | 服务端把 `warehouse` 当 **prefix** 用（`CatalogService.resolveForConfig`）。填成 `file:///tmp/warehouse` 会找不到 catalog。留空则落到部署配置的 `paimon.rest.default-prefix` |
+| `warehouse` 填 catalog 名 | 服务端把 `warehouse` 当 **prefix** 用（`CatalogService.resolveForConfig`）。填成 `file:///tmp/warehouse` 会找不到 catalog。留空则落到部署配置的 `lakehouse.rest.default-prefix` |
 | 不用配 `io-impl` | Spark 自带 Hadoop，默认的 `ResolvingFileIO` 能装上。裸 JVM 才需要显式指定 |
 
 **还有一个容易踩的：不要给建表报文塞 `location`。** 表位置由服务端按
-`paimon.rest.path-template` 推（默认 `{warehouse}/{database}.db/{table}`），
+`lakehouse.rest.path-template` 推（默认 `{warehouse}/{database}.db/{table}`），
 `CREATE TABLE ... LOCATION '...'` 走的路子要求那个位置落在 catalog 的
 `allowedLocations` 里，否则被拒。
 
 ### 1.3 认证
 
-本服务端默认**不要求令牌**（`paimon.rest.auth.enabled=false`），
+本服务端默认**不要求令牌**（`lakehouse.rest.auth.enabled=false`），
 连不上的第一嫌疑不是认证。要按部署形态选：
 
 | 部署形态 | Spark 侧配置 |
 | --- | --- |
-| 默认（数据面匿名） | 什么都不用配。服务端把认不出主体的请求记为 `paimon.rest.auth.principal`（默认 `anonymous`） |
+| 默认（数据面匿名） | 什么都不用配。服务端把认不出主体的请求记为 `lakehouse.rest.auth.principal`（默认 `anonymous`） |
 | 数据面要求令牌（`auth.enabled=true`） | `spark.sql.catalog.lakehouse.token=<令牌>`，并显式加 `spark.sql.catalog.lakehouse.rest.auth.type=oauth2` |
 | 用主体凭据换令牌 | `spark.sql.catalog.lakehouse.credential=<clientId>:<clientSecret>` **加** `spark.sql.catalog.lakehouse.scope=PRINCIPAL_ROLE:ALL` |
 

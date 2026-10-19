@@ -45,7 +45,7 @@ public class CatalogService {
     /**
      * 解析 prefix 对应的 catalog。
      *
-     * <p>未登记且开了自动登记时，按 {@code paimon.rest.default-catalog-format}
+     * <p>未登记且开了自动登记时，按 {@code lakehouse.rest.default-catalog-format}
      * 建一个——这是「部署侧选默认格式」那一半对策；另一半见
      * {@link #resolveOrCreate}。
      *
@@ -102,7 +102,7 @@ public class CatalogService {
      *
      * <p><b>自动登记按 {@code expected} 建，而不是按部署默认格式。</b>这条路径上的请求
      * 已经把自己的格式说清楚了——是 Iceberg 的路径形状把请求送到这个面的，那比
-     * {@code paimon.rest.default-catalog-format} 这个部署级猜测更权威。按默认格式建的后果很具体：
+     * {@code lakehouse.rest.default-catalog-format} 这个部署级猜测更权威。按默认格式建的后果很具体：
      * 一个 Iceberg 客户端的首次调用会**建出一个 Paimon catalog**，然后以格式不匹配 404，
      * 而它此后每一次调用都是同一个错——错还是这一次请求自己留下的。
      * 部署默认值仍然管两件事：管理 API 未指定 {@code catalogFormat} 时建哪种，
@@ -154,7 +154,7 @@ public class CatalogService {
      * 登记一个 catalog。
      *
      * <p>{@code format} 由调用方给出（管理 API 的 {@code catalogFormat} 字段、
-     * 或自动登记时的 {@code paimon.rest.default-catalog-format}）。自动登记必须走这个
+     * 或自动登记时的 {@code lakehouse.rest.default-catalog-format}）。自动登记必须走这个
      * 重载而不是老的那一个：Iceberg 客户端敲一个未登记的 prefix 时，
      * 「建成 Iceberg」与「建成 Paimon」的区别就是「此后一切正常」与「此后每次调用都 404」。
      */
@@ -179,7 +179,7 @@ public class CatalogService {
 
     /**
      * 解析 {@code GET /v1/config} 要看的 catalog：请求带了 {@code warehouse} 就用它，
-     * 没带就回落到 {@code paimon.rest.default-prefix}。
+     * 没带就回落到 {@code lakehouse.rest.default-prefix}。
      *
      * <p>「缺省用哪个 catalog」这件事需要 {@link RestServerProperties}，而它在本类手里；
      * 因此这个回落留在这里，而**响应体的组装**（{@code defaults} 拼装 + 形状选择）

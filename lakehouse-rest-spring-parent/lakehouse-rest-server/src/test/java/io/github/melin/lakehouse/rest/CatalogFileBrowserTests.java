@@ -481,7 +481,7 @@ class CatalogFileBrowserTests {
 
         ApiException error = assertThrows(ApiException.class, () -> disabled.list(PREFIX, null));
         assertEquals(501, error.getStatus(), "能力关掉是「本部署不提供」，不是「你请求错了」");
-        assertTrue(error.getMessage().contains("paimon.rest.file-browser.enabled"),
+        assertTrue(error.getMessage().contains("lakehouse.rest.file-browser.enabled"),
                 "错误里要写出配置项：否则现象只是「那个页签永远报错」，看不出是部署刻意关的");
     }
 

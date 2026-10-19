@@ -13,7 +13,7 @@ import org.springframework.stereotype.Component;
 
 /**
  * 已下发凭据的短期复用缓存，容量由
- * {@code paimon.rest.storage-credential-cache.max-entries} 决定。
+ * {@code lakehouse.rest.storage-credential-cache.max-entries} 决定。
  *
  * <p><b>为什么要缓存。</b>读一张表是高频动作，而凭据解析要读配置、算过期时间。
  * 更实际的原因是语义：同一份未过期的凭据重复下发，调用方看到的是同一个凭据，

@@ -5,7 +5,7 @@
         <template #label>
           <FieldLabel label="存储类型（storageType）">
             仅可选择本部署已接入的存储实现（{{ supportedTypes.join(' / ') || '未知' }}），
-            由服务端 <code>paimon.rest.file-io.type</code> 决定。
+            由服务端 <code>lakehouse.rest.file-io.type</code> 决定。
             <template v-if="unknownType">
               当前值 <code>{{ unknownType }}</code> 不在本控制台的类型表里，
               保存时会原样带回，不会被改写。
@@ -56,7 +56,7 @@
       <el-form-item>
         <template #label>
           <FieldLabel label="具名存储（storageName）">
-            填服务端 <code>paimon.rest.storage.&lt;厂商&gt;.storages</code> 下的键名。
+            填服务端 <code>lakehouse.rest.storage.&lt;厂商&gt;.storages</code> 下的键名。
             这种做法让密钥只留在服务端配置里，不出现在 catalog 元数据中。
           </FieldLabel>
         </template>
@@ -130,7 +130,7 @@
              不告诉用户「去开哪个配置项、密钥怎么生成」就会停在死路上 -->
         <p v-if="!staticCredentialsEnabled" class="pc-static-disabled-hint">
           本部署未开启静态凭据：服务端需要配置
-          <code>paimon.rest.storage.credential-secret-key</code>（用于加密落库），
+          <code>lakehouse.rest.storage.credential-secret-key</code>（用于加密落库），
           生成命令：<code>openssl rand -base64 32</code>。
         </p>
 
@@ -749,7 +749,7 @@ function validateCredentials() {
     return '静态凭据与具名存储（storageName）互斥：两者都在指定用哪一组密钥，请只保留一种'
   }
   if (accessKeyId && !props.staticCredentialsEnabled) {
-    return '本部署未开启静态凭据（服务端未配置 paimon.rest.storage.credential-secret-key），'
+    return '本部署未开启静态凭据（服务端未配置 lakehouse.rest.storage.credential-secret-key），'
       + '请留空以使用服务端配置的密钥'
   }
   return ''

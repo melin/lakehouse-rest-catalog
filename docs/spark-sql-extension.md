@@ -35,7 +35,7 @@ val spark = PaimonRestManagement.install(SparkSession.builder())
 ```
 
 > **旧包名仍然可用。** 包名已从 `io.github.melin.paimonrest` 改到 `io.github.melin.lakehouse.rest`
-> （中间经过一次 `io.github.melin.paimon.rest`，那版未发布），
+> （中间经过一次 `io.github.melin.lakehouse.rest`，那版未发布），
 > 但模块里保留了一个旧包名下的空壳，所以既有配置写的
 > `io.github.melin.paimonrest.spark.ManagementSparkExtensions` **不用改也能启动**。
 > 新部署请写上面那个新包名——空壳只是过渡，确认没有部署再用旧名字之后就会删掉。

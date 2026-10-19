@@ -221,7 +221,7 @@ public class ManagementCatalogService {
     /**
      * 解析管理 API 传入的 {@code catalogFormat}。
      *
-     * <p>没给就用部署的默认格式（{@code paimon.rest.default-catalog-format}）——
+     * <p>没给就用部署的默认格式（{@code lakehouse.rest.default-catalog-format}）——
      * 与自动登记用的是同一个开关，理由也一样：这个值决定 catalog 此后服务哪一套协议，
      * 猜错的表现是「客户端每一次调用都 404」，因此部署必须能替调用方定这个默认值。
      *

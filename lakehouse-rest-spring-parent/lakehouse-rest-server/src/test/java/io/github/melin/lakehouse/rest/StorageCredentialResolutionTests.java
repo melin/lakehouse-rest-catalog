@@ -477,7 +477,7 @@ class StorageCredentialResolutionTests {
 
         assertEquals(500, failure.getStatus());
         assertTrue(failure.getMessage().contains("typo-storage"));
-        assertTrue(failure.getMessage().contains("paimon.rest.storage.obs.storages"), failure.getMessage());
+        assertTrue(failure.getMessage().contains("lakehouse.rest.storage.obs.storages"), failure.getMessage());
     }
 
     /** 声明不下发凭据时端点仍要发：引擎得知道连哪里，它可能自带 ECS 委托身份。 */
@@ -565,7 +565,7 @@ class StorageCredentialResolutionTests {
         ApiException failure = assertThrows(ApiException.class, () -> manager.vend(
                 ossConfig("oss://analytics/warehouse", "typo-storage", null), "t1", null));
 
-        assertTrue(failure.getMessage().contains("paimon.rest.storage.oss.storages"), failure.getMessage());
+        assertTrue(failure.getMessage().contains("lakehouse.rest.storage.oss.storages"), failure.getMessage());
     }
 
     // ------------------------------------------------------------------ FILE

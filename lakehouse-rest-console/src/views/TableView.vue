@@ -423,7 +423,7 @@
               <template #title>只显示了前 {{ tableFiles.data.value.maxEntries }} 条（共 {{ tableFiles.data.value.total }} 条）</template>
               <div>
                 排序是目录优先、名称升序，因此被截掉的是尾部的文件。下钻到更具体的子目录，
-                或调大 <span class="pc-mono">paimon.rest.file-browser.max-entries</span>。
+                或调大 <span class="pc-mono">lakehouse.rest.file-browser.max-entries</span>。
               </div>
             </el-alert>
 
@@ -539,7 +539,7 @@
               <PanelCard title="数据访问令牌" hint="GET .../token">
                 <p class="pc-dim pc-access-text">
                   服务端按 catalog 的存储配置下发临时凭据。若服务端以
-                  <code class="pc-mono">paimon.rest.credential-manager.type=noop</code> 运行，
+                  <code class="pc-mono">lakehouse.rest.credential-manager.type=noop</code> 运行，
                   这里会返回 501——那种部署下由引擎自带的云凭据链负责鉴权。
                 </p>
                 <el-button size="small" :loading="tokenLoading" @click="fetchToken">

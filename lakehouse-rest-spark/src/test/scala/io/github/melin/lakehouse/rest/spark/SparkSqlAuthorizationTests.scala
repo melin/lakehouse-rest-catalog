@@ -186,7 +186,7 @@ object SparkSqlAuthorizationTests {
    * 先让服务端把数据面要用的 catalog 登记出来。
    *
    * <p>顺序不能反：Spark 客户端请求的仓库名（`spark.sql.catalog.<catalog>.warehouse`）
-   * 就是它之后要用的 prefix，服务端只有在 `paimon.rest.auto-create-catalog=true` 时才
+   * 就是它之后要用的 prefix，服务端只有在 `lakehouse.rest.auto-create-catalog=true` 时才
    * 按需登记它。而管理面建 catalog role 之前会按名字 `require` 这个 catalog，
    * 不存在就直接 404——catalog 不先造出来，下一步建角色必然失败。
    *
@@ -204,7 +204,7 @@ object SparkSqlAuthorizationTests {
       HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8))
     assertEquals(200, response.statusCode(),
       () => "GET /v1/config 应当把数据面 catalog 登记出来，需要服务端开启 "
-        + "paimon.rest.auto-create-catalog；实际响应: " + response.body())
+        + "lakehouse.rest.auto-create-catalog；实际响应: " + response.body())
   }
 
   /**

@@ -47,10 +47,10 @@ const SOURCE_LABELS = {
 }
 
 const state = reactive({
-  /** 服务端是否要求令牌（`paimon.rest.auth.enabled`），也就是数据面是否受保护。 */
+  /** 服务端是否要求令牌（`lakehouse.rest.auth.enabled`），也就是数据面是否受保护。 */
   authEnabled: false,
   /**
-   * 控制台自身是否要求先登录（`paimon.rest.auth.console.required`，默认 true）。
+   * 控制台自身是否要求先登录（`lakehouse.rest.auth.console.required`，默认 true）。
    *
    * <p>与 `authEnabled` 分开：两者同时为 true 时是一回事，但只有这个为 true 时
    * 「登录」只挡住界面——`/v1/**` 与管理 API 仍然匿名可调。界面必须如实说出这一点，

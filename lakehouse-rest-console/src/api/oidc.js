@@ -1,7 +1,7 @@
 /**
  * OpenID Connect 授权码 + PKCE（浏览器侧）。
  *
- * <p>对应服务端 {@code paimon.rest.auth.console.oidc.*}。本文件做的是**换令牌**：
+ * <p>对应服务端 {@code lakehouse.rest.auth.console.oidc.*}。本文件做的是**换令牌**：
  * 把用户送到 IdP，接回授权码，再用授权码换回一个令牌。它不验证令牌——
  * 验证是服务端的事（{@code OidcService} 拉 JWKS 验签），
  * 前端验了也不算数，而且验不了（受众、签发者、时钟，任何一项都可能与服务端理解不同）。

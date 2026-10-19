@@ -31,7 +31,7 @@
 		- web/        与协议无关的 Web 组件：ConfigController（两套协议共用同一个端点）、
 		              OAuthTokenController（路径不带 prefix）、GlobalExceptionHandler、
 		              两个认证拦截器、CatalogAccessRules。
-		- config/     RestServerProperties（paimon.rest.*，本期不改前缀）、RequestContext、Clock。
+		- config/     RestServerProperties（lakehouse.rest.*，本期不改前缀）、RequestContext、Clock。
 
 		**格式名不出现在本模块。** 这是三条不变量里唯一由本模块自己承担的一条：
 		它必须一行格式代码都没有，否则两套协议面共享的这块地基会把 Paimon 与

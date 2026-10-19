@@ -41,8 +41,8 @@
         <el-alert type="info" :closable="false" show-icon class="pc-login-alert">
           <template #title>服务端未要求登录</template>
           <div>
-            当前部署的 <code class="pc-mono">paimon.rest.auth.enabled=false</code>
-            且 <code class="pc-mono">paimon.rest.auth.console.required=false</code>，
+            当前部署的 <code class="pc-mono">lakehouse.rest.auth.enabled=false</code>
+            且 <code class="pc-mono">lakehouse.rest.auth.console.required=false</code>，
             服务端既不校验令牌也不要求控制台登录，任何人访问本地址都可以读写全部数据。
             若这是生产环境，请把 <code class="pc-mono">auth.enabled</code> 设为
             <code class="pc-mono">true</code>（数据面与控制台一起受保护），
@@ -65,18 +65,18 @@
             请让运维在服务端配置里开启下面任意一项后重新检测：
             <ul class="pc-login-list">
               <li>
-                <code class="pc-mono">paimon.rest.auth.console.password.enabled=true</code>
+                <code class="pc-mono">lakehouse.rest.auth.console.password.enabled=true</code>
                 并配置账号（<code class="pc-mono">console.password.users</code>）
               </li>
               <li>
-                <code class="pc-mono">paimon.rest.auth.console.client-credentials.enabled=true</code>
+                <code class="pc-mono">lakehouse.rest.auth.console.client-credentials.enabled=true</code>
               </li>
               <li>
-                <code class="pc-mono">paimon.rest.auth.console.oidc.enabled=true</code>
+                <code class="pc-mono">lakehouse.rest.auth.console.oidc.enabled=true</code>
                 并配置 <code class="pc-mono">issuer-uri</code>
               </li>
               <li>
-                或在 <code class="pc-mono">paimon.rest.auth.tokens</code> 里登记一个静态令牌
+                或在 <code class="pc-mono">lakehouse.rest.auth.tokens</code> 里登记一个静态令牌
               </li>
             </ul>
             <!-- 把服务端原样下发的东西摆出来：若这里非空而上面仍说「没开启任何方式」，
@@ -236,7 +236,7 @@
           <p class="pc-login-foot">
             将跳转到上面的身份提供方完成认证，再回到本控制台。
             本控制台是公开客户端，用 PKCE 换令牌，不保存任何客户端密钥。<br />
-            服务端按 <code class="pc-mono">paimon.rest.auth.console.oidc.audience</code>
+            服务端按 <code class="pc-mono">lakehouse.rest.auth.console.oidc.audience</code>
             校验令牌受众，用 ID token 时应填 IdP 里的 client-id。
           </p>
         </template>

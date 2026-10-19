@@ -4,7 +4,7 @@ package io.github.melin.lakehouse.rest.support;
  * 存储路径推导。
  *
  * <p>Paimon 的目录约定是 {@code warehouse/database.db/table}，
- * 表路径模板可通过 {@code paimon.rest.path-template} 覆盖。
+ * 表路径模板可通过 {@code lakehouse.rest.path-template} 覆盖。
  */
 public final class Paths {
 

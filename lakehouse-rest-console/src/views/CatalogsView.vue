@@ -354,7 +354,7 @@ const formatOptions = computed(() => catalogFormats.value.map((value) => ({
 })))
 
 /**
- * 本部署建 catalog 时未指定格式用的是哪种（`paimon.rest.default-catalog-format`）。
+ * 本部署建 catalog 时未指定格式用的是哪种（`lakehouse.rest.default-catalog-format`）。
  *
  * <p>用它**预选**新建表单里的那一项，而不是恒选第一项：默认值最终由服务端决定，
  * 前端猜一个在部署改过默认时会与服务端不一致，表现为

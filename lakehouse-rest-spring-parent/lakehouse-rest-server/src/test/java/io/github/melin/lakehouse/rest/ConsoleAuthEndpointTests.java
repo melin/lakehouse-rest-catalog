@@ -41,21 +41,21 @@ import tools.jackson.databind.json.JsonMapper;
  * 只会让浏览器里的登录按钮没反应。
  */
 @SpringBootTest(properties = {
-        "paimon.rest.auth.enabled=true",
+        "lakehouse.rest.auth.enabled=true",
         // 固定密钥：测试要能构造「另一个实例签发的令牌」这类输入
-        "paimon.rest.auth.access-token.signing-key=dGVzdC1zaWduaW5nLWtleS0zMi1ieXRlcy1sb25nISE=",
-        "paimon.rest.auth.access-token.ttl=30m",
+        "lakehouse.rest.auth.access-token.signing-key=dGVzdC1zaWduaW5nLWtleS0zMi1ieXRlcy1sb25nISE=",
+        "lakehouse.rest.auth.access-token.ttl=30m",
         // 静态令牌：给机器用的那条路径不能被这次改动波及
-        "paimon.rest.auth.tokens[0]=static-token-for-tests",
-        "paimon.rest.auth.token-principals.static-token-for-tests=static-machine-user",
+        "lakehouse.rest.auth.tokens[0]=static-token-for-tests",
+        "lakehouse.rest.auth.token-principals.static-token-for-tests=static-machine-user",
         // 用户名密码：一个与主体同名的账号，一个映射到主体的账号
-        "paimon.rest.auth.console.password.users.console-auth-test=let-me-in",
-        "paimon.rest.auth.console.password.principals.console-auth-test=console-auth-test-principal",
+        "lakehouse.rest.auth.console.password.users.console-auth-test=let-me-in",
+        "lakehouse.rest.auth.console.password.principals.console-auth-test=console-auth-test-principal",
         // 阈值调小，让「连续失败后被拒」能在几行内测到
-        "paimon.rest.auth.console.client-credentials.rate-limit.max-failures=3",
-        "paimon.rest.auth.console.client-credentials.rate-limit.window=1m",
-        "paimon.rest.auth.console.password.rate-limit.max-failures=3",
-        "paimon.rest.auth.console.password.rate-limit.window=1m"})
+        "lakehouse.rest.auth.console.client-credentials.rate-limit.max-failures=3",
+        "lakehouse.rest.auth.console.client-credentials.rate-limit.window=1m",
+        "lakehouse.rest.auth.console.password.rate-limit.max-failures=3",
+        "lakehouse.rest.auth.console.password.rate-limit.window=1m"})
 @ActiveProfiles("test")
 @AutoConfigureMockMvc
 class ConsoleAuthEndpointTests {

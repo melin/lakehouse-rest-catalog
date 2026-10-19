@@ -1,7 +1,7 @@
 # 表存储优化任务的运行镜像。
 #
 # 这不是本服务端的镜像（那个在仓库根目录的 Dockerfile），而是**被服务端投到 k8s 的
-# 那个 Spark 任务**的镜像：服务端按 `paimon.rest.optimization.image` 创建 k8s Job，
+# 那个 Spark 任务**的镜像：服务端按 `lakehouse.rest.optimization.image` 创建 k8s Job，
 # 容器里跑的就是这里打出来的东西，容器的退出码就是 Job 的成功/失败依据。
 #
 # 为什么需要一个单独的镜像，而不是让 Job 去拉一个通用 Spark 镜像再挂载 jar：
@@ -15,7 +15,7 @@
 #   JAVA_HOME=/path/to/jdk-17 mvn -o -DskipTests -pl :lakehouse-rest-optimizer package
 #   docker build -f lakehouse-rest-optimizer/Dockerfile -t lakehouse-rest-optimizer:0.0.1 .
 #   docker push <registry>/lakehouse-rest-optimizer:0.0.1
-#   # 再把 paimon.rest.optimization.image 指向推上去的地址
+#   # 再把 lakehouse.rest.optimization.image 指向推上去的地址
 #
 # 多架构（Apple Silicon 上开发、x86 节点上跑）与根 Dockerfile 同一套做法，
 # 见 scripts/build-image.sh 的说明——这里没有单独的脚本：与那个镜像不同，

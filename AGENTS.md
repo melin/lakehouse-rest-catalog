@@ -18,10 +18,10 @@ REST Management API**（RBAC 管理面）与一个 **Vue 3 管理控制台**；�
 
 | 面 | 基址 | 规格来源 | 鉴权 |
 | --- | --- | --- | --- |
-| Catalog API（数据面） | `/v1/{prefix}/...` + `/v1/config` | `spec/rest-catalog-open-api.yaml` | `paimon.rest.auth.*` |
+| Catalog API（数据面） | `/v1/{prefix}/...` + `/v1/config` | `spec/rest-catalog-open-api.yaml` | `lakehouse.rest.auth.*` |
 | Management API | `/api/management/v1/...` | `spec/polaris-management-service.yml` | 同上 |
 | Console API + OAuth | `/api/console/v1/...`、`/api/catalog/v1/oauth/tokens` | 自有（`docs/console-auth.md`） | 同上（登录端点豁免） |
-| 控制台界面 | `/console/`（SPA 深链回退 `index.html`） | — | 开关 `paimon.rest.auth.console.required` |
+| 控制台界面 | `/console/`（SPA 深链回退 `index.html`） | — | 开关 `lakehouse.rest.auth.console.required` |
 
 ---
 
@@ -236,7 +236,7 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
 `rest.{dto,service,support,web}` 平级而不重合，为的是给 Iceberg 面留出对称的
 `rest.iceberg.*`（见第 7 节最后一条与设计文档 §11）。`rest.paimon.*` 仍是主类所在包的子包，
 组件扫描照旧覆盖。
-包名本身改过三次（`io.github.melin.paimonrest` → `io.github.melin.paimon.rest` →
+包名本身改过三次（`io.github.melin.paimonrest` → `io.github.melin.lakehouse.rest` →
 `io.github.melin.lakehouse.rest` → 各协议面加 `.paimon` 段），那是与模块边界无关的另一件事：
 目录 `git mv` + 全仓字符串替换，一次做完。最终名与 artifactId 的 `lakehouse` 对齐；空壳只保留
 **最初**那个（`spark.sql.extensions` 的存量值），中间名从未提交、从未发布，所以不需要壳
@@ -269,10 +269,10 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
 ## 4. 核心设计不变量（改代码前先理解）
 
 - **前缀路由**：`{prefix}` 是 catalog 的对外标识，由 `GET /v1/config` 下发。未登记的 prefix 在
-  `paimon.rest.auto-create-catalog=true`（默认）时自动登记 → 客户端可零配置接入，但
+  `lakehouse.rest.auto-create-catalog=true`（默认）时自动登记 → 客户端可零配置接入，但
   **写错 prefix 会得到一个新的空 catalog 而不是报错**。
 - **认证与授权分离**：`BearerAuthInterceptor` 只回答「调用者是谁」，RBAC 判定在授权层；
-  分别由 `paimon.rest.auth.*` 与 `paimon.rest.authorization.*` 控制，可以只开认证不开授权。
+  分别由 `lakehouse.rest.auth.*` 与 `lakehouse.rest.authorization.*` 控制，可以只开认证不开授权。
 - **Catalog API 的授权映射集中在一张表**（`config/CatalogAccessRules.java`）：`/v1/**` 路径 →
   所需权限，**未登记映射的端点直接拒绝而不是放行**。`CatalogEndpointAuthorizationTests`
   从运行时请求映射枚举全部端点核对覆盖率——**新增端点若忘了登记映射，构建会失败**（有意设计）。
@@ -361,10 +361,10 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
   所以 `lakehouse-rest-spark` 里保留了一个旧包名下的空壳
   `io.github.melin.paimonrest.spark.ManagementSparkExtensions`（只继承新实现、不覆盖方法），
   让既有部署不改配置也能升级。注意留的是**最初**那个名字：中间用过的
-  `io.github.melin.paimon.rest` 从未提交、从未发布，不为它留壳——壳的数量等于历史的对外
+  `io.github.melin.lakehouse.rest` 从未提交、从未发布，不为它留壳——壳的数量等于历史的对外
   名字数，不是改过的次数。**对全仓做包名批量替换时必须把壳排除**，否则旧部署会静默失效——
   症状是 Spark 会话初始化时的 `ClassNotFoundException`，离「改过包名」很远。
-  同类的「不能随意改」的名字还有 `paimon.rest.*` 配置前缀、k8s 资源名、`paimon_` 表前缀，
+  同类的「不能随意改」的名字还有 `lakehouse.rest.*` 配置前缀、k8s 资源名、`paimon_` 表前缀，
   见 `docs/maven-module-design.md` §4.3 与 §8.6。
 - **错误走 `ApiException`**，由 `GlobalExceptionHandler` 统一成规格要的报错形状；
   不要在控制器里手写响应体。
@@ -414,7 +414,7 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
   （`jdbc:mysql://127.0.0.1:3306/paimon_catalog`、`paimon/paimon`），不要复制原值，也不要贴进回复。
 - **静态凭据（`secretAccessKey`）只写**：任何响应、日志、控制台展示都不许回显明文；
   读路径一律走 `StorageConfigs.withoutSecrets(...)`。新增读路径时检查这条。
-- **未配置 `paimon.rest.storage.credential-secret-key` 时必须 fail-closed**：
+- **未配置 `lakehouse.rest.storage.credential-secret-key` 时必须 fail-closed**：
   保存静态凭据返回 400，而**不是**明文落库。
 - 控制台的 `admin/admin` 默认口令在启动时会有告警；不要把默认口令写进示例截图或文档正文
   （`docs/console-auth.md` 是成文例外，它本来就讲这个）。

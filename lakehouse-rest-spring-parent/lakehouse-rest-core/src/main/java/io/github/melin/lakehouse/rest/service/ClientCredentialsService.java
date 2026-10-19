@@ -81,7 +81,7 @@ public class ClientCredentialsService {
     /**
      * 控制台登录是否可用：控制台确实需要登录，且客户端凭据方式没被关掉。
      *
-     * <p>注意门槛不是 {@code paimon.rest.auth.enabled} 单独一项：控制台自己
+     * <p>注意门槛不是 {@code lakehouse.rest.auth.enabled} 单独一项：控制台自己
      * 要求登录（{@code console.required}，默认开）时，即使数据面还是匿名的，
      * 也需要这个换令牌的入口，否则登录页上会少一种方式。
      */
@@ -110,9 +110,9 @@ public class ClientCredentialsService {
             // 混在一起会让部署者一直怀疑密码，而真正的原因是配置没开
             throw ApiException.protocolError(400, OAUTH_INVALID_REQUEST,
                     "client credentials login is not enabled on this server:"
-                    + " set paimon.rest.auth.console.client-credentials.enabled=true, and make sure"
+                    + " set lakehouse.rest.auth.console.client-credentials.enabled=true, and make sure"
                     + " the console actually requires a login"
-                    + " (paimon.rest.auth.enabled=true or paimon.rest.auth.console.required=true)");
+                    + " (lakehouse.rest.auth.enabled=true or lakehouse.rest.auth.console.required=true)");
         }
         if (clientId == null || clientId.isBlank() || clientSecret == null || clientSecret.isEmpty()) {
             throw ApiException.protocolError(400, OAUTH_INVALID_REQUEST,

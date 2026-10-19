@@ -53,12 +53,12 @@ import tools.jackson.databind.node.JsonNodeFactory;
  * {@code StaticCredentialDisabledApiTests} 单独覆盖。
  */
 @SpringBootTest(properties = {
-        "paimon.rest.storage.credential-secret-key=AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
-        "paimon.rest.storage.aws.access-key=AKIA-CONFIG",
-        "paimon.rest.storage.aws.secret-key=SECRET-CONFIG",
+        "lakehouse.rest.storage.credential-secret-key=AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+        "lakehouse.rest.storage.aws.access-key=AKIA-CONFIG",
+        "lakehouse.rest.storage.aws.secret-key=SECRET-CONFIG",
         // 控制台端点默认要求先登录（console.required=true），元数据也不例外；
         // 登记一个静态令牌，省得在一条「顺便验一下元数据」的用例里走一遍登录
-        "paimon.rest.auth.tokens[0]=static-cred-token"
+        "lakehouse.rest.auth.tokens[0]=static-cred-token"
 })
 @ActiveProfiles("test")
 @AutoConfigureMockMvc

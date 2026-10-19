@@ -50,7 +50,7 @@ import org.springframework.test.web.servlet.MvcResult;
         // 默认配置下控制台要求先登录（console.required=true），因此 /api/console/v1/meta
         // 也要求令牌。本类测的是元数据与托管，不想在每条用例里走一遍登录：
         // 登记一个静态令牌，由 getJson 统一带上——顺带把「门禁开启时静态令牌可用」也覆盖了
-        "paimon.rest.auth.tokens[0]=console-api-test-token"})
+        "lakehouse.rest.auth.tokens[0]=console-api-test-token"})
 @ActiveProfiles("test")
 @AutoConfigureMockMvc
 class ConsoleApiTests {
@@ -169,7 +169,7 @@ class ConsoleApiTests {
         JsonNode body = mapper.readTree(body(result));
         assertEquals(200, result.getResponse().getStatus(), () -> "body=" + body);
 
-        assertFalse(body.get("authEnabled").asBoolean(), "测试 profile 下 paimon.rest.auth.enabled=false");
+        assertFalse(body.get("authEnabled").asBoolean(), "测试 profile 下 lakehouse.rest.auth.enabled=false");
         assertTrue(body.get("consoleRequired").asBoolean(), "控制台默认要求登录");
         assertEquals(List.of("password", "client-credentials", "static-token"), strings(body.get("methods")),
                 "用户名密码排在第一个：它不需要先建主体");
@@ -200,7 +200,7 @@ class ConsoleApiTests {
      *
      * <p>这是「只让控制台要求登录」这层门禁在服务端的落点：控制台界面被拦在登录页，
      * 它的数据端点也不接受匿名请求。**注意范围**——只有 {@code /api/console/v1/**}
-     * 这一段，catalog API 与管理 API 仍按 {@code paimon.rest.auth.enabled} 走。
+     * 这一段，catalog API 与管理 API 仍按 {@code lakehouse.rest.auth.enabled} 走。
      */
     @Test
     void consoleEndpointsRejectAnonymousRequestsWhileTheGateIsOn() throws Exception {

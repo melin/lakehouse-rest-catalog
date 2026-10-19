@@ -5,7 +5,7 @@ import java.util.Optional;
 import java.util.stream.Collectors;
 
 /**
- * {@code paimon.rest.credential-manager.type} 的取值：服务端是否下发数据访问凭据。
+ * {@code lakehouse.rest.credential-manager.type} 的取值：服务端是否下发数据访问凭据。
  *
  * <p>对应 Polaris 的 {@code polaris.credential-manager.type}——那里按
  * {@code @Identifier} 选择 {@code PolarisCredentialManager} 实现。
@@ -55,7 +55,7 @@ public enum CredentialManagerType {
      */
     public static CredentialManagerType require(String value) {
         return parse(value).orElseThrow(() -> new IllegalStateException(
-                "paimon.rest.credential-manager.type=" + value + " is not a known credential manager; expected one of "
+                "lakehouse.rest.credential-manager.type=" + value + " is not a known credential manager; expected one of "
                         + Arrays.stream(values()).map(CredentialManagerType::wireName)
                         .collect(Collectors.joining(", "))));
     }

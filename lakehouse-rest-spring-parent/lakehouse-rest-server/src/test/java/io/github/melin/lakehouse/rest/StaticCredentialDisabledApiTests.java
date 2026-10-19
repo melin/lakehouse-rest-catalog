@@ -28,7 +28,7 @@ import tools.jackson.databind.node.JsonNodeFactory;
  * 未配置落库加密密钥时，静态凭据功能的失败方向。
  *
  * <p><b>为什么单列一个类：</b>它必须运行在一个没配
- * {@code paimon.rest.storage.credential-secret-key} 的上下文里，
+ * {@code lakehouse.rest.storage.credential-secret-key} 的上下文里，
  * 而 {@code StaticCredentialApiTests} 恰恰要配。两者的配置互斥，
  * 只能各占一个 Spring 上下文（本类复用 test profile 的既有上下文，代价很小）。
  *
@@ -38,7 +38,7 @@ import tools.jackson.databind.node.JsonNodeFactory;
  */
 @SpringBootTest(properties = {
         // 控制台端点默认要求先登录（console.required=true），元数据也不例外
-        "paimon.rest.auth.tokens[0]=static-cred-disabled-token"
+        "lakehouse.rest.auth.tokens[0]=static-cred-disabled-token"
 })
 @ActiveProfiles("test")
 @AutoConfigureMockMvc

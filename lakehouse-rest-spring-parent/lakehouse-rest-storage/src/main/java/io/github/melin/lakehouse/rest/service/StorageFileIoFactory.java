@@ -72,7 +72,7 @@ public class StorageFileIoFactory {
         FileIOLoader loader = loaders().get(scheme);
         if (loader == null) {
             throw new IOException("no FileIO implementation for scheme '" + scheme
-                    + "' is available on the classpath; paimon.rest.file-io.type="
+                    + "' is available on the classpath; lakehouse.rest.file-io.type="
                     + storagePolicy.fileIo().wireName()
                     + " declares which storages this deployment accepts, but the actual"
                     + " implementation has to be deployed as a Paimon plugin"

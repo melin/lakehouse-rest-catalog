@@ -20,7 +20,7 @@ import org.springframework.stereotype.Component;
  *
  * <p>三个动作拆成两个节拍，间隔不同：
  * <ul>
- *   <li><b>扫描</b>（{@code paimon.rest.optimization.scan-interval}，默认 1 分钟）：
+ *   <li><b>扫描</b>（{@code lakehouse.rest.optimization.scan-interval}，默认 1 分钟）：
  *       把到期策略攒成批次落库；
  *   <li><b>提交与跟踪</b>（{@code dispatch-interval}，默认 10 秒）：把 {@code PENDING}
  *       的批次发出去、问 {@code RUNNING} 的批次跑到哪了。
@@ -51,8 +51,8 @@ public class OptimizationDispatcher {
     private final Clock clock;
 
     /** 出批节拍：扫描到期策略，攒批落库。 */
-    @Scheduled(fixedDelayString = "${paimon.rest.optimization.scan-interval:PT1M}",
-            initialDelayString = "${paimon.rest.optimization.scan-interval:PT1M}")
+    @Scheduled(fixedDelayString = "${lakehouse.rest.optimization.scan-interval:PT1M}",
+            initialDelayString = "${lakehouse.rest.optimization.scan-interval:PT1M}")
     public void scan() {
         if (!properties.getOptimization().isSchedulerEnabled()) {
             return;
@@ -65,8 +65,8 @@ public class OptimizationDispatcher {
     }
 
     /** 提交与跟踪节拍。 */
-    @Scheduled(fixedDelayString = "${paimon.rest.optimization.dispatch-interval:PT10S}",
-            initialDelayString = "${paimon.rest.optimization.dispatch-interval:PT10S}")
+    @Scheduled(fixedDelayString = "${lakehouse.rest.optimization.dispatch-interval:PT10S}",
+            initialDelayString = "${lakehouse.rest.optimization.dispatch-interval:PT10S}")
     public void dispatch() {
         if (!properties.getOptimization().isSchedulerEnabled()) {
             return;

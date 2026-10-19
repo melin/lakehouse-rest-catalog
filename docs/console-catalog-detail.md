@@ -266,7 +266,7 @@ GET /api/console/v1/catalogs/{catalogName}/files?path=<相对仓库根>&prefix=<
 
 | 情形 | 状态码 | 说明 |
 | --- | --- | --- |
-| 部署关掉了文件浏览 | 501 | 消息里带 `paimon.rest.file-browser.enabled`，否则现象是「页签永远在报错」 |
+| 部署关掉了文件浏览 | 501 | 消息里带 `lakehouse.rest.file-browser.enabled`，否则现象是「页签永远在报错」 |
 | catalog 不存在 | 404 | 按 prefix 查不到 |
 | catalog 没有 warehouse | 400 | 消息里带 `warehouse` 与那条 `PUT` 的路径 |
 | 路径是绝对的（`/x`、`s3://…`） | 400 | 分开两条消息：带 scheme 的是「另一个位置」，前导 `/` 的是「绝对路径」 |
@@ -369,8 +369,8 @@ GET /api/console/v1/catalogs/{catalogName}/files?path=<相对仓库根>&prefix=<
 
 | 配置 | 默认 | 作用 |
 | --- | --- | --- |
-| `paimon.rest.file-browser.enabled` | `true` | 关掉时端点回 501，消息里带这一项的名字 |
-| `paimon.rest.file-browser.max-entries` | `1000` | 单次列出的条目上限；超出时返回前 N 条并标 `truncated` |
+| `lakehouse.rest.file-browser.enabled` | `true` | 关掉时端点回 501，消息里带这一项的名字 |
+| `lakehouse.rest.file-browser.max-entries` | `1000` | 单次列出的条目上限；超出时返回前 N 条并标 `truncated` |
 
 默认开着，是因为排查「表建出来了却写不进去」这类问题时正是要看仓库目录；
 但它属于**运维面而不是数据面**的能力（本工程其余端点读的都是元数据），

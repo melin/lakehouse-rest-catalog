@@ -42,18 +42,18 @@ echo "== 启动服务端（端口 ${PORT}，日志 ${LOG}） =="
 "$JAVA_HOME/bin/java" -jar "$JAR" \
   --spring.profiles.active=h2 \
   --server.port="$PORT" \
-  --paimon.rest.auto-create-catalog=true \
-  --paimon.rest.auth.enabled=true \
-  --paimon.rest.auth.tokens[0]=root \
-  --paimon.rest.auth.tokens[1]=limited \
-  --paimon.rest.auth.token-principals.limited=e2e_limited \
-  --paimon.rest.auth.tokens[2]=alice \
-  --paimon.rest.auth.tokens[3]=bob \
-  --paimon.rest.auth.token-principals.alice=e2e_alice \
-  --paimon.rest.auth.token-principals.bob=e2e_bob \
-  --paimon.rest.authorization.enabled=true \
-  --paimon.rest.authorization.service-admins[0]=root \
-  --paimon.rest.authorization.bootstrap-principal=root \
+  --lakehouse.rest.auto-create-catalog=true \
+  --lakehouse.rest.auth.enabled=true \
+  --lakehouse.rest.auth.tokens[0]=root \
+  --lakehouse.rest.auth.tokens[1]=limited \
+  --lakehouse.rest.auth.token-principals.limited=e2e_limited \
+  --lakehouse.rest.auth.tokens[2]=alice \
+  --lakehouse.rest.auth.tokens[3]=bob \
+  --lakehouse.rest.auth.token-principals.alice=e2e_alice \
+  --lakehouse.rest.auth.token-principals.bob=e2e_bob \
+  --lakehouse.rest.authorization.enabled=true \
+  --lakehouse.rest.authorization.service-admins[0]=root \
+  --lakehouse.rest.authorization.bootstrap-principal=root \
   >"$LOG" 2>&1 &
 SERVER_PID=$!
 

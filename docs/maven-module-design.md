@@ -24,7 +24,7 @@ Paimon 与 Iceberg」的协议方案。本文件解决它的前置问题：**代
 | 集群侧模块 | `lakehouse-rest-spark`、`lakehouse-rest-optimizer`（职责不变，只改前缀） |
 | Maven 项目数 | 4（1 聚合 + 3 jar）→ **8**（阶段 0–3：2 个 pom + 6 个 jar）→ **9**（`-protocol-iceberg` 已落地，见 §12） |
 | Java 包名 | `io.github.melin.lakehouse.rest`。阶段 0–3 **不动它**（拆分不需要改包名，见 §4.3(2)）；阶段 4 按 §4.3(2) 预告的配方改成 `paimon.rest` 并给 Spark 扩展留了兼容壳（§9.2）；第二次改到当前名（§10） |
-| Spring 配置前缀 | **不改**（`paimon.rest.*`）。它是用户面的配置 API，改名配方见 §4.3(1) |
+| Spring 配置前缀 | **本已判定不改，后改为 `lakehouse.rest.*`**（一次性对齐，不是迁移：这份配置从未离开本仓库）。理由与实施见 §4.3(1) |
 | k8s 资源名 / 库名 / 表前缀 | **不改**。它们绑的是已部署的实例与已有数据，不是构建产物（§4.3(3)(4)） |
 | 落地顺序 | 先改名（阶段 0），再拆模块（阶段 1–3），**Iceberg 的代码从第一天就落进 `-protocol-iceberg`**（§5） |
 | 落地状态 | **阶段 0–5 全部已实施**：阶段 0–3（改坐标 + 拆模块）见 **§8**；阶段 4（模块嵌进 `spring-parent/` + 改 Java 包名）见 **§9**；包名第二次调整见 **§10**；阶段 5（`-protocol-iceberg` 落地）见 **§12** |
@@ -178,7 +178,7 @@ Jackson 2.15.2 抬到 Boot 的版本）。拆成 5 个服务端模块后，这�
 | `OAuthTokenController`（`POST /v1/oauth/tokens`） | core | Iceberg 客户端在拿到 catalog 配置**之前**就要换令牌，路径不带 prefix，与协议面无关（设计文档 §2.1 第 3 点） |
 | `GlobalExceptionHandler` | core 基类 + 各面各一个 `@RestControllerAdvice` | 错误体形状按格式分派（设计文档 §2.3）；基类管兜底与日志，面内覆盖形状 |
 | `CatalogAccessRules` / `AuthorizationInterceptor` / `BearerAuthInterceptor` | core | 按路径登记，与协议无关；两个面的请求都要过（Iceberg 路径逐条登记） |
-| `RestServerProperties`（`paimon.rest.*`） | core | 配置项被协议面与装配都读；前缀本期不改（§4.3） |
+| `RestServerProperties`（`lakehouse.rest.*`） | core | 配置项被协议面与装配都读；前缀已由 `paimon.rest` 改为 `lakehouse.rest`（§4.3(1)） |
 | `TableKinds` | protocol-paimon | import 了 Paimon 的对象表/格式表类型。**这里是当初的预判**：「表种类」这个枚举值要留在 core，因为 Iceberg 面也要产出它（控制台页签靠它伸缩）。**阶段 5 的实测结论与预判相反**——Iceberg catalog 里的表没有 Paimon 那套「表种类」，`protocol-iceberg` 里的类一处都不引用 `TableKinds`，所以「枚举值提到 core」并没有发生。控制台改成**先看 catalog 格式、再看表种类**（`docs/console.md` §10） |
 | `TableMetadataService` | protocol-paimon | `SchemaManager` / `SnapshotManager` / `JsonSerdeUtil` 都是 Paimon 的类 |
 | `StorageFileIoFactory` / `CatalogFileService` / `Paths` | storage | FileIO 提供者 |
@@ -264,21 +264,39 @@ public interface CatalogProtocolFace {
 
 这四处的共同点是：**它们的名字已经在别人的机器上运行**（配置文件、k8s 集群、数据库），
 改名的收益是「一致性」，成本是一次带停机风险的迁移。逐条给理由与改法。
-其中**第 2 条已在迭代二实施**（它当时的结论就是「配方先写下来、等一次破坏性发布再做」），
-其余三条仍然不动。
+其中**第 2 条在迭代二实施**（当时的结论是「配方先写下来、等一次破坏性发布再做」）；
+**第 1 条后来也改了**（`paimon.rest.*` → `lakehouse.rest.*`），但性质不同：这份配置
+从未离开本仓库，改它属于「一次性对齐」而不是「迁移」，详见 (1)。其余两条仍然不动。
 
-**（1）Spring 配置前缀 `paimon.rest.*`**
+**（1）Spring 配置前缀 `paimon.rest.*` → `lakehouse.rest.*`（已实施）**
 
-它出现在 `RestServerProperties` 的 `@ConfigurationProperties(prefix = "paimon.rest")`、
-`application.yml`、`deploy/kubernetes/configmap.yaml` 与全部文档里，是**用户面的配置 API**。
+它出现在 `RestServerProperties` 的 `@ConfigurationProperties`、`application.yml`、
+`deploy/kubernetes/configmap.yaml` 与全部文档里，是**用户面的配置 API**。
 `paimon.rest.credential-manager.type`、`paimon.rest.auto-create-catalog` 这些键是使用者
-写在自己 `application.yml` 里的。
+写在自己 `application.yml` 里的，所以最初的判定是「不改」——对外配置键一旦发出去，
+改名就是一次要带着迁移工具的破坏性发布。
 
-将来要改的配方（等到与其它破坏性变更合并成一次发布）：新增
-`@ConfigurationProperties(prefix = "lakehouse.rest")`，再用一个
-`EnvironmentPostProcessor` 把 `paimon.rest.*` 原样复制成 `lakehouse.rest.*` 并打一条
-WARN（Spring 的 relaxed binding 不允许一个 properties 类绑两个前缀，所以必须是
-属性源层面的别名，不能靠注解）。保留两个大版本后删别名。
+后来改了，判据是本仓库自己的那条线（§10.2）：**谁写过它**。这些键目前只出现在本仓库的
+`application*.yml`、测试属性、脚本与文档里，没有一个已部署实例持有它们，因此迁移成本为零；
+而继续留着 `paimon.rest` 会让「包名/坐标叫 lakehouse、配置叫 paimon」这个错位一直留在
+用户面。于是这一轮把前缀一次性改到 `lakehouse.rest`，同批改动包括：
+
+- `RestServerProperties` 的 `@ConfigurationProperties(prefix = "lakehouse.rest")`；
+- `EventListenerSettings.PREFIX`、三处 `@ConditionalOnProperty(prefix = "lakehouse.rest.optimization")`；
+- `application.yml` / `application-test.yml` 的根键（`paimon:` → `lakehouse:`，`rest:` 不变）；
+- 测试里的 `@SpringBootTest(properties = …)`、运维脚本的 `--lakehouse.rest.*` 命令行参数、
+  k8s configmap 的 `LAKEHOUSE_REST_*` 示例；
+- 运行时告警与前端文案里「请设置 `paimon.rest.x`」这类**指向参数的提示**——不同步的话，
+  提示会把运维引到一个不存在的键上。
+
+**没有一起改的**：`spark.paimon.rest.{token,management.url,catalog.url,management.timeoutSeconds}`。
+那四个是 Spark 侧的配置键（`ManagementSparkExtensions` 读 `SparkConf`），与 Spring 的
+`Environment` 不同源，属于客户端契约，改它们要另行评估 Spark 部署的兼容性。
+
+倘若将来真的出现了持有旧键的部署，配方仍是属性源级别的别名：新增
+`@ConfigurationProperties(prefix = "lakehouse.rest")` 之后，用 `EnvironmentPostProcessor`
+把 `paimon.rest.*` 复制成 `lakehouse.rest.*` 并打一条 WARN（Spring 的 relaxed binding
+不允许一个 properties 类绑两个前缀，所以不能靠注解）。保留两个大版本后删别名。
 
 **（2）Java 包名（已实施两次：`io.github.melin.paimonrest` → `io.github.melin.paimon.rest`（§9）→ `io.github.melin.lakehouse.rest`（§10））**
 
@@ -369,8 +387,9 @@ WARN 并被自动重定向，这是 Maven 为这种情况准备的原生机制�
 `lakehouse.rest`）。第二次的理由很简单：模块坐标已经是 `lakehouse-rest-*`，包名却还带
 `paimon`，而「服务端已不只服务 Paimon」正是整个方案要解决的问题。第一次之所以选中
 `paimon.rest` 而不是一步到位，是因为当时把「包名」与「配置前缀」当成同一条要保留的
-历史线——事后看，`paimon` 在包名里并不承载任何对外契约（真正承载契约的是 `paimon.rest.*`
-配置键与 `paimon_` 表名），分开判断才对。
+历史线——事后看，`paimon` 在包名里并不承载任何对外契约（当时认为真正承载契约的是
+`paimon.rest.*` 配置键与 `paimon_` 表名），分开判断才对。配置前缀后来也一并迁到
+`lakehouse.rest`（§4.3(1)），只剩 `paimon_` 表名这类绑着存量数据、真的不能动的名字。
 
 阶段 0 与阶段 1 之间可以插入任意长的间隔——阶段 0 单独就满足了「artifactId 避免 paimon」
 这个要求，且不依赖任何后续决策。
@@ -706,12 +725,14 @@ optimizer 的 `Main-Class` 跟着改了，但它不是外部契约——镜像�
 | 名字 | 谁持有 | 本次 |
 | --- | --- | --- |
 | `io.github.melin.paimonrest.spark.ManagementSparkExtensions` | 用户的 `spark.sql.extensions` | **留壳**（§9.2） |
-| `paimon.rest.*` | 用户的 `application.yml` | **不动**（§4.3(1)） |
+| `lakehouse.rest.*`（曾为 `paimon.rest.*`） | 用户的 `application.yml` | **已改**（§4.3(1)）：尚无部署持有旧键，一次性对齐 |
 | k8s 资源名 / namespace `paimon-rest*` | 集群里的对象 | **不动**（§4.3(3)） |
 | `paimon_` 表前缀、`paimon_catalog` | 存量数据库 | **不动**（§4.3(4)） |
 | `io.github.melin.paimon.rest.*` | 只有本仓库自己（且从未提交） | **直接改**（本节） |
 
-包名能改而配置键不能，差别就在最后一行：包名在提交之前**没有别人见过它**，配置键不是。
+包名能改而配置键当初判定不能，差别就在最后一行：包名在提交之前**没有别人见过它**，配置键
+按当时的假设不是。后来核实「这些配置键也确实没离开过本仓库」，于是按同一条判据一并改了
+（§4.3(1)）——判据本身没变，变的是事实：**有没有第三方写过它**。
 判断一个名字属于哪一类，只需要问「除了本仓库，还有谁会写它」。
 
 ### 10.3 验收
@@ -909,9 +930,9 @@ Java 包        ：paimonrest → paimon.rest → io.github.melin.lakehouse.rest
                  协议面再各加一层格式子包：core/storage/server 共用 rest.*，
                  Paimon 面独占 rest.paimon.{web,service,dto,support}，Iceberg 面对称   ✅ §11 / §12
                  拆包必查「同包直呼」的引用——它们不写 import，编译器才会告诉你      （§11.2）
-对外名字的分层 ：能不能改看「谁写它」——spark.sql.extensions 要留壳；paimon.rest.* 配置键 /
-                 k8s 资源名 / paimon_ 表前缀都不动；包名只有本仓库见过，直接改（§10.2）
-不改的三处     ：paimon.rest.* 配置前缀 · k8s 资源名 · paimon_ 表前缀（§4.3(1)(3)(4)）
+对外名字的分层 ：能不能改看「谁写它」——spark.sql.extensions 要留壳；spark.paimon.rest.* 客户端键
+                 与 k8s 资源名 / paimon_ 表前缀都不动；Spring 配置前缀已对齐 lakehouse.rest（§4.3(1)）
+不改的两处     ：k8s 资源名 · paimon_ 表前缀（§4.3(3)(4)）；Spark 客户端键另计（§4.3(1)）
 实测规模       ：core 86 · storage 8 · protocol-paimon 35 · server 39（共 168 个类）
 实际落点的差异 ：见 §8.2（六处，均由搬迁前的依赖图算出）
 ```

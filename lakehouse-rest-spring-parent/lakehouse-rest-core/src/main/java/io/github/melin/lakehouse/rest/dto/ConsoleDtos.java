@@ -44,36 +44,36 @@ public final class ConsoleDtos {
             String name,
             /** 从 jar 清单读取的构建版本；从类目录运行时为 {@code development} */
             String version,
-            /** {@code paimon.rest.auth.enabled} */
+            /** {@code lakehouse.rest.auth.enabled} */
             boolean authEnabled,
-            /** {@code paimon.rest.authorization.enabled} */
+            /** {@code lakehouse.rest.authorization.enabled} */
             boolean authorizationEnabled,
-            /** {@code paimon.rest.credential-manager.type} */
+            /** {@code lakehouse.rest.credential-manager.type} */
             String credentialManagerType,
-            /** {@code paimon.rest.file-io.type} */
+            /** {@code lakehouse.rest.file-io.type} */
             String fileIoType,
-            /** {@code paimon.rest.default-prefix} */
+            /** {@code lakehouse.rest.default-prefix} */
             String defaultPrefix,
-            /** {@code paimon.rest.default-warehouse} */
+            /** {@code lakehouse.rest.default-warehouse} */
             String defaultWarehouse,
             /**
-             * {@code paimon.rest.default-catalog-format}：本部署建 catalog 时未指定格式
+             * {@code lakehouse.rest.default-catalog-format}：本部署建 catalog 时未指定格式
              * 用哪种。下发它是为了让新建表单**预选**这一项——默认值最终由服务端决定，
              * 前端猜一个（例如恒选第一项）在部署改过默认时会与服务端不一致，
              * 表现为「表单里选的是 Paimon，建出来却是 Iceberg」。
              */
             String defaultCatalogFormat,
-            /** {@code paimon.rest.auto-create-catalog} */
+            /** {@code lakehouse.rest.auto-create-catalog} */
             boolean autoCreateCatalog,
-            /** {@code paimon.rest.default-page-size} */
+            /** {@code lakehouse.rest.default-page-size} */
             int defaultPageSize,
-            /** {@code paimon.rest.max-page-size} */
+            /** {@code lakehouse.rest.max-page-size} */
             int maxPageSize,
-            /** {@code paimon.rest.path-template} */
+            /** {@code lakehouse.rest.path-template} */
             String pathTemplate,
-            /** {@code paimon.rest.storage-credential-cache.max-entries} */
+            /** {@code lakehouse.rest.storage-credential-cache.max-entries} */
             long storageCredentialCacheMaxEntries,
-            /** {@code paimon.rest.credential.ttl-seconds} */
+            /** {@code lakehouse.rest.credential.ttl-seconds} */
             long credentialTtlSeconds) {
     }
 
@@ -86,7 +86,7 @@ public final class ConsoleDtos {
      * 让人看到「有 OBS 这个类型但当前部署没开」，比看不到要好。
      *
      * <p>{@code staticCredentialsEnabled} 同为能力开关：它由
-     * {@code paimon.rest.storage.credential-secret-key} 是否配置决定，
+     * {@code lakehouse.rest.storage.credential-secret-key} 是否配置决定，
      * 与 {@code supportedStorageTypes} 正交（存储类型可用，不代表能保存静态凭据）。
      * 放进元数据是为了让控制台**在提交前**就说明「本部署没开这个能力」，
      * 而不是让用户填完 AK/SK 再吃一个 400。
@@ -101,7 +101,7 @@ public final class ConsoleDtos {
             List<String> catalogFormats,
             List<String> storageTypes,
             List<String> supportedStorageTypes,
-            /** 能否把静态凭据加密落库（{@code paimon.rest.storage.credential-secret-key} 已配置）。 */
+            /** 能否把静态凭据加密落库（{@code lakehouse.rest.storage.credential-secret-key} 已配置）。 */
             boolean staticCredentialsEnabled,
             List<String> credentialManagerTypes,
             List<String> fileIoTypes,
@@ -126,9 +126,9 @@ public final class ConsoleDtos {
      * 因此「支持哪些登录方式、端点在哪」只能由服务端在运行时下发。
      * 前端硬编码一份必然漂移，而漂移的表现是「点了登录按钮没反应」。
      *
-     * @param authEnabled   服务端是否要求令牌（{@code paimon.rest.auth.enabled}），
+     * @param authEnabled   服务端是否要求令牌（{@code lakehouse.rest.auth.enabled}），
      *                      也就是<b>数据面</b>（catalog API 与管理 API）是否受保护
-     * @param consoleRequired 控制台自身是否要求先登录（{@code paimon.rest.auth.console.required}）。
+     * @param consoleRequired 控制台自身是否要求先登录（{@code lakehouse.rest.auth.console.required}）。
      *                      与 {@code authEnabled} 分开返回，因为控制台需要据此显示一句
      *                      区别很大的话：门禁开着而整体鉴权关着时，数据接口仍然匿名可调，
      *                      这层登录只挡住界面，不是安全边界
@@ -153,7 +153,7 @@ public final class ConsoleDtos {
     public static final class AuthMethod {
 
         /**
-         * 用户名 + 密码，账号在服务端配置里（{@code paimon.rest.auth.console.password}，
+         * 用户名 + 密码，账号在服务端配置里（{@code lakehouse.rest.auth.console.password}，
          * 默认 {@code admin/admin}）。
          *
          * <p>它排在第一位：不需要运维先去建主体、也不依赖外部身份提供方，
@@ -171,10 +171,10 @@ public final class ConsoleDtos {
          * 直接填一个访问令牌。
          *
          * <p>这是给机器与脚本准备的降级入口，不是给人用的正常路径——
-         * 要求使用者自己去拿 {@code paimon.rest.auth.tokens} 里的值。
+         * 要求使用者自己去拿 {@code lakehouse.rest.auth.tokens} 里的值。
          * 它在列表里排最后，正是为了不鼓励这条路。
          *
-         * <p><b>只在 {@code paimon.rest.auth.tokens} 里登记了令牌时才出现。</b>
+         * <p><b>只在 {@code lakehouse.rest.auth.tokens} 里登记了令牌时才出现。</b>
          * 它没有独立的 {@code enabled} 开关，「开启」的唯一表现就是配置里有值；
          * 没配就列出来，使用者填什么都会被拒。
          */
@@ -298,7 +298,7 @@ public final class ConsoleDtos {
      * @param total      过滤后该目录下的条目总数；超过 {@code maxEntries} 时大于 {@code entries.size()}
      * @param truncated  条目是否被上限截断（截断了就要在界面上说出来，否则「少了一些文件」
      *                   会被误读成「文件不存在」）
-     * @param maxEntries 本部署的条目上限（{@code paimon.rest.file-browser.max-entries}）
+     * @param maxEntries 本部署的条目上限（{@code lakehouse.rest.file-browser.max-entries}）
      */
     public record CatalogFileListing(
             String catalog,
@@ -353,7 +353,7 @@ public final class ConsoleDtos {
      * @param entries    条目，形状与 {@link CatalogFileEntry} 完全一致（目录在前、同类按名称排序）
      * @param total      过滤后该目录下的条目总数；超过 {@code maxEntries} 时大于 {@code entries.size()}
      * @param truncated  条目是否被上限截断
-     * @param maxEntries 本部署的条目上限（{@code paimon.rest.file-browser.max-entries}）
+     * @param maxEntries 本部署的条目上限（{@code lakehouse.rest.file-browser.max-entries}）
      */
     public record TableFileListing(
             String catalog,

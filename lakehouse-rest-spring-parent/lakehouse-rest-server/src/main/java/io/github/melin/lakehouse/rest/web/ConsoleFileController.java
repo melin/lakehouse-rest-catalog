@@ -33,7 +33,7 @@ import org.springframework.web.bind.annotation.RestController;
  * 不做细粒度判定。刻意如此——控制台用户是拿管理凭据进来的运维者，
  * 而细粒度判定要回答「这个主体能不能看这个 catalog 的物理目录」，
  * 那需要把 catalog 级权限语义延伸到文件系统层，本工程没有这个模型。
- * 部署不希望开放它时用 {@code paimon.rest.file-browser.enabled=false} 整体关掉。
+ * 部署不希望开放它时用 {@code lakehouse.rest.file-browser.enabled=false} 整体关掉。
  */
 @RestController
 @RequiredArgsConstructor

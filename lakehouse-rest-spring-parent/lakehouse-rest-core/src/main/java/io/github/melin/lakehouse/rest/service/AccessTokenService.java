@@ -16,7 +16,7 @@ import org.springframework.stereotype.Service;
 /**
  * 控制台登录签发的访问令牌。
  *
- * <p>对应 {@code paimon.rest.auth.access-token.*}。本服务只做两件事：
+ * <p>对应 {@code lakehouse.rest.auth.access-token.*}。本服务只做两件事：
  * 签一个令牌出去，验一个令牌回来。凭据校验（clientId / clientSecret 对不对）
  * 发生在调用方，因为那是主体仓库的事，不是签名的事。
  *
@@ -159,7 +159,7 @@ public class AccessTokenService {
         if (configured == null || configured.isBlank()) {
             byte[] generated = new byte[48];
             new SecureRandom().nextBytes(generated);
-            log.warn("paimon.rest.auth.access-token.signing-key is not set: a random key was generated"
+            log.warn("lakehouse.rest.auth.access-token.signing-key is not set: a random key was generated"
                     + " for this process. Tokens issued now will stop working after a restart, and"
                     + " multiple instances will not accept each other's tokens. Set it in production"
                     + " (generate one with: openssl rand -base64 48)");
@@ -170,11 +170,11 @@ public class AccessTokenService {
             decoded = Base64.getDecoder().decode(configured.trim());
         } catch (IllegalArgumentException e) {
             throw new IllegalStateException(
-                    "paimon.rest.auth.access-token.signing-key must be base64 (generate one with:"
+                    "lakehouse.rest.auth.access-token.signing-key must be base64 (generate one with:"
                             + " openssl rand -base64 48)", e);
         }
         if (decoded.length < Jwt.MIN_HMAC_KEY_BYTES) {
-            throw new IllegalStateException("paimon.rest.auth.access-token.signing-key must decode to at"
+            throw new IllegalStateException("lakehouse.rest.auth.access-token.signing-key must decode to at"
                     + " least " + Jwt.MIN_HMAC_KEY_BYTES + " bytes, got " + decoded.length);
         }
         return decoded;

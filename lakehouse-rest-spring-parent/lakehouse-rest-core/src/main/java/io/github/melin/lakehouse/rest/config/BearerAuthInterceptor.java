@@ -16,9 +16,9 @@ import org.springframework.web.servlet.HandlerInterceptor;
  * <p>它要求令牌有两种情形，两者都作用在同一段路径上（见 {@code WebConfig}）：
  *
  * <ul>
- *   <li><b>整体鉴权</b>（{@code paimon.rest.auth.enabled=true}）：{@code /v1/**}、
+ *   <li><b>整体鉴权</b>（{@code lakehouse.rest.auth.enabled=true}）：{@code /v1/**}、
  *       catalog API、管理 API 与控制台扩展端点全部要求令牌。
- *   <li><b>仅控制台门禁</b>（{@code paimon.rest.auth.console.required=true}，默认开，
+ *   <li><b>仅控制台门禁</b>（{@code lakehouse.rest.auth.console.required=true}，默认开，
  *       而整体鉴权关着）：<b>只有控制台扩展端点</b>要求令牌。这是「浏览器打开控制台
  *       要先登录」的实现方式，同时刻意<b>不</b>动数据面——把 {@code auth.enabled}
  *       默认打开会让开箱即用的 {@code curl /v1/config}、Spark 示例与两个验收脚本

@@ -13,7 +13,7 @@ import org.springframework.stereotype.Component;
  * {@code format} 与 {@code state} 两个最常用的键进日志，完整的看库。
  *
  * <p>典型用法是让日志只订阅关心的一小撮（{@code
- * paimon.rest.event-listener.log.enabled-event-categories=TABLE,GRANT}）：日志是全量的，
+ * lakehouse.rest.event-listener.log.enabled-event-categories=TABLE,GRANT}）：日志是全量的，
  * 把凭据重置、策略调整这类低频事件挡在外面能少一半噪音。
  */
 @Component

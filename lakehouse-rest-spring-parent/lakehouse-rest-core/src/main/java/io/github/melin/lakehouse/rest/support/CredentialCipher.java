@@ -19,7 +19,7 @@ import org.springframework.stereotype.Component;
  * 就不能让它以明文躺在 {@code paimon_catalog.storage_config_json} 里——
  * 一次数据库备份外泄就等价于对象存储被拿走。
  *
- * <p><b>密钥来源与失败方向。</b>密钥来自 {@code paimon.rest.storage.credential-secret-key}
+ * <p><b>密钥来源与失败方向。</b>密钥来自 {@code lakehouse.rest.storage.credential-secret-key}
  * （base64 的 32 字节，可用 {@code openssl rand -base64 32} 生成）。
  * 未配置时 {@link #available()} 为 false，写路径拒绝保存静态凭据（{@link #seal} 抛 400），
  * 而不是「先明文存下来、以后再说」——那等于给一个安全承诺开了一道后门。
@@ -86,7 +86,7 @@ public class CredentialCipher {
     public String seal(String plaintext) {
         if (key == null) {
             throw ApiException.badRequest("this deployment cannot store static storage credentials: "
-                    + "paimon.rest.storage.credential-secret-key is not configured"
+                    + "lakehouse.rest.storage.credential-secret-key is not configured"
                     + " (generate one with `" + GENERATE_HINT + "`)");
         }
         if (plaintext == null) {
@@ -124,7 +124,7 @@ public class CredentialCipher {
         }
         if (key == null) {
             throw new ApiException(500, null, null,
-                    "catalog has static storage credentials but paimon.rest.storage.credential-secret-key"
+                    "catalog has static storage credentials but lakehouse.rest.storage.credential-secret-key"
                             + " is not configured; cannot decrypt them");
         }
         byte[] payload;
@@ -148,7 +148,7 @@ public class CredentialCipher {
             // 认证标签校验失败只有两种原因：密钥换了，或密文被改过。两者都要人来处理
             throw new ApiException(500, null, null,
                     "stored storage credential cannot be decrypted with the configured"
-                            + " paimon.rest.storage.credential-secret-key; it was sealed with a different key");
+                            + " lakehouse.rest.storage.credential-secret-key; it was sealed with a different key");
         }
     }
 
@@ -167,11 +167,11 @@ public class CredentialCipher {
             raw = Base64.getDecoder().decode(configured.trim());
         } catch (IllegalArgumentException malformed) {
             throw new IllegalStateException(
-                    "paimon.rest.storage.credential-secret-key must be base64; generate one with `"
+                    "lakehouse.rest.storage.credential-secret-key must be base64; generate one with `"
                             + GENERATE_HINT + "`");
         }
         if (raw.length != KEY_BYTES) {
-            throw new IllegalStateException("paimon.rest.storage.credential-secret-key must decode to "
+            throw new IllegalStateException("lakehouse.rest.storage.credential-secret-key must decode to "
                     + KEY_BYTES + " bytes (AES-256), got " + raw.length + "; generate one with `"
                     + GENERATE_HINT + "`");
         }

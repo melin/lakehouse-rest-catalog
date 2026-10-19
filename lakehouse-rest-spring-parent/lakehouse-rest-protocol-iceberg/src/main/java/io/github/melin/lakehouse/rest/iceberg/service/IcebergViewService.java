@@ -144,7 +144,7 @@ public class IcebergViewService {
      * <p>与表侧一样，{@code build()} 不会填 {@code metadataFileLocation}
      * （实测为 {@code null}），位置必须由服务端自己推，见
      * {@link IcebergMetadataFiles}。而 {@code location} 若客户端没给，就用
-     * {@code paimon.rest.path-template} 推一个——与表同一套模板，于是视图与表
+     * {@code lakehouse.rest.path-template} 推一个——与表同一套模板，于是视图与表
      * 在同一层目录下（{@code <warehouse>/<db>.db/<name>}）。同名表与视图共用目录
      * 不会互相覆盖（元数据文件名里带 uuid），代价只是排障时 {@code ls metadata/}
      * 会同时看到两类文件：这是刻意保留的，因为**视图不该有自己的一套目录约定**——

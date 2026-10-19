@@ -6,7 +6,7 @@ import { ENDPOINTS } from './endpoints.js'
  * <p>三个约定，前端其余部分都建立在这上面：
  *
  * 1. **路径一律来自 {@link ENDPOINTS}**，不在视图里手写字符串。
- * 2. **凭证只从 `localStorage` 读**。服务端开启 `paimon.rest.auth.enabled` 后
+ * 2. **凭证只从 `localStorage` 读**。服务端开启 `lakehouse.rest.auth.enabled` 后
  *    所有 `/v1/**` 与 `/api/**` 都要求 `Authorization: Bearer <token>`。
  *    令牌有三种来源——客户端凭据换来的、SSO 换来的、手填的静态令牌——
  *    但**在这里只有一种**：`localStorage` 里的那个字符串。

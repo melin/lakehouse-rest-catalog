@@ -47,7 +47,7 @@ import org.springframework.web.client.RestClientResponseException;
  * 与 {@code docs/table-optimization.md} 的分期一致。
  */
 @Component
-@ConditionalOnProperty(prefix = "paimon.rest.optimization", name = "submitter",
+@ConditionalOnProperty(prefix = "lakehouse.rest.optimization", name = "submitter",
         havingValue = "k8s", matchIfMissing = true)
 @RequiredArgsConstructor
 public class KubernetesJobSubmitter implements OptimizationJobSubmitter {

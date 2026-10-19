@@ -23,7 +23,7 @@
     <ResourceState :loading="loading" :error="error" />
 
     <div class="pc-grid">
-      <PanelCard title="服务端配置" hint="来自 paimon.rest.* 的生效值">
+      <PanelCard title="服务端配置" hint="来自 lakehouse.rest.* 的生效值">
         <dl class="pc-kv">
           <template v-for="row in serviceRows" :key="row.label">
             <dt>{{ row.label }}</dt>
@@ -181,7 +181,7 @@ const serviceRows = computed(() => {
   const service = meta.service || {}
   return [
     {
-      label: '鉴权（paimon.rest.auth.enabled）',
+      label: '鉴权（lakehouse.rest.auth.enabled）',
       tag: service.authEnabled ? '要求令牌' : '关闭',
       tagType: service.authEnabled ? 'success' : 'info',
     },
@@ -195,7 +195,7 @@ const serviceRows = computed(() => {
       tagType: auth.state.consoleRequired ? 'success' : 'info',
     },
     {
-      label: '授权（paimon.rest.authorization.enabled）',
+      label: '授权（lakehouse.rest.authorization.enabled）',
       tag: service.authorizationEnabled ? '启用 RBAC' : '关闭',
       tagType: service.authorizationEnabled ? 'success' : 'info',
     },

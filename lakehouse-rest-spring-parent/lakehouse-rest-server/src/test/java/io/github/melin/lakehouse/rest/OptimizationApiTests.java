@@ -77,9 +77,9 @@ import tools.jackson.databind.node.JsonNodeFactory;
 @ActiveProfiles("test")
 @AutoConfigureMockMvc
 @TestPropertySource(properties = {
-        "paimon.rest.optimization.scheduler-enabled=false",
-        "paimon.rest.optimization.max-tables-per-job=2",
-        "paimon.rest.optimization.max-concurrent-jobs=2"
+        "lakehouse.rest.optimization.scheduler-enabled=false",
+        "lakehouse.rest.optimization.max-tables-per-job=2",
+        "lakehouse.rest.optimization.max-concurrent-jobs=2"
 })
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 class OptimizationApiTests {

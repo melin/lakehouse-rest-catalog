@@ -321,9 +321,9 @@ Paimon 读回来。
 
 | 配置 | 默认值 | 说明 |
 | --- | --- | --- |
-| `paimon.rest.table-metadata.enabled` | `true` | 是否物化 schema 与快照。`external` 表始终不物化 |
-| `paimon.rest.table-metadata.fail-on-error` | `false` | 物化失败时是否让请求失败（500 且事务回滚）。默认「尽力而为」：记一条 WARN，元数据照常落库；打开后建表与提交快照会因仓库不可写而直接失败 |
-| `paimon.rest.table-metadata.purge-on-drop` | `false` | `DROP TABLE` 时是否连表目录一起删。默认只删元数据、保留数据，删错不可逆 |
+| `lakehouse.rest.table-metadata.enabled` | `true` | 是否物化 schema 与快照。`external` 表始终不物化 |
+| `lakehouse.rest.table-metadata.fail-on-error` | `false` | 物化失败时是否让请求失败（500 且事务回滚）。默认「尽力而为」：记一条 WARN，元数据照常落库；打开后建表与提交快照会因仓库不可写而直接失败 |
+| `lakehouse.rest.table-metadata.purge-on-drop` | `false` | `DROP TABLE` 时是否连表目录一起删。默认只删元数据、保留数据，删错不可逆 |
 
 **仓库在对象存储上时，服务端自己也要有对应 scheme 的 FileIO 实现。**
 这一步与第 1.1 节客户端那件事是**两件独立的事**，缺任何一件都在各自的进程里失败：
@@ -451,9 +451,9 @@ options.put(PATH.key(), response.getPath());   // put，不是 putIfAbsent
 | `ParseException`（无正文），语句里含 `PRIMARY KEY (...) NOT ENFORCED` | Spark 3.5 的 `CREATE TABLE` 语法不接受列定义里的主键 | 改用 `TBLPROPERTIES ('primary-key' = '<列>')` |
 | `You should define a 'bucket-key' for bucketed append mode` | 追加表**显式**给了固定 `bucket` 却没给分桶键。不给 `bucket` 时 Paimon 用动态分桶，不需要它 | 加 `'bucket-key'`，或改成 `'bucket' = '-1'` |
 | `ParseException: ... is a reserved table property` | `TBLPROPERTIES` 里写了 Spark 自己的保留属性（如 `owner`）。这条在客户端解析阶段就被拒，请求根本没到服务端 | 删掉该属性。`owner` 由服务端按提交者自己补，不是客户端该传的字段 |
-| `Cannot get latest schema for table <表名>` | 引擎在仓库里读不到 `<table>/schema/schema-<n>`。服务端已负责物化它（见第 4 节），因此这条报错现在只意味着**物化那一步没成功** | 看服务端日志里 `TableMetadataService` 的 WARN：若提示缺对应 scheme 的 FileIO 实现，把 `paimon-s3` / `paimon-obs` / `paimon-oss` 加进服务端类路径；若服务端根本不该写仓库，把 `paimon.rest.table-metadata.enabled` 设为 `false` 并把 `fail-on-error` 打开，让它在建表时就明确失败，而不是拖到写入 |
+| `Cannot get latest schema for table <表名>` | 引擎在仓库里读不到 `<table>/schema/schema-<n>`。服务端已负责物化它（见第 4 节），因此这条报错现在只意味着**物化那一步没成功** | 看服务端日志里 `TableMetadataService` 的 WARN：若提示缺对应 scheme 的 FileIO 实现，把 `paimon-s3` / `paimon-obs` / `paimon-oss` 加进服务端类路径；若服务端根本不该写仓库，把 `lakehouse.rest.table-metadata.enabled` 设为 `false` 并把 `fail-on-error` 打开，让它在建表时就明确失败，而不是拖到写入 |
 | 服务端 WARN 里出现 `ServiceConfigurationError: java.net.spi.InetAddressResolverProvider: Provider org.xbill.DNS.spi.DnsjavaInetAddressResolverProvider not found` | 服务端跑在 JDK 18+ 上，而 `paimon-s3` 插件包把 dnsjava 那个 provider 的实现类放在 `META-INF/versions/18/`，插件 loader 加载不到 → 该作用域内任何 `InetAddress` 解析都失败（触发点是 Hadoop 度量系统的 `getHostname`） | **把服务端运行时换成 JDK 17**，见 4.2。这是唯一可靠的处理；这条 WARN 会让对象存储上的 schema / 快照都写不出去，而 REST 读写看着一切正常 |
-| `Cannot get latest schema for table <表名>`（服务端日志里**没有**对应 WARN） | 物化那一步压根没被触发：`paimon.rest.table-metadata.enabled=false`，或者表是**外部表**——`register` 登记进来的，或建表时客户端自己给了 `path` 的非 Paimon 表（见 4.4.1） | 前者打开开关；后者是有意不物化的（位置不归本服务端所有），需要引擎侧自己保证目录里有 schema |
+| `Cannot get latest schema for table <表名>`（服务端日志里**没有**对应 WARN） | 物化那一步压根没被触发：`lakehouse.rest.table-metadata.enabled=false`，或者表是**外部表**——`register` 登记进来的，或建表时客户端自己给了 `path` 的非 Paimon 表（见 4.4.1） | 前者打开开关；后者是有意不物化的（位置不归本服务端所有），需要引擎侧自己保证目录里有 schema |
 | `Content-Type 'text/plain;charset=UTF-8' is not supported` | 服务端未放宽 JSON 转换器。Paimon 客户端（Apache HttpClient 5）把 JSON 请求体标成 `text/plain`，早期版本会因此 415 | 已由 `JsonContentTypeConfig` 修复；若仍遇到，确认服务端版本 |
 | `Table <库.表> does not support batch scan.` / `does not support append in batch mode.` | 表的 `capabilities()` 里没有 `BATCH_READ` / `BATCH_WRITE`。Lance 表（连同 Iceberg 表）在 Paimon 2.0.0 里就是空集——上游只搭了 API 骨架，`LanceTableImpl` 的 `newScan()` / `newRead()` 都抛 `UnsupportedOperationException`，见 4.4 | **不是缺 jar**，补 `lance-core` 也没用。要读 Lance 数据用 Lance 生态自己的 Spark 连接器，拿 `LanceTable.location()` 指过去；Paimon 的 Spark 连接器在当前版本不解 |
 
@@ -494,10 +494,10 @@ options.put(PATH.key(), response.getPath());   // put，不是 putIfAbsent
 # 先起一个服务端
 java -jar lakehouse-rest-spring-parent/lakehouse-rest-server/target/lakehouse-rest-server-0.0.1-SNAPSHOT.jar \
   --spring.profiles.active=h2 --server.port=18080 \
-  --paimon.rest.auth.enabled=true --paimon.rest.auth.tokens[0]=root \
-  --paimon.rest.authorization.enabled=true \
-  --paimon.rest.authorization.service-admins[0]=root \
-  --paimon.rest.authorization.bootstrap-principal=root
+  --lakehouse.rest.auth.enabled=true --lakehouse.rest.auth.tokens[0]=root \
+  --lakehouse.rest.authorization.enabled=true \
+  --lakehouse.rest.authorization.service-admins[0]=root \
+  --lakehouse.rest.authorization.bootstrap-principal=root
 
 # 对着它跑建表与写入用例
 mvn -o -pl :lakehouse-rest-spark test -Dtest=PaimonTableDdlTests \
@@ -527,14 +527,14 @@ Iceberg 侧有一条只从它那一侧才看得出来的差异——写数据要
 ```bash
 java -jar lakehouse-rest-spring-parent/lakehouse-rest-server/target/lakehouse-rest-server-0.0.1-SNAPSHOT.jar \
   --spring.profiles.active=h2 --server.port=18080 \
-  --paimon.rest.auto-create-catalog=true \
-  --paimon.rest.auth.enabled=true \
-  --paimon.rest.auth.tokens[0]=root \
-  --paimon.rest.auth.tokens[1]=alice --paimon.rest.auth.token-principals.alice=e2e_alice \
-  --paimon.rest.auth.tokens[2]=bob   --paimon.rest.auth.token-principals.bob=e2e_bob \
-  --paimon.rest.authorization.enabled=true \
-  --paimon.rest.authorization.service-admins[0]=root \
-  --paimon.rest.authorization.bootstrap-principal=root
+  --lakehouse.rest.auto-create-catalog=true \
+  --lakehouse.rest.auth.enabled=true \
+  --lakehouse.rest.auth.tokens[0]=root \
+  --lakehouse.rest.auth.tokens[1]=alice --lakehouse.rest.auth.token-principals.alice=e2e_alice \
+  --lakehouse.rest.auth.tokens[2]=bob   --lakehouse.rest.auth.token-principals.bob=e2e_bob \
+  --lakehouse.rest.authorization.enabled=true \
+  --lakehouse.rest.authorization.service-admins[0]=root \
+  --lakehouse.rest.authorization.bootstrap-principal=root
 
 mvn -o -pl :lakehouse-rest-spark test -Dtest=SparkSqlAuthorizationTests -DfailIfNoTests=false \
   -De2e.management.url=http://127.0.0.1:18080/api/management/v1 \

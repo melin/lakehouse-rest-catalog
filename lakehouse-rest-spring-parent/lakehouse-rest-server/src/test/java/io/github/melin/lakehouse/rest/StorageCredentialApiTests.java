@@ -39,17 +39,17 @@ import tools.jackson.databind.node.JsonNodeFactory;
  * 凭据解析不发出网请求，这一点是被测行为的一部分。
  */
 @SpringBootTest(properties = {
-        "paimon.rest.storage.aws.access-key=AKIA-CONFIG",
-        "paimon.rest.storage.aws.secret-key=SECRET-CONFIG",
-        "paimon.rest.storage.aws.storages.named-a.access-key=AKIA-NAMED",
-        "paimon.rest.storage.aws.storages.named-a.secret-key=SECRET-NAMED",
-        "paimon.rest.storage.gcp.token=ya29.token-from-config",
-        "paimon.rest.storage.gcp.lifespan=10m",
-        "paimon.rest.storage.obs.access-key=OBS-AK-CONFIG",
-        "paimon.rest.storage.obs.secret-key=OBS-SK-CONFIG",
-        "paimon.rest.storage.obs.session-token=OBS-TOKEN-CONFIG",
-        "paimon.rest.storage.oss.access-key=OSS-AK-CONFIG",
-        "paimon.rest.storage.oss.secret-key=OSS-SK-CONFIG"
+        "lakehouse.rest.storage.aws.access-key=AKIA-CONFIG",
+        "lakehouse.rest.storage.aws.secret-key=SECRET-CONFIG",
+        "lakehouse.rest.storage.aws.storages.named-a.access-key=AKIA-NAMED",
+        "lakehouse.rest.storage.aws.storages.named-a.secret-key=SECRET-NAMED",
+        "lakehouse.rest.storage.gcp.token=ya29.token-from-config",
+        "lakehouse.rest.storage.gcp.lifespan=10m",
+        "lakehouse.rest.storage.obs.access-key=OBS-AK-CONFIG",
+        "lakehouse.rest.storage.obs.secret-key=OBS-SK-CONFIG",
+        "lakehouse.rest.storage.obs.session-token=OBS-TOKEN-CONFIG",
+        "lakehouse.rest.storage.oss.access-key=OSS-AK-CONFIG",
+        "lakehouse.rest.storage.oss.secret-key=OSS-SK-CONFIG"
 })
 @ActiveProfiles("test")
 @AutoConfigureMockMvc

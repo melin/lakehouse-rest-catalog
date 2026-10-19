@@ -10,7 +10,7 @@
  * 请求头上、校验失败没回滚——这些在服务端测试里全绿，表现却是「登录按钮点了没反应」
  * 或「一次写错令牌就把正在用的会话弄丢了」。
  *
- * <p>用法（服务端需以 `paimon.rest.auth.enabled=true` 运行）：
+ * <p>用法（服务端需以 `lakehouse.rest.auth.enabled=true` 运行）：
  *
  * <pre>
  * BASE=http://127.0.0.1:8080 \
@@ -110,7 +110,7 @@ check('它排在第一位（不需要先建主体）', auth.state.methods[0] ===
   auth.state.methods.join(', '))
 check('下发客户端凭据方式', auth.supports('client-credentials'))
 // 静态令牌的页签只在服务端登记过令牌时出现，而本脚本的 STATIC_TOKEN 与启动参数
-// `paimon.rest.auth.tokens[0]` 是同一个值，因此它正好是这条规则的判据：
+// `lakehouse.rest.auth.tokens[0]` 是同一个值，因此它正好是这条规则的判据：
 // 给了就该出现，没给就不该出现。两种都是被断言的行为，没有「跳过」这一档——
 // 不显示一个填了也进不去的页签，正是这次改动的目的
 if (STATIC_TOKEN) {
@@ -125,7 +125,7 @@ check('令牌端点用 Polaris 路径',
   auth.state.tokenEndpoint === '/api/catalog/v1/oauth/tokens', auth.state.tokenEndpoint)
 
 console.log('\n========== 2. 用户名密码（控制台默认方式） ==========')
-// 账号来自服务端配置 `paimon.rest.auth.console.password.users`，默认 admin/admin。
+// 账号来自服务端配置 `lakehouse.rest.auth.console.password.users`，默认 admin/admin。
 // 改过配置的部署用 CONSOLE_USER / CONSOLE_PASSWORD 覆盖。
 const CONSOLE_USER = process.env.CONSOLE_USER || 'admin'
 const CONSOLE_PASSWORD = process.env.CONSOLE_PASSWORD || 'admin'

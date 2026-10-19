@@ -8,9 +8,9 @@
 #
 # 前置：服务端以开启鉴权的方式启动，且有一个可用的主体凭据。
 #   java -jar lakehouse-rest-server-*.jar --spring.profiles.active=h2 \
-#     --paimon.rest.auth.enabled=true \
-#     --paimon.rest.auth.access-token.signing-key="$(openssl rand -base64 48)" \
-#     --paimon.rest.auth.tokens[0]=static-token-for-sweep
+#     --lakehouse.rest.auth.enabled=true \
+#     --lakehouse.rest.auth.access-token.signing-key="$(openssl rand -base64 48)" \
+#     --lakehouse.rest.auth.tokens[0]=static-token-for-sweep
 # 引导主体的 clientId / clientSecret 只在启动日志里出现一次（搜 "created bootstrap principal"）。
 #
 # 用法：
@@ -24,7 +24,7 @@
 #   CLIENT_ID     主体 clientId（必填）
 #   CLIENT_SECRET 主体明文密钥（必填）
 #   STATIC_TOKEN  静态令牌；给了就顺带验收那条降级路径。服务端需同时配
-#                 --paimon.rest.auth.tokens[0]：第 1 节断言该页签只在登记了令牌时才出现
+#                 --lakehouse.rest.auth.tokens[0]：第 1 节断言该页签只在登记了令牌时才出现
 #   PRINCIPAL     期望的主体名，默认 root（引导主体名）
 #   CONSOLE_USER  控制台账号，默认 admin（第 2 节用）
 #   CONSOLE_PASSWORD 控制台密码，默认 admin

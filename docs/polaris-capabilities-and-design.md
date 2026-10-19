@@ -67,7 +67,7 @@ Paimon 的 REST Catalog 规格遵循同一范式，但对象模型不同：Polar
 之后所有资源路径都以该 prefix 开头。这与 Polaris 用 catalog 做资源组织第一层的思路一致，
 差别只是 Paimon 规格把这个标识放在 URL 前缀位置。
 
-服务端不要求预先登记：`paimon.rest.auto-create-catalog=true` 时，任意 warehouse 值都会
+服务端不要求预先登记：`lakehouse.rest.auto-create-catalog=true` 时，任意 warehouse 值都会
 自动登记为一个 catalog，便于引擎零配置接入；生产环境可关闭该开关，改为显式管理。
 
 ### 2. 鉴权与业务解耦
@@ -104,13 +104,13 @@ catalog 自带 `accessKeyId` / `secretAccessKey` 时，具名存储与默认配�
 按 Polaris 的路径接入时只能写 `stsUnavailable: true` 并让引擎自己找凭据，
 静态凭据补上的正是这一格。
 
-选定的实现由 `paimon.rest.credential-manager.type` 决定：`default` 走上面的分派，
+选定的实现由 `lakehouse.rest.credential-manager.type` 决定：`default` 走上面的分派，
 `noop` 不下发（读表接口返回 501）。策略在 `StorageRuntimePolicy` 里于启动期解析，
 取值非法直接启动失败。
 
 范围限定到单表、时效由 `credential.ttl-seconds` 控制（GCS 的 `lifespan` 更短时收窄），
 对应 Polaris 的短时效、按需授权模型。未过期的凭据在
-`paimon.rest.storage-credential-cache.max-entries` 的容量内被复用，同一张表反复读拿到的是同一份凭据。
+`lakehouse.rest.storage-credential-cache.max-entries` 的容量内被复用，同一张表反复读拿到的是同一份凭据。
 
 ### 4. OBS / OSS 是超出规格的扩展
 
@@ -159,7 +159,7 @@ Polaris 规格的 `AwsStorageConfigInfo` 里**没有** per-catalog 的 `accessKe
   就得重新贴一遍密钥，而密钥本该是一次性输入的东西。
   要清除则显式提交一对空串（控制台表单里有对应按钮）。
 - **加密落库，fail-closed。** 用 AES-GCM（AES-256）加密后写进
-  `storageConfigInfo`，密钥由 `paimon.rest.storage.credential-secret-key` 提供
+  `storageConfigInfo`，密钥由 `lakehouse.rest.storage.credential-secret-key` 提供
   （Base64 且解码后必须恰好 32 字节）。未配该密钥时**拒绝保存**静态凭据并返回 400，
   而不是明文落库；取值非法则启动即失败。密文形态带 `v1:` 前缀，
   兼作「这是密文还是别人手工塞进来的明文」的判别依据——明文当作密文传入会明确 500。
@@ -321,7 +321,7 @@ Jackson 2.15.2 抬到 2.21.x，并替换 netty 与 jersey，导致 Spark 侧出�
     索引长度与值的实际长度解耦而唯一性语义不变。摘要在 `@PrePersist` / `@PreUpdate`
     里由原文重算，不依赖调用方是否记得规范化。
     注意：这是**面向 MySQL 的必要改动**，不是可选的优化。
-12. **静态凭据的加密密钥不支持多代共存**。轮换 `paimon.rest.storage.credential-secret-key`
+12. **静态凭据的加密密钥不支持多代共存**。轮换 `lakehouse.rest.storage.credential-secret-key`
     会让库里已有的密文全部解不开，必须配合一次凭据重录。细节见
     [`../README.md`](../README.md) 第 6 节「实现说明与已知边界」第 20 条。
 
@@ -409,7 +409,7 @@ Polaris 在每次操作前后各发一个事件，`PolarisEvent` 带 `eventId` /
   **只发 AFTER**，丢掉 Polaris 的 BEFORE 与 GET/LIST 读事件。
 - 一张 `audit_event` 表（event_id / type / category / principal / request_id / target /
   时间 / 属性 JSON），写库与写日志是两个 listener。
-- listener 可插拔，配置形状照搬 Polaris：`paimon.rest.event-listener.types` +
+- listener 可插拔，配置形状照搬 Polaris：`lakehouse.rest.event-listener.types` +
   `<name>.enabled-event-categories` / `.enabled-event-types`（启动期校验）。
 - 控制台的「刷新」已从全量轮询改成按游标增量拉（`?since=` + `?category=`）。
 

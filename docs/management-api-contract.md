@@ -226,7 +226,7 @@
   三点与其他字段不同：**`secretAccessKey` 只写不读**，落库前用 AES-GCM 加密，
   任何响应都不回显，因此 `PUT` 省略它表示保持原值——这是上面「整体替换」的**唯一例外**，
   要清除需显式提交一对空串；`accessKeyId` 可读可写，与 `storageName` 互斥（同时给返回 400），
-  只有密钥没有 ID 或反之也返回 400。加密密钥由 `paimon.rest.storage.credential-secret-key`
+  只有密钥没有 ID 或反之也返回 400。加密密钥由 `lakehouse.rest.storage.credential-secret-key`
   提供，未配置时保存这类凭据返回 400（fail-closed，不明文落库）。
 
 `ConnectionConfigInfo` 仍只按 Iceberg REST 形态处理。

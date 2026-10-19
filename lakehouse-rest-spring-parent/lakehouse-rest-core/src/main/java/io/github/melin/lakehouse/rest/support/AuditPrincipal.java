@@ -20,7 +20,7 @@ import lombok.extern.slf4j.Slf4j;
  *
  * <p><b>代价说明白。</b>超长的主体名在审计列里看不到原名。这不是信息损失，
  * 而是「超过 255 字符的字符串不是一个主体名，而多半是凭据被当成了名字」——
- * 告警会给出该配的东西（{@code paimon.rest.auth.token-principals}）。
+ * 告警会给出该配的东西（{@code lakehouse.rest.auth.token-principals}）。
  * 授权判定读的是 {@code RequestContext} 里的原名，不受这里影响。
  */
 @Slf4j
@@ -68,7 +68,7 @@ public final class AuditPrincipal {
         }
         log.warn("a principal name of {} characters exceeds the audit columns (varchar({})) and was recorded"
                 + " as {}. A name this long is usually a credential used as a principal: map tokens to real"
-                + " names with paimon.rest.auth.token-principals (static tokens) or point the OIDC principal"
+                + " names with lakehouse.rest.auth.token-principals (static tokens) or point the OIDC principal"
                 + " claim at a name-shaped claim. The value is hashed rather than truncated so no part of a"
                 + " secret reaches the metadata database", length, MAX_LENGTH, label);
     }

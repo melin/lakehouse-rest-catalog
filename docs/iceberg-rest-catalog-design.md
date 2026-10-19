@@ -64,7 +64,7 @@ Iceberg 侧的能力清单以 Apache Iceberg 官方规格为准
 解法有两层，都要用上：**主判据是 prefix 指向的 catalog 格式**
 （一个 catalog 只有一种格式，见 §3），**兜底再按请求体字段名分流**
 （出现 `object`/`database` → Paimon，出现 `namespace`/`name` → Iceberg）。
-第二层不是冗余：`paimon.rest.auto-create-catalog` 开着时，一个敲错 prefix 的
+第二层不是冗余：`lakehouse.rest.auto-create-catalog` 开着时，一个敲错 prefix 的
 客户端会先自动建出一个 catalog，此时唯一的线头就是请求体本身。
 
 **（2）`/v1/config` 要按格式下发不同内容。** 见 §3.3。
@@ -170,12 +170,12 @@ catalog_format varchar(32) NOT NULL DEFAULT 'PAIMON'   -- PAIMON | ICEBERG
 `table-uuid` / Paimon 的 snapshot 文件都会留在仓库里，两边对不上。
 
 不可变带来一个必须处理的地方——**自动登记**。当前 `resolve(prefix)` 在未登记
-且 `paimon.rest.auto-create-catalog=true` 时会自动建一个 catalog。两格式之后，
+且 `lakehouse.rest.auto-create-catalog=true` 时会自动建一个 catalog。两格式之后，
 一个 Iceberg 客户端敲了一个未登记的 prefix，会被自动建成 **Paimon** catalog，
 于是它此后每一次调用都 404，且错误信息是「Unknown catalog prefix」——
 client 会以为是自己的 prefix 写错了，而真正的原因是**格式不对**。两条对策：
 
-1. 新增配置 `paimon.rest.default-catalog-format`（默认 `PAIMON`），
+1. 新增配置 `lakehouse.rest.default-catalog-format`（默认 `PAIMON`），
    让部署能选择自动登记时建哪种格式；
 2. Iceberg 路径命中的 catalog 格式不匹配时，**报明确的错**：
    `404 NoSuchNamespaceError`，消息形如
@@ -477,7 +477,7 @@ Iceberg 规格副本已在 `spec/rest-catalog-open-api-iceberg.yaml`，
   请求侧有 `X-Iceberg-Access-Delegation: vended-credentials` 头。
   这套语义与 Paimon 的 `/token`、`/auth` 端点**同一件事**，
   复用 `StorageCredentialManager` 与 `StorageCredentialCache`；
-  `paimon.rest.credential-manager.type=noop` 时同样如实返回 501/不带凭据，
+  `lakehouse.rest.credential-manager.type=noop` 时同样如实返回 501/不带凭据，
   与控制台「数据访问」页的现状一致。
 - **认证**：Iceberg 客户端默认用 OAuth2（`/v1/oauth/tokens`）或直接 Bearer；
   两条路服务端都已经有（`OAuthTokenController` + `BearerAuthInterceptor`）。
@@ -575,7 +575,7 @@ Iceberg 的 `delete namespace` 级联删表（规格要求 namespace 非空时�
 | 1 | 两条 `rename` 同路径，靠 prefix 判据；`auto-create-catalog` 开着时 prefix 可能是错的 | 双层判据（catalog 格式 + 请求体字段名）；格式不匹配时给**指名原因的 404**（§3.3） |
 | 2 | 不声明 `endpoints` = 默认承诺了 `transactions/commit` | `/v1/config` 显式下发清单；契约测试断言清单与实现一致 |
 | 3 | 错误模型不同，Spark 侧报不出原因 | 按 catalog 格式选错误响应体（§2.3），两侧各有一条契约测试 |
-| 4 | `metadata_doc` 体积增长（大表 metadata 含 snapshot-log / metadata-log） | 列类型 mediumtext（16 MB 上限）；`metadata-log` 由服务端按 `paimon.rest.metadata-log.max-entries` 截断（只保留最近 N 条），与 Iceberg 默认语义一致 |
+| 4 | `metadata_doc` 体积增长（大表 metadata 含 snapshot-log / metadata-log） | 列类型 mediumtext（16 MB 上限）；`metadata-log` 由服务端按 `lakehouse.rest.metadata-log.max-entries` 截断（只保留最近 N 条），与 Iceberg 默认语义一致 |
 | 5 | 文档 / 投影行 / 仓库文件三方不一致 | 文档是唯一真相源；投影由唯一写入入口派生；「文件列表」页加同口径自检（§4.4） |
 | 6 | 并发提交互相覆盖 | 服务端 CAS（`metadata_location`）+ 客户端 `requirements` 双向校验（§4.5） |
 | 7 | 引 `iceberg-core` 带来的依赖体积与版本漂移 | 依赖只落在 `lakehouse-rest-server`，版本与支持区间写进 README；`iceberg-core` 不进 spark/optimizer 模块 |

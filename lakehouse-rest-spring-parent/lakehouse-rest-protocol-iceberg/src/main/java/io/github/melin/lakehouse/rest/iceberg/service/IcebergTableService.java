@@ -307,7 +307,7 @@ public class IcebergTableService {
      *
      * <p><b>「要不要连仓库一起清」有两个来源，取或。</b>Iceberg 规格的这条路径有一个
      * {@code purgeRequested} 查询参数（默认 {@code false}，语义是「用户要求删掉底下的数据
-     * 与元数据」），本服务端另有 {@code paimon.rest.table-metadata.purge-on-drop}
+     * 与元数据」），本服务端另有 {@code lakehouse.rest.table-metadata.purge-on-drop}
      * 这一个部署级开关。两者管的不是同一件事：
      *
      * <ul>

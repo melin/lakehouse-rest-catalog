@@ -11,7 +11,7 @@ import org.springframework.stereotype.Component;
  * 不连接执行环境的提交器：只记日志。
  *
  * <p>存在的理由有两个。一是本地开发：想验证「策略 → 组批 → 落库 → 跟踪」这条链路
- * 而不想先搭一个 k8s，把它设成 {@code paimon.rest.optimization.submitter=log} 即可，
+ * 而不想先搭一个 k8s，把它设成 {@code lakehouse.rest.optimization.submitter=log} 即可，
  * 批次照常创建、状态照常推进。二是把「服务端在没有集群时会不会把批次卡死」这件事
  * 变成可观察的：它永远返回 {@link JobState#UNKNOWN}，于是批次会一直等到
  * {@code deadline} 才被判失败——这个行为正是真实环境里「提交成功但任务丢了」的形态。
@@ -21,7 +21,7 @@ import org.springframework.stereotype.Component;
  * 迟早会有人在生产里误配它。
  */
 @Component
-@ConditionalOnProperty(prefix = "paimon.rest.optimization", name = "submitter", havingValue = "log")
+@ConditionalOnProperty(prefix = "lakehouse.rest.optimization", name = "submitter", havingValue = "log")
 @RequiredArgsConstructor
 public class LoggingJobSubmitter implements OptimizationJobSubmitter {
 
@@ -37,7 +37,7 @@ public class LoggingJobSubmitter implements OptimizationJobSubmitter {
     @Override
     public Submitted submit(SubmissionRequest request) {
         log.warn("optimization job {} for catalog {} is recorded but NOT executed:"
-                        + " submitter is 'log' (paimon.rest.optimization.submitter)."
+                        + " submitter is 'log' (lakehouse.rest.optimization.submitter)."
                         + " Point it at k8s to actually run the spark job",
                 request.jobId(), request.catalog());
         return new Submitted(properties.getOptimization().getNamespace(), "log-" + request.jobId());

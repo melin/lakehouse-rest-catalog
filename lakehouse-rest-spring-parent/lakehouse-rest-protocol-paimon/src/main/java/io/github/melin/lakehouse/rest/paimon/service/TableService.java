@@ -170,7 +170,7 @@ public class TableService {
      * <p><b>表位置</b>（也就是 {@code GetTableResponse.path}）在这里定下来，规则按表格式分两类：
      *
      * <ul>
-     *   <li><b>Paimon 表</b>：位置由目录按 {@code paimon.rest.path-template} 分配，客户端给的
+     *   <li><b>Paimon 表</b>：位置由目录按 {@code lakehouse.rest.path-template} 分配，客户端给的
      *       {@code path} 不参与（要指向另一份已经存在的 Paimon 数据，走 {@link #register}）；</li>
      *   <li><b>三种非 Paimon 表</b>：位置就是数据目录本身，客户端给了 {@code path} 就用它的，
      *       没给才用目录分配的位置。**必须**把客户端的目录写成表位置——Paimon 的 REST 客户端
@@ -277,7 +277,7 @@ public class TableService {
         partitionRepository.deleteByTableId(table.getId());
         consumerRepository.deleteByTableId(table.getId());
         tableRepository.delete(table);
-        // 表目录是否一起删由 paimon.rest.table-metadata.purge-on-drop 决定，默认不删
+        // 表目录是否一起删由 lakehouse.rest.table-metadata.purge-on-drop 决定，默认不删
         tableMetadataService.dropTableDirectory(table);
         events.publish(CatalogEventType.TABLE_DROPPED, prefix, CatalogEvent.TARGET_TABLE,
                 databaseName + "." + tableName,

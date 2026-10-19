@@ -38,7 +38,7 @@ import org.springframework.transaction.annotation.Transactional;
 /**
  * 启动时预置 catalog 与 database，并在开启授权时预置自举链路。
  *
- * <p>对应配置 {@code paimon.rest.initial-catalog.*}，用于本地开发或演示环境；
+ * <p>对应配置 {@code lakehouse.rest.initial-catalog.*}，用于本地开发或演示环境；
  * 生产环境可以留空，由引擎首次调用 {@code GET /v1/config} 时按需登记。
  */
 @Component
@@ -119,8 +119,8 @@ public class DataInitializer implements ApplicationRunner {
     /**
      * 预置 catalog 用哪种表格式。
      *
-     * <p>{@code paimon.rest.initial-catalog.format} 优先，留空回落到
-     * {@code paimon.rest.default-catalog-format}——后者本来就是「本部署建 catalog 时
+     * <p>{@code lakehouse.rest.initial-catalog.format} 优先，留空回落到
+     * {@code lakehouse.rest.default-catalog-format}——后者本来就是「本部署建 catalog 时
      * 未指定格式用哪种」的那个开关，预置与自动登记都归它管，运维只需记住一处。
      *
      * <p>认不出来的取值按默认格式处理并留 warn，而不是启动失败：这是启动路径上的
@@ -133,7 +133,7 @@ public class DataInitializer implements ApplicationRunner {
             return CatalogFormat.of(properties.getDefaultCatalogFormat());
         }
         return CatalogFormat.parse(configured).orElseGet(() -> {
-            log.warn("paimon.rest.initial-catalog.format is set to an unrecognized value \"{}\";"
+            log.warn("lakehouse.rest.initial-catalog.format is set to an unrecognized value \"{}\";"
                             + " falling back to {}", configured,
                     CatalogFormat.of(properties.getDefaultCatalogFormat()).wireName());
             return CatalogFormat.of(properties.getDefaultCatalogFormat());
@@ -152,7 +152,7 @@ public class DataInitializer implements ApplicationRunner {
         CatalogFormat stored = CatalogFormat.of(catalog.getCatalogFormat());
         if (stored != configured) {
             log.warn("initial catalog {} already exists as a {} catalog; the configured {} in"
-                            + " paimon.rest.initial-catalog.format is ignored (catalog format is"
+                            + " lakehouse.rest.initial-catalog.format is ignored (catalog format is"
                             + " immutable). Delete the catalog or seed a different prefix.",
                     catalog.getPrefix(), stored.wireName(), configured.wireName());
         }
@@ -172,7 +172,7 @@ public class DataInitializer implements ApplicationRunner {
         if (!console.loginRequired(auth.isEnabled())) {
             if (console.anyMethodEnabled()) {
                 log.warn("console login methods are configured but neither"
-                        + " paimon.rest.auth.enabled nor paimon.rest.auth.console.required is on:"
+                        + " lakehouse.rest.auth.enabled nor lakehouse.rest.auth.console.required is on:"
                         + " the console will not ask anyone to log in, and the server accepts every"
                         + " request without a token.");
             }
@@ -185,9 +185,9 @@ public class DataInitializer implements ApplicationRunner {
             // 现在静态令牌也按配置出现，因此这里是真的没有任何入口——
             // 登录页会显示一条「服务端要求登录但没有开启任何方式」，运维得先解决它
             log.warn("the console requires a login but no login method is available: enable one of"
-                    + " paimon.rest.auth.console.password.enabled,"
+                    + " lakehouse.rest.auth.console.password.enabled,"
                     + " …client-credentials.enabled or …oidc.enabled, or list a token in"
-                    + " paimon.rest.auth.tokens. Until then nobody can sign in to the web console"
+                    + " lakehouse.rest.auth.tokens. Until then nobody can sign in to the web console"
                     + " and every anonymous request is rejected.");
         } else {
             // 配置齐了就报告一行：运维需要从启动日志确认「登录是按我配的那样生效的」，
@@ -198,10 +198,10 @@ public class DataInitializer implements ApplicationRunner {
         if (!auth.isEnabled()) {
             // 这是默认组合（console.required=true、auth.enabled=false）。必须说清楚它挡住了
             // 什么、没挡住什么——否则会被当成真正的访问控制
-            log.warn("the console requires a login while paimon.rest.auth.enabled is false: the console"
+            log.warn("the console requires a login while lakehouse.rest.auth.enabled is false: the console"
                     + " asks for credentials before showing anything, but /v1/**,"
                     + " /api/catalog/v1/** and /api/management/v1/** still answer anonymous requests."
-                    + " Set paimon.rest.auth.enabled=true to make it an access boundary.");
+                    + " Set lakehouse.rest.auth.enabled=true to make it an access boundary.");
         }
 
         warnAboutDefaultPassword(console.getPassword());
@@ -250,7 +250,7 @@ public class DataInitializer implements ApplicationRunner {
             return;
         }
         if (password.getUsers().isEmpty()) {
-            log.warn("paimon.rest.auth.console.password.enabled is true but no users are configured:"
+            log.warn("lakehouse.rest.auth.console.password.enabled is true but no users are configured:"
                     + " nobody can log in this way");
             return;
         }
@@ -261,7 +261,7 @@ public class DataInitializer implements ApplicationRunner {
         if (!weak.isEmpty()) {
             log.warn("console password login uses its built-in default password for {}: anyone who can"
                     + " reach this address can log in as them. Change"
-                    + " paimon.rest.auth.console.password.users, or point the account at another"
+                    + " lakehouse.rest.auth.console.password.users, or point the account at another"
                     + " principal with …password.principals.", String.join(", ", weak));
         }
     }
@@ -292,7 +292,7 @@ public class DataInitializer implements ApplicationRunner {
         if (!unresolved.isEmpty()) {
             log.warn("authorization is enabled but these console password accounts map to a principal"
                     + " that does not exist: {}. They can log in and then see nothing. Add the"
-                    + " principal name to paimon.rest.authorization.service-admins, create the"
+                    + " principal name to lakehouse.rest.authorization.service-admins, create the"
                     + " principal, or remap the account with …console.password.principals",
                     String.join(", ", unresolved));
         }
@@ -301,24 +301,24 @@ public class DataInitializer implements ApplicationRunner {
     /** OIDC 的配置缺项与权限提示。 */
     private void warnAboutOidc(RestServerProperties.Auth.Oidc oidc) {
         if (!hasText(oidc.getIssuerUri()) || !hasText(oidc.getClientId())) {
-            log.warn("paimon.rest.auth.console.oidc.enabled is true but issuer-uri / client-id is"
+            log.warn("lakehouse.rest.auth.console.oidc.enabled is true but issuer-uri / client-id is"
                     + " missing: OIDC login will not be offered on the console login page");
         }
         if (!hasText(oidc.getRedirectUri())) {
             // IdP 比对的是完整字符串，缺了它前端只能自己猜一个，
             // 而猜错的唯一表现是「回到 IdP 时报 redirect_uri 不合法」
-            log.warn("paimon.rest.auth.console.oidc.redirect-uri is not set: the console cannot start"
+            log.warn("lakehouse.rest.auth.console.oidc.redirect-uri is not set: the console cannot start"
                     + " the OIDC flow without it (it must match the redirect URI registered at the"
                     + " identity provider)");
         }
         if (!hasText(oidc.getAudience())) {
-            log.warn("paimon.rest.auth.console.oidc.audience is not set: tokens issued for other"
+            log.warn("lakehouse.rest.auth.console.oidc.audience is not set: tokens issued for other"
                     + " applications by the same issuer will also be accepted");
         }
         // 登录成功但没有任何权限，是 OIDC 接入最常见的「配好了却不能用」。
         // 这里说的是排查方向，不是校验——主体名由 IdP 决定，服务端无从预知
         log.info("OIDC logins authenticate as the value of the {} claim; that name must exist in"
-                + " paimon.rest.authorization.service-admins or be registered as a principal,"
+                + " lakehouse.rest.authorization.service-admins or be registered as a principal,"
                 + " otherwise the console will log in and then see nothing",
                 oidc.getPrincipalClaim());
     }
@@ -348,7 +348,7 @@ public class DataInitializer implements ApplicationRunner {
         if (!properties.getAuth().isEnabled()) {
             log.warn("authorization is enabled while authentication is disabled: any bearer token"
                     + " will be accepted and used as the principal name, so callers can impersonate"
-                    + " any principal. Enable paimon.rest.auth.enabled in production.");
+                    + " any principal. Enable lakehouse.rest.auth.enabled in production.");
         }
 
         String bootstrapPrincipal = authorization.getBootstrapPrincipal();
@@ -358,7 +358,7 @@ public class DataInitializer implements ApplicationRunner {
             return;
         }
         if (!authorization.getServiceAdmins().contains(bootstrapPrincipal)) {
-            log.warn("bootstrap principal {} is not listed in paimon.rest.authorization.service-admins;"
+            log.warn("bootstrap principal {} is not listed in lakehouse.rest.authorization.service-admins;"
                     + " it will be created but cannot manage principals", bootstrapPrincipal);
         }
 

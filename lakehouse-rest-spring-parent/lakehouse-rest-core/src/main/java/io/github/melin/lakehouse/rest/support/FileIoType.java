@@ -9,7 +9,7 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
- * {@code paimon.rest.file-io.type} 的取值：本部署接入了哪些存储实现。
+ * {@code lakehouse.rest.file-io.type} 的取值：本部署接入了哪些存储实现。
  *
  * <p>对应 Polaris 的 {@code polaris.file-io.type}——那里是注册在
  * {@code FileIOFactory} 上的实现标识，本工程没有可插拔的 FileIO 工厂，
@@ -94,7 +94,7 @@ public enum FileIoType {
      */
     public static FileIoType require(String value) {
         return parse(value).orElseThrow(() -> new IllegalStateException(
-                "paimon.rest.file-io.type=" + value + " is not a known FileIO type; expected one of "
+                "lakehouse.rest.file-io.type=" + value + " is not a known FileIO type; expected one of "
                         + Arrays.stream(values()).map(FileIoType::wireName)
                         .collect(Collectors.joining(", "))));
     }

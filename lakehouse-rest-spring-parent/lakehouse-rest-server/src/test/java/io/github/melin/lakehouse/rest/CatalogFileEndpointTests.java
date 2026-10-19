@@ -47,7 +47,7 @@ import tools.jackson.databind.json.JsonMapper;
  * 而每条用例都走一遍登录换令牌只会让「门禁开启时静态令牌可用」之外的断言变慢。
  */
 @SpringBootTest(properties = {
-        "paimon.rest.auth.tokens[0]=catalog-file-endpoint-test-token"})
+        "lakehouse.rest.auth.tokens[0]=catalog-file-endpoint-test-token"})
 @ActiveProfiles("test")
 @AutoConfigureMockMvc
 class CatalogFileEndpointTests {

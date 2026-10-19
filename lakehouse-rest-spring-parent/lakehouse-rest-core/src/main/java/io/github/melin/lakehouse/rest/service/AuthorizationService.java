@@ -47,13 +47,13 @@ import org.springframework.transaction.annotation.Transactional;
  *   <li>对象级授予只覆盖该对象本身。
  * </ul>
  *
- * <p><b>开关。</b>{@code paimon.rest.authorization.enabled} 为假时所有判定直接通过，
+ * <p><b>开关。</b>{@code lakehouse.rest.authorization.enabled} 为假时所有判定直接通过，
  * 使未启用授权的部署保持既有行为。
  *
  * <p><b>服务管理员。</b>管理规格的权限 enum 覆盖 catalog、namespace、table、view、policy、
  * semantic model 六个层级，没有「管理主体与服务级角色」这一层，说明 Polaris 把这类操作
  * 交给服务管理员而非权限判定。因此本实现用
- * {@code paimon.rest.authorization.service-admins} 名单表达，不虚构权限取值。
+ * {@code lakehouse.rest.authorization.service-admins} 名单表达，不虚构权限取值。
  */
 @Service
 @RequiredArgsConstructor

@@ -15,8 +15,8 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 /**
- * 存储相关配置的解析与自检：把 {@code paimon.rest.storage.*}、
- * {@code paimon.rest.credential-manager.type}、{@code paimon.rest.file-io.type}
+ * 存储相关配置的解析与自检：把 {@code lakehouse.rest.storage.*}、
+ * {@code lakehouse.rest.credential-manager.type}、{@code lakehouse.rest.file-io.type}
  * 解析成可直接使用的对象，并在启动时把非法取值挡下来。
  *
  * <p><b>为什么集中在一处。</b>这些配置项分散在四处，但它们的错误形态是同一种：
@@ -63,7 +63,7 @@ public class StorageRuntimePolicy {
         }
         if (!fileIo.supports(type)) {
             throw ApiException.badRequest("storageType " + type.wireName()
-                    + " is not available in this deployment: paimon.rest.file-io.type=" + fileIo.wireName()
+                    + " is not available in this deployment: lakehouse.rest.file-io.type=" + fileIo.wireName()
                     + " supports " + fileIo.supportedStorageTypes().stream()
                     .map(StorageType::wireName).collect(Collectors.joining(", ")));
         }
@@ -84,7 +84,7 @@ public class StorageRuntimePolicy {
                 .filter(manager -> manager.type() == wanted)
                 .findFirst()
                 .orElseThrow(() -> new IllegalStateException(
-                        "paimon.rest.credential-manager.type=" + wanted.wireName()
+                        "lakehouse.rest.credential-manager.type=" + wanted.wireName()
                                 + " has no registered implementation"));
     }
 
@@ -106,7 +106,7 @@ public class StorageRuntimePolicy {
         durations.forEach((name, value) -> {
             if (value != null && (value.isNegative() || value.isZero())) {
                 throw new IllegalStateException(
-                        "paimon.rest.storage." + name + " must be positive, got " + value);
+                        "lakehouse.rest.storage." + name + " must be positive, got " + value);
             }
         });
 

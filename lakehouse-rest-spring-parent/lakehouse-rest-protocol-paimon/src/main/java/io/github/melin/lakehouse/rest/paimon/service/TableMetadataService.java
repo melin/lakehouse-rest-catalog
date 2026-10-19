@@ -283,7 +283,7 @@ public class TableMetadataService {
             return false;
         }
         if (!properties.getTableMetadata().isEnabled()) {
-            log.debug("paimon.rest.table-metadata.enabled=false; {} stays metadata-only", table.getName());
+            log.debug("lakehouse.rest.table-metadata.enabled=false; {} stays metadata-only", table.getName());
             return false;
         }
         return true;
@@ -361,13 +361,13 @@ public class TableMetadataService {
             String message = description + " failed for table " + table.getName()
                     + " at " + table.getPath() + ": " + rootMessage(e);
             if (properties.getTableMetadata().isFailOnError()) {
-                log.error("{} (paimon.rest.table-metadata.fail-on-error=true, refusing the request)",
+                log.error("{} (lakehouse.rest.table-metadata.fail-on-error=true, refusing the request)",
                         message, e);
                 throw new ApiException(500, ResourceType.TABLE, table.getName(), message);
             }
             log.warn("{}; the catalog keeps the metadata only, and engines will not be able to write"
                     + " to this table until the schema file exists. Set"
-                    + " paimon.rest.table-metadata.fail-on-error=true to make this a hard failure.",
+                    + " lakehouse.rest.table-metadata.fail-on-error=true to make this a hard failure.",
                     message, e);
         }
     }

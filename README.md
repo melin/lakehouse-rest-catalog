@@ -98,7 +98,7 @@ Maven 坐标与包名：`groupId` 为 `io.github.melin`，九个 artifact 是
 `lakehouse-rest-protocol-iceberg`、`lakehouse-rest-server`、`lakehouse-rest-spark`、
 `lakehouse-rest-optimizer`。
 包前缀为 `io.github.melin.lakehouse.rest`（三轮改定：`io.github.melin.paimonrest` →
-`io.github.melin.paimon.rest` → 本名 → 各协议面再加一层格式子包，主前缀与 artifactId 的
+`io.github.melin.lakehouse.rest` → 本名 → 各协议面再加一层格式子包，主前缀与 artifactId 的
 `lakehouse` 对齐），Spark 模块在其下再用 `.spark` 子包（如
 `io.github.melin.lakehouse.rest.spark.ManagementSparkExtensions`）。
 服务端的 core / storage / server 共用一个包树
@@ -117,10 +117,12 @@ Maven 坐标与包名：`groupId` 为 `io.github.melin`，九个 artifact 是
 服务端依赖」很远，不容易查。于是 Spark 模块里保留了**最初**包名下的同名空壳
 （`lakehouse-rest-spark/src/main/scala/io/github/melin/paimonrest/spark/ManagementSparkExtensions.scala`，
 只继承新实现、不覆盖任何方法），旧配置照旧可用；**新部署请写新包名**。
-中间那个 `io.github.melin.paimon.rest` 从未提交、也就从未发布，所以没有为它另留一个壳——
+中间那个 `io.github.melin.lakehouse.rest` 从未提交、也就从未发布，所以没有为它另留一个壳——
 壳的数量等于「历史的对外名字数」，不是「改过几次」。
-其余位置都不涉及外部契约：配置前缀（`paimon.rest.*`）、k8s 资源名、数据库表名都没跟着改，
-理由见下一段。
+其余位置都不涉及外部契约：配置前缀已从 `paimon.rest.*` 直接改到 `lakehouse.rest.*`（尚无部署
+写过旧键，属于一次性对齐而不是迁移，见
+[`maven-module-design.md`](docs/maven-module-design.md) §4.3(1)）；k8s 资源名与数据库表名
+没跟着改，理由见下一段。
 
 k8s 资源名与数据库表名的 `paimon-` / `paimon_` 前缀同样**故意不改**：
 它们不是产品名，是历史标识，改了要动存量部署与存量数据。见
@@ -144,7 +146,7 @@ k8s 资源名与数据库表名的 `paimon-` / `paimon_` 前缀同样**故意不
 | [`console-catalog-detail.md`](docs/console-catalog-detail.md) | 要改 Catalog 详情页或仓库文件浏览——三个页签、下钻与路径防护、只读的取舍、「配置」页的默认表属性（`table-default.*`）编辑与并发冲突处理；建表表单里的默认参数预填与为什么不给 Lance 表建表入口 |
 | [`console-auth.md`](docs/console-auth.md) | 要给浏览器访问控制台配登录——三种登录方式、两个开关的边界、令牌与认证链、安全考量 |
 | [`polaris-capabilities-and-design.md`](docs/polaris-capabilities-and-design.md) | 要对比 Polaris 或看整体设计——核心能力提取、映射关系、已知缺口 |
-| [`event-framework.md`](docs/event-framework.md) | 要加一种事件、接一个 listener 或理解事件流的边界——10 类 38 个领域事件与触发点、与 Polaris 事件枚举的逐类映射、audit_event 表、发布监听链路、按监听器的类别/类型订阅（`paimon.rest.event-listener.*`）、增量拉取契约（`?since=` 游标 + `?category=`）与不发清单 |
+| [`event-framework.md`](docs/event-framework.md) | 要加一种事件、接一个 listener 或理解事件流的边界——10 类 38 个领域事件与触发点、与 Polaris 事件枚举的逐类映射、audit_event 表、发布监听链路、按监听器的类别/类型订阅（`lakehouse.rest.event-listener.*`）、增量拉取契约（`?since=` 游标 + `?category=`）与不发清单 |
 | [`iceberg-rest-catalog-design.md`](docs/iceberg-rest-catalog-design.md) | 要看「同一份元数据同时服务 Paimon 与 Iceberg」怎么做的——双协议方案：创建时区分格式、22 张表复用只加 9 列、路径冲突与错误模型、能力边界与效果图（`outputs/iceberg-rest-catalog/mockup.html`），以及**已落地的实测记录与与方案不一致的几处**（§11） |
 | [`maven-module-design.md`](docs/maven-module-design.md) | 要改模块布局或 artifact 名——`lakehouse-rest-*` 命名定案、两个父 POM / 两个依赖世界、三条用 enforcer 守住的依赖不变量、改名清单与「哪四处故意不改」（§8.6），以及**已落地**的实测记录（§8，含与设计不一致的六处及原因） |
 | [`table-optimization.md`](docs/table-optimization.md) | 要改表存储优化或排查优化任务——三个动作的语义、批次与并发两道闸门、k8s 提交与状态跟踪、控制台两处页面 |
@@ -251,7 +253,7 @@ Management API（catalog、主体、角色、catalog 角色与 grants）两个 A
 首页还有一个「连接自检」，逐个探测控制台依赖的端点——地址或令牌配错时，
 它会把失败的那一个连同 HTTP 状态一起列出来，而不是让你对着空列表猜。
 
-控制台**默认就要求登录**（`paimon.rest.auth.console.required=true`），
+控制台**默认就要求登录**（`lakehouse.rest.auth.console.required=true`），
 默认账号密码 `admin/admin` —— 装好即可进入，不需要先建主体。
 登录方式有三种可同时启用（用户名密码 / 主体凭据 / 外部 IdP 的 SSO），
 也可以直接在「连接设置」里填静态令牌。**登录页只列出服务端真的开启了的方式**：
@@ -261,7 +263,7 @@ Management API（catalog、主体、角色、catalog 角色与 grants）两个 A
 [`docs/console-table-detail.md`](docs/console-table-detail.md)（表详情页）、
 [`docs/console-auth.md`](docs/console-auth.md)（登录与鉴权）。
 
-> **这层门禁只挡住界面。** 默认 `paimon.rest.auth.enabled=false`，
+> **这层门禁只挡住界面。** 默认 `lakehouse.rest.auth.enabled=false`，
 > 因此 `curl /v1/config` 与管理 API 仍然匿名可调。要保护数据必须把 `auth.enabled`
 > 设为 `true`；服务端在「门禁开着而鉴权关着」时会在启动日志里告警。
 
@@ -315,7 +317,7 @@ lakehouse-rest-spark/
 关键设计：
 
 - **前缀路由 + 格式分派**：`{prefix}` 是 catalog 的对外标识，由 `GET /v1/config` 下发。
-  未登记的 prefix 在 `paimon.rest.auto-create-catalog=true`（默认）时自动登记，客户端可零配置接入。
+  未登记的 prefix 在 `lakehouse.rest.auto-create-catalog=true`（默认）时自动登记，客户端可零配置接入。
   一个 catalog 只有一种**格式**（`catalog_format`，创建时定下、不可变），它决定这个 prefix
   服务哪一套协议：路径 → prefix → catalog → 格式 → 协议处理链。两个面互不依赖，
   装配层靠 Spring 收集 `List<CatalogProtocol>` 拿到它们，因此 core 不需要认识任何一个面。
@@ -323,7 +325,7 @@ lakehouse-rest-spark/
   时回 404，消息里点出两个格式——否则客户端只会以为自己的库名/表名写错了。
   自动登记时**按请求所属的面的格式建**，避免「一次失败的请求留下一个格式不对的 catalog」。
 - **认证与授权分离**：`BearerAuthInterceptor` 只回答「调用者是谁」，RBAC 判定由授权层完成。
-  两者分别由 `paimon.rest.auth.*` 与 `paimon.rest.authorization.*` 控制，可以只开认证不开授权。
+  两者分别由 `lakehouse.rest.auth.*` 与 `lakehouse.rest.authorization.*` 控制，可以只开认证不开授权。
 - **catalog API 的授权映射集中在一张表**：`CatalogAccessRules` 把 `/v1/**` 路径映射到所需权限，
   **未登记映射的端点直接拒绝而不是放行**；测试从运行时的请求映射里枚举全部端点核对覆盖率，
   新增端点若忘记登记会让构建失败。详见 `docs/authorization.md`。
@@ -390,36 +392,36 @@ Catalog 侧与鉴权：
 
 | 配置 | 默认值 | 说明 |
 | --- | --- | --- |
-| `paimon.rest.default-prefix` | `paimon` | `GET /v1/config` 未指定 warehouse 时的 prefix |
-| `paimon.rest.default-warehouse` | `file:///tmp/paimon-warehouse` | 默认仓库位置 |
-| `paimon.rest.auto-create-catalog` | `true` | 未登记 prefix 是否自动登记 |
-| `paimon.rest.path-template` | `{warehouse}/{database}.db/{table}` | 表路径模板 |
-| `paimon.rest.default-page-size` | `100` | 默认分页大小 |
-| `paimon.rest.max-page-size` | `1000` | 分页大小上限 |
-| `paimon.rest.auth.enabled` | `false` | 是否要求数据接口带 Bearer 令牌（`/v1/**`、`/api/catalog/v1/**`、`/api/management/v1/**`） |
-| `paimon.rest.auth.principal` | `anonymous` | 认证关闭或未带令牌时使用的主体名 |
-| `paimon.rest.auth.tokens` | 空 | 允许的静态令牌列表（给机器用）；**配置了才会在登录页出现「静态令牌」页签** |
-| `paimon.rest.auth.token-principals` | 空 | 静态令牌 → 主体名映射；未登记时退化为「令牌即主体名」（审计列放不下的长度会记摘要，见第 6 节第 19 条） |
-| `paimon.rest.auth.access-token.ttl` | `1h` | 控制台签发的访问令牌有效期（唯一能限制令牌泄露窗口的参数） |
-| `paimon.rest.auth.access-token.signing-key` | 空 | HS256 签名密钥，Base64 且解码后 ≥32 字节；**留空则每次启动随机生成**（多实例互不认、重启掉线），生产必须配 |
-| `paimon.rest.auth.console.required` | `true` | 浏览器进控制台是否必须先登录。**只作用于控制台界面与 `/api/console/v1/**`，不是安全边界** |
-| `paimon.rest.auth.console.password.enabled` | `true` | 允许用配置里的用户名 + 密码换访问令牌 |
-| `paimon.rest.auth.console.password.users` | `admin: admin` | 控制台账号表（明文，可写 `${ENV_VAR}`）；**生产必须改**，启动日志会告警 |
-| `paimon.rest.auth.console.password.principals` | 空 | 账号名 → 主体名映射；未登记时两者同名 |
-| `paimon.rest.auth.console.password.rate-limit.max-failures` / `.window` | `5` / `1m` | 该方式的失败限速（比客户端凭据更严：猜的是人定的密码） |
-| `paimon.rest.auth.console.client-credentials.enabled` | `true` | 允许用主体 `clientId` / `clientSecret` 换访问令牌 |
-| `paimon.rest.auth.console.client-credentials.rate-limit.max-failures` / `.window` | `10` / `1m` | 该方式的失败限速 |
-| `paimon.rest.auth.console.oidc.*` | 关闭 | 外部身份提供方（OIDC + PKCE）登录，见 [`console-auth.md`](docs/console-auth.md) |
-| `paimon.rest.credential.ttl-seconds` | `3600` | 数据访问令牌有效期 |
+| `lakehouse.rest.default-prefix` | `paimon` | `GET /v1/config` 未指定 warehouse 时的 prefix |
+| `lakehouse.rest.default-warehouse` | `file:///tmp/paimon-warehouse` | 默认仓库位置 |
+| `lakehouse.rest.auto-create-catalog` | `true` | 未登记 prefix 是否自动登记 |
+| `lakehouse.rest.path-template` | `{warehouse}/{database}.db/{table}` | 表路径模板 |
+| `lakehouse.rest.default-page-size` | `100` | 默认分页大小 |
+| `lakehouse.rest.max-page-size` | `1000` | 分页大小上限 |
+| `lakehouse.rest.auth.enabled` | `false` | 是否要求数据接口带 Bearer 令牌（`/v1/**`、`/api/catalog/v1/**`、`/api/management/v1/**`） |
+| `lakehouse.rest.auth.principal` | `anonymous` | 认证关闭或未带令牌时使用的主体名 |
+| `lakehouse.rest.auth.tokens` | 空 | 允许的静态令牌列表（给机器用）；**配置了才会在登录页出现「静态令牌」页签** |
+| `lakehouse.rest.auth.token-principals` | 空 | 静态令牌 → 主体名映射；未登记时退化为「令牌即主体名」（审计列放不下的长度会记摘要，见第 6 节第 19 条） |
+| `lakehouse.rest.auth.access-token.ttl` | `1h` | 控制台签发的访问令牌有效期（唯一能限制令牌泄露窗口的参数） |
+| `lakehouse.rest.auth.access-token.signing-key` | 空 | HS256 签名密钥，Base64 且解码后 ≥32 字节；**留空则每次启动随机生成**（多实例互不认、重启掉线），生产必须配 |
+| `lakehouse.rest.auth.console.required` | `true` | 浏览器进控制台是否必须先登录。**只作用于控制台界面与 `/api/console/v1/**`，不是安全边界** |
+| `lakehouse.rest.auth.console.password.enabled` | `true` | 允许用配置里的用户名 + 密码换访问令牌 |
+| `lakehouse.rest.auth.console.password.users` | `admin: admin` | 控制台账号表（明文，可写 `${ENV_VAR}`）；**生产必须改**，启动日志会告警 |
+| `lakehouse.rest.auth.console.password.principals` | 空 | 账号名 → 主体名映射；未登记时两者同名 |
+| `lakehouse.rest.auth.console.password.rate-limit.max-failures` / `.window` | `5` / `1m` | 该方式的失败限速（比客户端凭据更严：猜的是人定的密码） |
+| `lakehouse.rest.auth.console.client-credentials.enabled` | `true` | 允许用主体 `clientId` / `clientSecret` 换访问令牌 |
+| `lakehouse.rest.auth.console.client-credentials.rate-limit.max-failures` / `.window` | `10` / `1m` | 该方式的失败限速 |
+| `lakehouse.rest.auth.console.oidc.*` | 关闭 | 外部身份提供方（OIDC + PKCE）登录，见 [`console-auth.md`](docs/console-auth.md) |
+| `lakehouse.rest.credential.ttl-seconds` | `3600` | 数据访问令牌有效期 |
 
 表元数据物化（把 schema 写进 Paimon 表目录，见
 [`docs/spark-paimon-rest-e2e.md`](docs/spark-paimon-rest-e2e.md) 第 4 节）：
 
 | 配置 | 默认值 | 说明 |
 | --- | --- | --- |
-| `paimon.rest.table-metadata.enabled` | `true` | 建表 / 改表 / 回滚 schema 时是否写 `<table>/schema/schema-<n>`，以及提交 / 回滚快照时是否写 `<table>/snapshot/snapshot-<n>`。关掉只对「服务端刻意不持有仓库写权限」的部署有意义：此时用 REST catalog 读写仍正常（读路径也走服务端），但绕开服务端直接看仓库是一张没有元数据的表 |
-| `paimon.rest.table-metadata.fail-on-error` | `false` | 物化失败时是否让请求失败（500 且事务回滚）。默认尽力而为，只记 WARN；打开后建表与提交快照会因仓库不可写而直接失败，适合「宁可建不出表，也不要有表写着写着写不进去」的部署 |
-| `paimon.rest.table-metadata.purge-on-drop` | `false` | `DROP TABLE` 时是否连表目录一起删。默认只删元数据、保留数据；关着时「删表 → 同名重建」会撞 `Schema in filesystem exists, creation is not allowed.`，需手工清目录或把这一项打开。只删非外部表 |
+| `lakehouse.rest.table-metadata.enabled` | `true` | 建表 / 改表 / 回滚 schema 时是否写 `<table>/schema/schema-<n>`，以及提交 / 回滚快照时是否写 `<table>/snapshot/snapshot-<n>`。关掉只对「服务端刻意不持有仓库写权限」的部署有意义：此时用 REST catalog 读写仍正常（读路径也走服务端），但绕开服务端直接看仓库是一张没有元数据的表 |
+| `lakehouse.rest.table-metadata.fail-on-error` | `false` | 物化失败时是否让请求失败（500 且事务回滚）。默认尽力而为，只记 WARN；打开后建表与提交快照会因仓库不可写而直接失败，适合「宁可建不出表，也不要有表写着写着写不进去」的部署 |
+| `lakehouse.rest.table-metadata.purge-on-drop` | `false` | `DROP TABLE` 时是否连表目录一起删。默认只删元数据、保留数据；关着时「删表 → 同名重建」会撞 `Schema in filesystem exists, creation is not allowed.`，需手工清目录或把这一项打开。只删非外部表 |
 
 仓库在对象存储上时，服务端自己也需要对应 scheme 的 FileIO 实现
 （`paimon-core` 只带 `file` / `hdfs` / `viewfs`），详见上述文档第 4.2 节。
@@ -428,48 +430,48 @@ Catalog 侧与鉴权：
 
 | 配置 | 默认值 | 说明 |
 | --- | --- | --- |
-| `paimon.rest.authorization.enabled` | `false` | 是否对 `/api/management/v1/**` 与 `/v1/**` 启用权限判定 |
-| `paimon.rest.authorization.service-admins` | `[root]` | 服务管理员主体名单：可管理主体与 principal role，并可在任意 catalog 上操作角色与授权 |
-| `paimon.rest.authorization.bootstrap-principal` | `root` | 启动时预置的引导主体；留空则不预置 |
-| `paimon.rest.authorization.bootstrap-principal-role` | `service_admin` | 启动时预置的引导角色链 |
+| `lakehouse.rest.authorization.enabled` | `false` | 是否对 `/api/management/v1/**` 与 `/v1/**` 启用权限判定 |
+| `lakehouse.rest.authorization.service-admins` | `[root]` | 服务管理员主体名单：可管理主体与 principal role，并可在任意 catalog 上操作角色与授权 |
+| `lakehouse.rest.authorization.bootstrap-principal` | `root` | 启动时预置的引导主体；留空则不预置 |
+| `lakehouse.rest.authorization.bootstrap-principal-role` | `service_admin` | 启动时预置的引导角色链 |
 
 管理面启动时会预置：引导主体、引导 principal role，以及各 catalog 的 `catalog_admin` 角色。
 没有这条引导链，全新部署里没有任何主体能创建第一个主体。
 
 存储与凭据，对应 Polaris 1.8.0 配置参考的
 [Storage & Credentials](https://polaris.apache.org/releases/1.8.0/configuration/configuration-reference/#storage--credentials)
-一节，键名逐项对应，只把前缀从 `polaris` 换成 `paimon.rest`：
+一节，键名逐项对应，只把前缀从 `polaris` 换成 `lakehouse.rest`：
 
 | 配置 | 默认值 | 说明 |
 | --- | --- | --- |
-| `paimon.rest.storage.aws.access-key` | 空 | S3 默认凭据；留空则退化为环境凭据链 |
-| `paimon.rest.storage.aws.secret-key` | 空 | 同上 |
-| `paimon.rest.storage.aws.storages.<name>.access-key` | 空 | 具名存储，键为 catalog 的 `storageConfigInfo.storageName` |
-| `paimon.rest.storage.aws.storages.<name>.secret-key` | 空 | 同上 |
-| `paimon.rest.storage.gcp.token` | 空 | GCS 访问令牌；留空则交给引擎自己的凭据链 |
-| `paimon.rest.storage.gcp.lifespan` | 空 | GCS 令牌有效期；比 `credential.ttl-seconds` 短时收窄 `expiresAt` |
-| `paimon.rest.storage.obs.access-key` | 空 | 华为云 OBS 默认凭据；三项全空则退化为环境凭据链 |
-| `paimon.rest.storage.obs.secret-key` | 空 | 同上 |
-| `paimon.rest.storage.obs.session-token` | 空 | OBS 临时凭据的安全令牌；长期凭据留空 |
-| `paimon.rest.storage.obs.storages.<name>.access-key` | 空 | OBS 具名存储，另支持 `.secret-key` / `.session-token` |
-| `paimon.rest.storage.oss.access-key` | 空 | 阿里云 OSS 默认凭据 |
-| `paimon.rest.storage.oss.secret-key` | 空 | 同上 |
-| `paimon.rest.storage.oss.session-token` | 空 | OSS 临时凭据的安全令牌（阿里侧键名为 `securityToken`） |
-| `paimon.rest.storage.oss.storages.<name>.access-key` | 空 | OSS 具名存储，另支持 `.secret-key` / `.session-token` |
-| `paimon.rest.storage.credential-secret-key` | 空 | catalog 自带静态凭据的落库加密密钥，Base64 且解码后**恰好 32 字节**；留空则关闭静态凭据，见下方说明 |
-| `paimon.rest.storage.clients-cache-max-size` | 空 | 保留项，见下方说明 |
-| `paimon.rest.storage.max-http-connections` | 空 | 保留项，见下方说明 |
-| `paimon.rest.storage.read-timeout` | 空 | 读取超时；正数校验 |
-| `paimon.rest.storage.connect-timeout` | 空 | 建连超时；正数校验 |
-| `paimon.rest.storage.connection-acquisition-timeout` | 空 | 保留项，见下方说明 |
-| `paimon.rest.storage.connection-max-idle-time` | 空 | 保留项，见下方说明 |
-| `paimon.rest.storage.connection-time-to-live` | 空 | 保留项，见下方说明 |
-| `paimon.rest.storage.expect-continue-enabled` | 空 | 保留项，见下方说明 |
-| `paimon.rest.storage-credential-cache.max-entries` | `10000` | 已下发凭据的复用上限，条目按各自过期时间失效 |
-| `paimon.rest.credential-manager.type` | `default` | `default` 下发凭据；`noop` 不下发，读表接口返回 501 |
-| `paimon.rest.file-io.type` | `default` | 本部署接入的存储实现：`default`/`s3`/`azure`/`gcs`/`obs`/`oss`/`local` |
+| `lakehouse.rest.storage.aws.access-key` | 空 | S3 默认凭据；留空则退化为环境凭据链 |
+| `lakehouse.rest.storage.aws.secret-key` | 空 | 同上 |
+| `lakehouse.rest.storage.aws.storages.<name>.access-key` | 空 | 具名存储，键为 catalog 的 `storageConfigInfo.storageName` |
+| `lakehouse.rest.storage.aws.storages.<name>.secret-key` | 空 | 同上 |
+| `lakehouse.rest.storage.gcp.token` | 空 | GCS 访问令牌；留空则交给引擎自己的凭据链 |
+| `lakehouse.rest.storage.gcp.lifespan` | 空 | GCS 令牌有效期；比 `credential.ttl-seconds` 短时收窄 `expiresAt` |
+| `lakehouse.rest.storage.obs.access-key` | 空 | 华为云 OBS 默认凭据；三项全空则退化为环境凭据链 |
+| `lakehouse.rest.storage.obs.secret-key` | 空 | 同上 |
+| `lakehouse.rest.storage.obs.session-token` | 空 | OBS 临时凭据的安全令牌；长期凭据留空 |
+| `lakehouse.rest.storage.obs.storages.<name>.access-key` | 空 | OBS 具名存储，另支持 `.secret-key` / `.session-token` |
+| `lakehouse.rest.storage.oss.access-key` | 空 | 阿里云 OSS 默认凭据 |
+| `lakehouse.rest.storage.oss.secret-key` | 空 | 同上 |
+| `lakehouse.rest.storage.oss.session-token` | 空 | OSS 临时凭据的安全令牌（阿里侧键名为 `securityToken`） |
+| `lakehouse.rest.storage.oss.storages.<name>.access-key` | 空 | OSS 具名存储，另支持 `.secret-key` / `.session-token` |
+| `lakehouse.rest.storage.credential-secret-key` | 空 | catalog 自带静态凭据的落库加密密钥，Base64 且解码后**恰好 32 字节**；留空则关闭静态凭据，见下方说明 |
+| `lakehouse.rest.storage.clients-cache-max-size` | 空 | 保留项，见下方说明 |
+| `lakehouse.rest.storage.max-http-connections` | 空 | 保留项，见下方说明 |
+| `lakehouse.rest.storage.read-timeout` | 空 | 读取超时；正数校验 |
+| `lakehouse.rest.storage.connect-timeout` | 空 | 建连超时；正数校验 |
+| `lakehouse.rest.storage.connection-acquisition-timeout` | 空 | 保留项，见下方说明 |
+| `lakehouse.rest.storage.connection-max-idle-time` | 空 | 保留项，见下方说明 |
+| `lakehouse.rest.storage.connection-time-to-live` | 空 | 保留项，见下方说明 |
+| `lakehouse.rest.storage.expect-continue-enabled` | 空 | 保留项，见下方说明 |
+| `lakehouse.rest.storage-credential-cache.max-entries` | `10000` | 已下发凭据的复用上限，条目按各自过期时间失效 |
+| `lakehouse.rest.credential-manager.type` | `default` | `default` 下发凭据；`noop` 不下发，读表接口返回 501 |
+| `lakehouse.rest.file-io.type` | `default` | 本部署接入的存储实现：`default`/`s3`/`azure`/`gcs`/`obs`/`oss`/`local` |
 
-`paimon.rest.storage.obs.*` 与 `paimon.rest.storage.oss.*` 两组**没有 Polaris 侧的对应项**
+`lakehouse.rest.storage.obs.*` 与 `lakehouse.rest.storage.oss.*` 两组**没有 Polaris 侧的对应项**
 ——Polaris 没有这两个存储类型，它在 S3 兼容层上接入华为云与阿里云。
 本工程单列，是为了让这两家的 AK/SK 独立于 S3 那一份，各按各自的节奏轮转与授权。
 
@@ -500,12 +502,12 @@ Catalog 侧与鉴权：
 JDK 的 `HttpClient` 也没有对应的调节项，因此它们不改变行为。保留是为了让配置面与 Polaris
 一一对应，迁移时不必删配置。`read-timeout` 与 `connect-timeout` 之外的连接池参数属于此类。
 
-`paimon.rest.file-io.type` 决定 catalog 允许的 `storageType`：`default` 接受全部六种，
+`lakehouse.rest.file-io.type` 决定 catalog 允许的 `storageType`：`default` 接受全部六种，
 `s3`/`azure`/`gcs`/`obs`/`oss` 只接受对应云存储加 `FILE`，`local` 只接受 `FILE`。
 不接受本部署没有实现的存储类型时，创建或修改 catalog 直接返回 400，而不是让错误
 推迟到引擎第一次读写时才以文件系统异常暴露。`FILE` 在所有取值下都保留，它是本地的退路。
 
-`paimon.rest.credential-manager.type=noop` 适合引擎自带云凭据的部署。
+`lakehouse.rest.credential-manager.type=noop` 适合引擎自带云凭据的部署。
 关掉下发之后，引擎的凭据来源只剩一个，排查权限问题时不必再去猜
 「到底用了服务端给的那份还是它自己那份」。
 
@@ -574,7 +576,7 @@ Azure 只下发定位元数据是个明确的缺口：Polaris 的 `polaris.stora
    生产环境应替换为对接云 IAM 的 STS 调用。
 9. **`auth` 的列校验**。请求列不在表 schema 中时返回 403；当前不配置行过滤与列脱敏策略，
    因此返回空的过滤表达式与脱敏映射。
-10. **静态令牌的映射是静态配置**。`paimon.rest.auth.token-principals` 决定
+10. **静态令牌的映射是静态配置**。`lakehouse.rest.auth.token-principals` 决定
     「静态令牌 → 主体名」，因此改这个映射要重启。**但这不再限制新建的主体**：
     创建主体时会一次性返回 `clientId` 与明文 `clientSecret`，用它们走
     `POST /api/catalog/v1/oauth/tokens`（OAuth 2.0 客户端凭据）换一个访问令牌，
@@ -587,10 +589,10 @@ Azure 只下发定位元数据是个明确的缺口：Polaris 的 `polaris.stora
     中途失败时前面的已经生效。
 13. **`{prefix}` 的校验语义由服务端自行约定**。规格把 `prefix` 声明为必填路径参数，
     但未定义「prefix 与服务端不一致时如何响应」。本实现把 prefix 视为 catalog 标识：
-    已登记则解析到对应 catalog，未登记时按 `paimon.rest.auto-create-catalog` 决定
+    已登记则解析到对应 catalog，未登记时按 `lakehouse.rest.auto-create-catalog` 决定
     自动登记或返回 404。默认值 `true` 使客户端可零配置接入，代价是写错 prefix 时
     会得到一个新的空 catalog 而不是报错；生产环境建议设为 `false`，
-    由 `paimon.rest.initial-catalog.databases` 预置允许的 prefix。
+    由 `lakehouse.rest.initial-catalog.databases` 预置允许的 prefix。
 14. **`ddl-auto` 是 `validate`，不做自动迁移**。库结构由 `sql/schema-mysql.sql` 管理，
     实体与库不一致时应用直接启动失败。这样避免 Hibernate 在生产库上执行隐式 `alter table`，
     代价是实体变更后必须重新生成 DDL 并自行迁移存量数据（本工程未内置迁移工具，
@@ -621,11 +623,11 @@ Azure 只下发定位元数据是个明确的缺口：Polaris 的 `polaris.stora
     从错误信息里看不出与认证有关。因此落库前统一在 `AuditedEntity` 归一化
     （`AuditPrincipal.of`）：放得下的原样存，放不下的记 `sha256:<前 12 位>`。
     **不截断**：截断会把凭据的前 255 个字符原样写进元数据库，而元数据是能被列表接口读出来的。
-    超长时启动日志会告警一次，给出的解法是配 `paimon.rest.auth.token-principals`
+    超长时启动日志会告警一次，给出的解法是配 `lakehouse.rest.auth.token-principals`
     把令牌映射成真正的名字。授权判定读的是未归一化的主体名，两者互不影响。
     **刻意不通过加宽这三列来解决**：它们会被接口原样返回，加宽等于让凭据明文入库并可被读回；
     且主体名长度没有上界，加宽只是把溢出推后，还要对 14 张表共 42 个列做迁移。
-20. **静态凭据的加密密钥不支持多代共存**。`paimon.rest.storage.credential-secret-key`
+20. **静态凭据的加密密钥不支持多代共存**。`lakehouse.rest.storage.credential-secret-key`
     换值后，库里已有的密文用新密钥解不开，读取那个 catalog 的凭据会以 **500** 明确失败
     （不是静默退回服务端配置），需要重新提交一次凭据。做成多代密钥要同时保存密钥列表与
     「这条密文是第几代」，当前规模下不值得；代价是**轮换密钥必须配合一次凭据重录**。
@@ -794,7 +796,7 @@ JAVA_HOME=/path/to/jdk-21 mvn test
 | `CatalogFileBrowserTests` | 仓库文件浏览的服务语义：下钻一层、目录优先排序、冗余分隔符与 `.` 归一化、`..` 与绝对路径 / 带 scheme 拒绝、目录不存在 404、指向文件 400、未知 catalog 404、无 warehouse 400、超出上限标 `truncated`、关开关 501；表目录为根的三条（表级下钻、出不了表目录、未知表 404）；名称前缀过滤的四条（过滤与回显、过滤先于截断、只比本层条目名、含 `/` 拒 400，含表级过滤）；下载的三条（流里字节数与元数据一致、目录与仓库根 400、关开关 501） |
 | `CatalogFileEndpointTests` | 四条端点的**接口形状**：URL、`path` / `prefix` 查询参数、状态码、响应字段名；下载钉 `Content-Disposition` 与 `Content-Length` 与实际字节一致；前缀过滤钉回显与 `total` 口径。与服务语义分开是因为这些错误各自独立——服务能把目录列对不代表端点拼对了，反过来同理 |
 | `ConsoleEventTests` | 目录事件流（`GET /api/console/v1/events`）：表生命周期（建 / 改名 / 删）与授权变更（授 / 撤）都落成事件且 principal / requestId 来自请求上下文、属性带格式标识；**幂等撤销（未命中）不进事件流**（事件流里没有空操作）；增量游标契约——首页游标落在「现在」、带 `since` 只回更新的、`limit` 截断给 `hasMore`、catalog 过滤按 catalog 名（传库名拿到空页）；**类别过滤**（`?category=` 只回该类事件、大小写不敏感、未知取值 400 而不是空页） |
-| `EventListenerSettingsTests` | 监听器订阅配置（`paimon.rest.event-listener.types` / `<name>.enabled-event-categories`）：不配 = 全订阅、`types` 只启用名单内的监听器、类别与类型同时配取并集、单配某一类不影响其他监听器；监听器名 / 类别名 / wire 值写错都在启动期抛错（配置错的后果是「该记的没记」，运行期发现通常已经丢了审计） |
+| `EventListenerSettingsTests` | 监听器订阅配置（`lakehouse.rest.event-listener.types` / `<name>.enabled-event-categories`）：不配 = 全订阅、`types` 只启用名单内的监听器、类别与类型同时配取并集、单配某一类不影响其他监听器；监听器名 / 类别名 / wire 值写错都在启动期抛错（配置错的后果是「该记的没记」，运行期发现通常已经丢了审计） |
 | `ConsoleAuthMethodVisibilityTests` | 登录方式的可见性：**没开启的方式不出现在登录引导里**——关掉 `console.client-credentials.enabled` 就不下发 `client-credentials`，`auth.tokens` 为空就不下发 `static-token`，而默认开启的用户名密码照旧（对照组，防「无脑返回空列表」） |
 | `AccessTokenServiceTests` | 访问令牌的签发与验证：claims、TTL 边界、换钥、篡改、换 issuer、无 `exp`、`alg:none`、签名密钥格式错必须启动失败、随机钥不共享 |
 | `JwtTests` | 纯 JDK 的 JWT 编解码与验签：HS256 / RS256 / ES256 往返、**ES256 的原始签名转 DER**、`alg:none` 与未知算法、结构拒绝、`aud` 单值与数组 |
@@ -853,14 +855,14 @@ BASE=http://127.0.0.1:8080 ./scripts/management-sweep.sh
 ./scripts/e2e-spark-sql.sh
 
 # 控制台登录（HTTP 层）：登录引导、用户名密码登录、令牌端点的错误码、凭据校验、
-# 签发令牌、静态令牌、静态资源深链——63 项。需以 --paimon.rest.auth.enabled=true 启动，
+# 签发令牌、静态令牌、静态资源深链——63 项。需以 --lakehouse.rest.auth.enabled=true 启动，
 # 凭据取自启动日志里「created bootstrap principal」那行（仅在开了授权时才有；
 # 没开时先用默认账号密码登录、再调管理 API 建一个主体，见 docs/console-auth.md §11）。
 # 第 1 节断言「登记了静态令牌，登录页才会有这个页签」，因此实例要一并配
-# --paimon.rest.auth.tokens[0]，否则那几条会如实报出「没出现」
+# --lakehouse.rest.auth.tokens[0]，否则那几条会如实报出「没出现」
 BASE=http://127.0.0.1:8080 \
 CLIENT_ID=<引导主体 clientId> CLIENT_SECRET=<明文密钥> \
-STATIC_TOKEN=<需与启动参数 paimon.rest.auth.tokens[0] 一致，否则脚本会断言该方式不出现> \
+STATIC_TOKEN=<需与启动参数 lakehouse.rest.auth.tokens[0] 一致，否则脚本会断言该方式不出现> \
   ./scripts/sweep-console-auth.sh
 
 # 前端登录逻辑：直接跑 src/store/auth.js 与 src/api/* 的真实代码——59 项
@@ -1154,8 +1156,8 @@ http://localhost:8080/console/
 
 ### 9.1 登录与鉴权
 
-两个开关管两件不同的事：`paimon.rest.auth.console.required`（默认 `true`）只作用于控制台界面
-与 `/api/console/v1/**`；`paimon.rest.auth.enabled`（默认 `false`）管 `/v1/**`、
+两个开关管两件不同的事：`lakehouse.rest.auth.console.required`（默认 `true`）只作用于控制台界面
+与 `/api/console/v1/**`；`lakehouse.rest.auth.enabled`（默认 `false`）管 `/v1/**`、
 `/api/catalog/v1/**`、`/api/management/v1/**` 是否要带令牌。
 
 **默认部署是「要求登录但数据面敞开」**：浏览器被拦在登录页，而 `curl /v1/config` 返回 200。

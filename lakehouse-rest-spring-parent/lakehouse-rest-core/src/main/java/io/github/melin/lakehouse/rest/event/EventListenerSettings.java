@@ -18,9 +18,9 @@ import org.springframework.stereotype.Component;
  * <p>配置形状**照搬 Polaris**（1.5 起的多监听器 + 按类型/类别过滤），只把根前缀换成本项目：
  *
  * <pre>
- * paimon.rest.event-listener.types=db,log
- * paimon.rest.event-listener.log.enabled-event-categories=TABLE,NAMESPACE
- * paimon.rest.event-listener.db.enabled-event-types=catalog.dropped
+ * lakehouse.rest.event-listener.types=db,log
+ * lakehouse.rest.event-listener.log.enabled-event-categories=TABLE,NAMESPACE
+ * lakehouse.rest.event-listener.db.enabled-event-types=catalog.dropped
  * </pre>
  *
  * <ul>
@@ -43,7 +43,7 @@ import org.springframework.stereotype.Component;
 @Component
 public class EventListenerSettings {
 
-    public static final String PREFIX = "paimon.rest.event-listener";
+    public static final String PREFIX = "lakehouse.rest.event-listener";
 
     private static final Logger log = LoggerFactory.getLogger(EventListenerSettings.class);
 

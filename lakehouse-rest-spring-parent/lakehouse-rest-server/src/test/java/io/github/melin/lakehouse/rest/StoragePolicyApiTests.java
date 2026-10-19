@@ -36,8 +36,8 @@ import tools.jackson.databind.json.JsonMapper;
  * 在用例结束时要删掉，尤其是 {@code .../token} 那条用例会往库里写真实数据。
  */
 @SpringBootTest(properties = {
-        "paimon.rest.file-io.type=s3",
-        "paimon.rest.credential-manager.type=noop"
+        "lakehouse.rest.file-io.type=s3",
+        "lakehouse.rest.credential-manager.type=noop"
 })
 @ActiveProfiles("test")
 @AutoConfigureMockMvc
@@ -79,7 +79,7 @@ class StoragePolicyApiTests {
         assertEquals(400, azure.getResponse().getStatus(), azure.getResponse().getContentAsString());
         // 错误信息要指向真正的原因：不是配置不合法，而是本部署没接入这个实现
         String azureMessage = azure.getResponse().getContentAsString();
-        assertTrue(azureMessage.contains("paimon.rest.file-io.type"), azureMessage);
+        assertTrue(azureMessage.contains("lakehouse.rest.file-io.type"), azureMessage);
         assertTrue(azureMessage.contains("AZURE"), azureMessage);
 
         MvcResult gcs = perform(createCatalog("policy-gcs", """
@@ -106,7 +106,7 @@ class StoragePolicyApiTests {
         String message = obs.getResponse().getContentAsString();
         assertTrue(message.contains("OBS"), message);
         // 与其它类型同一条错误契约：说清是本部署没接入，而不是配置写错了
-        assertTrue(message.contains("paimon.rest.file-io.type"), message);
+        assertTrue(message.contains("lakehouse.rest.file-io.type"), message);
 
         MvcResult oss = perform(createCatalog("policy-oss", """
                 {"storageType":"OSS","allowedLocations":["oss://analytics-bucket/wh/"]}

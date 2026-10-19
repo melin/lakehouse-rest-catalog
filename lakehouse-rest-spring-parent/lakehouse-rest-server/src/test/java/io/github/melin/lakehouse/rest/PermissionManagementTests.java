@@ -37,7 +37,7 @@ import tools.jackson.databind.node.JsonNodeFactory;
  * <p>使用独立的 H2 库，避免与其它测试类共享内存库导致状态互相污染。
  */
 @SpringBootTest(properties = {
-        "paimon.rest.authorization.enabled=true",
+        "lakehouse.rest.authorization.enabled=true",
         "spring.datasource.url=jdbc:h2:mem:paimon-perm;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE"
 })
 @ActiveProfiles("test")

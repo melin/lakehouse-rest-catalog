@@ -70,9 +70,9 @@ import org.springframework.test.context.DynamicPropertySource;
         // 每次覆盖而不是追加，保证脚本可重复生成
         "spring.jpa.properties.hibernate.hbm2ddl.schema-generation.script.append=false",
         // 关掉启动期预置数据：此时库里没有表，预置会失败
-        "paimon.rest.initial-catalog.prefix=",
-        "paimon.rest.authorization.enabled=false",
-        "paimon.rest.auth.enabled=false"
+        "lakehouse.rest.initial-catalog.prefix=",
+        "lakehouse.rest.authorization.enabled=false",
+        "lakehouse.rest.auth.enabled=false"
 })
 class MysqlDdlGeneratorTests {
 

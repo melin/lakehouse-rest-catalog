@@ -13,13 +13,13 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.validation.annotation.Validated;
 
 /**
- * {@code paimon.rest.*} 配置项。
+ * {@code lakehouse.rest.*} 配置项。
  *
  * <p>加了 {@link Validated}：数值与时长类配置写错（负数、零）会让服务带着无效参数跑起来，
  * 直到第一次真正用上才暴露。这里让它在启动绑定时就失败，错误信息带上属性名，
  * 比运行时再看日志去猜要省事。
  */
-@ConfigurationProperties(prefix = "paimon.rest")
+@ConfigurationProperties(prefix = "lakehouse.rest")
 @Validated
 @Getter
 @Setter
@@ -77,10 +77,10 @@ public class RestServerProperties {
 
     private final TableMetadata tableMetadata = new TableMetadata();
 
-    /** {@code paimon.rest.file-browser.*}：控制台的文件浏览器（见 {@link FileBrowser}）。 */
+    /** {@code lakehouse.rest.file-browser.*}：控制台的文件浏览器（见 {@link FileBrowser}）。 */
     private final FileBrowser fileBrowser = new FileBrowser();
 
-    /** {@code paimon.rest.optimization.*}：表存储优化（见 {@link Optimization}）。 */
+    /** {@code lakehouse.rest.optimization.*}：表存储优化（见 {@link Optimization}）。 */
     private final Optimization optimization = new Optimization();
 
     /** Bearer 鉴权开关。关闭时所有请求以 {@code principal} 身份通过。 */
@@ -126,7 +126,7 @@ public class RestServerProperties {
         private final Console console = new Console();
 
         /**
-         * {@code paimon.rest.auth.access-token.*}：控制台登录签发的访问令牌。
+         * {@code lakehouse.rest.auth.access-token.*}：控制台登录签发的访问令牌。
          *
          * <p><b>令牌是自包含的 JWT，不是服务端会话。</b>签名密钥在配置里，
          * 因此多实例部署下任一实例签发的令牌其它实例都认，服务端重启也不失效。
@@ -171,7 +171,7 @@ public class RestServerProperties {
         }
 
         /**
-         * {@code paimon.rest.auth.console.*}：浏览器访问控制台时的登录方式。
+         * {@code lakehouse.rest.auth.console.*}：浏览器访问控制台时的登录方式。
          *
          * <p>这里有两层开关，别混在一起看：
          *
@@ -368,7 +368,7 @@ public class RestServerProperties {
              *
              * <p>默认 {@code sub}。要让授权链路认得出人，这个 claim 的取值需要
              * 与 {@code paimon_principal.name} 或
-             * {@code paimon.rest.authorization.service-admins} 中的名字对得上，
+             * {@code lakehouse.rest.authorization.service-admins} 中的名字对得上，
              * 否则登录成功但没有任何权限——现象是「每个页面都 403」。
              */
             private String principalClaim = "sub";
@@ -407,7 +407,7 @@ public class RestServerProperties {
      * 与未开启授权的既有部署行为完全一致。开启后管理 API 会校验调用者权限，
      * 且 catalog API 会按 {@code @RequiresPrivilege} 声明校验。
      *
-     * <p>开启时建议同时打开 {@code paimon.rest.auth.enabled}，
+     * <p>开启时建议同时打开 {@code lakehouse.rest.auth.enabled}，
      * 否则所有请求都落到同一个主体上，授权判定失去区分度。
      */
     @Getter
@@ -452,7 +452,7 @@ public class RestServerProperties {
 
         /**
          * 预置 catalog 的表格式（{@code PAIMON} / {@code ICEBERG}），留空则用
-         * {@code paimon.rest.default-catalog-format}。
+         * {@code lakehouse.rest.default-catalog-format}。
          *
          * <p>为什么值得单独一个开关：预置出来的是本地开发、演示环境里那把「默认钥匙」，
          * 而**格式决定了用它敲哪一套客户端**。没有这个开关时，想试 Iceberg 就得先手改
@@ -475,15 +475,15 @@ public class RestServerProperties {
     }
 
     /**
-     * {@code paimon.rest.storage.*}：服务端访问对象存储所用的凭据与连接参数。
+     * {@code lakehouse.rest.storage.*}：服务端访问对象存储所用的凭据与连接参数。
      *
      * <p>键名与 Polaris 1.8.0 配置参考的「Storage & Credentials」一节逐项对应，
-     * 只把前缀从 {@code polaris} 换成 {@code paimon.rest}，运维从 Polaris 迁过来时
+     * 只把前缀从 {@code polaris} 换成 {@code lakehouse.rest}，运维从 Polaris 迁过来时
      * 配置可以按名字平移。唯一的结构差异是具名存储：Polaris 写成
      * {@code polaris.storage.aws.<storage>.access-key}，与同层的
      * {@code polaris.storage.aws.access-key} 共用键空间；Spring 的绑定器无法在
      * 一个 {@code aws} 前缀下同时接受具名字段和动态子节点，因此这里下沉一层，
-     * 写成 {@code paimon.rest.storage.aws.storages.<storage>.access-key}。
+     * 写成 {@code lakehouse.rest.storage.aws.storages.<storage>.access-key}。
      *
      * <p><b>连接池与超时项的作用范围。</b>{@code read-timeout}、{@code connect-timeout}
      * 之外的连接池参数（{@code max-http-connections}、{@code connection-max-idle-time}、
@@ -580,7 +580,7 @@ public class RestServerProperties {
              * 密钥留在服务端配置里，不出现在管理 API 的报文中。这也是**密钥完全不落库**
              * 的唯一途径——另一种做法（{@code storageConfigInfo} 里的静态凭据）
              * 密钥仍然写进 {@code storage_config_json}，只是以
-             * {@code paimon.rest.storage.credential-secret-key} 加密后的形态落库。
+             * {@code lakehouse.rest.storage.credential-secret-key} 加密后的形态落库。
              */
             private Map<String, Keys> storages = new LinkedHashMap<>();
         }
@@ -653,7 +653,7 @@ public class RestServerProperties {
     }
 
     /**
-     * {@code paimon.rest.storage-credential-cache.*}：下发的存储凭据的复用上限。
+     * {@code lakehouse.rest.storage-credential-cache.*}：下发的存储凭据的复用上限。
      *
      * <p>凭据在过期前会被重复下发，缓存避免每次读表都重新解析一遍配置。
      * 缓存条目按签发时的过期时间自然失效，因此这个上限只用于兜住
@@ -669,7 +669,7 @@ public class RestServerProperties {
     }
 
     /**
-     * {@code paimon.rest.credential-manager.*}：凭据签发策略的选择。
+     * {@code lakehouse.rest.credential-manager.*}：凭据签发策略的选择。
      *
      * <p>对应 Polaris 的 {@code polaris.credential-manager.type}，取值是实现标识。
      * 取值非法时启动失败，而不是悄悄退回默认实现——
@@ -684,7 +684,7 @@ public class RestServerProperties {
     }
 
     /**
-     * {@code paimon.rest.file-io.*}：本部署接入了哪些存储实现的 FileIO。
+     * {@code lakehouse.rest.file-io.*}：本部署接入了哪些存储实现的 FileIO。
      *
      * <p>对应 Polaris 的 {@code polaris.file-io.type}。取值为
      * {@code default} / {@code s3} / {@code azure} / {@code gcs} / {@code local}，
@@ -700,7 +700,7 @@ public class RestServerProperties {
     }
 
     /**
-     * {@code paimon.rest.table-metadata.*}：是否把表元数据（schema 与快照）物化到 Paimon 仓库里。
+     * {@code lakehouse.rest.table-metadata.*}：是否把表元数据（schema 与快照）物化到 Paimon 仓库里。
      *
      * <p><b>为什么需要这一层，而不是像 HiveCatalog 那样理所当然地写。</b>Paimon 的
      * REST Catalog 客户端是瘦客户端：{@code RESTCatalog.createTable} 只把 schema
@@ -769,7 +769,7 @@ public class RestServerProperties {
     }
 
     /**
-     * {@code paimon.rest.file-browser.*}：控制台「Catalog 详情 → 文件列表」能看多深。
+     * {@code lakehouse.rest.file-browser.*}：控制台「Catalog 详情 → 文件列表」能看多深。
      *
      * <p><b>为什么这件事需要一组配置。</b>这个页面列出的是 catalog 仓库里的物理目录，
      * 而不是契约里那层「库 / 表」抽象——它比其余只读端点更靠近数据：
@@ -807,7 +807,7 @@ public class RestServerProperties {
     }
 
     /**
-     * {@code paimon.rest.optimization.*}：表存储优化。
+     * {@code lakehouse.rest.optimization.*}：表存储优化。
      *
      * <p>这一组配置决定「优化任务在哪里跑、跑多久算超时、一批塞几张表」，
      * 都属于部署形态而非业务参数——表级参数在策略里，catalog 级默认值在 catalog 属性里
@@ -898,7 +898,7 @@ public class RestServerProperties {
          *
          * <p>批次回调令牌只对优化回调端点有效，不能当 catalog 凭据——任务要访问
          * {@code /v1/{prefix}} 才能拿到 Paimon 表对象，那一步走的是
-         * {@code paimon.rest.auth.*} 这套认证。两者作用域不同，因此是两个令牌。
+         * {@code lakehouse.rest.auth.*} 这套认证。两者作用域不同，因此是两个令牌。
          *
          * <p>留空表示目标部署没开认证（本地与测试形态），任务会不带头去连；
          * 开了认证的部署必须配一个属于优化任务专用主体（{@code optimizer}）的令牌，

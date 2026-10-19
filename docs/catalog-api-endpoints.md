@@ -194,7 +194,7 @@ SQL 侧同样是 `WITH ('type' = 'format-table')`。本服务端认四种取值�
 
 | 表格式 | 表位置 | 客户端给的 `path` |
 | --- | --- | --- |
-| Paimon 表 | 按 `paimon.rest.path-template` 分配，恒定 | 不参与（要指向一份已经存在的 Paimon 数据，走 `register`） |
+| Paimon 表 | 按 `lakehouse.rest.path-template` 分配，恒定 | 不参与（要指向一份已经存在的 Paimon 数据，走 `register`） |
 | Format / Object / Lance 表 | 客户端给了就用它，没给才按模板分配 | 就是表位置，同时写进 `options.path` |
 
 非 Paimon 表为什么必须这样做：Paimon 的 REST 客户端在 load 表时，用响应里的表位置

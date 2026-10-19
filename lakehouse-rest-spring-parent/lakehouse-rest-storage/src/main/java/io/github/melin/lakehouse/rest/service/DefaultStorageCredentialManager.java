@@ -330,7 +330,7 @@ public class DefaultStorageCredentialManager implements StorageCredentialManager
         if (keys == null || keys.getAccessKey() == null || keys.getAccessKey().isBlank()) {
             throw new ApiException(500, null, null,
                     "catalog references storageName '" + storageName
-                            + "' but paimon.rest.storage." + group + ".storages has no such entry");
+                            + "' but lakehouse.rest.storage." + group + ".storages has no such entry");
         }
         return keys;
     }
@@ -425,7 +425,7 @@ public class DefaultStorageCredentialManager implements StorageCredentialManager
     /**
      * 本次下发的有效期（秒）。
      *
-     * <p>基准是 {@code paimon.rest.credential.ttl-seconds}；GCS 配置了
+     * <p>基准是 {@code lakehouse.rest.credential.ttl-seconds}；GCS 配置了
      * {@code lifespan} 时取两者较小值，理由见 {@link #gcs}。
      */
     private long ttlSeconds(StorageConfigInfo storage) {

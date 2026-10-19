@@ -13,7 +13,7 @@ import org.springframework.stereotype.Service;
 /**
  * 用户名 + 密码登录（控制台的默认方式）。
  *
- * <p>账号来自配置（{@code paimon.rest.auth.console.password.users}，默认 {@code admin/admin}），
+ * <p>账号来自配置（{@code lakehouse.rest.auth.console.password.users}，默认 {@code admin/admin}），
  * 不是数据库里的主体。两者回答的是不同的问题：<b>这里回答「谁能打开控制台」，
  * 授权链路回答「进来之后能做什么」</b>。登录成功后签发的令牌仍然带主体名
  * （默认就是用户名，也可以用 {@code password.principals} 映射到别的主体名），
@@ -82,9 +82,9 @@ public class ConsolePasswordService {
         if (!enabled()) {
             // 400 而不是 401：这是「服务端没提供这个功能」，不是「你给的凭据不对」
             throw ApiException.badRequest("username/password login is not enabled on this server:"
-                    + " set paimon.rest.auth.console.password.enabled=true, and make sure the console"
-                    + " actually requires a login (paimon.rest.auth.enabled=true or"
-                    + " paimon.rest.auth.console.required=true)");
+                    + " set lakehouse.rest.auth.console.password.enabled=true, and make sure the console"
+                    + " actually requires a login (lakehouse.rest.auth.enabled=true or"
+                    + " lakehouse.rest.auth.console.required=true)");
         }
         if (username == null || username.isBlank() || password == null || password.isEmpty()) {
             throw ApiException.badRequest("username and password are both required");

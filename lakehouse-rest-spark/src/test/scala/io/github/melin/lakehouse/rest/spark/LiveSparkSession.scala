@@ -130,7 +130,7 @@ object LiveSparkSession {
 
     /**
      * 测试用的 catalog 标识，既是 `spark.sql.catalog.<name>` 的后缀，
-     * 也是服务端上的 prefix（服务端默认 prefix 由 `paimon.rest.default-prefix` 决定，默认同名）。
+     * 也是服务端上的 prefix（服务端默认 prefix 由 `lakehouse.rest.default-prefix` 决定，默认同名）。
      *
      * <p>SQL 里要用全限定名 `paimon.<database>.<table>` 才能落到这个 catalog 上：
      * `USE <database>` 只切换当前库、不切换 catalog，漏写限定名会把表建到
@@ -227,7 +227,7 @@ object LiveSparkSession {
      * <p>`newSession()` 满足这里的需求：它共享 SparkContext，但**另有一份 SQLConf**，
      * 因此可以只改 `spark.sql.catalog.<catalog>.token` 而不影响别人。
      * 令牌是这一层唯一的身份来源——服务端由
-     * `paimon.rest.auth.tokens` 认证出主体名，再由 RBAC 判定能做什么；
+     * `lakehouse.rest.auth.tokens` 认证出主体名，再由 RBAC 判定能做什么；
      * Spark 与 Paimon 客户端都不认识「用户」这个概念。
      *
      * <p>改的是 catalog 配置，所以子会话必须在**第一次使用该 catalog 之前**取；

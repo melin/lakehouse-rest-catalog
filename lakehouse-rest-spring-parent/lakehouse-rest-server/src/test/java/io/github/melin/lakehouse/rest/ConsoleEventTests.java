@@ -50,7 +50,7 @@ import tools.jackson.databind.json.JsonMapper;
  */
 @SpringBootTest(properties = {
         // 控制台扩展端点在门禁之后（console.required 默认开），登记一个静态令牌
-        "paimon.rest.auth.tokens[0]=console-event-test-token",
+        "lakehouse.rest.auth.tokens[0]=console-event-test-token",
         "spring.datasource.url=jdbc:h2:mem:paimon-events;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE"})
 @ActiveProfiles("test")
 @AutoConfigureMockMvc

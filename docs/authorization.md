@@ -15,17 +15,17 @@ LakeHouse Catalog API（`/v1/**`）上。
 
 | 层 | 回答的问题 | 实现 | 配置前缀 |
 | --- | --- | --- | --- |
-| 认证 | 调用者是谁 | `BearerAuthInterceptor` 取 `Authorization: Bearer <token>`，交给 `TokenAuthenticationService` 认证成主体名，写入 `RequestContext` | `paimon.rest.auth.*` |
-| 授权 | 这个主体能做什么 | 管理 API 在控制器内判定；catalog API 在 `AuthorizationInterceptor` 统一判定 | `paimon.rest.authorization.*` |
+| 认证 | 调用者是谁 | `BearerAuthInterceptor` 取 `Authorization: Bearer <token>`，交给 `TokenAuthenticationService` 认证成主体名，写入 `RequestContext` | `lakehouse.rest.auth.*` |
+| 授权 | 这个主体能做什么 | 管理 API 在控制器内判定；catalog API 在 `AuthorizationInterceptor` 统一判定 | `lakehouse.rest.authorization.*` |
 
 认证是**一条链**，令牌来自三个来源之一（顺序即尝试顺序）：
 
-1. **静态令牌**（`paimon.rest.auth.tokens`）——服务端配置的长期凭据，给机器用。
-   `paimon.rest.auth.token-principals` 给出「令牌 → 主体名」映射；
+1. **静态令牌**（`lakehouse.rest.auth.tokens`）——服务端配置的长期凭据，给机器用。
+   `lakehouse.rest.auth.token-principals` 给出「令牌 → 主体名」映射；
    **未登记的令牌退化为「令牌本身即主体名」**。
 2. **控制台访问令牌**——本服务端签发（HS256）的 JWT，有两条路换来：
    主体用 `clientId` / `clientSecret` 走 OAuth 2.0 客户端凭据，
-   或者用 `paimon.rest.auth.console.password.users` 里配置的**控制台账号 + 密码**。
+   或者用 `lakehouse.rest.auth.console.password.users` 里配置的**控制台账号 + 密码**。
    **两条路签发的令牌完全一样**，对授权链路没有区别。
 3. **OIDC 令牌**——外部身份提供方签发的 JWT（RS256 / ES256），本服务端拉 JWKS 验签。
 
@@ -42,8 +42,8 @@ LakeHouse Catalog API（`/v1/**`）上。
 > **不改变本文件描述的授权判定**，也不是安全边界（见
 > [`console-auth.md` §2.1](console-auth.md#21-两个开关门禁不是安全边界)）。
 
-`paimon.rest.auth.enabled=false`（默认）时，数据面（`/v1/**`、`/api/catalog/v1/**`、
-`/api/management/v1/**`）的请求都以 `paimon.rest.auth.principal`（默认 `anonymous`）通过，
+`lakehouse.rest.auth.enabled=false`（默认）时，数据面（`/v1/**`、`/api/catalog/v1/**`、
+`/api/management/v1/**`）的请求都以 `lakehouse.rest.auth.principal`（默认 `anonymous`）通过，
 便于本地开发与既有部署平滑升级。
 
 **一个例外**：控制台自己另有一层门禁 `console.required`（默认 `true`），
@@ -112,9 +112,9 @@ principal ──(N:M)── principal role ──(N:M)── catalog role ──
 管理规格的权限枚举里没有「管理主体与 principal role」这一层权限，说明 Polaris 把这类操作
 交给服务管理员而不是权限判定。因此本实现用名单表达：
 
-- `paimon.rest.authorization.service-admins`（默认 `[root]`）：名单内的主体可管理 principal 与
+- `lakehouse.rest.authorization.service-admins`（默认 `[root]`）：名单内的主体可管理 principal 与
   principal role，并可在任意 catalog 上操作角色与授权；
-- `paimon.rest.authorization.bootstrap-principal`（默认 `root`）与
+- `lakehouse.rest.authorization.bootstrap-principal`（默认 `root`）与
   `bootstrap-principal-role`（默认 `service_admin`）：启动时预置的引导链
   「主体 → 角色 → 各 catalog 的 `catalog_admin`」。
 
@@ -299,23 +299,23 @@ catalog 存在但主体无权时仍返回 403。
 
 | 配置 | 默认值 | 说明 |
 | --- | --- | --- |
-| `paimon.rest.auth.enabled` | `false` | 是否要求 `Authorization: Bearer <token>` |
-| `paimon.rest.auth.principal` | `anonymous` | 认证关闭或未带令牌时使用的主体名 |
-| `paimon.rest.auth.tokens` | 空 | 允许的静态令牌列表 |
-| `paimon.rest.auth.token-principals` | 空 | 静态令牌 → 主体名映射；未登记的令牌退化为「令牌即主体名」（审计列超长的记摘要，见 §6 第 8 条） |
-| `paimon.rest.auth.access-token.ttl` | `1h` | 控制台签发的访问令牌有效期 |
-| `paimon.rest.auth.access-token.issuer` | `paimon-rest` | 访问令牌的 `iss` |
-| `paimon.rest.auth.access-token.signing-key` | 空 | HS256 签名密钥（Base64，≥32 字节）；留空则每次启动随机生成 |
-| `paimon.rest.auth.console.required` | `true` | 浏览器进控制台是否必须先登录；**只作用于界面，不是安全边界** |
-| `paimon.rest.auth.console.password.enabled` | `true` | 是否允许用配置里的账号密码换令牌 |
-| `paimon.rest.auth.console.password.users` | `admin: admin` | 控制台账号表（明文）；**生产必须改** |
-| `paimon.rest.auth.console.password.principals` | 空 | 账号名 → 主体名映射；不填则两者同名 |
-| `paimon.rest.auth.console.client-credentials.enabled` | `true` | 是否允许用主体凭据换令牌 |
-| `paimon.rest.auth.console.oidc.*` | 关闭 | 外部身份提供方登录；见 [`console-auth.md`](console-auth.md) |
-| `paimon.rest.authorization.enabled` | `false` | 是否对管理 API 与 catalog API 启用 RBAC 判定 |
-| `paimon.rest.authorization.service-admins` | `[root]` | 服务管理员主体名单 |
-| `paimon.rest.authorization.bootstrap-principal` | `root` | 启动时预置的引导主体；留空则不预置 |
-| `paimon.rest.authorization.bootstrap-principal-role` | `service_admin` | 启动时预置的引导角色链 |
+| `lakehouse.rest.auth.enabled` | `false` | 是否要求 `Authorization: Bearer <token>` |
+| `lakehouse.rest.auth.principal` | `anonymous` | 认证关闭或未带令牌时使用的主体名 |
+| `lakehouse.rest.auth.tokens` | 空 | 允许的静态令牌列表 |
+| `lakehouse.rest.auth.token-principals` | 空 | 静态令牌 → 主体名映射；未登记的令牌退化为「令牌即主体名」（审计列超长的记摘要，见 §6 第 8 条） |
+| `lakehouse.rest.auth.access-token.ttl` | `1h` | 控制台签发的访问令牌有效期 |
+| `lakehouse.rest.auth.access-token.issuer` | `paimon-rest` | 访问令牌的 `iss` |
+| `lakehouse.rest.auth.access-token.signing-key` | 空 | HS256 签名密钥（Base64，≥32 字节）；留空则每次启动随机生成 |
+| `lakehouse.rest.auth.console.required` | `true` | 浏览器进控制台是否必须先登录；**只作用于界面，不是安全边界** |
+| `lakehouse.rest.auth.console.password.enabled` | `true` | 是否允许用配置里的账号密码换令牌 |
+| `lakehouse.rest.auth.console.password.users` | `admin: admin` | 控制台账号表（明文）；**生产必须改** |
+| `lakehouse.rest.auth.console.password.principals` | 空 | 账号名 → 主体名映射；不填则两者同名 |
+| `lakehouse.rest.auth.console.client-credentials.enabled` | `true` | 是否允许用主体凭据换令牌 |
+| `lakehouse.rest.auth.console.oidc.*` | 关闭 | 外部身份提供方登录；见 [`console-auth.md`](console-auth.md) |
+| `lakehouse.rest.authorization.enabled` | `false` | 是否对管理 API 与 catalog API 启用 RBAC 判定 |
+| `lakehouse.rest.authorization.service-admins` | `[root]` | 服务管理员主体名单 |
+| `lakehouse.rest.authorization.bootstrap-principal` | `root` | 启动时预置的引导主体；留空则不预置 |
+| `lakehouse.rest.authorization.bootstrap-principal-role` | `service_admin` | 启动时预置的引导角色链 |
 
 `authorization.enabled=false` 时不做 RBAC 判定，认证仍然生效——即所有请求以读取到的
 主体名通过，便于在既有部署上先只做认证。
@@ -368,7 +368,7 @@ TOKEN=$(curl -s -X POST http://127.0.0.1:8080/api/catalog/v1/oauth/tokens \
   -d client_id="$CLIENT_ID" -d client_secret="$CLIENT_SECRET" | jq -r .access_token)
 curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "$J" \
   -d '{"name":"sales","options":{}}' "http://127.0.0.1:8080/v1/paimon/databases"
-#    b) 或者把长期令牌登记进 paimon.rest.auth.tokens / token-principals 再用（给机器用）
+#    b) 或者把长期令牌登记进 lakehouse.rest.auth.tokens / token-principals 再用（给机器用）
 curl -s -X POST -H "Authorization: Bearer etl-token" -H "$J" \
   -d '{"name":"sales","options":{}}' "http://127.0.0.1:8080/v1/paimon/databases"
 # -> 403：reader 只有 NAMESPACE_LIST，没有 NAMESPACE_CREATE

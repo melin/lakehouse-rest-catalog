@@ -232,7 +232,7 @@ GET /api/console/v1/events?since=<id>&catalog=<name>&category=<name>&limit=100
 配置形状**照搬 Polaris**（只把根前缀换成本项目）：
 
 ```yaml
-paimon:
+lakehouse:
   rest:
     event-listener:
       types: db,log
@@ -244,9 +244,9 @@ paimon:
 
 | 配置项 | 默认 | 说明 |
 | --- | --- | --- |
-| `paimon.rest.event-listener.types` | 空 = 全部 | 启用的监听器名（`CatalogEventListener.name()`，现有 `db` / `log`） |
-| `paimon.rest.event-listener.<name>.enabled-event-categories` | 空 = 全部 | 按类别订阅，取值见 `CatalogEventCategory` |
-| `paimon.rest.event-listener.<name>.enabled-event-types` | 空 = 全部 | 按具体类型订阅，取值是 wire 值 |
+| `lakehouse.rest.event-listener.types` | 空 = 全部 | 启用的监听器名（`CatalogEventListener.name()`，现有 `db` / `log`） |
+| `lakehouse.rest.event-listener.<name>.enabled-event-categories` | 空 = 全部 | 按类别订阅，取值见 `CatalogEventCategory` |
+| `lakehouse.rest.event-listener.<name>.enabled-event-types` | 空 = 全部 | 按具体类型订阅，取值是 wire 值 |
 
 语义（与 Polaris 1.8 一致，见其 Configuration Reference）：
 
@@ -260,7 +260,7 @@ paimon:
   与 `types` 平级——同一前缀里既有标量又有动态子键，绑定器表达不了。因此用 `Environment`
   显式读，键名与 Polaris 完全对齐。
 
-> 上一版的 `paimon.rest.event.db-enabled` / `log-enabled` 已并入 `types`：
+> 上一版的 `lakehouse.rest.event.db-enabled` / `log-enabled` 已并入 `types`：
 > `types=log` 就等价于「只要日志监听器」。两个开关并存会让「到底关没关」有两个答案。
 
 Kafka / Webhook 接入时新增一个 `CatalogEventListener` 实现并给它起个名字，

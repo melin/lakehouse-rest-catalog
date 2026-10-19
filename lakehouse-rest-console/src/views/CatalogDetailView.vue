@@ -238,7 +238,7 @@
               <template #title>只显示了前 {{ files.data.value.maxEntries }} 条（共 {{ files.data.value.total }} 条）</template>
               <div>
                 排序是目录优先、名称升序，因此被截掉的是尾部的文件。需要看全部的话，
-                下钻到更具体的子目录，或调大 <span class="pc-mono">paimon.rest.file-browser.max-entries</span>。
+                下钻到更具体的子目录，或调大 <span class="pc-mono">lakehouse.rest.file-browser.max-entries</span>。
               </div>
             </el-alert>
 

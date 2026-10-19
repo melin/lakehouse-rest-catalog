@@ -17,7 +17,7 @@ import org.springframework.stereotype.Service;
  * <p>三种来源依次尝试，任何一条认出令牌就停下：
  *
  * <ol>
- *   <li><b>静态令牌</b>（{@code paimon.rest.auth.tokens}）——运维配置的长期凭据，给机器用。
+ *   <li><b>静态令牌</b>（{@code lakehouse.rest.auth.tokens}）——运维配置的长期凭据，给机器用。
  *   <li><b>控制台访问令牌</b>（{@link AccessTokenService}）——控制台用主体凭据登录后
  *       拿到的 JWT，本服务端签发。
  *   <li><b>OIDC 令牌</b>（{@link OidcService}）——外部身份提供方签发，本服务端验签。
