@@ -144,6 +144,8 @@ export const ENDPOINTS = {
   // 只摘目录条目、不动仓库里的文件（规格里的 `unregister`，成功码 200 而不是 204）。
   icebergUnregisterTable: { method: 'POST', path: '/v1/{prefix}/namespaces/{namespace}/tables/{table}/unregister' },
   icebergListViews: { method: 'GET', path: '/v1/{prefix}/namespaces/{namespace}/views' },
+  // 建视图（成功码 200）：请求体要 `name` + `schema` + `view-version` 两段元数据。
+  icebergCreateView: { method: 'POST', path: '/v1/{prefix}/namespaces/{namespace}/views' },
   icebergLoadView: { method: 'GET', path: '/v1/{prefix}/namespaces/{namespace}/views/{view}' },
   icebergDropView: { method: 'DELETE', path: '/v1/{prefix}/namespaces/{namespace}/views/{view}' },
   // 登记仓库里已有的一份 ViewMetadata（成功码 200）。

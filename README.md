@@ -762,7 +762,7 @@ Azure 只下发定位元数据是个明确的缺口：Polaris 的 `polaris.stora
       （授予 / 凭据）这四类端点在 Iceberg 协议里不存在。**目录浏览与表详情都按格式分两套实现**：
       Paimon catalog 走 `/v1/{prefix}/databases/**`，Iceberg catalog 走
       `IcebergBrowseView`（`namespaces/**`：命名空间平铺、建表 / 登记 / 改名 / 删除 / 注销、
-      视图读与删）与 **`IcebergTableView`**（`/iceberg-tables/...`：详细信息 / 快照 / 文件列表 /
+      视图增删与登记）与 **`IcebergTableView`**（`/iceberg-tables/...`：详细信息 / 快照 / 文件列表 /
       存储优化四个页签——前三个读一次 `loadTable` 的整份 metadata，
       文件列表走 catalog 级文件端点并由 `metadata.location` 减 warehouse 得到根；
       **存储优化页签挂的是与 Paimon 表同一个面板**，只把 `format="ICEBERG"` 传进去，
@@ -1140,7 +1140,7 @@ http://localhost:8080/console/
 | --- | --- |
 | `/login`、`/auth/callback` | 登录与 SSO 回调 |
 | `/` | 概览：统计块、服务端配置、**连接自检**、catalog 清单、`GET /v1/config` |
-| `/browse` | 目录浏览：库/表/视图/函数/语义视图；建库建表、注册表、按表 ID 定位、重命名、删除。表列表六列——表名 / 表格式 / 表类型（Managed 或外部表）/ 创建时间 / 元数据更新时间 / 操作，数据取自 `table-details`（只回表名的 `/tables` 给不出这几列） |
+| `/browse` | 目录浏览：库/表/视图/函数（语义视图的端点仍在服务端，控制台不再暴露）；工具条常驻在每个页签里，空库时也有新建入口——建库建表、注册表、按表 ID 定位、重命名、删除。表列表六列——表名 / 表格式 / 表类型（Managed 或外部表）/ 创建时间 / 元数据更新时间 / 操作，数据取自 `table-details`（只回表名的 `/tables` 给不出这几列） |
 | `/tables/:prefix/:database/:table` | [表详情](docs/console-table-detail.md)：页签随表格式伸缩——Paimon 表六个（详细信息含字段列表 / 分区列表、**文件列表**、快照、标签、分支、数据访问），Format / Object / Lance 表只有详细信息与**文件列表**，且不向快照端点发请求；三种表都展示字段列表（Object 表是 Paimon 固定的六列，主键 / 分区字段两列不渲染）。**改表结构不在控制台做**：`alter` 端点仍在，走 HTTP 或 Spark SQL |
 | `/catalogs` | Catalog 列表：创建、编辑（带版本）、删除；名称进详情页 |
 | `/catalogs/:catalogName` | [Catalog 详情](docs/console-catalog-detail.md)：概览 / **文件列表**（仓库物理目录，目录名可点下钻、文件可下载、文件名前缀过滤 + 本地分页）/ **配置**（两种格式都编辑新建表的默认参数 `table-default.*`；Iceberg 另附只读的 `/v1/config` `defaults` / `overrides`） |
@@ -1158,7 +1158,7 @@ http://localhost:8080/console/
   用 `./scripts/build-console.sh` 一条命令完成构建与校验。
 - **路径不靠人工比对。** 全部端点收在 `lakehouse-rest-console/src/api/endpoints.js` 一张表里，
   由 `scripts/verify-console.py` 与三份 OpenAPI 规格（Paimon / Iceberg / 管理 API）机械比对
-  （17 组 77 项：端点存在性、引用完整性、五处基址一致、产物新鲜度、对话框状态、下拉候选来源、
+  （18 组 80 项：端点存在性、引用完整性、五处基址一致、产物新鲜度、对话框状态、下拉候选来源、
   静态凭据字段与服务端的一致性、两种格式的优化参数键、**catalog 表格式**、**Iceberg 目录浏览的契约形状**、
   **存储字段分层**、**事件页的增量契约与类别筛选**、**问号图标悬停即显**，最后由一组「文档计数」盯住这个数字本身与脚本一致）；
   服务端侧 `ConsoleApiTests` 守住静态资源托管与 SPA 深链回退。
@@ -1168,7 +1168,7 @@ http://localhost:8080/console/
   端点清单摆出来（Iceberg 侧读 `GET /v1/config` 的 `endpoints` 原文，前端不抄一份）。
   目录浏览与表详情按格式换实现：Paimon catalog 走 `databases/**` 的浏览页与表详情页，
   Iceberg catalog 走 `IcebergBrowseView`（`namespaces/**`：命名空间平铺、建表/登记/改名/删除/注销、
-  视图读与删）与 `IcebergTableView`（详细信息 / 快照 / 文件列表 / 存储优化四个页签）。
+  视图增删与登记）与 `IcebergTableView`（详细信息 / 快照 / 文件列表 / 存储优化四个页签）。
   Paimon 版表详情页在 Iceberg catalog 下不发请求、只给跳转。
 
 ### 9.1 登录与鉴权

@@ -337,7 +337,7 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
 - **写了机械校验就要做变异测试**：故意把被校验的东西改错（DTO 字段改名、前端类型列表少一项），
   确认校验脚本**报得出来**。不做的校验往往是空跑。
 - 新增校验组要顺手把「总数」写进 `README.md` / `docs/console.md`。**这条现在由机制兜着**
-  （`verify-console.py` 第 17 组断言这两处写的「N 组 M 项」与脚本实际一致，也断言那一组自己）——
+  （`verify-console.py` 第 18 组断言这两处写的「N 组 M 项」与脚本实际一致，也断言那一组自己）——
   在此之前它只是句人情话，真漏过一次：`docs/console.md` 写 37、`README.md` 写 38、实际 38。
 - **前端字段分层的改动要连 `build()` 一起看**：catalog 表单的字段拆成了
   `BASIC_FIELDS` / `ADVANCED_FIELDS`（高级那张进折叠区），而 `build()` 读的是两者合并后的

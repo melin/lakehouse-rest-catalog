@@ -139,7 +139,7 @@ lakehouse-rest-console/
 | `/login` | 登录 | 按服务端下发的登录方式渲染页签：用户名密码（默认）/ 主体凭据（OAuth 2.0 客户端凭据）/ SSO（OIDC）/ 静态令牌（需配 `auth.tokens`）。**未开启的方式不渲染**；一个可用方式都没有时说明该开哪个配置项。门禁单开时先显示一句「只挡住界面」。不套管理布局 |
 | `/auth/callback` | SSO 回调 | 校验 `state` → 用授权码换令牌 → 让服务端确认 → 回跳原页面。不套管理布局 |
 | `/` | 控制台概览 | 统计块（三个数量）、服务端配置摘要、**连接自检**、catalog 清单、`GET /v1/config` 展示 |
-| `/browse` | 目录浏览 | 按选中 catalog 的**表格式**换一套实现：Paimon catalog 是「左库右对象、四页签（表/视图/函数/语义视图）」；Iceberg catalog 换成 `IcebergBrowseView`（左命名空间右表/视图，见 §4.6）。Paimon 侧能力：建库、建表（Paimon 表 / Format 表 / Object 表三种表格式，Lance 表留在选项里但禁用，见 [console-catalog-detail.md](console-catalog-detail.md) §3.5）、注册表、按表 ID 定位、重命名、删除、详情抽屉。表页签列出表名 / 表格式 / 表类型（Managed 或外部表）/ 创建时间 / 元数据更新时间 / 操作六列，数据取自 `table-details`（只回表名的 `/tables` 给不出这几列）；「元数据更新时间」是服务端这条表记录的最后改动时间，快照提交与回滚也会推动它。表页签的过滤为空时说明「没有匹配 ×××」，与「库里没有表」区分开 |
+| `/browse` | 目录浏览 | 按选中 catalog 的**表格式**换一套实现：Paimon catalog 是「左库右对象、三页签（表/视图/函数；语义视图的 4 条端点仍在服务端，控制台不再暴露）」；Iceberg catalog 换成 `IcebergBrowseView`（左命名空间右表/视图，见 §4.6）。Paimon 侧能力：建库、建表（Paimon 表 / Format 表 / Object 表三种表格式，Lance 表留在选项里但禁用，见 [console-catalog-detail.md](console-catalog-detail.md) §3.5）、注册表、按表 ID 定位、重命名、删除、详情抽屉。表页签列出表名 / 表格式 / 表类型（Managed 或外部表）/ 创建时间 / 元数据更新时间 / 操作六列，数据取自 `table-details`（只回表名的 `/tables` 给不出这几列）；「元数据更新时间」是服务端这条表记录的最后改动时间，快照提交与回滚也会推动它。表页签的过滤为空时说明「没有匹配 ×××」，与「库里没有表」区分开。**建表入口在「表」页签工具条的右侧**（页头只留刷新与新建数据库）：三类对象的工具条都写在 `ResourceState` 之外——那个组件命中空态时只渲染 `el-empty`、默认插槽整个不渲染，工具条若在里面，「这个库还是空的」这一刻就正好没有新建按钮 |
 | `/tables/:prefix/:database/:table` | [表详情](console-table-detail.md) | 七页签：详细信息 / 快照 / 标签 / 分支 / **文件列表** / 数据访问 / **存储优化**；含快照与标签的**回滚**。**没有「变更」页签**：改表结构走 HTTP 或 Spark SQL，理由见该文档 §2。详细信息首屏的四张统计卡片取自 `getTableSnapshot`（三个文件统计的来路与「什么时候会空」见该文档 §2.1），内含**字段列表 / 分区列表**二级页签（名称过滤 + 本地分页，分区按需加载）。文件列表按表目录物理内容列一层（根是表目录，出不了表外），目录名可点下钻、文件可下载、支持文件名前缀过滤与本地分页。存储优化页签承载表级策略与执行历史（见 [table-optimization.md](table-optimization.md) §7）。授权不在这张表上做——表级权限统一到「权限管理」页 |
 | `/catalogs` | Catalogs | 列出 / 创建 / 详情 / 更新（带版本）/ 删除。名称链到详情页；操作列另有「浏览库与对象」直达 `/browse` |
 | `/catalogs/:catalogName` | [Catalog 详情](console-catalog-detail.md) | 三页签：概览 / 文件列表 / 配置。文件列表按仓库物理目录列一层，目录名可点下钻、带面包屑与「返回上级」；只读，不提供删除与建目录。**配置页签**两种格式是同一套设计：都编辑「表默认参数」（`table-default.*`，见 [catalog-api-endpoints.md](catalog-api-endpoints.md#catalog-级默认表属性table-default)），Iceberg 另附只读的 `/v1/config` `defaults` / `overrides`（连接参数，非表属性）；其余 catalog 属性不在此页重复展示（概览已有） |
@@ -326,7 +326,7 @@ Iceberg catalog 打开 `/browse` 时渲染的是 `IcebergBrowseView`，不是 Pa
 
 **能做什么**：命名空间平铺列出（含多级，点号显示）、新建、删除（**非空回 409**，
 与 Paimon 的级联删除刻意不同，确认框里写明）、建表、登记已有表（`metadata-location`）、
-重命名、删除、注销（`unregister`：只摘目录条目、保留文件）、视图列表 / 详情 / 删除；
+重命名、删除、注销（`unregister`：只摘目录条目、保留文件）、视图列表 / 详情 / **新建** / 登记 / 删除；
 表名与「详情」进 **Iceberg 表详情页**（§4.7），视图详情走抽屉
 （`LoadViewResponse` 原文 + 元数据摘要）。
 
@@ -335,10 +335,11 @@ Iceberg catalog 打开 `/browse` 时渲染的是 `IcebergBrowseView`，不是 Pa
 - **不在列表里显示 location / 时间 / 快照数。** `identifiers` 里没有这些字段，
   要拼出来只能逐表 `loadTable`——N 次请求换一屏数据，而且一旦表多到翻页就不可行。
   这些信息在表详情页按需取（见 §4.7）。
-- **不提供建视图。** 建视图要 `schema` 与 `view-version` 两段元数据（后者含
-  `version-id` / `timestamp-ms` / `summary` / `representations`），控制台拼不出
-  一份可靠的；拼错了服务端只会用 `ViewMetadata` 的解析器报一句难懂的错。
-  页面上直说「用 Spark 或客户端建」。
+- **建视图只做常见形状。** 表单收「字段 + 一句 SQL」，据此拼出 `schema` 与第一个
+  `view-version`（`version-id` 为 1、`timestamp-ms` 取当前时间、单条 `sql` 表示、
+  `default-catalog` / `default-namespace` 取当前上下文）。多方言并存、多版本、
+  带完整 `summary` 的视图仍走 Spark 或客户端——控制台不复刻那份报文的全部组合，
+  页面上也直说了这一点。
 - **不按表 ID 定位。** Iceberg 协议面没有 `tables/id/{id}` 这条反查端点。
 
 ### 4.7 Iceberg 表详情
@@ -447,7 +448,7 @@ python3 scripts/verify-console.py      # 退出码 0 通过 / 1 不一致 / 2 �
 PYTHON=/path/to/python3 scripts/verify-console.py   # 多解释器时指定装了 PyYAML 的那个
 ```
 
-它**不构建前端、不启动服务端**，只做静态比对，因此可以放进提交前的检查。17 组 77 项：
+它**不构建前端、不启动服务端**，只做静态比对，因此可以放进提交前的检查。18 组 80 项：
 
 | 组 | 校验内容 |
 | --- | --- |
@@ -467,7 +468,8 @@ PYTHON=/path/to/python3 scripts/verify-console.py   # 多解释器时指定装�
 | 14. 存储字段分层 | catalog 表单的字段拆成「基本 / 高级」两张表，高级那张进默认收起的折叠区。判据对着**服务端 record**，不在前端另抄名单：两张表合并后与 record 的专属字段**不丢不多**、两表之间不重叠、`build()` 既**不读折叠状态**又仍读合并后的视图、`FILE` 没有高级字段、折叠区按「有没有高级字段」出现而非硬编码某类型、默认收起、收起态给出计数与「可以不管它」的说明 |
 | 15. 事件页 | 事件流的增量契约与「类别筛选走服务端」要前后端钉在一起：`listEvents` 端点路径与端点名一致、`EventsView` 消费 `since` 游标与 `nextCursor`（丢了 `since` 就是全量重拉，页面不报错但契约名存实亡）、事件类型清单逐个覆盖 `CatalogEventType` 的 wire 值、**类别清单逐个覆盖 `CatalogEventCategory` 的取值**、**类别作为 `category` 参数随游标一起发出**（只在前端筛会让「换类别」沿用旧游标的整页数据）、目标类型显示名逐个覆盖 `CatalogEvent` 的 `TARGET_*` 常量（前端另抄名单漏了新类型的表现是那条事件显示成 wire 原文，静默）、`/events` 有独立路由并进侧边菜单 |
 | 16. 提示图标 | 问号图标（`TipNote` / `FieldLabel`）必须**悬停即显示**：`trigger="hover"` 显式写明、`show-after` 为 0，且命中区比 14px 的图标本身大一圈。这条约束的起因是用户反馈「移到问号上没反应、点一下才弹」——`show-after` 的 100ms 让快速划过什么都不出现，而 14px 的命中区偏一两个像素就落在容器上（点击时整块区域都算命中，所以点击反而有效）。两个原因都不会让页面报错 |
-| 17. 文档计数 | 本节这张表上方的「N 组 M 项」与脚本实际一致（`docs/console.md` 与 `README.md` 各一条）。期望值由脚本自身推出——组数是源码里分组标题的条数，项数是本次校验的总条数——因此加/删校验项时这里不用改，但**文档必须跟着改** |
+| 17. 目录浏览的入口 | 两个浏览页（`BrowseView` / `IcebergBrowseView`）的三条工具条都写在 `ResourceState` **之外**：那个组件命中空态时只渲染 `el-empty`、默认插槽整个不渲染，「这个库还是空的」这一刻新建按钮会跟着表格一起消失（表页签当时靠页头那颗按钮躲过，代价是同一动作两个入口）。因此还断言：页头不再放「新建表」、`/browse` 不再有「语义视图」页签，以及 Iceberg 视图页签的创建入口与 `endpoints.js` 的 `icebergCreateView`、控制器上的 `@PostMapping` 三处对齐——缺一处按钮就是 404 |
+| 18. 文档计数 | 本节这张表上方的「N 组 M 项」与脚本实际一致（`docs/console.md` 与 `README.md` 各一条）。期望值由脚本自身推出——组数是源码里分组标题的条数，项数是本次校验的总条数——因此加/删校验项时这里不用改，但**文档必须跟着改** |
 
 第 7 组是这套机制里最实用的一条：**产物过期不会让任何东西报错**，
 它只是安静地少一个按钮。
@@ -478,7 +480,7 @@ PYTHON=/path/to/python3 scripts/verify-console.py   # 多解释器时指定装�
   只在模板上藏内容，请求照样发得出去——对一个 Iceberg catalog 打 Paimon 的
   `/databases/**`，页面上会留下一串 404，看起来像故障。
   目录浏览这一条在 Iceberg 浏览落地后变成两半：**换页那一半**断言
-  `<IcebergBrowseView v-else-if="icebergCatalog" />` 真的在，**挡请求那一半**
+  `<IcebergBrowseView v-if="icebergCatalog" />` 真的在，**挡请求那一半**
   断言 Paimon 的五个 loader 仍保留守卫——`watch`、刷新与「重试」都会绕过模板
   直接调 `load()`，只换页不挡请求仍然会发出去。
 - **能力清单那一项断言「读 `/v1/config`」并且「源码里没有端点字面量」。**
@@ -490,9 +492,9 @@ PYTHON=/path/to/python3 scripts/verify-console.py   # 多解释器时指定装�
 改成单数、或把某个动作名改掉，脚本应当报出具体的字段/动作名而不是通过——空跑的校验
 比没有校验更糟。
 
-第 17 组就是这么来的：**「加了校验组要顺手改文档」是一条靠人记的约定，而它真的漏过一次**
+第 18 组就是这么来的：**「加了校验组要顺手改文档」是一条靠人记的约定，而它真的漏过一次**
 ——`docs/console.md` 写 37 项、`README.md` 写 38 项、脚本实际 38，两个数字都没人对账，
-直到有人去数。现在这条约定变成了一条断言。它的盲区是拦不住「连第 17 组一起删掉」，
+直到有人去数。现在这条约定变成了一条断言。它的盲区是拦不住「连第 18 组一起删掉」，
 因此文档里的组数仍值得在 review 时扫一眼——**没有哪个自校验能覆盖它自己**。
 
 唯一允许出现在规格之外的端点是 `EXTENSION_ENDPOINTS` 里的：

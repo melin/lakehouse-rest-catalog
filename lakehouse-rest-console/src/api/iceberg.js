@@ -109,6 +109,17 @@ export const icebergApi = {
   listViews: (prefix, levels, query = {}) => get('icebergListViews', {
     params: { prefix, namespace: namespacePath(levels), query },
   }),
+  /**
+   * 建视图。`body` 形如 `{name, schema, 'view-version', properties?}`。
+   *
+   * <p>两段元数据都是**必填**：`schema` 是视图结果的字段（`{type:'struct', fields:[…]}`），
+   * `view-version` 是第一个版本的报文（`representations` 里放 SQL 表示）。服务端拿
+   * `ViewMetadata.Builder#setCurrentVersion(version, schema)` 把两者拼起来，所以少一段
+   * 就会 400——这不像 Paimon 面那样只消给一句 SQL。
+   */
+  createView: (prefix, levels, body) => post('icebergCreateView', {
+    params: { prefix, namespace: namespacePath(levels) }, body,
+  }),
   loadView: (prefix, levels, view) => get('icebergLoadView', {
     params: { prefix, namespace: namespacePath(levels), view },
   }),

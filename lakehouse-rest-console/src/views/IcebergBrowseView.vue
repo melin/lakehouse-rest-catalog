@@ -9,10 +9,6 @@
           <el-icon><Refresh /></el-icon>
           <span class="pc-btn-text">刷新</span>
         </el-button>
-        <el-button size="small" :disabled="!currentLevels.length" @click="openCreateTable">
-          <el-icon><Plus /></el-icon>
-          <span class="pc-btn-text">新建表</span>
-        </el-button>
         <el-button size="small" type="primary" @click="openCreateNamespace">
           <el-icon><Plus /></el-icon>
           <span class="pc-btn-text">新建命名空间</span>
@@ -95,6 +91,44 @@
         </el-tabs>
 
         <div class="pc-obj-body">
+          <!-- 工具条放在 ResourceState 之外：空态时组件里只剩 el-empty，
+               而「这个命名空间还没有视图」正是最需要「新建视图」的时刻。 -->
+          <div v-if="tab === 'tables'" class="pc-tools-row">
+            <el-input v-model="tableFilter" size="small" placeholder="过滤表名" clearable class="pc-filter">
+              <template #prefix><el-icon><Search /></el-icon></template>
+            </el-input>
+            <span class="pc-spacer" />
+            <el-button size="small" @click="openRegisterTable">登记已有表</el-button>
+            <el-button size="small" type="primary" @click="openCreateTable">
+              <el-icon><Plus /></el-icon>
+              <span class="pc-btn-text">新建表</span>
+            </el-button>
+          </div>
+          <div v-else-if="tab === 'views'" class="pc-tools-row">
+            <span class="pc-dim">
+              视图定义按 Iceberg 的 <code class="pc-mono">ViewMetadata</code> 整篇保存。
+              新建时控制台按「字段 + SQL」拼出 schema 与第一个 view-version（方言可选 Spark / Trino）；
+              多方言、多版本的视图仍建议用 Spark 或客户端提交，这里只做常见形状。
+            </span>
+            <span class="pc-spacer" />
+            <el-button size="small" @click="openRegisterView">登记已有视图</el-button>
+            <el-button size="small" type="primary" @click="openCreateView">
+              <el-icon><Plus /></el-icon>
+              <span class="pc-btn-text">新建视图</span>
+            </el-button>
+          </div>
+          <div v-else class="pc-tools-row">
+            <span class="pc-dim">
+              函数在 Iceberg 协议面是<strong>只读</strong>的（规格只定义了两个 GET）：
+              写路径在 Paimon 面、且那条面只服务 Paimon catalog，所以 Iceberg catalog 上
+              这份列表通常为空——Paimon catalog 里的函数可通过这条只读通道以
+              <code class="pc-mono">FunctionMetadata</code> 的形状读出
+              （只有 SQL 定义能投影，<code class="pc-mono">file</code> /
+              <code class="pc-mono">lambda</code> 不显示）。
+              要管理函数请到 Paimon catalog 的浏览页「函数」页签。
+            </span>
+          </div>
+
           <ResourceState
             :loading="currentList.loading.value"
             :error="currentList.error.value"
@@ -102,17 +136,6 @@
             :empty-text="emptyText"
           >
             <template v-if="tab === 'tables'">
-              <div class="pc-tools-row">
-                <el-input v-model="tableFilter" size="small" placeholder="过滤表名" clearable class="pc-filter">
-                  <template #prefix><el-icon><Search /></el-icon></template>
-                </el-input>
-                <span class="pc-spacer" />
-                <el-button size="small" @click="openRegisterTable">登记已有表</el-button>
-                <el-button size="small" type="primary" @click="openCreateTable">
-                  <el-icon><Plus /></el-icon>
-                  <span class="pc-btn-text">新建表</span>
-                </el-button>
-              </div>
               <el-table v-loading="tablesList.loading.value" :data="filteredTables" size="small">
                 <el-table-column label="表名" min-width="220">
                   <template #default="{ row }">
@@ -131,14 +154,6 @@
             </template>
 
             <template v-else-if="tab === 'views'">
-              <div class="pc-tools-row">
-                <span class="pc-dim">
-                  视图定义按 Iceberg 的 <code class="pc-mono">ViewMetadata</code> 整篇保存。
-                  新建视图需要 schema 与 view-version 两段元数据，控制台不拼——请用 Spark 或客户端建，这里只读、登记与删。
-                </span>
-                <span class="pc-spacer" />
-                <el-button size="small" @click="openRegisterView">登记已有视图</el-button>
-              </div>
               <el-table v-loading="viewsList.loading.value" :data="viewsList.items.value" size="small">
                 <el-table-column prop="name" label="视图名" min-width="220" />
                 <el-table-column label="操作" width="110" align="right">
@@ -151,17 +166,6 @@
             </template>
 
             <template v-else>
-              <div class="pc-tools-row">
-                <span class="pc-dim">
-                  函数在 Iceberg 协议面是<strong>只读</strong>的（规格只定义了两个 GET）：
-                  写路径在 Paimon 面、且那条面只服务 Paimon catalog，所以 Iceberg catalog 上
-                  这份列表通常为空——Paimon catalog 里的函数可通过这条只读通道以
-                  <code class="pc-mono">FunctionMetadata</code> 的形状读出
-                  （只有 SQL 定义能投影，<code class="pc-mono">file</code> /
-                  <code class="pc-mono">lambda</code> 不显示）。
-                  要管理函数请到 Paimon catalog 的浏览页「函数」页签。
-                </span>
-              </div>
               <el-table v-loading="functionsList.loading.value" :data="functionsList.items.value" size="small">
                 <el-table-column prop="name" label="函数名" min-width="220" />
                 <el-table-column label="操作" width="90" align="right">
@@ -382,6 +386,89 @@
       <template #footer>
         <el-button @click="viewRegisterDialog.open = false">取消</el-button>
         <el-button type="primary" :loading="viewRegisterDialog.saving" @click="saveRegisterView">登记</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 新建视图：Iceberg 建视图要 schema + view-version 两段元数据，表单只覆盖常见形状
+         （一份 SQL 表示 + 字段列表）。多方言、多版本的视图仍走 Spark / 客户端。 -->
+    <el-dialog
+      v-model="viewDialog.open"
+      title="新建视图（Iceberg）"
+      width="820px"
+      :close-on-click-modal="false"
+      top="8vh"
+      destroy-on-close
+    >
+      <el-form label-position="top" size="small" class="pc-form">
+        <el-form-item label="视图名" required>
+          <el-input v-model="viewDialog.name" placeholder="例如 recent_orders" />
+        </el-form-item>
+        <el-form-item label="查询语句（SQL 表示）" required>
+          <el-input
+            v-model="viewDialog.sql"
+            type="textarea"
+            :rows="5"
+            placeholder="SELECT id, amount FROM orders WHERE amount > 0"
+          />
+        </el-form-item>
+        <el-form-item>
+          <template #label>
+            <FieldLabel label="方言（dialect）">
+              写进 <code class="pc-mono">representations[0].dialect</code>。Spark 与 Trino 的
+              SQL 方言不同，按这条语句实际来自哪个引擎选；服务端不解析语句，只原样存。
+            </FieldLabel>
+          </template>
+          <el-select v-model="viewDialog.dialect">
+            <el-option label="spark" value="spark" />
+            <el-option label="trino" value="trino" />
+          </el-select>
+        </el-form-item>
+      </el-form>
+
+      <SectionTitle title="字段（schema）">
+        <template #tip>
+          <TipNote>
+            视图<strong>结果列</strong>的声明，服务端不校验它与 SQL 是否吻合——对不上会在引擎读视图时报错。
+            字段 id 由行序决定（第 1 行是 1），类型按 Iceberg 的写法填
+            （<code>long</code>、<code>decimal(10, 2)</code>、<code>timestamp</code> 等）。
+          </TipNote>
+        </template>
+      </SectionTitle>
+      <div class="pc-ice-grid pc-ice-head">
+        <span>ID</span>
+        <span>列名称</span>
+        <span class="pc-ice-check">必填</span>
+        <span>数据类型</span>
+        <span>描述（doc）</span>
+        <span class="pc-ice-op">操作</span>
+      </div>
+      <div v-for="(field, index) in viewDialog.fields" :key="index" class="pc-ice-grid">
+        <span class="pc-dim pc-mono">{{ index + 1 }}</span>
+        <el-input v-model="field.name" size="small" placeholder="请输入名称" />
+        <el-checkbox v-model="field.required" size="small" class="pc-ice-check" />
+        <el-select
+          v-model="field.type"
+          filterable
+          allow-create
+          default-first-option
+          size="small"
+          placeholder="如 long / string"
+        >
+          <el-option v-for="type in ICEBERG_TYPES" :key="type" :label="type" :value="type" />
+        </el-select>
+        <el-input v-model="field.doc" size="small" placeholder="可选的字段说明" />
+        <span class="pc-ice-op">
+          <el-button size="small" text type="danger" @click="viewDialog.fields.splice(index, 1)">删除</el-button>
+        </span>
+      </div>
+      <el-button size="small" text type="primary" @click="viewDialog.fields.push(emptyField())">
+        <el-icon><Plus /></el-icon>
+        <span class="pc-repeat-add">添加一项</span>
+      </el-button>
+
+      <template #footer>
+        <el-button @click="viewDialog.open = false">取消</el-button>
+        <el-button type="primary" :loading="viewDialog.saving" @click="saveView">创建</el-button>
       </template>
     </el-dialog>
 
@@ -765,8 +852,8 @@ function openCreateTable() {
  * 分区指向不存在的字段、`bucket[]` 缺数字。类型写法本身不校验——
  * 那等于在前端复刻 Iceberg 的类型文法，猜错就拦掉合法 schema。
  */
-function buildSchema() {
-  const valid = tableDialog.fields.filter((field) => field.name.trim() && field.type.trim())
+function buildSchema(fields = tableDialog.fields) {
+  const valid = fields.filter((field) => field.name.trim() && field.type.trim())
   if (!valid.length) {
     throw new Error('至少填写一个字段（字段名与类型都不能为空）')
   }
@@ -951,6 +1038,74 @@ async function confirmDropView(name) {
     viewsList.load(true)
   } catch (error) {
     notifyError(error)
+  }
+}
+
+// ------------------------------------------------------------------ 新建视图
+
+const viewDialog = reactive({
+  open: false,
+  name: '',
+  sql: '',
+  dialect: 'spark',
+  fields: [],
+  saving: false,
+})
+
+function openCreateView() {
+  viewDialog.name = ''
+  viewDialog.sql = ''
+  viewDialog.dialect = 'spark'
+  viewDialog.fields = [
+    { ...emptyField(), name: 'id', type: 'long' },
+    { ...emptyField(), name: 'amount', type: 'double' },
+  ]
+  viewDialog.open = true
+}
+
+/**
+ * 建视图：把「字段 + SQL」拼成 Iceberg 要的两段元数据。
+ *
+ * <p>`view-version` 的 `schema-id` 只是占位：`ViewMetadata.Builder#setCurrentVersion`
+ * 分配 schema 时会覆盖成真实的 id。`default-namespace` 填当前命名空间、`default-catalog`
+ * 填 catalog 名，这样视图里不带限定名的表名也能按「建它的人当时看到的上下文」解析。
+ */
+async function saveView() {
+  const name = viewDialog.name.trim()
+  const sql = viewDialog.sql.trim()
+  if (!name || !sql) {
+    notifyError(new Error('视图名与查询语句都不能为空'))
+    return
+  }
+  let schema
+  try {
+    schema = buildSchema(viewDialog.fields)
+  } catch (error) {
+    notifyError(error)
+    return
+  }
+  viewDialog.saving = true
+  try {
+    await icebergApi.createView(prefix.value, currentLevels.value, {
+      name,
+      schema,
+      'view-version': {
+        'version-id': 1,
+        'timestamp-ms': Date.now(),
+        'schema-id': 0,
+        summary: { 'engine-name': 'lakehouse-console' },
+        representations: [{ type: 'sql', sql, dialect: viewDialog.dialect }],
+        'default-catalog': prefix.value || null,
+        'default-namespace': [...currentLevels.value],
+      },
+    })
+    notifySuccess(`已创建视图 ${name}`)
+    viewDialog.open = false
+    viewsList.load(true)
+  } catch (error) {
+    notifyError(error)
+  } finally {
+    viewDialog.saving = false
   }
 }
 

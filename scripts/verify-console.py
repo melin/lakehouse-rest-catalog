@@ -1234,10 +1234,78 @@ check("问号图标的命中区比图标本身大（鼠标差一两个像素也�
       "styles/index.css 里 .pc-tip-icon / .pc-field-label-icon 应带 padding，"
       "把 14px 图标的可悬停范围撑大一圈")
 
-# ------------------------------------------------------------------ 17. 文档计数
+# ------------------------------------------------------------------ 17. 目录浏览的入口
 
 print()
-print("17. 文档计数（文档写的「N 组 M 项」必须与脚本实际一致）")
+print("17. 目录浏览的入口（工具条常驻、页头不重复、Iceberg 视图可建）")
+
+# 起因：`ResourceState` 命中空态时只渲染 `el-empty`，**默认插槽整个不渲染**。
+# 三类对象的工具条原先都写在插槽里，于是「这个库还是空的」这一刻，
+# 「新建视图 / 新建函数」按钮跟着表格一起消失了——而那正是最需要它的时刻。
+# 表页签当时没暴露，是因为页头另有一颗「新建表」；代价是同一个动作两个入口，
+# 而 Iceberg 页连这点运气都没有：页头的按钮与工具条里的重复，空态时仍然只剩页头那颗。
+# 三条断言都是「字符串位置」级别的，能拦住把工具条挪回插槽、或把按钮塞回页头。
+browse_src = read(BROWSE_VIEW)
+iceberg_browse_src = read(os.path.join(CONSOLE_DIR, "src/views/IcebergBrowseView.vue"))
+endpoints_source = read(os.path.join(CONSOLE_DIR, "src/api/endpoints.js"))
+iceberg_view_controller = read(os.path.join(
+    ROOT, "lakehouse-rest-spring-parent/lakehouse-rest-protocol-iceberg",
+    "src/main/java/io/github/melin/lakehouse/rest/iceberg/web/IcebergViewController.java"))
+tools_rows_broken = []
+for label, source in (("BrowseView", browse_src), ("IcebergBrowseView", iceberg_browse_src)):
+    positions = [m.start() for m in re.finditer(r'class="pc-tools-row"', source)]
+    state_at = source.index("<ResourceState")
+    if len(positions) != 3 or any(pos > state_at for pos in positions):
+        tools_rows_broken.append(f"{label}: {len(positions)} 处工具条，"
+                                 f"其中 {sum(pos > state_at for pos in positions)} 处在 ResourceState 之后")
+check("两个浏览页的三条工具条都在 ResourceState 之外（空态下新建入口仍在）",
+      not tools_rows_broken,
+      "\n".join(tools_rows_broken))
+
+
+def page_header_block(source):
+    start = source.index("<PageHeader")
+    return source[start:source.index("</PageHeader>", start)]
+
+
+semantic_left = "语义视图" in browse_src
+header_extra = [label for label, source in (("BrowseView", browse_src),
+                                            ("IcebergBrowseView", iceberg_browse_src))
+                if "openCreateTable" in page_header_block(source)]
+check("目录浏览没有「语义视图」页签，页头也不再重复放「新建表」",
+      not semantic_left and not header_extra,
+      ("BrowseView 里仍有「语义视图」文案" if semantic_left else "")
+      + ("；页头仍带新建表: " + "、".join(header_extra) if header_extra else ""))
+
+# Iceberg 建视图：前端有入口、端点表登记了它、服务端控制器真有那条 POST。
+# 三处任何一处缺失，按钮都会变成 404 或静默不发请求——静态检查能提前抓住。
+create_view_path = re.search(r'icebergCreateView: \{ method: .POST., path: .([^\']+). \}',
+                             endpoints_source)
+# 控制器的路径写在两处：类上的 `@RequestMapping("/v1/{prefix}")` 与方法上的
+# `@PostMapping("/namespaces/{namespace}/views")`。端点表里的是拼起来的全路径，
+# 因此比的是「去掉类前缀之后的那一段」——直接比全路径永远不相等。
+class_prefix = re.search(r'@RequestMapping\("([^"]+)"\)', iceberg_view_controller)
+create_view_suffix = (
+    create_view_path.group(1)[len(class_prefix.group(1)):]
+    if create_view_path and class_prefix and create_view_path.group(1).startswith(class_prefix.group(1))
+    else None
+)
+create_view_mapped = bool(create_view_suffix) and (
+    f'@PostMapping("{create_view_suffix}")' in iceberg_view_controller)
+check("Iceberg 视图页签有创建入口，且端点路径与控制器一致",
+      "openCreateView" in iceberg_browse_src and create_view_mapped,
+      "缺: " + "、".join([
+          item for item, ok in (
+              ("IcebergBrowseView 里的新建视图按钮", "openCreateView" in iceberg_browse_src),
+              ("endpoints.js 的 icebergCreateView", create_view_path is not None),
+              ("IcebergViewController 的 POST 映射", create_view_mapped),
+          ) if not ok
+      ]))
+
+# ------------------------------------------------------------------ 18. 文档计数
+
+print()
+print("18. 文档计数（文档写的「N 组 M 项」必须与脚本实际一致）")
 
 # 这一组是**元校验**，起因是一次真实的漂移：docs/console.md 写「12 组 37 项」、
 # README 写「12 组 38 项」，而脚本实际是 38——两个数字都没人核对，因为脚本此前

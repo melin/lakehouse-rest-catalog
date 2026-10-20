@@ -1,7 +1,7 @@
 <template>
   <div class="pc-page pc-browse">
     <!-- Iceberg 分支整页换成 IcebergBrowseView，本页的页头与对话框都不该再出现：
-         页头里的动作（刷新 / 新建表 / 新建数据库）是 Paimon 语义的，留下只会出现
+         页头里的动作（刷新 / 新建数据库）是 Paimon 语义的，留下只会出现
          「同一屏两个页头、两套按钮」。IcebergBrowseView 自带页头与对话框。 -->
     <PageHeader
       v-if="!icebergCatalog"
@@ -12,10 +12,6 @@
         <el-button size="small" @click="reloadDatabases">
           <el-icon><Refresh /></el-icon>
           <span class="pc-btn-text">刷新</span>
-        </el-button>
-        <el-button size="small" :disabled="!database || icebergCatalog" @click="openCreateTable">
-          <el-icon><Plus /></el-icon>
-          <span class="pc-btn-text">新建表</span>
         </el-button>
         <el-button size="small" type="primary" :disabled="icebergCatalog" @click="openCreateDatabase">
           <el-icon><Plus /></el-icon>
@@ -101,10 +97,43 @@
           <el-tab-pane label="表" name="tables" />
           <el-tab-pane label="视图" name="views" />
           <el-tab-pane label="函数" name="functions" />
-          <el-tab-pane label="语义视图" name="semanticViews" />
         </el-tabs>
 
         <div class="pc-obj-body">
+          <!-- 工具条放在 ResourceState 之外：空态时组件里只剩 el-empty，工具条跟着
+               进去的话，「这个库里还没有视图」恰恰是最需要「新建视图」的时刻，
+               按钮却消失了。表页签以前靠页头那颗按钮躲过这一点，现在三类对象
+               一视同仁——工具条常驻，表格自己走加载 / 失败 / 空三态。 -->
+          <div v-if="tab === 'tables'" class="pc-tools-row">
+            <el-input v-model="tableFilter" size="small" placeholder="过滤表名" clearable class="pc-filter">
+              <template #prefix><el-icon><Search /></el-icon></template>
+            </el-input>
+            <!-- 与其余页签一样把动作推到右边：那一行左边是「看什么」，右边是「做什么」 -->
+            <span class="pc-spacer" />
+            <el-button size="small" @click="openLocateTable">按表 ID 定位</el-button>
+            <el-button size="small" @click="openRegisterTable">注册已有表</el-button>
+            <el-button size="small" type="primary" :disabled="!database" @click="openCreateTable">
+              <el-icon><Plus /></el-icon>
+              <span class="pc-btn-text">新建表</span>
+            </el-button>
+          </div>
+          <div v-else-if="tab === 'views'" class="pc-tools-row">
+            <span class="pc-dim">SQL 视图，定义由服务端整篇保存。</span>
+            <span class="pc-spacer" />
+            <el-button size="small" type="primary" @click="openCreateView">
+              <el-icon><Plus /></el-icon>
+              <span class="pc-btn-text">新建视图</span>
+            </el-button>
+          </div>
+          <div v-else class="pc-tools-row">
+            <span class="pc-dim">函数定义支持 file / sql / lambda 三种，控制台按 JSON 原样提交。</span>
+            <span class="pc-spacer" />
+            <el-button size="small" type="primary" @click="openCreateFunction">
+              <el-icon><Plus /></el-icon>
+              <span class="pc-btn-text">新建函数</span>
+            </el-button>
+          </div>
+
           <ResourceState
             :loading="currentList.loading.value"
             :error="currentList.error.value"
@@ -113,15 +142,6 @@
           >
             <!-- 表 -->
             <template v-if="tab === 'tables'">
-              <div class="pc-tools-row">
-                <el-input v-model="tableFilter" size="small" placeholder="过滤表名" clearable class="pc-filter">
-                  <template #prefix><el-icon><Search /></el-icon></template>
-                </el-input>
-                <!-- 与其余页签一样把动作推到右边：那一行左边是「看什么」，右边是「做什么」 -->
-                <span class="pc-spacer" />
-                <el-button size="small" @click="openLocateTable">按表 ID 定位</el-button>
-                <el-button size="small" @click="openRegisterTable">注册已有表</el-button>
-              </div>
               <el-table v-loading="tablesList.loading.value" :data="filteredTables" size="small">
                 <el-table-column label="表名" min-width="160">
                   <template #default="{ row }">
@@ -184,14 +204,6 @@
 
             <!-- 视图 -->
             <template v-else-if="tab === 'views'">
-              <div class="pc-tools-row">
-                <span class="pc-dim">SQL 视图，定义由服务端整篇保存。</span>
-                <span class="pc-spacer" />
-                <el-button size="small" @click="openCreateView">
-                  <el-icon><Plus /></el-icon>
-                  <span class="pc-btn-text">新建视图</span>
-                </el-button>
-              </div>
               <el-table v-loading="viewsList.loading.value" :data="viewsList.items.value" size="small">
                 <el-table-column prop="name" label="视图名" min-width="200" />
                 <el-table-column label="操作" width="150" align="right">
@@ -206,37 +218,12 @@
 
             <!-- 函数 -->
             <template v-else-if="tab === 'functions'">
-              <div class="pc-tools-row">
-                <span class="pc-dim">函数定义支持 file / sql / lambda 三种，控制台按 JSON 原样提交。</span>
-                <span class="pc-spacer" />
-                <el-button size="small" @click="openCreateFunction">
-                  <el-icon><Plus /></el-icon>
-                  <span class="pc-btn-text">新建函数</span>
-                </el-button>
-              </div>
               <el-table v-loading="functionsList.loading.value" :data="functionsList.items.value" size="small">
                 <el-table-column prop="name" label="函数名" min-width="200" />
                 <el-table-column label="操作" width="110" align="right">
                   <template #default="{ row }">
                     <IconAction icon="View" label="详情" @click="showFunction(row)" />
                     <IconAction icon="Delete" label="删除" type="danger" @click="confirmDropFunction(row.name)" />
-                  </template>
-                </el-table-column>
-              </el-table>
-            </template>
-
-            <!-- 语义视图 -->
-            <template v-else>
-              <div class="pc-tools-row">
-                <span class="pc-dim">语义视图按格式整篇保存（上限 1 MiB）。</span>
-              </div>
-              <el-table v-loading="semanticViewsList.loading.value" :data="semanticViewsList.items.value" size="small">
-                <el-table-column prop="name" label="名称" min-width="200" />
-                <el-table-column label="操作" width="150" align="right">
-                  <template #default="{ row }">
-                    <IconAction icon="View" label="查看定义" @click="showSemanticView(row)" />
-                    <IconAction icon="Edit" label="编辑" @click="openUpsertSemanticView(row)" />
-                    <IconAction icon="Delete" label="删除" type="danger" @click="confirmDropSemanticView(row)" />
                   </template>
                 </el-table-column>
               </el-table>
@@ -762,7 +749,7 @@ function createPagedList(field, call) {
 
   async function load(reset = true) {
     const current = ++sequence
-    // 第二个短路条件是 Iceberg catalog：这四条路径（表 / 视图 / 函数 / 语义视图）
+    // 第二个短路条件是 Iceberg catalog：这三条路径（表 / 视图 / 函数）
     // 都是 Paimon 协议面的，对一个 Iceberg catalog 发出去只会拿到 404。
     // 与数据库列表同一个策略——守卫收在 loader 里，页签切换、刷新、「重试」都盖得住。
     if (!prefix.value || !database.value || icebergCatalog.value) {
@@ -807,13 +794,11 @@ function createPagedList(field, call) {
 const tablesList = createPagedList('tableDetails', (p, d, q) => catalogApi.listTableDetails(p, d, q))
 const viewsList = createPagedList('views', (p, d, q) => catalogApi.listViews(p, d, q))
 const functionsList = createPagedList('functions', (p, d, q) => catalogApi.listFunctions(p, d, q))
-const semanticViewsList = createPagedList('semanticViews', (p, d, q) => catalogApi.listSemanticViews(p, d, q))
 
 const lists = {
   tables: tablesList,
   views: viewsList,
   functions: functionsList,
-  semanticViews: semanticViewsList,
 }
 
 const currentList = computed(() => lists[tab.value] || tablesList)
@@ -828,7 +813,6 @@ const emptyText = computed(() => {
     tables: '这个数据库里还没有表',
     views: '这个数据库里还没有视图',
     functions: '这个数据库里还没有函数',
-    semanticViews: '这个数据库里还没有语义视图',
   }[tab.value] || '暂无数据'
 })
 
@@ -1457,51 +1441,6 @@ async function confirmDropFunction(name) {
     await catalogApi.dropFunction(prefix.value, database.value, name)
     notifySuccess(`已删除函数 ${name}`)
     functionsList.load(true)
-  } catch (error) {
-    notifyError(error)
-  }
-}
-
-// ------------------------------------------------------------------ 语义视图
-
-async function showSemanticView(row) {
-  try {
-    const payload = await catalogApi.getSemanticView(prefix.value, database.value, row.name)
-    detail.title = `语义视图：${row.name}`
-    detail.payload = payload
-    detail.open = true
-  } catch (error) {
-    notifyError(error)
-  }
-}
-
-async function openUpsertSemanticView(row) {
-  try {
-    const payload = await catalogApi.getSemanticView(prefix.value, database.value, row.name)
-    const format = payload.definition?.format || 'ossie-yaml'
-    const content = window.prompt(`编辑语义视图「${row.name}」的定义内容`, payload.definition?.content || '')
-    if (content === null) return
-    await catalogApi.upsertSemanticView(prefix.value, database.value, row.name, {
-      definition: { format, content },
-    })
-    notifySuccess('已保存')
-    semanticViewsList.load(true)
-  } catch (error) {
-    notifyError(error)
-  }
-}
-
-async function confirmDropSemanticView(row) {
-  const ok = await confirmDanger({
-    title: '删除语义视图',
-    target: `确认删除语义视图「${row.name}」？`,
-    detail: '定义内容会被移除，且无法恢复。',
-  })
-  if (!ok) return
-  try {
-    await catalogApi.dropSemanticView(prefix.value, database.value, row.name)
-    notifySuccess(`已删除 ${row.name}`)
-    semanticViewsList.load(true)
   } catch (error) {
     notifyError(error)
   }
