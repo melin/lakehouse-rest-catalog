@@ -21,8 +21,8 @@ Paimon 与 Iceberg」的协议方案。本文件解决它的前置问题：**代
 | 命名族 | **`lakehouse-rest-*`**，groupId 仍是 `io.github.melin` |
 | 骨架模块 | `lakehouse-rest-parent`（聚合）、`lakehouse-rest-spring-parent`（服务端世界的父）、`-core`、`-storage`、`-server` |
 | 协议面模块 | `lakehouse-rest-protocol-paimon`、`lakehouse-rest-protocol-iceberg` —— **格式名只允许出现在协议面模块的 artifactId 里**（§2.2） |
-| 集群侧模块 | `lakehouse-rest-optimizer`；Spark 侧自 §13 起拆成 `lakehouse-rest-spark-parent` + `-common` + `-3.5` + `-4.1`（一份源码、两个版本产物） |
-| Maven 项目数 | 4（1 聚合 + 3 jar）→ **8**（阶段 0–3：2 个 pom + 6 个 jar）→ **9**（`-protocol-iceberg`，§12）→ **12**（Spark 侧拆版本，§13） |
+| 集群侧模块 | `lakehouse-rest-optimizer`；Spark 侧自 §13 起拆成 `lakehouse-rest-spark-parent` + `-common` + `-3.5` + `-4.1`（一份源码、两个版本产物）；Flink 侧（§14）拆成 `lakehouse-rest-flink-parent` + `-1.20` + `-2.3`（同样一份源码、两个版本产物） |
+| Maven 项目数 | 4（1 聚合 + 3 jar）→ **8**（阶段 0–3：2 个 pom + 6 个 jar）→ **9**（`-protocol-iceberg`，§12）→ **12**（Spark 侧拆版本，§13）→ **15**（Flink 侧两个版本，§14） |
 | Java 包名 | `io.github.melin.lakehouse.rest`。阶段 0–3 **不动它**（拆分不需要改包名，见 §4.3(2)）；阶段 4 按 §4.3(2) 预告的配方改成 `paimon.rest` 并给 Spark 扩展留了兼容壳（§9.2）；第二次改到当前名（§10） |
 | Spring 配置前缀 | **本已判定不改，后改为 `lakehouse.rest.*`**（一次性对齐，不是迁移：这份配置从未离开本仓库）。理由与实施见 §4.3(1) |
 | k8s 资源名 / 库名 / 表前缀 | **不改**。它们绑的是已部署的实例与已有数据，不是构建产物（§4.3(3)(4)） |
@@ -92,6 +92,10 @@ io.github.melin:lakehouse-rest-parent                     pom   聚合器 + 集�
 │   ├── lakehouse-rest-spark-3.5                          jar   Spark 3.5 / Scala 2.12 / ANTLR 4.9.3
 │   └── lakehouse-rest-spark-4.1                          jar   Spark 4.1 / Scala 2.13 / ANTLR 4.13.1
 │       （shared/ 不是模块：两个版本模块共用的源码目录，见 §13）
+├── lakehouse-rest-flink-parent                           pom   Flink 侧的聚合（复用根 POM 的依赖世界）
+│   ├── lakehouse-rest-flink-1.20                         jar   Flink 1.20.1 + Paimon 2.0.0 + Iceberg 1.11.0
+│   └── lakehouse-rest-flink-2.3                          jar   Flink 2.3.0 + Paimon 2.0.0（2.2 连接器）+ Iceberg 1.12.0
+│       （shared/ 同上：catalog 选项与端到端用例的唯一一份，见 §14）
 └── lakehouse-rest-optimizer                              jar   k8s 优化任务
 ```
 
@@ -1053,3 +1057,33 @@ Java 包        ：paimonrest → paimon.rest → io.github.melin.lakehouse.rest
 实测规模       ：core 86 · storage 8 · protocol-paimon 35 · server 39（共 168 个类）
 实际落点的差异 ：见 §8.2（六处，均由搬迁前的依赖图算出）
 ```
+
+---
+
+## 14. 落地记录之六：Flink 侧的两个版本模块
+
+**动机**：服务端要能被 Flink SQL 直接读写，而不是只有 Spark。Flink 的
+`CatalogFactory` / Table 工厂按版本编译，1.20 与 2.x 的字节码不兼容——与 Spark 3.5 / 4.1
+是同一类问题，解法也照搬。
+
+**结构**：`lakehouse-rest-flink-parent`（pom）+ `-1.20` + `-2.3`，共用
+`lakehouse-rest-flink/shared/src/{main,test}/java`。主源码**不 import 任何 Flink 类型**
+（只拼 catalog 选项与 `CREATE CATALOG` 字符串），否则 shared 就必须选一个版本编译。
+
+**与 Spark 模块的三处不同**：
+
+1. 没有 `-common`：Flink 侧不需要自研 REST 客户端，连接器自己会讲 REST；
+   管理 API 的调用只出现在测试里（`FlinkE2eSupport`），用 JDK HttpClient 直连。
+2. 没有 SQL 语法扩展：Flink 的解析入口与 Spark 的 `ParserInterface` 不是一回事，
+   复制一套只会多一处要跟着服务端词表改的地方。
+3. 版本属性只在本模块内：`flink.version` / `paimon.flink.artifact` / `iceberg.flink.artifact`，
+   不进根 POM——根 POM 的 `spark.version` 那组已经够多，再混进来分不清谁绑谁。
+
+**版本取舍**：1.20 钉 1.20.1（Paimon 2.0.0 连接器就是按它编的）；2.3 用 2.3.0 +
+Iceberg 1.12.0（`iceberg-flink-runtime-2.3` 从 1.12.0 才有）。Paimon 没有 2.3 构件，
+2.2 的连接器实测在 2.3.0 上可用——这是实测结论，Paimon 发布 2.3 构件后应换回。
+
+**验收**：`scripts/e2e-flink-sql.sh` 自起 h2 实例，两个版本各跑 Paimon（建主键表、
+主键更新）与 Iceberg（建表、写入、读回），共 12 个用例。细节（两套选项键名、
+`sequence.field` 的必要性、缺 Hadoop / connector / `add-opens` 的报错）见
+[`flink-rest-catalog.md`](flink-rest-catalog.md)。

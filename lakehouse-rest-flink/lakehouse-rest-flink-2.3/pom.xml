@@ -1,0 +1,174 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+	<modelVersion>4.0.0</modelVersion>
+
+	<parent>
+		<groupId>io.github.melin</groupId>
+		<artifactId>lakehouse-rest-flink-parent</artifactId>
+		<version>0.0.1-SNAPSHOT</version>
+		<relativePath>../pom.xml</relativePath>
+	</parent>
+
+	<artifactId>lakehouse-rest-flink-2.3</artifactId>
+	<name>lakehouse-rest-flink-2.3</name>
+	<description>Flink 2.3：通过 REST catalog 访问 Paimon 与 Iceberg</description>
+
+	<properties>
+		<flink.version>2.3.0</flink.version>
+		<!--
+			Iceberg 必须 1.12.0：`iceberg-flink-runtime-2.3` 这个构件从 1.12.0 才存在
+			（1.11.0 只发到 flink-1.20）。服务端是 1.11.0，但 Iceberg REST 的元数据
+			契约在 1.11 → 1.12 之间没有破坏性变化，客户端新一点不影响读服务端；
+			反过来（服务端新、客户端旧）才会踩新字段。
+		-->
+		<iceberg.version>1.12.0</iceberg.version>
+		<iceberg.flink.artifact>iceberg-flink-runtime-2.3</iceberg.flink.artifact>
+
+		<!--
+			Paimon 目前**没有** `paimon-flink-2.3` 构件（Maven Central 上只到
+			`paimon-flink-2.2`）。这里挂 2.2 的连接器，**实测在 Flink 2.3.0 上可用**：
+			建 Paimon 主键表、两次写同一主键、读回合并后的值，三个用例全过
+			（见 docs/flink-rest-catalog.md 的「实测结论」）。
+
+			为什么能跨版本：Paimon 的 Flink 连接器只用 Table/Catalog 工厂的稳定面，
+			而 2.x 在 2.0 就把这套接口定形了，2.1 → 2.3 是增量。反过来要记住：
+			这是**实测结论而非保证**，Paimon 发布 2.3 连接器后应换回官方构件，
+			并把版本对齐服务端的 paimon.version。
+		-->
+		<paimon.flink.artifact>paimon-flink-2.2</paimon.flink.artifact>
+	</properties>
+
+	<dependencies>
+		<dependency>
+			<groupId>org.apache.flink</groupId>
+			<artifactId>flink-table-api-java</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.apache.flink</groupId>
+			<artifactId>flink-table-api-java-bridge</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.apache.flink</groupId>
+			<artifactId>flink-table-planner-loader</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.apache.flink</groupId>
+			<artifactId>flink-table-runtime</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.apache.flink</groupId>
+			<artifactId>flink-streaming-java</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.apache.flink</groupId>
+			<artifactId>flink-clients</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.apache.flink</groupId>
+			<artifactId>flink-runtime</artifactId>
+		</dependency>
+
+		<dependency>
+			<groupId>org.apache.paimon</groupId>
+			<artifactId>${paimon.flink.artifact}</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.apache.iceberg</groupId>
+			<artifactId>${iceberg.flink.artifact}</artifactId>
+		</dependency>
+
+		<dependency>
+			<groupId>org.apache.flink</groupId>
+			<artifactId>flink-connector-base</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.apache.flink</groupId>
+			<artifactId>flink-connector-files</artifactId>
+		</dependency>
+
+		<dependency>
+			<groupId>org.apache.hadoop</groupId>
+			<artifactId>hadoop-common</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.apache.hadoop</groupId>
+			<artifactId>hadoop-hdfs-client</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.apache.hadoop</groupId>
+			<artifactId>hadoop-mapreduce-client-core</artifactId>
+		</dependency>
+
+		<dependency>
+			<groupId>org.junit.jupiter</groupId>
+			<artifactId>junit-jupiter</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.junit.platform</groupId>
+			<artifactId>junit-platform-launcher</artifactId>
+			<scope>test</scope>
+		</dependency>
+	</dependencies>
+
+	<build>
+		<plugins>
+			<plugin>
+				<groupId>org.codehaus.mojo</groupId>
+				<artifactId>build-helper-maven-plugin</artifactId>
+				<executions>
+					<execution>
+						<id>add-shared-sources</id>
+						<phase>generate-sources</phase>
+						<goals>
+							<goal>add-source</goal>
+						</goals>
+						<configuration>
+							<sources>
+								<source>${project.basedir}/../shared/src/main/java</source>
+							</sources>
+						</configuration>
+					</execution>
+					<execution>
+						<id>add-shared-test-sources</id>
+						<phase>generate-test-sources</phase>
+						<goals>
+							<goal>add-test-source</goal>
+						</goals>
+						<configuration>
+							<sources>
+								<source>${project.basedir}/../shared/src/test/java</source>
+							</sources>
+						</configuration>
+					</execution>
+				</executions>
+			</plugin>
+
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-surefire-plugin</artifactId>
+				<configuration>
+					<useSystemClassLoader>true</useSystemClassLoader>
+					<useManifestOnlyJar>false</useManifestOnlyJar>
+					<!--
+						Flink 在 JDK 17 上要求一组「add-opens」JVM 参数：它的 Kryo
+						序列化器会反射 `Arrays$ArrayList` 之类的字段，模块系统默认拒绝，
+						症状是 `InaccessibleObjectException` 从 com.twitter.chill 里
+						冒出来，与「SQL 写错了」毫无关系。Iceberg 的 INSERT 会走到 Kryo
+						（行类型没有被识别成内部序列化器），Paimon 那条正好不经过。
+					-->
+					<argLine>--add-opens=java.base/java.util=ALL-UNNAMED
+						--add-opens=java.base/java.lang=ALL-UNNAMED
+						--add-opens=java.base/java.lang.invoke=ALL-UNNAMED
+						--add-opens=java.base/java.net=ALL-UNNAMED
+						--add-opens=java.base/java.nio=ALL-UNNAMED
+						--add-opens=java.base/java.time=ALL-UNNAMED
+						--add-opens=java.base/java.util.concurrent=ALL-UNNAMED
+						--add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED
+						--add-opens=java.base/sun.nio.ch=ALL-UNNAMED</argLine>
+				</configuration>
+			</plugin>
+		</plugins>
+	</build>
+</project>

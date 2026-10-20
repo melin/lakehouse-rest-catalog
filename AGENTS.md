@@ -116,7 +116,7 @@ REST Management API**（RBAC 管理面）与一个 **Vue 3 管理控制台**；�
 
 ```bash
 # ---- 构建 / 测试（JDK 17 或 21）----
-JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn -o -DskipTests clean install   # 全量（9 个模块，含 enforcer 校验）
+JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn -o -DskipTests clean install   # 全量（11 个模块，含 enforcer 校验）
 JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn -o -DskipTests -pl :lakehouse-rest-server -am clean package
                                                 # 只要服务端 jar（-am 会连上游 core/storage/两个协议面一起构建）
 JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn -o test        # 全量测试
@@ -134,6 +134,7 @@ open http://127.0.0.1:8080/console/        # 默认账号密码 admin/admin
 BASE=http://127.0.0.1:8080 ./scripts/api-sweep.sh            # Catalog API 全部 60 个 operation
 BASE=http://127.0.0.1:8080 ./scripts/management-sweep.sh     # 管理面扩展端点 + 权限端点
 ./scripts/e2e-spark-sql.sh                                   # 自起 h2 实例，跑 Spark 四件套
+./scripts/e2e-flink-sql.sh                                   # 自起 h2 实例，Flink 1.20 与 2.3 各跑 Paimon + Iceberg
 BASE=... CLIENT_ID=... CLIENT_SECRET=... STATIC_TOKEN=... ./scripts/sweep-console-auth.sh
 cd lakehouse-rest-console && BASE=... CLIENT_ID=... CLIENT_SECRET=... npm run check:login
 
@@ -224,13 +225,18 @@ lakehouse-rest-spark/      语法扩展（16 条管理语句），一份源码�
                         两个版本模块各自只有一个 LakehouseRestSqlParser（4.1 侧补
                         parseRoutineParam），其余代码全部来自 shared/
                         旧包名 `io.github.melin.paimonrest.spark` 下的兼容空壳已删除（见第 7 节）
+lakehouse-rest-flink/      Flink SQL 读写 Paimon / Iceberg，一份源码、两个版本（1.20 / 2.3）：
+                        shared/src/main/java/…/LakehouseRestFlinkCatalogs.java   两套 catalog 选项
+                        shared/src/test/java/…        Paimon 主键更新 / Iceberg 读写（各 3 例）
+                        lakehouse-rest-flink-1.20/   Flink 1.20.1 + Paimon 2.0.0 + Iceberg 1.11.0
+                        lakehouse-rest-flink-2.3/    Flink 2.3.0 + Paimon 2.0.0（2.2 连接器）+ Iceberg 1.12.0
 lakehouse-rest-optimizer/  表优化执行体（被 k8s 提交起来跑，不经服务端 classpath）：
                         PaimonProcedures、TableOptimizerJob、OptimizerOptions、OptimizationApiClient
 deploy/kubernetes/      kustomize 清单（有独立 README）
 spec/                   两份 OpenAPI 规格的仓库副本（运行时可从 /<name> 下载）
 sql/                    MySQL 建表语句（生成物）
 scripts/                验收 / 生成 / 校验 / 镜像构建脚本
-docs/                   20 份设计文档
+docs/                   21 份设计文档
 ```
 
 服务端四模块的**类数**：core 86 · storage 8 · protocol-paimon 35 · server 39（共 168）。
@@ -264,6 +270,7 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
 | `spark-sql-extension.md` | 改 Spark 扩展：做法、两个约束、测试分层 |
 | `spark-paimon-rest-e2e.md` | Spark 经本服务端建表：连接配置、可执行 SQL、报错对照、三种非 Paimon 表（Format / Object / Lance）的读写边界（§4.4） |
 | `spark-iceberg-rest-e2e.md` | 让 Spark 通过本服务端建 **Iceberg** 表：`spark.sql.catalog.*` 配置（含 `rest.auth.type` 与 `scope=PRINCIPAL_ROLE:ALL` 两个坑）、可执行 SQL、与 Paimon 那套的差异对照、一期不做的 9 个端点会怎么撞上来（含 **CTAS 受 `transactions/commit` 缺失影响**）。**三层都已实测**：协议层、官方 Java 客户端层、Spark 引擎层（`IcebergTableDdlTests`）；第 4 节记着跑出来的四条边界（CTAS / `RENAME TO` 不带 catalog 前缀 / 元数据表不能用四段名 / decimal 规范化） |
+| `flink-rest-catalog.md` | 让 Flink SQL 读写 Paimon / Iceberg：两个版本模块为什么拆、两套 catalog 选项（`metastore=rest` vs `catalog-type=rest`、`warehouse` 是 prefix、`token.provider=bear`）、实测矩阵、**主键更新必须配 `sequence.field`**（否则同键先后未定义）、缺 Hadoop / `flink-connector-base|files` / JDK17 `add-opens` 的报错对照、Iceberg 无 upsert |
 | `authorization.md` | 权限实体链、授权映射、失败关闭的取舍；**多级 namespace 的判定口径在 §2.6**（两条链存的形状不同，按点号拼成路径再比，逐段比会静默不命中） |
 | `console.md` | 改控制台 / 排查「页面空列表」：分层、端点契约表、机械校验、加页面清单 |
 | `console-table-detail.md` | 改表详情页：页签随**表格式**（表级 `schema.options.type`）伸缩的数据来源（详细信息含字段/分区列表、表目录文件列表、「为什么没有权限页签」）、按需加载与非 Paimon 表不问快照端点、破坏性操作 |

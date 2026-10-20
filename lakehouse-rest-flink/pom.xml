@@ -1,0 +1,220 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+	<modelVersion>4.0.0</modelVersion>
+
+	<parent>
+		<groupId>io.github.melin</groupId>
+		<artifactId>lakehouse-rest-parent</artifactId>
+		<version>0.0.1-SNAPSHOT</version>
+		<relativePath>../pom.xml</relativePath>
+	</parent>
+
+	<artifactId>lakehouse-rest-flink-parent</artifactId>
+	<packaging>pom</packaging>
+	<name>lakehouse-rest-flink-parent</name>
+	<description>Flink SQL 通过 REST catalog 访问 Lakehouse：一份共享源码，按 Flink 1.20 / 2.3 各出一个模块</description>
+
+	<!--
+		为什么按 Flink 版本拆成两个模块。
+
+		Flink 的 Catalog / Table 工厂是**按版本编译**的：`CatalogFactory` 接口在 1.20 与 2.x
+		之间换过包路径与签名（`flink-table-common` 的组织方式也变过），连接器又各自
+		只认自己编译时的那个版本。一份 class 不可能同时装进两个版本——症状不是
+		「找不到类」这么直白，而是 `NoSuchMethodError` 出现在 Catalog 初始化深处。
+
+		因此沿用 Spark 模块的做法：源码只有一份（shared/），两个版本模块各自用
+		**自己的 Flink / Paimon / Iceberg 构件**编译与跑测试。
+
+		两个子模块的职责：
+		  lakehouse-rest-flink-1.20   Flink 1.20.1 + Paimon 2.0.0 + Iceberg 1.11.0
+		  lakehouse-rest-flink-2.3    Flink 2.3.0 + Iceberg 1.12.0（Paimon 见下面的说明）
+
+		shared/ 不是 Maven 模块（没有 pom），它是两个版本模块共用的**源码目录**：
+		  shared/src/main/java   目录选项与 DDL 的唯一一份（纯 Java，不碰 Flink API）
+		  shared/src/test/java   端到端用例（唯一一份，两个版本各跑一遍）
+
+		为什么主源码不碰 Flink API：一旦主源码 `import org.apache.flink.*`，它就必须选一个
+		Flink 版本编译，而 1.20 与 2.3 的字节码互不兼容——共享源码的意义就没了。
+		这里只需要「拼 catalog 选项 / 拼 CREATE CATALOG DDL」，用 Map 与 String 就够。
+	-->
+
+	<modules>
+		<module>lakehouse-rest-flink-1.20</module>
+		<module>lakehouse-rest-flink-2.3</module>
+	</modules>
+
+	<properties>
+		<!--
+			默认值 = Flink 1.20 那一套，2.3 模块整组覆盖：
+
+			  flink.version / paimon.flink.artifact / iceberg.flink.artifact / iceberg.version
+
+			**这四个必须一起改**：Flink 版本、两个连接器的构件名、Iceberg bundle 的版本
+			本来就是绑定的（连接器只认自己编译时的 Flink 小版本）。只改一半的症状是
+			「编译过、运行期 NoSuchMethodError」或者「Catalog 建不出来但没有任何提示」。
+		-->
+		<flink.version>1.20.1</flink.version>
+		<!--
+			Paimon 的 Flink 连接器。构件名带 Flink 主次版本后缀，因此用属性承载完整名字，
+			dependencyManagement 里只引用属性。
+
+			版本跟根 POM 的 paimon.version 走（当前 2.0.0）：连接器自带 paimon-core，
+			它决定「引擎侧把 schema / 提交信息写成什么样」，必须与服务端
+			（spring-parent 的 paimon.version）一致，否则症状是引擎读不回自己刚写的表。
+		-->
+		<paimon.flink.artifact>paimon-flink-1.20</paimon.flink.artifact>
+		<!--
+			Iceberg 的 Flink bundle，构件名同样带 Flink 版本后缀。
+
+			2.3 模块必须覆盖成 1.12.0：Iceberg 从 1.12.0 才发布 `iceberg-flink-runtime-2.3`，
+			1.11.0 没有这个构件（只有到 1.20 为止）。反过来，1.20 模块不要跳到 1.12.0——
+			版本跟服务端（spring-parent 的 iceberg.version）对齐更省事。
+		-->
+		<iceberg.flink.artifact>iceberg-flink-runtime-1.20</iceberg.flink.artifact>
+
+		<!--
+			Hadoop 只用于测试，但**不能省**：Paimon 的 RESTCatalog 在构造时调用
+			`CatalogContext#hadoopConf()`，类路径上没有 Hadoop 就直接抛
+			「Hadoop configuration is not available for this CatalogContext」——
+			连 catalog 都建不出来，且报错完全没提 Hadoop 缺失这件事。
+			Flink 发行版默认不带 Hadoop（flink-shaded-hadoop 只在启用 HDFS 时才装），
+			所以这里由测试自己提供。
+		-->
+		<hadoop.version>3.4.1</hadoop.version>
+	</properties>
+
+	<dependencyManagement>
+		<dependencies>
+			<!--
+				Flink 自身：**只用于测试**。主源码不依赖 Flink，发布 jar 里也没有 Flink。
+
+				为什么测试必须引真实 Flink：`CREATE CATALOG ... WITH ('type'='paimon', ...)`
+				由 Flink 的 CatalogFactory 发现机制 + 连接器自己的 Catalog 实现执行，
+				`CREATE TABLE / INSERT / SELECT` 更是整条 Planner → Runtime 链路。
+				用桩替代只能证明「我们与自己的假设自洽」，证明不了「Flink 与连接器
+				真的接受服务端的响应」。
+			-->
+			<dependency>
+				<groupId>org.apache.flink</groupId>
+				<artifactId>flink-table-api-java</artifactId>
+				<version>${flink.version}</version>
+				<scope>test</scope>
+			</dependency>
+			<dependency>
+				<groupId>org.apache.flink</groupId>
+				<artifactId>flink-table-api-java-bridge</artifactId>
+				<version>${flink.version}</version>
+				<scope>test</scope>
+			</dependency>
+			<dependency>
+				<groupId>org.apache.flink</groupId>
+				<artifactId>flink-table-planner-loader</artifactId>
+				<version>${flink.version}</version>
+				<scope>test</scope>
+			</dependency>
+			<dependency>
+				<groupId>org.apache.flink</groupId>
+				<artifactId>flink-table-runtime</artifactId>
+				<version>${flink.version}</version>
+				<scope>test</scope>
+			</dependency>
+			<dependency>
+				<groupId>org.apache.flink</groupId>
+				<artifactId>flink-streaming-java</artifactId>
+				<version>${flink.version}</version>
+				<scope>test</scope>
+			</dependency>
+			<dependency>
+				<groupId>org.apache.flink</groupId>
+				<artifactId>flink-clients</artifactId>
+				<version>${flink.version}</version>
+				<scope>test</scope>
+			</dependency>
+			<dependency>
+				<groupId>org.apache.flink</groupId>
+				<artifactId>flink-runtime</artifactId>
+				<version>${flink.version}</version>
+				<scope>test</scope>
+			</dependency>
+
+			<dependency>
+				<groupId>org.apache.paimon</groupId>
+				<artifactId>${paimon.flink.artifact}</artifactId>
+				<version>${paimon.version}</version>
+				<scope>test</scope>
+			</dependency>
+			<dependency>
+				<groupId>org.apache.iceberg</groupId>
+				<artifactId>${iceberg.flink.artifact}</artifactId>
+				<version>${iceberg.version}</version>
+				<scope>test</scope>
+			</dependency>
+			<!--
+				Paimon 的 Flink source 继承 `SingleThreadMultiplexSourceReaderBase`，
+				那个类在 flink-connector-base 里；它**不是** flink-streaming-java 的传递依赖，
+				少了它写入能成、一读就 NoClassDefFoundError（报错发生在 mini cluster
+				的任务线程里，看起来像服务端没数据）。
+			-->
+			<dependency>
+				<groupId>org.apache.flink</groupId>
+				<artifactId>flink-connector-base</artifactId>
+				<version>${flink.version}</version>
+				<scope>test</scope>
+			</dependency>
+			<!--
+				同上：Paimon 的 FileStoreSourceReader 直接用 `flink-connector-files`
+				的 BulkFormat / RecordIterator。缺了它仍然是「写完能提交、一读就崩」，
+				而且崩在任务线程里。
+			-->
+			<dependency>
+				<groupId>org.apache.flink</groupId>
+				<artifactId>flink-connector-files</artifactId>
+				<version>${flink.version}</version>
+				<scope>test</scope>
+			</dependency>
+
+			<dependency>
+				<groupId>org.apache.hadoop</groupId>
+				<artifactId>hadoop-common</artifactId>
+				<version>${hadoop.version}</version>
+				<scope>test</scope>
+			</dependency>
+			<!--
+				HdfsConfiguration 在 hadoop-hdfs-client 里，而 Paimon 的
+				HadoopUtils.getHadoopConfiguration 会显式加载它。只给 hadoop-common 时
+				抛的是 NoClassDefFoundError: org/apache/hadoop/hdfs/HdfsConfiguration，
+				被 CatalogContext 吞成「Hadoop configuration is not available」——
+				从报错完全看不出少了这个包。
+			-->
+			<dependency>
+				<groupId>org.apache.hadoop</groupId>
+				<artifactId>hadoop-hdfs-client</artifactId>
+				<version>${hadoop.version}</version>
+				<scope>test</scope>
+			</dependency>
+			<!--
+				再往下一层：Paimon 的读路径用 Hadoop 的 FileInputFormat 判定「一批能读多少」，
+				缺了 mapreduce-client-core 会在 SplitFetcher 线程里 NoClassDefFoundError。
+			-->
+			<dependency>
+				<groupId>org.apache.hadoop</groupId>
+				<artifactId>hadoop-mapreduce-client-core</artifactId>
+				<version>${hadoop.version}</version>
+				<scope>test</scope>
+			</dependency>
+		</dependencies>
+	</dependencyManagement>
+
+	<build>
+		<pluginManagement>
+			<plugins>
+				<plugin>
+					<groupId>org.codehaus.mojo</groupId>
+					<artifactId>build-helper-maven-plugin</artifactId>
+					<version>3.6.2</version>
+				</plugin>
+			</plugins>
+		</pluginManagement>
+	</build>
+</project>

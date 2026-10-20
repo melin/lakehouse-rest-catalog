@@ -59,6 +59,10 @@ paimon-rest/
 │   ├── lakehouse-rest-spark-common/  REST 客户端：纯 Java，无 Spark 依赖
 │   ├── lakehouse-rest-spark-3.5/     Spark 3.5.9 / Scala 2.12 / ANTLR 4.9.3
 │   └── lakehouse-rest-spark-4.1/     Spark 4.1.2 / Scala 2.13 / ANTLR 4.13.1
+├── lakehouse-rest-flink/       Flink SQL 通过 REST catalog 读写：一份源码、两个版本
+│   ├── shared/                 两个 Flink 版本共用的源码（catalog 选项 + 端到端用例）
+│   ├── lakehouse-rest-flink-1.20/  Flink 1.20.1 + Paimon 2.0.0 + Iceberg 1.11.0
+│   └── lakehouse-rest-flink-2.3/   Flink 2.3.0 + Paimon 2.0.0（2.2 连接器）+ Iceberg 1.12.0
 ├── lakehouse-rest-optimizer/   表存储优化任务（Spark，由服务端投到 k8s 运行）
 ├── deploy/kubernetes/       Kubernetes 部署清单（kustomize 组装，见其目录下的 README）
 ├── spec/                    OpenAPI 规格副本（两套协议面各一份）
@@ -97,14 +101,18 @@ Spark 侧是 Scala 2.12 / Spark 3.5 / Jackson 2 / ANTLR 4.9.3。
 是构建期断言。完整依赖图与规则细节见
 [`maven-module-design.md`](docs/maven-module-design.md)。
 
-Maven 坐标与包名：`groupId` 为 `io.github.melin`，十二个 artifact 是
+Maven 坐标与包名：`groupId` 为 `io.github.melin`，十五个 artifact 是
 `lakehouse-rest-parent`（聚合）、`lakehouse-rest-spring-parent`（服务端父 POM）、
 `lakehouse-rest-core`、`lakehouse-rest-storage`、`lakehouse-rest-protocol-paimon`、
 `lakehouse-rest-protocol-iceberg`、`lakehouse-rest-server`、
 `lakehouse-rest-spark-parent`（Spark 侧聚合）、`lakehouse-rest-spark-common`、
-`lakehouse-rest-spark-3.5`、`lakehouse-rest-spark-4.1`、`lakehouse-rest-optimizer`。
+`lakehouse-rest-spark-3.5`、`lakehouse-rest-spark-4.1`、
+`lakehouse-rest-flink-parent`（Flink 侧聚合）、`lakehouse-rest-flink-1.20`、
+`lakehouse-rest-flink-2.3`、`lakehouse-rest-optimizer`。
 两个 Spark 版本模块都产出「语法扩展 + 客户端」可用的 jar：一个是给 Spark 3.5 的，
-一个是给 Spark 4.1 的，装哪个由集群版本决定（见第 5 节）。
+一个是给 Spark 4.1 的，装哪个由集群版本决定（见第 5 节）。Flink 两个版本模块只带
+「catalog 选项 + 端到端用例」，数据面由 Paimon / Iceberg 自己的连接器负责
+（见 [`flink-rest-catalog.md`](docs/flink-rest-catalog.md)）。
 包前缀为 `io.github.melin.lakehouse.rest`（三轮改定：`io.github.melin.paimonrest` →
 `io.github.melin.lakehouse.rest` → 本名 → 各协议面再加一层格式子包，主前缀与 artifactId 的
 `lakehouse` 对齐），Spark 模块在其下再用 `.spark` 子包（如
@@ -137,7 +145,7 @@ k8s 资源名的 `paimon-` 前缀**故意不改**：它不是产品名，是历�
 （StatefulSet 与 PVC 引用）。见
 [`maven-module-design.md`](docs/maven-module-design.md) §8.6。
 
-`docs/` 里二十份文档的分工：
+`docs/` 里二十一份文档的分工：
 
 | 文档 | 读它的时机 |
 | --- | --- |
@@ -149,6 +157,7 @@ k8s 资源名的 `paimon-` 前缀**故意不改**：它不是产品名，是历�
 | [`spark-sql-extension.md`](docs/spark-sql-extension.md) | 要改这个 Spark 扩展——语法扩展的做法、两个必须知道的约束、测试分层 |
 | [`spark-paimon-rest-e2e.md`](docs/spark-paimon-rest-e2e.md) | 要让 Spark 通过本服务端建 Paimon 表——连接配置、可执行的 SQL、报错对照表 |
 | [`spark-iceberg-rest-e2e.md`](docs/spark-iceberg-rest-e2e.md) | 要让 Spark 通过本服务端建 Iceberg 表——`spark.sql.catalog.*` 配置、可执行的 SQL、与 Paimon 那套的差异对照 |
+| [`flink-rest-catalog.md`](docs/flink-rest-catalog.md) | 要让 Flink SQL 读写 Paimon / Iceberg——两个版本模块的划分、两套 catalog 选项（`metastore=rest` vs `catalog-type=rest`）、实测结论（含主键更新要配 `sequence.field`）、缺 Hadoop / connector / `add-opens` 的报错对照 |
 | [`authorization.md`](docs/authorization.md) | 要理解权限怎么判——实体链、授权映射、失败关闭的取舍 |
 | [`console.md`](docs/console.md) | 要改 Web 控制台或排查「页面空列表」——前端分层、端点契约表、机械校验 |
 | [`console-table-detail.md`](docs/console-table-detail.md) | 要改表详情页——页签随表格式（Paimon / Format / Object / Lance）伸缩的数据来源、为什么授权不在这页、破坏性操作与边界 |
@@ -190,14 +199,15 @@ mysql -h 127.0.0.1 -u root -p < sql/schema-mysql.sql
 ### 2.2 构建与运行
 
 ```bash
-# 全量构建（9 个模块；用 install 而不是 package，因为模块之间有内部依赖）
+# 全量构建（11 个模块；用 install 而不是 package，因为模块之间有内部依赖）
 JAVA_HOME=/path/to/jdk-21 mvn -o -DskipTests install
 
 # 只要服务端可执行 jar：-am 会一并构建它依赖的 core / storage / 两个协议面
 JAVA_HOME=/path/to/jdk-21 mvn -o -DskipTests -pl :lakehouse-rest-server -am clean package
 
 # 运行全部测试（服务端 346 + Spark 107，共 453 个用例；Spark 侧有 1 个示例用例
-# 在本地缺 spark.sql.extensions 时会失败，见第 7 节）
+# 在本地缺 spark.sql.extensions 时会失败，见第 7 节）。Flink 侧另有 12 个端到端用例，
+# 没给 e2e 地址时整体跳过，用 scripts/e2e-flink-sql.sh 跑真实服务端
 JAVA_HOME=/path/to/jdk-21 mvn test
 
 # 启动服务端（默认 8080 端口，连 MySQL，预置 catalog prefix=paimon 与 database=default）
@@ -328,6 +338,14 @@ lakehouse-rest-spark/        一份源码、两个版本产物（Spark 3.5 与 4
   lakehouse-rest-spark-common/src/main/java/…/client/   REST 客户端（JDK HttpClient + Jackson 2）
   lakehouse-rest-spark-3.5/…/LakehouseRestSqlParser.scala  3.5 侧：无版本特有成员
   lakehouse-rest-spark-4.1/…/LakehouseRestSqlParser.scala  4.1 侧：补 parseRoutineParam
+
+lakehouse-rest-flink/        一份源码、两个版本产物（Flink 1.20 与 2.3）
+  shared/src/main/java/…/LakehouseRestFlinkCatalogs.java   两套 catalog 选项 + CREATE CATALOG 拼装
+                                                          （不 import 任何 Flink 类型）
+  shared/src/test/java/…/PaimonFlinkSqlTests.java          建主键表 / 读写 / 主键更新（配 sequence.field）
+  shared/src/test/java/…/IcebergFlinkSqlTests.java         建表（format-version=2）/ 读写 / 二次写入
+  lakehouse-rest-flink-1.20/  Flink 1.20.1 + Paimon 2.0.0 + Iceberg 1.11.0
+  lakehouse-rest-flink-2.3/   Flink 2.3.0 + Paimon 2.0.0（2.2 连接器）+ Iceberg 1.12.0
 ```
 
 关键设计：

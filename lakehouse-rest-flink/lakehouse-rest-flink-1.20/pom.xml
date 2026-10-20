@@ -1,0 +1,172 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+	<modelVersion>4.0.0</modelVersion>
+
+	<parent>
+		<groupId>io.github.melin</groupId>
+		<artifactId>lakehouse-rest-flink-parent</artifactId>
+		<version>0.0.1-SNAPSHOT</version>
+		<relativePath>../pom.xml</relativePath>
+	</parent>
+
+	<artifactId>lakehouse-rest-flink-1.20</artifactId>
+	<name>lakehouse-rest-flink-1.20</name>
+	<description>Flink 1.20：通过 REST catalog 访问 Paimon 与 Iceberg</description>
+
+	<!--
+		Flink 1.20.1 而不是 1.20.5：Paimon 2.0.0 的 `paimon-flink-1.20` 是按 1.20.1 编译的
+		（pom 里 `flink-streaming-java` / `flink-table-common` 都是 1.20.1、provided），
+		Iceberg 的 `iceberg-flink-runtime-1.20` 也按 1.20 系列编译。1.20.x 内部二进制兼容，
+		但既然连接器就是用 1.20.1 编的，测试也钉同一个值，省掉「到底是补丁版差异还是
+		我们的问题」这类排查。
+	-->
+	<properties>
+		<flink.version>1.20.1</flink.version>
+	</properties>
+
+	<dependencies>
+		<!-- Flink 与两个连接器都只在测试期使用，见父 POM 的说明 -->
+		<dependency>
+			<groupId>org.apache.flink</groupId>
+			<artifactId>flink-table-api-java</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.apache.flink</groupId>
+			<artifactId>flink-table-api-java-bridge</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.apache.flink</groupId>
+			<artifactId>flink-table-planner-loader</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.apache.flink</groupId>
+			<artifactId>flink-table-runtime</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.apache.flink</groupId>
+			<artifactId>flink-streaming-java</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.apache.flink</groupId>
+			<artifactId>flink-clients</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.apache.flink</groupId>
+			<artifactId>flink-runtime</artifactId>
+		</dependency>
+
+		<dependency>
+			<groupId>org.apache.paimon</groupId>
+			<artifactId>${paimon.flink.artifact}</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.apache.iceberg</groupId>
+			<artifactId>${iceberg.flink.artifact}</artifactId>
+		</dependency>
+
+		<dependency>
+			<groupId>org.apache.flink</groupId>
+			<artifactId>flink-connector-base</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.apache.flink</groupId>
+			<artifactId>flink-connector-files</artifactId>
+		</dependency>
+
+		<dependency>
+			<groupId>org.apache.hadoop</groupId>
+			<artifactId>hadoop-common</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.apache.hadoop</groupId>
+			<artifactId>hadoop-hdfs-client</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.apache.hadoop</groupId>
+			<artifactId>hadoop-mapreduce-client-core</artifactId>
+		</dependency>
+
+		<dependency>
+			<groupId>org.junit.jupiter</groupId>
+			<artifactId>junit-jupiter</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.junit.platform</groupId>
+			<artifactId>junit-platform-launcher</artifactId>
+			<scope>test</scope>
+		</dependency>
+	</dependencies>
+
+	<build>
+		<plugins>
+			<!--
+				把 shared/ 挂进源码根。挂的是**相对本模块 basedir** 的路径，不用继承来的属性：
+				这里只差一层目录，写死比多一层间接更容易核对。
+			-->
+			<plugin>
+				<groupId>org.codehaus.mojo</groupId>
+				<artifactId>build-helper-maven-plugin</artifactId>
+				<executions>
+					<execution>
+						<id>add-shared-sources</id>
+						<phase>generate-sources</phase>
+						<goals>
+							<goal>add-source</goal>
+						</goals>
+						<configuration>
+							<sources>
+								<source>${project.basedir}/../shared/src/main/java</source>
+							</sources>
+						</configuration>
+					</execution>
+					<execution>
+						<id>add-shared-test-sources</id>
+						<phase>generate-test-sources</phase>
+						<goals>
+							<goal>add-test-source</goal>
+						</goals>
+						<configuration>
+							<sources>
+								<source>${project.basedir}/../shared/src/test/java</source>
+							</sources>
+						</configuration>
+					</execution>
+				</executions>
+			</plugin>
+
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-surefire-plugin</artifactId>
+				<configuration>
+					<!--
+						Flink 的 TableEnvironment 会把线程上下文类加载器当成「用户类加载器」，
+						再用它做 CatalogFactory 的 ServiceLoader 发现。surefire 默认给测试
+						套一层隔离类加载器，工厂有时在错误的加载器里找不到，症状是
+						「Could not find any factory for identifier 'paimon'」——看起来像
+						依赖没引进来。让测试跑在 system classloader 下，与命令行一致。
+					-->
+					<useSystemClassLoader>true</useSystemClassLoader>
+					<useManifestOnlyJar>false</useManifestOnlyJar>
+					<!--
+						Flink 在 JDK 17 上要求一组「add-opens」JVM 参数：它的 Kryo
+						序列化器会反射 `Arrays$ArrayList` 之类的字段，模块系统默认拒绝，
+						症状是 `InaccessibleObjectException` 从 com.twitter.chill 里
+						冒出来，与「SQL 写错了」毫无关系。Iceberg 的 INSERT 会走到 Kryo
+						（行类型没有被识别成内部序列化器），Paimon 那条正好不经过。
+					-->
+					<argLine>--add-opens=java.base/java.util=ALL-UNNAMED
+						--add-opens=java.base/java.lang=ALL-UNNAMED
+						--add-opens=java.base/java.lang.invoke=ALL-UNNAMED
+						--add-opens=java.base/java.net=ALL-UNNAMED
+						--add-opens=java.base/java.nio=ALL-UNNAMED
+						--add-opens=java.base/java.time=ALL-UNNAMED
+						--add-opens=java.base/java.util.concurrent=ALL-UNNAMED
+						--add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED
+						--add-opens=java.base/sun.nio.ch=ALL-UNNAMED</argLine>
+				</configuration>
+			</plugin>
+		</plugins>
+	</build>
+</project>
