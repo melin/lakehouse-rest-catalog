@@ -502,7 +502,7 @@ const declaredEndpoints = computed(() => capabilities.data.value?.endpoints || [
 const configDefaults = computed(() => capabilities.data.value?.defaults || {})
 
 /**
- * 一期不做、因此**不声明**的端点，按能力分组显示。
+ * 不做、因此**不声明**的端点，按能力分组显示。
  *
  * <p>为什么这份清单在前端：它是「**没有**出现在 `endpoints` 里的东西」——
  * 服务端不会下发「我不支持什么」，没有就是没有。因此它只能写在这里，
@@ -514,14 +514,11 @@ const configDefaults = computed(() => capabilities.data.value?.defaults || {})
  * 就在这两栏里——清单里有没有它。要读文档才能回答的话，这一页就白做了。
  */
 const NOT_DECLARED = [
-  'transactions/commit（多表事务）',
   'plan / tasks（扫描规划）',
   'sign（远程签名）',
-  'register-view（视图登记）',
-  'functions（只读两个）',
 ]
 /** 不声明的操作总数（分组不是一对一，所以单独写一个数）。 */
-const NOT_DECLARED_TOTAL = 9
+const NOT_DECLARED_TOTAL = 5
 
 /**
  * 凭据下发：由 `credential-manager.type` 决定，读 `meta.service`。

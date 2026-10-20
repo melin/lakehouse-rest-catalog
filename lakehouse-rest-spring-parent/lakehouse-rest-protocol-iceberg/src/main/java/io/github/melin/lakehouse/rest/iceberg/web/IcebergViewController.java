@@ -30,16 +30,10 @@ import org.springframework.web.bind.annotation.RestController;
  * <table border="1">
  *   <caption>视图端点</caption>
  *   <tr><th>端点</th><th>成功</th></tr>
- *   <tr><td>{@code GET/POST .../views}、{@code GET/POST .../views/{v}}</td><td>200</td></tr>
+ *   <tr><td>{@code GET/POST .../views}、{@code GET/POST .../views/{v}}、
+ *       {@code POST .../register-view}</td><td>200</td></tr>
  *   <tr><td>{@code DELETE .../views/{v}}、{@code HEAD .../views/{v}}</td><td>204</td></tr>
  * </table>
- *
- * <p><b>一期不实现的 {@code POST .../register-view} 不登记</b>（因此不在
- * {@code IcebergEndpoints.SUPPORTED} 里）：它的语义是「把仓库里已有的
- * {@code ViewMetadata} 登记进来」，而视图的元数据文件位置是 {@code ViewMetadata}
- * 自己之外的另一个指针，登记它需要与 {@code register} 相同的一轮取舍
- * （external 标记、覆盖语义、purge 行为），那是一件独立的事。
- * 不做就不能声明——声明了等于承诺一个存在的能力，故障现场会离原因很远。
  */
 @RestController
 @RequestMapping("/v1/{prefix}")
@@ -62,6 +56,15 @@ public class IcebergViewController {
             @PathVariable String namespace,
             @RequestBody(required = false) IcebergDtos.CreateViewRequest request) {
         return viewService.create(prefix, levels(namespace), request);
+    }
+
+    /** {@code POST .../register-view}：登记仓库里已存在的一份 {@code ViewMetadata}。 */
+    @PostMapping("/namespaces/{namespace}/register-view")
+    public IcebergDtos.LoadViewResponse registerView(
+            @PathVariable String prefix,
+            @PathVariable String namespace,
+            @RequestBody(required = false) IcebergDtos.RegisterViewRequest request) {
+        return viewService.register(prefix, levels(namespace), request);
     }
 
     @GetMapping("/namespaces/{namespace}/views/{view}")

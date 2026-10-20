@@ -255,6 +255,62 @@ public class IcebergViewService {
         return new IcebergDtos.LoadViewResponse(newLocation, Json.readTree(document), null);
     }
 
+    // ------------------------------------------------------------------ 登记
+
+    /**
+     * {@code POST /v1/{prefix}/namespaces/{namespace}/register-view}。
+     *
+     * <p>与表的 {@code register} 同一条路线：**内容以仓库里那一份为准**——先读
+     * {@code metadata-location} 指向的文件（读不到就是 404，语义正是「位置写错」），
+     * 解析成 {@code ViewMetadata}，再把指针与文档原文一起落库。视图不投影任何从属行，
+     * 因此登记比登记表还轻：一行 {@code lakehouse_view} 就完了。
+     *
+     * <p><b>没有 {@code overwrite}。</b>规格的 {@code RegisterViewRequest} 只有
+     * {@code name} 与 {@code metadata-location} 两个字段，因此重名一律 409——
+     * 不去学表侧「带 overwrite 就覆盖」的行为，规格没给的字段就别提供语义。
+     */
+    @Transactional
+    public IcebergDtos.LoadViewResponse register(String prefix, List<String> levels,
+                                                 IcebergDtos.RegisterViewRequest request) {
+        CatalogEntity catalog = resolve(prefix);
+        DatabaseEntity database = namespaceService.require(catalog, levels);
+        String viewName = requireName(request == null ? null : request.name(), "name");
+        String metadataLocation = request == null ? null : request.metadataLocation();
+        if (metadataLocation == null || metadataLocation.isBlank()) {
+            throw ApiException.badRequest("metadata-location is required to register a view");
+        }
+        // 文件读不到时 StorageFileAccess 抛 404——先排除位置写错这一种，语义正是它那个 404
+        String document = fileAccess.read(catalog.getId(), metadataLocation);
+        // 这里的文档是**调用方指来**的：解析不动是它给错了位置（指向了不是视图元数据的文件），
+        // 报 400 而不是像读路径那样 500——读路径的 500 语义是「服务端自己的一致性坏了」
+        try {
+            ViewMetadataParser.fromJson(metadataLocation, document);
+        } catch (RuntimeException e) {
+            throw ApiException.badRequest("Cannot parse ViewMetadata at " + metadataLocation
+                    + ": " + messageOf(e));
+        }
+
+        if (viewRepository.existsByDatabaseIdAndName(database.getId(), viewName)) {
+            throw viewAlreadyExists(levels, viewName);
+        }
+        ViewEntity view = new ViewEntity();
+        view.setId(Paging.newId());
+        view.setCatalogId(catalog.getId());
+        view.setDatabaseId(database.getId());
+        view.setName(viewName);
+        view.setMetadataLocation(metadataLocation);
+        view.setViewSchemaDoc(document);
+        view.markCreated(RequestContext.principal(), RequestContext.now());
+        viewRepository.save(view);
+        // 复用 VIEW_CREATED 并带 registered 标记，而不是新增事件类型：
+        // 目录条目出现的语义与「建视图」相同，事件消费者不需要为登记建一套新的订阅。
+        events.publish(CatalogEventType.VIEW_CREATED, prefix, CatalogEvent.TARGET_VIEW,
+                NamespacePaths.toStorageName(levels) + "." + viewName,
+                Map.of("format", "ICEBERG", "registered", "true"));
+
+        return new IcebergDtos.LoadViewResponse(metadataLocation, Json.readTree(document), null);
+    }
+
     // ------------------------------------------------------------------ 删除
 
     /**

@@ -85,7 +85,7 @@ io.github.melin:lakehouse-rest-parent                     pom   聚合器 + 集�
 │   ├── lakehouse-rest-core                               jar   领域与共享契约
 │   ├── lakehouse-rest-storage                            jar   对象存储访问
 │   ├── lakehouse-rest-protocol-paimon                    jar   Paimon 协议面（60 端点）
-│   ├── lakehouse-rest-protocol-iceberg                   jar   Iceberg 协议面（35 端点里的一期 26 个）
+│   ├── lakehouse-rest-protocol-iceberg                   jar   Iceberg 协议面（35 端点里实现的 30 个）
 │   └── lakehouse-rest-server                             jar   可执行：装配 / 管理 API / 控制台宿主
 ├── lakehouse-rest-spark-parent                           pom   Spark 侧的聚合（复用根 POM 的依赖世界）
 │   ├── lakehouse-rest-spark-common                       jar   管理 API 的 REST 客户端（纯 Java）

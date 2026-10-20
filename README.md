@@ -51,7 +51,7 @@ paimon-rest/
 │   ├── lakehouse-rest-core/          与表格式无关的地基：鉴权、授权、JPA 实体与仓储、协议分派、共享 DTO 词表
 │   ├── lakehouse-rest-storage/       数据目录文件访问与 FileIO 构造（唯一允许依赖 paimon-core 的非协议模块）
 │   ├── lakehouse-rest-protocol-paimon/  Paimon 协议面：Catalog API 全部 60 个端点
-│   ├── lakehouse-rest-protocol-iceberg/ Iceberg 协议面：35 个端点里的一期 26 个 + `iceberg-core` 元数据代数
+│   ├── lakehouse-rest-protocol-iceberg/ Iceberg 协议面：35 个端点里实现的 30 个 + `iceberg-core` 元数据代数
 │   └── lakehouse-rest-server/        可执行服务端：Management API + 控制台 API + 优化调度，最终 jar 在这里
 ├── lakehouse-rest-console/     Web 管理控制台（Vue 3 + Vite，产物构建进服务端，见第 9 节）
 ├── lakehouse-rest-spark/       Spark SQL 语法扩展：用 SQL 管理主体、角色与授权
@@ -308,7 +308,7 @@ lakehouse-rest-spring-parent/
   lakehouse-rest-protocol-paimon/   Paimon 面：60 个端点、Paimon DTO 与元数据代数
     web/          按规格路径一一对应的控制器
     service/      目录解析、schema 变更、快照与版本、分区分支标签；格式门禁在 DatabaseService
-  lakehouse-rest-protocol-iceberg/  Iceberg 面：26 个端点、Iceberg DTO 与元数据代数
+  lakehouse-rest-protocol-iceberg/  Iceberg 面：30 个端点、Iceberg DTO 与元数据代数
     web/          namespace / table / view 三棵控制器
     service/      update 代数、requirements 校验、CAS 提交、投影派生
     support/      元数据文件命名、端点清单（endpoints）、update 编解码
@@ -358,7 +358,7 @@ lakehouse-rest-spark/        一份源码、两个版本产物（Spark 3.5 与 4
   新关键字，因此 Spark 子模块自带一份只描述管理语句的语法，解析成功才接管，失败原样交回。
 
 两份 API 与元数据的清单不在本文展开：Catalog API 的
-[Paimon 60 个与 Iceberg 26 个端点](docs/catalog-api-endpoints.md)、Management API 的
+[Paimon 60 个与 Iceberg 30 个端点](docs/catalog-api-endpoints.md)、Management API 的
 [操作概览](docs/management-api-overview.md)（逐字契约见
 [`management-api-contract.md`](docs/management-api-contract.md)）、以及
 [23 张表的数据模型与设计取舍](docs/data-model.md)。
@@ -713,21 +713,21 @@ Azure 只下发定位元数据是个明确的缺口：Polaris 的 `polaris.stora
     `alter` 的范畴）。默认值放在 `properties` 而不是 `defaults` / `overrides`：后两者是随
     `GET /v1/config` 下发给引擎的**连接参数**，改它影响的是客户端能否连上。Spark SQL 建表走的
     同样是 `POST .../tables`，因此引擎侧不需要各做一遍。
-25. **Iceberg 协议面：一期 26 个端点，9 个不声明；一个 catalog 一种格式，建完改不了。**
+25. **Iceberg 协议面：30 个端点（一期 26 + 二期 4），5 个不声明；一个 catalog 一种格式，建完改不了。**
     Iceberg 面与 Paimon 面**共用同一份元数据**（22 张表全部复用、只加 9 列，
     见 [`docs/data-model.md`](docs/data-model.md) §1.1），但对外是**第二个协议面**，
     能力比 Paimon 面窄一截，且其中几处是「明确不做」而不是「还没做」。
 
-    - **不声明的 9 个端点**：`functions` 只读两个、`register-view`、
-      `transactions/commit` 归二期；`plan`（`POST` 建 / `GET` 拉 / `DELETE` 取消）、
+    - **不声明的 5 个端点**：`plan`（`POST` 建 / `GET` 拉 / `DELETE` 取消）、
       `tasks`、`sign` 明确不做——扫描规划要一个常驻执行引擎、远程签名要 KMS，
-      都是另一个产品的份量。逐条清单在
+      都是另一个产品的份量。二期的 functions 只读两个、`register-view`、
+      `transactions/commit` 已实现并写进声明清单。逐条清单在
       [`docs/iceberg-rest-catalog-design.md`](docs/iceberg-rest-catalog-design.md) §6.1，
       **代码里有两处副本且必须逐字一致**：`IcebergEndpoints` 的类注释与
       `scripts/verify-iceberg-endpoints.py` 的 `NOT_IMPLEMENTED`。
       这份清单同时是 `GET /v1/config` 里 `endpoints` 字段的内容：Iceberg 规格规定
-      **不发这个字段等于承诺一整套默认端点**，而那份默认清单里含 `transactions/commit`——
-      少发一个字段的后果是客户端一路正常，直到用户真的发起一次多表提交才炸，
+      **不发这个字段等于承诺一整套默认端点**，而那份默认清单比实现面宽——
+      少发一个字段的后果是客户端一路正常，直到用户真的发起一次未实现的操作才炸，
       而那时错误现场离原因已经很远（客户端报的是
       `Server does not support endpoint: …`，看着像服务端坏了一半）。
     - **一个 catalog 只有一种格式，且创建后不可改**（`lakehouse_catalog.catalog_format`，
@@ -861,7 +861,7 @@ BASE=http://127.0.0.1:8080 ./scripts/api-sweep.sh
 BASE=http://127.0.0.1:8080 ./scripts/management-sweep.sh
 
 # Iceberg 协议面：不需要服务端实例——它是静态三方比对
-# （规格 35 条 ↔ 声明的能力清单 26 条 ↔ 控制器映射），15 项断言
+# （规格 35 条 ↔ 声明的能力清单 30 条 ↔ 控制器映射），16 项断言
 ./scripts/verify-iceberg-endpoints.py
 
 # Spark SQL：先校验参考文档，再自动起服务端（用 h2 profile，并配好令牌
@@ -961,8 +961,8 @@ Iceberg 协议面落地的 9 个新列也由它产出（`catalog_format` 是
 
 `verify-iceberg-endpoints.py` **不依赖 PyYAML**：它只需要规格里「路径 / 方法」两层
 （indent 2 / indent 4），所以自写了一个缩进解析器，而不是为一条校验引入一个部署前提。
-它做的三方比对是「规格 35 条 ↔ `IcebergEndpoints.SUPPORTED` 26 条 ↔ 控制器映射」，
-并且把「9 个不声明」写成**字面量**——从「规格 − 声明」推出来的清单永远自洽，
+它做的三方比对是「规格 35 条 ↔ `IcebergEndpoints.SUPPORTED` 30 条 ↔ 控制器映射」，
+并且把「5 个不声明」写成**字面量**——从「规格 − 声明」推出来的清单永远自洽，
 就永远发现不了漏实现。派生自规格而不是照抄文档，是因为 `plan` 有三个方法、
 `tasks` 是 `POST`，这两处照记忆写必然错。
 

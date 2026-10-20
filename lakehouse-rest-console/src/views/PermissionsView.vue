@@ -378,7 +378,7 @@ onConsoleRefresh(() => {
 
 // ------------------------------------------------------------------ 授权对象
 
-/** 用户与角色候选：来自管理面的主体与 catalog 角色，也允许直接手输任意 principal。 */
+/** 用户与角色候选：来自管理面的主体与 **principal role**，也允许直接手输任意 principal。 */
 const principals = ref([])
 const roles = ref([])
 
@@ -396,9 +396,12 @@ const granteeGroups = computed(() => [
 async function loadGranteeOptions() {
   if (!catalogName.value) return
   try {
+    // 「角色」候选是 **principal role**（`role:<名>` 是有效的授权主体串），
+    // 不是 Polaris 的 catalog 角色——后者在本服务端不存在，调它会直接抛
+    // `listCatalogRoles is not a function`。
     const [principalPayload, rolePayload] = await Promise.all([
       managementApi.listPrincipals().catch(() => null),
-      managementApi.listCatalogRoles(catalogName.value).catch(() => null),
+      managementApi.listPrincipalRoles().catch(() => null),
     ])
     principals.value = (principalPayload?.principals || []).map((item) => item.name)
     roles.value = (rolePayload?.roles || []).map((item) => item.name)

@@ -36,7 +36,7 @@ import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilde
 /**
  * Iceberg 协议面（{@code /v1/{prefix}/namespaces…}）的 HTTP 层集成测试。
  *
- * <p><b>为什么需要这一层，光有静态校验不够。</b>Iceberg 面的 26 个端点另有两条机器守卫：
+ * <p><b>为什么需要这一层，光有静态校验不够。</b>Iceberg 面的 30 个端点另有两条机器守卫：
  * {@code scripts/verify-iceberg-endpoints.py} 断言「声明的能力清单 ↔ 控制器映射」一一对应，
  * {@code CatalogEndpointAuthorizationTests} 断言每个端点都在授权映射表里登记过。
  * 那两条守的都是**形状**（路径、方法、清单），它们读的是映射与常量，
@@ -138,6 +138,15 @@ class IcebergRestCatalogApiTests {
         call(expected, builder(method, path));
     }
 
+    /** 只看状态码但带请求体：204 的事务、200 的 Paimon 面函数创建都用它。 */
+    private void status(int expected, String method, String path, String body) throws Exception {
+        MockHttpServletRequestBuilder request = builder(method, path);
+        if (body != null) {
+            request = request.contentType(MediaType.APPLICATION_JSON).content(body);
+        }
+        call(expected, request);
+    }
+
     /**
      * 按方法名造请求。
      *
@@ -223,12 +232,17 @@ class IcebergRestCatalogApiTests {
 
         List<String> endpoints = new ArrayList<>();
         config.get("endpoints").forEach(node -> endpoints.add(node.asString()));
-        assertEquals(26, endpoints.size(), "一期实现 26 个端点: " + endpoints);
+        assertEquals(30, endpoints.size(), "一期 26 个 + 二期 4 个: " + endpoints);
 
-        // 三个「明确不做」的能力一个都不能出现在清单里：声明了就等于承诺了它存在
-        for (String unsupported : List.of("transactions/commit", "/plan", "/tasks", "/sign")) {
+        // 「明确不做」的能力一个都不能出现在清单里：声明了就等于承诺了它存在
+        for (String unsupported : List.of("/plan", "/tasks", "/sign")) {
             assertFalse(endpoints.stream().anyMatch(endpoint -> endpoint.contains(unsupported)),
                     unsupported + " 未实现，不能出现在能力清单里: " + endpoints);
+        }
+        // 二期补齐的四个能力必须都在清单里
+        for (String supported : List.of("functions", "register-view", "transactions/commit")) {
+            assertTrue(endpoints.stream().anyMatch(endpoint -> endpoint.contains(supported)),
+                    supported + " 已实现，必须出现在能力清单里: " + endpoints);
         }
         assertTrue(endpoints.contains("HEAD /v1/{prefix}/namespaces/{namespace}"),
                 "能力清单里的字符串必须与 Iceberg 客户端的 Endpoint 逐字一致: " + endpoints);
@@ -539,6 +553,23 @@ class IcebergRestCatalogApiTests {
                         .contains("/metadata/00002-"),
                 "视图与表用同一套元数据文件命名: " + committed.get("metadata-location").asString());
 
+        // register-view：把仓库里已有的一份 ViewMetadata 登记成新的目录条目
+        JsonNode registered = json(200, "POST", BASE + "/namespaces/" + NS + "/register-view",
+                "{\"name\":\"v_registered\",\"metadata-location\":\"" + location + "\"}");
+        assertEquals(location, registered.get("metadata-location").asString());
+        assertEquals(created.get("metadata"), registered.get("metadata"),
+                "登记的内容以仓库里那一份为准（此处是第一代文档，不含后来提交的 tier）");
+        assertTrue(strings(json(200, "GET", BASE + "/namespaces/" + NS + "/views", null)
+                .get("identifiers")).contains("v_registered"));
+        // 重名 409（规格没给 overwrite 字段，就不提供覆盖语义）
+        json(409, "POST", BASE + "/namespaces/" + NS + "/register-view",
+                "{\"name\":\"v_registered\",\"metadata-location\":\"" + location + "\"}");
+        // 位置写错 -> 404 来自仓库（文件不存在），不是「视图不存在」
+        json(404, "POST", BASE + "/namespaces/" + NS + "/register-view",
+                "{\"name\":\"v_nowhere\",\"metadata-location\":\"" + WAREHOUSE + "/no/such/view.json\"}");
+        // 缺 metadata-location -> 400
+        json(400, "POST", BASE + "/namespaces/" + NS + "/register-view", "{\"name\":\"v_no_location\"}");
+
         // 同路径的 views/rename 也只改标识，成功码 204
         json(204, "POST", BASE + "/views/rename", renameBody(NS, "v_orders", "v_orders_v2"));
         json(200, "GET", BASE + "/namespaces/" + NS + "/views/v_orders_v2", null);
@@ -551,6 +582,147 @@ class IcebergRestCatalogApiTests {
         json(404, "GET", BASE + "/namespaces/" + NS + "/views/v_orders_v2", null);
         assertTrue(Files.exists(localFile(viewMetadata)),
                 "删视图不删元数据文件：视图位置可能与其他对象共用，按目录删会误删别人的文件");
+    }
+
+    // ------------------------------------------------------------------ 多表事务
+
+    @Test
+    @Order(11)
+    void transactionCommitsAllTablesOrNone() throws Exception {
+        // 两张表都自建：前面用例的收尾动作会把 orders 删掉，事务测试不依赖那些残留
+        json(200, "POST", BASE + "/namespaces/" + NS + "/tables", createTableBody("tx_source"));
+        json(200, "POST", BASE + "/namespaces/" + NS + "/tables", createTableBody("tx_target"));
+        String firstUuid = json(200, "GET", BASE + "/namespaces/" + NS + "/tables/tx_source", null)
+                .get("metadata").get("table-uuid").asString();
+        String secondUuid = json(200, "GET", BASE + "/namespaces/" + NS + "/tables/tx_target", null)
+                .get("metadata").get("table-uuid").asString();
+
+        // 全部成立 -> 204，两张表一起推进
+        status(204, "POST", BASE + "/transactions/commit", """
+                {"table-changes":[
+                  {"identifier":{"namespace":["%s"],"name":"tx_source"},
+                   "requirements":[{"type":"assert-table-uuid","uuid":"%s"}],
+                   "updates":[{"action":"set-properties","updates":{"tier":"gold"}}]},
+                  {"identifier":{"namespace":["%s"],"name":"tx_target"},
+                   "requirements":[{"type":"assert-table-uuid","uuid":"%s"}],
+                   "updates":[{"action":"set-properties","updates":{"tier":"silver"}}]}]}
+                """.formatted(NS, firstUuid, NS, secondUuid));
+        assertEquals("gold", json(200, "GET", BASE + "/namespaces/" + NS + "/tables/tx_source", null)
+                .get("metadata").get("properties").get("tier").asString());
+        assertEquals("silver", json(200, "GET", BASE + "/namespaces/" + NS + "/tables/tx_target", null)
+                .get("metadata").get("properties").get("tier").asString());
+
+        // 第二张表的 requirement 失败 -> 409，且**第一张表没有被推进**（原子性）
+        String staleFirst = json(200, "GET", BASE + "/namespaces/" + NS + "/tables/tx_source", null)
+                .get("metadata-location").asString();
+        JsonNode conflict = json(409, "POST", BASE + "/transactions/commit", """
+                {"table-changes":[
+                  {"identifier":{"namespace":["%s"],"name":"tx_source"},
+                   "requirements":[],"updates":[{"action":"set-properties","updates":{"tier":"platinum"}}]},
+                  {"identifier":{"namespace":["%s"],"name":"tx_target"},
+                   "requirements":[{"type":"assert-table-uuid","uuid":
+                       "00000000-0000-0000-0000-000000000000"}],"updates":[]}]}
+                """.formatted(NS, NS));
+        assertEquals("CommitFailedException", conflict.get("error").get("type").asString());
+        assertEquals(staleFirst,
+                json(200, "GET", BASE + "/namespaces/" + NS + "/tables/tx_source", null)
+                        .get("metadata-location").asString(),
+                "事务里任何一张表失败，其余表也不能被推进");
+
+        // 报文问题 -> 400：identifier 缺失（路径不再指名表）、同一张表出现两次、没有 changes
+        json(400, "POST", BASE + "/transactions/commit",
+                "{\"table-changes\":[{\"requirements\":[],\"updates\":[]}]}");
+        json(400, "POST", BASE + "/transactions/commit", """
+                {"table-changes":[
+                  {"identifier":{"namespace":["%s"],"name":"tx_source"},"requirements":[],
+                   "updates":[{"action":"set-properties","updates":{"a":"b"}}]},
+                  {"identifier":{"namespace":["%s"],"name":"tx_source"},"requirements":[],
+                   "updates":[{"action":"set-properties","updates":{"c":"d"}}]}]}
+                """.formatted(NS, NS));
+        json(400, "POST", BASE + "/transactions/commit", "{\"table-changes\":[]}");
+    }
+
+    // ------------------------------------------------------------------ 函数（只读投影）
+
+    @Test
+    @Order(12)
+    void functionsAreProjectOntoTheIcebergShape() throws Exception {
+        // 函数经 Paimon 面创建，而那个面严格限定 PAIMON catalog——所以这条投影链
+        // 只能在 PAIMON catalog 上观察到（见 IcebergFunctionService 的类注释）
+        String paimon = "iceberg-api-fn";
+        createPaimonCatalog(paimon);
+        json(200, "POST", "/v1/" + paimon + "/databases", "{\"name\":\"" + NS + "\"}");
+        status(200, "POST", "/v1/" + paimon + "/databases/" + NS + "/functions", """
+                {"name":"add_one",
+                 "inputParams":[{"name":"a","type":"INT"}],
+                 "returnParams":[{"name":"result","type":"INT"}],
+                 "deterministic":true,
+                 "definitions":{"sql":{"type":"sql","definition":"SELECT $a + 1"}},
+                 "comment":"qa","options":{"owner":"qa"}}
+                """);
+
+        // 列举：identifier 的 namespace 是层级数组，与 tables / views 同形状
+        JsonNode identifiers = json(200, "GET", "/v1/" + paimon + "/namespaces/" + NS + "/functions", null)
+                .get("identifiers");
+        assertTrue(strings(identifiers).contains("add_one"), identifiers.toString());
+
+        // 读取：FunctionMetadata 由投影拼出，uuid 对同一行恒定
+        JsonNode first = json(200, "GET", "/v1/" + paimon + "/namespaces/" + NS + "/functions/add_one", null);
+        assertNull(first.get("metadata-location"),
+                "函数没有元数据文件，metadata-location 缺席即如实");
+        JsonNode metadata = first.get("metadata");
+        assertEquals(1, metadata.get("format-version").asInt());
+        String uuid = metadata.get("function-uuid").asString();
+        assertFalse(uuid.isBlank());
+        assertEquals("qa", metadata.get("doc").asString());
+        assertEquals("qa", metadata.get("properties").get("owner").asString());
+        JsonNode definition = metadata.get("definitions").get(0);
+        assertEquals("INT", definition.get("definition-id").asString());
+        assertEquals("INT", definition.get("parameters").get(0).get("type").asString());
+        assertEquals("a", definition.get("parameters").get(0).get("name").asString());
+        assertEquals("INT", definition.get("return-type").asString());
+        assertEquals(1, definition.get("current-version-id").asInt());
+        assertEquals("udf", definition.get("function-type").asString());
+        JsonNode representation = definition.get("versions").get(0).get("representations").get(0);
+        assertEquals("sql", representation.get("type").asString());
+        assertEquals("spark", representation.get("dialect").asString());
+        assertEquals("SELECT $a + 1", representation.get("sql").asString());
+        // 再读一次：uuid 由实体 id 派生，必须恒定（客户端拿它当锚点）
+        assertEquals(uuid, json(200, "GET", "/v1/" + paimon + "/namespaces/" + NS + "/functions/add_one", null)
+                .get("metadata").get("function-uuid").asString());
+
+        // 非 SQL 定义（lambda）在 Iceberg 词表里没有对应物：投影时跳过，definitions 为空
+        status(200, "POST", "/v1/" + paimon + "/databases/" + NS + "/functions", """
+                {"name":"identity_lambda",
+                 "inputParams":[],"returnParams":[{"name":"r","type":"STRING"}],
+                 "definitions":{"body":{"type":"lambda","definition":"x -> x"}}}
+                """);
+        JsonNode lambda = json(200, "GET",
+                "/v1/" + paimon + "/namespaces/" + NS + "/functions/identity_lambda", null)
+                .get("metadata");
+        assertEquals(0, lambda.get("definitions").size(),
+                "file / lambda 定义没有 Iceberg 表示，跳过而不是编一个形状");
+
+        // 不存在的函数 -> 404，Iceberg 形状的错误体
+        JsonNode missing = json(404, "GET", "/v1/" + paimon + "/namespaces/" + NS + "/functions/nope", null);
+        assertEquals("NoSuchFunctionException", missing.get("error").get("type").asString());
+
+        // ICEBERG catalog 上没有写路径：列表是如实的空（这条路径不做格式门禁，但数据不会凭空出现）
+        assertEquals(List.of(), strings(json(200, "GET", BASE + "/namespaces/" + NS + "/functions", null)
+                .get("identifiers")));
+    }
+
+    /**
+     * 建一个 **PAIMON** catalog（{@link #createIcebergCatalog} 建的是 ICEBERG）。
+     * 函数的写路径只在 Paimon 面，那条面又严格限定 PAIMON catalog。
+     */
+    private String createPaimonCatalog(String name) throws Exception {
+        JsonNode created = json(201, "POST", M + "/catalogs", """
+                {"catalog":{"type":"INTERNAL","name":"%s","catalogFormat":"PAIMON","properties":{},
+                 "storageConfigInfo":{"storageType":"FILE","allowedLocations":["file://%s/lakehouse-rest-tests/%s"]}}}
+                """.formatted(name, System.getProperty("java.io.tmpdir"), name));
+        assertEquals("PAIMON", created.get("catalogFormat").asString());
+        return created.get("name").asString();
     }
 
     // ------------------------------------------------------------------ 跨协议面的门禁

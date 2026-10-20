@@ -334,9 +334,10 @@ class ManagementApiTests {
         JsonNode icebergConfig = json(200, "GET", "/v1/config?warehouse=fmt-iceberg", null);
         assertEquals("fmt-iceberg", icebergConfig.get("defaults").get("prefix").asString());
         assertTrue(icebergConfig.get("endpoints").isArray(), "Iceberg 的 /v1/config 必须发能力清单");
-        // 不发 endpoints 时客户端会假定一整套默认端点存在，其中包含多表事务
-        assertFalse(strings(icebergConfig.get("endpoints")).contains("POST /v1/{prefix}/transactions/commit"),
-                "不实现的多表事务不能出现在能力清单里");
+        // 多表事务（二期）已实现：不声明的话，按清单行事的客户端会以为它不存在，
+        // 永远不会发起 transactions/commit
+        assertTrue(strings(icebergConfig.get("endpoints")).contains("POST /v1/{prefix}/transactions/commit"),
+                "已实现的多表事务必须出现在能力清单里");
 
         JsonNode paimonConfig = json(200, "GET", "/v1/config?warehouse=fmt-default", null);
         assertEquals("fmt-default", paimonConfig.get("defaults").get("prefix").asString());

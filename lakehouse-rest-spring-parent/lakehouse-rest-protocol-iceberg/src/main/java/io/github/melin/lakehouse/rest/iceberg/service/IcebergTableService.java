@@ -7,12 +7,14 @@ import io.github.melin.lakehouse.rest.domain.entity.DatabaseEntity;
 import io.github.melin.lakehouse.rest.domain.entity.TableEntity;
 import io.github.melin.lakehouse.rest.domain.repo.TableRepository;
 import io.github.melin.lakehouse.rest.domain.repo.TableSnapshotRepository;
+import io.github.melin.lakehouse.rest.dto.PermissionDtos.Access;
 import io.github.melin.lakehouse.rest.event.CatalogEvent;
 import io.github.melin.lakehouse.rest.event.CatalogEventPublisher;
 import io.github.melin.lakehouse.rest.event.CatalogEventType;
 import io.github.melin.lakehouse.rest.iceberg.dto.IcebergDtos;
 import io.github.melin.lakehouse.rest.iceberg.support.IcebergMetadataFiles;
 import io.github.melin.lakehouse.rest.iceberg.support.IcebergUpdateCodec;
+import io.github.melin.lakehouse.rest.service.AuthorizationService;
 import io.github.melin.lakehouse.rest.service.CatalogService;
 import io.github.melin.lakehouse.rest.service.StorageFileAccess;
 import io.github.melin.lakehouse.rest.support.ApiException;
@@ -25,9 +27,11 @@ import io.github.melin.lakehouse.rest.support.ResourceType;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.iceberg.MetadataUpdate;
@@ -104,6 +108,7 @@ public class IcebergTableService {
     private final StorageFileAccess fileAccess;
     private final RestServerProperties properties;
     private final CatalogEventPublisher events;
+    private final AuthorizationService authorizationService;
 
     // ------------------------------------------------------------------ 列举
 
@@ -298,6 +303,130 @@ public class IcebergTableService {
                 Map.of("format", "ICEBERG", "updates", updates.size()));
 
         return new IcebergDtos.LoadTableResponse(newLocation, Json.readTree(document), null, null);
+    }
+
+    // ------------------------------------------------------------------ 多表事务
+
+    /**
+     * {@code POST /v1/{prefix}/transactions/commit}：多张表的一轮提交要么全部生效、
+     * 要么全部不生效。
+     *
+     * <p><b>原子性来自三段式，而且段的次序不能换：</b>
+     *
+     * <ol>
+     *   <li><b>全量校验（只读）。</b>逐表解析 identifier / requirements / updates，
+     *       对每张表的**当前**元数据跑 requirements。任何一张不成立
+     *       （表不存在、requirement 失败、update 畸形），整笔事务在这里就失败，
+     *       什么都没写。</li>
+     *   <li><b>写仓库。</b>按单表提交同一条「先写仓库、后落库」的次序逐表写新元数据文件。
+     *       后续任何一步失败，这些文件成为孤儿——与单表提交的取舍完全一致：
+     *       Iceberg 本来就允许孤儿元数据文件，库里仍指旧版本即可。</li>
+     *   <li><b>一次事务落库。</b>逐表做与单表相同的 CAS 更新；任何一行 CAS 失败
+     *       （读到基线之后被别人提交过）就抛 409，整个数据库事务回滚——
+     *       **不会出现「改了一半」的目录状态**。这是 {@code @Transactional} 在这里的
+     *       全部意义：单表提交时它只是锦上添花，多表提交时它是原子性本身。</li>
+     * </ol>
+     *
+     * <p><b>授权按 deferred 处理。</b>这条端点的目标表全在请求体里，路径上只有一个
+     * catalog；映射表登记的是 deferred 要求，由这里对**每张表**逐个判
+     * {@code TABLE:ALTER}——与单表提交走拦截器判的是同一个 access，
+     * 不会因为打包成事务就放宽。
+     *
+     * <p><b>空 updates 的子请求按 no-op 跳过</b>（requirements 仍然校验）：
+     * 与单表提交的「空提交不产生新一代元数据」同一取舍。
+     */
+    @Transactional
+    public void commitTransaction(String prefix, IcebergDtos.CommitTransactionRequest request) {
+        CatalogEntity catalog = resolve(prefix);
+        List<IcebergDtos.UpdateTableRequest> changes = request == null ? null : request.tableChanges();
+        if (changes == null || changes.isEmpty()) {
+            throw ApiException.badRequest(
+                    "table-changes is required: a transaction without changes commits nothing");
+        }
+
+        // ---- 阶段一：全量校验（只读），任何一张不成立都在这里失败
+        List<PlannedChange> planned = new ArrayList<>();
+        Set<String> seen = new HashSet<>();
+        for (int index = 0; index < changes.size(); index++) {
+            IcebergDtos.UpdateTableRequest change = changes.get(index);
+            if (change == null) {
+                throw ApiException.badRequest("table-changes[" + index + "] is empty");
+            }
+            IcebergDtos.TableIdentifier identifier = change.identifier();
+            if (identifier == null || identifier.name() == null || identifier.name().isBlank()
+                    || identifier.namespace() == null || identifier.namespace().isEmpty()) {
+                throw ApiException.badRequest("table-changes[" + index
+                        + "] requires an identifier with a non-empty namespace and name:"
+                        + " the path no longer names the table");
+            }
+            String key = String.join("\u001F", identifier.namespace()) + "." + identifier.name();
+            if (!seen.add(key)) {
+                throw ApiException.badRequest("table-changes names the same table twice: " + key);
+            }
+            // 目标在请求体里，拦截器只能放行到这一层；逐表判与单表提交同一个 access。
+            // 全限定名：support.ResourceType（ApiException 用）与 dto.PermissionDtos.ResourceType
+            // （授权判定用）重名，本类的 import 已被前者占用。
+            authorizationService.require(prefix,
+                    io.github.melin.lakehouse.rest.dto.PermissionDtos.ResourceType.TABLE,
+                    identifier.namespace(), identifier.name(), Access.ALTER, "commit transaction");
+
+            TableEntity table = requireIcebergTable(catalog, identifier.namespace(), identifier.name());
+            String expectedLocation = table.getMetadataLocation();
+            TableMetadata base = readMetadata(table);
+            IcebergUpdateCodec.validate(
+                    IcebergUpdateCodec.parseRequirements(change.requirements()), base);
+
+            List<MetadataUpdate> updates = IcebergUpdateCodec.parseUpdates(change.updates());
+            if (updates.isEmpty()) {
+                continue; // no-op：校验仍然做了，只是不产生新一代元数据
+            }
+            TableMetadata updated = IcebergUpdateCodec.apply(base, updates);
+            String newLocation = IcebergMetadataFiles.nextTableMetadataLocation(
+                    updated.location(), expectedLocation);
+            planned.add(new PlannedChange(table, identifier.namespace(), identifier.name(),
+                    expectedLocation, newLocation, TableMetadataParser.toJson(updated),
+                    updated, updates.size()));
+        }
+
+        // ---- 阶段二：写仓库。从这里往后失败，留下的是孤儿文件（无害）
+        for (PlannedChange change : planned) {
+            fileAccess.write(catalog.getId(), change.newLocation(), change.document());
+        }
+
+        // ---- 阶段三：一次事务逐表 CAS 落库；任何一行失败，整体回滚
+        for (PlannedChange change : planned) {
+            int rows = tableRepository.updateIcebergMetadata(change.table().getId(),
+                    change.expectedLocation(), change.newLocation(), change.document(),
+                    change.updated().uuid(), change.updated().formatVersion(),
+                    change.updated().currentSchemaId(),
+                    SchemaParser.toJson(change.updated().schema()), TABLE_TYPE_ICEBERG,
+                    change.updated().location(), snapshotIdOf(change.updated()), null,
+                    RequestContext.now(), RequestContext.principal());
+            if (rows == 0) {
+                throw new ApiException(409, ResourceType.TABLE, change.name(),
+                        "Commit failed: the table metadata changed concurrently (expected"
+                                + " metadata-location " + change.expectedLocation()
+                                + "); refresh the table and retry",
+                        "CommitFailedException");
+            }
+        }
+
+        // ---- 阶段四：重建投影、发事件。CAS 是批量更新，必须重读实体（与单表提交同因）
+        for (PlannedChange change : planned) {
+            TableEntity refreshed = tableRepository.findById(change.table().getId())
+                    .orElseThrow(() -> tableNotExist(change.levels(), change.name()));
+            projections.rebuild(refreshed, change.updated());
+            events.publish(CatalogEventType.TABLE_COMMITTED, prefix, CatalogEvent.TARGET_TABLE,
+                    NamespacePaths.toStorageName(change.levels()) + "." + change.name(),
+                    Map.of("format", "ICEBERG", "updates", change.updateCount(),
+                            "transaction", true));
+        }
+    }
+
+    /** 阶段之间传递的一张表的全部计算结果：解析与校验只做一次，后面各段直接用。 */
+    private record PlannedChange(TableEntity table, List<String> levels, String name,
+                                 String expectedLocation, String newLocation, String document,
+                                 TableMetadata updated, int updateCount) {
     }
 
     // ------------------------------------------------------------------ 删除

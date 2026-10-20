@@ -145,12 +145,25 @@ public final class IcebergDtos {
     /**
      * {@code POST .../tables/{table}}：一轮 update 作用在当前元数据上。
      *
-     * <p>{@code identifier} 在单表提交里可以缺席（路径已经指明了表），
-     * 它只在多表事务的每个子请求里是必填的——而多表事务本服务端不做。
+     * <p>{@code identifier} 在单表提交里可以缺席（路径已经指明了表）；在
+     * {@link CommitTransactionRequest 多表事务} 的每个子请求里它是**必填的**——
+     * 路径不再指明对象，缺失时服务端按 400 拒绝整笔事务。
      */
     public record UpdateTableRequest(@JsonProperty("identifier") TableIdentifier identifier,
                                      @JsonProperty("requirements") List<JsonNode> requirements,
                                      @JsonProperty("updates") List<JsonNode> updates) {
+    }
+
+    /**
+     * {@code POST /v1/{prefix}/transactions/commit}：把多张表的一轮提交包成一个原子单元。
+     *
+     * <p>规格里每个元素就是 {@code CommitTableRequest}，形状与单表提交的报文体相同
+     * （{@code identifier + requirements + updates}），因此直接复用
+     * {@link UpdateTableRequest}——它与单表端点共用同一条解析与应用路径
+     * （{@code IcebergUpdateCodec}），只是多包了一层「全部成立才落库」的闸。
+     */
+    public record CommitTransactionRequest(
+            @JsonProperty("table-changes") List<UpdateTableRequest> tableChanges) {
     }
 
     public record LoadCredentialsResponse(@JsonProperty("storage-credentials") List<StorageCredential> storageCredentials) {
@@ -174,8 +187,36 @@ public final class IcebergDtos {
                                    @JsonProperty("config") Map<String, String> config) {
     }
 
+    /**
+     * {@code POST .../namespaces/{ns}/register-view}：登记仓库里已存在的一份
+     * {@code ViewMetadata}。
+     *
+     * <p>与表的 {@link RegisterTableRequest} 相比少一个 {@code overwrite}——规格没定义它，
+     * 重名时服务端直接 409。
+     */
+    public record RegisterViewRequest(@JsonProperty("name") String name,
+                                      @JsonProperty("metadata-location") String metadataLocation) {
+    }
+
     public record UpdateViewRequest(@JsonProperty("identifier") TableIdentifier identifier,
                                     @JsonProperty("requirements") List<JsonNode> requirements,
                                     @JsonProperty("updates") List<JsonNode> updates) {
+    }
+
+    // ------------------------------------------------------------------ function
+
+    public record ListFunctionsResponse(@JsonProperty("identifiers") List<TableIdentifier> identifiers,
+                                        @JsonProperty("next-page-token") String nextPageToken) {
+    }
+
+    /**
+     * {@code GET .../functions/{function}}：{@code LoadFunctionResult}。
+     *
+     * <p>{@code metadata} 是整份 {@code FunctionMetadata} JSON；本服务端的函数没有
+     * 元数据文件（它是 {@code lakehouse_function} 一行的只读投影），因此
+     * {@code metadata-location} 恒为 {@code null}——规格说「if available」，缺席即如实。
+     */
+    public record LoadFunctionResult(@JsonProperty("metadata-location") String metadataLocation,
+                                     @JsonProperty("metadata") JsonNode metadata) {
     }
 }

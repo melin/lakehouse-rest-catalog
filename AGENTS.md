@@ -251,7 +251,7 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
 
 | 文档 | 什么时候读 |
 | --- | --- |
-| `catalog-api-endpoints.md` | Catalog API 的端点、基址、前缀、授权映射；**两个协议面各一章**——Paimon 的 60 个与 Iceberg 的 26 个（含 9 个不声明的、各端点的成功码、错误模型） |
+| `catalog-api-endpoints.md` | Catalog API 的端点、基址、前缀、授权映射；**两个协议面各一章**——Paimon 的 60 个与 Iceberg 的 30 个（含 5 个不声明的、各端点的成功码、错误模型） |
 | `management-api-overview.md` | 官方权限端点与扩展端点落在哪几个控制器、易读错的语义 |
 | `management-api-contract.md` | 管理 API 字段与权限枚举**逐字契约**（生成物，勿手改） |
 | `data-model.md` | 改实体 / 看 20 张表划分、摘要列与审计列的理由、实体与仓储分在哪两个模块、Iceberg 协议面新增的 9 个列（§1.1） |

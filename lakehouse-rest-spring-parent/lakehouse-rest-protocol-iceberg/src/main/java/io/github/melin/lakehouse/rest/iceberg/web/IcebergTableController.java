@@ -31,7 +31,8 @@ import tools.jackson.databind.JsonNode;
  *       {@code POST .../register}、{@code POST .../unregister}、
  *       {@code GET .../credentials}</td><td>200（带响应体）</td></tr>
  *   <tr><td>{@code HEAD .../tables/{t}}</td><td>204</td></tr>
- *   <tr><td>{@code DELETE .../tables/{t}}、{@code POST .../metrics}</td><td>204</td></tr>
+ *   <tr><td>{@code DELETE .../tables/{t}}、{@code POST .../metrics}、
+ *       {@code POST /v1/{prefix}/transactions/commit}</td><td>204</td></tr>
  * </table>
  *
  * <p><b>{@code X-Iceberg-Access-Delegation} 是一个「要不要把凭据给我」的请求头</b>
@@ -175,6 +176,22 @@ public class IcebergTableController {
                                               @PathVariable String table,
                                               @RequestBody(required = false) JsonNode report) {
         tableService.reportMetrics(prefix, levels(namespace), table, report);
+        return ResponseEntity.noContent().build();
+    }
+
+    // ------------------------------------------------------------------ 多表事务
+
+    /**
+     * {@code POST /v1/{prefix}/transactions/commit}：多张表的一轮提交，成功码 204。
+     *
+     * <p>目标表全在请求体里，授权由服务层对每张表逐个判（deferred），
+     * 见 {@code IcebergTableService#commitTransaction}。
+     */
+    @PostMapping("/transactions/commit")
+    public ResponseEntity<Void> commitTransaction(
+            @PathVariable String prefix,
+            @RequestBody(required = false) IcebergDtos.CommitTransactionRequest request) {
+        tableService.commitTransaction(prefix, request);
         return ResponseEntity.noContent().build();
     }
 

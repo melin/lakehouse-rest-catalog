@@ -5,9 +5,9 @@
 **能力承诺**，它有两类错，靠人工读代码都看不出来：
 
   1. **声明了但没实现**——客户端在连接阶段看到这个端点存在，就会在某次操作里用它，
-     而那时候才 404。典型例子是 {@code POST /v1/{prefix}/transactions/commit}：
-     规格里有、本服务端一期不做，一旦声明出去，故障现场会离原因非常远
-     （客户端一直正常，直到用户真的发起一次多表提交）。
+     而那时候才 404。典型例子是 {@code POST .../plan}：
+     规格里有、本服务端不做，一旦声明出去，故障现场会离原因非常远
+     （客户端一直正常，直到用户真的发起一次扫描规划）。
   2. **实现了但没声明**——功能其实能用，但客户端认为服务端不支持，
      于是在连接阶段就拒绝本服务端，或者回落到一条更差的路。
 
@@ -17,9 +17,9 @@
 
 校验项：
   1. 规格端点总数          规格里 (路径 x 方法) 的组合数 == 35
-  2. 声明条数              IcebergEndpoints.SUPPORTED 的条数 == 26
+  2. 声明条数              IcebergEndpoints.SUPPORTED 的条数 == 30
   3. 声明 ⊆ 规格           声明里没有规格里不存在的端点（拼错路径/动词会在这里露出来）
-  4. 未实现的端点          「规格 - 声明」== 设计文档 §6 列出的那 9 个（逐条列出）
+  4. 未实现的端点          「规格 - 声明」== 设计文档 §6 列出的那 5 个（逐条列出）
   5. 声明 → 实现           每一条声明都能在控制器上找到对应的映射
   6. 实现 → 声明           Iceberg 侧的每个映射都在声明里（不声明就是一个隐藏端点）
   7. 注解解析完整性        每个控制器里 mapping 注解的条数 == 脚本解析出的端点条数
@@ -65,13 +65,11 @@ CORE_SOURCES = [
      ["POST /api/catalog/v1/oauth/tokens"]),
 ]
 
-# 设计文档 §6 里写明"一期不做"的那 9 个端点。写成字面量而不是从"规格 - 声明"推出来：
+# 设计文档 §6 里写明"不做"的那 5 个端点。写成字面量而不是从"规格 - 声明"推出来：
 # 推导出来的集合永远是自洽的，这里要的恰恰是"实现变了但文档没改"能被发现。
-# 三个分组（§6 的「二期」与「不做」）在这份清单里按路径排列。
+# 二期补齐了 functions（只读两个）、register-view 与 transactions/commit，
+# 剩下的都在 plan / tasks / sign 一族（见各分组注释）。
 NOT_IMPLEMENTED = [
-    # functions：二期做只读投影
-    "GET /v1/{prefix}/namespaces/{namespace}/functions",
-    "GET /v1/{prefix}/namespaces/{namespace}/functions/{function}",
     # plan / tasks：扫描规划要一个常驻执行引擎，是另一个产品的份量
     "POST /v1/{prefix}/namespaces/{namespace}/tables/{table}/plan",
     "GET /v1/{prefix}/namespaces/{namespace}/tables/{table}/plan/{plan-id}",
@@ -79,14 +77,10 @@ NOT_IMPLEMENTED = [
     "POST /v1/{prefix}/namespaces/{namespace}/tables/{table}/tasks",
     # sign：远程签名 KMS
     "POST /v1/{prefix}/namespaces/{namespace}/tables/{table}/sign",
-    # 多表事务：要在 DB 里做跨表原子提交，且必须与 requirements 语义对齐
-    "POST /v1/{prefix}/transactions/commit",
-    # register-view：二期
-    "POST /v1/{prefix}/namespaces/{namespace}/register-view",
 ]
 
 SPEC_ENDPOINT_TOTAL = 35
-SUPPORTED_TOTAL = 26
+SUPPORTED_TOTAL = 30
 
 problems = []
 checks = 0

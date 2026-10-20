@@ -3,7 +3,8 @@
 
 为什么需要它：控制台是用字符串拼 URL 的，而服务端的路径属于契约
 （catalog API 见 static/rest-catalog-open-api.yaml，管理 API 见
-spec/polaris-management-service.yml）。路径写错时前端只表现为「空列表」或 404，
+static/polaris-management-service.yml，Iceberg 协议面见
+spec/rest-catalog-open-api-iceberg.yaml）。路径写错时前端只表现为「空列表」或 404，
 看不出是拼错了还是服务端改了；而这批路径分散在几十个端点里，靠人工比对不现实。
 
 本脚本不构建前端、不启动服务端，只做静态比对——它读的是磁盘上的产物与源码，
@@ -83,7 +84,11 @@ CATALOG_SPEC = os.path.join(
 # （namespaces / identifiers / kebab-case 报文），因此端点比对必须把两份规格
 # 并起来——只比 Paimon 那份的话，新加的 Iceberg 端点会被判成「规格里没有」。
 ICEBERG_SPEC = os.path.join(ROOT, "spec/rest-catalog-open-api-iceberg.yaml")
-MANAGEMENT_SPEC = os.path.join(ROOT, "spec/polaris-management-service.yml")
+# 管理面的规格副本随服务端分发（运行时可从 /polaris-management-service.yml 下载）。
+# spec/ 下的同名副本已删除——官方 Paimon 管理 API 只剩权限 3 个 operation（见
+# docs/management-api-overview.md），那份副本是另一回事，不能拿来比对管理面端点。
+MANAGEMENT_SPEC = os.path.join(
+    ROOT, "lakehouse-rest-spring-parent/lakehouse-rest-server/src/main/resources/static/polaris-management-service.yml")
 
 CONSOLE_ASSETS = os.path.join(
     ROOT, "lakehouse-rest-spring-parent/lakehouse-rest-server/src/main/resources/static/console")
@@ -914,11 +919,11 @@ check("列表请求用 Iceberg 的 pageSize（不是 Paimon 的 maxResults）",
 # 表列表只拿得到 identifiers：控制台不能假装列表里有 location / 时间。
 # loadTable 属于表详情页（IcebergTableView），浏览页里出现它就是又在逐表拼列。
 iceberg_table_view = read(os.path.join(CONSOLE_DIR, "src/views/IcebergTableView.vue"))
-check("表与视图列表都按 identifiers 取，逐表 load 只发生在表详情页",
-      iceberg_browse.count("createPagedList('identifiers'") == 2
+check("表、视图、函数列表都按 identifiers 取，逐表 load 只发生在表详情页",
+      iceberg_browse.count("createPagedList('identifiers'") == 3
       and "icebergApi.loadTable" not in iceberg_browse
       and "icebergApi.loadTable" in iceberg_table_view,
-      "两个列表都应以 identifiers 为字段；loadTable 应只在 IcebergTableView 里按需调用")
+      "三个列表都应以 identifiers 为字段；loadTable 应只在 IcebergTableView 里按需调用")
 
 # 建表报文是 Iceberg 形状：schema-id / required / source-id / field-id。
 # 这四项任何一项写成 Paimon 的样子，服务端会用 SchemaParser 报一句难懂的错。

@@ -123,11 +123,10 @@ export const ENDPOINTS = {
   // 由 `verify-console.py` 第 1 组与服务端控制器双向比对。
   //
   // 有意**不**登记的三类：
-  // · `plan` / `tasks` / `sign` / `transactions/commit` / `register-view` /
-  //   `functions`：服务端一期不实现（见 `IcebergEndpoints` 的类注释），登记进来就是死条目；
-  // · `POST .../tables/{table}`（提交 update）：请求体里是 metadata 代数相关的
-  //   `updates` / `requirements`，控制台拼不出一轮合法的提交——与 Paimon 侧不登记
-  //   `commitTable` 同一个理由；
+  // · `plan` / `tasks` / `sign`：服务端不实现（见 `IcebergEndpoints` 的类注释），登记进来就是死条目；
+  // · `POST .../tables/{table}`（提交 update）与 `POST /v1/{prefix}/transactions/commit`：
+  //   请求体里是 metadata 代数相关的 `updates` / `requirements`，控制台拼不出一轮
+  //   合法的提交——与 Paimon 侧不登记 `commitTable` 同一个理由；
   // · `HEAD` 两个存在性检查：控制台用不到（列表已经告诉它有没有），
   //   而 `client.js` 的动词糖只有 GET/POST/PUT/DELETE。
   icebergListNamespaces: { method: 'GET', path: '/v1/{prefix}/namespaces' },
@@ -147,6 +146,12 @@ export const ENDPOINTS = {
   icebergListViews: { method: 'GET', path: '/v1/{prefix}/namespaces/{namespace}/views' },
   icebergLoadView: { method: 'GET', path: '/v1/{prefix}/namespaces/{namespace}/views/{view}' },
   icebergDropView: { method: 'DELETE', path: '/v1/{prefix}/namespaces/{namespace}/views/{view}' },
+  // 登记仓库里已有的一份 ViewMetadata（成功码 200）。
+  icebergRegisterView: { method: 'POST', path: '/v1/{prefix}/namespaces/{namespace}/register-view' },
+  // 函数只读两个：写路径在 Paimon 面（`/v1/{prefix}/databases/{db}/functions…`），
+  // 规格在 Iceberg 侧也只定义了这两个 GET。
+  icebergListFunctions: { method: 'GET', path: '/v1/{prefix}/namespaces/{namespace}/functions' },
+  icebergLoadFunction: { method: 'GET', path: '/v1/{prefix}/namespaces/{namespace}/functions/{function}' },
 
   // ------------------------------------------------------------------ 管理 API：catalog
   listCatalogs: { method: 'GET', path: '/api/management/v1/catalogs' },

@@ -87,10 +87,11 @@
           </el-button>
         </div>
 
-        <!-- Iceberg 协议面没有函数与语义视图：页签只留这两个，不摆空页签 -->
+        <!-- 语义视图是 Paimon 面的能力：Iceberg 页签是表 / 视图 / 函数（函数只读，写路径在 Paimon 面） -->
         <el-tabs v-model="tab" class="pc-tabs">
           <el-tab-pane label="表" name="tables" />
           <el-tab-pane label="视图" name="views" />
+          <el-tab-pane label="函数" name="functions" />
         </el-tabs>
 
         <div class="pc-obj-body">
@@ -129,12 +130,14 @@
               </el-table>
             </template>
 
-            <template v-else>
+            <template v-else-if="tab === 'views'">
               <div class="pc-tools-row">
                 <span class="pc-dim">
                   视图定义按 Iceberg 的 <code class="pc-mono">ViewMetadata</code> 整篇保存。
-                  新建视图需要 schema 与 view-version 两段元数据，控制台不拼——请用 Spark 或客户端建，这里只读与删。
+                  新建视图需要 schema 与 view-version 两段元数据，控制台不拼——请用 Spark 或客户端建，这里只读、登记与删。
                 </span>
+                <span class="pc-spacer" />
+                <el-button size="small" @click="openRegisterView">登记已有视图</el-button>
               </div>
               <el-table v-loading="viewsList.loading.value" :data="viewsList.items.value" size="small">
                 <el-table-column prop="name" label="视图名" min-width="220" />
@@ -142,6 +145,28 @@
                   <template #default="{ row }">
                     <IconAction icon="View" label="详情" @click="showView(row)" />
                     <IconAction icon="Delete" label="删除" type="danger" @click="confirmDropView(row.name)" />
+                  </template>
+                </el-table-column>
+              </el-table>
+            </template>
+
+            <template v-else>
+              <div class="pc-tools-row">
+                <span class="pc-dim">
+                  函数在 Iceberg 协议面是<strong>只读</strong>的（规格只定义了两个 GET）：
+                  写路径在 Paimon 面、且那条面只服务 Paimon catalog，所以 Iceberg catalog 上
+                  这份列表通常为空——Paimon catalog 里的函数可通过这条只读通道以
+                  <code class="pc-mono">FunctionMetadata</code> 的形状读出
+                  （只有 SQL 定义能投影，<code class="pc-mono">file</code> /
+                  <code class="pc-mono">lambda</code> 不显示）。
+                  要管理函数请到 Paimon catalog 的浏览页「函数」页签。
+                </span>
+              </div>
+              <el-table v-loading="functionsList.loading.value" :data="functionsList.items.value" size="small">
+                <el-table-column prop="name" label="函数名" min-width="220" />
+                <el-table-column label="操作" width="90" align="right">
+                  <template #default="{ row }">
+                    <IconAction icon="View" label="详情" @click="showFunction(row)" />
                   </template>
                 </el-table-column>
               </el-table>
@@ -329,6 +354,34 @@
       <template #footer>
         <el-button @click="registerDialog.open = false">取消</el-button>
         <el-button type="primary" :loading="registerDialog.saving" @click="saveRegister">登记</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 登记已有视图：与登记表同一套「内容以仓库为准」的语义，但没有 overwrite（规格没给） -->
+    <el-dialog v-model="viewRegisterDialog.open" title="登记已有视图" width="560px" :close-on-click-modal="false" destroy-on-close>
+      <el-alert type="info" :closable="false" show-icon class="pc-hint">
+        <template #title>登记只写经目录，不搬动数据</template>
+        <div>
+          <code class="pc-mono">metadata-location</code> 必须指向仓库里一份可读的
+          <code class="pc-mono">ViewMetadata</code> 文件；视图重名时服务端会拒绝（409），
+          没有「覆盖」选项——规格的请求体里没有这个字段。
+        </div>
+      </el-alert>
+      <el-form label-position="top" size="small" class="pc-form">
+        <el-form-item label="视图名" required>
+          <el-input v-model="viewRegisterDialog.name" />
+        </el-form-item>
+        <el-form-item label="metadata-location" required>
+          <el-input
+            v-model="viewRegisterDialog.metadataLocation"
+            class="pc-pre"
+            placeholder="s3://warehouse/orders/metadata/00001-....metadata.json"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="viewRegisterDialog.open = false">取消</el-button>
+        <el-button type="primary" :loading="viewRegisterDialog.saving" @click="saveRegisterView">登记</el-button>
       </template>
     </el-dialog>
 
@@ -531,8 +584,9 @@ function createPagedList(field, call) {
 
 const tablesList = createPagedList('identifiers', (levels, query) => icebergApi.listTables(prefix.value, levels, query))
 const viewsList = createPagedList('identifiers', (levels, query) => icebergApi.listViews(prefix.value, levels, query))
+const functionsList = createPagedList('identifiers', (levels, query) => icebergApi.listFunctions(prefix.value, levels, query))
 
-const lists = { tables: tablesList, views: viewsList }
+const lists = { tables: tablesList, views: viewsList, functions: functionsList }
 const currentList = computed(() => lists[tab.value] || tablesList)
 
 const filteredTables = computed(() => {
@@ -553,6 +607,7 @@ const emptyText = computed(() => {
   return {
     tables: '这个命名空间下还没有表',
     views: '这个命名空间下还没有视图',
+    functions: '这个命名空间下还没有函数',
   }[tab.value] || '暂无数据'
 })
 
@@ -577,6 +632,7 @@ watch(
     if (!prefix.value || !levels) return
     tablesList.load(true)
     viewsList.load(true)
+    functionsList.load(true)
   },
   { immediate: true },
 )
@@ -893,6 +949,62 @@ async function confirmDropView(name) {
     await icebergApi.dropView(prefix.value, currentLevels.value, name)
     notifySuccess(`已删除视图 ${name}`)
     viewsList.load(true)
+  } catch (error) {
+    notifyError(error)
+  }
+}
+
+// ------------------------------------------------------------------ 登记视图 / 函数详情
+
+const viewRegisterDialog = reactive({ open: false, name: '', metadataLocation: '', saving: false })
+
+function openRegisterView() {
+  viewRegisterDialog.name = ''
+  viewRegisterDialog.metadataLocation = ''
+  viewRegisterDialog.open = true
+}
+
+async function saveRegisterView() {
+  const name = viewRegisterDialog.name.trim()
+  const location = viewRegisterDialog.metadataLocation.trim()
+  if (!name || !location) {
+    notifyError(new Error('视图名与 metadata-location 都不能为空'))
+    return
+  }
+  viewRegisterDialog.saving = true
+  try {
+    await icebergApi.registerView(prefix.value, currentLevels.value, {
+      name,
+      'metadata-location': location,
+    })
+    notifySuccess(`已登记视图 ${name}`)
+    viewRegisterDialog.open = false
+    viewsList.load(true)
+  } catch (error) {
+    notifyError(error)
+  } finally {
+    viewRegisterDialog.saving = false
+  }
+}
+
+/**
+ * 函数详情：抽屉里放整份 `FunctionMetadata` 投影。
+ *
+ * <p>与视图详情共用同一个抽屉壳；函数没有 metadata-location（只读投影、没有
+ * 元数据文件），摘要列只给 uuid 与定义数。
+ */
+async function showFunction(row) {
+  try {
+    const payload = await icebergApi.loadFunction(prefix.value, currentLevels.value, row.name)
+    const metadata = payload?.metadata || {}
+    detail.title = `函数：${row.name}`
+    detail.summary = [
+      { label: 'function-uuid', value: metadata['function-uuid'] || '—' },
+      { label: 'format-version', value: String(metadata['format-version'] ?? '—') },
+      { label: '定义数', value: String((metadata.definitions || []).length) },
+    ]
+    detail.payload = payload
+    detail.open = true
   } catch (error) {
     notifyError(error)
   }

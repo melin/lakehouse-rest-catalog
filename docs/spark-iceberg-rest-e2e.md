@@ -21,7 +21,7 @@ Paimon 侧的同名文档是 [`spark-paimon-rest-e2e.md`](spark-paimon-rest-e2e.
 
 | 层 | 验的是什么 | 状态与证据 |
 | --- | --- | --- |
-| 协议层 | 26 个端点回什么：状态码、字段名、`metadata.json` 有没有真的落进仓库、错误体的形状 | **已实测**：`IcebergRestCatalogApiTests`（10 个用例，HTTP 行为） |
+| 协议层 | 30 个端点回什么：状态码、字段名、`metadata.json` 有没有真的落进仓库、错误体的形状 | **已实测**：`IcebergRestCatalogApiTests`（10 个用例，HTTP 行为） |
 | 客户端协商层 | 官方 Java 客户端能不能连上：`/v1/config` 的能力清单协商、嵌套错误体翻不翻得成具体异常、更新代数（`requirements` + `updates`）真跑不跑得通 | **已实测**：`IcebergClientEndToEndTests`（3 个用例，真 HTTP + `org.apache.iceberg.rest.RESTCatalog`） |
 | 引擎层 | Spark 起会话、跑 SQL、写数据文件、再读回来 | **已实测**：`IcebergTableDdlTests`（10 个用例，真 `SparkSession` + 真服务端 + 真仓库，见第 0.1 节） |
 

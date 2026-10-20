@@ -6,7 +6,7 @@ LakeHouse Catalog API 在本服务端的全部端点，按资源分组列出。
 | 协议面 | 规格来源 | 端点 |
 | --- | --- | --- |
 | **Paimon**（本文档第 1–10 节） | Apache Paimon `docs/static/rest-catalog-open-api.yaml`（副本 `spec/rest-catalog-open-api.yaml`，运行时可从 `/rest-catalog-open-api.yaml` 下载） | **60 个**（规格全部实现）、144 个 schema |
-| **Iceberg**（本文档末尾） | Apache Iceberg `rest-catalog-open-api.yaml`（副本 `spec/rest-catalog-open-api-iceberg.yaml`） | **26 个**（规格共 35 个「路径 × 方法」组合，9 个不声明） |
+| **Iceberg**（本文档末尾） | Apache Iceberg `rest-catalog-open-api.yaml`（副本 `spec/rest-catalog-open-api-iceberg.yaml`） | **30 个**（规格共 35 个「路径 × 方法」组合，5 个不声明） |
 
 一个 catalog 只有一种格式（`lakehouse_catalog.catalog_format`，创建时定下、**不可变**），
 两套路径因此互不重叠地落在各自的 prefix 上。走错面的请求会拿到**指名原因的 404**
@@ -295,10 +295,10 @@ POST /v1/paimon/databases/ods/tables
 
 ---
 
-## Iceberg 协议面（26 个端点）
+## Iceberg 协议面（30 个端点）
 
 规格 `spec/rest-catalog-open-api-iceberg.yaml` 共 **35 个「路径 × 方法」组合**，
-本服务端一期实现 **26 个**，其余 9 个**不声明**（见本节末尾）。
+本服务端实现 **30 个**（一期 26 + 二期 4），其余 5 个**不声明**（见本节末尾）。
 基址与 Paimon 面相同（`/v1`），`{prefix}` 的含义也相同——只是能落在它上面的 catalog
 必须是 Iceberg 格式。`{namespace}` 是**多级**拼接段：规格默认分隔符 `0x1F`
 （URL 编码 `%1F`），解析时同时接受点号。
@@ -311,9 +311,9 @@ POST /v1/paimon/databases/ods/tables
 | POST | `/v1/oauth/tokens` | OAuth2 客户端凭据换令牌（与 Paimon 侧共用） |
 
 `endpoints` **必须发**：Iceberg 规格写明服务端不返回它时，客户端会假定一整套默认端点存在，
-而那份默认清单里含 `POST /v1/{prefix}/transactions/commit`（多表事务）——
-本服务端不做多表事务，不发声明等于承诺了一个不存在的能力，
-故障现场会离原因很远（客户端一路正常，直到用户真的发起一次多表提交）。
+而那份默认清单比实现面宽——`plan` / `tasks` / `sign` 这类能力本服务端不做，
+不发声明等于承诺了不存在的能力，故障现场会离原因很远
+（客户端一路正常，直到用户真的发起一次那类操作）。
 清单的内容是 `IcebergEndpoints.SUPPORTED`，与控制器映射逐条对应，
 由 `scripts/verify-iceberg-endpoints.py` 机械校验。
 
@@ -376,12 +376,13 @@ namespace ↔ `lakehouse_database` 是同一个东西的两个名词：Iceberg �
   它唯一能给出的确定结论是「报告里的 `snapshot-id` 不在本目录的投影里」——
   那说明有人绕开本服务端往仓库里写了。
 
-### view（7）
+### view（8）
 
 | 方法 | 路径 | 成功 |
 | --- | --- | --- |
 | GET | `/v1/{prefix}/namespaces/{namespace}/views` | 200 |
 | POST | `/v1/{prefix}/namespaces/{namespace}/views` | 200 |
+| POST | `/v1/{prefix}/namespaces/{namespace}/register-view` | 200（登记仓库里已有的一份 `ViewMetadata`；重名 409，规格没有 overwrite 字段） |
 | GET | `/v1/{prefix}/namespaces/{namespace}/views/{view}` | 200 |
 | HEAD | `/v1/{prefix}/namespaces/{namespace}/views/{view}` | **204** |
 | POST | `/v1/{prefix}/namespaces/{namespace}/views/{view}` | 200（一轮 update 作用在 `ViewMetadata` 上） |
@@ -392,26 +393,60 @@ namespace ↔ `lakehouse_database` 是同一个东西的两个名词：Iceberg �
 `ViewMetadata`（Iceberg 形状），因此两边互不认对方的行——一个通过 Paimon 面建的视图
 在 Iceberg 面会 404，反之亦然，且在报错里说清原因（而不是一句「视图不存在」）。
 
+`register-view` 与表的 `register` 同一条路线：内容以仓库里那一份为准——先读
+`metadata-location` 指向的文件（读不到 404），解析成 `ViewMetadata`（解析不动 400），
+再把指针与文档原文一起落库。视图没有任何投影行，登记就是一行 `lakehouse_view`。
+
 **删视图只摘目录条目，不碰仓库，也不受 `purge-on-drop` 影响**：视图不拥有数据目录
 （它只是一段 SQL），它的位置甚至可能与别的对象共用，按目录删会误删别人的文件。
 代价是留一个几 KB 的孤儿 metadata 文件。
 
-### 一期不做的 9 个（因此不声明）
+### function（2，只读）
 
-| 端点 | 归入 |
+| 方法 | 路径 | 成功 |
+| --- | --- | --- |
+| GET | `/v1/{prefix}/namespaces/{namespace}/functions` | 200 |
+| GET | `/v1/{prefix}/namespaces/{namespace}/functions/{function}` | 200（`LoadFunctionResult`，`metadata` 是整份 `FunctionMetadata`） |
+
+规格在 Iceberg 侧只定义了这两个 GET，**写路径在 Paimon 面**——本服务端不做半套写路径。
+读取是对 `lakehouse_function` 的**只读投影**：函数的 Paimon 形状与 `FunctionMetadata`
+表达同一件事，任何一边建的函数两边都读得到。三处取舍：
+
+- 只有 **SQL 定义**能投影出来；`file` / `lambda` 定义在 Iceberg 的
+  `FunctionRepresentation` 词表里没有对应物，跳过而不是编一个形状。
+- `function-uuid` 由实体 id 派生（UUID v3），同一行每次 load 恒定——但没有地方
+  在创建时生成并保存它，它不是「建函数时的那个 uuid」。
+- `metadata-location` 恒为缺席：函数没有元数据文件，规格说「if available」。
+
+### transaction（1）
+
+| 方法 | 路径 | 成功 |
+| --- | --- | --- |
+| POST | `/v1/{prefix}/transactions/commit` | **204**（`table-changes[]`，每个元素与单表提交的报文体同形状；409 `CommitFailedException`） |
+
+多张表的一轮提交**要么全部生效、要么全部不生效**。实现是三段式：
+
+1. **全量校验（只读）**：逐表解析 identifier / requirements / updates，
+   对每张表的当前元数据跑 requirements。任何一张不成立，整笔事务在这里就失败。
+2. **写仓库**：逐表写新元数据文件（与单表提交同一条「先写仓库、后落库」）。
+3. **一次事务落库**：逐表做与单表相同的 CAS 更新；任何一行 CAS 失败就抛 409，
+   整个数据库事务回滚——不会出现「改了一半」的目录状态。
+
+授权按 deferred 处理：目标表全在请求体里，控制器对每张表逐个判 `TABLE:ALTER`——
+打包成事务不会放宽任何一张表的权限。空 updates 的子请求按 no-op 跳过（requirements 仍然校验）。
+
+### 不做的 5 个（因此不声明）
+
+| 端点 | 原因 |
 | --- | --- |
-| `GET /v1/{prefix}/namespaces/{namespace}/functions` | 二期（只读投影 `FunctionMetadata`） |
-| `GET /v1/{prefix}/namespaces/{namespace}/functions/{function}` | 二期 |
-| `POST /v1/{prefix}/namespaces/{namespace}/register-view` | 二期 |
-| `POST /v1/{prefix}/transactions/commit` | 二期（跨表原子提交 + `requirements` 对齐） |
-| `POST /v1/{prefix}/namespaces/{namespace}/tables/{table}/plan` | 不做（需要常驻扫描规划引擎） |
-| `GET /v1/{prefix}/namespaces/{namespace}/tables/{table}/plan/{plan-id}` | 不做 |
-| `DELETE /v1/{prefix}/namespaces/{namespace}/tables/{table}/plan/{plan-id}` | 不做 |
-| `POST /v1/{prefix}/namespaces/{namespace}/tables/{table}/tasks` | 不做 |
-| `POST /v1/{prefix}/namespaces/{namespace}/tables/{table}/sign` | 不做（远程签名要 KMS） |
+| `POST /v1/{prefix}/namespaces/{namespace}/tables/{table}/plan` | 需要常驻的扫描规划引擎 |
+| `GET /v1/{prefix}/namespaces/{namespace}/tables/{table}/plan/{plan-id}` | 同上 |
+| `DELETE /v1/{prefix}/namespaces/{namespace}/tables/{table}/plan/{plan-id}` | 同上 |
+| `POST /v1/{prefix}/namespaces/{namespace}/tables/{table}/tasks` | plan 体系的一部分 |
+| `POST /v1/{prefix}/namespaces/{namespace}/tables/{table}/sign` | 远程签名要 KMS |
 
 这份清单在代码里有两处副本，**必须与上表逐字一致**：`IcebergEndpoints` 的类注释
-（哪 9 个不声明）与 `scripts/verify-iceberg-endpoints.py` 的 `NOT_IMPLEMENTED`。
+（哪 5 个不声明）与 `scripts/verify-iceberg-endpoints.py` 的 `NOT_IMPLEMENTED`。
 校验脚本是从规格里读出「路径 × 方法」来比的，不是照抄上表——
 `plan` 有三个方法（`POST` 建 / `GET` 拉 / `DELETE` 取消）、`tasks` 是 `POST`（不是 `GET`），
 这两处容易照记忆写错。

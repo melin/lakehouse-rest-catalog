@@ -2,7 +2,7 @@
   <div class="pc-page">
     <PageHeader
       title="角色（Principal Role）"
-      subtitle="角色串起主体与 catalog 角色：主体持有角色，角色在各 catalog 上持有 catalog 角色，权限挂在最后一级。因此改一个角色，会影响所有持有它的主体。"
+      subtitle="角色只是主体分组，不携带任何权限：主体持有角色，授权按 `role:&lt;角色名&gt;` 命中。因此改一个角色，会影响所有持有它的主体。"
     >
       <template #actions>
         <el-button size="small" :loading="table.loading.value" @click="table.load">
@@ -325,54 +325,28 @@ async function openDetail(row) {
   }
 }
 
+/**
+ * Catalog 角色是 Polaris 的「catalog 内实体」，本服务端没有这套端点——
+ * 授权模型只有两层：principal 与 principal role（见 docs/authorization.md）。
+ *
+ * <p>这里**不再调用** `listCatalogRoles*`：管理面的方法早已随服务端一起移除，
+ * 调用它们会抛 `is not a function` 把详情页打崩。页签保留是为了让老链接仍能打开，
+ * 内容如实说明不可用，而不是显示一个空列表让人以为「这个 catalog 还没建角色」。
+ */
 async function loadCatalogRoles() {
-  detail.loadingCatalogRoles = true
-  detail.errorCatalogRoles = ''
-  try {
-    const [owned, all] = await Promise.all([
-      managementApi.listCatalogRolesOfPrincipalRole(detail.name, detail.catalogName),
-      managementApi.listCatalogRoles(detail.catalogName),
-    ])
-    detail.catalogRoles = owned.roles || []
-    detail.allCatalogRoles = all.roles || []
-  } catch (error) {
-    detail.catalogRoles = []
-    detail.allCatalogRoles = []
-    detail.errorCatalogRoles = describeError(error)
-  } finally {
-    detail.loadingCatalogRoles = false
-  }
+  detail.catalogRoles = []
+  detail.allCatalogRoles = []
+  detail.errorCatalogRoles =
+    '本服务端没有 catalog 角色：请在「权限」页按主体（user:）或 principal role（role:）授权'
+  detail.loadingCatalogRoles = false
 }
 
 async function grantCatalogRole() {
-  detail.saving = true
-  try {
-    await managementApi.grantCatalogRole(detail.name, detail.catalogName, { name: detail.toGrant })
-    notifySuccess(`已在 ${detail.catalogName} 上授予 ${detail.toGrant}`)
-    detail.toGrant = ''
-    await loadCatalogRoles()
-  } catch (error) {
-    notifyError(error)
-  } finally {
-    detail.saving = false
-  }
+  notifyError(new Error('不可用：本服务端没有 catalog 角色，授权请用 principal role'))
 }
 
-async function revokeCatalogRole(name) {
-  const ok = await confirmDanger({
-    title: '移除 Catalog 角色',
-    target: `在 catalog「${detail.catalogName}」上移除角色「${name}」？`,
-    detail: '持有这个角色的所有主体都会失去该 catalog 角色带来的权限。',
-    confirmText: '移除',
-  })
-  if (!ok) return
-  try {
-    await managementApi.revokeCatalogRole(detail.name, detail.catalogName, name)
-    notifySuccess(`已移除 ${name}`)
-    await loadCatalogRoles()
-  } catch (error) {
-    notifyError(error)
-  }
+async function revokeCatalogRole() {
+  notifyError(new Error('不可用：本服务端没有 catalog 角色'))
 }
 
 onConsoleRefresh(() => table.load())

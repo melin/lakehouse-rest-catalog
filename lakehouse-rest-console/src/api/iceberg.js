@@ -115,6 +115,23 @@ export const icebergApi = {
   dropView: (prefix, levels, view) => del('icebergDropView', {
     params: { prefix, namespace: namespacePath(levels), view },
   }),
+  /** 登记仓库里已有的一份 ViewMetadata。`body` 是 `{name, 'metadata-location'}`。 */
+  registerView: (prefix, levels, body) => post('icebergRegisterView', {
+    params: { prefix, namespace: namespacePath(levels) }, body,
+  }),
+
+  // ------------------------------------------------------------------ function（只读）
+  /**
+   * 列函数。Iceberg 侧的函数是**只读**的：写路径在 Paimon 协议面（functions
+   * 的建删走那边的函数端点），这里读到的就是那些行，以 `FunctionMetadata`
+   * 的形状投影出来。
+   */
+  listFunctions: (prefix, levels, query = {}) => get('icebergListFunctions', {
+    params: { prefix, namespace: namespacePath(levels), query },
+  }),
+  loadFunction: (prefix, levels, fn) => get('icebergLoadFunction', {
+    params: { prefix, namespace: namespacePath(levels), function: fn },
+  }),
 }
 
 /**

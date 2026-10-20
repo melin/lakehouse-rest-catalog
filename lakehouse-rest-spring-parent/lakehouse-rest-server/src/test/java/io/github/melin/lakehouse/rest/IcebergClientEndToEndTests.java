@@ -251,8 +251,8 @@ class IcebergClientEndToEndTests {
      * 能力清单是服务端的**承诺**，客户端据此决定要不要发某个请求。
      *
      * <p>这里直接读原始报文而不是走客户端：客户端只在「清单与它自己要用到的端点不一致」
-     * 时才会抱怨，而本用例要钉的是「哪些字符串不许出现」——尤其是
-     * {@code transactions/commit}：它一旦被声明，客户端就会允许用户发起多表事务。
+     * 时才会抱怨。清单里每个字符串都是双向承诺——声明了的（如 {@code transactions/commit}，
+     * 二期已落地）客户端就允许用户发起对应请求；这里钉住的是「哪些字符串不许出现」。
      */
     @Test
     void theClientSeesExactlyTheDeclaredCapabilityList() throws Exception {
@@ -263,7 +263,7 @@ class IcebergClientEndToEndTests {
         assertEquals(200, response.statusCode(), response.body());
         String body = response.body();
         assertTrue(body.contains("\"endpoints\""), "Iceberg 的 /v1/config 必须下发能力清单: " + body);
-        for (String unsupported : List.of("transactions/commit", "/plan", "/tasks", "/sign")) {
+        for (String unsupported : List.of("/plan", "/tasks", "/sign")) {
             assertTrue(!body.contains(unsupported),
                     unsupported + " 未实现，不能出现在能力清单里: " + body);
         }

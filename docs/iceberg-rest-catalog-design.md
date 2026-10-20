@@ -118,11 +118,12 @@ Spark 的 Iceberg 客户端会把响应体反序列化成 `ErrorResponse`，拿�
 （400/401/403/404/409/422/500 一一对应）。
 
 **`endpoints` 能力声明（一定要发，不能省）。** Iceberg 规格写明：服务端若不返回
-`endpoints`，客户端会**假定一整套默认端点存在**，而那份默认清单里**包含
-`POST /v1/{prefix}/transactions/commit`**（多表事务）。不发声明，就等于承诺了
-一个我们不做的东西；等到客户端真的发起多表提交才 404，故障现场离原因很远。
+`endpoints`，客户端会**假定一整套默认端点存在**，而那份默认清单比实现面宽
+（`plan` / `tasks` / `sign` 这些我们不做）。不发声明，就等于承诺了
+一个我们不做的东西；等到客户端真的发起那类操作才 404，故障现场离原因很远。
 因此 `/v1/config`（Iceberg 格式）必须回一份**显式的 `endpoints` 清单**，
-只列一期真正实现的路径。
+只列真正实现的路径（一期 26 条；二期的 functions 只读两个、`register-view`、
+`transactions/commit` 落地后补进清单，现为 30 条）。
 
 **namespace 的分隔符。** Iceberg 的多级 namespace 在路径里用
 「namespace separator」拼接，由 `/config` 的 override `namespace-separator`
@@ -206,7 +207,7 @@ client 会以为是自己的 prefix 写错了，而真正的原因是**格式不
 | `lakehouse_tag` | 标签 | **`refs` 里 `type=tag`** | **0** |
 | `lakehouse_partition` | 分区（spec + 统计 + done 标记） | 不适用（分区由 manifest 决定，REST catalog 不需要逐分区登记） | **0**（Iceberg 表不写） |
 | `lakehouse_view` | 视图（字段 / 查询语句 / 方言） | 视图（`ViewMetadata`：versions / version-log） | **+1 列** |
-| `lakehouse_function` | 函数（入参/出参/定义体） | Iceberg 也有 `FunctionMetadata` | **0**（二期做只读投影） |
+| `lakehouse_function` | 函数（入参/出参/定义体） | Iceberg 也有 `FunctionMetadata` | **0**（已落地：Iceberg 面只读投影，无新列） |
 | `lakehouse_consumer` | 流式消费位点 | 不适用（Iceberg 无消费位点） | **0**（页签隐藏） |
 | `lakehouse_semantic_view` | 语义视图 | 不适用 | **0**（页签隐藏） |
 | 管理侧 7 张（principal / role / grant…） | RBAC + Paimon 原生权限 | **同一套 RBAC**：`ResourceGrant(namespace, objectName)` 的形状本来就与 Iceberg 的 namespace/table 一一对应 | **0** |
@@ -384,7 +385,7 @@ database 是单级字符串。`lakehouse_database.name` 是 `varchar(512)` 且
 | **直接映射**（namespace ↔ database） | `GET/POST /namespaces`、`GET/HEAD/DELETE /namespaces/{ns}`、`POST /namespaces/{ns}/properties` | 落到现有 `DatabaseService`，属性读写用 `options` |
 | **直接映射**（table ↔ table） | `GET/POST /namespaces/{ns}/tables`、`GET/POST/DELETE/HEAD /namespaces/{ns}/tables/{t}`、`POST /tables/rename`、`POST /namespaces/{ns}/register` | 落到新 `IcebergTableService`；`register` 复用现有 `register` 语义（登记已有目录 = 外部表） |
 | **新的小端点** | `POST .../tables/{t}/metrics`、`POST .../tables/{t}/unregister`、`GET .../tables/{t}/credentials`、`POST /views/rename`、`POST /namespaces/{ns}/register-view` | 各自一个方法；`credentials` 复用 `StorageCredentialManager`（含 `X-Iceberg-Access-Delegation` 头） |
-| **一期不做**（不声明） | `POST .../tables/{t}/plan`、`GET/DELETE .../plan/{plan-id}`、`POST .../tasks`、`POST .../tables/{t}/sign`、`POST /transactions/commit`、`GET .../functions(/{f})`、`/namespaces/{ns}/register-view` 视排期 | 见 §6 |
+| **不做**（不声明） | `POST .../tables/{t}/plan`、`GET/DELETE .../plan/{plan-id}`、`POST .../tasks`、`POST .../tables/{t}/sign` | 见 §6；二期的 functions / register-view / transactions/commit 已实现并声明 |
 
 ### 5.2 `/v1/config` 的差异化下发
 
@@ -501,12 +502,16 @@ Iceberg 规格副本已在 `spec/rest-catalog-open-api-iceberg.yaml`，
 | 控制台 | 格式徽标、Iceberg 表详情（页签随格式伸缩）、Iceberg 建表表单（§7） |
 | 格式版本 | **v1 / v2 全支持**；v3 的 `next-row-id` / `encryption-keys` 透传即可，不保证 |
 
-**二期**
+**二期（已落地）**
 
-多表事务 `POST /transactions/commit`（要在 DB 里做跨表原子提交，
-复用现有事务边界即可，但**必须与 Iceberg 的 `requirements` 语义对齐**）；
-只读 `functions`（投影 `FunctionMetadata`）；`register-view`；
-`EXTERNAL + ICEBERG`（外部 Iceberg 仓库入口）；namespace 层级树控制台。
+多表事务 `POST /transactions/commit`：三段式（全量校验 → 逐表写仓库 →
+一次 DB 事务逐表 CAS 落库），授权按 deferred 逐表判 `TABLE:ALTER`；
+只读 `functions`：对 `lakehouse_function` 的只读投影（写路径只在 Paimon 面，
+因此这条路径不做 catalog 格式门禁）；`register-view`：与表的 `register`
+同一条「内容以仓库为准」的路线，规格没有 overwrite 字段故重名一律 409。
+
+二期**尚未**落地的：`EXTERNAL + ICEBERG`（外部 Iceberg 仓库入口）、namespace
+层级树控制台。
 
 （原列在这里的「优化三项动作的 Iceberg procedures」已在落地时随一期完成：
 它们不在协议面上，而是在 optimizer 侧用 Spark 的 `CALL` 执行，见 §4.7。）
@@ -518,24 +523,24 @@ Iceberg 规格副本已在 `spec/rest-catalog-open-api-iceberg.yaml`，
 Iceberg 的 `delete namespace` 级联删表（规格要求 namespace 非空时回 409
 `NamespaceNotEmptyError`，本方案遵循规格，不做静默级联）。
 
-### 6.1 一期不做的 9 个端点（逐条）
+### 6.1 不做的 5 个端点（逐条）
 
-规格共 35 个「路径 × 方法」组合，一期实现 26 个，剩下 9 个是：
+规格共 35 个「路径 × 方法」组合，实现 30 个（一期 26 + 二期 4），
+剩下 5 个是：
 
 | 端点 | 归入 |
 | --- | --- |
-| `GET /v1/{prefix}/namespaces/{namespace}/functions` | 二期（只读投影 `FunctionMetadata`） |
-| `GET /v1/{prefix}/namespaces/{namespace}/functions/{function}` | 二期 |
-| `POST /v1/{prefix}/namespaces/{namespace}/register-view` | 二期 |
-| `POST /v1/{prefix}/transactions/commit` | 二期（跨表原子提交 + `requirements` 对齐） |
 | `POST /v1/{prefix}/namespaces/{namespace}/tables/{table}/plan` | 不做（需要常驻扫描规划引擎） |
 | `GET /v1/{prefix}/namespaces/{namespace}/tables/{table}/plan/{plan-id}` | 不做 |
 | `DELETE /v1/{prefix}/namespaces/{namespace}/tables/{table}/plan/{plan-id}` | 不做 |
 | `POST /v1/{prefix}/namespaces/{namespace}/tables/{table}/tasks` | 不做 |
 | `POST /v1/{prefix}/namespaces/{namespace}/tables/{table}/sign` | 不做（远程签名 KMS） |
 
+（原「二期」四条——functions 只读两个、`register-view`、`transactions/commit`——
+已实现，从本表移除；见 §5 的端点清单与 §6 的二期段。）
+
 这份清单在代码里有两处副本，都**必须**与上表逐字一致：`IcebergEndpoints` 的类注释
-（哪 9 个不声明）与 `scripts/verify-iceberg-endpoints.py` 的 `NOT_IMPLEMENTED`
+（哪 5 个不声明）与 `scripts/verify-iceberg-endpoints.py` 的 `NOT_IMPLEMENTED`
 （它把「规格 − 声明」算出来与这份清单比对，因此要么实现、要么改文档，两者不能只改一边）。
 
 表中 `plan` 有三个方法（`POST` 建计划、`GET` 拉计划、`DELETE` 取消计划）、
@@ -649,7 +654,7 @@ Iceberg 的 `delete namespace` 级联删表（规格要求 namespace 非空时�
 | 守卫 | 守什么 | 为什么不能省 |
 | --- | --- | --- |
 | `scripts/verify-iceberg-endpoints.py` | 规格 35 条 ↔ `IcebergEndpoints.SUPPORTED` 26 条 ↔ 控制器映射，三方比对；`NOT_IMPLEMENTED` 的 9 条写成字面量 | 「声明了但没实现」与「实现了但没声明」两种错各自都会让客户端在**错误的时机**失败（前者是用户真的用到了那个能力时，后者是连接阶段就被拒）。另外它**先做过变异测试**：首跑就抓出三处既有问题（脚本自身的 `tasks` 写成 GET、`plan` 漏了 `DELETE`、控制器注释里的 `{@code @GetMapping}` 被当成映射），证明它不是空跑 |
-| `IcebergRestCatalogApiTests` | 26 个端点的**行为**：规格要求的成功码（`rename` 204 / `unregister` 200 / 两个 `HEAD` 204）、kebab-case 字段名、`metadata.json` 真的落到仓库、错误体嵌一层 `error`、外部表不被 purge、视图删除不碰仓库 | 静态校验与授权映射都只读**形状**（路径、方法、清单），从不发一个请求。状态码错了、字段名写成驼峰、文件没落盘，前两条守卫一条都发现不了 |
+| `IcebergRestCatalogApiTests` | 30 个端点的**行为**：规格要求的成功码（`rename` 204 / `unregister` 200 / 两个 `HEAD` 204）、kebab-case 字段名、`metadata.json` 真的落到仓库、错误体嵌一层 `error`、外部表不被 purge、视图删除不碰仓库 | 静态校验与授权映射都只读**形状**（路径、方法、清单），从不发一个请求。状态码错了、字段名写成驼峰、文件没落盘，前两条守卫一条都发现不了 |
 | `IcebergClientEndToEndTests` | 用官方 `org.apache.iceberg.rest.RESTCatalog` 走**真 HTTP**（`RANDOM_PORT` + JDK `HttpClient` 建 catalog）验三件 MockMvc 看不见的事：① `/v1/config` 下发的 `endpoints` 与客户端自需端点**等值协商**（清单少了操作在本地就被拒、多了会真发出去拿到 404，两个方向 MockMvc 都发现不了）；② 嵌套错误体翻不翻得成 `NoSuchTableException` 等**具体**异常（形状对而 `type` 名字错在 MockMvc 里是绿的）；③ 更新代数真跑通（客户端自己生成 `requirements` 与 `updates`，服务端解、校验、应用、落库，客户端再解析回元数据） | 前两条守卫都只读**形状**，第三条只验服务端自己造出来的报文。只有真客户端才会去用服务端**发出去**的报文——清单、错误体、元数据文档这三样都是「服务端的输出被客户端消费」，只有这一层能证 |
 | `SparkSqlAuthorizationTests`（Iceberg 两条） | 两个身份（读写 / 只读）各跑一遍真 SQL：建 namespace、建表、写入、读回，以及三种被拒的写入。抓的是**「每一项映射都对、组合起来却写不进去」**——Iceberg 的写入要同时过 `…/metrics`（`TABLE_WRITE_DATA`）与 `POST …/tables/{t}`（`TABLE_WRITE_PROPERTIES`）两道闸，只给 `UPDATE` 的角色在映射表上「看起来该能写」，真写时才 403 | 前三条守卫都看不见权限的**组合**：`CatalogEndpointAuthorizationTests` 只验「每个端点都在映射里登记过」，一个端点一条记录，不验「做成一件事需要哪几条」。而且 `TABLE_WRITE_PROPERTIES` 在官方词表里由 `ALTER` 给出——「写数据要给 ALTER」这种结论只能从真跑里得到（见 §5.5 与 `spark-iceberg-rest-e2e.md` §1.5） |
 

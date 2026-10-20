@@ -6,7 +6,7 @@
 > 范围：服务端五个模块（core / storage / protocol-paimon / protocol-iceberg / server）。
 > 不含：控制台前端埋点、分布式追踪（trace）、日志规范——那是另外三件事。
 > 结论：**Polaris 值得抄的是「三层拆账 + 高基数标签默认关 + SLO 桶按需开」这套骨架，
-> 不是它那一百多个 `@Timed` 注解。** 我们的端点只有 126 个、租户维度只有 catalog，
+> 不是它那一百多个 `@Timed` 注解。** 我们的端点只有 130 个、租户维度只有 catalog，
 > 照抄注解会得到一份随代码漂移的清单；用切面 + 指标名常量表，才能让「文档里的指标名」
 > 和「代码里的指标名」由同一个真源生成。
 
@@ -259,8 +259,8 @@ Micrometer 里用点分层，Prometheus 导出自动转下划线：
 
 | 指标 | 组合上限 | 说明 |
 | --- | --- | --- |
-| `http.server.requests` | ~300 | 126 个端点 × 少量状态码 |
-| `lakehouse.api.requests` | ~200 | 126 个方法 × 2 outcome × 常见异常 |
+| `http.server.requests` | ~300 | 130 个端点 × 少量状态码 |
+| `lakehouse.api.requests` | ~200 | 130 个方法 × 2 outcome × 常见异常 |
 | `lakehouse.authorization.decisions` | ~60 | 见 4.3.4 |
 | `lakehouse.catalog.operations` | 50×2×3×2 = 600 | 最坏情况；`catalog` 有 50 上限 |
 | `lakehouse.table.commit` | 2×3 = 6 | — |
@@ -441,7 +441,7 @@ public class ApiMetricsAspect {
 ```
 
 为什么不用 `@Timed` 注解逐端点加：
-- 126 个端点，注解会漏、会随重构漂移，且只能靠人 review；
+- 130 个端点，注解会漏、会随重构漂移，且只能靠人 review；
 - 切面对**新加的控制器自动生效**，这正是我们想要的「加端点不用记得加指标」；
 - 端点级指标与 `http.server.requests` 的 `uri` 有重叠，切面只补 `class`/`method`/`exception` 三个维度。
 
@@ -656,7 +656,7 @@ spec:
 
 | 维度 | Polaris | 本设计 | 为什么 |
 | --- | --- | --- | --- |
-| 端点级指标 | 生成模板逐端点 `@Timed` | 一个 `@RestController` 切面 | 126 个端点，注解会漂；切面对新端点自动生效 |
+| 端点级指标 | 生成模板逐端点 `@Timed` | 一个 `@RestController` 切面 | 130 个端点，注解会漂；切面对新端点自动生效 |
 | `class` 标签 | FQCN | 简单类名 | 值更短；跨模块搬类不炸面板 |
 | 高基数标签超限 | 停止记录 HTTP 指标 | 折叠成 `__other__` | 故障时更需要数据；聚合仍然正确 |
 | 关闭 principal 标签 | 标签键存在、值为空 | 键不出现 | 空值会多一条时间线，且 `group by` 时要过滤 |

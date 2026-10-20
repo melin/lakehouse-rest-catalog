@@ -32,15 +32,18 @@ import java.util.List;
  * {@code scripts/verify-iceberg-endpoints.py} 机械校验——「声明了但没实现」
  * 与「实现了但没声明」两种错都会在那条校验里露出来。
  *
- * <p><b>一期不实现的 9 个端点</b>（因此不在这里声明）：
- * {@code functions} 只读两个、{@code plan} 两个 + {@code tasks} 一个、
- * {@code sign} 一个、{@code transactions/commit} 一个、{@code register-view} 一个。
+ * <p><b>一期不实现的 5 个端点</b>（因此不在这里声明）：
+ * {@code plan} 三个（发起 / 查询 / 取消——需要常驻的扫描规划引擎）、
+ * {@code tasks} 一个（plan 体系的一部分）、{@code sign} 一个（凭据直签）。
  * 原因见 {@code docs/iceberg-rest-catalog-design.md} §6。
+ * functions 的两个只读 GET、{@code register-view} 与 {@code transactions/commit}
+ * 已在二期实现并登记进这份清单。
  */
 public final class IcebergEndpoints {
 
     /**
-     * 已实现的端点，按「namespace → table → view → 装配层」的次序排列。
+     * 已实现的端点，按「namespace → table → view → function → transaction → 装配层」
+     * 的次序排列。
      *
      * <p>次序只影响可读性与校验脚本的 diff 结果，客户端的比较是基于集合的。
      */
@@ -77,7 +80,15 @@ public final class IcebergEndpoints {
             "POST /v1/{prefix}/namespaces/{namespace}/views/{view}",
             "DELETE /v1/{prefix}/namespaces/{namespace}/views/{view}",
             "HEAD /v1/{prefix}/namespaces/{namespace}/views/{view}",
-            "POST /v1/{prefix}/views/rename");
+            "POST /v1/{prefix}/namespaces/{namespace}/register-view",
+            "POST /v1/{prefix}/views/rename",
+
+            // ---- function（只读两个：写路径在 Paimon 面，规格也只定义了这两个 GET）
+            "GET /v1/{prefix}/namespaces/{namespace}/functions",
+            "GET /v1/{prefix}/namespaces/{namespace}/functions/{function}",
+
+            // ---- transaction（多表原子提交）
+            "POST /v1/{prefix}/transactions/commit");
 
     private IcebergEndpoints() {
     }

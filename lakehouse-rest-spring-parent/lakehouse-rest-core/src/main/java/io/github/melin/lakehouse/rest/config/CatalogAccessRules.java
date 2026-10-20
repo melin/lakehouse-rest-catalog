@@ -128,6 +128,13 @@ public final class CatalogAccessRules {
         if ("namespaces".equals(head)) {
             return namespaces(catalog, path, method, read);
         }
+        if ("transactions".equals(head)) {
+            // 目标表全在请求体里，路径上只有 catalog：deferred，由控制器逐表判 TABLE:ALTER
+            if (path.size() == 2 && "commit".equals(path.get(1)) && !read) {
+                return new Requirement(catalog, ResourceType.CATALOG_ALL, List.of(), null, null);
+            }
+            return null;
+        }
         if (!"databases".equals(head)) {
             return null;
         }
@@ -342,8 +349,8 @@ public final class CatalogAccessRules {
      *
      * <p>与 Paimon 的 {@code databases/**} 是**同一件事的两个名词**，因此映射同构。
      * 差别是 namespace 为多级，先按 {@link NamespacePaths} 切成层级再比。
-     * {@code functions} 与 {@code register-view} 是一期不做的端点，不登记——
-     * 失败关闭保证它们不会因为「忘了登记」而变成静默的越权入口。
+     * {@code functions}（只读两个）、{@code register-view} 与 {@code transactions/commit}
+     * 都在各自分支里登记——失败关闭保证没登记的路径不会变成静默的越权入口。
      */
     private static Requirement namespaces(String catalog, List<String> path, String method, boolean read) {
         if (path.size() == 1) {
@@ -369,11 +376,33 @@ public final class CatalogAccessRules {
                     : null;
             case "tables" -> namespaceTables(catalog, namespace, path, method, read);
             case "views" -> namespaceViews(catalog, namespace, path, method, read);
+            case "functions" -> namespaceFunctions(catalog, namespace, path, method, read);
             case "register" -> "POST".equals(method)
                     ? at(catalog, ResourceType.DATABASE, namespace, null, Access.CREATETABLE)
                     : null;
+            case "register-view" -> "POST".equals(method)
+                    // 与建视图同一档：登记是「把一个已存在的视图声明进目录」，不是 ALTER 别人的对象
+                    ? at(catalog, ResourceType.DATABASE, namespace, null, Access.CREATEVIEW)
+                    : null;
             default -> null;
         };
+    }
+
+    /**
+     * {@code /v1/{prefix}/namespaces/{ns}/functions……}（Iceberg 形态，只读两个）。
+     *
+     * <p>与 Paimon 面的 {@code functions} 同构：列举是 FUNCTION 上的 {@code LIST}，
+     * 读取是函数的 {@code DESCRIBE}。Iceberg 规格只定义了这两个 GET，因此写方法
+     * 一律 {@code null}（失败关闭），写路径在 Paimon 面。
+     */
+    private static Requirement namespaceFunctions(String catalog, List<String> namespace,
+                                                  List<String> path, String method, boolean read) {
+        if (path.size() == 3) {
+            return read ? at(catalog, ResourceType.FUNCTION, namespace, null, Access.LIST) : null;
+        }
+        return read
+                ? at(catalog, ResourceType.FUNCTION, namespace, path.get(3), Access.DESCRIBE)
+                : null;
     }
 
     /** {@code /v1/{prefix}/namespaces/{ns}/tables……}，含 metrics / credentials / unregister 子资源。 */
