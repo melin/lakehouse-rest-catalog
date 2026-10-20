@@ -961,11 +961,12 @@ check("Iceberg 浏览页不出现 Paimon 的路径与参数（/databases）",
       "/databases" not in iceberg_browse and "/databases" not in iceberg_api,
       "Iceberg 侧的路径是 /namespaces/**")
 
-# 删命名空间在 Iceberg 里不是级联删除：非空回 409。确认框要说清这一点，
-# 否则用户删失败后会以为是控制台的问题。
-check("删除命名空间的确认框说明「非空会被拒绝（409）」并按需先清空",
-      "409" in iceberg_browse and "级联" in iceberg_browse,
-      "Iceberg 的 drop namespace 与 Paimon 的 drop database 语义不同，界面要如实说明")
+# 删命名空间的入口已按需求移除（2026-10-20）：Iceberg 的 drop namespace 不是级联
+# 删除（非空回 409），误触成本高；管理动作收敛到「新建命名空间」。API 层的
+# dropNamespace 保留——服务端端点还在，API 层照旧镜像它。
+check("Iceberg 浏览页不再提供删除命名空间的入口",
+      "删除命名空间" not in iceberg_browse and "confirmDropNamespace" not in iceberg_browse,
+      "按钮已按需求移除，别把它加回来；确要恢复时先改这条断言与文档")
 
 # 两个浏览页共用一套骨架样式：搬回某个组件的 scoped 里，另一页会塌。
 index_css = read(os.path.join(CONSOLE_DIR, "src/styles/index.css"))

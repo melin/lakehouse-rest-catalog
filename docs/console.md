@@ -324,8 +324,9 @@ Iceberg catalog 打开 `/browse` 时渲染的是 `IcebergBrowseView`，不是 Pa
 | 表列表内容 | `table-details`（格式 / 表类型 / 时间） | `identifiers`（**只有名字**） |
 | 标识符 | `{database, object}` | `{namespace: [...], name}` |
 
-**能做什么**：命名空间平铺列出（含多级，点号显示）、新建、删除（**非空回 409**，
-与 Paimon 的级联删除刻意不同，确认框里写明）、建表、登记已有表（`metadata-location`）、
+**能做什么**：命名空间平铺列出（含多级，点号显示）、新建（**没有删除入口**——
+Iceberg 的 drop 非级联、非空回 409，误触成本高，已按需求把按钮从界面拿掉；
+服务端端点与 API 层的 `dropNamespace` 保留）、建表、登记已有表（`metadata-location`）、
 重命名、删除、注销（`unregister`：只摘目录条目、保留文件）、视图列表 / 详情 / **新建** / 登记 / 删除；
 表名与「详情」进 **Iceberg 表详情页**（§4.7），视图详情走抽屉
 （`LoadViewResponse` 原文 + 元数据摘要）。
@@ -464,7 +465,7 @@ PYTHON=/path/to/python3 scripts/verify-console.py   # 多解释器时指定装�
 | 10. 静态凭据 | catalog 自带 AK/SK 这条链路横跨四个文件（服务端 DTO 的字段名、`supportsStaticCredentials` 认可的类型、meta 里的能力开关、前端表单），逐处对齐：字段名与三种类型的 record 参数逐字一致、类型集合两侧一致、**规格里确实没有这两个字段**（否则不再是扩展，要先对齐语义）、能力开关从 meta 一路传到表单 prop、能力关着时给的是可操作提示而不是把字段藏起来、读路径仍做脱敏 |
 | 11. 优化参数键 | 存储优化各动作的表单字段名与服务端逐字一致：Paimon 那份对 `OptimizationOptions.KNOWN_KEYS`、Iceberg 那份对 `IcebergOptimizationOptions.KNOWN_KEYS`（键名写错的表现是保存时吃一个 400，而编译、类型检查与单元测试都不会报；两套键混用的表现更糟——`retain-min` 与 `retain-last` 被互相收下、然后静默不生效） |
 | 12. catalog 表格式 | `PAIMON` / `ICEBERG` 这条链路跨六处：服务端 `CatalogFormat` 枚举 ↔ 前端兜底取值逐字一致、meta 下发的候选与默认值都来自枚举本身、新建表单从 meta 取候选与默认值且提交体带 `catalogFormat`、**编辑不回传它**（格式不可变）、列表有徽标与格式筛选（筛选与徽标用同一个归属函数）、三个页面按 catalog 格式伸缩**且在 loader 里就挡住请求**、详情页的能力清单读服务端 `/v1/config` 而不是前端抄一份、**权限页的候选来源按格式分派**（Iceberg 走 `namespaces/**` 并按层递归、Paimon 走 `databases/**`，选错来源的表现是空下拉而不是报错）、**两种格式的「配置」页签是同一套设计**（都编辑 `table-default.*`，标题按格式换名；Iceberg 另附只读的 `/v1/config` 的 `defaults` / `overrides`——那是连接参数，不是表属性；Paimon 不再重复列出概览已有的「其它属性」） |
-| 13. Iceberg 浏览 | Iceberg catalog 的目录浏览走 `namespaces/**` 而不是 `databases/**`。这一组钉的是**契约形状**，不是像素：13 条 `iceberg*` 端点逐条对 Iceberg 规格（不靠第 1 组的并集蒙混）、浏览页只调 `icebergApi` 不混用 `catalogApi`、namespace 路径段用 `0x1F` 拼（点号只是显示口径）、分页键是 `pageSize` 而不是 `maxResults`、三个列表（表 / 视图 / 函数）都按 `identifiers` 取（逐表 `loadTable` 只许出现在表详情页）、建表体是 Iceberg 的 `schema` / `partition-spec`（`schema-id`、`required`、`source-id`、`field-id`）、浏览页与 API 层都不出现 `/databases`、删除命名空间的确认框写明「非空会被拒（409）」、两页共用的骨架样式留在全局；以及 **Iceberg 表详情页**（`IcebergTableView`）：有独立路由、只调 `icebergApi`、文件列表走 catalog 级文件端点（不用 Paimon 的 `tableId` 端点）、快照处理 `-1` 无快照哨兵、存储优化页签复用共用面板并显式传 `format="ICEBERG"`（页签自己调端点会绕过 format 分派）、建表表单的 `format-version` 提供 1/2/3 |
+| 13. Iceberg 浏览 | Iceberg catalog 的目录浏览走 `namespaces/**` 而不是 `databases/**`。这一组钉的是**契约形状**，不是像素：13 条 `iceberg*` 端点逐条对 Iceberg 规格（不靠第 1 组的并集蒙混）、浏览页只调 `icebergApi` 不混用 `catalogApi`、namespace 路径段用 `0x1F` 拼（点号只是显示口径）、分页键是 `pageSize` 而不是 `maxResults`、三个列表（表 / 视图 / 函数）都按 `identifiers` 取（逐表 `loadTable` 只许出现在表详情页）、建表体是 Iceberg 的 `schema` / `partition-spec`（`schema-id`、`required`、`source-id`、`field-id`）、浏览页与 API 层都不出现 `/databases`、浏览页不再提供删除命名空间的入口（按钮已移除）、两页共用的骨架样式留在全局；以及 **Iceberg 表详情页**（`IcebergTableView`）：有独立路由、只调 `icebergApi`、文件列表走 catalog 级文件端点（不用 Paimon 的 `tableId` 端点）、快照处理 `-1` 无快照哨兵、存储优化页签复用共用面板并显式传 `format="ICEBERG"`（页签自己调端点会绕过 format 分派）、建表表单的 `format-version` 提供 1/2/3 |
 | 14. 存储字段分层 | catalog 表单的字段拆成「基本 / 高级」两张表，高级那张进默认收起的折叠区。判据对着**服务端 record**，不在前端另抄名单：两张表合并后与 record 的专属字段**不丢不多**、两表之间不重叠、`build()` 既**不读折叠状态**又仍读合并后的视图、`FILE` 没有高级字段、折叠区按「有没有高级字段」出现而非硬编码某类型、默认收起、收起态给出计数与「可以不管它」的说明 |
 | 15. 事件页 | 事件流的增量契约与「类别筛选走服务端」要前后端钉在一起：`listEvents` 端点路径与端点名一致、`EventsView` 消费 `since` 游标与 `nextCursor`（丢了 `since` 就是全量重拉，页面不报错但契约名存实亡）、事件类型清单逐个覆盖 `CatalogEventType` 的 wire 值、**类别清单逐个覆盖 `CatalogEventCategory` 的取值**、**类别作为 `category` 参数随游标一起发出**（只在前端筛会让「换类别」沿用旧游标的整页数据）、目标类型显示名逐个覆盖 `CatalogEvent` 的 `TARGET_*` 常量（前端另抄名单漏了新类型的表现是那条事件显示成 wire 原文，静默）、`/events` 有独立路由并进侧边菜单 |
 | 16. 提示图标 | 问号图标（`TipNote` / `FieldLabel`）必须**悬停即显示**：`trigger="hover"` 显式写明、`show-after` 为 0，且命中区比 14px 的图标本身大一圈。这条约束的起因是用户反馈「移到问号上没反应、点一下才弹」——`show-after` 的 100ms 让快速划过什么都不出现，而 14px 的命中区偏一两个像素就落在容器上（点击时整块区域都算命中，所以点击反而有效）。两个原因都不会让页面报错 |

@@ -58,9 +58,6 @@
             >
               <el-icon class="pc-db-icon"><Folder /></el-icon>
               <span class="pc-db-name">{{ row.label }}</span>
-              <el-icon class="pc-db-drop" title="删除命名空间" @click.stop="confirmDropNamespace(row)">
-                <Delete />
-              </el-icon>
             </div>
           </template>
         </div>
@@ -71,16 +68,6 @@
         <div class="pc-pane-head">
           <span class="pc-pane-title">{{ currentLabel || '未选择命名空间' }}</span>
           <el-tag size="small" effect="plain" type="primary">Iceberg</el-tag>
-          <span class="pc-spacer" />
-          <el-button
-            v-if="currentLabel"
-            size="small"
-            text
-            type="danger"
-            @click="confirmDropNamespace({ levels: currentLevels, label: currentLabel })"
-          >
-            删除命名空间
-          </el-button>
         </div>
 
         <!-- 语义视图是 Paimon 面的能力：Iceberg 页签是表 / 视图 / 函数（函数只读，写路径在 Paimon 面） -->
@@ -785,28 +772,6 @@ async function saveNamespace() {
     notifyError(error)
   } finally {
     nsDialog.saving = false
-  }
-}
-
-async function confirmDropNamespace(row) {
-  const ok = await confirmDanger({
-    title: '删除命名空间',
-    target: `确认删除命名空间「${row.label}」？`,
-    // 与 Paimon 的「删库连带删表」不同：这里服务端要求先清空。把 409 的成因写在
-    // 确认框里，用户才不会在删失败后以为是控制台的问题。
-    detail: 'Iceberg 不接受级联删除：命名空间下还有表或视图时，服务端会拒绝（HTTP 409）。'
-      + '请先删掉里面的表与视图。',
-  })
-  if (!ok) return
-  try {
-    await icebergApi.dropNamespace(prefix.value, row.levels)
-    notifySuccess(`已删除命名空间 ${row.label}`)
-    if (currentLabel.value === row.label) {
-      router.replace({ name: 'browse', query: { catalog: prefix.value } })
-    }
-    namespacesResource.load()
-  } catch (error) {
-    notifyError(error)
   }
 }
 
