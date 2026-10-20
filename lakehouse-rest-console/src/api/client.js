@@ -16,8 +16,15 @@ import { ENDPOINTS } from './endpoints.js'
  *    非 JSON 的响应（例如网关的 HTML 错误页）则退化为状态行文本。
  */
 
-const TOKEN_KEY = 'paimon.console.token'
-const BASE_URL_KEY = 'paimon.console.baseUrl'
+/**
+ * 令牌的本地键。前缀随服务端配置前缀 `paimon.rest.*` → `lakehouse.rest.*` 一起
+ * 迁到 `lakehouse.console.*`（与控制台其余本地键保持同一前缀）。
+ *
+ * <p>这里**不做旧键兼容读取**：静默搬家会把两套前缀长期留在代码里，而代价只是
+ * 升级后重新登录一次（页面读到空令牌就跳登录页，不会出现「已登录却处处 401」）。
+ */
+const TOKEN_KEY = 'lakehouse.console.token'
+const BASE_URL_KEY = 'lakehouse.console.baseUrl'
 
 /** 服务端返回的错误响应，或本地网络故障。 */
 export class ApiError extends Error {

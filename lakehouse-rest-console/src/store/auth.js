@@ -13,7 +13,7 @@ import { credentials } from '@/store/credentials.js'
  * OIDC 的端点更是只有服务端能发现（要拉 {@code .well-known/openid-configuration}）。
  * 前端硬编码一份必然漂移，而漂移的表现是「点了登录按钮没反应」。
  *
- * <p><b>令牌只有一处存储</b>（`localStorage` 的 `paimon.console.token`，
+ * <p><b>令牌只有一处存储</b>（`localStorage` 的 `lakehouse.console.token`，
  * 见 {@link credentials}）。账号密码换来的、客户端凭据换来的、SSO 换来的、
  * 手填的静态令牌，在这里都是同一个字符串。因此「登录」与「在设置页手填令牌」不是两套机制，
  * 而是同一件事的两个入口——API 客户端不需要知道令牌是怎么来的。

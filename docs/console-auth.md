@@ -574,7 +574,7 @@ lakehouse:
 | 时钟漂移导致合法令牌被拒 | `clock-skew`（默认 60s）同时作用于 `exp` 与 `nbf`。 |
 
 `/console/**` 不在鉴权范围，因此**不引入 Cookie 会话**，也就没有 CSRF 面需要防。
-令牌只存在 `localStorage`（键 `paimon.console.token`），由 `client.js` 统一附加到请求头。
+令牌只存在 `localStorage`（键 `lakehouse.console.token`），由 `client.js` 统一附加到请求头。
 
 ---
 

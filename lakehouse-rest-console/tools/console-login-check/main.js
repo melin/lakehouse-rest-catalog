@@ -96,7 +96,7 @@ function lastCall(predicate) {
 
 // 基址写成本机地址：client.js 默认拼相对路径（同源），Node 的 fetch 要求绝对 URL。
 // 这顺带把「设置页填 baseUrl」这条路径也走了一遍。
-localStorage.setItem('paimon.console.baseUrl', BASE)
+localStorage.setItem('lakehouse.console.baseUrl', BASE)
 
 const { auth } = await import('@/store/auth.js')
 
@@ -138,13 +138,13 @@ check('密码不对被拒', wrongPassword.ok === false)
 check('报文与「用户名不存在」一字不差（服务端刻意不区分）',
   wrongPassword.ok === false && wrongPassword.error.includes('invalid username or password'),
   wrongPassword.error)
-check('失败不把令牌留在本地', localStorage.getItem('paimon.console.token') === null)
+check('失败不把令牌留在本地', localStorage.getItem('lakehouse.console.token') === null)
 
 const viaPassword = await auth.loginWithPassword(CONSOLE_USER, CONSOLE_PASSWORD)
 check('用户名密码登录成功', viaPassword.ok === true, viaPassword.error)
 check('主体名来自服务端', auth.state.principal === CONSOLE_PRINCIPAL, auth.state.principal)
 check('签发的是同一种访问令牌', auth.state.source === 'console-access-token', auth.state.source)
-check('令牌写入同一处 localStorage', Boolean(localStorage.getItem('paimon.console.token')))
+check('令牌写入同一处 localStorage', Boolean(localStorage.getItem('lakehouse.console.token')))
 check('剩余有效期为正', auth.expiresInSeconds() > 0, `${auth.expiresInSeconds()}s`)
 
 const loginCall = lastCall((call) => call.url.endsWith('/api/console/v1/login'))
@@ -171,7 +171,7 @@ const bad = await auth.loginWithClientCredentials(CLIENT_ID, 'not-the-secret')
 check('错误密钥被拒', bad.ok === false)
 check('错误信息取自 RFC 6749 的 error_description',
   bad.error.includes('invalid_client'), bad.error)
-check('失败不把令牌留在本地', localStorage.getItem('paimon.console.token') === null)
+check('失败不把令牌留在本地', localStorage.getItem('lakehouse.console.token') === null)
 check('失败后仍是未登录', auth.state.authenticated === false)
 
 console.log('\n========== 4. 前端实际发出的请求 ==========')
@@ -193,8 +193,8 @@ check('登录成功', ok.ok === true, ok.error)
 check('已认证', auth.state.authenticated === true)
 check('主体名来自服务端', auth.state.principal === PRINCIPAL, auth.state.principal)
 check('令牌来源正确', auth.state.source === 'console-access-token', auth.state.source)
-const saved = localStorage.getItem('paimon.console.token')
-check('令牌写入 paimon.console.token', Boolean(saved))
+const saved = localStorage.getItem('lakehouse.console.token')
+check('令牌写入 lakehouse.console.token', Boolean(saved))
 check('存的是裸令牌（不是 JSON 串）', Boolean(saved) && !saved.startsWith('{'), `长度 ${saved?.length}`)
 check('剩余有效期为正', auth.expiresInSeconds() > 0, `${auth.expiresInSeconds()}s`)
 check('未过期', auth.expired() === false)
@@ -212,7 +212,7 @@ check('凭据待轮换标记被读出来',
 
 console.log('\n========== 7. 登出 ==========')
 await auth.logout()
-check('登出清掉本地令牌', localStorage.getItem('paimon.console.token') === null)
+check('登出清掉本地令牌', localStorage.getItem('lakehouse.console.token') === null)
 check('登出后未认证', auth.state.authenticated === false)
 check('登出后主体名清空', auth.state.principal === '')
 check('登出后仍需要登录', auth.loginRequired() === true)
@@ -229,8 +229,8 @@ if (STATIC_TOKEN) {
   const rejected = await auth.loginWithStaticToken('some-unregistered-token')
   check('未登记的令牌被拒', rejected.ok === false, rejected.error)
   check('被拒后回滚到上一份令牌',
-    localStorage.getItem('paimon.console.token') === STATIC_TOKEN,
-    `本地令牌=${String(localStorage.getItem('paimon.console.token')).slice(0, 20)}…`)
+    localStorage.getItem('lakehouse.console.token') === STATIC_TOKEN,
+    `本地令牌=${String(localStorage.getItem('lakehouse.console.token')).slice(0, 20)}…`)
   check('被拒后仍是原来那个身份', auth.state.authenticated === true)
   check('被拒后来源仍是静态令牌', auth.state.source === 'static-token', auth.state.source)
 
@@ -238,7 +238,7 @@ if (STATIC_TOKEN) {
   await auth.logout()
   const rejectedFresh = await auth.loginWithStaticToken('some-unregistered-token')
   check('未登录时写错令牌同样被拒', rejectedFresh.ok === false, rejectedFresh.error)
-  check('拒绝后本地不留令牌', localStorage.getItem('paimon.console.token') === null)
+  check('拒绝后本地不留令牌', localStorage.getItem('lakehouse.console.token') === null)
   check('拒绝后仍是未登录', auth.state.authenticated === false)
 } else {
   console.log('(跳过：未提供 STATIC_TOKEN)')

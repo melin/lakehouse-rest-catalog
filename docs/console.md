@@ -601,13 +601,19 @@ BASE=http://127.0.0.1:8080 CLIENT_ID=<clientId> CLIENT_SECRET=<secret> \
 
 | localStorage 键 | 含义 |
 | --- | --- |
-| `paimon.console.token` | 访问令牌（登录页或设置页写入的**同一个**位置） |
-| `paimon.console.baseUrl` | API 基址，默认空串（同源） |
-| `paimon.console.catalog` | 当前选中的 catalog prefix |
-| `paimon.console.theme` | `light` / `dark` |
+| `lakehouse.console.token` | 访问令牌（登录页或设置页写入的**同一个**位置） |
+| `lakehouse.console.baseUrl` | API 基址，默认空串（同源） |
+| `lakehouse.console.catalog` | 当前选中的 catalog prefix |
+| `lakehouse.console.theme` | `light` / `dark` |
+
+键前缀随服务端 `paimon.rest.*` → `lakehouse.rest.*` 一并从 `paimon.console.*`
+改成 `lakehouse.console.*`（源码里已无旧前缀）。**不做旧键兼容读取**——静默搬家会把
+两套前缀长期留在代码里。升级后的可见影响：登录态失效（读到空令牌就跳登录页，不会
+「已登录却处处 401」）；上次选中的 catalog 与主题回到默认；覆盖过 `baseUrl` 的跨域
+部署要重填一次。
 
 OIDC 登录期间还会在 `sessionStorage` 里放三个短命键
-（`paimon.console.oidc.verifier` / `.state` / `.returnTo`），它们是 PKCE 的中间状态，
+（`lakehouse.console.oidc.verifier` / `.state` / `.returnTo`），它们是 PKCE 的中间状态，
 **用完即弃**，成功后立刻清掉。放 sessionStorage 而不是 localStorage 有两个原因：
 它只在一次往返里有意义；两个标签页同时登录时不会互相覆盖。
 

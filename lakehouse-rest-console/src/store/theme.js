@@ -5,7 +5,7 @@ import { reactive, watchEffect } from 'vue'
  * 这里只负责维护这个类名与用户选择。
  */
 
-const THEME_KEY = 'paimon.console.theme'
+const THEME_KEY = 'lakehouse.console.theme'
 
 function initial() {
   const stored = localStorage.getItem(THEME_KEY)

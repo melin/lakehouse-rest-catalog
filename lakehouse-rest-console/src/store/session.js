@@ -14,7 +14,7 @@ import { managementApi, metaApi } from '@/api/management.js'
  * 它持久化在 `localStorage`：刷新后仍停在上次看的地方，是运维时更省事的行为。
  */
 
-const SELECTED_KEY = 'paimon.console.catalog'
+const SELECTED_KEY = 'lakehouse.console.catalog'
 
 const state = reactive({
   /** 管理 API 返回的 catalog 列表。 */

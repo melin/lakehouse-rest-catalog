@@ -20,9 +20,9 @@
  * （两个标签页同时登录时互相覆盖 verifier）。
  */
 
-const VERIFIER_KEY = 'paimon.console.oidc.verifier'
-const STATE_KEY = 'paimon.console.oidc.state'
-const RETURN_TO_KEY = 'paimon.console.oidc.returnTo'
+const VERIFIER_KEY = 'lakehouse.console.oidc.verifier'
+const STATE_KEY = 'lakehouse.console.oidc.state'
+const RETURN_TO_KEY = 'lakehouse.console.oidc.returnTo'
 
 /** 控制台的回调路径。与服务端 `oidc.redirect-uri` 的示例一致。 */
 const CALLBACK_PATH = '/console/auth/callback'
