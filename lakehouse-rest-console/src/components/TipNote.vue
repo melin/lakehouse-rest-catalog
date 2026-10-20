@@ -17,6 +17,12 @@
  * &lt;TipNote&gt;需要 &lt;code&gt;code&lt;/code&gt; 或分段时用默认插槽&lt;/TipNote&gt;
  * </pre>
  *
+ * <p>**鼠标移上去就显示，不要延迟、不要点击**：这个图标是 14px 的小东西，
+ * 用户能给的注意力就是「移过去扫一眼」。因此 `trigger="hover"` 显式写明（默认虽然也是
+ * hover，但写在模板里才不会有人后来改成 click），`show-after` 取 0——原先的 100ms
+ * 让快速划过时什么都不出现，观感上就是「移到图标上没反应」。命中区由
+ * `.pc-tip-icon` 的 padding 撑大一圈（见 styles/index.css），不必对准像素。
+ *
  * <p>不带内容时不渲染（`v-if` 交给调用方判断更清楚，这里只兜住空 `text`）。
  */
 defineProps({
@@ -32,7 +38,8 @@ defineProps({
     v-if="text || $slots.default"
     :placement="placement"
     effect="dark"
-    :show-after="100"
+    trigger="hover"
+    :show-after="0"
     :hide-after="0"
     popper-class="pc-field-tip-popper"
   >

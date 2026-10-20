@@ -31,7 +31,7 @@
               <TipNote>
                 这一页只读。属性与存储配置的修改走管理 API
                 （<code>PUT /api/management/v1/catalogs/{{ catalogName }}</code>）：
-                「配置」页签能改其中的 <code>table-default.*</code>（新建 Paimon 表的默认参数），
+                「配置」页签能改其中的 <code>table-default.*</code>（此后新建表的默认属性），
                 其余属性与控制台的编辑弹窗在「Catalogs」页。
               </TipNote>
             </template>
@@ -48,20 +48,22 @@
             </template>
           </el-tab-pane>
           <!--
-            两种格式都有「配置」页签，但内容不同：
-            - Paimon：编辑 `table-default.*`（新建 Paimon 表的默认参数），这一项只对 Paimon 表生效；
-            - Iceberg：没有对应的默认值机制（表属性逐表声明），这里只读展示客户端连上来时
-              实际读到的 `/v1/config`（defaults / overrides）。
+            两种格式的「配置」页签刻意做成同一套设计：
+            - 都能编辑 `table-default.*`（此后新建表的默认属性；两格式同名同义，
+              都由服务端在建表时合并，表级显式声明的同名属性优先）；
+            - Iceberg 额外只读展示客户端连上来实际读到的 `/v1/config`
+              （defaults / overrides）——那是**连接参数**，与表属性是两件事。
             catalog 自身的属性（warehouse 等）两种格式都在「Catalogs」页的编辑弹窗里改。
           -->
           <el-tab-pane name="config">
             <template #label>
               配置
               <TipNote>
-                Paimon 侧编辑 <code>table-default.*</code>（只作用于此后新建的 Paimon 表）；
-                Iceberg 侧只读展示客户端连接时读到的 <code>/v1/config</code>
-                （<code>defaults</code> / <code>overrides</code>）。两种格式共用的 catalog 属性
-                （<code>warehouse</code> 等）都在「Catalogs」页的编辑弹窗里改。
+                两种格式都编辑 <code>table-default.*</code>：此后在这个 catalog 下新建的表
+                默认带上的表属性，只在建表时合并。Iceberg 下面另附一份只读的
+                <code>/v1/config</code>（客户端连接时实际读到的 <code>defaults</code> /
+                <code>overrides</code>）。catalog 自身的属性（<code>warehouse</code> 等）
+                都在「Catalogs」页的编辑弹窗里改。
               </TipNote>
             </template>
           </el-tab-pane>
@@ -332,11 +334,28 @@
 
           <!-------------------------------- 配置 ---------------------------------->
           <template v-else-if="tab === 'config'">
-            <!-- Paimon 侧：table-default.* 的编辑 -->
-            <template v-if="!isIceberg">
-            <SectionTitle title="Paimon 表默认参数（table-default.*）">
+            <!-- 两种格式共用一套：table-default.* 的编辑 -->
+            <SectionTitle :title="`${isIceberg ? 'Iceberg' : 'Paimon'} 表默认参数（table-default.*）`">
               <template #tip>
-                <TipNote>
+                <TipNote v-if="isIceberg">
+                  这里配的属性会在这个 catalog 下<strong>新建 Iceberg 表</strong>时自动带上，前缀在写入表属性时去掉：
+                  例如配 <code>write.format.default=parquet</code>，新表就自带
+                  <code>write.format.default=parquet</code>，不必每次建表都声明一遍。
+                  <br /><br />
+                  三条边界：<br />
+                  1. <strong>表级参数优先</strong>——建表请求里显式给了同名属性时以表的为准；<br />
+                  2. <strong>对本 catalog 的所有表生效</strong>——Iceberg catalog 只建 Iceberg 表，
+                  不像 Paimon 侧还要区分表格式；<br />
+                  3. <strong>只在建表时合并</strong>——已建成的表不受影响，改它的属性是
+                  <code>ALTER TABLE</code> 的事。
+                  <br /><br />
+                  <code>type</code> 不接受默认：它由建表请求决定（对 Iceberg 也不是合法表属性）。
+                  <br /><br />
+                  保存只替换 <code>table-default.*</code>，其余 catalog 属性<strong>原样回填</strong>
+                  （管理 API 的更新是全量替换），所以这一页不会弄丢别的键；它们的完整内容看「概览」页。
+                  保存期间别人改过属性会以版本冲突（409）拒绝——宁可不写，也不静默覆盖。
+                </TipNote>
+                <TipNote v-else>
                   这里配的属性会在这个 catalog 下<strong>新建 Paimon 表</strong>时自动带上，前缀在写入表属性时去掉：
                   例如配 <code>deletion-vectors.enabled=true</code>，新表就自带
                   <code>deletion-vectors.enabled=true</code>，不必每次建表都声明一遍。
@@ -394,10 +413,9 @@
               </div>
             </div>
 
-            </template>
-
-            <!-- Iceberg 侧：客户端连接配置（只读） -->
-            <template v-else>
+            <!-- Iceberg 侧另附：客户端连接配置（只读）。
+                 连接参数与表属性是两件事：前者决定「怎么连」，后者决定「新表带什么」 -->
+            <template v-if="isIceberg">
               <SectionTitle title="客户端连接配置（/v1/config）">
                 <template #tip>
                   <TipNote>
@@ -427,8 +445,11 @@
               </div>
 
               <p class="pc-drawer-note pc-dim">
-                Iceberg 没有 <code>table-default.*</code> 机制：表属性在建表或
-                <code>ALTER TABLE</code> 时逐表声明，服务端不提供 catalog 级默认值。
+                这一组是<strong>连接参数</strong>：决定客户端怎么连、连到哪个仓库（改错的表现是「连不上」）；
+                上面的 <code>table-default.*</code> 是<strong>表属性</strong>（改错只影响新表）。
+                两者都挂在 catalog 上，但走两条不同的下发路径——这里只读，因为它们由
+                <code>warehouse</code> 与 catalog 的 <code>defaults</code> / <code>overrides</code>
+                拼出来，要改去「Catalogs」页。
               </p>
             </template>
           </template>
@@ -492,8 +513,8 @@ const warehouse = computed(() => {
 /**
  * 表格式：`catalogFormat`（PAIMON / ICEBERG），**创建后不可更改**。
  *
- * <p>它决定这个页面上的三件事：协议面那一栏怎么读、「配置」页签里显示哪一段
- * （Paimon 是 `table-default.*` 编辑器，Iceberg 是 `/v1/config` 的只读展示）、
+ * <p>它决定这个页面上的三件事：协议面那一栏怎么读、「配置」页签里要不要多一段
+ * （`table-default.*` 编辑器两格式都有，Iceberg 另附 `/v1/config` 的只读展示）、
  * 以及「文件列表」以外那些 Paimon 专有的东西要不要显示。
  *
  * <p>值从 `session.state.catalogs` 里读（列表在首屏就取回来了），而不是为了

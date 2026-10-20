@@ -37,7 +37,7 @@ import io.github.melin.lakehouse.rest.paimon.service.TagService;
 import io.github.melin.lakehouse.rest.paimon.service.ViewService;
 import io.github.melin.lakehouse.rest.support.ApiException;
 import io.github.melin.lakehouse.rest.support.ResourceType;
-import io.github.melin.lakehouse.rest.paimon.support.TableDefaults;
+import io.github.melin.lakehouse.rest.support.TableDefaults;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;

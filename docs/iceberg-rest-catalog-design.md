@@ -428,6 +428,14 @@ POST /v1/{prefix}/namespaces/sales/tables/orders
 「明确报错而不是静默忽略」这条要有：静默吞掉一个 update，等于让服务端返回一份
 与客户端预期不符的元数据，客户端会拿它继续往下算。
 
+**建表还会合并 catalog 级的 `table-default.*`。** 这条与 Paimon 面共用
+`lakehouse-rest-core` 的 `support/TableDefaults`：`POST .../tables` 时把 catalog
+`properties` 里 `table-default.` 开头的项去掉前缀写进新表的 `properties`，表级显式声明的
+同名属性优先（`putIfAbsent`），`type` 与空属性名跳过。放在服务端而不是靠客户端解读
+`/v1/config`，是因为前者对任何语言的客户端都成立，也与 Paimon 侧的心智模型一致
+（「在这个 catalog 下新建的表默认带上」），细节见
+[`catalog-api-endpoints.md` §catalog 级默认表属性](catalog-api-endpoints.md#catalog-级默认表属性table-default)。
+
 ### 5.4 依赖取舍：要不要引 `iceberg-core`
 
 **要。** 理由是量级：`TableUpdate` 25 种、`TableRequirement` 8 种，

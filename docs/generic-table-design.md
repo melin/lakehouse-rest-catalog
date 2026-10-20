@@ -586,7 +586,7 @@ DESC EXTENDED events;                       -- 看 format / location / schema-so
 - `CatalogEventCategory` / `CatalogEventType`；
 - 控制台 `EventsView.vue` 的 `CATEGORIES` / `TYPES`；
 - `docs/event-framework.md` §1.1 映射表（Polaris 的 `GENERIC_TABLE` 从 ❌ 改 ✅）与 §1.2 清单；
-- `verify-console.py` 第 15 组的条数与文档计数（若为通用表新增校验项，「16 组 72 项」要同步改）。
+- `verify-console.py` 第 17 组的条数与文档计数（若为通用表新增校验项，「17 组 77 项」要同步改）。
 
 **不发布** `generic_table.loaded`：那是读路径，与「只收变更」的判据冲突（同一个理由已经写在
 `event-framework.md` §1.3）。

@@ -252,8 +252,9 @@ SQL 侧同样是 `WITH ('type' = 'format-table')`。本服务端认四种取值�
 ### catalog 级默认表属性：`table-default.*`
 
 catalog 的 `properties` 里以 `table-default.` 开头的项，是这个 catalog 下
-**新建 Paimon 表**默认带上的表属性（前缀在写入时去掉）。名字与语义都照 Paimon 自己来
-（`Catalog.TABLE_DEFAULT_OPTION_PREFIX`），所以客户端不必知道本服务端的实现：
+**新建表**默认带上的表属性（前缀在写入时去掉）。名字与语义两种格式一致
+（Paimon 的 `Catalog.TABLE_DEFAULT_OPTION_PREFIX`、Iceberg 的
+`CatalogProperties.TABLE_DEFAULT_PREFIX`），因此客户端不必知道本服务端的实现：
 
 ```
 PUT /api/management/v1/catalogs/paimon
@@ -264,14 +265,25 @@ POST /v1/paimon/databases/ods/tables
 → 落库的 options：{"bucket": "4", "deletion-vectors.enabled": "true"}
 ```
 
-四条边界（实现见 `support/TableDefaults`，逐条有用例）：
+Iceberg catalog 上走同一条规则，只是作用在 Iceberg 表属性上：
+
+```
+PUT /api/management/v1/catalogs/lake
+{"properties": {"table-default.write.format.default": "parquet"}}
+
+POST /v1/lake/namespaces/ods/tables
+{"name": "orders", "schema": {...}, "properties": {"write.parquet.compression-codec": "zstd"}}
+→ 元数据里的 properties 同时含 write.format.default=parquet 与 write.parquet.compression-codec=zstd
+```
+
+四条边界（实现见 **core** 的 `support/TableDefaults`，两种格式共用同一段映射，逐条有用例）：
 
 | 规则 | 为什么 |
 | --- | --- |
 | 表级参数优先 | 默认值是「省事的缺省」而不是约束；要强制取值应该用 catalog 的 `overrides` |
-| 只对 Paimon 表生效 | Format / Object / Lance 的 `options` 描述各自的表格式，不读 Paimon 表属性；写进去只会在仓库的 `schema-0` 里留下噪音 |
+| 适用范围按格式定 | Paimon 只合并到 Paimon 表——Format / Object / Lance 的 `options` 描述各自的表格式，写进去只会在仓库的 `schema-0` 里留下噪音；Iceberg catalog 只建 Iceberg 表，因此对该 catalog 的所有表生效 |
 | `type` 不接受默认 | 表格式由建表请求决定；否则一次 catalog 配置会让此后所有新表换格式 |
-| 只在建表时合并 | 已建成的表不受影响——改它的属性是 `alter` 的范畴 |
+| 只在建表时合并 | 已建成的表不受影响——改它的属性是 `alter` / `ALTER TABLE` 的范畴 |
 
 默认值放在 `properties` 而不是 `defaults` / `overrides`：后两者是随 `GET /v1/config`
 下发给引擎的**连接参数**（合并顺序 defaults → 客户端属性 → overrides），改它影响的是

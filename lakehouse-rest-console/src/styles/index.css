@@ -155,12 +155,31 @@ body {
  * 撑满宽度、链接、区块间距），因此放在一处。
  * ---------------------------------------------------------------------- */
 
+/* 问号图标：**可悬停的范围要比图标本身大一圈**。
+ * 图标只有 14px，鼠标得精确落在它上面才触发；偏一两个像素就没反应，
+ * 而点击时整块区域（页签、标签行）都算命中，于是表现成「移上去没动静、
+ * 点一下才弹」。这里用 padding 把命中区扩到 20px，负 margin 抵掉尺寸变化，
+ * 版面与原来一致。
+ *
+ * <p>`content-box` 不能省：Element Plus 给 `.el-icon` 钉了 `width/height: 1em`，
+ * 而全局是 `box-sizing: border-box`——那样 padding 会从图标内部扣，14px 的图标
+ * 被压成 8px，命中区却一点没变大（图标反而更难悬停）。声明成 content-box 后
+ * 尺寸按「14px 内容 + 6px 内边距」算，视觉大小不变、可悬停范围扩大。 */
+.pc-tip-icon,
+.pc-field-label-icon {
+  box-sizing: content-box;
+  padding: 3px;
+  margin: -3px;
+  border-radius: 50%;
+  transition: color 0.15s, background-color 0.15s;
+}
+
 /* 区块级的补充说明不再直接铺开：收进 TipNote 的问号图标（见上）。
  * 这里只留图标在正文流里的对齐——它常紧跟在标题、工具行或表格后面，
  * 需要一个不撑行高、不抢注意力的落点。 */
 .pc-tip-icon {
   vertical-align: middle;
-  margin-left: 2px;
+  margin-left: -1px; /* 与前面的文字留 2px（原先的 margin-left），其余三边由 padding 撑开 */
 }
 
 /* 字段备注收进问号图标后的样式（FieldLabel.vue，气泡挂在 body 下，须全局定义） */
@@ -173,11 +192,11 @@ body {
 .pc-field-label-icon {
   color: var(--pc-text-dim);
   cursor: help;
-  transition: color 0.15s;
 }
 
 .pc-field-label-icon:hover {
   color: var(--el-color-primary);
+  background-color: rgba(127, 127, 127, 0.16);
 }
 
 .pc-field-tip {

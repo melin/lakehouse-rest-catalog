@@ -4,7 +4,9 @@
  *
  * <p>字段备注如果直接铺在输入框下面（原先的 `.pc-tip`），一段说明就有三四行，
  * 表单页会被文字占满——真正要填的字段反而被挤到视野外。因此备注改成
- * 字段名后面的一个小图标，鼠标放上去才显示。
+ * 字段名后面的一个小图标，**鼠标移上去立刻显示**（`trigger="hover"` + `show-after: 0`）：
+ * 图标只有 14px，能给的注意力就是「移过去扫一眼」，加延迟或要求点击都会让它形同虚设。
+ * 命中区由 `.pc-field-label-icon` 的 padding 撑大一圈（见 styles/index.css）。
  *
  * <p>用法（放在 `el-form-item` 的 `#label` 插槽里）：
  *
@@ -36,7 +38,8 @@ defineProps({
       v-if="tip || $slots.default"
       placement="top"
       effect="dark"
-      :show-after="100"
+      trigger="hover"
+      :show-after="0"
       :hide-after="0"
       popper-class="pc-field-tip-popper"
     >

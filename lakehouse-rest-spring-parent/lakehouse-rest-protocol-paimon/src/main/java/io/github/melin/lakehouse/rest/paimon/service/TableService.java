@@ -21,7 +21,6 @@ import io.github.melin.lakehouse.rest.paimon.dto.PartitionDtos;
 import io.github.melin.lakehouse.rest.paimon.dto.TableDtos;
 import io.github.melin.lakehouse.rest.paimon.support.Codecs;
 import io.github.melin.lakehouse.rest.paimon.support.SchemaSupport;
-import io.github.melin.lakehouse.rest.paimon.support.TableDefaults;
 import io.github.melin.lakehouse.rest.paimon.support.TableKinds;
 import io.github.melin.lakehouse.rest.event.CatalogEvent;
 import io.github.melin.lakehouse.rest.event.CatalogEventPublisher;
@@ -34,6 +33,7 @@ import io.github.melin.lakehouse.rest.support.Paging;
 import io.github.melin.lakehouse.rest.support.Paths;
 import io.github.melin.lakehouse.rest.support.Patterns;
 import io.github.melin.lakehouse.rest.support.ResourceType;
+import io.github.melin.lakehouse.rest.support.TableDefaults;
 import io.github.melin.lakehouse.rest.support.Values;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -200,7 +200,9 @@ public class TableService {
         // 下面的归一化也按它分派（见 TableKinds）。schemaDoc 与仓库里的 schema-0
         // 都取自这一份 schema，因此两步都必须在写库之前完成。
         TableKinds.Kind kind = TableKinds.parse(schema.getOptions());
-        Map<String, String> defaults = TableDefaults.apply(schema, kind, catalog.getProperties());
+        Map<String, String> defaults = kind == TableKinds.Kind.PAIMON
+                ? TableDefaults.apply(schema.getOptions(), catalog.getProperties())
+                : Map.of();
         // 客户端指了数据目录就认它的（只对非 Paimon 表，理由见方法注释）
         String clientPath = TableKinds.honorsClientPath(kind) ? TableKinds.explicitPath(schema) : null;
         String tablePath = clientPath == null ? assignedPath : clientPath;

@@ -713,6 +713,46 @@ class IcebergRestCatalogApiTests {
     }
 
     /**
+     * catalog 级的 {@code table-default.*} 对 Iceberg 表同样生效——与 Paimon 面共用
+     * core 的 {@code TableDefaults}（见 {@code catalog-api-endpoints.md}）。
+     *
+     * <p>三条最容易错的语义在这里钉住：**表级同名属性优先**（catalog 配 {@code orc}、
+     * 建表请求写 {@code parquet}，结果必须是 {@code parquet}）、**默认值不带前缀**落进
+     * 元数据（留着 {@code table-default.} 等于写了个没人读的键）、以及**空属性名与
+     * {@code type} 要跳过**（后者会改变表的格式语义）。
+     */
+    @Test
+    @Order(13)
+    void tableDefaultsApplyToNewIcebergTables() throws Exception {
+        String catalog = "iceberg-api-defaults";
+        String base = "/v1/" + catalog;
+        json(201, "POST", M + "/catalogs", """
+                {"catalog":{"type":"INTERNAL","name":"%s","catalogFormat":"ICEBERG",
+                 "properties":{"table-default.write.parquet.compression-codec":"zstd",
+                               "table-default.write.format.default":"orc",
+                               "table-default.type":"object-table",
+                               "table-default.":"没有属性名，忽略"},
+                 "storageConfigInfo":{"storageType":"FILE","allowedLocations":["%s-defaults"]}}}
+                """.formatted(catalog, WAREHOUSE));
+        json(200, "POST", base + "/namespaces", "{\"namespace\":[\"fn\"]}");
+
+        // createTableBody 里显式写了 write.format.default=parquet——用来验表级优先
+        JsonNode created = json(200, "POST", base + "/namespaces/fn/tables", createTableBody("orders"));
+        JsonNode properties = created.get("metadata").get("properties");
+
+        assertEquals("zstd", properties.get("write.parquet.compression-codec").asString(),
+                "catalog 上的默认参数要进新表的元数据: " + properties);
+        assertEquals("parquet", properties.get("write.format.default").asString(),
+                "表级显式声明的同名属性优先于 catalog 默认: " + properties);
+        assertFalse(properties.has("type"), "type 由建表请求决定，不接受默认: " + properties);
+        assertFalse(properties.has(""), "空前缀（table-default. 自己）要跳过: " + properties);
+        for (String key : properties.propertyNames()) {
+            assertFalse(key.startsWith("table-default."),
+                    "写进表属性的键要去前缀，否则没人会读它: " + key);
+        }
+    }
+
+    /**
      * 建一个 **PAIMON** catalog（{@link #createIcebergCatalog} 建的是 ICEBERG）。
      * 函数的写路径只在 Paimon 面，那条面又严格限定 PAIMON catalog。
      */

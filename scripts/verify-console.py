@@ -44,7 +44,10 @@ spec/rest-catalog-open-api-iceberg.yaml）。路径写错时前端只表现为�
                   消费、事件类型清单对 CatalogEventType 的 wire 值、目标类型显示名
                   对 CatalogEvent 的 TARGET_* 常量、独立路由。前端另抄一份名单
                   或丢了 since，页面都不报错——只是契约悄悄失效
- 16. 文档计数     文档里写的「N 组 M 项」与脚本实际一致——加校验组的人要顺手改文档，
+ 16. 提示图标     问号图标必须「悬停即显示」：trigger 显式写成 hover、show-after 为 0，
+                  且命中区比 14px 的图标本身大一圈。加延迟或要求点击时，用户看到的
+                  现象是「移到图标上没反应」，而页面不会报任何错
+ 17. 文档计数     文档里写的「N 组 M 项」与脚本实际一致——加校验组的人要顺手改文档，
                   而这条约定此前没人执行（真漂过一次：docs/console.md 37、实际 38）
 
 用法：
@@ -791,22 +794,28 @@ page_wiring = {
         '<IcebergBrowseView v-if="icebergCatalog" />' in browse_view,
     "目录浏览：Paimon 的库列表 loader 在 Iceberg 下仍挡请求": "if (icebergCatalog.value) return []" in browse_view,
     "目录浏览：Paimon 的四个对象列表 loader 一并挡掉": "|| icebergCatalog.value) {" in browse_view,
-    "catalog 详情：「配置」页签两种格式都在，Paimon 的 table-default 编辑器按格式收起":
-        'name="config"' in detail_view and 'v-if="!isIceberg"' in detail_view,
+    "catalog 详情：「配置」页签两种格式都在，table-default 编辑器对两者都开放":
+        'name="config"' in detail_view and 'v-if="!isIceberg"' not in detail_view,
 }
 check("三个页面都按 catalog 格式伸缩（且在 loader 里挡请求，不只是藏界面）",
       all(page_wiring.values()),
       "\n".join(name for name, ok in page_wiring.items() if not ok))
 
-# --- 12.4.1 「配置」页签的两套内容 ------------------------------------------
-# 这个页签曾经只在 Paimon 侧出现（Iceberg 下整块收起），后来两边都要有：
-# Paimon 编辑 `table-default.*`，Iceberg 只读展示 `/v1/config` 下发的 defaults /
-# overrides。留一个空白页比不给页签更糟——用户会以为「没东西可配」。
-check("Iceberg catalog 的配置页展示 /v1/config 的 defaults 与 overrides（只读）",
+# --- 12.4.1 「配置」页签的内容（两种格式同一套） ----------------------------
+# 这个页签曾经只在 Paimon 侧出现，后来改成「两边都有但内容不同」：Paimon 编辑
+# `table-default.*`，Iceberg 只读展示 `/v1/config`。现在两边统一成同一套设计——
+# 都能编辑 `table-default.*`（服务端在建表时合并，表级同名优先），Iceberg 再**另附**
+# 一份只读的连接配置（defaults / overrides），因为那是连接参数，与表属性不是一回事。
+check("两种格式的配置页都编辑 table-default.*（同一套设计）",
+      "表默认参数（table-default.*）" in detail_view
+      and "isIceberg ? 'Iceberg' : 'Paimon'" in detail_view,
+      "配置页应在两种格式下给出同一个默认参数编辑器，标题按格式换名")
+
+check("Iceberg catalog 的配置页另附 /v1/config 的 defaults 与 overrides（只读）",
       "客户端连接配置" in detail_view
       and "configDefaults" in detail_view
       and "configOverrides" in detail_view,
-      "Iceberg 侧应只读展示 defaults / overrides，而不是空白页或照搬 table-default")
+      "Iceberg 侧应保留 defaults / overrides 的只读展示：那是连接参数，不是表属性")
 
 # 「其它属性」曾经在 Paimon 配置页重复列一遍（全量替换时要回填的那些键）：
 # 概览页的「属性」与 JSON 块已经完整展示同一份数据，这一列既占地方又容易过期。
@@ -1196,10 +1205,39 @@ check("事件页有独立路由（/events，进侧边菜单）",
       "'/events'" in router_source and "EventsView" in router_source,
       "router/index.js 应声明 /events 路由并指向 EventsView")
 
-# ------------------------------------------------------------------ 16. 文档计数
+# ------------------------------------------------------------------ 16. 提示图标
 
 print()
-print("16. 文档计数（文档写的「N 组 M 项」必须与脚本实际一致）")
+print("16. 提示图标（鼠标移上去就显示，不延迟、不用点）")
+
+# 问号图标是 14px 的小东西，用户能给它的注意力就是「移过去扫一眼」。
+# 两个坑都真实发生过：
+#   1. `show-after=100` 的延迟——快速划过时什么都没出现，观感就是「移到图标上没反应」；
+#   2. 图标本身只有 14px，鼠标偏一两像素就落在容器上，而点击时整块区域都算命中，
+#      于是表现成「移上去没动静、点一下才弹」。
+# 前者在模板里断言（trigger 显式 hover + show-after 为 0），后者在样式里断言
+# （图标带 padding，把可悬停范围撑到 20px）。
+tip_note_source = read(os.path.join(CONSOLE_DIR, "src/components/TipNote.vue"))
+field_label_source = read(os.path.join(CONSOLE_DIR, "src/components/FieldLabel.vue"))
+console_styles = read(os.path.join(CONSOLE_DIR, "src/styles/index.css"))
+
+hover_broken = [
+    name for name, source in (("TipNote", tip_note_source), ("FieldLabel", field_label_source))
+    if 'trigger="hover"' not in source or ':show-after="0"' not in source
+]
+check(f"两个提示组件都是悬停即显示（trigger=\"hover\" + show-after 0）",
+      not hover_broken,
+      "以下组件仍带显示延迟、或不是悬停触发: " + "、".join(hover_broken))
+
+check("问号图标的命中区比图标本身大（鼠标差一两个像素也要能触发）",
+      re.search(r"\.pc-field-label-icon\s*\{[^}]*?padding:", console_styles) is not None,
+      "styles/index.css 里 .pc-tip-icon / .pc-field-label-icon 应带 padding，"
+      "把 14px 图标的可悬停范围撑大一圈")
+
+# ------------------------------------------------------------------ 17. 文档计数
+
+print()
+print("17. 文档计数（文档写的「N 组 M 项」必须与脚本实际一致）")
 
 # 这一组是**元校验**，起因是一次真实的漂移：docs/console.md 写「12 组 37 项」、
 # README 写「12 组 38 项」，而脚本实际是 38——两个数字都没人核对，因为脚本此前

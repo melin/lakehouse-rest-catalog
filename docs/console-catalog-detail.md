@@ -153,21 +153,28 @@ schema 物化没生效：客户端建表成功、写入时报
 
 ### 3.3 配置
 
-两种格式都有这个页签，内容不同：Paimon 侧是**表默认参数**（可编辑），
-Iceberg 侧是**客户端连接配置**（只读）。
+两种格式的「配置」页签是**同一套设计**：都编辑**表默认参数**（`table-default.*`）。
+Iceberg 下面另附一段只读的**客户端连接配置**（`/v1/config` 的 `defaults` / `overrides`）——
+那是连接参数，与表属性是两条不同的下发路径，放在一起是因为它们都挂在 catalog 上。
 
-早期版本这个页签只在 Paimon 侧出现，理由是 `table-default.*` 对 Iceberg 建表不生效。
-后来改成「两边都有、各显示各的」：留一个点了不生效的页签确实更糟，但**留一个空白页
-同样糟**——用户会以为「这个 catalog 没东西可配」。现在按格式换内容，而不是整块收起。
+这个页签的形态变过两次。最早只在 Paimon 侧出现（理由：`table-default.*` 对 Iceberg 建表
+不生效）；后来改成「两边都有、Iceberg 只读」——但同一页签在两种格式下长得完全不同，
+用户要学两套。真正的收敛在服务端：Iceberg 建表现在也合并 `table-default.*`
+（两格式共用 `lakehouse-rest-core` 的 `support/TableDefaults`，见
+[catalog-api-endpoints.md](catalog-api-endpoints.md#catalog-级默认表属性table-default)），
+于是页面可以做成一套，只换标题与适用范围的说明。
 
-#### 3.3.1 Paimon 表默认参数（`table-default.*`）
+#### 3.3.1 表默认参数（`table-default.*`）
 
 编辑 catalog 的 `properties` 里 `table-default.` 开头的那些键：键值行编辑器，
 前缀 `table-default.` 由界面固定显示（不让用户手打，省得打出
 `table-default.deletion-vectors.enabled` 这种「带着前缀的键」），属性名与取值各一列。
+标题按格式换名（`Paimon 表默认参数` / `Iceberg 表默认参数`），编辑器本身共用。
 
-语义与服务端一致，页面上用一条 `TipNote` 写清三条边界（表级参数优先、
-只对 Paimon 表生效、只在建表时合并），以及 `type` 不接受默认。
+语义与服务端一致，页面上用一条 `TipNote` 写清三条边界（表级参数优先、适用范围、
+只在建表时合并），以及 `type` 不接受默认。两种格式的**唯一差别**在第二条：
+Paimon 只对 Paimon 表合并（Format / Object / Lance 表的选项由各自的表格式定义），
+Iceberg catalog 只建 Iceberg 表，因此对本 catalog 的所有表生效。
 判据与读写都在 `utils/tableDefaults.js`，与服务端 `support/TableDefaults` 一一对应。
 
 **编辑的是本地副本，不是服务端返回的对象。** 直接绑会让「没保存」和「已保存」分不开，
@@ -179,17 +186,18 @@ baseline 就推到新值，按钮回到「与服务端一致」。
 属性名里又带了一次前缀（粘贴整键时的常见错误）、以及 `type`
 （服务端会忽略它，写进去只会让人以为生效了）。
 
-#### 3.3.2 Iceberg：客户端连接配置（只读）
+#### 3.3.2 Iceberg：客户端连接配置（只读，另附）
 
-Iceberg 没有 `table-default.*` 这一层：表属性在建表或 `ALTER TABLE` 时**逐表声明**，
-服务端不提供 catalog 级默认值。因此这个页签展示的是客户端连上来时**实际读到**的
-`GET /v1/config`：
+这是 Iceberg catalog 上**额外**展示的一段，不参与上面的编辑。内容来自客户端连上来时
+**实际读到**的 `GET /v1/config`：
 
 - `defaults`——服务端把 `warehouse`、`prefix` 与 catalog 自身的属性拼成的那份；
 - `overrides`——服务端强制、客户端改不了的项。
 
-两者都只读：`warehouse` 决定数据写在哪，改它等于换存储位置；其余 catalog 属性去
-「Catalogs」页的编辑弹窗改（`PUT` 全量替换，带 `entityVersion` 做乐观并发）。
+两者都只读：它们决定客户端**怎么连、连到哪个仓库**，改错的表现是「连不上」；
+而上面那组 `table-default.*` 决定**新表带什么属性**，改错只影响此后新建的表。
+`warehouse` 的修改等于换存储位置，其余 catalog 属性去「Catalogs」页的编辑弹窗改
+（`PUT` 全量替换，带 `entityVersion` 做乐观并发）。
 数据与「概览」的「协议与能力」共用同一个 `capabilities` 资源（`catalogApi.config`），
 不额外发请求。
 
@@ -199,7 +207,7 @@ Iceberg 没有 `table-default.*` 这一层：表属性在建表或 `ALTER TABLE`
 「属性」一行、`Catalog 属性（properties）` JSON 块是**同一份数据**，已删除：
 两处显示同一批键，迟早有一处过期。保存时**原样回填**的语义不变
 （`composeProperties` 仍把其余键带上，否则全量替换等于把它们删了），
-这条说明搬进了 Paimon 段落的 `TipNote`。
+这条说明搬进了表默认参数段落的 `TipNote`（两种格式各一份，措辞按适用范围不同）。
 
 ### 3.4 新建表表单里的默认参数
 

@@ -2,6 +2,7 @@ package io.github.melin.lakehouse.rest.paimon.support;
 
 import io.github.melin.lakehouse.rest.dto.TypeDtos;
 import io.github.melin.lakehouse.rest.support.ApiException;
+import io.github.melin.lakehouse.rest.support.TableDefaults;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;

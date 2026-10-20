@@ -33,8 +33,8 @@
   [`docs/spark-paimon-rest-e2e.md`](docs/spark-paimon-rest-e2e.md) §4.4）：
   接口照常接受建表请求，控制台的新建表表单不给入口
 - 默认表属性：catalog 的 `properties` 里写 `table-default.<属性名>`（如
-  `table-default.deletion-vectors.enabled=true`），新建 **Paimon 表**时自动带上该属性
-  （去前缀、表级参数优先）；控制台入口是 Catalog 详情页的「配置」页签。见
+  `table-default.deletion-vectors.enabled=true`），新建表时自动带上该属性
+  （去前缀、表级参数优先）；两种格式都支持。控制台入口是 Catalog 详情页的「配置」页签。见
   [第 6 节第 24 条](#6-实现要点与边界)与
   [`docs/catalog-api-endpoints.md`](docs/catalog-api-endpoints.md#catalog-级默认表属性table-default)
 
@@ -703,12 +703,13 @@ Azure 只下发定位元数据是个明确的缺口：Polaris 的 `polaris.stora
     三者中 **Lance 表只登记不能读写**（Paimon 2.0.0 未实现，见
     [`docs/spark-paimon-rest-e2e.md`](docs/spark-paimon-rest-e2e.md) §4.4），
     服务端照常接受它的建表请求，控制台的新建表表单把它标成不可选。
-24. **catalog 级默认表属性（`table-default.*`）只作用于新建的 Paimon 表**。
+24. **catalog 级默认表属性（`table-default.*`）两种格式都支持，只作用于新建的表**。
     catalog 的 `properties` 里 `table-default.<属性名>` 的项，建表时**去掉前缀**写进表属性
-    （`support/TableDefaults`）。四条边界：**表级参数优先**（只做 `putIfAbsent`，
-    默认值是缺省而不是约束——要强制取值该用 `overrides`）、**只对 Paimon 表生效**
-    （Format / Object / Lance 的 `options` 描述各自的表格式，塞进 Paimon 表属性只会在仓库的
-    `schema-0` 里留噪音）、**`type` 不接受默认**（表格式由建表请求决定，否则一次 catalog
+    （`support/TableDefaults`，在 core 里两种格式共用）。四条边界：**表级参数优先**（只做
+    `putIfAbsent`，默认值是缺省而不是约束——要强制取值该用 `overrides`）、**适用范围按格式定**
+    （Paimon 只合并到 Paimon 表：Format / Object / Lance 的 `options` 描述各自的表格式，
+    塞进 Paimon 表属性只会在仓库的 `schema-0` 里留噪音；Iceberg catalog 只建 Iceberg 表，
+    因此对它下面的表都生效）、**`type` 不接受默认**（表格式由建表请求决定，否则一次 catalog
     配置会让此后所有新表换格式）、**只在建表时合并**（已建成的表不受影响，改它的属性是
     `alter` 的范畴）。默认值放在 `properties` 而不是 `defaults` / `overrides`：后两者是随
     `GET /v1/config` 下发给引擎的**连接参数**，改它影响的是客户端能否连上。Spark SQL 建表走的
@@ -792,7 +793,7 @@ JAVA_HOME=/path/to/jdk-21 mvn test
 | 测试类 | 覆盖 |
 | --- | --- |
 | `PaimonRestCatalogApiTests` | 配置发现、建表与 schema 变更（加列 / 列改名 / 改类型 / 改可空性 / 改属性）/ 回滚、四种表格式建表（Paimon / Format / Object / Lance：非 Paimon 表补 `path`、Format 表禁主键、Object 表用固定六列覆盖用户字段、Lance 表保留主键、未知类型 400、`listTableDetails` 按 `tableType` 过滤）、catalog 级默认表属性（`table-default.*`：去前缀写入、表级参数优先、只对 Paimon 表生效、只在建表时合并、`type` 不接受默认）、快照提交与乐观并发、快照文件统计（由提交携带的 `statistics` 增量累计：跨提交叠加、未测量字段不进合计、没带统计的提交沿用上一个快照、缺基线时退回分区合计、最新快照缺统计时读路径兜底）、分区统计、表重命名（改名不动数据位置、跨库重命名、目标名被占用 409）、视图与函数、语义视图 1 MiB 上限、消费者位点、凭证下发与 403、各类 404 的 `resourceType` |
-| `IcebergRestCatalogApiTests` | Iceberg 协议面 26 个端点的**行为**：`/v1/config` 的能力清单恰是 26 条且不含 `transactions/commit` / `plan` / `tasks` / `sign`；namespace 全套（列举 / 建 / 读 / 存在性 / properties 批量增删含 `missing` / 重名 409 / 空层级 400 / 多级 namespace 两种分隔符 / `?parent=` 只列直接子级 / **非空时删除 409**）；表全套（建表把 `metadata.json` 真的写进仓库且序号是 `00001-`、`format-version` 默认 2、服务端补 `created-at`、读回来与写下去**逐字节同一份**、`snapshots=all\|refs` 与非法取值 400、凭据不问不给 / 问了给 / `/credentials` 无条件给、`stage-create` 400 且表没建出来、`report-type` 必填）；提交（空 updates 不换位置、`assert-table-uuid` 放行且序号走到 `00002-`、对不上时 409 `CommitFailedException`、`identifier` 与路径不符 400、畸形 update 400）；重命名（**204**、只改标识不改位置、目标名被占用 409、报文残缺 400）；`register` / `unregister` / `drop`（外部表**永不清**、`unregister` 不碰仓库、`purgeRequested` 的作用范围——这三条只能落到文件系统上验）；视图全套（建 / 读 / 存在性 / 提交 / **204** 重命名 / 删除**不删元数据文件**）；跨面门禁（Iceberg 路径落在 Paimon catalog 上拿到嵌套形状且消息点出 `PAIMON catalog`） |
+| `IcebergRestCatalogApiTests` | Iceberg 协议面 30 个端点的**行为**：`/v1/config` 的能力清单恰是 30 条、不含 `plan` / `tasks` / `sign`，且函数 / `register-view` / 多表事务必须出现；namespace 全套（列举 / 建 / 读 / 存在性 / properties 批量增删含 `missing` / 重名 409 / 空层级 400 / 多级 namespace 两种分隔符 / `?parent=` 只列直接子级 / **非空时删除 409**）；表全套（建表把 `metadata.json` 真的写进仓库且序号是 `00001-`、`format-version` 默认 2、服务端补 `created-at`、读回来与写下去**逐字节同一份**、`snapshots=all\|refs` 与非法取值 400、凭据不问不给 / 问了给 / `/credentials` 无条件给、`stage-create` 400 且表没建出来、`report-type` 必填）；提交（空 updates 不换位置、`assert-table-uuid` 放行且序号走到 `00002-`、对不上时 409 `CommitFailedException`、`identifier` 与路径不符 400、畸形 update 400）；重命名（**204**、只改标识不改位置、目标名被占用 409、报文残缺 400）；`register` / `unregister` / `drop`（外部表**永不清**、`unregister` 不碰仓库、`purgeRequested` 的作用范围——这三条只能落到文件系统上验）；视图全套（建 / 读 / 存在性 / 提交 / **204** 重命名 / 删除**不删元数据文件**）；跨面门禁（Iceberg 路径落在 Paimon catalog 上拿到嵌套形状且消息点出 `PAIMON catalog`）；二期的四项（函数只读投影：Paimon 函数 → `FunctionMetadata`、uuid 恒定、ICEBERG catalog 上列表为空；`register-view`：重名 409 / 位置错 404 / 缺字段 400；多表事务：两表事件共享同一 requestId、任一 requirement 失败整批回滚；catalog 级 `table-default.*` 对 Iceberg 表生效：表级同名优先、写入时去前缀、`type` 与空属性名跳过） |
 | `IcebergClientEndToEndTests` | 用 **Iceberg 官方 Java 客户端**（`org.apache.iceberg.rest.RESTCatalog`）走真 HTTP（随机端口 + JDK `HttpClient` 建 catalog），验三件 MockMvc 结构性看不见的事：① `/v1/config` 的 `endpoints` 与客户端自需端点**等值协商**（清单少了操作在本地就被拒、多了会真发出去拿到 404，两个方向 MockMvc 都发现不了）；② 嵌套错误体真的被翻成**具体**异常（`NoSuchTableException` / `NoSuchNamespaceException` / `AlreadyExistsException`，而不是退化成通用 `RESTException`）；③ 更新代数真跑通（客户端自己生成 `requirements` 与 `updates`，服务端解、校验、应用、落库，客户端再解析回元数据）。另外它钉住了两处**客户端环境**上的坑：裸 JVM 里默认 `io-impl`（`ResolvingFileIO`）装不上（需要 Hadoop），以及上游 `createNamespace` 对 `Map.of(...)` 会因 `containsKey(null)` 抛 NPE |
 | `TableMetadataMaterializationTests` | 把 schema 与快照物化到 Paimon 表目录：建表写 `schema-0`、改表写下一个号、回滚把旧内容写到**新号**（回滚也是向前一步）、`register` 进来的外部表一个文件都不碰、缺 FileIO 实现时默认只记日志不打断请求（并断言打开 `fail-on-error` 后确实变成 500）；快照侧写 `snapshot/snapshot-<id>` 与 `LATEST`、落盘的是客户端**原文**（`properties` 这类规格没建模的字段不能丢）、`VERSION AS OF <数字>` 按**快照 id** 而不是 `Snapshot.version` 取值（含 `LATEST` / `EARLIEST` / 标签名）、快照回滚会删掉目标之后的快照文件；钉住「数据库 `schemaId` ↔ 仓库 `schema-<n>`」与「数据库 `snapshotId` ↔ 仓库 `snapshot-<n>`」逐号对应 |
 | `ManagementApiTests` | 管理 API 的主体、角色、装配与授权链路；以及**格式分派**（`catalogFormat` 省略时用部署默认值、显式 ICEBERG 落库且能读回、认不出的取值 400 不让脏值进库、改已有 catalog 的格式 400 且消息说明不可变、原样带回则放行、`/v1/config` 的形状随格式变（Iceberg 带 `endpoints` 而 Paimon 不带）、两个方向的格式不匹配都给出**指名原因**的 404） |
@@ -1142,7 +1143,7 @@ http://localhost:8080/console/
 | `/browse` | 目录浏览：库/表/视图/函数/语义视图；建库建表、注册表、按表 ID 定位、重命名、删除。表列表六列——表名 / 表格式 / 表类型（Managed 或外部表）/ 创建时间 / 元数据更新时间 / 操作，数据取自 `table-details`（只回表名的 `/tables` 给不出这几列） |
 | `/tables/:prefix/:database/:table` | [表详情](docs/console-table-detail.md)：页签随表格式伸缩——Paimon 表六个（详细信息含字段列表 / 分区列表、**文件列表**、快照、标签、分支、数据访问），Format / Object / Lance 表只有详细信息与**文件列表**，且不向快照端点发请求；三种表都展示字段列表（Object 表是 Paimon 固定的六列，主键 / 分区字段两列不渲染）。**改表结构不在控制台做**：`alter` 端点仍在，走 HTTP 或 Spark SQL |
 | `/catalogs` | Catalog 列表：创建、编辑（带版本）、删除；名称进详情页 |
-| `/catalogs/:catalogName` | [Catalog 详情](docs/console-catalog-detail.md)：概览 / **文件列表**（仓库物理目录，目录名可点下钻、文件可下载、文件名前缀过滤 + 本地分页）/ **配置**（Paimon 侧编辑新建 Paimon 表的默认参数 `table-default.*`；Iceberg 侧只读展示 `/v1/config` 的 `defaults` / `overrides`） |
+| `/catalogs/:catalogName` | [Catalog 详情](docs/console-catalog-detail.md)：概览 / **文件列表**（仓库物理目录，目录名可点下钻、文件可下载、文件名前缀过滤 + 本地分页）/ **配置**（两种格式都编辑新建表的默认参数 `table-default.*`；Iceberg 另附只读的 `/v1/config` `defaults` / `overrides`） |
 | `/principals`、`/principal-roles` | 治理：主体、角色；角色页含「授予 / 撤销 catalog 角色」。**catalog 角色与它的资源授权没有页面**——这两件事的入口是管理 API 与 Spark SQL |
 | `/permissions` | 权限管理：控制台**唯一**的授权页（Paimon 官方权限模型、授权直接挂在主体上），覆盖官方八种资源定位器里的四级——catalog / database / table / view |
 | `/settings` | 连接设置：API 基址、访问令牌、登录状态、主题 |
@@ -1157,9 +1158,9 @@ http://localhost:8080/console/
   用 `./scripts/build-console.sh` 一条命令完成构建与校验。
 - **路径不靠人工比对。** 全部端点收在 `lakehouse-rest-console/src/api/endpoints.js` 一张表里，
   由 `scripts/verify-console.py` 与三份 OpenAPI 规格（Paimon / Iceberg / 管理 API）机械比对
-  （16 组 74 项：端点存在性、引用完整性、五处基址一致、产物新鲜度、对话框状态、下拉候选来源、
+  （17 组 77 项：端点存在性、引用完整性、五处基址一致、产物新鲜度、对话框状态、下拉候选来源、
   静态凭据字段与服务端的一致性、两种格式的优化参数键、**catalog 表格式**、**Iceberg 目录浏览的契约形状**、
-  **存储字段分层**、**事件页的增量契约与类别筛选**，最后由一组「文档计数」盯住这个数字本身与脚本一致）；
+  **存储字段分层**、**事件页的增量契约与类别筛选**、**问号图标悬停即显**，最后由一组「文档计数」盯住这个数字本身与脚本一致）；
   服务端侧 `ConsoleApiTests` 守住静态资源托管与 SPA 深链回退。
 - **表格式（Paimon / Iceberg）在创建 Catalog 时就选定，之后不可改。** 新建弹窗里用
   **选项卡片**而不是下拉：每个选项要能读出「客户端走哪段路径」与一句话影响面；
@@ -1188,5 +1189,5 @@ OIDC 授权码 + PKCE 三种方式；令牌是自包含 JWT，多实例互认但
 | --- | --- |
 | [`docs/console.md`](docs/console.md) | 控制台总览：目录结构、服务端如何托管、页面清单、端点契约表与机械校验、构建与提交约定、测试分层 |
 | [`docs/console-table-detail.md`](docs/console-table-detail.md) | 表详情页：页签随表格式（Paimon / Format / Object / Lance）伸缩、详细信息含字段/分区列表、表目录文件列表、为什么授权不在这页、破坏性操作、已知边界 |
-| [`docs/console-catalog-detail.md`](docs/console-catalog-detail.md) | Catalog 详情页：概览与文件列表、下钻与路径防护、为什么只读、「配置」页的默认表属性（`table-default.*`）编辑与仍未做的三项 |
+| [`docs/console-catalog-detail.md`](docs/console-catalog-detail.md) | Catalog 详情页：概览与文件列表、下钻与路径防护、为什么只读、「配置」页的默认表属性（`table-default.*`）编辑（两格式同一套）与并发冲突处理 |
 | [`docs/console-auth.md`](docs/console-auth.md) | 登录与鉴权：两个开关的边界、三种登录方式与令牌端点、错误码、安全考量、已知边界 |

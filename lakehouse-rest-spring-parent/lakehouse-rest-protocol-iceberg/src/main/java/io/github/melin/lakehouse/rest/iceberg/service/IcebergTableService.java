@@ -24,6 +24,7 @@ import io.github.melin.lakehouse.rest.support.NamespacePaths;
 import io.github.melin.lakehouse.rest.support.Paging;
 import io.github.melin.lakehouse.rest.support.Paths;
 import io.github.melin.lakehouse.rest.support.ResourceType;
+import io.github.melin.lakehouse.rest.support.TableDefaults;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
@@ -208,6 +209,15 @@ public class IcebergTableService {
 
         Map<String, String> tableProperties = request.properties() == null
                 ? new LinkedHashMap<>() : new LinkedHashMap<>(request.properties());
+        // catalog 级的默认表属性（table-default.*）：与 Paimon 面走同一段映射
+        // （core 的 TableDefaults），表级显式声明的同名属性优先。Iceberg 只有一种表，
+        // 因此不像 Paimon 那样还要按表格式判断合不合并。
+        Map<String, String> defaults = TableDefaults.apply(tableProperties, catalog.getProperties());
+        if (!defaults.isEmpty()) {
+            // 与 Paimon 面同一条 debug 日志：回答「这个表属性哪来的」
+            log.debug("applied catalog table-default options to {}.{}: {}",
+                    NamespacePaths.toStorageName(levels), tableName, defaults);
+        }
         tableProperties.putIfAbsent(PROPERTY_CREATED_AT, OffsetDateTime.now(ZoneOffset.UTC).toString());
 
         String location = request.location() == null || request.location().isBlank()
