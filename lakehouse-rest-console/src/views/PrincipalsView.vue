@@ -135,13 +135,6 @@
       >
         <el-table :data="rolesDrawer.roles" size="small">
           <el-table-column prop="name" label="角色" min-width="160" />
-          <el-table-column label="联邦（federated）" width="150">
-            <template #default="{ row }">
-              <el-tag size="small" effect="plain" :type="row.federated ? 'warning' : 'info'">
-                {{ row.federated ? '是' : '否' }}
-              </el-tag>
-            </template>
-          </el-table-column>
           <el-table-column label="" width="70" align="right">
             <template #default="{ row }">
               <IconAction icon="Close" label="移除" type="danger" @click="revokeRole(row.name)" />

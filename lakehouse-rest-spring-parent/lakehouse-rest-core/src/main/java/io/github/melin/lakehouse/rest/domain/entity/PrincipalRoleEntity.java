@@ -23,8 +23,12 @@ import lombok.Setter;
  * <p>原先「principal role → catalog role → 权限」的中转层已随 catalog role 整体移除，
  * 因此这里不再有指向 catalog role 的成员关系。
  *
- * <p>{@code federated} 标记该角色是否来自外部身份提供方（规格字段）。
- * 本服务不接入外部 IdP，因此该字段只作为标记保存与回显。
+ * <p>{@code federated} 标记该角色是否来自外部身份提供方（管理规格字段）。
+ * 本服务不接入外部 IdP，因此该字段**只作为标记保存与回显**：授权判定不读它，
+ * 成员关系也不受它影响；{@code PUT} 不接受它，建好之后无法改回。
+ * 正因如此控制台不再暴露这个开关（勾了没有任何行为差异，只是给列表多一列死信息），
+ * 但字段保留——它属于管理规格的 {@code PrincipalRole} 形状，且
+ * {@code SHOW PRINCIPAL ROLES} 会把它作为一列返回。
  */
 @Entity
 @Table(name = "lakehouse_principal_role",

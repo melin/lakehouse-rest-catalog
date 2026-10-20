@@ -37,13 +37,6 @@
         </template>
         <el-table v-loading="table.loading.value" :data="rows" size="small">
           <el-table-column prop="name" label="名称" min-width="160" />
-          <el-table-column label="联邦（federated）" width="150">
-            <template #default="{ row }">
-              <el-tag size="small" effect="plain" :type="row.federated ? 'warning' : 'info'">
-                {{ row.federated ? '是' : '否' }}
-              </el-tag>
-            </template>
-          </el-table-column>
           <el-table-column label="属性" min-width="170">
             <template #default="{ row }">
               <span class="pc-mono pc-dim pc-break">{{ inlineMap(row.properties) }}</span>
@@ -75,16 +68,7 @@
         <el-form-item v-if="dialog.mode === 'create'" label="名称" required>
           <el-input v-model="dialog.name" placeholder="例如 service_admin、data_reader" />
         </el-form-item>
-        <el-form-item v-if="dialog.mode === 'create'">
-          <template #label>
-            <FieldLabel
-              label="联邦角色（federated）"
-              tip="联邦角色表示由外部身份提供方映射而来，不由本服务管理成员。"
-            />
-          </template>
-          <el-switch v-model="dialog.federated" />
-        </el-form-item>
-        <el-form-item v-else label="当前版本（currentEntityVersion）">
+        <el-form-item v-if="dialog.mode === 'edit'" label="当前版本（currentEntityVersion）">
           <el-input :model-value="String(dialog.entityVersion)" disabled />
         </el-form-item>
       </el-form>
@@ -129,7 +113,6 @@
 import { computed, reactive } from 'vue'
 
 import CopyText from '@/components/CopyText.vue'
-import FieldLabel from '@/components/FieldLabel.vue'
 import SectionTitle from '@/components/SectionTitle.vue'
 import IconAction from '@/components/IconAction.vue'
 import PageHeader from '@/components/PageHeader.vue'
@@ -149,14 +132,13 @@ const dialog = reactive({
   open: false,
   mode: 'create',
   name: '',
-  federated: false,
   entityVersion: 0,
   properties: {},
   saving: false,
 })
 
 function openCreate() {
-  Object.assign(dialog, { open: true, mode: 'create', name: '', federated: false, properties: {} })
+  Object.assign(dialog, { open: true, mode: 'create', name: '', properties: {} })
 }
 
 function openEdit(row) {
@@ -179,7 +161,6 @@ async function save() {
     if (dialog.mode === 'create') {
       await managementApi.createPrincipalRole({
         name: dialog.name.trim(),
-        federated: dialog.federated,
         properties: dialog.properties,
       })
       notifySuccess(`已创建角色 ${dialog.name.trim()}`)
