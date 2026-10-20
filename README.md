@@ -161,7 +161,7 @@ k8s 资源名的 `paimon-` 前缀**故意不改**：它不是产品名，是历�
 | [`authorization.md`](docs/authorization.md) | 要理解权限怎么判——实体链、授权映射、失败关闭的取舍 |
 | [`console.md`](docs/console.md) | 要改 Web 控制台或排查「页面空列表」——前端分层、端点契约表、机械校验 |
 | [`console-table-detail.md`](docs/console-table-detail.md) | 要改表详情页——页签随表格式（Paimon / Format / Object / Lance）伸缩的数据来源、为什么授权不在这页、破坏性操作与边界 |
-| [`console-catalog-detail.md`](docs/console-catalog-detail.md) | 要改 Catalog 详情页或仓库文件浏览——三个页签、下钻与路径防护、只读的取舍、「配置」页的默认表属性（`table-default.*`）编辑与并发冲突处理；建表表单里的默认参数预填与为什么不给 Lance 表建表入口 |
+| [`console-catalog-detail.md`](docs/console-catalog-detail.md) | 要改 Catalog 详情页或仓库文件浏览——四个页签（概览 / 存储 / 文件列表 / 配置）、下钻与路径防护、只读的取舍、「配置」页的默认表属性（`table-default.*`）编辑与并发冲突处理；建表表单里的默认参数预填与为什么不给 Lance 表建表入口 |
 | [`console-auth.md`](docs/console-auth.md) | 要给浏览器访问控制台配登录——三种登录方式、两个开关的边界、令牌与认证链、安全考量 |
 | [`polaris-capabilities-and-design.md`](docs/polaris-capabilities-and-design.md) | 要对比 Polaris 或看整体设计——核心能力提取、映射关系、已知缺口 |
 | [`event-framework.md`](docs/event-framework.md) | 要加一种事件、接一个 listener 或理解事件流的边界——9 类 33 个领域事件与触发点、与 Polaris 事件枚举的逐类映射、audit_event 表、发布监听链路、按监听器的类别/类型订阅（`lakehouse.rest.event-listener.*`）、增量拉取契约（`?since=` 游标 + `?category=`）与不发清单 |
@@ -1177,7 +1177,7 @@ http://localhost:8080/console/
   用 `./scripts/build-console.sh` 一条命令完成构建与校验。
 - **路径不靠人工比对。** 全部端点收在 `lakehouse-rest-console/src/api/endpoints.js` 一张表里，
   由 `scripts/verify-console.py` 与三份 OpenAPI 规格（Paimon / Iceberg / 管理 API）机械比对
-  （18 组 80 项：端点存在性、引用完整性、五处基址一致、产物新鲜度、对话框状态、下拉候选来源、
+  （19 组 87 项：端点存在性、引用完整性、五处基址一致、产物新鲜度、对话框状态、下拉候选来源、
   静态凭据字段与服务端的一致性、两种格式的优化参数键、**catalog 表格式**、**Iceberg 目录浏览的契约形状**、
   **存储字段分层**、**事件页的增量契约与类别筛选**、**问号图标悬停即显**，最后由一组「文档计数」盯住这个数字本身与脚本一致）；
   服务端侧 `ConsoleApiTests` 守住静态资源托管与 SPA 深链回退。

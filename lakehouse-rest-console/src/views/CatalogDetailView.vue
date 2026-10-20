@@ -36,6 +36,19 @@
               </TipNote>
             </template>
           </el-tab-pane>
+          <el-tab-pane name="storage">
+            <template #label>
+              存储
+              <TipNote>
+                只读的一页：回答「哪些表该做 compaction」。指标口径取自 AWS 的
+                <em>Monitoring Iceberg workloads</em>，但数据来源是本服务端已有的读端点
+                ——Paimon 读每张表的快照，Iceberg 读表元数据里当前快照的 <code>summary</code>，
+                不依赖只有引擎才能查的元数据表（<code>t.files</code> 那类）。
+                因此两处口径要留意：平均文件大小是<b>加权</b>的（总大小 ÷ 总文件数，不是各表平均再平均），
+                小文件是<b>表级近似</b>（按表的平均文件大小判，看不出「大表里混着一批小文件」）。
+              </TipNote>
+            </template>
+          </el-tab-pane>
           <el-tab-pane name="files">
             <template #label>
               文件列表
@@ -211,6 +224,15 @@
                 />
               </div>
             </div>
+          </template>
+
+          <!------------------------------ 存储 -------------------------------------->
+          <template v-else-if="tab === 'storage'">
+            <CatalogStoragePanel
+              ref="storagePanel"
+              :catalog-name="catalogName"
+              :format="isIceberg ? 'ICEBERG' : 'PAIMON'"
+            />
           </template>
 
           <!------------------------------ 文件列表 -------------------------------->
@@ -467,6 +489,7 @@ import { consoleApi } from '@/api/console.js'
 import { describeError } from '@/api/client.js'
 import { catalogApi } from '@/api/catalog.js'
 import { managementApi } from '@/api/management.js'
+import CatalogStoragePanel from '@/components/CatalogStoragePanel.vue'
 import CopyText from '@/components/CopyText.vue'
 import IconAction from '@/components/IconAction.vue'
 import JsonBlock from '@/components/JsonBlock.vue'
@@ -493,6 +516,13 @@ const route = useRoute()
 const catalogName = computed(() => route.params.catalogName || '')
 
 const tab = ref('overview')
+
+/**
+ * 「存储」页签的统计。它按「一张表一次请求」取数，比概览重一个数量级，
+ * 因此只在页签切过去时由组件自己加载一次；顶栏刷新时若正停在这一页，由下面
+ * 的 reloadAll 显式驱动（组件没挂载时 ref 是 null，正好跳过）。
+ */
+const storagePanel = ref(null)
 
 const overview = useResource(() => managementApi.getCatalog(catalogName.value))
 const catalog0 = computed(() => overview.data.value)
@@ -680,6 +710,9 @@ function reloadAll() {
   capabilities.load()
   if (tab.value === 'files') {
     files.load()
+  }
+  if (tab.value === 'storage') {
+    storagePanel.value?.reload()
   }
 }
 

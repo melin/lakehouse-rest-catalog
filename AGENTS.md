@@ -275,7 +275,7 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
 | `authorization.md` | 权限实体链、授权映射、失败关闭的取舍；**多级 namespace 的判定口径在 §2.6**（两条链存的形状不同，按点号拼成路径再比，逐段比会静默不命中） |
 | `console.md` | 改控制台 / 排查「页面空列表」：分层、端点契约表、机械校验、加页面清单 |
 | `console-table-detail.md` | 改表详情页：页签随**表格式**（表级 `schema.options.type`）伸缩的数据来源（详细信息含字段/分区列表、表目录文件列表、「为什么没有权限页签」）、按需加载与非 Paimon 表不问快照端点、破坏性操作 |
-| `console-catalog-detail.md` | 改 Catalog 详情页 / 仓库文件浏览：三页签、下钻与路径防护、单文件下载、只读取舍、「配置」页的默认表属性（`table-default.*`）编辑与并发冲突处理；建表表单里的默认参数预填（§3.4）与为什么不给 Lance 表建表入口（§3.5）；**「协议与能力」卡片**（§3.1.1：客户端基址、端点清单、不声明支持）以及 Iceberg catalog 下只剩「概览」与「文件列表」两页可用（§9） |
+| `console-catalog-detail.md` | 改 Catalog 详情页 / 仓库文件浏览：四页签（概览 / **存储** / 文件列表 / 配置；存储页的口径与来源见 §3.2）、下钻与路径防护、单文件下载、只读取舍、「配置」页的默认表属性（`table-default.*`）编辑与并发冲突处理；建表表单里的默认参数预填（§3.5）与为什么不给 Lance 表建表入口（§3.6）；**「协议与能力」卡片**（§3.1.1：客户端基址、端点清单、不声明支持）以及 Iceberg catalog 下只剩「概览」与「文件列表」两页可用（§9） |
 | `console-auth.md` | 配控制台登录：三种登录方式、两个开关的边界、令牌链、安全考量 |
 | `polaris-capabilities-and-design.md` | 对比 Polaris、看整体设计与已知缺口 |
 | `iceberg-rest-catalog-design.md` | 让同一基址、同一份元数据同时服务原生 Iceberg REST 客户端：双协议方案、两套面的差异与代价、catalog 建时区分格式；**已落地的实测记录与与方案不一致的十六处**（§11） |
@@ -345,7 +345,7 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
 - **写了机械校验就要做变异测试**：故意把被校验的东西改错（DTO 字段改名、前端类型列表少一项），
   确认校验脚本**报得出来**。不做的校验往往是空跑。
 - 新增校验组要顺手把「总数」写进 `README.md` / `docs/console.md`。**这条现在由机制兜着**
-  （`verify-console.py` 第 18 组断言这两处写的「N 组 M 项」与脚本实际一致，也断言那一组自己）——
+  （`verify-console.py` 第 19 组断言这两处写的「N 组 M 项」与脚本实际一致，也断言那一组自己）——
   在此之前它只是句人情话，真漏过一次：`docs/console.md` 写 37、`README.md` 写 38、实际 38。
 - **前端字段分层的改动要连 `build()` 一起看**：catalog 表单的字段拆成了
   `BASIC_FIELDS` / `ADVANCED_FIELDS`（高级那张进折叠区），而 `build()` 读的是两者合并后的

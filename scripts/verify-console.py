@@ -1303,10 +1303,83 @@ check("Iceberg 视图页签有创建入口，且端点路径与控制器一致",
           ) if not ok
       ]))
 
-# ------------------------------------------------------------------ 18. 文档计数
+# ------------------------------------------------------------------ 18. Catalog 详情·存储
+
+# 这一页两种格式读法不同，而「不同」只允许出现在一个文件里（`api/storageHealth.js`）。
+# 页面上混进 Paimon 的 `databases/**` 时，Iceberg catalog 下的症状是一串 404——不白屏，
+# 很容易漏看。断言分别钉：页签存在且两格式共用组件、数据来源只有那几个端点、
+# 平均是加权的、面板本身不碰写接口，以及三个交互的钉子（Paimon 表开关、明细分页、两卡对齐）。
+#
+# 第 2 条断言比对的是**调用集合**而不是文本包含：源码注释里会出现 `t.files`、`const files`
+# 这类词，裸字符串比对既会漏也会误伤（写这一组时实测过）。
 
 print()
-print("18. 文档计数（文档写的「N 组 M 项」必须与脚本实际一致）")
+print("18. Catalog 详情·存储（两种格式同一套读法，来源与口径钉死）")
+
+CATALOG_DETAIL = os.path.join(CONSOLE_DIR, "src/views/CatalogDetailView.vue")
+STORAGE_PANEL = os.path.join(CONSOLE_DIR, "src/components/CatalogStoragePanel.vue")
+STORAGE_API = os.path.join(CONSOLE_DIR, "src/api/storageHealth.js")
+STORAGE_UTIL = os.path.join(CONSOLE_DIR, "src/utils/storageHealth.js")
+
+catalog_detail_src = read(CATALOG_DETAIL)
+storage_panel_src = read(STORAGE_PANEL)
+storage_api_src = read(STORAGE_API)
+storage_util_src = read(STORAGE_UTIL)
+
+check("详情页有「存储」页签，两种格式传同一个组件（格式只作参数）",
+      'name="storage"' in catalog_detail_src
+      and "CatalogStoragePanel" in catalog_detail_src
+      and "isIceberg ? 'ICEBERG' : 'PAIMON'" in catalog_detail_src,
+      "缺: 页签 / 组件引用 / 格式参数之一")
+
+# 元数据表（`t.files` 那类）只在引擎侧存在，HTTP 接口拿不到。采集文件里一旦多出别的调用，
+# 说明有人把它当成「再补一个端点就能查」——那会是一条永远 404 的路径。
+# `listTableDetails` 是「只统计 Paimon 表」开关的判定来源（表格式在 schema.options.type 里），
+# 取代了只回表名的 `listTables`。
+paimon_calls = set(re.findall(r'catalogApi\.(\w+)', storage_api_src))
+iceberg_calls = set(re.findall(r'icebergApi\.(\w+)', storage_api_src))
+paimon_allowed = {"listDatabases", "listTableDetails", "tableSnapshot"}
+iceberg_allowed = {"listTables", "loadTable"}
+check("存储页的读数只取已有端点（Paimon 快照 / Iceberg loadTable），不查元数据表",
+      paimon_calls <= paimon_allowed and iceberg_calls <= iceberg_allowed
+      and {"tableSnapshot"} <= paimon_calls and {"loadTable"} <= iceberg_calls,
+      f"Paimon 调用: {sorted(paimon_calls)}（允许 {sorted(paimon_allowed)}）；"
+      f"Iceberg 调用: {sorted(iceberg_calls)}（允许 {sorted(iceberg_allowed)}）")
+
+check("平均文件大小是加权的（总字节 ÷ 文件数，不是各表平均再平均）",
+      "size / filesWithSize" in storage_util_src and "row.size / row.files" in storage_util_src,
+      "加权口径被改成了「各表平均值的平均」——1 张 10 万文件的大表会与 1000 张单文件表等权")
+
+check("存储页只读：面板不直接调协议面或管理面（写动作留在表页的「存储优化」）",
+      "catalogApi" not in storage_panel_src and "icebergApi" not in storage_panel_src,
+      "面板里出现了直接的 API 调用；取数应当只经 api/storageHealth.js")
+
+# 「只统计 Paimon 表」的判定必须读 schema（`isSnapshotManaged`），不能猜表名：
+# Format / Object / Lance 表没有快照，混进来只会把「有数据的表」的分母撑大。
+check("Paimon 侧有「只统计 Paimon 表」开关，判定读 table-details 的 schema 而不是猜表名",
+      "只统计 Paimon 表" in storage_panel_src
+      and "isSnapshotManaged" in storage_api_src
+      and "listTableDetails" in storage_api_src,
+      "缺: 面板开关 / schema 判定 / table-details 调用之一")
+
+# 明细分页是**本地**的（数据侧已有 MAX_TABLES 截断 + 列表早停两道闸，不再把请求切碎）。
+# 同时排序必须跨页生效：el-table 自带排序在分页下只排当前页那 20 行，要用 sortable="custom"
+# 把排序收进 computed。
+check("逐表明细本地分页（el-pagination + pagedRows），排序用 custom 跨页生效",
+      "el-pagination" in storage_panel_src and "pagedRows" in storage_panel_src
+      and 'sortable="custom"' in storage_panel_src
+      and "sortState" in storage_panel_src,
+      "缺: 分页器 / 分页数据 / 自定义排序之一")
+
+check("按库/Top10 两卡在栅格并排且不吃堆叠边距（等高、顶部对齐）",
+      ".pc-sto-grid > :deep(.pc-card + .pc-card)" in storage_panel_src
+      and "margin-top: 0" in storage_panel_src,
+      "缺: 栅格内边距回收规则——右卡会被全局堆叠边距推下 16px，顶部错位")
+
+# ------------------------------------------------------------------ 19. 文档计数
+
+print()
+print("19. 文档计数（文档写的「N 组 M 项」必须与脚本实际一致）")
 
 # 这一组是**元校验**，起因是一次真实的漂移：docs/console.md 写「12 组 37 项」、
 # README 写「12 组 38 项」，而脚本实际是 38——两个数字都没人核对，因为脚本此前

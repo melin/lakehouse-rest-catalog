@@ -142,7 +142,7 @@ lakehouse-rest-console/
 | `/browse` | 目录浏览 | 按选中 catalog 的**表格式**换一套实现：Paimon catalog 是「左库右对象、三页签（表/视图/函数；语义视图的 4 条端点仍在服务端，控制台不再暴露）」；Iceberg catalog 换成 `IcebergBrowseView`（左命名空间右表/视图，见 §4.6）。Paimon 侧能力：建库、建表（Paimon 表 / Format 表 / Object 表三种表格式，Lance 表留在选项里但禁用，见 [console-catalog-detail.md](console-catalog-detail.md) §3.5）、注册表、按表 ID 定位、重命名、删除、详情抽屉。表页签列出表名 / 表格式 / 表类型（Managed 或外部表）/ 创建时间 / 元数据更新时间 / 操作六列，数据取自 `table-details`（只回表名的 `/tables` 给不出这几列）；「元数据更新时间」是服务端这条表记录的最后改动时间，快照提交与回滚也会推动它。表页签的过滤为空时说明「没有匹配 ×××」，与「库里没有表」区分开。**建表入口在「表」页签工具条的右侧**（页头只留刷新与新建数据库）：三类对象的工具条都写在 `ResourceState` 之外——那个组件命中空态时只渲染 `el-empty`、默认插槽整个不渲染，工具条若在里面，「这个库还是空的」这一刻就正好没有新建按钮 |
 | `/tables/:prefix/:database/:table` | [表详情](console-table-detail.md) | 七页签：详细信息 / 快照 / 标签 / 分支 / **文件列表** / 数据访问 / **存储优化**；含快照与标签的**回滚**。**没有「变更」页签**：改表结构走 HTTP 或 Spark SQL，理由见该文档 §2。详细信息首屏的四张统计卡片取自 `getTableSnapshot`（三个文件统计的来路与「什么时候会空」见该文档 §2.1），内含**字段列表 / 分区列表**二级页签（名称过滤 + 本地分页，分区按需加载）。文件列表按表目录物理内容列一层（根是表目录，出不了表外），目录名可点下钻、文件可下载、支持文件名前缀过滤与本地分页。存储优化页签承载表级策略与执行历史（见 [table-optimization.md](table-optimization.md) §7）。授权不在这张表上做——表级权限统一到「权限管理」页 |
 | `/catalogs` | Catalogs | 列出 / 创建 / 详情 / 更新（带版本）/ 删除。名称链到详情页；操作列另有「浏览库与对象」直达 `/browse` |
-| `/catalogs/:catalogName` | [Catalog 详情](console-catalog-detail.md) | 三页签：概览 / 文件列表 / 配置。文件列表按仓库物理目录列一层，目录名可点下钻、带面包屑与「返回上级」；只读，不提供删除与建目录。**配置页签**两种格式是同一套设计：都编辑「表默认参数」（`table-default.*`，见 [catalog-api-endpoints.md](catalog-api-endpoints.md#catalog-级默认表属性table-default)），Iceberg 另附只读的 `/v1/config` `defaults` / `overrides`（连接参数，非表属性）；其余 catalog 属性不在此页重复展示（概览已有） |
+| `/catalogs/:catalogName` | [Catalog 详情](console-catalog-detail.md) | 四页签：概览 / 存储 / 文件列表 / 配置。**存储**页回答「哪些表该做 compaction」：文件数、存储、平均文件大小、小文件占比（按库聚合），两种格式都支持，口径参考 AWS《Monitoring Iceberg workloads》但取数只用已有端点，见 [console-catalog-detail.md §3.2](console-catalog-detail.md)。文件列表按仓库物理目录列一层，目录名可点下钻、带面包屑与「返回上级」；只读，不提供删除与建目录。**配置页签**两种格式是同一套设计：都编辑「表默认参数」（`table-default.*`，见 [catalog-api-endpoints.md](catalog-api-endpoints.md#catalog-级默认表属性table-default)），Iceberg 另附只读的 `/v1/config` `defaults` / `overrides`（连接参数，非表属性）；其余 catalog 属性不在此页重复展示（概览已有） |
 | `/principals` | 主体 | 列出 / 创建 / 更新 / 删除 / rotate / reset；授予与撤销角色。创建、轮换、重置后的凭据弹窗可一键导出 JSON 文件（`{principal, clientId, clientSecret}`，文件名 `<主体>-credentials.json`），密钥仍只在弹窗期间可见 |
 | `/principal-roles` | 角色 | 列出 / 创建 / 更新 / 删除；查看成员（授予成员要按主体操作，在「主体」页做）。角色是**纯分组**，自身不携带权限；管理规格里的 `federated` 字段控制台不暴露——本服务不接入外部 IdP，勾了只存一个标记，且 PUT 不接受该字段，勾错改不回来 |
 | `/permissions` | 权限管理 | 控制台**唯一**的授权入口（Paimon 官方权限模型，principal 直授）：页头「添加授权」按钮开弹窗填表——多选授权对象（`user:` / `role:`，可手输任意 principal）、选**作用范围**（Catalog / Database / Table / View，四级就是官方的四种资源类型；**Iceberg catalog 下 `Database` 这一级显示为 `Namespace`**，候选与文案都跟着换，见 §4.8；catalog 不需要选库，表 / 视图还要选具体对象）、权限项按范围给（catalog：Create database/Alter/Drop/Grant；db：Create table/Alter/Drop/Describe；表：Select/Insert/Delete/Describe/Alter/Drop；视图：Select/Describe/Alter/Drop）、**有效期**默认长期有效，可选「指定日期」（按所选当天 23:59:59 本地时区换算成官方的 UTC instant；日历与手输都挡掉过去的时间）；主界面是授权清单——一行 = 一个主体 × 一个作用范围，同范围的权限并列成标签、点标签上的 × 逐项撤销，过期时间按日期显示（完整时刻在悬浮提示，7 天内到期标「N 天后」，过期条目不隐藏但标注「已过期」，多项不一致取最早并标注），资源合成「作用范围」一列（`整个 catalog` / `库` / `库.对象`，标注整 catalog/整库/单表），权限用与表单一致的词（UPDATE 显示为 Insert / Delete），空态给「添加授权」入口；支持过滤与幂等撤销 |
@@ -449,7 +449,7 @@ python3 scripts/verify-console.py      # 退出码 0 通过 / 1 不一致 / 2 �
 PYTHON=/path/to/python3 scripts/verify-console.py   # 多解释器时指定装了 PyYAML 的那个
 ```
 
-它**不构建前端、不启动服务端**，只做静态比对，因此可以放进提交前的检查。18 组 80 项：
+它**不构建前端、不启动服务端**，只做静态比对，因此可以放进提交前的检查。19 组 87 项：
 
 | 组 | 校验内容 |
 | --- | --- |
@@ -470,7 +470,8 @@ PYTHON=/path/to/python3 scripts/verify-console.py   # 多解释器时指定装�
 | 15. 事件页 | 事件流的增量契约与「类别筛选走服务端」要前后端钉在一起：`listEvents` 端点路径与端点名一致、`EventsView` 消费 `since` 游标与 `nextCursor`（丢了 `since` 就是全量重拉，页面不报错但契约名存实亡）、事件类型清单逐个覆盖 `CatalogEventType` 的 wire 值、**类别清单逐个覆盖 `CatalogEventCategory` 的取值**、**类别作为 `category` 参数随游标一起发出**（只在前端筛会让「换类别」沿用旧游标的整页数据）、目标类型显示名逐个覆盖 `CatalogEvent` 的 `TARGET_*` 常量（前端另抄名单漏了新类型的表现是那条事件显示成 wire 原文，静默）、`/events` 有独立路由并进侧边菜单 |
 | 16. 提示图标 | 问号图标（`TipNote` / `FieldLabel`）必须**悬停即显示**：`trigger="hover"` 显式写明、`show-after` 为 0，且命中区比 14px 的图标本身大一圈。这条约束的起因是用户反馈「移到问号上没反应、点一下才弹」——`show-after` 的 100ms 让快速划过什么都不出现，而 14px 的命中区偏一两个像素就落在容器上（点击时整块区域都算命中，所以点击反而有效）。两个原因都不会让页面报错 |
 | 17. 目录浏览的入口 | 两个浏览页（`BrowseView` / `IcebergBrowseView`）的三条工具条都写在 `ResourceState` **之外**：那个组件命中空态时只渲染 `el-empty`、默认插槽整个不渲染，「这个库还是空的」这一刻新建按钮会跟着表格一起消失（表页签当时靠页头那颗按钮躲过，代价是同一动作两个入口）。因此还断言：页头不再放「新建表」、`/browse` 不再有「语义视图」页签，以及 Iceberg 视图页签的创建入口与 `endpoints.js` 的 `icebergCreateView`、控制器上的 `@PostMapping` 三处对齐——缺一处按钮就是 404 |
-| 18. 文档计数 | 本节这张表上方的「N 组 M 项」与脚本实际一致（`docs/console.md` 与 `README.md` 各一条）。期望值由脚本自身推出——组数是源码里分组标题的条数，项数是本次校验的总条数——因此加/删校验项时这里不用改，但**文档必须跟着改** |
+| 18. Catalog 详情·存储 | catalog 详情的「存储」页：两种格式共用 `CatalogStoragePanel`（格式只作参数），数据来源只允许 `tableSnapshot` 与 `loadTable`（元数据表只有引擎侧有，多一条调用就是一条永远 404 的路径）、平均文件大小必须是**加权**口径（各表平均再平均会让 1 张 10 万文件的大表与 1000 张单文件表等权）、面板不许直接调协议面写接口（写动作在表页的「存储优化」）。比对的是调用集合而不是文本包含——注释里的 `t.files`、`const files` 会让裸字符串比对既漏又误伤 |
+| 19. 文档计数 | 本节这张表上方的「N 组 M 项」与脚本实际一致（`docs/console.md` 与 `README.md` 各一条）。期望值由脚本自身推出——组数是源码里分组标题的条数，项数是本次校验的总条数——因此加/删校验项时这里不用改，但**文档必须跟着改** |
 
 第 7 组是这套机制里最实用的一条：**产物过期不会让任何东西报错**，
 它只是安静地少一个按钮。
@@ -493,9 +494,9 @@ PYTHON=/path/to/python3 scripts/verify-console.py   # 多解释器时指定装�
 改成单数、或把某个动作名改掉，脚本应当报出具体的字段/动作名而不是通过——空跑的校验
 比没有校验更糟。
 
-第 18 组就是这么来的：**「加了校验组要顺手改文档」是一条靠人记的约定，而它真的漏过一次**
+第 19 组就是这么来的：**「加了校验组要顺手改文档」是一条靠人记的约定，而它真的漏过一次**
 ——`docs/console.md` 写 37 项、`README.md` 写 38 项、脚本实际 38，两个数字都没人对账，
-直到有人去数。现在这条约定变成了一条断言。它的盲区是拦不住「连第 18 组一起删掉」，
+直到有人去数。现在这条约定变成了一条断言。它的盲区是拦不住「连第 19 组一起删掉」，
 因此文档里的组数仍值得在 review 时扫一眼——**没有哪个自校验能覆盖它自己**。
 
 唯一允许出现在规格之外的端点是 `EXTENSION_ENDPOINTS` 里的：

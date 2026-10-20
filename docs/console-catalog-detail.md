@@ -1,8 +1,12 @@
 # Catalog 详情页（`/catalogs/:catalogName`）
 
-控制台里单个 catalog 的操作面。三个页签都已实现：概览、文件列表（只读），
+控制台里单个 catalog 的操作面。四个页签都已实现：概览、**存储**、文件列表（后两个只读），
 以及**配置**——Paimon 侧编辑「表默认参数」（`table-default.*`），Iceberg 侧只读展示
-客户端连接配置（`/v1/config` 的 `defaults` / `overrides`），见 §3.3。
+客户端连接配置（`/v1/config` 的 `defaults` / `overrides`），见 §3.4。
+
+「存储」页是后加的：它回答**哪些表该做 compaction**（活跃文件数、活跃存储、平均文件大小、
+小文件占比，按库聚合），口径参考 AWS《Monitoring Iceberg workloads》，数据取自本服务端
+已有的读端点，两种 catalog 格式都支持，见 §3.2。
 
 `catalogName` 就是 catalog 的 prefix（创建后不可改名），因此路径里的这一段
 与客户端配置里的 `warehouse` 之外的另一个标识完全一致：这一页看到的东西，
@@ -37,7 +41,7 @@ schema 物化没生效：客户端建表成功、写入时报
 
 | 请求 | 用途 | 失败时 |
 | --- | --- | --- |
-| `GET /api/management/v1/catalogs/{catalogName}`（`getCatalog`） | 概览页签的全部读数 | 页面显示错误态，三个页签都不渲染 |
+| `GET /api/management/v1/catalogs/{catalogName}`（`getCatalog`） | 概览页签的全部读数 | 页面显示错误态，四个页签都不渲染 |
 | `GET /v1/config?warehouse={catalogName}`（`config`） | 「协议与能力」卡片：协议面、下发给客户端的 `defaults`，Iceberg 侧还有 `endpoints` 能力清单 | **只有这一块失败**：卡片里显示读不到及原因，整页照常 |
 
 **第二个请求为什么值得发。** 它问的是服务端**实际下发**给客户端的内容，而不是
@@ -51,6 +55,12 @@ schema 物化没生效：客户端建表成功、写入时报
 
 「配置」页签不发新请求：Paimon 侧的数据来自已取回的 `getCatalog`，Iceberg 侧复用
 概览已经读过的 `capabilities`（`/v1/config`）。
+
+「存储」页签按需加载，且是这一页唯一的**重**请求：**每张表一次**（Paimon 读
+`/tables/{t}/snapshot`，Iceberg 读 `loadTable` 的元数据），加上列库/列命名空间的那几次。
+因此它有自己的两道闸：最多统计 `MAX_TABLES`（200）张表、同时最多 6 个请求在飞；列表阶段
+数到第 201 张就停，页面不显示「共有 N 张」（早停之后这个数字没人知道，编一个比不写更糟）。
+详细口径见 §3.2。
 
 ### 2.1 当前目录是页面状态，不是路由参数
 
@@ -73,13 +83,14 @@ schema 物化没生效：客户端建表成功、写入时报
 
 ---
 
-## 3. 三个页签
+## 3. 四个页签
 
 | 页签 | 数据来源 | 一句话 |
 | --- | --- | --- |
 | 概览 | `getCatalog` + `config` | 名称 / 类型 / **表格式** / 存储类型 / 仓库位置 / 属性 / 版本 / 创建 / 更新，右侧是 `storageConfigInfo` 与 `properties` 的原始 JSON；下方是「协议与能力」卡片 |
+| 存储 | Paimon：每张表的 `/snapshot`；Iceberg：每张表的 `loadTable` | 文件数与存储的四个汇总、按库的存储条、Top 10 表、平均文件大小的分布、逐表明细；**只读**，动手的入口在表页的「存储优化」 |
 | 文件列表 | `listCatalogFiles` | 仓库物理目录的一层内容，目录名可点下钻 |
-| 配置 | `getCatalog` + `updateCatalog`（+ 概览的 `config`） | Paimon：编辑「表默认参数（`table-default.*`）」；Iceberg：只读展示 `/v1/config` 的 `defaults` / `overrides`。其余 catalog 属性不在这里重复展示，见 §3.3 |
+| 配置 | `getCatalog` + `updateCatalog`（+ 概览的 `config`） | Paimon：编辑「表默认参数（`table-default.*`）」；Iceberg：只读展示 `/v1/config` 的 `defaults` / `overrides`。其余 catalog 属性不在这里重复展示，见 §3.4 |
 
 ### 3.1 概览
 
@@ -127,7 +138,86 @@ schema 物化没生效：客户端建表成功、写入时报
 `NOT_IMPLEMENTED` 的条数由 `verify-console.py` 对齐——每多实现一个端点，它就该少一条，
 而这是这个页面上唯一会随实现漂移的数字。
 
-### 3.2 文件列表
+### 3.2 存储（只读）
+
+回答一个问题：**哪些表该做 compaction。** 五个汇总读数、按库的存储条、Top 10 表、
+平均文件大小的分布、逐表明细。指标口径来自 AWS 的
+[Monitoring Iceberg workloads](https://docs.aws.amazon.com/prescriptive-guidance/latest/apache-iceberg-on-aws/monitoring.html)，
+**数据来源与那篇不同**——这一点必须写在页面上，否则读图的人会按 AWS 的口径去理解这些数。
+
+#### 3.2.1 指标与数据来源
+
+| 读数 | Paimon | Iceberg |
+| --- | --- | --- |
+| 活跃数据文件 | `GET …/tables/{t}/snapshot` → `snapshot.fileCount` | `loadTable` → 当前快照 `summary['total-data-files']` |
+| 活跃存储 | 同上 `fileSizeInBytes` | `summary['total-files-size']` |
+| 记录数 | 同上 `recordCount` | `summary['total-records']` |
+| delete 文件 | 无（Paimon 没有 delete file 这一层） | `summary['total-delete-files']` |
+| 最近写入 | `lastFileCreationTime` | `metadata['last-updated-ms']` |
+
+那篇让客户端跑 `select count(*) from t.files` 这类**元数据表**查询。元数据表是**引擎侧**能力
+（Spark / Athena 才有），控制台的 HTTP 接口拿不到文件清单，因此这一页只用目录接口里已有的
+聚合统计。Iceberg 的 `summary` 值是 kebab-case 的字符串，且可能是字符串也可能是数字
+（取决于写元数据的是哪个客户端），前端一律归一化后再算。
+
+#### 3.2.2 三处口径差异
+
+1. **平均文件大小是加权的**：总字节 ÷ 总文件数，不是「各表平均值的平均」。后者让
+   「一张 10 万文件的大表」与「1000 张单文件小表」等权，算出来的数明显偏大。
+2. **小文件是表级近似**：判据是「这张表的平均文件大小 < 100 MB」，不是「逐个文件 < 100 MB」。
+   逐文件只能读元数据表。这个近似会**漏掉**「大表里混着一批小文件」——它平均下来不小，
+   但仍然需要 compaction。所以这一页给的是**候选名单**，不是结论。
+3. **空表不进平均**：没有快照的表文件数是 0，算进分母会把平均拉低，凭空造出一批「小文件表」。
+
+三处写在页面顶部的 `TipNote` 里：算错的人不会去读源码。
+
+#### 3.2.3 三种「没有数」要分开
+
+| 状态 | 含义 | 是不是错误 |
+| --- | --- | --- |
+| `无快照` | 表刚建、还没写过（Paimon 侧 404 `SNAPSHOT`；Iceberg 侧 `current-snapshot-id` 缺席） | 不是，正常状态 |
+| `缺统计` | 写过，但聚合统计缺失（Paimon 侧分区合计也缺；Iceberg 侧老客户端写的 `summary` 里没有 `total-*`） | 采集缺口，页面单独一行说明 |
+| `—` | 整页还在加载 / 失败了 | 由 `ResourceState` 统一处理 |
+
+Paimon 侧还有一层兜底：快照行的累计统计为空时，服务端改用分区合计
+（`TableService#getTableSnapshot`），所以「缺统计」在 Paimon 上已经是两层都缺之后才出现。
+
+**「不知道」不能当 0**：把它算成 0 会把平均文件大小压低、把小文件比例抬高，两边同时失真。
+
+#### 3.2.4 三张图各自的理由
+
+| 图 | 形式 | 为什么不用另一种 |
+| --- | --- | --- |
+| 按库的存储 | 横条，按存储降序，超出 8 个库并成一行「其余 N 个库」 | 饼图在 8 个以上扇区时无法比较相邻扇区；库名长，横条能放下标签 |
+| Top 10 表 | 横条，条右端标平均文件大小，低于 100 MB 标黄 | 表格里看不出量级差 |
+| 平均文件大小的分布 | SVG 柱状图，五档（1 MB / 10 MB / 100 MB / 1 GB） | 第三档上界正好是 100 MB，于是「前三个桶 = 小文件表」在图上看得出来，不需要读图例 |
+
+直方图是**手写 SVG** 而不是图表库：这一页只有一张图、五个桶，引一个图表库要多 200KB
+和一套主题适配。尺寸写死成 `viewBox` 再交给 CSS 缩放，避免为一个图挂 `ResizeObserver`。
+
+#### 3.2.5 按库过滤、Paimon 表开关与明细分页
+
+| 交互 | 行为 | 为什么这样做 |
+| --- | --- | --- |
+| 按库过滤（下拉，可清空） | 过滤发生在**采集阶段**：选中库后列表只列这个库，全页统计随之缩小 | 对已采回的行做筛选等于「为看一张表把另外 199 张的快照都请求一遍」。下拉候选是**全量**库名——列库是便宜请求，没有早停 |
+| 只统计 Paimon 表（开关，仅 Paimon catalog 显示） | 默认开启。判定读 `table-details` 的 `schema.options.type`（`isSnapshotManaged`），不是猜表名 | Format / Object / Lance 表没有快照，混进统计只会变成一列「无快照」，把「有数据的表」的分母撑大。表列表因此从 `/tables` 换成 `/table-details`（分页约定一致，请求次数不变） |
+| 逐表明细分页 | 本地分页，每页 20 / 50 / 100 可选 | 数据侧已有 `MAX_TABLES = 200` 截断 + 列表早停两道闸，分页要避免的是把 200 行一次渲染成 DOM，不是把请求切碎 |
+| 明细排序 | `sortable="custom"`，排序在 computed 里跨全量数据生效 | el-table 自带排序在分页下只排当前页那 20 行——「点存储排序，最大的一张表不见了」 |
+
+切 catalog 时库过滤自动清空（库名属于 catalog）；清空本身会触发一次重新统计，不会来两次。
+
+「按库的存储」与「存储 Top 10 表」两张卡**等高且顶部对齐**：全局 `.pc-card + .pc-card`
+的堆叠边距是给纵向堆叠用的，会误伤并排栅格，`.pc-sto-grid` 内已回收（右卡原本被推下 16px）。
+
+#### 3.2.6 为什么只读
+
+这里不提供 compaction、删快照这类动作：它们走表详情页的「存储优化」面板，那边有批次、
+并发与回滚（见 [`table-optimization.md`](table-optimization.md)）。统计页只回答「该看哪几张表」，
+让它能动手会多出一条没有审计的写路径。
+
+---
+
+### 3.3 文件列表
 
 界面三件套：面包屑（`仓库根` 起，每段可点）、「返回上级」按钮（根目录时禁用）、
 条目表格。
@@ -151,7 +241,7 @@ schema 物化没生效：客户端建表成功、写入时报
 
 页面底部写明这一页**只读**及其理由（见 §6）。
 
-### 3.3 配置
+### 3.4 配置
 
 两种格式的「配置」页签是**同一套设计**：都编辑**表默认参数**（`table-default.*`）。
 Iceberg 下面另附一段只读的**客户端连接配置**（`/v1/config` 的 `defaults` / `overrides`）——
@@ -164,7 +254,7 @@ Iceberg 下面另附一段只读的**客户端连接配置**（`/v1/config` 的 
 [catalog-api-endpoints.md](catalog-api-endpoints.md#catalog-级默认表属性table-default)），
 于是页面可以做成一套，只换标题与适用范围的说明。
 
-#### 3.3.1 表默认参数（`table-default.*`）
+#### 3.4.1 表默认参数（`table-default.*`）
 
 编辑 catalog 的 `properties` 里 `table-default.` 开头的那些键：键值行编辑器，
 前缀 `table-default.` 由界面固定显示（不让用户手打，省得打出
@@ -186,7 +276,7 @@ baseline 就推到新值，按钮回到「与服务端一致」。
 属性名里又带了一次前缀（粘贴整键时的常见错误）、以及 `type`
 （服务端会忽略它，写进去只会让人以为生效了）。
 
-#### 3.3.2 Iceberg：客户端连接配置（只读，另附）
+#### 3.4.2 Iceberg：客户端连接配置（只读，另附）
 
 这是 Iceberg catalog 上**额外**展示的一段，不参与上面的编辑。内容来自客户端连上来时
 **实际读到**的 `GET /v1/config`：
@@ -201,7 +291,7 @@ baseline 就推到新值，按钮回到「与服务端一致」。
 数据与「概览」的「协议与能力」共用同一个 `capabilities` 资源（`catalogApi.config`），
 不额外发请求。
 
-#### 3.3.3 「其它属性」不再单列
+#### 3.4.3 「其它属性」不再单列
 
 早先配置页还列过一张「其它属性」只读表（非 `table-default.*` 的键）。它和「概览」页的
 「属性」一行、`Catalog 属性（properties）` JSON 块是**同一份数据**，已删除：
@@ -209,7 +299,7 @@ baseline 就推到新值，按钮回到「与服务端一致」。
 （`composeProperties` 仍把其余键带上，否则全量替换等于把它们删了），
 这条说明搬进了表默认参数段落的 `TipNote`（两种格式各一份，措辞按适用范围不同）。
 
-### 3.4 新建表表单里的默认参数
+### 3.5 新建表表单里的默认参数
 
 「目录浏览」页的新建表对话框读同一个 `utils/tableDefaults.js`：打开时把当前 catalog 的
 默认参数**去掉前缀**预填进表属性。这样表单里看得见它们，不会有「表怎么凭空多了个属性」
@@ -225,7 +315,7 @@ baseline 就推到新值，按钮回到「与服务端一致」。
 留空则由服务端按表位置分配。取舍与边界见
 [`catalog-api-endpoints.md` §「表位置与 `path`」](catalog-api-endpoints.md#表位置与-path)。
 
-### 3.5 为什么不给 Lance 表的建表入口
+### 3.6 为什么不给 Lance 表的建表入口
 
 选择器里保留「Lance 表」这个选项，但标成不可选（`TABLE_KINDS` 里那条的 `disabled`）。
 **不直接删掉它**：Paimon 支持的格式就是四种，删掉之后用户只会觉得「怎么少了一种」，
@@ -439,17 +529,15 @@ GET /api/console/v1/catalogs/{catalogName}/files?path=<相对仓库根>&prefix=<
   这一类读数。真要做应当是独立端点，且要接受它是一次全树遍历。
 - **不做过滤与搜索。** 目录内条目按排序原样列出，没有关键字过滤。
   条目多到需要过滤时，先调 `max-entries`——但更该做的是下钻。
-- **「配置」页签只能改一部分。** 见 §3.3：Paimon 侧只编辑 `table-default.*`，
+- **「配置」页签只能改一部分。** 见 §3.4：Paimon 侧只编辑 `table-default.*`，
   Iceberg 侧完全只读；catalog 自身的属性（`warehouse` 等）都在「Catalogs」页的编辑弹窗里改。
 - **路径不进 URL。** 当前目录只在会话内保留，深链接只能到 catalog，
   不能到某个具体子目录。
 - **切换 catalog 会重置当前目录。** 有意为之（见 §2.1），代价是同一层级
   换了 catalog 后要重新钻。
-- **Iceberg catalog 上，catalog 详情只有「概览」与「文件列表」两页是自己的。**
-  「文件列表」读的是仓库物理目录，与协议面无关，因此对 Iceberg catalog 同样可用。
-  反过来，「配置」页签（`table-default.*`）只对新建 Paimon 表生效，Iceberg catalog
-  下整块收起。**目录浏览**已按格式分成两套实现（Iceberg 走 `IcebergBrowseView`
-  的 `namespaces/**`，见 `console.md` §4.6），而**表详情页**仍然只有 Paimon 版：
-  它整页挂在 Paimon 的表端点上，因此在 Iceberg catalog 下**在 loader 里就返回空、
-  不发请求**，只给出说明与去向；Iceberg 表的详情在浏览页的抽屉里看。
-  理由见 `iceberg-rest-catalog-design.md` §11.1 第 11 条。
+- **Iceberg catalog 上四个页签都可用，但读数来源不同。** 概览与**存储**取 Iceberg 协议面
+  （`loadTable` 的元数据，存储页读当前快照的 `summary`）；「文件列表」读仓库物理目录，
+  与协议面无关，两种格式一样可用；「配置」页签在 Iceberg 下只读展示 `/v1/config`
+  的 `defaults` / `overrides`（`table-default.*` 只对新建 Paimon 表生效）。
+  **目录浏览**按格式分成两套实现（Iceberg 走 `IcebergBrowseView` 的 `namespaces/**`，
+  见 `console.md` §4.6），**表详情**也分成两页（`/tables/…` 与 `/iceberg-tables/…`）。
