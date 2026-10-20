@@ -1,8 +1,8 @@
 # Catalog 详情页（`/catalogs/:catalogName`）
 
 控制台里单个 catalog 的操作面。三个页签都已实现：概览、文件列表（只读），
-以及**配置**——它这一轮先做「Paimon 表默认参数」（`table-default.*`）的编辑，
-其余几项留在页面的待办表里，各自的阻塞点见 §3.3.3。
+以及**配置**——Paimon 侧编辑「表默认参数」（`table-default.*`），Iceberg 侧只读展示
+客户端连接配置（`/v1/config` 的 `defaults` / `overrides`），见 §3.3。
 
 `catalogName` 就是 catalog 的 prefix（创建后不可改名），因此路径里的这一段
 与客户端配置里的 `warehouse` 之外的另一个标识完全一致：这一页看到的东西，
@@ -49,7 +49,8 @@ schema 物化没生效：客户端建表成功、写入时报
 （对象存储上是一次前缀列举），不该在打开页面时就付这个代价。切到「文件列表」
 才发第一次请求，之后同一个目录不重复请求。
 
-「配置」页签不发任何请求：它列的是计划能力，数据是页面里的常量。
+「配置」页签不发新请求：Paimon 侧的数据来自已取回的 `getCatalog`，Iceberg 侧复用
+概览已经读过的 `capabilities`（`/v1/config`）。
 
 ### 2.1 当前目录是页面状态，不是路由参数
 
@@ -78,7 +79,7 @@ schema 物化没生效：客户端建表成功、写入时报
 | --- | --- | --- |
 | 概览 | `getCatalog` + `config` | 名称 / 类型 / **表格式** / 存储类型 / 仓库位置 / 属性 / 版本 / 创建 / 更新，右侧是 `storageConfigInfo` 与 `properties` 的原始 JSON；下方是「协议与能力」卡片 |
 | 文件列表 | `listCatalogFiles` | 仓库物理目录的一层内容，目录名可点下钻 |
-| 配置 | `getCatalog` + `updateCatalog` | 「Paimon 表默认参数（`table-default.*`）」可编辑；其余属性只读回填；末尾列出仍未实现的三项。**Iceberg catalog 下不出现**（见 §3.3） |
+| 配置 | `getCatalog` + `updateCatalog`（+ 概览的 `config`） | Paimon：编辑「表默认参数（`table-default.*`）」；Iceberg：只读展示 `/v1/config` 的 `defaults` / `overrides`。其余 catalog 属性不在这里重复展示，见 §3.3 |
 
 ### 3.1 概览
 
@@ -152,13 +153,12 @@ schema 物化没生效：客户端建表成功、写入时报
 
 ### 3.3 配置
 
-页面分三段：**Paimon 表默认参数**（可编辑）、**其它属性**（只读回填）、
+两种格式都有这个页签，内容不同：Paimon 侧是**表默认参数**（可编辑），
+Iceberg 侧是**客户端连接配置**（只读）。
 
-**Iceberg catalog 下这个页签不出现。** `table-default.*` 的作用域是「在这个 catalog 下
-新建 **Paimon 表**」（见页签内的三条边界），对 Iceberg 侧的建表请求不生效。
-留一个点了不生效的页签比没有更糟，因此模板上直接 `v-if="!isIceberg"`。
-若用户正停在它上面而当前 catalog 换成了 Iceberg，`watch(isIceberg)` 会把页签退回
-「概览」——`v-model` 停在一个没有对应面板的名字上只会留下一片空白。
+早期版本这个页签只在 Paimon 侧出现，理由是 `table-default.*` 对 Iceberg 建表不生效。
+后来改成「两边都有、各显示各的」：留一个点了不生效的页签确实更糟，但**留一个空白页
+同样糟**——用户会以为「这个 catalog 没东西可配」。现在按格式换内容，而不是整块收起。
 
 #### 3.3.1 Paimon 表默认参数（`table-default.*`）
 
@@ -179,11 +179,27 @@ baseline 就推到新值，按钮回到「与服务端一致」。
 属性名里又带了一次前缀（粘贴整键时的常见错误）、以及 `type`
 （服务端会忽略它，写进去只会让人以为生效了）。
 
-#### 3.3.2 其它属性（只读回填）
+#### 3.3.2 Iceberg：客户端连接配置（只读）
 
-非 `table-default.*` 的键在这页只读展示（键值表），保存时**原样回填**：
-管理 API 的更新是全量替换，不回填就等于把这些键删了。这条写在页面的 `TipNote` 里，
-因为它解释了「为什么这页只改了默认参数，却要带上别的属性」。
+Iceberg 没有 `table-default.*` 这一层：表属性在建表或 `ALTER TABLE` 时**逐表声明**，
+服务端不提供 catalog 级默认值。因此这个页签展示的是客户端连上来时**实际读到**的
+`GET /v1/config`：
+
+- `defaults`——服务端把 `warehouse`、`prefix` 与 catalog 自身的属性拼成的那份；
+- `overrides`——服务端强制、客户端改不了的项。
+
+两者都只读：`warehouse` 决定数据写在哪，改它等于换存储位置；其余 catalog 属性去
+「Catalogs」页的编辑弹窗改（`PUT` 全量替换，带 `entityVersion` 做乐观并发）。
+数据与「概览」的「协议与能力」共用同一个 `capabilities` 资源（`catalogApi.config`），
+不额外发请求。
+
+#### 3.3.3 「其它属性」不再单列
+
+早先配置页还列过一张「其它属性」只读表（非 `table-default.*` 的键）。它和「概览」页的
+「属性」一行、`Catalog 属性（properties）` JSON 块是**同一份数据**，已删除：
+两处显示同一批键，迟早有一处过期。保存时**原样回填**的语义不变
+（`composeProperties` 仍把其余键带上，否则全量替换等于把它们删了），
+这条说明搬进了 Paimon 段落的 `TipNote`。
 
 ### 3.4 新建表表单里的默认参数
 
@@ -415,8 +431,8 @@ GET /api/console/v1/catalogs/{catalogName}/files?path=<相对仓库根>&prefix=<
   这一类读数。真要做应当是独立端点，且要接受它是一次全树遍历。
 - **不做过滤与搜索。** 目录内条目按排序原样列出，没有关键字过滤。
   条目多到需要过滤时，先调 `max-entries`——但更该做的是下钻。
-- **「配置」页签只做了一部分。** 见 §3.3：`table-default.*` 可编辑，其余属性只读回填，
-  待办表里列着剩下三项与它们各自的阻塞点。
+- **「配置」页签只能改一部分。** 见 §3.3：Paimon 侧只编辑 `table-default.*`，
+  Iceberg 侧完全只读；catalog 自身的属性（`warehouse` 等）都在「Catalogs」页的编辑弹窗里改。
 - **路径不进 URL。** 当前目录只在会话内保留，深链接只能到 catalog，
   不能到某个具体子目录。
 - **切换 catalog 会重置当前目录。** 有意为之（见 §2.1），代价是同一层级

@@ -54,7 +54,7 @@
           </el-table-column>
           <el-table-column label="操作" width="160" fixed="right">
             <template #default="{ row }">
-              <IconAction icon="User" label="成员与 Catalog 角色" type="primary" @click="openDetail(row)" />
+              <IconAction icon="User" label="成员主体" type="primary" @click="openDetail(row)" />
               <IconAction icon="Edit" label="编辑" @click="openEdit(row)" />
               <IconAction icon="Delete" label="删除" type="danger" @click="confirmDelete(row)" />
             </template>
@@ -98,90 +98,29 @@
       </template>
     </el-dialog>
 
-    <!-- 成员与 catalog 角色 -->
+    <!-- 成员主体 -->
     <el-drawer v-model="detail.open" :title="`角色：${detail.name}`" size="620px">
-      <el-tabs v-model="detail.tab">
-        <el-tab-pane label="成员主体" name="principals">
-          <ResourceState
-            :loading="detail.loadingPrincipals"
-            :error="detail.errorPrincipals"
-            :empty="!detail.principals.length"
-            empty-text="还没有主体持有这个角色。授予要按主体操作，去「主体」页面。"
-          >
-            <template #actions>
-              <el-button size="small" type="primary" @click="$router.push({ name: 'principals' })">
-                去「主体」页面授予
-              </el-button>
-            </template>
-            <el-table :data="detail.principals" size="small">
-              <el-table-column prop="name" label="主体" min-width="160" />
-              <el-table-column label="Client ID" min-width="180">
-                <template #default="{ row }"><CopyText :text="row.clientId" /></template>
-              </el-table-column>
-            </el-table>
-          </ResourceState>
-          <p v-if="detail.principals.length" class="pc-drawer-note">
-            授予主体要在「主体」页面操作：那条接口按主体定位，这里只做展示。
-          </p>
-        </el-tab-pane>
-
-        <el-tab-pane label="Catalog 角色" name="catalogRoles">
-          <div class="pc-role-add">
-            <el-select
-              v-model="detail.catalogName"
-              size="small"
-              placeholder="选择 catalog"
-              filterable
-              class="pc-role-select"
-              @change="loadCatalogRoles"
-            >
-              <el-option
-                v-for="catalog in session.state.catalogs"
-                :key="catalog.name"
-                :label="catalog.name"
-                :value="catalog.name"
-              />
-            </el-select>
-          </div>
-
-          <div v-if="detail.catalogName" class="pc-role-add">
-            <el-select v-model="detail.toGrant" size="small" placeholder="选择要授予的 catalog 角色" filterable class="pc-role-select">
-              <el-option
-                v-for="role in grantableCatalogRoles"
-                :key="role.name"
-                :label="role.name"
-                :value="role.name"
-              />
-            </el-select>
-            <el-button size="small" type="primary" :loading="detail.saving" :disabled="!detail.toGrant" @click="grantCatalogRole">
-              授予
-            </el-button>
-          </div>
-
-          <el-alert v-if="detail.errorCatalogRoles" type="error" :closable="false" show-icon class="pc-hint">
-            <template #title>{{ detail.errorCatalogRoles }}</template>
-            <div>授予 catalog 角色需要在目标 catalog 上具备 CATALOG_MANAGE_ACCESS。</div>
-          </el-alert>
-
-          <el-table
-            v-else
-            v-loading="detail.loadingCatalogRoles"
-            :data="detail.catalogRoles"
-            size="small"
-            empty-text="这个角色在该 catalog 上还没有 catalog 角色"
-          >
-            <el-table-column prop="name" label="Catalog 角色" min-width="180" />
-            <el-table-column label="创建时间" width="170">
-              <template #default="{ row }"><TimeText :millis="row.createTimestamp" /></template>
-            </el-table-column>
-            <el-table-column label="" width="70" align="right">
-              <template #default="{ row }">
-                <IconAction icon="Close" label="移除" type="danger" @click="revokeCatalogRole(row.name)" />
-              </template>
-            </el-table-column>
-          </el-table>
-        </el-tab-pane>
-      </el-tabs>
+      <ResourceState
+        :loading="detail.loadingPrincipals"
+        :error="detail.errorPrincipals"
+        :empty="!detail.principals.length"
+        empty-text="还没有主体持有这个角色。授予要按主体操作，去「主体」页面。"
+      >
+        <template #actions>
+          <el-button size="small" type="primary" @click="$router.push({ name: 'principals' })">
+            去「主体」页面授予
+          </el-button>
+        </template>
+        <el-table :data="detail.principals" size="small">
+          <el-table-column prop="name" label="主体" min-width="160" />
+          <el-table-column label="Client ID" min-width="180">
+            <template #default="{ row }"><CopyText :text="row.clientId" /></template>
+          </el-table-column>
+        </el-table>
+      </ResourceState>
+      <p v-if="detail.principals.length" class="pc-drawer-note">
+        授予主体要在「主体」页面操作：那条接口按主体定位，这里只做展示。
+      </p>
     </el-drawer>
   </div>
 </template>
@@ -201,7 +140,6 @@ import TimeText from '@/components/TimeText.vue'
 import { managementApi } from '@/api/management.js'
 import { describeError } from '@/api/client.js'
 import { confirmDanger, notifyError, notifySuccess, onConsoleRefresh, useResource } from '@/composables/index.js'
-import { session } from '@/store/session.js'
 import { inlineMap } from '@/utils/format.js'
 
 const table = useResource(() => managementApi.listPrincipalRoles())
@@ -265,7 +203,7 @@ async function confirmDelete(row) {
   const ok = await confirmDanger({
     title: '删除角色',
     target: `确认删除角色「${row.name}」？`,
-    detail: '与该角色相关的绑定会一并移除：主体的角色授予、以及它在各 catalog 上持有的 catalog 角色。',
+    detail: '与该角色相关的绑定会一并移除：所有持有它的主体都会失去这个角色带来的授权。',
   })
   if (!ok) return
   try {
@@ -282,31 +220,14 @@ async function confirmDelete(row) {
 const detail = reactive({
   open: false,
   name: '',
-  tab: 'principals',
   principals: [],
   loadingPrincipals: false,
   errorPrincipals: '',
-  catalogName: '',
-  catalogRoles: [],
-  allCatalogRoles: [],
-  loadingCatalogRoles: false,
-  errorCatalogRoles: '',
-  toGrant: '',
-  saving: false,
-})
-
-const grantableCatalogRoles = computed(() => {
-  const owned = new Set(detail.catalogRoles.map((role) => role.name))
-  return detail.allCatalogRoles.filter((role) => !owned.has(role.name))
 })
 
 async function openDetail(row) {
   detail.name = row.name
-  detail.tab = 'principals'
-  detail.catalogName = session.state.selectedCatalog || ''
-  detail.catalogRoles = []
-  detail.allCatalogRoles = []
-  detail.toGrant = ''
+  detail.principals = []
   detail.open = true
 
   detail.loadingPrincipals = true
@@ -319,34 +240,6 @@ async function openDetail(row) {
   } finally {
     detail.loadingPrincipals = false
   }
-
-  if (detail.catalogName) {
-    await loadCatalogRoles()
-  }
-}
-
-/**
- * Catalog 角色是 Polaris 的「catalog 内实体」，本服务端没有这套端点——
- * 授权模型只有两层：principal 与 principal role（见 docs/authorization.md）。
- *
- * <p>这里**不再调用** `listCatalogRoles*`：管理面的方法早已随服务端一起移除，
- * 调用它们会抛 `is not a function` 把详情页打崩。页签保留是为了让老链接仍能打开，
- * 内容如实说明不可用，而不是显示一个空列表让人以为「这个 catalog 还没建角色」。
- */
-async function loadCatalogRoles() {
-  detail.catalogRoles = []
-  detail.allCatalogRoles = []
-  detail.errorCatalogRoles =
-    '本服务端没有 catalog 角色：请在「权限」页按主体（user:）或 principal role（role:）授权'
-  detail.loadingCatalogRoles = false
-}
-
-async function grantCatalogRole() {
-  notifyError(new Error('不可用：本服务端没有 catalog 角色，授权请用 principal role'))
-}
-
-async function revokeCatalogRole() {
-  notifyError(new Error('不可用：本服务端没有 catalog 角色'))
 }
 
 onConsoleRefresh(() => table.load())

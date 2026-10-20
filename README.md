@@ -1142,7 +1142,7 @@ http://localhost:8080/console/
 | `/browse` | 目录浏览：库/表/视图/函数/语义视图；建库建表、注册表、按表 ID 定位、重命名、删除。表列表六列——表名 / 表格式 / 表类型（Managed 或外部表）/ 创建时间 / 元数据更新时间 / 操作，数据取自 `table-details`（只回表名的 `/tables` 给不出这几列） |
 | `/tables/:prefix/:database/:table` | [表详情](docs/console-table-detail.md)：页签随表格式伸缩——Paimon 表六个（详细信息含字段列表 / 分区列表、**文件列表**、快照、标签、分支、数据访问），Format / Object / Lance 表只有详细信息与**文件列表**，且不向快照端点发请求；三种表都展示字段列表（Object 表是 Paimon 固定的六列，主键 / 分区字段两列不渲染）。**改表结构不在控制台做**：`alter` 端点仍在，走 HTTP 或 Spark SQL |
 | `/catalogs` | Catalog 列表：创建、编辑（带版本）、删除；名称进详情页 |
-| `/catalogs/:catalogName` | [Catalog 详情](docs/console-catalog-detail.md)：概览 / **文件列表**（仓库物理目录，目录名可点下钻、文件可下载、文件名前缀过滤 + 本地分页）/ **配置**（编辑新建 Paimon 表的默认参数 `table-default.*`，其余属性只读回填） |
+| `/catalogs/:catalogName` | [Catalog 详情](docs/console-catalog-detail.md)：概览 / **文件列表**（仓库物理目录，目录名可点下钻、文件可下载、文件名前缀过滤 + 本地分页）/ **配置**（Paimon 侧编辑新建 Paimon 表的默认参数 `table-default.*`；Iceberg 侧只读展示 `/v1/config` 的 `defaults` / `overrides`） |
 | `/principals`、`/principal-roles` | 治理：主体、角色；角色页含「授予 / 撤销 catalog 角色」。**catalog 角色与它的资源授权没有页面**——这两件事的入口是管理 API 与 Spark SQL |
 | `/permissions` | 权限管理：控制台**唯一**的授权页（Paimon 官方权限模型、授权直接挂在主体上），覆盖官方八种资源定位器里的四级——catalog / database / table / view |
 | `/settings` | 连接设置：API 基址、访问令牌、登录状态、主题 |
@@ -1157,7 +1157,7 @@ http://localhost:8080/console/
   用 `./scripts/build-console.sh` 一条命令完成构建与校验。
 - **路径不靠人工比对。** 全部端点收在 `lakehouse-rest-console/src/api/endpoints.js` 一张表里，
   由 `scripts/verify-console.py` 与三份 OpenAPI 规格（Paimon / Iceberg / 管理 API）机械比对
-  （16 组 72 项：端点存在性、引用完整性、五处基址一致、产物新鲜度、对话框状态、下拉候选来源、
+  （16 组 74 项：端点存在性、引用完整性、五处基址一致、产物新鲜度、对话框状态、下拉候选来源、
   静态凭据字段与服务端的一致性、两种格式的优化参数键、**catalog 表格式**、**Iceberg 目录浏览的契约形状**、
   **存储字段分层**、**事件页的增量契约与类别筛选**，最后由一组「文档计数」盯住这个数字本身与脚本一致）；
   服务端侧 `ConsoleApiTests` 守住静态资源托管与 SPA 深链回退。

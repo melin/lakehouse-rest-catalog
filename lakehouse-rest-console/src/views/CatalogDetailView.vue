@@ -48,19 +48,20 @@
             </template>
           </el-tab-pane>
           <!--
-            「配置」页签只在 Paimon 侧出现：它编辑的是 `table-default.*`，
-            而这些属性的作用域是「在这个 catalog 下新建 Paimon 表」（见页签内的说明）。
-            对 Iceberg catalog 它们不生效，留在那里会让人以为配了就管用。
+            两种格式都有「配置」页签，但内容不同：
+            - Paimon：编辑 `table-default.*`（新建 Paimon 表的默认参数），这一项只对 Paimon 表生效；
+            - Iceberg：没有对应的默认值机制（表属性逐表声明），这里只读展示客户端连上来时
+              实际读到的 `/v1/config`（defaults / overrides）。
+            catalog 自身的属性（warehouse 等）两种格式都在「Catalogs」页的编辑弹窗里改。
           -->
-          <el-tab-pane v-if="!isIceberg" name="config">
+          <el-tab-pane name="config">
             <template #label>
               配置
               <TipNote>
-                为什么还不做：这几项改下去都会被引擎直接读到（<code>defaults</code> /
-                <code>overrides</code> 参与客户端配置合并），写错的表现是「客户端连不上」或
-                「连上了但读到别的仓库」；而写入必须带 <code>entityVersion</code> 做乐观并发，
-                否则两个人同时改会静默覆盖。要先有这三件事：版本冲突的交互、凭据字段的脱敏与回填、
-                以及改动前后的差异确认。
+                Paimon 侧编辑 <code>table-default.*</code>（只作用于此后新建的 Paimon 表）；
+                Iceberg 侧只读展示客户端连接时读到的 <code>/v1/config</code>
+                （<code>defaults</code> / <code>overrides</code>）。两种格式共用的 catalog 属性
+                （<code>warehouse</code> 等）都在「Catalogs」页的编辑弹窗里改。
               </TipNote>
             </template>
           </el-tab-pane>
@@ -331,6 +332,8 @@
 
           <!-------------------------------- 配置 ---------------------------------->
           <template v-else-if="tab === 'config'">
+            <!-- Paimon 侧：table-default.* 的编辑 -->
+            <template v-if="!isIceberg">
             <SectionTitle title="Paimon 表默认参数（table-default.*）">
               <template #tip>
                 <TipNote>
@@ -345,6 +348,10 @@
                   3. <strong>只在建表时合并</strong>——已建成的表不受影响，改它的属性是 alter 的事。
                   <br /><br />
                   表格式（<code>type</code>）不接受默认：它由建表请求决定，配在这里会被忽略。
+                  <br /><br />
+                  保存只替换 <code>table-default.*</code>，其余 catalog 属性<strong>原样回填</strong>
+                  （管理 API 的更新是全量替换），所以这一页不会弄丢别的键；它们的完整内容看「概览」页。
+                  保存期间别人改过属性会以版本冲突（409）拒绝——宁可不写，也不静默覆盖。
                 </TipNote>
               </template>
             </SectionTitle>
@@ -387,26 +394,43 @@
               </div>
             </div>
 
-            <SectionTitle title="其它属性（properties）">
-              <template #tip>
-                <TipNote>
-                  本页只编辑 <code>table-default.*</code>。其余属性在这里只读展示，
-                  保存时会<strong>原样回填</strong>（管理 API 的更新是全量替换），
-                  因此不会因为这一页而丢失别的键；若保存期间有人改过它们，
-                  服务端会以版本冲突（409）拒绝——宁可不写，也不静默覆盖。
-                </TipNote>
-              </template>
-            </SectionTitle>
+            </template>
 
-            <el-table :data="otherProperties" size="small">
-              <el-table-column prop="key" label="属性名" min-width="240" />
-              <el-table-column prop="value" label="取值" min-width="240">
-                <template #default="{ row }">
-                  <span class="pc-mono pc-break">{{ row.value || '—' }}</span>
+            <!-- Iceberg 侧：客户端连接配置（只读） -->
+            <template v-else>
+              <SectionTitle title="客户端连接配置（/v1/config）">
+                <template #tip>
+                  <TipNote>
+                    这是客户端连上来时<strong>实际读到</strong>的配置：服务端把
+                    <code>warehouse</code>、<code>prefix</code> 与 catalog 自身的属性拼成
+                    <code>defaults</code> 下发；<code>overrides</code> 是服务端强制、客户端改不了的项。
+                    两者在控制台都只读——<code>warehouse</code> 决定数据写在哪，改它等于换存储位置；
+                    其余属性去「Catalogs」页的编辑弹窗改（<code>PUT</code> 全量替换，带
+                    <code>entityVersion</code> 做乐观并发）。
+                  </TipNote>
                 </template>
-              </el-table-column>
-              <template #empty>这个 catalog 没有其它属性</template>
-            </el-table>
+              </SectionTitle>
+
+              <div class="pc-detail-grid">
+                <JsonBlock
+                  :value="configDefaults"
+                  label="defaults（客户端默认值）"
+                  empty-text="没有下发的默认值"
+                  max-height="320px"
+                />
+                <JsonBlock
+                  :value="configOverrides"
+                  label="overrides（服务端强制项）"
+                  empty-text="没有强制项"
+                  max-height="320px"
+                />
+              </div>
+
+              <p class="pc-drawer-note pc-dim">
+                Iceberg 没有 <code>table-default.*</code> 机制：表属性在建表或
+                <code>ALTER TABLE</code> 时逐表声明，服务端不提供 catalog 级默认值。
+              </p>
+            </template>
           </template>
         </div>
       </PanelCard>
@@ -440,7 +464,7 @@ import {
   isIcebergCatalog,
 } from '@/utils/catalogFormat.js'
 import { formatBytes, inlineMap } from '@/utils/format.js'
-import { composeProperties, isTableDefaultKey, otherPropertiesOf, tableDefaultsOf } from '@/utils/tableDefaults.js'
+import { composeProperties, isTableDefaultKey, tableDefaultsOf } from '@/utils/tableDefaults.js'
 
 const route = useRoute()
 
@@ -468,9 +492,9 @@ const warehouse = computed(() => {
 /**
  * 表格式：`catalogFormat`（PAIMON / ICEBERG），**创建后不可更改**。
  *
- * <p>它决定这个页面上的三件事：协议面那一栏怎么读、「配置」页签出不出现
- * （`table-default.*` 只对新建 Paimon 表生效）、以及「文件列表」以外
- * 那些 Paimon 专有的东西要不要显示。
+ * <p>它决定这个页面上的三件事：协议面那一栏怎么读、「配置」页签里显示哪一段
+ * （Paimon 是 `table-default.*` 编辑器，Iceberg 是 `/v1/config` 的只读展示）、
+ * 以及「文件列表」以外那些 Paimon 专有的东西要不要显示。
  *
  * <p>值从 `session.state.catalogs` 里读（列表在首屏就取回来了），而不是为了
  * 一个字段再发一次管理 API 请求——见 `session.catalogByName` 的说明。
@@ -500,6 +524,12 @@ const clientBase = computed(() => `/v1/${catalogName.value}`)
 const capabilities = useResource(() => catalogApi.config(catalogName.value))
 const declaredEndpoints = computed(() => capabilities.data.value?.endpoints || [])
 const configDefaults = computed(() => capabilities.data.value?.defaults || {})
+/**
+ * 服务端强制项。Iceberg 侧「配置」页签要用它，Paimon 侧的概览只展示 `defaults`。
+ * 一起读回来就不再发第二次 `/v1/config`：那次请求只有排障时才有意义，
+ * 而这一页每次加载都会读一次，多读一次纯属浪费。
+ */
+const configOverrides = computed(() => capabilities.data.value?.overrides || {})
 
 /**
  * 不做、因此**不声明**的端点，按能力分组显示。
@@ -615,17 +645,6 @@ watch(catalogName, () => {
 })
 
 /**
- * 「配置」页签在 Iceberg catalog 上不存在（见模板里的说明），
- * 而 `v-model` 停在一个没有对应面板的名字上会留下一片空白。
- * 发现格式变了就退回「概览」——比让用户对着一块空白猜要好。
- */
-watch(isIceberg, (iceberg) => {
-  if (iceberg && tab.value === 'config') {
-    tab.value = 'overview'
-  }
-})
-
-/**
  * 首次切到「文件列表」时才请求：概览页自己就能回答大部分问题，
  * 而列目录要打一次存储（对象存储上是一次前缀列举），不该在打开页面时就付这个代价。
  */
@@ -671,10 +690,6 @@ function rowsToDefaults() {
 }
 
 const defaultsDirty = computed(() => JSON.stringify(rowsToDefaults()) !== defaultsBaseline.value);
-
-/** 只读展示的其它属性；表格不接受对象，转成数组。 */
-const otherProperties = computed(() =>
-  Object.entries(otherPropertiesOf(catalog0.value?.properties)).map(([key, value]) => ({ key, value })));
 
 function resetDefaultRows() {
   defaultRows.value = Object.entries(tableDefaultsOf(catalog0.value?.properties))

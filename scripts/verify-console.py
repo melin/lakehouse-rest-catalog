@@ -791,11 +791,28 @@ page_wiring = {
         '<IcebergBrowseView v-if="icebergCatalog" />' in browse_view,
     "目录浏览：Paimon 的库列表 loader 在 Iceberg 下仍挡请求": "if (icebergCatalog.value) return []" in browse_view,
     "目录浏览：Paimon 的四个对象列表 loader 一并挡掉": "|| icebergCatalog.value) {" in browse_view,
-    "catalog 详情：Paimon 专有的「配置」页签按格式收起": 'v-if="!isIceberg"' in detail_view,
+    "catalog 详情：「配置」页签两种格式都在，Paimon 的 table-default 编辑器按格式收起":
+        'name="config"' in detail_view and 'v-if="!isIceberg"' in detail_view,
 }
 check("三个页面都按 catalog 格式伸缩（且在 loader 里挡请求，不只是藏界面）",
       all(page_wiring.values()),
       "\n".join(name for name, ok in page_wiring.items() if not ok))
+
+# --- 12.4.1 「配置」页签的两套内容 ------------------------------------------
+# 这个页签曾经只在 Paimon 侧出现（Iceberg 下整块收起），后来两边都要有：
+# Paimon 编辑 `table-default.*`，Iceberg 只读展示 `/v1/config` 下发的 defaults /
+# overrides。留一个空白页比不给页签更糟——用户会以为「没东西可配」。
+check("Iceberg catalog 的配置页展示 /v1/config 的 defaults 与 overrides（只读）",
+      "客户端连接配置" in detail_view
+      and "configDefaults" in detail_view
+      and "configOverrides" in detail_view,
+      "Iceberg 侧应只读展示 defaults / overrides，而不是空白页或照搬 table-default")
+
+# 「其它属性」曾经在 Paimon 配置页重复列一遍（全量替换时要回填的那些键）：
+# 概览页的「属性」与 JSON 块已经完整展示同一份数据，这一列既占地方又容易过期。
+check("Paimon 配置页不再重复展示「其它属性」（概览页已有完整 properties）",
+      "其它属性" not in detail_view and "otherProperties" not in detail_view,
+      "其余属性请在概览页展示；配置页只留 table-default.* 的编辑")
 
 # 深链接进来时 catalog 列表可能还没到，格式就无从判断——那时会默认走 Paimon 路径。
 # 两页都要先等一次列表（`ensureCatalogs`），否则「直接打开链接」这条路径上是猜的。
