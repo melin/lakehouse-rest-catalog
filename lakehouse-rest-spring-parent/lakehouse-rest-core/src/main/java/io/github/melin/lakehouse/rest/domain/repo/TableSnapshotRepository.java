@@ -107,6 +107,9 @@ public interface TableSnapshotRepository extends JpaRepository<TableSnapshotEnti
      * filesWithSize, smallTables, smallFiles, smallSize}。
      * 口径与前端旧实现一致：「无快照」（快照行缺失）与「缺统计」（有快照行但统计列空）
      * 是两件事；小文件判据是表级平均 {@code size / fileCount < 阈值}。
+     *
+     * <p>{@code database} 为 null 时统计整个 catalog；给了库（控制台选中「按库过滤」）
+     * 就只统计这个库——明细能按库下钻，读数却不动会让两块数字对不上。
      */
     @Query("""
             select count(t.id),
@@ -131,9 +134,11 @@ public interface TableSnapshotRepository extends JpaRepository<TableSnapshotEnti
               join DatabaseEntity d on d.id = t.databaseId
               left join TableSnapshotEntity s on s.tableId = t.id and s.snapshotId = t.latestSnapshotId
             where t.catalogId = :catalogId
+              and (:database is null or d.name = :database)
               and (:onlyPaimon = false or t.tableType = 'PAIMON')
             """)
     List<Object[]> summarizeCatalogTables(@Param("catalogId") String catalogId,
+                                          @Param("database") String database,
                                           @Param("onlyPaimon") boolean onlyPaimon,
                                           @Param("smallThreshold") long smallThreshold);
 
@@ -172,6 +177,7 @@ public interface TableSnapshotRepository extends JpaRepository<TableSnapshotEnti
     /**
      * 平均文件大小的五档分布（直方图）：列序 {@code <1MB, <10MB, <100MB, <1GB, ≥1GB, unknown}。
      * 判据与汇总的小文件一致（表级平均）；「缺统计」的表不计入任何一档。
+     * {@code database} 的口径与 {@link #summarizeCatalogTables} 相同：null = 整个 catalog。
      */
     @Query("""
             select sum(case when s.fileCount is not null and s.fileCount > 0
@@ -197,8 +203,10 @@ public interface TableSnapshotRepository extends JpaRepository<TableSnapshotEnti
               join DatabaseEntity d on d.id = t.databaseId
               left join TableSnapshotEntity s on s.tableId = t.id and s.snapshotId = t.latestSnapshotId
             where t.catalogId = :catalogId
+              and (:database is null or d.name = :database)
               and (:onlyPaimon = false or t.tableType = 'PAIMON')
             """)
     List<Object[]> bucketCatalogTables(@Param("catalogId") String catalogId,
+                                       @Param("database") String database,
                                        @Param("onlyPaimon") boolean onlyPaimon);
 }

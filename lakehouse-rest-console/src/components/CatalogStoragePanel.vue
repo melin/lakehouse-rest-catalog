@@ -28,7 +28,7 @@
       :loading="loading"
       :error="error"
       :empty="!loading && !error && !totals.tables"
-      empty-text="这个 catalog 下还没有表。建表并写入之后，这里会显示文件数与存储分布。"
+      :empty-text="emptyText"
     >
       <div class="pc-stats">
         <div v-for="card in cards" :key="card.label" class="pc-stat">
@@ -244,7 +244,8 @@ import { SMALL_FILE_THRESHOLD, decorate } from '@/utils/storageHealth.js'
  * 页面上也留了说明，因为算错的人不会去读源码。
  *
  * <p>数据来自管理面两个聚合端点，各按各的量级取数：
- * **汇总**（KPI / 按库 / Top 10 / 直方图）由服务端 SQL 聚合一次算完，永远是全量，
+ * **汇总**（KPI / 按库 / Top 10 / 直方图）由服务端 SQL 聚合一次算完，
+ * KPI / Top 10 / 直方图随「按库过滤」下发 `database` 参数，按库聚合保持全 catalog，
  * 没有截断；**表明细**是远程分页——打开页面默认取全部表的第一页，按库 / 关键字 /
  * 排序各自重取，全部下推 SQL。「只统计 Paimon 表」交给服务端
  * （`tableType` 过滤），切换开关重新取一次汇总。指标口径的差异说明见
@@ -289,10 +290,12 @@ async function reload() {
   loading.value = true
   error.value = ''
   try {
-    // 汇总永远是全量的（服务端 SQL 聚合），onlyPaimon 是服务端过滤参数。
+    // 汇总与明细共用「按库过滤」：KPI / Top 10 / 直方图跟着库走（服务端过滤），
+    // 按库聚合不跟（它要保持全 catalog 的分布与下拉候选）。
     const result = await loadCatalogSummary({
       catalogName: props.catalogName,
       onlyPaimon: props.format === 'PAIMON' && onlyPaimon.value,
+      database: database.value,
     })
     summary.value = result
     databases.value = (result.databases || []).map((row) => row.db)
@@ -332,13 +335,14 @@ onMounted(() => {
   fetchDetail()
 })
 // 切 catalog 时组件不会重建（同一条路由、只有参数变），所以这里要显式重来一次。
-// 库名属于 catalog，先清掉——清空本身会触发下面的按库 watcher 重取明细；
-// 本来就没选库时明细还是旧 catalog 的，只能自己来。reload 无条件调：
-// 之前「选着库切 catalog 不重取汇总」就是这条 if 漏的。
+// 库名属于 catalog，先清掉——清空本身会触发下面的按库 watcher（汇总与明细都重取）；
+// 本来就没选库时明细还是旧 catalog 的，只能自己来。
 watch(() => [props.catalogName, props.format], () => {
   if (database.value) database.value = ''
-  else fetchDetail()
-  reload()
+  else {
+    fetchDetail()
+    reload()
+  }
 })
 // 开关改的是服务端过滤参数：汇总重取；明细换第一页。
 watch(onlyPaimon, () => {
@@ -346,9 +350,11 @@ watch(onlyPaimon, () => {
   reload()
   fetchDetail()
 })
-// 按库过滤是服务端参数：换库（含清空 = 全部表）都取第一页。
+// 按库过滤是服务端参数：换库（含清空 = 全部表）都取第一页，
+// 汇总（KPI / Top 10 / 直方图）也跟着重取——明细能下钻、读数不动，两块数字会对不上。
 watch(database, () => {
   page.value = 1
+  reload()
   fetchDetail()
 })
 // 关键字是服务端 LIKE：换词取第一页。
@@ -362,6 +368,11 @@ watch(keyword, () => {
 })
 
 defineExpose({ reload })
+
+// 选中库时统计的是这个库：空态文案跟着口径走，别再说「这个 catalog」
+const emptyText = computed(() => (database.value
+  ? `「${database.value}」里还没有可统计的表。建表并写入之后，这里会显示文件数与存储分布。`
+  : '这个 catalog 下还没有表。建表并写入之后，这里会显示文件数与存储分布。'))
 
 const cards = computed(() => {
   const item = totals.value
@@ -408,7 +419,11 @@ const cards = computed(() => {
 
 const dbHint = computed(() => {
   const count = summary.value.databases.length
-  return count > databaseRows.value.length ? `按存储降序，${count} 个库里只画前 ${databaseRows.value.length} 行` : '按存储降序'
+  const base = count > databaseRows.value.length
+    ? `按存储降序，${count} 个库里只画前 ${databaseRows.value.length} 行`
+    : '按存储降序'
+  // 这一卡是「全 catalog 的分布」与下拉候选的来源，不随库过滤塌缩
+  return `${base}；不随库过滤变化`
 })
 
 /** 按库的存储条：服务端已按存储降序给全量库；超出 8 个的尾部并成一行，防止细线海。 */

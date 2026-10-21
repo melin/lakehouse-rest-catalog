@@ -193,13 +193,18 @@ public class ManagementCatalogService {
      * <p>这是一次聚合查询而不是预计算任务：投影行本身就是写路径维护好的中间产物，
      * 单表聚合走索引是毫秒级；真到了成为热点的规模，再在这份投影上加物化即可，
      * 契约不需要变。
+     *
+     * <p>{@code database} 的过滤口径（控制台「按库过滤」随请求下发）：
+     * <b>KPI / Top 10 / 直方图跟着库走，按库聚合不跟</b>——后者是「全 catalog 的分布」
+     * 与下拉候选的来源，跟着塌缩成一个库，用户就换不回去了。
      */
     @Transactional(readOnly = true)
-    public TableStatsSummary tableStatsSummary(String catalogName, boolean onlyPaimon) {
+    public TableStatsSummary tableStatsSummary(String catalogName, boolean onlyPaimon, String database) {
         CatalogEntity catalog = require(catalogName);
+        String db = database == null || database.isBlank() ? null : database;
         // 单行聚合：Spring Data 会把「一行本身是 Object[]」的结果再包一层，取首行。
         Object[] sums = snapshotRepository.summarizeCatalogTables(
-                catalog.getId(), onlyPaimon, SMALL_FILE_THRESHOLD).get(0);
+                catalog.getId(), db, onlyPaimon, SMALL_FILE_THRESHOLD).get(0);
         long tables = num(sums[0]);
         long empty = num(sums[1]);
         long unknown = num(sums[2]);
@@ -222,13 +227,13 @@ public class ManagementCatalogService {
         PageRequest top = PageRequest.of(0, 100,
                 JpaSort.unsafe(Sort.Direction.DESC, SORT_EXPRESSIONS.get("size")));
         List<TableStat> topTables = snapshotRepository
-                .findCatalogTableRows(catalog.getId(), null, onlyPaimon, null, top).stream()
+                .findCatalogTableRows(catalog.getId(), db, onlyPaimon, null, top).stream()
                 .map(ManagementCatalogService::toTableStat)
                 .filter(stat -> stat.fileSizeInBytes() != null && stat.fileSizeInBytes() > 0)
                 .limit(10)
                 .toList();
 
-        Object[] buckets = snapshotRepository.bucketCatalogTables(catalog.getId(), onlyPaimon).get(0);
+        Object[] buckets = snapshotRepository.bucketCatalogTables(catalog.getId(), db, onlyPaimon).get(0);
         List<Long> counts = new ArrayList<>(5);
         long counted = 0;
         for (int i = 0; i < 5; i++) {

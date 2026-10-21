@@ -142,10 +142,11 @@ public class ManagementCatalogController {
      */
     @GetMapping("/{catalogName}/table-stats")
     public ManagementDtos.TableStatsSummary tableStats(@PathVariable String catalogName,
-                                                       @RequestParam(defaultValue = "false") boolean onlyPaimon) {
+                                                       @RequestParam(defaultValue = "false") boolean onlyPaimon,
+                                                       @RequestParam(required = false) String database) {
         authorizationService.require(catalogName, ResourceType.CATALOG_ALL, List.of(), null,
                 Access.DESCRIBE, "read the catalog");
-        return catalogService.tableStatsSummary(catalogName, onlyPaimon);
+        return catalogService.tableStatsSummary(catalogName, onlyPaimon, database);
     }
 
     /**

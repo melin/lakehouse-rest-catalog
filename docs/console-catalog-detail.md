@@ -148,10 +148,12 @@ schema 物化没生效：客户端建表成功、写入时报
 #### 3.2.1 指标与数据来源
 
 两种格式同源：管理面聚合端点 `GET /api/management/v1/catalogs/{catalogName}/table-stats`
-（服务端扩展，非官方规格）。它对 `lakehouse_table` 与**当前快照行**（`latest_snapshot_id`
-join 上的那行 `lakehouse_snapshot`）的投影做 **SQL 聚合**，四块结果一次算完：
-KPI 五张读数（`totals`）、按库的存储条（`databases`，全量库、存储降序）、
-Top 10 表（`topTables`）、平均文件大小的五档分布（`histogram`）。
+（服务端扩展，非官方规格；可选 `database` 参数下钻到单个库）。它对 `lakehouse_table` 与
+**当前快照行**（`latest_snapshot_id` join 上的那行 `lakehouse_snapshot`）的投影做
+**SQL 聚合**，四块结果一次算完：KPI 五张读数（`totals`）、按库的存储条（`databases`，
+全量库、存储降序）、Top 10 表（`topTables`）、平均文件大小的五档分布（`histogram`）。
+`database` 只作用于 KPI / Top 10 / 直方图——按库聚合保持全 catalog，
+它是「全 catalog 的分布」与下拉候选的来源，跟着塌缩一个库就没法换库了。
 **统计永远是全量的**——响应大小与表数无关，浏览器不做任何逐行计算。
 
 「有数据的表」的分子是**前端算的**（`tables - empty`）：服务端 `Totals` 没有这个现成字段，

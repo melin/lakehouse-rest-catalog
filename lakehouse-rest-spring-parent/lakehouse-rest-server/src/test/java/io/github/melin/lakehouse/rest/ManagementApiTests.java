@@ -410,6 +410,18 @@ class ManagementApiTests {
         assertEquals(1, filtered.get("totals").get("tables").asLong());
         assertEquals(1, filtered.get("databases").get(0).get("tables").asLong());
 
+        // database 过滤：KPI 跟着库走；按库聚合不跟（它是全 catalog 分布与下拉候选）
+        JsonNode dbFiltered = json(200, "GET", M + "/catalogs/fmt-default/table-stats?database=stats_db", null);
+        assertEquals(2, dbFiltered.get("totals").get("tables").asLong());
+        assertEquals(2, dbFiltered.get("databases").size(), "按库聚合不随 database 参数塌缩");
+        assertTrue(dbFiltered.get("topTables").isEmpty(), "没有写入数据的库不进 Top 10");
+        JsonNode emptyFiltered = json(200, "GET", M + "/catalogs/fmt-default/table-stats?database=stats_empty", null);
+        assertEquals(0, emptyFiltered.get("totals").get("tables").asLong());
+        // 与 onlyPaimon 叠加：两个过滤都是服务端参数
+        JsonNode both = json(200, "GET",
+                M + "/catalogs/fmt-default/table-stats?database=stats_db&onlyPaimon=true", null);
+        assertEquals(1, both.get("totals").get("tables").asLong());
+
         json(404, "GET", M + "/catalogs/does-not-exist/table-stats", null);
 
         // ---- 逐表明细：远程分页、按库 / 关键字过滤、onlyPaimon，全部下推 SQL。

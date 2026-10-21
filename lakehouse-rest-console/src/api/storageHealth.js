@@ -53,13 +53,18 @@ function toRow(item) {
  * @param {object} options
  * @param {string} options.catalogName catalog 名（即 prefix）
  * @param {boolean} [options.onlyPaimon] 只统计 Paimon 表（服务端按 `tableType` 过滤）
+ * @param {string} [options.database] 只统计这个库——KPI / Top 10 / 直方图跟着库走；
+ *        按库聚合（`databases`）不随它过滤（它是「全 catalog 的分布」与下拉候选）
  * @returns {Promise<{totals: object, databases: Array<object>,
  *           topTables: Array<object>, histogram: object}>}
  *           `databases` 是全量库聚合（存储降序），`topTables` 是 Top 10，
  *           `histogram` 是 `{buckets: [5 档计数], counted, unknown}`。
  */
-export function loadCatalogSummary({ catalogName, onlyPaimon = false }) {
-  return managementApi.getCatalogTableStats(catalogName, { onlyPaimon }).then((payload) => ({
+export function loadCatalogSummary({ catalogName, onlyPaimon = false, database = '' }) {
+  return managementApi.getCatalogTableStats(catalogName, {
+    onlyPaimon,
+    database: database || undefined,
+  }).then((payload) => ({
     totals: payload?.totals || {},
     databases: (payload?.databases || []).map((row) => ({
       db: row?.database || '',
