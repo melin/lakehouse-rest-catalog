@@ -86,6 +86,38 @@
 			<artifactId>paimon-s3</artifactId>
 		</dependency>
 
+		<!--
+			Hadoop 的「可嵌入」两件套。**没有它们，数据预览读 parquet 会 500**：
+
+			  parquet-hadoop（Iceberg 面用的原生 1.17.1，以及 paimon-format 里
+			  relocate 到 org.apache.paimon.shade.* 的那份副本）把 org.apache.hadoop.*
+			  声明成 provided。ParquetReadOptions.Builder 的构造函数里有一句
+			  `ParquetInputFormat.class`，加载它就解析到父类 FileInputFormat——
+			  于是缺 Hadoop 的症状是启动正常、打开预览页时
+			  `NoClassDefFoundError: org/apache/hadoop/mapreduce/lib/input/FileInputFormat`
+			  （2026-10-21 线上报的就是这个，栈底在 ParquetReadOptions.<init>）。
+
+			为什么不是 hadoop-common + hadoop-mapreduce-client-core：体积能省 40MB，
+			但那两份带**未 shaded** 的 guava 27 / protobuf 2.5 / avro，会与本仓
+			其余依赖（Spring Boot、Paimon）在同一类路径上抢版本。client-api 与
+			client-runtime 把第三方全部 relocate 到 org.apache.hadoop.shaded.*，
+			零传递依赖，这是「把 Hadoop 塞进别人的应用」的官方形态。
+
+			放在 server 而不是各协议模块：真正要进可执行产物的只有这一份，而
+			「产物里装什么」是部署决策（与上面的 paimon-s3 同一个理由）。
+			runtime scope：编译期没有任何代码 import org.apache.hadoop.*。
+		-->
+		<dependency>
+			<groupId>org.apache.hadoop</groupId>
+			<artifactId>hadoop-client-api</artifactId>
+			<scope>runtime</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.apache.hadoop</groupId>
+			<artifactId>hadoop-client-runtime</artifactId>
+			<scope>runtime</scope>
+		</dependency>
+
 		<!-- 元数据存储：默认 H2 内存库，可用 profile 切换到 MySQL / PostgreSQL -->
 		<dependency>
 			<groupId>com.h2database</groupId>

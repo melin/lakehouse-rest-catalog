@@ -70,6 +70,24 @@ public enum CatalogEventType {
     /** 元数据指针推进（提交快照、schema 变更）。对标 {@code AFTER_UPDATE_TABLE}。 */
     TABLE_COMMITTED(CatalogEventCategory.TABLE, "table.committed"),
 
+    /**
+     * 有人通过控制台读了表里的数据（数据预览的**第一页**）。
+     *
+     * <p><b>这是本枚举里唯一一个"读路径"事件</b>，与上面那条"只收变更"的判据不一致，
+     * 因此要单独说明：预览是本工程第一个真的把行数据取出来给浏览器看的接口，
+     * "谁在什么时候看了哪张表、看了多大范围"本身就是合规要回答的问题——
+     * 它记录的不是状态变化，而是**数据访问**。两类问题分开记，比把它们混进
+     * {@code table.committed} 里好查。
+     *
+     * <p><b>一次预览只记一条。</b>记在"加载更多"的每一页上会让事件表变成访问日志；
+     * 用户翻页是同一个意图的延续。
+     *
+     * <p><b>取值不落库。</b>属性里只有过滤条件的列名与算子、分区字段名与命中数——
+     * 值可能就是手机号或身份证号。这条约束由发布点（{@code TablePreviewService}）保证，
+     * 因为只有它知道哪一部分是"条件"、哪一部分是"值"。
+     */
+    TABLE_PREVIEWED(CatalogEventCategory.TABLE, "table.previewed"),
+
     // ------------------------------------------------------------------ VIEW
 
     /** 建视图。对标 {@code AFTER_CREATE_VIEW}。 */

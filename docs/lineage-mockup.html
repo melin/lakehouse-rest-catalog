@@ -1,0 +1,1026 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>表血缘 · 效果图（lakehouse-rest 控制台）</title>
+<style>
+  :root {
+    --sidebar-w: 252px;
+    --sidebar-bg: #0e1626;
+    --sidebar-fg: #c7d2e3;
+    --sidebar-dim: #7b8aa3;
+    --sidebar-active: rgba(59, 130, 246, 0.18);
+    --page-bg: #f3f5f9;
+    --surface: #ffffff;
+    --surface-2: #f7f9fc;
+    --border: #e2e7f0;
+    --text: #1f2937;
+    --dim: #6b7280;
+    --accent: #1d4ed8;
+    --radius: 2px;
+    --warn: #d97706;
+    --danger: #dc2626;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    /* 格式色：图例、节点色条与目录页的格式徽标共用这三个变量，别在渲染器里另写色值 */
+    --fmt-paimon: #2563eb;
+    --fmt-iceberg: #0891b2;
+    --fmt-external: #94a3b8;
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    font: 13.5px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", sans-serif;
+    color: var(--text);
+    background: var(--page-bg);
+  }
+  .app { display: flex; min-height: 100vh; }
+
+  /* ---------------- 侧边栏 ---------------- */
+  .sidebar {
+    width: var(--sidebar-w); flex: 0 0 var(--sidebar-w);
+    background: var(--sidebar-bg); color: var(--sidebar-fg);
+    padding: 14px 0 20px; position: sticky; top: 0; height: 100vh;
+  }
+  .brand { display: flex; align-items: center; gap: 10px; padding: 6px 18px 18px; }
+  .brand-mark {
+    width: 30px; height: 30px; border-radius: 3px; background: #1e40af;
+    display: grid; place-items: center; color: #fff; font-weight: 700; font-size: 15px;
+  }
+  .brand-text strong { display: block; color: #eaf1ff; font-size: 14.5px; }
+  .brand-text span { font-size: 11.5px; color: var(--sidebar-dim); }
+  .nav-group { padding: 10px 18px 4px; font-size: 11px; letter-spacing: .08em; color: #5f6f88; }
+  .nav-item {
+    display: flex; align-items: center; gap: 9px; padding: 8px 18px;
+    font-size: 13px; color: var(--sidebar-fg); cursor: default;
+  }
+  .nav-item.on { background: var(--sidebar-active); color: #dce9ff; border-left: 2px solid #3b82f6; padding-left: 16px; }
+  .nav-item .ico { width: 15px; text-align: center; opacity: .85; font-size: 12px; }
+
+  /* ---------------- 主区 ---------------- */
+  .main { flex: 1; min-width: 0; padding: 16px 24px 40px; }
+  .topbar {
+    display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--dim);
+    margin-bottom: 14px;
+  }
+  .topbar .sep { color: #cbd5e1; }
+  .topbar .current { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+  .topbar select {
+    font: inherit; padding: 4px 10px; border: 1px solid var(--border); border-radius: var(--radius);
+    background: #fff; color: var(--text);
+  }
+
+  .page-head { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 14px; }
+  .page-head h1 { font-size: 20px; margin: 0 0 4px; font-weight: 650; font-family: var(--mono); letter-spacing: -.01em; }
+  .page-head .sub { font-size: 12.5px; color: var(--dim); display: flex; align-items: center; gap: 8px; }
+  .page-head .actions { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
+
+  .btn {
+    display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px;
+    border: 1px solid var(--border); background: #fff; color: var(--text);
+    border-radius: var(--radius); font: inherit; font-size: 13px; cursor: pointer;
+  }
+  .btn:hover { border-color: #c7d2e3; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn.ghost { background: var(--surface-2); }
+  .btn.sm { height: 26px; padding: 0 9px; font-size: 12.5px; }
+
+  .badge {
+    display: inline-flex; align-items: center; gap: 4px; height: 18px; padding: 0 6px;
+    font-size: 11px; border-radius: 2px; border: 1px solid #cfdcf7; background: #eef4ff; color: #1e3a8a;
+  }
+  .badge.ice { border-color: #bfe6ef; background: #ecfbfe; color: #0e7490; }
+  .badge.dim { border-color: var(--border); background: var(--surface-2); color: var(--dim); }
+
+  /* ---------------- 卡片 / 页签 ---------------- */
+  .card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+    box-shadow: 0 1px 2px rgba(16,24,40,.05), 0 1px 3px rgba(16,24,40,.05);
+  }
+  .tabs { display: flex; gap: 2px; padding: 0 14px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+  .tab {
+    padding: 11px 12px 9px; font-size: 13.5px; color: var(--dim); cursor: pointer;
+    border-bottom: 2px solid transparent; margin-bottom: -1px; white-space: nowrap;
+  }
+  .tab.on { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+  .tab-body { padding: 14px 16px 16px; }
+
+  /* ---------------- 工具行 ---------------- */
+  .ln-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+  .seg { display: inline-flex; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: #fff; }
+  .seg button {
+    font: inherit; font-size: 12.5px; height: 28px; padding: 0 10px; border: 0; background: #fff;
+    color: var(--dim); cursor: pointer; border-right: 1px solid var(--border);
+  }
+  .seg button:last-child { border-right: 0; }
+  .seg button.on { background: #eef4ff; color: var(--accent); font-weight: 600; }
+  .ctl {
+    display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 9px;
+    border: 1px solid var(--border); border-radius: var(--radius); background: #fff;
+    font-size: 12.5px; color: var(--text);
+  }
+  .ctl .caret { color: #9aa5b6; font-size: 9px; }
+  .ctl .k { color: var(--dim); }
+  .ln-label { font-size: 12.5px; color: var(--dim); }
+  .spacer { flex: 1; }
+  .ln-search {
+    display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 9px; width: 190px;
+    border: 1px solid var(--border); border-radius: var(--radius); background: #fff;
+    font-size: 12.5px; color: #9aa5b6;
+  }
+  .ln-budget {
+    display: flex; align-items: center; gap: 8px; font-size: 12px; color: #1e3a8a;
+    background: #f4f8ff; border: 1px solid #dbe7ff; border-radius: var(--radius);
+    padding: 6px 10px; margin-bottom: 10px;
+  }
+  .ln-budget .lnk { color: var(--accent); cursor: pointer; font-weight: 600; }
+
+  /* ---------------- 画布 ---------------- */
+  .ln-stage { position: relative; border: 1px solid var(--border); border-radius: var(--radius); background: #fff; overflow: hidden; }
+  .ln-stage canvas { display: block; width: 100%; height: 520px; }
+  .ln-legend {
+    position: absolute; left: 12px; bottom: 12px; display: flex; align-items: center; gap: 14px;
+    padding: 6px 10px; background: rgba(255,255,255,.94); border: 1px solid var(--border);
+    border-radius: var(--radius); font-size: 11.5px; color: var(--dim); backdrop-filter: blur(2px);
+  }
+  .ln-legend .k { display: inline-flex; align-items: center; gap: 5px; }
+  .ln-legend .sw { width: 9px; height: 9px; border-radius: 1px; }
+  .ln-legend .ln-sample { width: 16px; height: 0; border-top: 1.5px solid #b9c6d8; }
+  .ln-legend .ln-sample.dash { border-top-style: dashed; border-color: #d3dce8; }
+  .ln-legend .ln-sample.ring { border-top-style: dashed; border-color: var(--warn); }
+  .ln-hint { position: absolute; right: 12px; top: 10px; font-size: 11.5px; color: #9aa5b6; }
+
+  /* ---------------- 节点抽屉（overlay） ---------------- */
+  .ln-drawer {
+    position: absolute; right: 0; top: 0; bottom: 0; width: 320px; background: #fff;
+    border-left: 1px solid var(--border); box-shadow: -8px 0 18px rgba(16,24,40,.06);
+    display: flex; flex-direction: column;
+  }
+  .ln-drawer header { padding: 12px 14px; border-bottom: 1px solid var(--border); }
+  .ln-drawer header .nm { font-family: var(--mono); font-size: 13px; font-weight: 600; word-break: break-all; }
+  .ln-drawer header .meta { margin-top: 4px; display: flex; gap: 6px; align-items: center; }
+  .ln-drawer .body { padding: 12px 14px; overflow: auto; }
+  .kv { display: grid; grid-template-columns: 74px 1fr; gap: 6px 8px; font-size: 12.5px; }
+  .kv .k { color: var(--dim); }
+  .kv .v { color: var(--text); }
+  .ln-drawer h4 { font-size: 12px; color: var(--dim); font-weight: 600; margin: 16px 0 8px; letter-spacing: .02em; }
+  .ln-drawer .row-mini {
+    display: flex; align-items: center; gap: 6px; font-size: 12px; padding: 4px 0;
+    font-family: var(--mono); color: #374151;
+  }
+  .ln-drawer footer { margin-top: auto; padding: 10px 14px; border-top: 1px solid var(--border); display: flex; gap: 8px; }
+
+  .ln-foot {
+    display: flex; align-items: center; gap: 10px; margin-top: 10px;
+    font-size: 12px; color: var(--dim);
+  }
+  .ln-foot .sep { color: #cbd5e1; }
+  .ln-foot .right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+
+  /* ---------------- 邻接表 ---------------- */
+  .adj-alert {
+    display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: #1e3a8a;
+    background: #eff6ff; border: 1px solid #bfdbfe; border-radius: var(--radius);
+    padding: 7px 11px; margin-bottom: 10px;
+  }
+  .adj-alert .lnk { color: var(--accent); font-weight: 600; cursor: pointer; margin-left: 4px; }
+  table.grid { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  table.grid th {
+    text-align: left; font-weight: 600; color: var(--dim); background: var(--surface-2);
+    padding: 8px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; font-size: 12px;
+  }
+  table.grid td { padding: 8px 10px; border-bottom: 1px solid #f0f3f8; vertical-align: middle; }
+  table.grid tr:hover td { background: #fafcff; }
+  .mono { font-family: var(--mono); font-size: 12px; }
+  .dot-fmt { display: inline-block; width: 7px; height: 7px; border-radius: 1px; margin-right: 6px; vertical-align: 1px; }
+  .kind {
+    display: inline-block; font-size: 10.5px; line-height: 16px; padding: 0 5px; border-radius: 2px;
+    border: 1px solid var(--border); color: var(--dim); background: #fff; white-space: nowrap;
+  }
+  .kind.agg { border-color: #e6c8f5; background: #fbf2ff; color: #7e22ce; }
+  .kind.der { border-color: #c7e0f7; background: #f0f8ff; color: #1d4ed8; }
+  .kind.dir { border-color: #cfe6d5; background: #f2fbf4; color: #15803d; }
+  .kind.con { border-color: #e6e2d5; background: #fbf9f2; color: #92400e; }
+  .kind.unr { border-color: #e5e7eb; background: #f7f8fa; color: #6b7280; }
+  .dir-tag { font-size: 11px; color: var(--dim); }
+  .dir-tag.up { color: #1d4ed8; }
+  .dir-tag.down { color: #0f766e; }
+  .stale { color: #9aa5b6; }
+
+  /* ---------------- 列映射 ---------------- */
+  .cols-wrap { display: grid; grid-template-columns: minmax(0,1fr) 340px; gap: 14px; }
+  .cols-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .cols-head .t { font-size: 13px; font-weight: 600; }
+  .cols-head .n { font-size: 12px; color: var(--dim); }
+  .grp-row td { background: #fbfcfe; color: var(--dim); font-size: 12px; }
+  .grp-row .lnk { color: var(--accent); cursor: pointer; }
+  tr.sel td { background: #f5f9ff; }
+  tr.sel td:first-child { box-shadow: inset 2px 0 0 var(--accent); }
+  .detail {
+    border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; height: fit-content;
+  }
+  .detail .hd { display: flex; align-items: center; gap: 8px; margin-bottom: 2px; }
+  .detail .hd .nm { font-family: var(--mono); font-size: 14px; font-weight: 600; }
+  .detail .ty { font-size: 12px; color: var(--dim); }
+  .expr {
+    margin: 12px 0 4px; padding: 8px 10px; background: #f8fafc; border: 1px solid var(--border);
+    border-radius: var(--radius); font-family: var(--mono); font-size: 12px; color: #334155;
+  }
+  .up-row {
+    display: flex; align-items: center; gap: 8px; padding: 7px 0; border-bottom: 1px dashed #eef1f6;
+    font-size: 12.5px;
+  }
+  .up-row .t { font-family: var(--mono); color: #374151; }
+  .up-row .c { font-family: var(--mono); color: var(--accent); }
+  .foot-note { margin-top: 12px; font-size: 11.5px; color: var(--dim); }
+
+  /* ---------------- 空态 ---------------- */
+  .empty-box { padding: 54px 0 60px; display: grid; place-items: center; text-align: center; }
+  .empty-box .t { margin-top: 14px; font-size: 14px; color: #374151; }
+  .empty-box .s { margin-top: 6px; font-size: 12.5px; color: var(--dim); max-width: 460px; }
+  .empty-box .a { margin-top: 16px; display: flex; gap: 8px; }
+
+  /* ---------------- 状态切换器 ---------------- */
+  .switcher {
+    position: fixed; right: 18px; top: 14px; z-index: 60; background: #0e1626; color: #dbe6f6;
+    border-radius: 6px; padding: 8px 10px; box-shadow: 0 8px 24px rgba(8,15,30,.28);
+    font-size: 12px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; max-width: 560px;
+  }
+  .switcher .ttl { font-size: 11px; color: #7b8aa3; letter-spacing: .04em; margin-right: 2px; }
+  .switcher button {
+    font: inherit; font-size: 12px; height: 24px; padding: 0 9px; border-radius: 3px; cursor: pointer;
+    border: 1px solid #2b3a52; background: #17233a; color: #c9d6ea;
+  }
+  .switcher button.on { background: #2563eb; border-color: #2563eb; color: #fff; }
+  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+</style>
+</head>
+<body data-view="g1">
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">LH</div>
+      <div class="brand-text"><strong>LakeHouse Catalog</strong><span>控制台</span></div>
+    </div>
+    <div class="nav-group">浏览</div>
+    <div class="nav-item"><span class="ico">▤</span>概览</div>
+    <div class="nav-item on"><span class="ico">▦</span>目录浏览</div>
+    <div class="nav-item"><span class="ico">◈</span>存储健康</div>
+    <div class="nav-group">运维</div>
+    <div class="nav-item"><span class="ico">◎</span>优化任务</div>
+    <div class="nav-item"><span class="ico">⌁</span>事件</div>
+    <div class="nav-group">管理</div>
+    <div class="nav-item"><span class="ico">⚿</span>权限</div>
+    <div class="nav-item"><span class="ico">⚙</span>设置</div>
+  </aside>
+
+  <main class="main">
+    <div class="topbar">
+      <span>目录浏览</span><span class="sep">/</span><span>paimon</span><span class="sep">/</span><span>dws</span>
+      <span class="sep">/</span><span class="mono" style="color:#374151">order_daily</span>
+      <span class="current">
+        <span>catalog</span>
+        <select><option>paimon</option></select>
+      </span>
+    </div>
+
+    <div class="page-head">
+      <div>
+        <h1>paimon.dws.order_daily</h1>
+        <div class="sub">
+          <span class="badge">PAIMON</span>
+          <span>主键表 · 3 个分区</span>
+          <span class="sep">·</span>
+          <span>最后写入 3 分钟前</span>
+        </div>
+      </div>
+      <div class="actions">
+        <button class="btn">刷新</button>
+        <button class="btn">返回目录浏览</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="tabs">
+        <div class="tab">详细信息</div>
+        <div class="tab on">血缘</div>
+        <div class="tab">数据预览</div>
+        <div class="tab">快照</div>
+        <div class="tab">标签</div>
+        <div class="tab">分支</div>
+        <div class="tab">文件列表</div>
+        <div class="tab">数据访问</div>
+        <div class="tab">存储优化</div>
+      </div>
+
+      <div class="tab-body">
+        <!-- ============================ 血缘主视图 ============================ -->
+        <div id="view-graph">
+          <div class="ln-tools">
+            <span class="ln-label">方向</span>
+            <div class="seg"><button>上游</button><button>下游</button><button class="on">双向</button></div>
+            <span class="ln-label" style="margin-left:6px">深度</span>
+            <div class="seg"><button class="on" id="d1">1 跳</button><button id="d2">2 跳</button><button>3 跳</button></div>
+            <span class="ctl"><span class="k">引擎</span> 全部 <span class="caret">▼</span></span>
+            <span class="ctl"><span class="k">节点</span> 全部 <span class="caret">▼</span></span>
+            <span class="ctl"><span class="k">最近写过</span> 不限 <span class="caret">▼</span></span>
+            <span class="spacer"></span>
+            <div class="seg"><button class="on">图</button><button>邻接表</button><button>列映射</button></div>
+            <span class="ln-search">⌕ 在图中查找表…</span>
+          </div>
+
+          <div class="ln-budget" id="budget" hidden>
+            <span>本图上游共 <b>12</b> 张表、下游共 <b>45</b> 张；已画 <b>11</b> 个节点（服务端上限 300）</span>
+            <span class="lnk">展开全部上游</span>
+            <span class="spacer"></span>
+            <span style="color:#6b7280">深度 2 · 按需展开，未展开的方向带 <b>›</b></span>
+          </div>
+
+          <div class="ln-stage">
+            <canvas id="cv"></canvas>
+            <div class="ln-hint" id="hint">滚轮缩放 · 拖拽平移 · 单击节点看详情</div>
+            <div class="ln-legend">
+              <span class="k"><i class="sw" style="background:var(--fmt-paimon)"></i>Paimon</span>
+              <span class="k"><i class="sw" style="background:var(--fmt-iceberg)"></i>Iceberg</span>
+              <span class="k"><i class="sw" style="background:var(--fmt-external);border:1px dashed #b6c2d4"></i>外部节点</span>
+              <span class="k"><i class="ln-sample"></i>写过</span>
+              <span class="k"><i class="ln-sample dash"></i>30 天未更新</span>
+              <span class="k"><i class="ln-sample ring"></i>回刷环</span>
+            </div>
+
+            <!-- 节点抽屉：overlay，不挤压画布 -->
+            <aside class="ln-drawer" id="drawer" hidden>
+              <header>
+                <div class="nm">paimon.dws.order_daily</div>
+                <div class="meta">
+                  <span class="badge">PAIMON</span>
+                  <span class="badge dim">目录内表</span>
+                  <span class="badge dim">可点开</span>
+                </div>
+              </header>
+              <div class="body">
+                <div class="kv">
+                  <span class="k">上游</span><span class="v">12 张表 · 3 层</span>
+                  <span class="k">下游</span><span class="v">45 张表 · 2 层</span>
+                  <span class="k">列级映射</span><span class="v">52 列中 39 列有来源</span>
+                  <span class="k">运行次数</span><span class="v">132 次（Spark）</span>
+                  <span class="k">最近运行</span><span class="v">2026-10-21 15:02 · 成功</span>
+                </div>
+                <h4>入边（最近的 3 次写）</h4>
+                <div class="row-mini"><span class="dot-fmt" style="background:var(--fmt-paimon)"></span>order_base · OVERWRITE · 18 列</div>
+                <div class="row-mini"><span class="dot-fmt" style="background:var(--fmt-paimon)"></span>trade_detail · OVERWRITE · 9 列</div>
+                <div class="row-mini"><span class="dot-fmt" style="background:var(--fmt-iceberg)"></span>user_profile · APPEND · 3 列</div>
+                <p class="foot-note">单击不跳页：图上点一下就离开是惩罚。跳转放在下面的按钮里。</p>
+              </div>
+              <footer>
+                <button class="btn primary sm">以它为根</button>
+                <button class="btn sm">打开表详情</button>
+              </footer>
+            </aside>
+          </div>
+
+          <div class="ln-foot">
+            <span id="foot-count">8 个节点 · 6 条边</span>
+            <span class="sep">·</span>
+            <span>上游 12 张表（已画 4）</span>
+            <span class="sep">·</span>
+            <span>下游 45 张（已折叠 43）</span>
+            <span class="right">
+              <span id="lod-text">视图：图 · LOD 高</span>
+              <span class="sep">·</span>
+              <span>数据来自 Spark · 3 分钟前</span>
+              <button class="btn sm ghost">适应窗口</button>
+            </span>
+          </div>
+        </div>
+
+        <!-- ============================ 邻接表（超预算降级） ============================ -->
+        <div id="view-adj" hidden>
+          <div class="adj-alert">
+            <span>ⓘ</span>
+            <span>当前图有 <b>812</b> 个节点，超过 500 的绘图上限，已自动切到表格视图（同一份数据，零请求）。</span>
+            <span class="lnk">仍要看图（前 500 个 + 312 占位）</span>
+          </div>
+          <div class="ln-tools">
+            <span class="ln-label">方向</span>
+            <div class="seg"><button>上游</button><button>下游</button><button class="on">双向</button></div>
+            <span class="ln-label" style="margin-left:6px">跳数</span>
+            <div class="seg"><button class="on">1 跳</button><button>2 跳</button><button>3 跳</button></div>
+            <span class="ctl"><span class="k">只保留</span> 有列级映射 <span class="caret">▼</span></span>
+            <span class="spacer"></span>
+            <div class="seg"><button>图</button><button class="on">邻接表</button><button>列映射</button></div>
+            <span class="ln-search">⌕ 在表中查找…</span>
+          </div>
+          <table class="grid">
+            <thead>
+              <tr>
+                <th style="width:34%">节点</th><th>方向</th><th>跳数</th><th>格式</th><th>引擎</th>
+                <th style="text-align:right">列数</th><th style="text-align:right">运行</th><th>最后更新</th><th>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><span class="dot-fmt" style="background:var(--fmt-paimon)"></span><span class="mono">paimon.dwd.order_base</span></td>
+                <td><span class="dir-tag up">上游</span></td><td>1</td><td>PAIMON</td><td>Spark</td>
+                <td style="text-align:right">18</td><td style="text-align:right">132</td><td>3 分钟前</td>
+                <td><span class="lnk" style="color:var(--accent);cursor:pointer">以它为根</span></td>
+              </tr>
+              <tr>
+                <td><span class="dot-fmt" style="background:var(--fmt-paimon)"></span><span class="mono">paimon.dwd.trade_detail</span></td>
+                <td><span class="dir-tag up">上游</span></td><td>1</td><td>PAIMON</td><td>Spark</td>
+                <td style="text-align:right">9</td><td style="text-align:right">132</td><td>3 分钟前</td>
+                <td><span style="color:var(--accent);cursor:pointer">以它为根</span></td>
+              </tr>
+              <tr>
+                <td><span class="dot-fmt" style="background:var(--fmt-paimon)"></span><span class="mono">paimon.dwd.payment_flow</span></td>
+                <td><span class="dir-tag up">上游</span></td><td>1</td><td>PAIMON</td><td>Spark</td>
+                <td style="text-align:right">4</td><td style="text-align:right">128</td><td>3 分钟前</td>
+                <td><span style="color:var(--accent);cursor:pointer">以它为根</span></td>
+              </tr>
+              <tr>
+                <td><span class="dot-fmt" style="background:var(--fmt-iceberg)"></span><span class="mono">paimon.dwd.user_profile</span></td>
+                <td><span class="dir-tag up">上游</span></td><td>1</td><td>ICEBERG</td><td>Spark</td>
+                <td style="text-align:right">3</td><td style="text-align:right">96</td><td class="stale">12 天前</td>
+                <td><span style="color:var(--accent);cursor:pointer">以它为根</span></td>
+              </tr>
+              <tr>
+                <td><span class="dot-fmt" style="background:var(--fmt-external);border:1px dashed #b6c2d4"></span><span class="mono">~file:a1b2c3d4e5f6</span></td>
+                <td><span class="dir-tag up">上游</span></td><td>2</td><td>外部</td><td>Spark</td>
+                <td style="text-align:right">5</td><td style="text-align:right">61</td><td>2 小时前</td>
+                <td><span class="stale">不可点开</span></td>
+              </tr>
+              <tr>
+                <td><span class="dot-fmt" style="background:var(--fmt-paimon)"></span><span class="mono">paimon.dws.gmv_dashboard</span></td>
+                <td><span class="dir-tag down">下游</span></td><td>1</td><td>PAIMON</td><td>Spark</td>
+                <td style="text-align:right">22</td><td style="text-align:right">132</td><td>3 分钟前</td>
+                <td><span style="color:var(--accent);cursor:pointer">以它为根</span></td>
+              </tr>
+              <tr>
+                <td><span class="dot-fmt" style="background:var(--fmt-paimon)"></span><span class="mono">paimon.ads.gmv_report</span></td>
+                <td><span class="dir-tag down">下游</span></td><td>1</td><td>PAIMON</td><td>Spark</td>
+                <td style="text-align:right">15</td><td style="text-align:right">131</td><td>3 分钟前</td>
+                <td><span style="color:var(--accent);cursor:pointer">以它为根</span></td>
+              </tr>
+              <tr>
+                <td><span class="dot-fmt" style="background:var(--fmt-paimon)"></span><span class="mono">paimon.dws.order_backfill</span></td>
+                <td><span class="dir-tag down">下游</span></td><td>2</td><td>PAIMON</td><td>Spark</td>
+                <td style="text-align:right">7</td><td style="text-align:right">18</td><td>9 天前</td>
+                <td><span style="color:var(--accent);cursor:pointer">以它为根</span></td>
+              </tr>
+              <tr>
+                <td><span class="dot-fmt" style="background:var(--fmt-paimon)"></span><span class="mono">paimon.ads.ops_daily</span></td>
+                <td><span class="dir-tag down">下游</span></td><td>2</td><td>PAIMON</td><td>Spark</td>
+                <td style="text-align:right">11</td><td style="text-align:right">44</td><td>5 小时前</td>
+                <td><span style="color:var(--accent);cursor:pointer">以它为根</span></td>
+              </tr>
+            </tbody>
+          </table>
+          <div class="ln-foot">
+            <span>已列出 8 个节点（另有 804 个在服务端未返回）</span>
+            <span class="right">
+              <span>第 1 / 41 页</span>
+              <button class="btn sm">上一页</button><button class="btn sm">下一页</button>
+            </span>
+          </div>
+        </div>
+
+        <!-- ============================ 列映射 ============================ -->
+        <div id="view-cols" hidden>
+          <div class="cols-head">
+            <span class="t">字段血缘</span>
+            <span class="n">52 列 · 39 列有上游 · 13 列由常量或分区给出</span>
+            <span class="spacer"></span>
+            <div class="seg"><button class="on">按列序</button><button>按 kind</button><button>按上游表数</button></div>
+            <span class="ln-search">⌕ 查找列…</span>
+          </div>
+          <div class="cols-wrap">
+            <div>
+              <table class="grid">
+                <thead>
+                  <tr>
+                    <th style="width:22%">列</th><th style="width:17%">类型</th><th style="width:12%">kind</th>
+                    <th>上游</th><th style="width:14%">最近运行</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td class="mono">order_id</td><td class="mono" style="color:#6b7280">BIGINT</td>
+                    <td><span class="kind dir">DIRECT</span></td>
+                    <td><span class="mono">ods.orders.order_id</span></td><td>3 分钟前</td>
+                  </tr>
+                  <tr>
+                    <td class="mono">user_id</td><td class="mono" style="color:#6b7280">BIGINT</td>
+                    <td><span class="kind dir">DIRECT</span></td>
+                    <td><span class="mono">ods.users.user_id</span></td><td>3 分钟前</td>
+                  </tr>
+                  <tr class="sel">
+                    <td class="mono">gmv</td><td class="mono" style="color:#6b7280">DECIMAL(18,2)</td>
+                    <td><span class="kind agg">AGGREGATE</span></td>
+                    <td><span class="mono">order_base.amount</span> <span class="kind">+1</span></td><td>3 分钟前</td>
+                  </tr>
+                  <tr>
+                    <td class="mono">order_cnt</td><td class="mono" style="color:#6b7280">BIGINT</td>
+                    <td><span class="kind agg">AGGREGATE</span></td>
+                    <td><span class="mono">trade_detail.order_id</span></td><td>3 分钟前</td>
+                  </tr>
+                  <tr>
+                    <td class="mono">pay_rate</td><td class="mono" style="color:#6b7280">DECIMAL(9,4)</td>
+                    <td><span class="kind der">DERIVED</span></td>
+                    <td><span class="mono">payment_flow.status</span> <span class="kind">+1</span></td><td>3 分钟前</td>
+                  </tr>
+                  <tr>
+                    <td class="mono">channel</td><td class="mono" style="color:#6b7280">STRING</td>
+                    <td><span class="kind der">DERIVED</span></td>
+                    <td><span class="mono">order_base.channel_code</span></td><td>3 分钟前</td>
+                  </tr>
+                  <tr class="grp-row">
+                    <td colspan="5"><b>38 个同名列直通</b> · 数量最多、信息量最低，默认折叠 <span class="lnk">展开</span></td>
+                  </tr>
+                  <tr class="grp-row">
+                    <td colspan="5"><b>2 个常量列</b> · <span class="mono">dt</span>（分区）、<span class="mono">etl_src</span> <span class="lnk">展开</span></td>
+                  </tr>
+                  <tr>
+                    <td class="mono">risk_score</td><td class="mono" style="color:#6b7280">DOUBLE</td>
+                    <td><span class="kind unr">UNRESOLVED</span></td>
+                    <td><span class="stale">经过无法解析的表达式（UDF）</span></td><td>3 分钟前</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div class="detail">
+              <div class="hd">
+                <span class="nm">gmv</span>
+                <span class="kind agg">AGGREGATE</span>
+              </div>
+              <div class="ty">DECIMAL(18,2) · 来自 2 张表</div>
+              <div class="expr">sum(<span style="color:#1d4ed8">order_base.amount</span> - <span style="color:#1d4ed8">payment_flow.refund_amount</span>)</div>
+              <h4 style="font-size:12px;color:#6b7280;margin:14px 0 6px">上游</h4>
+              <div class="up-row">
+                <span class="dot-fmt" style="background:var(--fmt-paimon)"></span>
+                <span class="t">paimon.dwd.order_base</span>
+                <span class="spacer"></span><span class="c">amount</span>
+              </div>
+              <div class="up-row">
+                <span class="dot-fmt" style="background:var(--fmt-paimon)"></span>
+                <span class="t">paimon.dwd.payment_flow</span>
+                <span class="spacer"></span><span class="c">refund_amount</span>
+              </div>
+              <p class="foot-note">
+                在图上「聚焦这一列」会只画它的上游链路，其余边淡化到 8%；不隐藏——隐藏会改变布局。
+              </p>
+            </div>
+          </div>
+          <div class="ln-foot">
+            <span>列级映射来自最近一次成功运行（2026-10-21 15:02）</span>
+            <span class="right"><span>表达式文本截断到 512 字符，仅供人看，不参与判定</span></span>
+          </div>
+        </div>
+
+        <!-- ============================ 空态 ============================ -->
+        <div id="view-empty" hidden>
+          <div class="empty-box">
+            <svg width="96" height="70" viewBox="0 0 96 70" fill="none" aria-hidden="true">
+              <rect x="4" y="26" width="26" height="18" rx="2" stroke="#cbd5e1" stroke-width="1.5"/>
+              <rect x="66" y="26" width="26" height="18" rx="2" stroke="#cbd5e1" stroke-width="1.5"/>
+              <rect x="35" y="26" width="26" height="18" rx="2" stroke="#cbd5e1" stroke-width="1.5" stroke-dasharray="4 3"/>
+              <path d="M30 35h5M61 35h5" stroke="#dbe3ef" stroke-width="1.5" stroke-dasharray="3 3"/>
+              <circle cx="48" cy="12" r="7" stroke="#dbe3ef" stroke-width="1.5"/>
+              <path d="M48 8v5M48 16.5v.5" stroke="#cbd5e1" stroke-width="1.6" stroke-linecap="round"/>
+            </svg>
+            <div class="t">还没有血缘</div>
+            <div class="s">执行一条 <span class="mono">INSERT</span> 后回到这里。血缘只记录<strong>执行成功</strong>的写入——<span class="mono">SELECT</span> 不产生血缘，失败的作业也不产生。</div>
+            <div class="a">
+              <button class="btn primary sm">刷新</button>
+              <button class="btn sm">查看 Spark 接入方式</button>
+            </div>
+          </div>
+          <div class="ln-foot">
+            <span>采集点：Spark <span class="mono">QueryExecutionListener.onSuccess</span> · 分析的计划树</span>
+            <span class="right"><span>视图已展开为底层表，图上看到的是实际读写的表</span></span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<div class="switcher">
+  <span class="ttl">效果图</span>
+  <button data-go="g1" class="on">1 首屏（1 跳）</button>
+  <button data-go="g2">2 展开 2 跳</button>
+  <button data-go="adj">3 邻接表</button>
+  <button data-go="cols">4 列映射</button>
+  <button data-go="empty">5 空态</button>
+</div>
+
+<script>
+/* ============================================================================
+ * 血缘图渲染器（效果图版）
+ * 与设计方案 §9.2 / §9.3 同构：rank 由跳数决定、层内居中、三次贝塞尔边、
+ * 三档 LOD、标签避让。真实实现里 layout 与 render 是两个纯模块，这里合在一处
+ * 只为让效果图能独立打开。
+ * ========================================================================== */
+
+const FMT = {
+  PAIMON: getCss('--fmt-paimon'),
+  ICEBERG: getCss('--fmt-iceberg'),
+  EXTERNAL: getCss('--fmt-external'),
+};
+function getCss(name) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
+const W = 200, H = 44, GAP_X = 80, GAP_Y = 16, STEP_Y = H + GAP_Y;
+
+/** 首屏：双向 1 跳。上游 12 张只画 4 张 + 一个 +8 折叠；下游 45 张画 2 张 + 一个 +43 折叠。 */
+const G1 = {
+  root: 'paimon.dws.order_daily',
+  nodes: [
+    { ref: 'paimon.dwd.order_base',    fmt: 'PAIMON',   rank: -1, runs: 132, cols: 18, last: '3 分钟前' },
+    { ref: 'paimon.dwd.trade_detail',  fmt: 'PAIMON',   rank: -1, runs: 132, cols: 9,  last: '3 分钟前' },
+    { ref: 'paimon.dwd.payment_flow',  fmt: 'PAIMON',   rank: -1, runs: 128, cols: 4,  last: '3 分钟前' },
+    { ref: 'paimon.dwd.user_profile',  fmt: 'ICEBERG',  rank: -1, runs: 96,  cols: 3,  last: '12 天前', stale: true },
+    { ref: '+8',                       fmt: 'FOLD',     rank: -1, fold: '+8', note: '上游其余 8 张' },
+    { ref: 'paimon.dws.order_daily',   fmt: 'PAIMON',   rank: 0,  runs: 132, cols: 52, last: '3 分钟前', root: true },
+    { ref: 'paimon.dws.gmv_dashboard', fmt: 'PAIMON',   rank: 1,  runs: 132, cols: 22, last: '3 分钟前' },
+    { ref: 'paimon.ads.gmv_report',    fmt: 'PAIMON',   rank: 1,  runs: 131, cols: 15, last: '3 分钟前' },
+    { ref: '+43',                      fmt: 'FOLD',     rank: 1,  fold: '+43', note: '下游其余 43 张' },
+  ],
+  edges: [
+    { s: 'paimon.dwd.order_base',   t: 'paimon.dws.order_daily', mode: 'O', runs: 132, cols: 18 },
+    { s: 'paimon.dwd.trade_detail', t: 'paimon.dws.order_daily', mode: 'O', runs: 132, cols: 9 },
+    { s: 'paimon.dwd.payment_flow', t: 'paimon.dws.order_daily', mode: 'O', runs: 128, cols: 4 },
+    { s: 'paimon.dwd.user_profile', t: 'paimon.dws.order_daily', mode: 'O', runs: 96,  cols: 3, stale: true },
+    { s: 'paimon.dws.order_daily',  t: 'paimon.dws.gmv_dashboard', mode: 'A', runs: 132, cols: 22 },
+    { s: 'paimon.dws.order_daily',  t: 'paimon.ads.gmv_report',  mode: 'A', runs: 131, cols: 15 },
+  ],
+};
+
+/** 展开到 2 跳：5 列，出现外部节点、回刷环与 MORE 徽标；k<0.9 自动落中档 LOD。 */
+const G2 = {
+  root: 'paimon.dws.order_daily',
+  nodes: [
+    { ref: 'paimon.ods.orders',        fmt: 'PAIMON',  rank: -2, runs: 210, cols: 26, last: '3 分钟前', more: true },
+    { ref: 'paimon.ods.payments',      fmt: 'PAIMON',  rank: -2, runs: 205, cols: 14, last: '3 分钟前', more: true },
+    { ref: '~file:a1b2c3d4e5f6',       fmt: 'EXTERNAL',rank: -2, runs: 61,  cols: 5,  last: '2 小时前' },
+    { ref: 'paimon.dwd.order_base',    fmt: 'PAIMON',  rank: -1, runs: 132, cols: 18, last: '3 分钟前' },
+    { ref: 'paimon.dwd.trade_detail',  fmt: 'PAIMON',  rank: -1, runs: 132, cols: 9,  last: '3 分钟前' },
+    { ref: 'paimon.dwd.payment_flow',  fmt: 'PAIMON',  rank: -1, runs: 128, cols: 4,  last: '3 分钟前' },
+    { ref: 'paimon.dwd.user_profile',  fmt: 'ICEBERG', rank: -1, runs: 96,  cols: 3,  last: '12 天前', stale: true },
+    { ref: '+8',                       fmt: 'FOLD',    rank: -1, fold: '+8', note: '上游其余 8 张' },
+    { ref: 'paimon.dws.order_daily',   fmt: 'PAIMON',  rank: 0,  runs: 132, cols: 52, last: '3 分钟前', root: true },
+    { ref: 'paimon.dws.gmv_dashboard', fmt: 'PAIMON',  rank: 1,  runs: 132, cols: 22, last: '3 分钟前' },
+    { ref: 'paimon.ads.gmv_report',    fmt: 'PAIMON',  rank: 1,  runs: 131, cols: 15, last: '3 分钟前' },
+    { ref: '+43',                      fmt: 'FOLD',    rank: 1,  fold: '+43', note: '下游其余 43 张' },
+    { ref: 'paimon.ads.ops_daily',     fmt: 'PAIMON',  rank: 2,  runs: 44,  cols: 11, last: '5 小时前', more: true },
+    { ref: 'paimon.dws.order_backfill',fmt: 'PAIMON',  rank: 2,  runs: 18,  cols: 7,  last: '9 天前' },
+  ],
+  edges: [
+    { s: 'paimon.ods.orders',        t: 'paimon.dwd.order_base',   mode: 'O', runs: 132, cols: 12 },
+    { s: 'paimon.ods.payments',      t: 'paimon.dwd.payment_flow', mode: 'O', runs: 128, cols: 4 },
+    { s: '~file:a1b2c3d4e5f6',       t: 'paimon.dwd.trade_detail', mode: 'A', runs: 61,  cols: 5, external: true },
+    { s: 'paimon.dwd.order_base',    t: 'paimon.dws.order_daily',  mode: 'O', runs: 132, cols: 18 },
+    { s: 'paimon.dwd.trade_detail',  t: 'paimon.dws.order_daily',  mode: 'O', runs: 132, cols: 9 },
+    { s: 'paimon.dwd.payment_flow',  t: 'paimon.dws.order_daily',  mode: 'O', runs: 128, cols: 4 },
+    { s: 'paimon.dwd.user_profile',  t: 'paimon.dws.order_daily',  mode: 'O', runs: 96,  cols: 3, stale: true },
+    { s: 'paimon.dws.order_daily',   t: 'paimon.dws.gmv_dashboard',mode: 'A', runs: 132, cols: 22 },
+    { s: 'paimon.dws.order_daily',   t: 'paimon.ads.gmv_report',   mode: 'A', runs: 131, cols: 15 },
+    { s: 'paimon.ads.gmv_report',    t: 'paimon.ads.ops_daily',    mode: 'A', runs: 44,  cols: 11 },
+    // 回刷环：order_daily → order_backfill 是一次真实存在的补数回刷，图不能当错误处理
+    { s: 'paimon.dws.order_daily',   t: 'paimon.dws.order_backfill', mode: 'U', runs: 18, cols: 7, stale: true },
+    { s: 'paimon.dws.order_backfill',t: 'paimon.dws.order_daily',  mode: 'U', runs: 18, cols: 7, ring: true },
+  ],
+};
+
+/* ------------------------------- 布局（纯函数） ------------------------------ */
+
+function layout(graph, cssW, cssH) {
+  const byRank = new Map();
+  for (const n of graph.nodes) {
+    if (!byRank.has(n.rank)) byRank.set(n.rank, []);
+    byRank.get(n.rank).push(n);
+  }
+  // 层内顺序：先按 ref 字典序（确定性），折叠节点永远在末尾
+  for (const list of byRank.values()) {
+    list.sort((a, b) => (a.fmt === 'FOLD' ? 1 : 0) - (b.fmt === 'FOLD' ? 1 : 0) || a.ref.localeCompare(b.ref));
+  }
+  const ranks = [...byRank.keys()].sort((a, b) => a - b);
+  const minRank = ranks[0], maxRank = ranks[ranks.length - 1];
+  const cols = maxRank - minRank + 1;
+  const naturalW = cols * W + (cols - 1) * GAP_X;
+  const k = Math.max(0.58, Math.min(1, (cssW - 48) / naturalW));
+  const drawW = naturalW * k;
+  const ox = (cssW - drawW) / 2;
+
+  const pos = new Map();
+  for (const n of graph.nodes) {
+    const list = byRank.get(n.rank);
+    const i = list.indexOf(n);
+    const layerH = list.length * STEP_Y - GAP_Y;
+    // 层居中：单节点层不贴画布顶
+    const y = (cssH - layerH) / 2 + i * STEP_Y;
+    const x = (n.rank - minRank) * (W + GAP_X);
+    pos.set(n.ref, { x, y, w: W, h: H });
+  }
+  return { pos, k, ox, naturalW };
+}
+
+/* --------------------------------- 绘制 --------------------------------- */
+
+const cv = document.getElementById('cv');
+let CURRENT = G1;
+let LAYOUT = null;
+
+function render() {
+  const dpr = window.devicePixelRatio || 1;
+  const cssW = cv.clientWidth, cssH = cv.clientHeight;
+  cv.width = Math.round(cssW * dpr);
+  cv.height = Math.round(cssH * dpr);
+  const ctx = cv.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, cssW, cssH);
+
+  drawDotGrid(ctx, cssW, cssH);
+  // 抽屉是 overlay，但布局按「抽屉让位后的可用宽」算，整图左移，完整可见
+  const drawer = document.getElementById('drawer');
+  const availW = drawer.hidden ? cssW : cssW - 300;
+  LAYOUT = layout(CURRENT, availW, cssH);
+  const { pos, k, ox } = LAYOUT;
+  const lod = k >= 0.9 ? 'high' : k >= 0.55 ? 'mid' : 'low';
+  document.getElementById('lod-text').textContent =
+    '视图：图 · LOD ' + (lod === 'high' ? '高' : lod === 'mid' ? '中' : '低') + ' · k=' + k.toFixed(2);
+
+  ctx.save();
+  ctx.translate(ox, (cssH - cssH) / 2);
+  ctx.scale(k, k);
+
+  drawEdges(ctx, CURRENT, pos);
+  drawNodes(ctx, CURRENT, pos, lod);
+
+  ctx.restore();
+  drawFoldBadges(ctx, CURRENT, pos, k, ox);
+  drawMoreBadges(ctx, CURRENT, pos, k, ox);
+  drawRingBadge(ctx, CURRENT, pos, k, ox);
+}
+
+/** 回边中点的 ↺ 角标：画在缩放外，任何 k 下都保持可读的屏幕尺寸。 */
+function drawRingBadge(ctx, graph, pos, k, ox) {
+  ctx.save();
+  for (const e of graph.edges) {
+    if (!e.ring) continue;
+    const a = pos.get(e.s), b = pos.get(e.t);
+    if (!a || !b) continue;
+    const p0x = a.x + a.w - 30, p0y = a.y - 6;
+    const p3x = b.x + b.w - 30, p3y = b.y - 6;
+    const mx = (p0x + 3 * (p0x + 20) + 3 * (p3x + 120) + p3x) / 8;
+    const my = ((p0y) + 3 * (p0y - 110) + 3 * (p3y - 160) + p3y) / 8;
+    const x = ox + mx * k, y = my * k;
+    ctx.beginPath();
+    ctx.arc(x, y, 9, 0, Math.PI * 2);
+    ctx.fillStyle = '#fff';
+    ctx.fill();
+    ctx.strokeStyle = '#d97706';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.fillStyle = '#d97706';
+    ctx.font = '600 11px -apple-system, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('↺', x, y + 0.5);
+  }
+  ctx.restore();
+}
+
+function drawDotGrid(ctx, w, h) {
+  ctx.save();
+  ctx.fillStyle = '#e8edf5';
+  for (let y = 16; y < h; y += 20) {
+    for (let x = 16; x < w; x += 20) ctx.fillRect(x, y, 1, 1);
+  }
+  ctx.restore();
+}
+
+function edgeStyle(edge) {
+  if (edge.ring) return { color: '#d97706', dash: [5, 4], width: 1.4 };
+  if (edge.stale) return { color: '#d3dce8', dash: [4, 4], width: 1.4 };
+  if (edge.external) return { color: '#b6c2d4', dash: [4, 4], width: 1.4 };
+  return { color: '#b9c6d8', dash: [], width: 1 + Math.min(2.6, Math.log10((edge.cols || 1) + 1) * 1.5) };
+}
+
+function drawEdges(ctx, graph, pos) {
+  // 按 (颜色, 线宽) 分组，每组一次 stroke —— 真实实现里这条把 1500 次 draw call 降到 ≤4 次
+  const groups = new Map();
+  for (const e of graph.edges) {
+    const a = pos.get(e.s), b = pos.get(e.t);
+    if (!a || !b) continue;
+    const st = edgeStyle(e);
+    const key = st.color + '|' + st.width + '|' + st.dash.join(',');
+    if (!groups.has(key)) groups.set(key, { st, list: [] });
+    groups.get(key).list.push({ a, b, e });
+  }
+  for (const { st, list } of groups.values()) {
+    ctx.save();
+    ctx.strokeStyle = st.color;
+    ctx.lineWidth = st.width;
+    ctx.setLineDash(st.dash);
+    ctx.beginPath();
+    for (const { a, b, e } of list) {
+      if (e.ring) {
+        // 回边：从源节点顶部绕到目标（root）顶部，走在 +1 层上方，不穿过任何节点
+        const x1 = a.x + a.w - 30, y1 = a.y - 6;
+        const x2 = b.x + b.w - 30, y2 = b.y - 6;
+        ctx.moveTo(x1, y1);
+        ctx.bezierCurveTo(x1 + 20, y1 - 110, x2 + 120, y2 - 160, x2, y2);
+      } else if (b.x > a.x) {
+        const x1 = a.x + a.w, y1 = a.y + a.h / 2;
+        const x2 = b.x, y2 = b.y + b.h / 2;
+        const cx = x1 + (x2 - x1) * 0.5;
+        ctx.moveTo(x1, y1);
+        ctx.bezierCurveTo(cx, y1, cx, y2, x2, y2);
+      } else {
+        const x1 = a.x, y1 = a.y + a.h / 2;
+        const x2 = b.x + b.w, y2 = b.y + b.h / 2;
+        const cx = x1 - (x1 - x2) * 0.5;
+        ctx.moveTo(x1, y1);
+        ctx.bezierCurveTo(cx, y1, cx, y2, x2, y2);
+      }
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
+}
+
+function drawNodes(ctx, graph, pos, lod) {
+  for (const n of graph.nodes) {
+    const p = pos.get(n.ref);
+    if (!p) continue;
+    if (n.fmt === 'FOLD') { drawFoldNode(ctx, p, n, lod); continue; }
+
+    ctx.save();
+    // 底
+    ctx.beginPath();
+    if (lod === 'high') ctx.roundRect(p.x, p.y, p.w, p.h, 4);
+    else ctx.rect(p.x, p.y, p.w, p.h);
+    ctx.fillStyle = n.root ? '#f7fbff' : '#ffffff';
+    ctx.fill();
+
+    // 格式色条（裁进圆角里）
+    ctx.save();
+    ctx.clip();
+    ctx.fillStyle = FMT[n.fmt] || FMT.EXTERNAL;
+    ctx.fillRect(p.x, p.y, 3, p.h);
+    ctx.restore();
+
+    // 边框：选中态两层
+    if (n.root) {
+      ctx.strokeStyle = 'rgba(29,78,216,.16)';
+      ctx.lineWidth = 4;
+      ctx.stroke();
+    }
+    ctx.strokeStyle = n.root ? '#1d4ed8' : '#dbe3ef';
+    ctx.lineWidth = n.root ? 1.6 : 1;
+    ctx.stroke();
+
+    // 文字
+    if (lod !== 'low') {
+      const inner = p.w - 18;
+      ctx.fillStyle = '#1f2937';
+      ctx.font = '600 12.5px -apple-system, "PingFang SC", sans-serif';
+      ctx.textBaseline = 'middle';
+      const label = lod === 'high' ? fitMiddle(ctx, fullName(n.ref), inner) : tail(n.ref);
+      ctx.fillText(label, p.x + 12, p.y + (lod === 'high' ? 16 : p.h / 2));
+
+      if (lod === 'high') {
+        ctx.fillStyle = '#8a94a6';
+        ctx.font = '10.5px -apple-system, "PingFang SC", sans-serif';
+        ctx.fillText('×' + n.runs + ' · ' + n.cols + ' 列 · ' + n.last, p.x + 12, p.y + 32);
+      }
+    }
+    ctx.restore();
+  }
+}
+
+function drawFoldNode(ctx, p, n, lod) {
+  ctx.save();
+  ctx.beginPath();
+  ctx.roundRect(p.x, p.y, p.w, p.h, 4);
+  ctx.fillStyle = '#fbfcfe';
+  ctx.fill();
+  ctx.setLineDash([4, 3]);
+  ctx.strokeStyle = '#c7d2e3';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  if (lod === 'low') {
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = '600 12px -apple-system, "PingFang SC", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(n.fold, p.x + p.w / 2, p.y + p.h / 2);
+  } else {
+    ctx.fillStyle = '#475569';
+    ctx.font = '600 13px -apple-system, "PingFang SC", sans-serif';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(n.fold + ' 张', p.x + 12, p.y + 17);
+    ctx.fillStyle = '#8a94a6';
+    ctx.font = '10.5px -apple-system, "PingFang SC", sans-serif';
+    ctx.fillText(n.note + ' · 点击展开', p.x + 12, p.y + 32);
+  }
+  ctx.restore();
+}
+
+/** MORE 徽标与折叠徽标画在缩放之外，保证任何 k 下都可点（18×18 的屏幕尺寸）。 */
+function drawMoreBadges(ctx, graph, pos, k, ox) {
+  ctx.save();
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  for (const n of graph.nodes) {
+    if (!n.more) continue;
+    const p = pos.get(n.ref);
+    if (!p) continue;
+    const x = ox + (p.x + p.w) * k + 4;
+    const y = (p.y + p.h / 2) * k - 9;
+    ctx.fillStyle = '#eef2f9';
+    ctx.strokeStyle = '#d5dfee';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.roundRect(x, y, 18, 18, 3);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = '#4b5563';
+    ctx.font = '600 13px -apple-system, sans-serif';
+    ctx.fillText('›', x + 9.5, y + 9.5);
+  }
+  ctx.restore();
+}
+
+function drawFoldBadges() { /* 折叠节点是真实节点，无需额外徽标 */ }
+
+function fullName(ref) { return ref; }
+
+/** 中间省略：保留 catalog 与末段，中间换成 …。尾部省略会让两张表看起来一样。 */
+function fitMiddle(ctx, text, maxW) {
+  if (ctx.measureText(text).width <= maxW) return text;
+  const parts = text.split('.');
+  if (parts.length < 3) return tail(text, maxW);
+  const head = parts[0] + '.';
+  const mid = parts.slice(1, -1).join('.');
+  const last = parts[parts.length - 1];
+  const cand = head + '…' + last;
+  if (ctx.measureText(cand).width <= maxW) return cand;
+  return head + '…' + tail(last, maxW - ctx.measureText(head + '…').width);
+}
+
+function tail(ref, maxW) {
+  const parts = ref.split('.');
+  return parts[parts.length - 1];
+}
+
+/* ------------------------------ 状态与切换 ------------------------------ */
+
+function setView(go) {
+  document.body.dataset.view = go;
+  document.querySelectorAll('.switcher button').forEach((b) => b.classList.toggle('on', b.dataset.go === go));
+  document.getElementById('view-graph').hidden = !(go === 'g1' || go === 'g2');
+  document.getElementById('view-adj').hidden = go !== 'adj';
+  document.getElementById('view-cols').hidden = go !== 'cols';
+  document.getElementById('view-empty').hidden = go !== 'empty';
+
+  const drawer = document.getElementById('drawer');
+  const budget = document.getElementById('budget');
+  const hint = document.getElementById('hint');
+  const foot = document.getElementById('foot-count');
+
+  if (go === 'g1') {
+    CURRENT = G1;
+    drawer.hidden = true;
+    budget.hidden = true;
+    hint.hidden = false;
+    foot.textContent = '8 个节点 · 6 条边';
+    document.getElementById('d1').classList.add('on');
+    document.getElementById('d2').classList.remove('on');
+  } else if (go === 'g2') {
+    CURRENT = G2;
+    drawer.hidden = false;
+    budget.hidden = false;
+    hint.hidden = true;
+    foot.textContent = '14 个节点 · 12 条边';
+    document.getElementById('d2').classList.add('on');
+    document.getElementById('d1').classList.remove('on');
+  }
+  if (go === 'g1' || go === 'g2') render();
+}
+
+document.querySelectorAll('.switcher button').forEach((b) => {
+  b.addEventListener('click', () => setView(b.dataset.go));
+});
+window.addEventListener('resize', () => {
+  if (document.body.dataset.view === 'g1' || document.body.dataset.view === 'g2') render();
+});
+
+setView('g1');
+</script>
+</body>
+</html>

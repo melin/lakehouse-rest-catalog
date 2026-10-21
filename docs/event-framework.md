@@ -68,6 +68,7 @@ Polaris 的 `PolarisEventType` 有 15 个类别、一百多个常量，是 **CRU
 | `table.unregistered` | 只从目录摘掉登记，不动仓库 | Iceberg `unregister`（Paimon 侧没有这个动作） |
 | `table.renamed` | 改名 / 换库 | 两侧的 `rename`（目标在 target，来源在属性 `from`） |
 | `table.committed` | 元数据指针推进 | `commit`；Paimon 的 `alter` / `rollback-schema` 带 `change` 属性 |
+| `table.previewed` | 有人从控制台读了表数据（一次预览一条） | `TablePreviewService` 的第一页；属性只有条件列名与算子、分区字段名与命中数，**取值不落库** |
 
 **VIEW**（4）
 
@@ -136,6 +137,14 @@ Polaris 的 `PolarisEventType` 有 15 个类别、一百多个常量，是 **CRU
 - **优化批次的中间状态**（PENDING / SUBMITTING / RUNNING）：批次列表页已经在轮询这些状态；
   事件流只记终态，避免一条优化在审计里留下四条噪音。
 - **`table.refreshed`**（Polaris 有）：它是读操作，且是最高频的那一个。
+
+**唯一的例外是 `table.previewed`。** 它也是读路径，但记的不是"有人 load 了表"，
+而是"有人把这张表的行数据读出去了"——数据预览是控制台里第一个真的搬行数据的接口，
+"谁在什么时候看了哪张表的哪些范围"本身是合规要回答的问题，与 access log 回答的
+"哪个请求打到哪个端点"不是同一件事。两条约束让它不至于退化成访问日志：
+一次预览只记**第一页**（翻页是同一意图的延续），且属性里**没有条件的取值**
+（值可能就是手机号）。判据因此收紧成：**只有"让数据离开服务端"的读才收录**，
+`load` / `list` / `HEAD` 仍然一条都不发。
 
 ## 2. `audit_event` 表
 

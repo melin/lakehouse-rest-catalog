@@ -23,6 +23,9 @@
 		                    IcebergViewService（Iceberg 形态的视图）、IcebergProjections
 		                    （把 TableMetadata 派生快照 / refs / schema 历史投影行）、
 		                    IcebergCredentialService（凭据委托）、IcebergProtocol（装配钩子）
+		  iceberg/preview/  数据预览：IcebergPreviewTable（按 FileScanTask 逐文件读、
+		                    delete 文件抵扣、分区聚合）、IcebergPreviewTableFactory、
+		                    IcebergPreviewFileIo（只读 FileIO，接 StorageFileAccess）
 		  iceberg/support/  元数据文件位置的推演、要求与更新的解析
 		  iceberg/dto/      这些端点各自的请求与响应契约
 
@@ -68,6 +71,33 @@
 		<dependency>
 			<groupId>org.apache.iceberg</groupId>
 			<artifactId>iceberg-core</artifactId>
+		</dependency>
+		<!--
+			数据预览（docs/table-data-preview-design.md §3 候选 A、§13 依赖表）。
+
+			**为什么必须是 iceberg 自己的读路径**：Iceberg v2 的行删除是
+			position delete / equality delete 文件，只有在 `FileScanTask#deletes()`
+			被正确应用时行集才是对的；自己按文件列表读 parquet 会读出**已删除的行**——
+			预览显示幽灵行比不显示更糟，用户会拿它当"数据脏了"的证据去排查一个
+			不存在的故障（与 Paimon 主键表同一条理由，见 §3 否决候选 B/C）。
+
+			iceberg-data 提供 `GenericDeleteFilter` / `GenericParquetReaders`
+			（GenericReader 本身就是这两者的组合，但它不是 public 的，所以这里按它的
+			实现逐句复用这两个 `public` 组件）；iceberg-parquet 提供
+			`Parquet.ReadBuilder`，并自带 parquet-hadoop / parquet-avro 1.17.1。
+
+			体积代价约 9 MB（含 parquet 的原生依赖树）。它与 paimon-format 里
+			shaded 的那套 parquet **不冲突**：paimon 把 parquet relocate 到了
+			`org.apache.paimon.shade.org.apache.parquet`，两者可以同时存在于一个
+			jar 里（§13 已核对 1907 个 shade 类）。
+		-->
+		<dependency>
+			<groupId>org.apache.iceberg</groupId>
+			<artifactId>iceberg-data</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.apache.iceberg</groupId>
+			<artifactId>iceberg-parquet</artifactId>
 		</dependency>
 	</dependencies>
 

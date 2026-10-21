@@ -65,6 +65,19 @@
 			<groupId>org.apache.paimon</groupId>
 			<artifactId>paimon-core</artifactId>
 		</dependency>
+		<!--
+			数据预览要真的把 parquet/orc/avro 读出来，而 paimon-core 把这个模块声明成
+			provided（它假设运行环境是引擎 bundle），因此必须显式引一次。
+
+			它自带 shade 过的 parquet（jar 内 relocate 到 org.apache.paimon.shade.org.apache.parquet），
+			与 Iceberg 面用的原生 parquet 不冲突——两个协议面本来就各自关在自己的依赖世界里。
+			体积约 25 MB，是「不装引擎也能看数据」的代价，取舍见 docs/table-data-preview-design.md §13。
+		-->
+		<dependency>
+			<groupId>org.apache.paimon</groupId>
+			<artifactId>paimon-format</artifactId>
+			<version>${paimon.version}</version>
+		</dependency>
 	</dependencies>
 
 	<build>

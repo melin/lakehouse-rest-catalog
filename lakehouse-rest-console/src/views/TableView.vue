@@ -64,6 +64,10 @@
       <PanelCard flush>
         <el-tabs v-model="tab" class="pc-tabs" @tab-change="onTabChange">
           <el-tab-pane label="详细信息" name="details" />
+          <!-- 数据预览放在「详细信息」之后、「快照」之前：它是详情页里第二个"第一眼要看"的东西。
+               只给快照托管表（Paimon / table）——Format / Object / Lance 表的数据文件不是
+               快照托管的 parquet 族，显示一个"不支持"不如不显示（与快照/标签/分支同一条伸缩规则） -->
+          <el-tab-pane v-if="isPaimonTable" label="数据预览" name="preview" />
           <!-- 快照 / 标签 / 分支 / 数据访问都是快照托管表的产物：非 Paimon 表不出现这几个页签 -->
           <el-tab-pane v-if="isPaimonTable" label="快照" name="snapshots" />
           <el-tab-pane v-if="isPaimonTable" label="标签" name="tags" />
@@ -524,6 +528,13 @@
             />
           </template>
 
+          <!------------------------------- 数据预览 -------------------------------->
+          <!-- 面板自身不判断格式：格式差异（读取器、分区拼法、hidden 分区）全在服务端。
+               因此这里只传 tableId 与全量列名（投影多选框的选项来源） -->
+          <template v-else-if="tab === 'preview' && table0">
+            <TablePreviewPanel :table-id="table0.id" :columns="previewColumns" />
+          </template>
+
           <!------------------------------- 数据访问 -------------------------------->
           <template v-else>
             <div class="pc-access">
@@ -623,6 +634,7 @@ import PageHeader from '@/components/PageHeader.vue'
 import PanelCard from '@/components/PanelCard.vue'
 import ResourceState from '@/components/ResourceState.vue'
 import TableOptimizationPanel from '@/components/TableOptimizationPanel.vue'
+import TablePreviewPanel from '@/components/TablePreviewPanel.vue'
 import TablePager from '@/components/TablePager.vue'
 import TimeText from '@/components/TimeText.vue'
 import TipNote from '@/components/TipNote.vue'
@@ -752,6 +764,17 @@ const latest = computed(() => overview.data.value?.snapshot?.snapshot || null)
 const tableKind = computed(() => tableKindOf(table0.value))
 const kindLabel = computed(() => tableKindLabel(table0.value))
 const isPaimonTable = computed(() => isSnapshotManaged(table0.value))
+
+/**
+ * 数据预览的列名来源：全量 schema。
+ *
+ * <p>预览响应里只有**本次投影**的那几列，而「列投影」多选框要能一次点回被隐藏的列，
+ * 所以选项来自这里、不是来自响应。类型一并带上——面板据此提前把不可能的算子藏起来
+ * （真正判定在服务端，前端只是体贴，见设计文档 §6.1）。
+ */
+const previewColumns = computed(() =>
+  (table0.value?.schema?.fields || []).map((field) => ({ name: field.name, type: field.type })),
+)
 const isObjectTable = computed(() => tableKind.value === 'object-table')
 
 /** 少了几个页签的原因写在页面上，免得看起来像加载失败。 */

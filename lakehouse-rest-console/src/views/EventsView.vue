@@ -203,6 +203,9 @@ const TYPES = [
   { value: 'table.renamed', label: '表重命名', tag: 'warning', category: 'TABLE' },
   { value: 'table.unregistered', label: '注销表', tag: 'info', category: 'TABLE' },
   { value: 'table.dropped', label: '删表', tag: 'danger', category: 'TABLE' },
+  // 唯一的「读路径」事件：记录的是数据访问（谁看了哪张表的哪些范围），不是状态变化。
+  // 取值不落库（只有条件列名与算子），因此这条事件本身不含敏感值。
+  { value: 'table.previewed', label: '预览数据', tag: 'info', category: 'TABLE' },
   { value: 'view.created', label: '建视图', tag: 'success', category: 'VIEW' },
   { value: 'view.updated', label: '改视图', tag: 'warning', category: 'VIEW' },
   { value: 'view.renamed', label: '视图重命名', tag: 'warning', category: 'VIEW' },

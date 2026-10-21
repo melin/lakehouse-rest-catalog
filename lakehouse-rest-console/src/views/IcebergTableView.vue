@@ -50,6 +50,7 @@
     <PanelCard v-else flush>
       <el-tabs v-model="tab" class="pc-tabs" @tab-change="onTabChange">
         <el-tab-pane label="详细信息" name="details" />
+        <el-tab-pane label="数据预览" name="preview" />
         <el-tab-pane label="快照" name="snapshots" />
         <el-tab-pane label="文件列表" name="files" />
         <el-tab-pane label="存储优化" name="optimization" />
@@ -367,6 +368,23 @@
             </template>
           </template>
 
+          <!------------------------------- 数据预览 -------------------------------->
+          <!-- 与 Paimon 表详情页**同一个组件**：只传 tableId 与全量列名，格式差异
+               全在服务端（`TablePreviewFactory` 按 catalog 格式分派）。
+               本页比那一页多一步：按名字换内部 id——这里的数据来自 `loadTable`，
+               而 `LoadTableResult` 是 Iceberg 规格的形状，里面没有本服务端的 id -->
+          <template v-else-if="tab === 'preview'">
+            <ResourceState :error="previewLookup.error">
+              <TablePreviewPanel
+                v-if="previewTableId"
+                :key="previewTableId"
+                :table-id="previewTableId"
+                :columns="previewColumns"
+              />
+              <div v-else class="pc-dim">正在解析这张表的内部 id…</div>
+            </ResourceState>
+          </template>
+
           <!------------------------------- 存储优化 -------------------------------->
           <!-- 与 Paimon 表详情页同一个组件：三项动作的名字与执行流程两种格式一致，
                差别只在参数键与指标口径，而那两样都在 utils/optimization.js 与执行侧，
@@ -403,12 +421,14 @@ import ResourceState from '@/components/ResourceState.vue'
 import SectionTitle from '@/components/SectionTitle.vue'
 import TablePager from '@/components/TablePager.vue'
 import TableOptimizationPanel from '@/components/TableOptimizationPanel.vue'
+import TablePreviewPanel from '@/components/TablePreviewPanel.vue'
 import TimeText from '@/components/TimeText.vue'
 import TipNote from '@/components/TipNote.vue'
 import { describeError } from '@/api/client.js'
 import { consoleApi } from '@/api/console.js'
 import { icebergApi, namespaceLevels } from '@/api/iceberg.js'
 import { managementApi } from '@/api/management.js'
+import { previewApi } from '@/api/preview.js'
 import { notifyError, useRemotePaging, useResource } from '@/composables/index.js'
 import { session } from '@/store/session.js'
 import { isIcebergCatalog } from '@/utils/catalogFormat.js'
@@ -704,17 +724,59 @@ function loadOptimization() {
   }
 }
 
+// ------------------------------------------------------------------ 数据预览
+
+/** 这张表的内部 id：本页只有名字，预览端点要 id（换一次，换到就存着）。 */
+const previewTableId = ref(null)
+
+const previewLookup = reactive({ loading: false, error: '' })
+
+/** 面板里列多选框的选项来源；`type` 只用于表头展示，取值口径与 Paimon 页一致。 */
+const previewColumns = computed(() => {
+  const fields = metadata.value?.schema?.fields || []
+  return fields.map((field) => ({
+    name: field.name,
+    type: typeof field.type === 'string' ? field.type : JSON.stringify(field.type),
+  }))
+})
+
+/**
+ * 切到数据预览时先做一次「名字 → 内部 id」，换到才挂面板。
+ *
+ * <p>为什么不把 id 放进路由或首屏请求里：本页的数据全部来自一次 `loadTable`，
+ * 拿 id 只是为了调预览端点；把它塞进 URL 会让"已存在的深链接"全部失效。
+ * 失败时（没有 SELECT 权限、表在库里找不到）错误就地显示，面板不挂——
+ * 那样用户看到的是"为什么不能看"，而不是一个空表格。
+ */
+async function loadPreview() {
+  if (previewTableId.value || previewLookup.loading) return
+  previewLookup.loading = true
+  previewLookup.error = ''
+  try {
+    const payload = await previewApi.lookupTable(prefix.value, database.value, table.value)
+    previewTableId.value = payload.id
+  } catch (error) {
+    previewLookup.error = describeError(error)
+  } finally {
+    previewLookup.loading = false
+  }
+}
+
 function onTabChange(name) {
   if (loadedTabs.has(name)) return
   loadedTabs.add(name)
   if (name === 'files') loadFilesIfFirst()
   // 切到存储优化时才拉策略与历史：打开一张表的成本不该因为多了一个页签而变高
   if (name === 'optimization') loadOptimization()
+  if (name === 'preview') loadPreview()
 }
 
 function reloadAll() {
   overview.load()
   loadedTabs.clear()
+  // 刷新时把 id 与面板一起作废：数据可能已经换了快照，重新换一次 id 最省事
+  previewTableId.value = null
+  previewLookup.error = ''
   onTabChange(tab.value)
   if (tab.value === 'files') loadFiles()
 }
@@ -727,6 +789,9 @@ watch([prefix, database, table], () => {
   filePrefixInput.value = ''
   fileListing.value = null
   fileLoaded.value = false
+  // 换表也要作废内部 id：拿旧表的 id 去预览新表会读到别人的数据
+  previewTableId.value = null
+  previewLookup.error = ''
   overview.load()
   if (tab.value !== 'details') {
     loadedTabs.add(tab.value)

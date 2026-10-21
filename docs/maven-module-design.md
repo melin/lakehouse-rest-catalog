@@ -172,7 +172,7 @@ Jackson 2.15.2 抬到 Boot 的版本）。拆成 5 个服务端模块后，这�
 | `-core` | 22 张表的实体与仓库、共享服务（catalog/database/table/快照、授权、凭据接口）、共享 DTO、共享 Web 组件（`/v1/config`、错误模型基类、两个认证拦截器、`CatalogAccessRules`、`RestServerProperties`）、协议面 SPI | 两个协议面都要用它，而它自己**一行格式代码都不该有**——这条约束只有在它是个模块时才守得住 |
 | `-storage` | `StorageFileIoFactory`、`CatalogFileService`、`Paths`、`StorageConfigs`、`FileIoType`、凭据管理器的实现与缓存 | 它是唯一需要「往仓库写文件」的模块（Paimon 的 `FileIO` 在这里承担的是**通用文件系统客户端**：s3 插件加载、凭据刷新、路径模板）。若 Iceberg 面另引一套 hadoop-aws 做同样的事，就会有两套 s3 凭据解析逻辑——设计文档 §5.5 要的「凭据统一」当场破功 |
 | `-protocol-paimon` | `paimon/web/` 下 9 个控制器、`paimon/dto/` 的 Paimon 契约、`TableMetadataService`（schema/snapshot 物化）、`TableKinds`、`SchemaChangeService`、`CredentialService` | 唯一允许 `import org.apache.paimon` 的服务端模块（`storage` 除外，且只用于 FileIO）；包名独占 `rest.paimon.*`（§11） |
-| `-protocol-iceberg` | 35 个端点、Iceberg DTO、元数据代数（update 应用 / requirements 校验 / CAS）、投影派生（`schemas[]`/`snapshots[]`/`refs` → 行）、Iceberg 错误模型 | 唯一允许 `import org.apache.iceberg` 的模块；`iceberg-core` 带来的 avro 等依赖被关在这里 |
+| `-protocol-iceberg` | 35 个端点、Iceberg DTO、元数据代数（update 应用 / requirements 校验 / CAS）、投影派生（`schemas[]`/`snapshots[]`/`refs` → 行）、Iceberg 错误模型、`iceberg/preview/`（数据预览的读取器与只读 `FileIO`） | 唯一允许 `import org.apache.iceberg` 的模块；`iceberg-core` / `iceberg-data` / `iceberg-parquet` 带来的 avro、parquet 等依赖被关在这里 |
 | `-server` | 启动类、管理 API 控制器（33 个 operation）、控制台宿主与静态资源、安全装配、优化调度与 k8s 提交、`application.yml` | **唯一产出可执行 jar 与镜像**的模块。镜像里有什么，看这一个 POM 就够了 |
 
 ### 3.4 跨模块的判断表（几个没写在包名里的类）
@@ -513,6 +513,7 @@ Dockerfile、七个脚本、`verify-*.py` 里的路径逐字一致，不用套�
 | `spring-parent` 的 `<dependencies>` | `spring-boot-starter-webmvc`、`-data-jpa`、`-validation`、`lombok` | 五个模块最终进**同一个 fat jar、同一个 JVM**，所以「谁需要 webmvc」只影响编译期可见性，不影响产物内容。集中一处，各模块的 POM 就只剩「它比别的模块多需要什么」 |
 | `storage` / `protocol-paimon` | `paimon-core`（编译期） | 存储层只用 `fs` / `catalog.CatalogContext` / `options` 三个包；协议面用 `schema` / `utils` / `table.object` / `types` |
 | `server` | `paimon-core` + `paimon-format` + `paimon-s3` | 这三个决定**可执行产物里装了哪几个文件系统插件与格式实现**，是部署决策 |
+| `server` | `hadoop-client-api` + `hadoop-client-runtime`（`runtime`，3.3.4） | parquet 读取（两个协议面都是）需要 `FileInputFormat` / `Configuration`，而 parquet-hadoop 把它们声明成 `provided`。**没有它们，元数据一切正常、第一次预览读数据 500**——2026-10-21 就是这么发现的，取舍见 `table-data-preview-design.md` §13 |
 
 **Paimon 绝不放进父 POM 的 `<dependencies>`**：那样 core 会拿到它，不变量 1 当场破功。
 enforcer 会拦下来，但更好的做法是别让这种事有机会发生。

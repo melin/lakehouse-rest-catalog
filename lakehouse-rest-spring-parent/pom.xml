@@ -101,6 +101,28 @@
 			因此向上对齐而不是取「能跑就行」的更旧版本。
 		-->
 		<iceberg.version>1.11.0</iceberg.version>
+		<!--
+			Hadoop 的版本只服务一件事：**让 parquet 能读**。
+
+			parquet-hadoop（无论是 Iceberg 面用的原生那份，还是 paimon-format 里
+			relocate 过的 shade 副本）把 org.apache.hadoop.* 声明成 provided——
+			它假设运行在引擎里。而 ParquetReadOptions.Builder 的构造函数里有一句
+			`ParquetInputFormat.class`，加载这个类就要解析它的父类
+			FileInputFormat，于是「没有 Hadoop」的表现在启动时看不见，直到第一次
+			预览读数据才变成 NoClassDefFoundError（2026-10-21 线上就是这样）。
+
+			选 hadoop-client-api + hadoop-client-runtime 而不是 hadoop-common：
+			前者是 Hadoop 官方的「可嵌入」产物——第三方库（guava / protobuf /
+			commons）全部 relocate 到 org.apache.hadoop.shaded.*，零传递依赖，
+			因此不会与 Spring Boot / Paimon 各自的 guava 打架。代价是体积
+			（19MB + 30MB）；换 hadoop-common + mapreduce-client-core 能省 40MB，
+			但会把未 shaded 的 guava 27 与 protobuf 2.5 塞进类路径，那是本仓
+			一直在避免的事。
+
+			3.3.4 与 parquet 1.17.1 声明的 provided 版本（3.3.0）同一小版本线，
+			也是 Spark 3.5 / Flink 1.18 实际带的版本。
+		-->
+		<hadoop.version>3.3.4</hadoop.version>
 		<!-- 依赖边界守卫，见各模块 POM 里的 bannedDependencies -->
 		<enforcer.version>3.1.0</enforcer.version>
 	</properties>
@@ -143,6 +165,26 @@
 				<artifactId>iceberg-core</artifactId>
 				<version>${iceberg.version}</version>
 			</dependency>
+			<!--
+				数据预览的读取路径（docs/table-data-preview-design.md §3）：
+				  iceberg-data     GenericDeleteFilter / GenericParquetReaders 等
+				                   "不依赖引擎的通用记录"实现——预览要读到与引擎一致的
+				                   行（含 position / equality delete），只能走它
+				  iceberg-parquet  parquet 读取（Parquet.ReadBuilder），它自己带
+				                   parquet-hadoop 与 parquet-avro 1.17.1（与
+				                   iceberg 1.11.0 的 pom 一致，不另立版本）
+				两者都不进 <dependencies>：元数据侧（load / create / commit）用不到它们。
+			-->
+			<dependency>
+				<groupId>org.apache.iceberg</groupId>
+				<artifactId>iceberg-data</artifactId>
+				<version>${iceberg.version}</version>
+			</dependency>
+			<dependency>
+				<groupId>org.apache.iceberg</groupId>
+				<artifactId>iceberg-parquet</artifactId>
+				<version>${iceberg.version}</version>
+			</dependency>
 
 			<!-- Paimon：只有 storage（FileIO）与各协议面（元数据读写）会用到 -->
 			<dependency>
@@ -155,10 +197,13 @@
 				<artifactId>paimon-format</artifactId>
 				<version>${paimon.version}</version>
 				<!--
-					paimon-format 会带进 hadoop-common，而服务端只需要它的格式读写实现，
-					不需要 Hadoop 客户端栈（类路径上多一份 hadoop-common 与大版本不符的
-					Guava / protobuf 是常见冲突来源）。排除后仍能工作：
-					warehouse 的本地与对象存储访问都由 paimon-s3 / LocalFileIO 承担。
+					paimon-format 按 Hadoop 2.8.5 声明了 hadoop-common（compile），那是一份
+					**又旧又带未 shaded guava 的**坐标，排除它是对的；但**排除不等于
+					「不需要 Hadoop」**（2026-10-21 修正）：parquet 读路径要
+					ParquetInputFormat → FileInputFormat，这类由下面的 hadoop-client-api /
+					hadoop-client-runtime 提供。当时的注释写着「排除后仍能工作」，
+					那句话只在**元数据读写**上成立，数据预览读 parquet 时会以
+					NoClassDefFoundError: FileInputFormat 收场。
 				-->
 				<exclusions>
 					<exclusion>
@@ -166,6 +211,23 @@
 						<artifactId>hadoop-common</artifactId>
 					</exclusion>
 				</exclusions>
+			</dependency>
+			<!--
+				parquet 读取需要的最小 Hadoop 面。声明在 dependencyManagement 里是因为
+				**两个协议面都要**（Iceberg 的 parquet-hadoop 与 paimon-format 里的
+				shade 副本都把它当 provided），把它写在一处才不会一边有一边漏。
+				真正进可执行产物的是 server 里的那两行 runtime 依赖——哪几个面要读
+				parquet 是部署决策，因此由 server 决定。
+			-->
+			<dependency>
+				<groupId>org.apache.hadoop</groupId>
+				<artifactId>hadoop-client-api</artifactId>
+				<version>${hadoop.version}</version>
+			</dependency>
+			<dependency>
+				<groupId>org.apache.hadoop</groupId>
+				<artifactId>hadoop-client-runtime</artifactId>
+				<version>${hadoop.version}</version>
 			</dependency>
 			<!--
 				S3 的 FileIO 插件。**运行时**必须有它，否则 warehouse 落在 s3:// 时

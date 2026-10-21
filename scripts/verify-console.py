@@ -197,6 +197,18 @@ EXTENSION_ENDPOINTS = {
     # docs/event-framework.md §4。两份规格都不涉及事件——这是本工程自己的
     # 审计面，服务端实现见 ConsoleEventController。只读。
     ("GET", "/api/console/v1/events"): "控制台目录事件流（游标增量拉取，只读）",
+    # 数据预览：本工程第一个**真的把行数据读出来给浏览器看**的控制台端点。
+    # 两份规格都不涉及读数据（协议面只搬元数据），因此按扩展端点登记。
+    # 它与其他控制台端点的区别是**要判权**：TABLE 级 SELECT（不是 DESCRIBE），
+    # 见 TablePreviewController。只读：不写文件、不提交快照、不做 DDL。
+    ("POST", "/api/console/v1/tables/{tableId}/preview"): "表详情页数据预览（读一页行数据，TABLE 级 SELECT）",
+    # 分区选择器的数据源。只读清单、不读数据文件；分区值与文件数本身是数据分布信息，
+    # 因此与预览同一道门（TABLE 级 SELECT）。
+    ("GET", "/api/console/v1/tables/{tableId}/partitions"): "表分区枚举（分区选择器，只读清单）",
+    # 名字 → 内部 id。只为 Iceberg 表详情页存在：那一页按名字加载表
+    # （LoadTableResult 里没有本服务端的 id），而预览的两个端点按 id 寻址。
+    # 判权与预览同一道门（TABLE 级 SELECT），不另开一条"能确认表存在"的路。
+    ("GET", "/api/console/v1/tables/lookup"): "按名字查表的内部 id（供 Iceberg 表详情页调预览）",
 }
 
 problems = []
@@ -1617,10 +1629,102 @@ check("TablePager 在 total 为 0 时不渲染（空态已经有说明文字）"
       "total > 0" in read(TABLE_PAGER),
       "空页面再挂一条「共 0 条」只会更吵")
 
-# ------------------------------------------------------------------ 20. 文档计数
+# ------------------------------------------------------------------ 20. 数据预览
 
 print()
-print("20. 文档计数（文档写的「N 组 M 项」必须与脚本实际一致）")
+print("20. 数据预览（分区默认锁最新、采样必须标注、只走一个端点）")
+
+# 起因：预览是控制台里第一个**真的把行数据读出来**的页面，它有几处错法都不会报错，
+# 只是把话说错：
+#   - 采样了却不标注 → 用户把 8 个文件里的 100 行当成全表结论；
+#   - 只显示一个分母 → 「3/12」被读成「3/128」，「分区已经缩小了范围」这个事实消失；
+#   - 前端自己算「最新分区」→ 与服务端两处实现迟早不一致，刷新一次分区就变了；
+#   - 分区 chip 的 × 被做成「删掉自动条件」→ 用户点了以为看全表，实际仍在某个分区里；
+#   - 页签出现在 Format / Object / Lance 表上 → 点进去只能看到一个「不支持」。
+# 这一组把上述五条钉在源码上，另外核对两条端点在服务端真的存在（前端加、服务端没实现
+# 的表现是页签里一句「加载失败」，没有任何一处能定位到是谁没写）。
+PREVIEW_PANEL = os.path.join(CONSOLE_DIR, "src/components/TablePreviewPanel.vue")
+PREVIEW_API = os.path.join(CONSOLE_DIR, "src/api/preview.js")
+TABLE_VIEW = os.path.join(CONSOLE_DIR, "src/views/TableView.vue")
+PREVIEW_CONTROLLER = os.path.join(
+    ROOT, "lakehouse-rest-spring-parent/lakehouse-rest-server/src/main/java/io/github/melin/"
+          "lakehouse/rest/web/TablePreviewController.java")
+panel_source = read(PREVIEW_PANEL)
+preview_api_source = read(PREVIEW_API)
+
+check("预览面板只调 previewApi（不拼下载端点、不直连协议面）",
+      "previewApi.preview" in panel_source and "previewApi.partitions" in panel_source
+      and "/v1/" not in panel_source and "download" not in panel_source,
+      "预览要能走到别的读取路径，就会绕过 TABLE 级 SELECT 与采样限额")
+
+check("采样时必须有提示条，且提示里两个分母都在",
+      "sampled" in panel_source
+      and "scanned.filesRead" in panel_source
+      and "scanned.filesInScope" in panel_source
+      and "scanned.filesInTable" in panel_source,
+      "只写「只读了 K 个文件」等于不说全表多大；三个文件数说的是三件事")
+
+check("底部状态行同时给出 filesInScope 与 filesInTable",
+      "{{ scanned.filesRead }}/{{ scanned.filesInScope }}" in panel_source
+      and "全表 {{ scanned.filesInTable }}" in panel_source,
+      "只剩一个分母就把「3/12（本分区）」说成「3/128（全表）」")
+
+check("分区 chip 带「自动」角标分支，且 × 的含义是「切到全部分区」",
+      "partition.auto" in panel_source and "tp-auto" in panel_source
+      and "clearPartition" in panel_source
+      and "partitionMode.value = 'all'" in panel_source,
+      "× 若被写成「删掉这条自动条件」，用户以为在看全表，实际仍在某个分区里")
+
+check("面板不自己算「最新分区」（不在前端排序 / 取 max）",
+      "sort(" not in panel_source and "Math.max(" not in panel_source,
+      "两处实现迟早不一致，表现是「刷新一次分区变了」")
+
+check("预览页签只对快照托管表渲染（Format / Object / Lance 表不出现）",
+      'v-if="isPaimonTable" label="数据预览" name="preview"' in read(TABLE_VIEW),
+      "非快照托管表的数据文件不是 parquet 族，显示一个「不支持」不如不显示")
+
+# 五类失败各有各的下一步：403 指向权限、404 指向快照被清理、409 说明表刚提交过、
+# 429 是并发上限、504 要给「换小一点的范围」。混成一句「加载失败」时，
+# 用户唯一能做的就是刷新，而其中至少三类刷新是没用的。
+missing_codes = [code for code in ("400", "403", "404", "409", "429", "504")
+                 if f"status === {code}" not in panel_source]
+check("错误态覆盖 400/403/404/409/429/504 六类", not missing_codes,
+      f"这些状态码没有单独文案：{missing_codes}")
+
+controller_source = read(PREVIEW_CONTROLLER)
+check("两条预览端点在服务端都有实现",
+      '@PostMapping("/api/console/v1/tables/{tableId}/preview")' in controller_source
+      and '@GetMapping("/api/console/v1/tables/{tableId}/partitions")' in controller_source,
+      "前端加了端点、服务端没实现时，页签里只有一句「加载失败」")
+
+check("预览端点用 TABLE 级 SELECT 判权，而不是 DESCRIBE",
+      "Access.SELECT" in controller_source and "Access.DESCRIBE" not in controller_source,
+      "能看元数据不等于能看数据——这两件事在客户心里是分开的")
+
+check("「加载更多」只依赖游标：hasMore 为假时游标必须清空",
+      "response.hasMore ? response.cursor : null" in panel_source,
+      "留着旧游标再点一次，会在同一段上重复读")
+
+# Iceberg 表详情页比 Paimon 那页多一步：它按名字加载表（LoadTableResult 是 Iceberg
+# 规格的形状，没有本服务端 id），而预览按 id 寻址。因此它必须先换 id 再挂面板——
+# 但**只换 id，不另写一个面板**：两种格式的预览在界面上必须是同一个东西，
+# 否则"某一列在这张表上显示得不一样"会变成一件需要读两个组件才能解释的事。
+ICE_VIEW = os.path.join(CONSOLE_DIR, "src/views/IcebergTableView.vue")
+ice_source = read(ICE_VIEW)
+check("Iceberg 表详情页挂同一个预览面板（先按名字换 id，不另写组件）",
+      "TablePreviewPanel" in ice_source
+      and "previewApi.lookupTable" in ice_source
+      and 'label="数据预览" name="preview"' in ice_source,
+      "另写一个面板等于两套渲染规则：同一列在两种表上会显示得不一样")
+
+check("换表或刷新时作废已换到的内部 id",
+      ice_source.count("previewTableId.value = null") >= 2,
+      "拿旧表的 id 去预览新表，读到的是别人的数据——比报错严重得多")
+
+# ------------------------------------------------------------------ 21. 文档计数
+
+print()
+print("21. 文档计数（文档写的「N 组 M 项」必须与脚本实际一致）")
 
 # 这一组是**元校验**，起因是一次真实的漂移：docs/console.md 写「12 组 37 项」、
 # README 写「12 组 38 项」，而脚本实际是 38——两个数字都没人核对，因为脚本此前

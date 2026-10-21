@@ -33,6 +33,15 @@ export const ENDPOINTS = {
   // 省略表示首次拉取、回当前最新一页（增量契约见 `docs/event-framework.md` §4）。
   // 两种表格式的事件在同一个流里，`?catalog=` 只是查询参数、不是两套 API。
   listEvents: { method: 'GET', path: '/api/console/v1/events' },
+  // 数据预览：POST 而非 GET 的三个理由（结构化过滤条件、会写审计事件、游标是不透明长串）
+  // 写在 docs/table-data-preview-design.md §5。响应显式 `no-store`。
+  previewTable: { method: 'POST', path: '/api/console/v1/tables/{tableId}/preview' },
+  // 分区选择器的数据源。与预览同一道门（TABLE 级 SELECT）：分区值与文件数本身就是
+  // 数据分布信息。`?keyword=` 按分区值前缀过滤，`?page=`/`?pageSize=` 走全站远程分页。
+  listTablePartitions: { method: 'GET', path: '/api/console/v1/tables/{tableId}/partitions' },
+  // 名字 → 内部 id。只给 Iceberg 表详情页用：它按名字加载表（LoadTableResult 里没有内部
+  // id），而上面两条按 id 寻址。判权与预览同一道门（TABLE 级 SELECT）。
+  lookupPreviewTable: { method: 'GET', path: '/api/console/v1/tables/lookup' },
   // 登录引导：服务端支持哪些认证方式、令牌端点在哪儿、手上这个令牌算不算数。
   auth: { method: 'GET', path: '/api/console/v1/auth' },
   // 用户名 + 密码换令牌：控制台的默认方式，账号在服务端配置里（默认 admin/admin）。

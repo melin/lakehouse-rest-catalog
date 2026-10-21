@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>表数据预览 · 效果图（lakehouse-rest 控制台）</title>
+<style>
+  :root {
+    --sidebar-w: 252px;
+    --sidebar-bg: #0e1626;
+    --sidebar-fg: #c7d2e3;
+    --sidebar-dim: #7b8aa3;
+    --sidebar-active: rgba(59, 130, 246, 0.18);
+    --page-bg: #f3f5f9;
+    --surface: #ffffff;
+    --surface-2: #f7f9fc;
+    --border: #e2e7f0;
+    --text: #1f2937;
+    --dim: #6b7280;
+    --accent: #1d4ed8;
+    --radius: 2px;
+    --warn: #d97706;
+    --danger: #dc2626;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    font: 13.5px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", sans-serif;
+    color: var(--text);
+    background: var(--page-bg);
+  }
+  .app { display: flex; min-height: 100vh; }
+
+  /* ---------------- 侧边栏 ---------------- */
+  .sidebar {
+    width: var(--sidebar-w); flex: 0 0 var(--sidebar-w);
+    background: var(--sidebar-bg); color: var(--sidebar-fg);
+    padding: 14px 0 20px; position: sticky; top: 0; height: 100vh;
+  }
+  .brand { display: flex; align-items: center; gap: 10px; padding: 6px 18px 18px; }
+  .brand-mark {
+    width: 30px; height: 30px; border-radius: 3px; background: #1e40af;
+    display: grid; place-items: center; color: #fff; font-weight: 700; font-size: 15px;
+  }
+  .brand-text strong { display: block; color: #eaf1ff; font-size: 14.5px; }
+  .brand-text span { font-size: 11.5px; color: var(--sidebar-dim); }
+  .nav-group { padding: 10px 18px 4px; font-size: 11px; letter-spacing: .08em; color: #5f6f88; }
+  .nav-item {
+    display: flex; align-items: center; gap: 9px; padding: 8px 18px;
+    font-size: 13px; color: var(--sidebar-fg); cursor: default;
+  }
+  .nav-item.on { background: var(--sidebar-active); color: #dce9ff; border-left: 2px solid #3b82f6; padding-left: 16px; }
+  .nav-item .ico { width: 15px; text-align: center; opacity: .85; font-size: 12px; }
+
+  /* ---------------- 主区 ---------------- */
+  .main { flex: 1; min-width: 0; padding: 16px 24px 40px; }
+  .topbar {
+    display: flex; align-items: center; gap: 10px; font-size: 12.5px; color: var(--dim);
+    margin-bottom: 14px;
+  }
+  .topbar .sep { color: #cbd5e1; }
+  .topbar .current { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+  .topbar select {
+    font: inherit; padding: 4px 10px; border: 1px solid var(--border); border-radius: var(--radius);
+    background: #fff; color: var(--text);
+  }
+
+  .page-head { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 14px; }
+  .page-head h1 { font-size: 20px; margin: 0 0 4px; font-weight: 650; }
+  .page-head .sub { font-size: 12.5px; color: var(--dim); }
+  .page-head .actions { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
+
+  .btn {
+    display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px;
+    border: 1px solid var(--border); background: #fff; color: var(--text);
+    border-radius: var(--radius); font: inherit; font-size: 13px; cursor: pointer;
+  }
+  .btn:hover { border-color: #c7d2e3; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn.primary:hover { background: #1a45c0; }
+  .btn.ghost { background: var(--surface-2); }
+  .btn.danger { color: var(--danger); border-color: #f3c7c7; background: #fff; }
+  .btn.sm { height: 26px; padding: 0 9px; font-size: 12.5px; }
+
+  /* ---------------- 卡片 / 页签 ---------------- */
+  .card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+    box-shadow: 0 1px 2px rgba(16,24,40,.05), 0 1px 3px rgba(16,24,40,.05);
+  }
+  .tabs { display: flex; gap: 2px; padding: 0 14px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+  .tab {
+    padding: 11px 12px 9px; font-size: 13.5px; color: var(--dim); cursor: pointer;
+    border-bottom: 2px solid transparent; margin-bottom: -1px; white-space: nowrap;
+  }
+  .tab.on { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+  .tab .dot { display: inline-block; width: 5px; height: 5px; border-radius: 50%; background: var(--warn); margin-left: 5px; vertical-align: 2px; }
+  .tab-body { padding: 14px 16px 16px; }
+
+  /* ---------------- 工具行 ---------------- */
+  .tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+  .field { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--dim); }
+  .control {
+    display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px;
+    border: 1px solid var(--border); border-radius: var(--radius); background: #fff;
+    font-size: 13px; color: var(--text); min-width: 110px;
+  }
+  .control .caret { margin-left: auto; color: #9aa5b6; font-size: 10px; }
+  .control.mono { font-family: var(--mono); font-size: 12.5px; }
+  .spacer { flex: 1; }
+  .chip-note { font-size: 12px; color: var(--warn); }
+
+  /* ---------------- 分区控件 ---------------- */
+  .part-wrap { position: relative; display: inline-flex; }
+  .auto-badge {
+    display: inline-block; padding: 0 5px; height: 17px; line-height: 17px;
+    font-size: 10.5px; color: #1e3a8a; background: #e6efff; border: 1px solid #cfdcf7;
+    border-radius: 2px; font-family: sans-serif; letter-spacing: .02em;
+  }
+  .part-pop {
+    position: absolute; top: 34px; left: 0; z-index: 15; width: 404px; display: none;
+    background: #fff; border: 1px solid var(--border); border-radius: 3px;
+    box-shadow: 0 10px 28px rgba(16,24,40,.14); padding: 8px 0 0;
+  }
+  .part-pop.open { display: block; }
+  .pp-head { padding: 2px 12px 8px; font-size: 11.8px; color: var(--dim); border-bottom: 1px solid #f0f3f8; }
+  .pp-head b { color: var(--text); font-weight: 600; display: block; font-size: 12.5px; margin-bottom: 2px; }
+  .pp-row {
+    display: grid; grid-template-columns: 1fr 92px 78px; gap: 8px; align-items: center;
+    padding: 7px 12px; font-size: 12.3px; cursor: pointer;
+  }
+  .pp-row:hover { background: #f6f9ff; }
+  .pp-row.on { background: #eef4ff; }
+  .pp-row.on .pp-v { color: var(--accent); font-weight: 600; }
+  .pp-row.dim { color: #9aa5b6; }
+  .pp-row.dim:hover { background: transparent; }
+  .pp-v { font-family: var(--mono); font-size: 12px; }
+  .pp-m, .pp-t { color: var(--dim); font-size: 11.8px; }
+  .pp-foot {
+    display: flex; justify-content: space-between; gap: 10px; margin-top: 4px;
+    border-top: 1px solid var(--border); padding: 8px 12px; font-size: 12px; color: var(--accent);
+  }
+
+  /* ---------------- 过滤条 ---------------- */
+  .filterbar {
+    border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-2);
+    padding: 10px 12px; margin-bottom: 12px;
+  }
+  .filter-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .filter-row .control { background: #fff; min-width: 0; }
+  .filter-row .control.col { min-width: 132px; }
+  .filter-row .control.op { min-width: 116px; }
+  .filter-row .value {
+    height: 30px; padding: 0 10px; border: 1px solid var(--border); border-radius: var(--radius);
+    font: inherit; font-size: 13px; min-width: 168px; background: #fff;
+  }
+  .filter-row .value:focus { outline: 2px solid rgba(29,78,216,.15); border-color: var(--accent); }
+  .chips { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 9px; }
+  .chips .lead { font-size: 11.5px; color: var(--dim); letter-spacing: .04em; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 8px;
+    border: 1px solid #cfd9ea; background: #eef4ff; color: #1e3a8a;
+    border-radius: var(--radius); font-size: 12.5px; font-family: var(--mono);
+  }
+  .chip .x { color: #64748b; cursor: pointer; font-family: sans-serif; }
+  .chip .x:hover { color: var(--danger); }
+  .and { font-size: 11px; color: var(--dim); letter-spacing: .06em; }
+  .dirty { font-size: 12px; color: var(--warn); margin-left: 2px; }
+
+  /* ---------------- 提示条 ---------------- */
+  .banner {
+    display: flex; align-items: flex-start; gap: 8px; padding: 8px 12px; margin-bottom: 12px;
+    border-left: 3px solid var(--warn); background: #fffbeb; color: #7c4a03;
+    font-size: 12.5px; border-radius: var(--radius);
+  }
+  .banner .tag { font-weight: 600; }
+  .banner.history { border-left-color: var(--accent); background: #eff6ff; color: #1e3a8a; }
+
+  /* ---------------- 数据表 ---------------- */
+  .tablewrap { border: 1px solid var(--border); border-radius: var(--radius); overflow: auto; max-height: 420px; }
+  table.dtable { width: 100%; border-collapse: collapse; font-size: 12.8px; }
+  table.dtable thead th {
+    position: sticky; top: 0; z-index: 1; background: var(--surface-2);
+    text-align: left; font-weight: 600; color: #475569; padding: 8px 12px;
+    border-bottom: 1px solid var(--border); white-space: nowrap;
+  }
+  table.dtable th .type {
+    display: inline-block; margin-left: 6px; padding: 0 5px; height: 17px; line-height: 17px;
+    font-family: var(--mono); font-size: 10.5px; color: #64748b; background: #eef2f7;
+    border-radius: 2px; font-weight: 500; vertical-align: 1px;
+  }
+  table.dtable th .pk { color: var(--warn); margin-right: 4px; font-size: 11px; }
+  table.dtable tbody td {
+    padding: 7px 12px; border-bottom: 1px solid #f0f3f8; vertical-align: top;
+    font-variant-numeric: tabular-nums;
+  }
+  table.dtable tbody tr:hover td { background: #f8fbff; }
+  table.dtable tbody tr:last-child td { border-bottom: none; }
+  .num { font-family: var(--mono); font-size: 12.5px; }
+  .null { color: #9aa5b6; font-style: italic; font-family: var(--mono); font-size: 12px; }
+  .bin { color: #7c3aed; font-family: var(--mono); font-size: 12px; }
+  .json { color: #0f766e; font-family: var(--mono); font-size: 12px; }
+  .clip { display: inline-block; max-width: 230px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+  .mono-dim { font-family: var(--mono); font-size: 12px; color: var(--dim); }
+
+  /* ---------------- 底部 ---------------- */
+  .footerbar {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding-top: 10px; margin-top: 10px; border-top: 1px solid var(--border);
+    font-size: 12.3px; color: var(--dim);
+  }
+  .footerbar b { color: var(--text); font-weight: 600; }
+  .footerbar .sep { color: #cbd5e1; }
+  .footerbar .grow { flex: 1; }
+
+  /* ---------------- 空 / 错误态 ---------------- */
+  .statebox { padding: 44px 20px; text-align: center; color: var(--dim); }
+  .statebox .ico { font-size: 26px; margin-bottom: 8px; opacity: .7; }
+  .statebox strong { display: block; color: var(--text); font-size: 14px; margin-bottom: 4px; }
+  .statebox p { margin: 0 0 12px; font-size: 12.5px; }
+  .statebox .hint { font-family: var(--mono); font-size: 11.5px; color: #94a3b8; margin-top: 10px; }
+
+  /* ---------------- 演示状态切换（效果图专用） ---------------- */
+  .demo {
+    position: fixed; right: 18px; bottom: 18px; z-index: 20;
+    display: flex; align-items: center; gap: 6px; padding: 8px 10px;
+    background: #111827; color: #e5e7eb; border-radius: 3px; font-size: 12px;
+    box-shadow: 0 8px 24px rgba(0,0,0,.18);
+  }
+  .demo span { color: #9ca3af; margin-right: 2px; }
+  .demo button {
+    font: inherit; padding: 4px 9px; border-radius: 2px; border: 1px solid transparent;
+    background: rgba(255,255,255,.08); color: #e5e7eb; cursor: pointer;
+  }
+  .demo button.on { background: #1d4ed8; border-color: #3b82f6; color: #fff; }
+
+  body[data-state="empty"] .only-normal,
+  body[data-state="forbidden"] .only-normal,
+  body[data-state="unsupported"] .only-normal { display: none !important; }
+  body:not([data-state="empty"]) .only-empty,
+  body:not([data-state="forbidden"]) .only-forbidden,
+  body:not([data-state="unsupported"]) .only-unsupported { display: none !important; }
+
+  @media (max-width: 1180px) {
+    .sidebar { display: none; }
+    .main { padding: 14px; }
+  }
+</style>
+</head>
+<body data-state="normal">
+<div class="app">
+
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">P</div>
+      <div class="brand-text"><strong>LakeHouse Catalog</strong><span>管理控制台</span></div>
+    </div>
+    <div class="nav-group">通用</div>
+    <div class="nav-item"><span class="ico">▦</span> 控制台概览</div>
+    <div class="nav-group">目录（CATALOG API）</div>
+    <div class="nav-item"><span class="ico">▤</span> 目录浏览</div>
+    <div class="nav-group">治理（MANAGEMENT API）</div>
+    <div class="nav-item"><span class="ico">▥</span> Catalogs</div>
+    <div class="nav-item"><span class="ico">◔</span> 主体</div>
+    <div class="nav-item"><span class="ico">◑</span> 角色</div>
+    <div class="nav-item"><span class="ico">◈</span> 权限管理</div>
+    <div class="nav-item on"><span class="ico">▧</span> 优化任务</div>
+    <div class="nav-group">审计</div>
+    <div class="nav-item"><span class="ico">◎</span> 事件</div>
+    <div class="nav-group">系统</div>
+    <div class="nav-item"><span class="ico">⚙</span> 连接设置</div>
+  </aside>
+
+  <main class="main">
+    <div class="topbar">
+      <span>控制台</span><span class="sep">/</span><span>目录浏览</span><span class="sep">/</span>
+      <span>表详情</span>
+      <span class="current">
+        当前 Catalog
+        <select><option>paimon_catalog</option><option>demo</option><option>iceberg_catalog</option></select>
+      </span>
+    </div>
+
+    <div class="page-head">
+      <div>
+        <h1>表：paimon_sample2</h1>
+        <div class="sub">paimon_catalog / demo / paimon_sample2　这里是引擎客户端读写的那一份数据；预览按抽样读，不保证全表口径。</div>
+      </div>
+      <div class="actions">
+        <button class="btn">← 返回列表</button>
+        <button class="btn">刷新</button>
+        <button class="btn danger">删除表</button>
+      </div>
+    </div>
+
+    <section class="card">
+      <div class="tabs">
+        <div class="tab">详细信息</div>
+        <div class="tab on">数据预览</div>
+        <div class="tab">快照</div>
+        <div class="tab">标签</div>
+        <div class="tab">分支</div>
+        <div class="tab">文件列表</div>
+        <div class="tab">数据访问</div>
+        <div class="tab">存储优化</div>
+      </div>
+
+      <div class="tab-body">
+
+        <!-- ============ 工具行 ============ -->
+        <div class="tools only-normal">
+          <span class="field">快照</span>
+          <span class="control" style="min-width:150px">
+            <span>最新快照 #8</span><span class="caret">▾</span>
+          </span>
+          <span class="field">分区</span>
+          <span class="part-wrap">
+            <span class="control" id="partCtl" style="min-width:206px">
+              <span class="mono-dim">dt</span><span>= 2026-10-21</span>
+              <span class="auto-badge">自动</span>
+              <span class="caret">▾</span>
+            </span>
+            <div class="part-pop" id="partPop">
+              <div class="pp-head">
+                <b>按分区筛选</b>
+                默认锁最新分区；多级分区时按文件数自动级联，本表只有 dt 一级，锁一次即够
+              </div>
+              <div class="pp-row on">
+                <span class="pp-v">dt = 2026-10-21</span><span class="pp-m">12 个 · 86 MB</span><span class="pp-t">今天 08:12</span>
+              </div>
+              <div class="pp-row">
+                <span class="pp-v">dt = 2026-10-20</span><span class="pp-m">9 个 · 61 MB</span><span class="pp-t">昨天 23:57</span>
+              </div>
+              <div class="pp-row">
+                <span class="pp-v">dt = 2026-10-19</span><span class="pp-m">11 个 · 74 MB</span><span class="pp-t">10-19 23:41</span>
+              </div>
+              <div class="pp-row dim">
+                <span class="pp-v">dt = 2026-10-22</span><span class="pp-m">0 个 · 暂无数据</span><span class="pp-t">—</span>
+              </div>
+              <div class="pp-foot"><span>全部分区（128 个文件）</span><span>只看最新（自动）</span></div>
+            </div>
+          </span>
+          <span class="field">列</span>
+          <span class="control" style="min-width:170px">
+            <span>全部列（7）</span><span class="caret">▾</span>
+          </span>
+          <button class="btn sm">刷新</button>
+          <span class="spacer"></span>
+          <span class="chip-note">抽样预览 · 最多 200 行/页</span>
+        </div>
+
+        <!-- ============ 历史快照提示（示意，正常状态不显示） ============ -->
+        <!-- 过滤条 -->
+        <div class="filterbar only-normal">
+          <div class="filter-row">
+            <span class="control col"><span class="mono-dim">列</span><span>amount</span><span class="caret">▾</span></span>
+            <span class="control op"><span class="mono-dim">算子</span><span>&gt;=</span><span class="caret">▾</span></span>
+            <input class="value" value="100" />
+            <button class="btn sm ghost">+ 条件</button>
+            <button class="btn sm primary">应用</button>
+            <span class="dirty">● 有未应用的改动</span>
+            <span class="spacer"></span>
+            <button class="btn sm">清空过滤</button>
+          </div>
+          <div class="chips">
+            <span class="lead">生效条件</span>
+            <span class="chip">amount &gt;= 100 <span class="x">×</span></span>
+            <span class="and">分区条件在工具行</span>
+            <span class="chip" style="background:#f2f6ff">dt = 2026-10-21 <span class="auto-badge" style="margin-left:2px">自动</span></span>
+          </div>
+        </div>
+
+        <!-- ============ 采样提示条 ============ -->
+        <div class="banner only-normal">
+          <span class="tag">抽样</span>
+          <span>本次预览只读了最近 <b>3 / 12</b> 个数据文件（本分区，全表 128 个 · 12.0 MB），<b>不是全表</b>。要看别的日期，换一个分区；要看全部分区，在分区下拉里选「全部分区」。</span>
+        </div>
+
+        <!-- ============ 数据表 ============ -->
+        <div class="tablewrap only-normal">
+          <table class="dtable">
+            <thead>
+              <tr>
+                <th><span class="pk">🔑</span>id<span class="type">INT</span></th>
+                <th>name<span class="type">STRING</span></th>
+                <th>amount<span class="type">DECIMAL(10,2)</span></th>
+                <th>dt<span class="type">STRING</span></th>
+                <th>created_at<span class="type">TIMESTAMP(3)</span></th>
+                <th>payload<span class="type">STRING</span></th>
+                <th>blob<span class="type">BINARY</span></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="num">1</td>
+                <td>alice</td>
+                <td class="num">128.50</td>
+                <td class="mono-dim">2026-10-21</td>
+                <td class="mono-dim">2026-10-21 09:12:03</td>
+                <td class="json">{"coupon":"A1","channel":"app"}</td>
+                <td class="null">&lt;null&gt;</td>
+              </tr>
+              <tr>
+                <td class="num">2</td>
+                <td>bob</td>
+                <td class="num">99.00</td>
+                <td class="mono-dim">2026-10-21</td>
+                <td class="mono-dim">2026-10-21 09:13:44</td>
+                <td class="json">{"coupon":null,"channel":"h5"}</td>
+                <td class="null">&lt;null&gt;</td>
+              </tr>
+              <tr>
+                <td class="num">3</td>
+                <td>charlie</td>
+                <td class="num">1,204.00</td>
+                <td class="mono-dim">2026-10-21</td>
+                <td class="mono-dim">2026-10-21 10:02:11</td>
+                <td><span class="clip json" title='{"coupon":"B7","channel":"app","source":"campaign_2024_q1_retargeting","utm":"utm_source%3Dwechat%26utm_medium%3Dsocial"}'>{"coupon":"B7","channel":"app","source":"campaign_2024_q1_re…</span></td>
+                <td class="bin">&lt;binary 12 B&gt;</td>
+              </tr>
+              <tr>
+                <td class="num">4</td>
+                <td class="null">&lt;null&gt;</td>
+                <td class="num">0.00</td>
+                <td class="mono-dim">2026-10-21</td>
+                <td class="mono-dim">2026-10-21 10:31:55</td>
+                <td class="json">{}</td>
+                <td class="bin">&lt;binary 1.2 KB&gt;</td>
+              </tr>
+              <tr>
+                <td class="num">5</td>
+                <td>diana</td>
+                <td class="num">733.20</td>
+                <td class="mono-dim">2026-10-21</td>
+                <td class="mono-dim">2026-10-21 11:07:09</td>
+                <td class="json">{"coupon":"A1","channel":"mini"}</td>
+                <td class="null">&lt;null&gt;</td>
+              </tr>
+              <tr>
+                <td class="num">6</td>
+                <td>erin</td>
+                <td class="num">2,980.00</td>
+                <td class="mono-dim">2026-10-21</td>
+                <td class="mono-dim">2026-10-21 11:48:30</td>
+                <td class="json">{"coupon":"C2","channel":"app"}</td>
+                <td class="null">&lt;null&gt;</td>
+              </tr>
+              <tr>
+                <td class="num">7</td>
+                <td>frank</td>
+                <td class="num">56.80</td>
+                <td class="mono-dim">2026-10-21</td>
+                <td class="mono-dim">2026-10-21 12:02:47</td>
+                <td class="json">{"coupon":null,"channel":"h5"}</td>
+                <td class="null">&lt;null&gt;</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- ============ 底部状态行 ============ -->
+        <div class="footerbar only-normal">
+          <span>已加载 <b>7</b> 行</span><span class="sep">·</span>
+          <span>读了 <b>3 / 12</b> 个文件（本分区，全表 128）· 12.0 MB</span><span class="sep">·</span>
+          <span>过滤掉 <b>320</b> 行（命中 7）</span><span class="sep">·</span>
+          <span>耗时 <b>42 ms</b></span><span class="sep">·</span>
+          <span>快照 <b>#8</b></span>
+          <span class="grow"></span>
+          <button class="btn sm primary">加载更多</button>
+        </div>
+
+        <!-- ============ 空结果 ============ -->
+        <div class="statebox only-empty">
+          <div class="ico">🔍</div>
+          <strong>过滤后没有匹配行</strong>
+          <p>本次扫了 3 个文件、420 行，没有一行满足 <code class="mono-dim">dt = 2024-02-30</code>。<br />
+             这个分区可能不存在，或者日期写错了。</p>
+          <button class="btn sm">清空过滤</button>
+          <button class="btn sm">切到「最新快照」</button>
+          <div class="hint">filesRead 3 / filesInScope 12 · filesInTable 128 · rowsRead 420 · rowsMatched 0</div>
+        </div>
+
+        <!-- ============ 无权限 ============ -->
+        <div class="statebox only-forbidden">
+          <div class="ico">🔒</div>
+          <strong>没有读这张表数据的权限</strong>
+          <p>预览需要表级 <code class="mono-dim">SELECT</code> 权限（当前主体只有 <code class="mono-dim">DESCRIBE</code>）。
+             能看元数据不等于能看数据，这两件事是分开授予的。</p>
+          <button class="btn sm primary">申请权限</button>
+          <button class="btn sm">查看我的授权</button>
+          <div class="hint">paimon_catalog / demo / paimon_sample2 · Access.SELECT</div>
+        </div>
+
+        <!-- ============ 格式不支持 ============ -->
+        <div class="statebox only-unsupported">
+          <div class="ico">▤</div>
+          <strong>这张表的数据格式暂不支持预览</strong>
+          <p>预览只读 Parquet / ORC / Avro 三种数据文件。当前表是 <code class="mono-dim">lance-table</code>，
+             它的数据在 Lance 自己的目录结构里，控制台不解析这种格式。</p>
+          <button class="btn sm">打开「文件列表」</button>
+          <button class="btn sm">打开「数据访问」</button>
+          <div class="hint">tableType=lance-table · 预览只对 Paimon / Iceberg 的快照托管表开放</div>
+        </div>
+
+      </div>
+    </section>
+  </main>
+</div>
+
+<div class="demo">
+  <span>演示状态</span>
+  <button data-set="normal" class="on">正常</button>
+  <button data-set="empty">空结果</button>
+  <button data-set="forbidden">无权限</button>
+  <button data-set="unsupported">格式不支持</button>
+</div>
+
+<script>
+  document.querySelectorAll('.demo button').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      document.body.dataset.state = btn.dataset.set;
+      document.querySelectorAll('.demo button').forEach(function (b) { b.classList.toggle('on', b === btn); });
+    });
+  });
+  // 分区下拉：点开 / 点外面关掉（效果图只为看形状，不做真实选择）
+  var partCtl = document.getElementById('partCtl');
+  var partPop = document.getElementById('partPop');
+  if (partCtl && partPop) {
+    partCtl.addEventListener('click', function (e) {
+      e.stopPropagation();
+      partPop.classList.toggle('open');
+    });
+    document.addEventListener('click', function () { partPop.classList.remove('open'); });
+    partPop.addEventListener('click', function (e) { e.stopPropagation(); });
+    partPop.querySelectorAll('.pp-row').forEach(function (row) {
+      row.addEventListener('click', function () {
+        partPop.querySelectorAll('.pp-row').forEach(function (r) { r.classList.remove('on'); });
+        row.classList.add('on');
+      });
+    });
+  }
+
+  // 效果图里也演示一下「改条件未应用」的标记：切一次输入框就亮起来
+  var value = document.querySelector('.filter-row .value');
+  if (value) {
+    value.addEventListener('input', function () {
+      document.querySelector('.dirty').style.display = 'inline';
+    });
+  }
+</script>
+</body>
+</html>

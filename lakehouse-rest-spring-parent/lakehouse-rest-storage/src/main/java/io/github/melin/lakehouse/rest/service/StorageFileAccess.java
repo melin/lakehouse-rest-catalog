@@ -4,12 +4,14 @@ import io.github.melin.lakehouse.rest.domain.entity.CatalogEntity;
 import io.github.melin.lakehouse.rest.domain.repo.CatalogRepository;
 import io.github.melin.lakehouse.rest.support.ApiException;
 import io.github.melin.lakehouse.rest.support.ResourceType;
+import io.github.melin.lakehouse.rest.support.SeekableBytes;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import lombok.RequiredArgsConstructor;
 import org.apache.paimon.fs.FileIO;
 import org.apache.paimon.fs.Path;
+import org.apache.paimon.fs.SeekableInputStream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -106,6 +108,42 @@ public class StorageFileAccess {
         }
     }
 
+    /**
+     * 以 catalog 的身份**按位置读**一个数据文件。
+     *
+     * <p><b>为什么需要"按位置"。</b>预览读的是 parquet：先读文件尾部的 footer，
+     * 再按 row group 跳到各处读列块。普通 {@code InputStream} 只能从头读到尾，
+     * 跳过 N 字节要真读再丢——对对象存储来说这是两个数量级的差别。
+     *
+     * <p><b>为什么参数与返回都不带格式类型。</b>调用方是 Iceberg 协议面的预览读取器，
+     * 它不能 import {@code org.apache.paimon.fs.SeekableInputStream}（那条禁令由
+     * 模块 POM 的 {@code bannedDependencies} 守着）。本类把它包成 core 里的
+     * {@link SeekableBytes}，于是"打开文件"这件事的实现仍然只有一处——
+     * 与写元数据共用同一套凭据解析，避免"引擎能读、控制台读不了"。
+     *
+     * <p><b>为什么调用方必须关。</b>句柄不随请求结束自动释放；对象存储上它对应一个
+     * HTTP 连接池里的连接，泄漏的后果是连接池耗尽，现象与网络故障无法区分。
+     * 因此返回值是 {@code Closeable}，读取器在 finally / try-with-resources 里关。
+     *
+     * @throws ApiException 404 文件不存在（清单与文件不一致时会发生：并发 compaction
+     *                      删掉了刚被规划进来的文件）；500 仓库访问失败
+     */
+    public SeekableBytes open(String catalogId, String location) {
+        try {
+            FileIO fileIO = fileIO(catalogId, location);
+            Path path = new Path(location);
+            if (!fileIO.exists(path)) {
+                throw new ApiException(404, null, location, "No such file: " + location);
+            }
+            // 长度先问一次：parquet 的 footer 读取要从 length - 8 开始寻址，
+            // 而 InputFile 的契约要求长度可答且廉价
+            return new PaimonSeekableBytes(fileIO.newInputStream(path),
+                    fileIO.getFileSize(path), location);
+        } catch (IOException e) {
+            throw failure("open", location, e);
+        }
+    }
+
     /** 删一个文件；文件不存在时返回 {@code false} 而不是报错。 */
     public boolean delete(String catalogId, String location) {
         try {
@@ -157,5 +195,59 @@ public class StorageFileAccess {
         log.error("failed to {} {}", action, location, cause);
         return new ApiException(500, null, location,
                 "failed to " + action + " " + location + ": " + cause.getMessage());
+    }
+
+    /**
+     * 把 Paimon 的流包成 {@link SeekableBytes}——**这个类就是那道类型边界**。
+     *
+     * <p>包装而不是暴露：调用方拿到的是"能 seek 的字节流"这个能力，而不是
+     * {@code org.apache.paimon.fs.SeekableInputStream} 这个类型。于是 Iceberg 协议面
+     * 不必为了读一个文件而依赖 Paimon，而凭据与 scheme 插件的解析仍然只有一份。
+     *
+     * <p>长度在构造时定死，之后不再问存储：一次预览里文件的长度是稳定的
+     * （快照托管的数据文件写完就不再改），而重复问一次可能多一次 RTT。
+     */
+    private static final class PaimonSeekableBytes implements SeekableBytes {
+
+        private final SeekableInputStream stream;
+        private final long length;
+        private final String location;
+
+        private PaimonSeekableBytes(SeekableInputStream stream, long length, String location) {
+            this.stream = stream;
+            this.length = length;
+            this.location = location;
+        }
+
+        @Override
+        public long length() {
+            return length;
+        }
+
+        @Override
+        public long position() {
+            try {
+                return stream.getPos();
+            } catch (IOException e) {
+                // position() 不在接口上声明受检异常：调用方（parquet 读取器）此时
+                // 只会把它当成"流坏了"，包成未检异常让它走同一条失败路径
+                throw new UncheckedIOException("cannot tell the position in " + location, e);
+            }
+        }
+
+        @Override
+        public void seek(long position) throws IOException {
+            stream.seek(position);
+        }
+
+        @Override
+        public int read(byte[] target, int offset, int length) throws IOException {
+            return stream.read(target, offset, length);
+        }
+
+        @Override
+        public void close() throws IOException {
+            stream.close();
+        }
     }
 }
