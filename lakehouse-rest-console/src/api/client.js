@@ -105,10 +105,17 @@ export function buildPath(name, params = {}) {
  * @param {object} options `params`（含 `query`）、`body` 或 `form`
  * @returns {Promise<object>} 解析后的 JSON；204 等空响应返回 `{}`
  */
-export async function request(name, { params = {}, body, form } = {}) {
+export async function request(name, { params = {}, body, form, ...rest } = {}) {
   const endpoint = ENDPOINTS[name]
   if (!endpoint) {
     throw new Error(`unknown endpoint: ${name}`)
+  }
+  // 顶层的 `query` 会被静默丢掉：拼 URL 的 `buildPath` 只读 `params.query`，
+  // 于是请求照样发出去、服务端照样 200，只是什么过滤与分页都没传过去——
+  // 症状是「表格显示了全部数据」「点下一页没变化」，两处相隔十万八千里。
+  // 这类错编译期抓不到，只能让它当场响。
+  if (rest.query !== undefined) {
+    throw new Error(`${name}: query 要写在 params 里（{ params: { query } }），写在顶层会被丢弃`)
   }
   const url = `${getBaseUrl()}${buildPath(name, params)}`
   const headers = { Accept: 'application/json' }

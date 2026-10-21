@@ -364,13 +364,15 @@ class ManagementApiTests {
      * <p>为控制台「存储」页服务。这里覆盖 HTTP 形状：汇总把全部表各计入一次、
      * 空表进 {@code empty} 而不是消失（left join 语义，投影数值的逐列断言在
      * {@code IcebergRestCatalogApiTests#commitSummaryIsProjectedIntoSnapshotRows}）、
-     * onlyPaimon 滤掉 format 表、未知 catalog 404。
+     * 没有表的库也出现在按库聚合里、onlyPaimon 滤掉 format 表、未知 catalog 404。
      */
     @Test
     @Order(8)
     void tableStatsSummaryCoversWholeCatalog() throws Exception {
-        // fmt-default（PAIMON）在 Order 7 已建；两张表：普通表 + format 表
+        // fmt-default（PAIMON）在 Order 7 已建；两张表：普通表 + format 表，
+        // 外加一个**没有表**的库——「按库过滤」下拉的候选来自按库聚合，空库不能消失。
         json(200, "POST", "/v1/fmt-default/databases", "{\"name\":\"stats_db\"}");
+        json(200, "POST", "/v1/fmt-default/databases", "{\"name\":\"stats_empty\"}");
         json(200, "POST", "/v1/fmt-default/databases/stats_db/tables", """
                 {"identifier":{"database":"stats_db","object":"stats_tbl"},
                  "schema":{"fields":[{"id":0,"name":"id","type":"INT"}],
@@ -393,6 +395,12 @@ class ManagementApiTests {
         JsonNode dbRow = summary.get("databases").get(0);
         assertEquals("stats_db", dbRow.get("database").asString());
         assertEquals(2, dbRow.get("tables").asLong());
+        // 空库也有一行（从 DatabaseEntity 驱动 group by；两行 size 都是 0，按库名升序）
+        assertEquals(2, summary.get("databases").size(), "没有表的库也要出现在按库聚合里");
+        JsonNode emptyDbRow = summary.get("databases").get(1);
+        assertEquals("stats_empty", emptyDbRow.get("database").asString());
+        assertEquals(0, emptyDbRow.get("tables").asLong());
+        assertEquals(0, emptyDbRow.get("files").asLong());
 
         assertTrue(summary.get("topTables").isEmpty(), "没有写入过数据的表不进 Top 10");
         assertEquals(0, summary.get("histogram").get("counted").asLong());
@@ -465,6 +473,24 @@ class ManagementApiTests {
         assertEquals(0, json(200, "GET", M + "/catalogs/fmt-iceberg/table-stats/tables", null)
                 .get("total").asLong());
         json(404, "GET", M + "/catalogs/does-not-exist/table-stats/tables", null);
+
+        // ---- 排序白名单：控制台的表格每一列都能点，点了必须取到数（不是 500）。
+        // 这里逐个排序列打一遍，「平均文件大小」是派生列（size/files），没有实体字段，
+        // 走的是 JpaSort.unsafe 的原始表达式——它曾经整列 500，而单元测试看不到：
+        // 无论走 MockMvc 还是直接调还需要真发一次请求才能发现。
+        for (String key : List.of("files", "size", "records", "updatedAt", "table", "avgSize")) {
+            for (String order : List.of("desc", "asc")) {
+                JsonNode sorted = json(200, "GET",
+                        M + "/catalogs/fmt-default/table-stats/tables?sort=" + key + "&order=" + order
+                                + "&page=1&pageSize=20", null);
+                assertEquals(2, sorted.get("page").get("total").asLong(),
+                        "排序 " + key + " " + order + " 不该改变命中行数");
+            }
+        }
+        // 白名单外的键回落到默认排序（size）：非法键也不能变成 500。
+        assertEquals(2, json(200, "GET",
+                M + "/catalogs/fmt-default/table-stats/tables?sort=../../etc/passwd", null)
+                .get("total").asLong());
     }
 
     private static List<String> strings(JsonNode array) {

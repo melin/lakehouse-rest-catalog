@@ -11,9 +11,9 @@ import { managementApi } from './management.js'
  *       一次算完，响应大小与表数无关——**统计永远是全量的**，没有截断这回事。
  *       这是「预先计算」的低配形态：投影行本身就是写路径维护好的中间产物，
  *       聚合是毫秒级单表扫描；真到了热点规模，物化加在这份投影上，契约不变。</li>
- *   <li><b>逐表明细</b>走 `GET …/table-stats/tables`：远程分页，分页 / 按库 /
- *       关键字过滤 / 排序全部下推 SQL。**打开存储页不拉任何明细**——
- *       选中了库才按页取数，翻页 / 排序 / 过滤各自再取一页。</li>
+ *   <li><b>表明细</b>走 `GET …/table-stats/tables`：远程分页，按库 /
+ *       关键字过滤 / 排序全部下推 SQL。打开页面默认取**全部表**的第一页，
+ *       翻页 / 排序 / 过滤各自再取一页。</li>
  * </ul>
  *
  * <p>Format / Object / Lance 表不会再被问到任何单表端点：汇总与明细都按
@@ -83,7 +83,7 @@ export function loadCatalogSummary({ catalogName, onlyPaimon = false }) {
  *
  * @param {object} options
  * @param {string} options.catalogName catalog 名（即 prefix）
- * @param {string} [options.database] 只取这个库——控制台**选中库才发这个请求**
+ * @param {string} [options.database] 只取这个库——不传 = 全部表
  * @param {string} [options.keyword] 按库名.表名模糊过滤（服务端 LIKE）
  * @param {boolean} [options.onlyPaimon] 只看 Paimon 表（服务端按 `tableType` 过滤）
  * @param {string} [options.sort] 排序键：files / size / avgSize / records / updatedAt / table

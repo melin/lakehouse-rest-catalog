@@ -155,7 +155,7 @@
         </div>
       </PanelCard>
 
-      <PanelCard title="逐表明细" :hint="detailHint" flush>
+      <PanelCard title="表明细" :hint="detailHint" flush>
         <template #actions>
           <el-input
             v-model="keyword"
@@ -166,11 +166,6 @@
           />
           <el-checkbox v-model="onlySmall" size="small">只看小文件表</el-checkbox>
         </template>
-        <!-- 没选库不发请求：明细是远程分页，打开页面不去预取全部库的表 -->
-        <div v-if="!database" class="pc-dim pc-sto-empty">
-          选择一个库，按需加载这个库的逐表明细。
-        </div>
-        <template v-else>
         <!-- 排序用 custom：数据一加分页，el-table 自带的排序就只能排当前页那 20 行——
              「点存储排序，最大的一张表不见了」这种错必须拦在 computed 里。 -->
         <el-table
@@ -221,7 +216,6 @@
           @page-change="onPageChange"
           @size-change="onSizeChange"
         />
-        </template>
       </PanelCard>
     </ResourceState>
   </div>
@@ -251,8 +245,8 @@ import { SMALL_FILE_THRESHOLD, decorate } from '@/utils/storageHealth.js'
  *
  * <p>数据来自管理面两个聚合端点，各按各的量级取数：
  * **汇总**（KPI / 按库 / Top 10 / 直方图）由服务端 SQL 聚合一次算完，永远是全量，
- * 没有截断；**逐表明细**是远程分页——打开页面不拉任何明细，选中了库才按页取数，
- * 分页 / 关键字 / 排序全部下推 SQL。「只统计 Paimon 表」交给服务端
+ * 没有截断；**表明细**是远程分页——打开页面默认取全部表的第一页，按库 / 关键字 /
+ * 排序各自重取，全部下推 SQL。「只统计 Paimon 表」交给服务端
  * （`tableType` 过滤），切换开关重新取一次汇总。指标口径的差异说明见
  * `utils/storageHealth.js` 的文件头。
 
@@ -271,7 +265,8 @@ const error = ref('')
 const summary = ref({ totals: {}, databases: [], topTables: [], histogram: { buckets: [], counted: 0, unknown: 0 } })
 const totals = computed(() => summary.value.totals || {})
 
-// 库名候选来自汇总（有表的库才会出现），与 loading 状态分开存：
+// 库名候选来自汇总的按库聚合（服务端以 DatabaseEntity 驱动 group by，
+// 没有表的库——比如 default——也在候选里），与 loading 状态分开存：
 // 统计失败重试时下拉里已有的选项不该闪没。
 const databases = ref([])
 
@@ -280,7 +275,7 @@ const database = ref('')
  *  过滤在服务端按 tableType 做，切换开关重新取一次汇总（一次请求，与表数无关）。 */
 const onlyPaimon = ref(true)
 
-// ---------------------------------------------------------------- 逐表明细（远程分页）
+// ---------------------------------------------------------------- 表明细（远程分页）
 const keyword = ref('')
 const onlySmall = ref(false)
 const page = ref(1)
@@ -309,9 +304,9 @@ async function reload() {
   }
 }
 
-/** 明细的一页。没选库不请求——打开页面不去预取全部库的表。 */
+/** 明细的一页。默认不带库（全部表），翻页 / 排序 / 过滤各自重取。 */
 async function fetchDetail() {
-  if (!props.catalogName || !database.value) return
+  if (!props.catalogName) return
   detailLoading.value = true
   try {
     detail.value = await loadCatalogTableRows({
@@ -332,30 +327,34 @@ async function fetchDetail() {
   }
 }
 
-onMounted(reload)
+onMounted(() => {
+  reload()
+  fetchDetail()
+})
 // 切 catalog 时组件不会重建（同一条路由、只有参数变），所以这里要显式重来一次。
-// 库名属于 catalog，先清掉——清掉本身会触发下面那个 watcher，别来两次。
+// 库名属于 catalog，先清掉——清空本身会触发下面的按库 watcher 重取明细；
+// 本来就没选库时明细还是旧 catalog 的，只能自己来。reload 无条件调：
+// 之前「选着库切 catalog 不重取汇总」就是这条 if 漏的。
 watch(() => [props.catalogName, props.format], () => {
   if (database.value) database.value = ''
-  else reload()
+  else fetchDetail()
+  reload()
 })
-// 开关改的是服务端过滤参数：汇总重取；明细换第一页（选了库才有请求）。
+// 开关改的是服务端过滤参数：汇总重取；明细换第一页。
 watch(onlyPaimon, () => {
   page.value = 1
   reload()
   fetchDetail()
 })
-// 选中库才触发明细查询；清空库回到「按需」提示，不发请求。
+// 按库过滤是服务端参数：换库（含清空 = 全部表）都取第一页。
 watch(database, () => {
   page.value = 1
-  if (database.value) fetchDetail()
-  else detail.value = { rows: [], total: 0 }
+  fetchDetail()
 })
 // 关键字是服务端 LIKE：换词取第一页。
 let keywordTimer = null
 watch(keyword, () => {
   clearTimeout(keywordTimer)
-  if (!database.value) return
   keywordTimer = setTimeout(() => {
     page.value = 1
     fetchDetail()
@@ -366,12 +365,16 @@ defineExpose({ reload })
 
 const cards = computed(() => {
   const item = totals.value
-  const withData = (item.tables || 0) - (item.empty || 0) - (item.unknown || 0)
+  // 服务端 Totals 没有 withData 字段（只有 tables / empty / unknown），
+  // 读不到就是「—」——分子只能在前端算。「有数据」= 有快照（快照即写过数据）；
+  // 「可判定」= 有快照且带文件统计，是下面小文件占比的分母，两个口径别混。
+  const withSnapshot = (item.tables || 0) - (item.empty || 0)
+  const decidable = withSnapshot - (item.unknown || 0)
   const emptyFoot = item.empty ? `其中 ${formatNumber(item.empty)} 张还没有快照` : '全部表都有快照'
   return [
     {
       label: '有数据的表',
-      value: `${formatNumber(item.withData)} / ${formatNumber(item.tables)}`,
+      value: `${formatNumber(withSnapshot)} / ${formatNumber(item.tables)}`,
       foot: emptyFoot,
     },
     {
@@ -395,9 +398,9 @@ const cards = computed(() => {
     },
     {
       label: '小文件表',
-      value: withData ? `${((item.smallShare || 0) * 100).toFixed(1)}%` : '—',
-      foot: withData
-        ? `${formatNumber(item.smallTables)} / ${formatNumber(withData)} 张，合计 ${formatBytes(item.smallSize)}`
+      value: decidable ? `${((item.smallShare || 0) * 100).toFixed(1)}%` : '—',
+      foot: decidable
+        ? `${formatNumber(item.smallTables)} / ${formatNumber(decidable)} 张，合计 ${formatBytes(item.smallSize)}`
         : '没有可判定的表',
     },
   ]
@@ -488,7 +491,7 @@ const histogramHint = computed(() => `分桶按「表的平均文件大小」；
 
 const detailHint = computed(() => (database.value
   ? `${database.value} · 共 ${formatNumber(detail.value.total)} 张表`
-  : '选中库后按需加载，分页与过滤都在服务端完成'))
+  : `全部库 · 共 ${formatNumber(detail.value.total)} 张表`))
 
 function onSortChange({ prop, order }) {
   // 点第三下取消排序时回默认：按存储降序。排序下推 SQL，换了排序键就取第一页。

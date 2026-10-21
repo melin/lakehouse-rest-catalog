@@ -1,7 +1,6 @@
-package io.github.melin.lakehouse.rest.spark.example
+package io.github.melin.lakehouse.rest.spark
 
-import io.github.melin.lakehouse.rest.spark.LiveSparkSession.{catalog, catalogUrl, managementUrl, token}
-import io.github.melin.lakehouse.rest.spark.{LiveSparkSession, PaimonRestManagement}
+import io.github.melin.lakehouse.rest.spark.LiveSparkSession.catalog
 import org.apache.spark.sql.SparkSession
 
 class PaimonS3Test {
@@ -17,7 +16,7 @@ class PaimonS3Test {
    */
   val token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJwYWltb24tcmVzdCIsInN1YiI6InJlZ3Jlc3MtcHJpbmNpcGFsIiwiaWF0IjoxNzkxNTk1ODI2LCJleHAiOjE3OTE1OTk0MjYsImp0aSI6Ijg3MmVlYWUwLTQxYzctNDE2Ni04OGI3LTAzNDgwMWMxNjcyMCIsInNjb3BlIjoiUFJJTkNJUEFMX1JPTEU6QUxMIn0.OonQtdHvb-scEg2zk2ijGKiZDFEyXAdauDXM06FsXG8"
 
-  // @org.junit.jupiter.api.Test
+  @org.junit.jupiter.api.Test
   def test(): Unit = {
     val warehouse = java.nio.file.Files.createTempDirectory("paimon-rest-warehouse")
     val spark = SparkSession.builder()
@@ -75,10 +74,10 @@ class PaimonS3Test {
 
     spark.sql("show create table demo.paimon_sample2").show(false)
 
-    val insertSql = "insert into table demo.paimon_sample2 values(1, 'xx', '20240812')"
-    //spark.sql(insertSql)
+    val insertSql = "insert into table demo.paimon_sample2 values(1, 'xx', '20240813')"
+    spark.sql(insertSql)
 
-    val insertSql1 = "insert into table demo.paimon_sample2 values(1, 'yy', '20240812')"
+    val insertSql1 = "insert into table demo.paimon_sample2 values(1, 'yy', '20240813')"
     spark.sql(insertSql1)
 
     spark.sql("select * from demo.paimon_sample2").show()

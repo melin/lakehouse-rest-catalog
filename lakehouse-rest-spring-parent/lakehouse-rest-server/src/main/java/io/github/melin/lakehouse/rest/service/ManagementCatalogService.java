@@ -151,8 +151,22 @@ public class ManagementCatalogService {
     /**
      * 逐表明细的排序白名单：前端排序键 → JPQL 表达式。
      *
-     * <p>「平均文件大小」是派生列（没有实体字段），用 {@code JpaSort#unsafe} 的原始表达式排序；
-     * 表达式只出自这张白名单，前端传什么都不能拼进 SQL 之外的东西。
+     * <p>表达式只出自这张白名单，前端传什么都不能拼进 SQL 之外的东西；
+     * 不在白名单里的键回落到 {@code size}（见 {@code tableRows}）。
+     *
+     * <p>「平均文件大小」是派生列（没有实体字段），只能用 {@code JpaSort#unsafe} 塞原始表达式，
+     * 而这条路径有两条不能违反的约束，违反时症状都是**整列 500**（Hibernate 语法错误），
+     * 且只有在真发一次请求时才暴露：
+     *
+     * <ol>
+     *   <li><b>表达式里不能有空格。</b>Spring Data 把排序属性拼进 {@code order by} 时会先看
+     *       首段是不是已声明的别名，不是就在前面补一个根别名——带空格的
+     *       {@code case when … end} 于是变成 {@code order by t.case when …}，直接语法错。
+     *       所以这里写的是 {@code nullif(…)} 而不是 {@code case when}。</li>
+     *   <li><b>除法要自己挡掉 0 与 null。</b>{@code nullif(s.fileCount,0)}：没统计的行本来就是
+     *       null（排到一端），而 fileCount=0 的行不该让 MySQL 报警告、让 H2 抛除零错。
+     *       乘 {@code *1.0} 是为了让除法落在浮点上——整数除法会把 333.3 与 333.7 排成并列。</li>
+     * </ol>
      */
     private static final Map<String, String> SORT_EXPRESSIONS = Map.of(
             "files", "s.fileCount",
@@ -160,7 +174,7 @@ public class ManagementCatalogService {
             "records", "s.recordCount",
             "updatedAt", "s.timeMillis",
             "table", "t.name",
-            "avgSize", "case when s.fileCount > 0 then s.fileSizeInBytes / s.fileCount end");
+            "avgSize", "s.fileSizeInBytes*1.0/nullif(s.fileCount,0)");
 
     /**
      * {@code GET /catalogs/{catalogName}/table-stats}：整个 catalog 的存储汇总，SQL 里算完。

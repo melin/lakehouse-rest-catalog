@@ -140,6 +140,13 @@ public interface TableSnapshotRepository extends JpaRepository<TableSnapshotEnti
     /**
      * 按库聚合（「按库的存储」条形图）：每库一行，列序
      * {@code database, tables, files, size, small, unknown}，按存储降序。
+     *
+     * <p><b>从 {@code DatabaseEntity} 驱动而不是从表驱动</b>：group by 落在表连接上时，
+     * 没有表的库根本不产生行——「按库过滤」的下拉候选来自这份聚合，
+     * 一个刚建好（或只有空表）的 default 库从下拉里消失，用户找不到它。
+     * left join 表之后，空库也是一行（统计列 coalesce 成 0）。
+     * {@code onlyPaimon} 时格式表被排除，但「库里没有 Paimon 表」不等于
+     * 「库不存在」，所以空库行用 {@code t.id is null} 单独放行。
      */
     @Query("""
             select d.name,
@@ -150,11 +157,11 @@ public interface TableSnapshotRepository extends JpaRepository<TableSnapshotEnti
                             and s.fileSizeInBytes is not null
                             and s.fileSizeInBytes / s.fileCount < :smallThreshold then 1 else 0 end),
                    sum(case when s.snapshotId is not null and s.fileCount is null then 1 else 0 end)
-            from TableEntity t
-              join DatabaseEntity d on d.id = t.databaseId
+            from DatabaseEntity d
+              left join TableEntity t on t.databaseId = d.id
               left join TableSnapshotEntity s on s.tableId = t.id and s.snapshotId = t.latestSnapshotId
-            where t.catalogId = :catalogId
-              and (:onlyPaimon = false or t.tableType = 'PAIMON')
+            where d.catalogId = :catalogId
+              and (t.id is null or :onlyPaimon = false or t.tableType = 'PAIMON')
             group by d.name
             order by sum(coalesce(s.fileSizeInBytes, 0)) desc, d.name asc
             """)

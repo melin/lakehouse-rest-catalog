@@ -192,7 +192,7 @@ EXTENSION_ENDPOINTS = {
     # 当前快照统计，替代「一张表一个请求」的逐表扫描。服务端实现见
     # ManagementCatalogController#tableStats。
     ("GET", "/api/management/v1/catalogs/{catalogName}/table-stats"): "存储页：catalog 存储汇总（SQL 聚合，只读）",
-    ("GET", "/api/management/v1/catalogs/{catalogName}/table-stats/tables"): "存储页：逐表明细的一页（远程分页，只读）",
+    ("GET", "/api/management/v1/catalogs/{catalogName}/table-stats/tables"): "存储页：表明细的一页（远程分页，只读）",
     # 目录事件流：游标增量拉取（`?since=` 只回比它新的事件），契约见
     # docs/event-framework.md §4。两份规格都不涉及事件——这是本工程自己的
     # 审计面，服务端实现见 ConsoleEventController。只读。
@@ -1389,16 +1389,28 @@ check("Paimon 侧有「只统计 Paimon 表」开关，onlyPaimon 传给汇总�
       and "onlyPaimon" in storage_api_src,
       "缺: 面板开关 / onlyPaimon 参数传递之一")
 
-# 逐表明细是**远程分页**：打开页面不拉任何明细，选中了库才按页取数；
+# 「有数据的表」的分子是前端算的：服务端 Totals 没有 withData 字段
+# （只有 tables / empty / unknown），读不到就渲染成「—」——表明明有数据，
+# 卡片却显示「— / 1」。分子 = tables - empty（有快照即有数据）；
+# 「可判定」（再减 unknown）只做小文件占比的分母，两个口径不许混用。
+check("「有数据的表」分子在前端算（服务端 Totals 没有 withData 字段）",
+      "withSnapshot" in storage_panel_src
+      and "item.withData" not in storage_panel_src
+      and "(item.tables || 0) - (item.empty || 0)" in storage_panel_src,
+      "分子读不到字段会渲染成「—」；必须由 tables - empty 算出")
+
+# 表明细是**远程分页**：打开页面默认取全部表的第一页（不要求先选库）；
 # 分页 / 关键字 / 排序全部下推 SQL。排序仍用 sortable="custom"——排序键要传给服务端，
 # el-table 自带排序在分页下只排当前页。
-check("逐表明细远程分页：选库才请求、TablePager 用服务端 total、排序 custom 下推",
-      "选择一个库，按需加载" in storage_panel_src
+check("表明细远程分页：默认拉全部表、TablePager 用服务端 total、排序 custom 下推",
+      "表明细" in storage_panel_src and "逐表明细" not in storage_panel_src
+      and 'v-if="!database"' not in storage_panel_src
+      and "fetchDetail()" in storage_panel_src
       and '<TablePager' in storage_panel_src and ':total="detail.total"' in storage_panel_src
       and "fetchDetail" in storage_panel_src and "onPageChange" in storage_panel_src
       and 'sortable="custom"' in storage_panel_src
       and "database" in storage_api_src and "pageSize" in storage_api_src,
-      "缺: 按需加载提示 / 远程 total / fetchDetail / 自定义排序 / 服务端页码参数之一")
+      "缺: 默认全表（不得再挂 v-if=!database 的选库门）/ 远程 total / fetchDetail / 自定义排序之一")
 
 check("按库/Top10 两卡在栅格并排且不吃堆叠边距（等高、顶部对齐）",
       ".pc-sto-grid > :deep(.pc-card + .pc-card)" in storage_panel_src
@@ -1502,6 +1514,78 @@ for folder in (os.path.join(CONSOLE_DIR, "src/views"), os.path.join(CONSOLE_DIR,
                 FIXED_MISSING.append(f"{name}: {' '.join(block.split())[:70]}")
 check("带行内动作的表格把「操作」列钉在右侧（不随横向滚动跑掉）", not FIXED_MISSING,
       f"这些操作列缺 fixed=\"right\"：{FIXED_MISSING}")
+
+# query 写在顶层会被静默丢掉：`buildPath` 只读 `params.query`，于是请求照样 200、
+# 服务端照样全量返回，症状是「表格显示了全部数据」「点下一页内容不变」，而调用方
+# 与服务端之间没有人报错。这里逐字节检查调用形状，而不是相信 PHPStorm 的提示。
+QUOTES = chr(34) + chr(39) + chr(96)  # 双引号 / 单引号 / 反引号
+
+def top_level_keys(source, start):
+    """返回 start 处那个 `{` 对象的顶层键名。"""
+    depth = 0
+    quote = None
+    index = start
+    while index < len(source):
+        char = source[index]
+        if quote:
+            if char == "\\":
+                index += 2
+                continue
+            if char == quote:
+                quote = None
+        elif char in QUOTES:
+            quote = char
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                break
+        index += 1
+    body = source[start + 1:index]
+    keys = []
+    depth = 0
+    quote = None
+    current = ""
+    for char in body:
+        if quote:
+            if char == "\\":
+                current += char
+                continue
+            if char == quote:
+                quote = None
+            current += char
+            continue
+        if char in QUOTES:
+            quote = char
+            current += char
+            continue
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+        if depth == 0 and char == ",":
+            token = current.strip()
+            if token:
+                keys.append(token.split(":")[0].strip())
+            current = ""
+            continue
+        current += char
+    token = current.strip()
+    if token:
+        keys.append(token.split(":")[0].strip())
+    return [key for key in keys if key]
+
+MISPLACED_QUERY = []
+for name in sorted(os.listdir(os.path.join(CONSOLE_DIR, "src/api"))):
+    if not name.endswith(".js") or name == "endpoints.js":
+        continue
+    source = read(os.path.join(CONSOLE_DIR, "src/api", name))
+    for match in re.finditer(r"\b(get|post|put|del)\(\s*'(\w+)'\s*,\s*\{", source):
+        if "query" in top_level_keys(source, match.end() - 1):
+            MISPLACED_QUERY.append(f"{name}:{source[:match.start()].count(chr(10)) + 1} {match.group(2)}")
+check("调用 API 时 query 写在 params 里（写在顶层会被静默丢弃）", not MISPLACED_QUERY,
+      f"这些调用把 query 放在了顶层：{MISPLACED_QUERY}；正确形状是 {{ params: {{ query }} }}")
 
 # 端点在：每个分页列表端点都要收 page。少了它，前端的翻页请求会被当成「不分页」，
 # 结果是每次翻页都回同一批——界面上表现为「点了下一页，内容没变」。

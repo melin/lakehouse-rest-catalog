@@ -18,8 +18,14 @@ import { del, get, post, put } from './client.js'
  */
 export const managementApi = {
   // ------------------------------------------------------------------ catalog
-  /** catalog 列表。`query` 给 `page` / `pageSize` —— 控制台的表格走远程分页。 */
-  listCatalogs: (query = {}) => get('listCatalogs', { query }),
+  /**
+   * catalog 列表。`query` 给 `page` / `pageSize` / `format` —— 控制台的表格走远程分页。
+   *
+   * <p>`query` 必须写在 `params` 里（`{ params: { query } }`）：拼 URL 的
+   * {@code buildPath} 只读 `params.query`，写在顶层是**看不见 fail**的——
+   * 请求照样发出去、照样 200，只是服务端没收到任何过滤与分页参数。
+   */
+  listCatalogs: (query = {}) => get('listCatalogs', { params: { query } }),
   createCatalog: (catalog) => post('createCatalog', { body: { catalog } }),
   getCatalog: (catalogName) => get('getCatalog', { params: { catalogName } }),
   updateCatalog: (catalogName, body) => put('updateCatalog', { params: { catalogName }, body }),
@@ -27,19 +33,18 @@ export const managementApi = {
   // 存储页的两个聚合端点（服务端扩展，非官方规格）。
   // 汇总：KPI / 按库 / Top 10 / 直方图服务端一次算完；`query.onlyPaimon` 过滤 format 类表。
   getCatalogTableStats: (catalogName, query = {}) => get('catalogTableStats', {
-    params: { catalogName },
-    query,
+    params: { catalogName, query },
   }),
   // 逐表明细的一页（远程分页）：`query` 给 database / keyword / onlyPaimon / sort / order /
-  // maxResults / pageToken，`total` 是过滤后的总行数，`nextPageToken` 翻页用。
+  // page / pageSize；`total` 是过滤后的总行数。两条都 DOM 里看不见 fail，
+  // 因此 `query` 只能写在 `params` 里（见 `listCatalogs` 的说明）。
   listCatalogTableRows: (catalogName, query = {}) => get('catalogTableRows', {
-    params: { catalogName },
-    query,
+    params: { catalogName, query },
   }),
 
   // ------------------------------------------------------------------ principal
   /** 主体列表。`query` 给 `page` / `pageSize`。 */
-  listPrincipals: (query = {}) => get('listPrincipals', { query }),
+  listPrincipals: (query = {}) => get('listPrincipals', { params: { query } }),
   createPrincipal: (principal, credentialRotationRequired) => post('createPrincipal', {
     body: { principal, credentialRotationRequired },
   }),
@@ -61,7 +66,7 @@ export const managementApi = {
 
   // ------------------------------------------------------------------ principal role
   /** 角色列表。`query` 给 `page` / `pageSize`。 */
-  listPrincipalRoles: (query = {}) => get('listPrincipalRoles', { query }),
+  listPrincipalRoles: (query = {}) => get('listPrincipalRoles', { params: { query } }),
   createPrincipalRole: (principalRole) => post('createPrincipalRole', { body: { principalRole } }),
   getPrincipalRole: (principalRoleName) => get('getPrincipalRole', { params: { principalRoleName } }),
   updatePrincipalRole: (principalRoleName, body) => put('updatePrincipalRole', {
