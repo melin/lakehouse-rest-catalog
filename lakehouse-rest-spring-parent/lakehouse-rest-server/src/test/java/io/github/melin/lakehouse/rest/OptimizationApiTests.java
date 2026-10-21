@@ -691,7 +691,7 @@ class OptimizationApiTests {
     }
 
     private void createPaimonTable(String database, String table) {
-        if (!databaseService.list(PREFIX, null, null).databases().contains(database)) {
+        if (!databaseService.list(PREFIX, null, null, null, null).databases().contains(database)) {
             databaseService.create(PREFIX, new DatabaseDtos.CreateDatabaseRequest(database, Map.of()));
         }
         if (tableRepository.findByCatalogIdAndDatabaseIdAndName(catalogId(), databaseId(database), table)

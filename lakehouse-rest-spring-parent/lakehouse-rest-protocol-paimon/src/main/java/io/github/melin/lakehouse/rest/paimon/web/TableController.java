@@ -38,8 +38,10 @@ public class TableController {
                                                    @PathVariable String database,
                                                    @RequestParam(required = false) Integer maxResults,
                                                    @RequestParam(required = false) String pageToken,
-                                                   @RequestParam(required = false) String tableNamePattern) {
-        return tableService.list(prefix, database, maxResults, pageToken, tableNamePattern);
+                                                   @RequestParam(required = false) String tableNamePattern,
+        @RequestParam(name = "page", required = false) Integer page,
+        @RequestParam(name = "pageSize", required = false) Integer pageSize) {
+        return tableService.list(prefix, database, maxResults, pageToken, tableNamePattern, page, pageSize);
     }
 
     @GetMapping("/databases/{database}/table-details")
@@ -48,8 +50,10 @@ public class TableController {
                                                                @RequestParam(required = false) Integer maxResults,
                                                                @RequestParam(required = false) String pageToken,
                                                                @RequestParam(required = false) String tableNamePattern,
-                                                               @RequestParam(required = false) String tableType) {
-        return tableService.listDetails(prefix, database, maxResults, pageToken, tableNamePattern, tableType);
+                                                               @RequestParam(required = false) String tableType,
+        @RequestParam(name = "page", required = false) Integer page,
+        @RequestParam(name = "pageSize", required = false) Integer pageSize) {
+        return tableService.listDetails(prefix, database, maxResults, pageToken, tableNamePattern, tableType, page, pageSize);
     }
 
     @GetMapping("/tables")
@@ -158,8 +162,10 @@ public class TableController {
                                                          @PathVariable String database,
                                                          @PathVariable String table,
                                                          @RequestParam(required = false) Integer maxResults,
-                                                         @RequestParam(required = false) String pageToken) {
-        return tableService.listSnapshots(prefix, database, table, maxResults, pageToken);
+                                                         @RequestParam(required = false) String pageToken,
+        @RequestParam(name = "page", required = false) Integer page,
+        @RequestParam(name = "pageSize", required = false) Integer pageSize) {
+        return tableService.listSnapshots(prefix, database, table, maxResults, pageToken, page, pageSize);
     }
 
     @GetMapping("/databases/{database}/tables/{table}/snapshots/{version}")

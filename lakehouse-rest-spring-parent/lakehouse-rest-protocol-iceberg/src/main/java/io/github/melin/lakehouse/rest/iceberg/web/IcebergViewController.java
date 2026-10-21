@@ -46,8 +46,9 @@ public class IcebergViewController {
     public IcebergDtos.ListViewsResponse listViews(@PathVariable String prefix,
                                                   @PathVariable String namespace,
                                                   @RequestParam(required = false) Integer pageSize,
-                                                  @RequestParam(required = false) String pageToken) {
-        return viewService.list(prefix, levels(namespace), pageSize, pageToken);
+                                                  @RequestParam(required = false) String pageToken,
+        @RequestParam(name = "page", required = false) Integer page) {
+        return viewService.list(prefix, levels(namespace), pageSize, pageToken, page);
     }
 
     @PostMapping("/namespaces/{namespace}/views")

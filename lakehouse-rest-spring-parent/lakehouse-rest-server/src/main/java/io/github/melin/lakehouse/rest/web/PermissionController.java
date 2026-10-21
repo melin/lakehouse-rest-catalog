@@ -3,6 +3,7 @@ package io.github.melin.lakehouse.rest.web;
 import io.github.melin.lakehouse.rest.dto.PermissionDtos.Access;
 import io.github.melin.lakehouse.rest.dto.PermissionDtos.PermissionAssignment;
 import io.github.melin.lakehouse.rest.dto.PermissionDtos.PermissionList;
+import io.github.melin.lakehouse.rest.dto.PermissionDtos.PermissionScopes;
 import io.github.melin.lakehouse.rest.dto.PermissionDtos.ResourceType;
 import io.github.melin.lakehouse.rest.service.AuthorizationService;
 import io.github.melin.lakehouse.rest.service.PermissionManagementService;
@@ -19,7 +20,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * Paimon 官方 REST Management API 的权限端点，共 3 个 operation。
+ * Paimon 官方 REST Management API 的权限端点，共 4 个 operation。
  *
  * <p>路径在 catalog API（{@code /v1/{prefix}/...}）之下，官方把它们归入
  * management API；本工程统一按 catalog API 的鉴权与授权链路处理。
@@ -55,11 +56,43 @@ public class PermissionController {
                                @RequestParam(required = false) String principal,
                                @RequestParam(required = false) String access,
                                @RequestParam(required = false) Integer maxResults,
-                               @RequestParam(required = false) String pageToken) {
+                               @RequestParam(required = false) String pageToken,
+                               @RequestParam(name = "page", required = false) Integer page,
+                               @RequestParam(name = "pageSize", required = false) Integer pageSize) {
         authorizationService.require(prefix, ResourceType.CATALOG_ALL, List.of(), null,
                 Access.GRANT, "list permissions");
         return permissionManagementService.list(prefix, resourceType, database, table, view,
-                function, principal, access, maxResults, pageToken);
+                function, principal, access, maxResults, pageToken, page, pageSize);
+    }
+
+    /**
+     * {@code GET /v1/{prefix}/permissions/scopes?page=&pageSize=&keyword=}：
+     * 控制台授权清单的一页，**已按「主体 × 作用范围」折叠**。
+     *
+     * <p>为什么单独一条端点而不是给上面那条加参数：上面那条响应的是「赋权」这一层
+     * （规格定义的形状，Spark 过程也在用），这里响应的是「清单行」这一层，
+     * 两者的元素个数都不同。塞进同一个 DTO 会让规格读者分不清哪个字段是权威。
+     *
+     * <p>过滤条件与 {@code GET /permissions} 完全一致（同样的七个维度），
+     * 多一个 {@code keyword}——它在服务端匹配「主体 + 作用范围」，
+     * 因为客户端只有一页，浏览器里筛不出全站的结果。
+     */
+    @GetMapping("/scopes")
+    public PermissionScopes scopes(@PathVariable String prefix,
+                                   @RequestParam(required = false) String resourceType,
+                                   @RequestParam(required = false) String database,
+                                   @RequestParam(required = false) String table,
+                                   @RequestParam(required = false) String view,
+                                   @RequestParam(required = false) String function,
+                                   @RequestParam(required = false) String principal,
+                                   @RequestParam(required = false) String access,
+                                   @RequestParam(required = false) String keyword,
+                                   @RequestParam(name = "page", required = false) Integer page,
+                                   @RequestParam(name = "pageSize", required = false) Integer pageSize) {
+        authorizationService.require(prefix, ResourceType.CATALOG_ALL, List.of(), null,
+                Access.GRANT, "list permissions");
+        return permissionManagementService.scopes(prefix, resourceType, database, table, view,
+                function, principal, access, keyword, page, pageSize);
     }
 
     /** {@code POST /v1/{prefix}/permissions/grant}。 */

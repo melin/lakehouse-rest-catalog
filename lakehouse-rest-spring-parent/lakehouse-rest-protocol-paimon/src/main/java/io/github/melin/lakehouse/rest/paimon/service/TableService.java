@@ -95,7 +95,8 @@ public class TableService {
 
     @Transactional(readOnly = true)
     public TableDtos.ListTablesResponse list(String prefix, String databaseName,
-                                             Integer maxResults, String pageToken, String tableNamePattern) {
+                                             Integer maxResults, String pageToken, String tableNamePattern,
+                                             Integer page, Integer pageSize) {
         DatabaseEntity database = tableLookup.requireDatabase(prefix, databaseName);
         List<String> names = new ArrayList<>();
         for (TableEntity table : tableRepository.findAllByDatabaseIdOrderByNameAsc(database.getId())) {
@@ -103,14 +104,20 @@ public class TableService {
                 names.add(table.getName());
             }
         }
+        // 页码模式（控制台表格）：切页 + 总数；游标模式（引擎客户端）保持原样。
+        Paging.Paged<String> paged = Paging.paged(names, page, pageSize);
+        if (paged != null) {
+            return new TableDtos.ListTablesResponse(paged.items(), null, (int) paged.meta().total());
+        }
         Paging.Slice<String> slice = Paging.slice(names, Paging.offset(pageToken), pageSize(maxResults));
-        return new TableDtos.ListTablesResponse(slice.items(), slice.nextPageToken());
+        return new TableDtos.ListTablesResponse(slice.items(), slice.nextPageToken(), null);
     }
 
     @Transactional(readOnly = true)
     public TableDtos.ListTableDetailsResponse listDetails(String prefix, String databaseName,
                                                           Integer maxResults, String pageToken,
-                                                          String tableNamePattern, String tableType) {
+                                                          String tableNamePattern, String tableType,
+                                                          Integer page, Integer pageSize) {
         DatabaseEntity database = tableLookup.requireDatabase(prefix, databaseName);
         List<TableDtos.GetTableResponse> details = new ArrayList<>();
         for (TableEntity table : tableRepository.findAllByDatabaseIdOrderByNameAsc(database.getId())) {
@@ -122,9 +129,13 @@ public class TableService {
             }
             details.add(toResponse(table, database.getName()));
         }
+        Paging.Paged<TableDtos.GetTableResponse> paged = Paging.paged(details, page, pageSize);
+        if (paged != null) {
+            return new TableDtos.ListTableDetailsResponse(paged.items(), null, (int) paged.meta().total());
+        }
         Paging.Slice<TableDtos.GetTableResponse> slice =
                 Paging.slice(details, Paging.offset(pageToken), pageSize(maxResults));
-        return new TableDtos.ListTableDetailsResponse(slice.items(), slice.nextPageToken());
+        return new TableDtos.ListTableDetailsResponse(slice.items(), slice.nextPageToken(), null);
     }
 
     @Transactional(readOnly = true)
@@ -623,15 +634,20 @@ public class TableService {
 
     @Transactional(readOnly = true)
     public TableDtos.ListSnapshotsResponse listSnapshots(String prefix, String databaseName, String tableName,
-                                                         Integer maxResults, String pageToken) {
+                                                         Integer maxResults, String pageToken,
+                                                         Integer page, Integer pageSize) {
         TableEntity table = tableLookup.requireTable(prefix, databaseName, tableName);
         List<TableDtos.Snapshot> snapshots = new ArrayList<>();
         for (TableSnapshotEntity entity : snapshotRepository.findAllByTableIdOrderBySnapshotIdDesc(table.getId())) {
             snapshots.add(toSnapshot(entity));
         }
+        Paging.Paged<TableDtos.Snapshot> paged = Paging.paged(snapshots, page, pageSize);
+        if (paged != null) {
+            return new TableDtos.ListSnapshotsResponse(paged.items(), null, (int) paged.meta().total());
+        }
         Paging.Slice<TableDtos.Snapshot> slice =
                 Paging.slice(snapshots, Paging.offset(pageToken), pageSize(maxResults));
-        return new TableDtos.ListSnapshotsResponse(slice.items(), slice.nextPageToken());
+        return new TableDtos.ListSnapshotsResponse(slice.items(), slice.nextPageToken(), null);
     }
 
     // ------------------------------------------------------------------ 辅助

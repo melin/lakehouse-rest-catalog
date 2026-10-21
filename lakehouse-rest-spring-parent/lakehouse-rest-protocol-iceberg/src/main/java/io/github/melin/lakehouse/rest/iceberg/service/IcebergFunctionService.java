@@ -71,17 +71,22 @@ public class IcebergFunctionService {
     /** {@code GET /v1/{prefix}/namespaces/{namespace}/functions}。 */
     @Transactional(readOnly = true)
     public IcebergDtos.ListFunctionsResponse list(String prefix, List<String> levels,
-                                                  Integer pageSize, String pageToken) {
+                                                  Integer pageSize, String pageToken, Integer page ) {
         CatalogEntity catalog = resolve(prefix);
         DatabaseEntity database = namespaceService.require(catalog, levels);
         List<IcebergDtos.TableIdentifier> identifiers = new ArrayList<>();
         for (FunctionEntity function : functionRepository.findAllByDatabaseIdOrderByNameAsc(database.getId())) {
             identifiers.add(new IcebergDtos.TableIdentifier(levels, function.getName()));
         }
+        // 页码模式（控制台表格）：切页并带回总数；协议里的 pageToken 翻页保持原样。
+        Paging.Paged<IcebergDtos.TableIdentifier> paged = Paging.paged(identifiers, page, pageSize);
+        if (paged != null) {
+            return new IcebergDtos.ListFunctionsResponse(paged.items(), null, (int) paged.meta().total());
+        }
         Paging.Slice<IcebergDtos.TableIdentifier> slice = Paging.slice(identifiers,
                 Paging.offset(pageToken),
                 Paging.pageSize(pageSize, properties.getDefaultPageSize(), properties.getMaxPageSize()));
-        return new IcebergDtos.ListFunctionsResponse(slice.items(), slice.nextPageToken());
+        return new IcebergDtos.ListFunctionsResponse(slice.items(), slice.nextPageToken(), null);
     }
 
     /** {@code GET /v1/{prefix}/namespaces/{namespace}/functions/{function}}。 */

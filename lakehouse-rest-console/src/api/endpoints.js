@@ -92,6 +92,9 @@ export const ENDPOINTS = {
   // 授权只有这一套模型：三元组 `(resource, access, principal)`，access 取官方 12 项。
   // grant / revoke 的资源定位在请求体里，因此不做成路径参数。
   listPermissions: { method: 'GET', path: '/v1/{prefix}/permissions' },
+  // 控制台授权清单的一页：**已按「主体 × 作用范围」折叠**（一条赋权一处、一组一行），
+  // 折叠在服务端做，因为先按赋权切页会把同一组切到两页上。`keyword` 也在服务端匹配。
+  listPermissionScopes: { method: 'GET', path: '/v1/{prefix}/permissions/scopes' },
   grantPermission: { method: 'POST', path: '/v1/{prefix}/permissions/grant' },
   revokePermission: { method: 'POST', path: '/v1/{prefix}/permissions/revoke' },
 

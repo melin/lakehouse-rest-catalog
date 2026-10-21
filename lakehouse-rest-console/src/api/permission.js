@@ -20,6 +20,17 @@ export const permissionApi = {
   list: (prefix, query = {}) => get('listPermissions', { params: { prefix, query } }),
 
   /**
+   * 授权清单的一页：服务端**先按「主体 × 作用范围」折叠，再切页**。
+   *
+   * <p>为什么清单要单独一条：表格的一行是多条赋权折叠出来的（同范围不同 access），
+   * 按赋权分页会把一组切到两页上，同一主体在相邻两页各出现一次。
+   *
+   * <p>`query` 里的 `keyword` 在服务端匹配「主体 + 作用范围」——客户端只有一页，
+   * 浏览器里筛不出全站结果。响应是 `{scopes: [...], page: {total, page, pageSize, hasNext}}`。
+   */
+  scopes: (prefix, query = {}) => get('listPermissionScopes', { params: { prefix, query } }),
+
+  /**
    * 授予。`assignment` 形如
    * `{resource: {type, database, table}, access, principal, expireTime?}`。
    */

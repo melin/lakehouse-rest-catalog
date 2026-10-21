@@ -56,17 +56,23 @@ public class DatabaseService {
     private final CatalogEventPublisher events;
 
     @Transactional(readOnly = true)
-    public DatabaseDtos.ListDatabasesResponse list(String prefix, Integer maxResults, String pageToken) {
+    public DatabaseDtos.ListDatabasesResponse list(String prefix, Integer maxResults, String pageToken,
+                                                  Integer page, Integer pageSize) {
         CatalogEntity catalog = catalogService.resolveForFormat(prefix, CatalogFormat.PAIMON);
         List<DatabaseEntity> databases = databaseRepository.findAllByCatalogIdOrderByNameAsc(catalog.getId());
         List<String> names = new ArrayList<>();
         for (DatabaseEntity database : databases) {
             names.add(database.getName());
         }
+        // 控制台的库列表走远程分页（页码 + 总数）；协议里的游标翻页留给引擎客户端。
+        Paging.Paged<String> paged = Paging.paged(names, page, pageSize);
+        if (paged != null) {
+            return new DatabaseDtos.ListDatabasesResponse(paged.items(), null, (int) paged.meta().total());
+        }
         Paging.Slice<String> slice = Paging.slice(names,
                 Paging.offset(pageToken),
                 Paging.pageSize(maxResults, properties.getDefaultPageSize(), properties.getMaxPageSize()));
-        return new DatabaseDtos.ListDatabasesResponse(slice.items(), slice.nextPageToken());
+        return new DatabaseDtos.ListDatabasesResponse(slice.items(), slice.nextPageToken(), null);
     }
 
     @Transactional

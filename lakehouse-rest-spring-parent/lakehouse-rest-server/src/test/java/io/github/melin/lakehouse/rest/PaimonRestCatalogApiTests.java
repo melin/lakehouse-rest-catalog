@@ -217,7 +217,7 @@ class PaimonRestCatalogApiTests {
         TableDtos.TableSnapshot latest = tableService.getTableSnapshot(PREFIX, database, "orders").snapshot();
         assertEquals(1L, latest.snapshot().id());
         assertEquals(100L, latest.recordCount());
-        assertEquals(1, tableService.listSnapshots(PREFIX, database, "orders", null, null).snapshots().size());
+        assertEquals(1, tableService.listSnapshots(PREFIX, database, "orders", null, null, null, null).snapshots().size());
 
         // 乐观并发：baseSnapshotUuid 不匹配时提交被拒绝
         TableDtos.CommitTableResponse stale = tableService.commit(PREFIX, database, "orders",
@@ -247,12 +247,12 @@ class PaimonRestCatalogApiTests {
                 Map.of(), 150L, 50L, 0L, 9L, null);
         tableService.commit(PREFIX, database, "orders",
                 new TableDtos.CommitTableRequest(created.id(), "uuid-1", second, null));
-        assertEquals(2, tableService.listSnapshots(PREFIX, database, "orders", null, null).snapshots().size());
+        assertEquals(2, tableService.listSnapshots(PREFIX, database, "orders", null, null, null, null).snapshots().size());
 
         tableService.rollback(PREFIX, database, "orders",
                 new TableDtos.RollbackTableRequest(Map.of("type", "snapshot", "snapshotId", 1L), null));
         List<TableDtos.Snapshot> afterRollback =
-                tableService.listSnapshots(PREFIX, database, "orders", null, null).snapshots();
+                tableService.listSnapshots(PREFIX, database, "orders", null, null, null, null).snapshots();
         assertEquals(1, afterRollback.size(), "回滚应丢弃目标之后的快照");
         assertEquals(100L, tableService.getTableSnapshot(PREFIX, database, "orders").snapshot().recordCount());
 
@@ -301,7 +301,7 @@ class PaimonRestCatalogApiTests {
                 Map.of("dt", "2024-01-01"), 10L, 1024L, 2L, 1000L, 4);
         partitionService.create(PREFIX, database, "events",
                 new PartitionDtos.CreatePartitionsRequest(List.of(january), true, List.of(stats), true, null));
-        PartitionDtos.Partition partition = partitionService.list(PREFIX, database, "events", null, null, null)
+        PartitionDtos.Partition partition = partitionService.list(PREFIX, database, "events", null, null, null, null, null)
                 .partitions().stream()
                 .filter(item -> "2024-01-01".equals(String.valueOf(item.spec().get("dt"))))
                 .findFirst()
@@ -340,13 +340,13 @@ class PaimonRestCatalogApiTests {
                 new PartitionDtos.DropPartitionsRequest(List.of(january, Map.of("dt", "2099-01-01")), true));
         assertEquals(1, dropped.dropped().size());
         assertEquals(1, dropped.missing().size());
-        assertEquals(1, partitionService.list(PREFIX, database, "events", null, null, null).partitions().size());
+        assertEquals(1, partitionService.list(PREFIX, database, "events", null, null, null, null, null).partitions().size());
 
         // 名称模式匹配
         PartitionDtos.ListPartitionsResponse matched = partitionService.list(PREFIX, database, "events",
-                null, null, "dt=2024-02%");
+                null, null, "dt=2024-02%", null, null);
         assertEquals(1, matched.partitions().size());
-        assertEquals(0, partitionService.list(PREFIX, database, "events", null, null, "dt=2099%").partitions().size());
+        assertEquals(0, partitionService.list(PREFIX, database, "events", null, null, "dt=2099%", null, null).partitions().size());
     }
 
     /**
@@ -468,13 +468,13 @@ class PaimonRestCatalogApiTests {
         ViewDtos.GetViewResponse view = viewService.get(PREFIX, database, "orders_view");
         assertEquals("SELECT id FROM orders", view.schema().getQuery());
         assertEquals("SELECT id FROM spark.orders", view.schema().getDialects().get("spark"));
-        assertEquals(List.of("orders_view"), viewService.list(PREFIX, database, null, null, null).views());
+        assertEquals(List.of("orders_view"), viewService.list(PREFIX, database, null, null, null, null, null).views());
 
         // 视图重命名
         viewService.rename(PREFIX, new TableDtos.RenameTableRequest(
                 new CommonDtos.Identifier(database, "orders_view"),
                 new CommonDtos.Identifier(database, "orders_view_v2")));
-        assertEquals(List.of("orders_view_v2"), viewService.list(PREFIX, database, null, null, null).views());
+        assertEquals(List.of("orders_view_v2"), viewService.list(PREFIX, database, null, null, null, null, null).views());
 
         // 函数
         Map<String, Object> definitions = new LinkedHashMap<>();
@@ -630,7 +630,7 @@ class PaimonRestCatalogApiTests {
         databaseService.drop(PREFIX, database);
         ApiException missing = assertThrows(ApiException.class, () -> databaseService.get(PREFIX, database));
         assertEquals(404, missing.getStatus());
-        assertFalse(databaseService.list(PREFIX, null, null).databases().contains(database));
+        assertFalse(databaseService.list(PREFIX, null, null, null, null).databases().contains(database));
     }
 
     /**
@@ -656,7 +656,7 @@ class PaimonRestCatalogApiTests {
         assertEquals("after", after.name());
         assertEquals(before.id(), after.id(), "重命名是改名字，不是建新表");
         assertEquals(before.path(), after.path(), "重命名不该搬动数据");
-        assertEquals(List.of("after"), tableService.list(PREFIX, database, null, null, null).tables());
+        assertEquals(List.of("after"), tableService.list(PREFIX, database, null, null, null, null, null).tables());
         assertEquals(404, assertThrows(ApiException.class,
                 () -> tableService.get(PREFIX, database, "before")).getStatus());
 
@@ -768,13 +768,13 @@ class PaimonRestCatalogApiTests {
 
         // 表类型落到 table_type 列上，listTableDetails 的过滤因此可用
         assertEquals(List.of("csv_files"), tableService
-                .listDetails(PREFIX, database, null, null, null, "format-table").tableDetails().stream()
+                .listDetails(PREFIX, database, null, null, null, "format-table", null, null).tableDetails().stream()
                 .map(TableDtos.GetTableResponse::name).toList());
         assertEquals(List.of("objects"), tableService
-                .listDetails(PREFIX, database, null, null, null, "object-table").tableDetails().stream()
+                .listDetails(PREFIX, database, null, null, null, "object-table", null, null).tableDetails().stream()
                 .map(TableDtos.GetTableResponse::name).toList());
         assertEquals(List.of("vectors"), tableService
-                .listDetails(PREFIX, database, null, null, null, "lance-table").tableDetails().stream()
+                .listDetails(PREFIX, database, null, null, null, "lance-table", null, null).tableDetails().stream()
                 .map(TableDtos.GetTableResponse::name).toList());
     }
 
@@ -888,14 +888,14 @@ class PaimonRestCatalogApiTests {
     // ------------------------------------------------------------------ 辅助
 
     private void createDatabase(String name) {
-        if (!databaseService.list(PREFIX, null, null).databases().contains(name)) {
+        if (!databaseService.list(PREFIX, null, null, null, null).databases().contains(name)) {
             databaseService.create(PREFIX, new DatabaseDtos.CreateDatabaseRequest(name, Map.of("owner", "paimon")));
         }
     }
 
     private PartitionDtos.Partition firstPartition(Map<String, String> spec) {
         String dt = spec.get("dt");
-        return partitionService.list(PREFIX, "it_partition", "events", null, null, null).partitions().stream()
+        return partitionService.list(PREFIX, "it_partition", "events", null, null, null, null, null).partitions().stream()
                 .filter(item -> dt.equals(String.valueOf(item.spec().get("dt"))))
                 .findFirst()
                 .orElseThrow();

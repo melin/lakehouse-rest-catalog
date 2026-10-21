@@ -428,6 +428,27 @@ class ManagementApiTests {
         assertEquals(1, secondPage.get("tables").size());
         assertNull(secondPage.get("nextPageToken"), "翻完就没有下一页 token");
 
+        // 页码模式：控制台的表格走这条（要渲染「共 N 条」就必须有 total）。
+        // 与上面那条游标翻法互斥——给了 page 就不再给 token。
+        JsonNode paged = json(200, "GET",
+                M + "/catalogs/fmt-default/table-stats/tables?page=1&pageSize=1", null);
+        assertEquals(1, paged.get("tables").size());
+        assertEquals(2, paged.get("page").get("total").asLong());
+        assertEquals(1, paged.get("page").get("page").asInt());
+        assertEquals(1, paged.get("page").get("pageSize").asInt());
+        assertTrue(paged.get("page").get("hasNext").asBoolean());
+        assertNull(paged.get("nextPageToken"), "页码模式下不给游标");
+        assertFalse(json(200, "GET",
+                M + "/catalogs/fmt-default/table-stats/tables?page=2&pageSize=1", null)
+                .get("page").get("hasNext").asBoolean(), "第二页即最后一页");
+
+        // 过滤在切页之前生效：total 数的是过滤后的行，不是整个 catalog 的表数
+        JsonNode filteredPage = json(200, "GET",
+                M + "/catalogs/fmt-default/table-stats/tables?keyword=stats_fmt&page=1&pageSize=20",
+                null);
+        assertEquals(1, filteredPage.get("page").get("total").asLong());
+        assertEquals(1, filteredPage.get("tables").size());
+
         // 按库过滤 / 关键字过滤 / onlyPaimon
         assertEquals(2, json(200, "GET",
                 M + "/catalogs/fmt-default/table-stats/tables?database=stats_db", null)

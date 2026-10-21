@@ -5,20 +5,16 @@
       subtitle="目录的事件流：catalog / 库 / 表 / 视图 / 授权 / 主体与角色 / 优化策略与批次终态都记进同一张 audit_event 表，Paimon 与 Iceberg 两种表格式在同一个流里。这里的「刷新」是带游标的增量拉取，只取上次之后新发生的事件。"
     >
       <template #actions>
-        <el-button size="small" :loading="loading" @click="refresh">
+        <el-button size="small" :loading="loading" @click="load">
           <el-icon><Refresh /></el-icon>
           <span class="pc-btn-text">刷新</span>
-        </el-button>
-        <el-button size="small" :loading="loading" @click="resetCursor">
-          <el-icon><VideoPlay /></el-icon>
-          <span class="pc-btn-text">重置游标</span>
         </el-button>
       </template>
     </PageHeader>
 
     <PanelCard flush>
       <div class="pc-list-head">
-        <span class="pc-list-title">事件（{{ rows.length }}）</span>
+        <span class="pc-list-title">事件（{{ total }}）</span>
         <el-select v-model="filter.catalog" size="small" class="pc-evt-filter" placeholder="Catalog">
           <el-option label="全部 Catalog" value="" />
           <el-option
@@ -39,26 +35,27 @@
           </el-option-group>
         </el-select>
         <TipNote>
-          <b>增量契约</b>（docs/event-framework.md §4）：首次进入显示当前最新的一页，
-          游标落在「现在」；之后每次刷新只取比游标新的事件，新事件插到列表最前面。
-          这与其它页面的「全量重拉」不同——事件页要的是「接下来发生了什么」，
-          服务端不提供往回翻页；要看更早的历史，点「重置游标」重新取最新一页
-          （窗口是最近 {{ LIMIT }} 条，不是全部历史）。
+          <b>分页契约</b>（docs/event-framework.md §4）：按发生时间倒序（id 倒序）
+          <b>远程分页</b>，新事件在第一页；「刷新」重取当前页，总条数随
+          <code>page.total</code> 一起回来，所以能一直往回翻到最早一条。
           <br /><br />
-          「目录」与「类别」筛选在服务端做（查询参数），换挡会重置游标；
-          「事件类型」筛选在浏览器里做——类型是类别的细分，本地筛不必再发一次请求。
+          「目录」「类别」「事件类型」三个筛选都在服务端做（查询参数），
+          任一变化回到第一页重取——本地筛只筛得到当页，「优化失败」筛出空页
+          并不等于窗口里没有失败。
+          <br /><br />
+          只增不改的增量流（<code>?since=</code> 游标）仍留在服务端给脚本和
+          引擎客户端用，两种翻法互斥；页面表格走的是页码模式。
         </TipNote>
         <span class="pc-spacer" />
-        <span class="pc-dim">游标 #{{ cursor === null ? '—' : cursor }}</span>
       </div>
 
       <ResourceState
         :loading="loading"
         :error="error"
-        :empty="loaded && !filteredRows.length"
+        :empty="loaded && !total"
         empty-text="窗口内没有事件。做一次建表、授权或等一个优化任务跑完，这里就会出现记录。"
       >
-        <el-table :data="pagedRows" size="small" row-key="id">
+        <el-table :data="rows" size="small" row-key="id">
           <el-table-column type="expand">
             <template #default="{ row }">
               <div class="pc-evt-detail">
@@ -126,15 +123,12 @@
           </template>
         </el-table>
 
-        <el-pagination
-          v-if="filteredRows.length > pageSize"
-          v-model:current-page="page"
-          v-model:page-size="pageSize"
-          :page-sizes="[10, 20, 50, 100]"
-          :total="filteredRows.length"
-          layout="total, sizes, prev, pager, next"
-          size="small"
-          class="pc-pager"
+        <TablePager
+          :total="total"
+          :page="page"
+          :page-size="pageSize"
+          @page-change="onPageChange"
+          @size-change="onSizeChange"
         />
       </ResourceState>
     </PanelCard>
@@ -145,37 +139,33 @@
 import { computed, reactive, ref, watch } from 'vue'
 
 import { consoleApi } from '@/api/console.js'
-import { describeError } from '@/api/client.js'
 import CopyText from '@/components/CopyText.vue'
 import JsonBlock from '@/components/JsonBlock.vue'
 import PageHeader from '@/components/PageHeader.vue'
 import PanelCard from '@/components/PanelCard.vue'
 import ResourceState from '@/components/ResourceState.vue'
 import SectionTitle from '@/components/SectionTitle.vue'
+import TablePager from '@/components/TablePager.vue'
 import TimeText from '@/components/TimeText.vue'
 import TipNote from '@/components/TipNote.vue'
-import { notifyError, notifySuccess, onConsoleRefresh, useLocalPaging } from '@/composables/index.js'
+import { onConsoleRefresh, useRemotePaging } from '@/composables/index.js'
 import { session } from '@/store/session.js'
 
 /**
  * 目录事件页：事件流的「看」入口。
  *
- * <p><b>为什么刷新不是全量重拉。</b>事件是只增不改的事实（append-only），
- * 增量拉取（`?since=游标`）既省流量，也不会在全量重拉的间隙里漏掉
- * 「拉取瞬间还在写入」的事件——漏了就再也补不回来，而增量流的游标
- * 保证每个事件至少被看到一次。刷新把新事件插到列表最前面（显示是新在前），
- * 列表封顶 {@link MAX_ROWS} 条，超出从尾部裁掉——要回看更早的历史，
- * 「重置游标」重新取最新一页，或者直接查库。
+ * <p><b>为什么从游标增量改成远程分页。</b>事件是只增不改的事实（append-only），
+ * 增量拉取（`?since=游标`）看起来更省流量，但它有个治不好的毛病：<b>只能往前看，
+ * 回不去</b>。想找「上周那次误删表」只能反复重置游标碰运气，而窗口只有 200 条。
+ * 页码模式把「第 N 页」交给服务端（按 id 倒序，新在前），总数随 `page.total`
+ * 回来，「看最新」与「往回翻」于是成了同一张表上的两件事。增量模式仍留在
+ * 服务端给脚本与引擎客户端用（两种翻法互斥，见 `ConsoleEventController` 的注释），
+ * 页面不再用它。
  *
- * <p><b>为什么 catalog 换挡要重置游标。</b>游标是全局自增 id，不带目录语义：
- * 换了筛选目录还沿用旧游标是对的（服务端会按 catalog 过滤增量），但用户
- * 换目录时想看到的是「这个目录现在最新的一页」，沿用游标只会得到
- * 「上次之后这个目录发生的事」——两者相差的正是窗口里那一页。
+ * <p><b>为什么三个筛选都要下推。</b>本地筛只筛得到当前这一页——「类型 = 优化失败」
+ * 筛出空页时，读的人会以为窗口里没有失败，而实际上失败事件都在第 7 页。
+ * 所以 catalog / category / type 全部进查询参数，任一变化回第一页重取。
  */
-const LIMIT = 200
-
-/** 显示列表的封顶条数：增量一直插到最前面，不裁的话无限刷新会无限涨。 */
-const MAX_ROWS = 1000
 
 /**
  * 事件类别：与服务端 `CatalogEventCategory` 一一对应，也是服务端过滤参数 `category`
@@ -261,23 +251,44 @@ const TARGET_LABELS = {
   'JOB': '任务',
 }
 
-const loading = ref(false)
-const error = ref('')
-/** 是否完成过至少一次成功加载：空态提示只在这个前提下出现，否则和加载失败分不开。 */
-const loaded = ref(false)
-/** 显示顺序：新在前。事件按 id 升序到达，进来先反转。 */
-const rows = ref([])
-/** 增量游标（audit_event.id）。null 表示还没建立游标——下一次拉取按「首次」走。 */
-const cursor = ref(null)
-
 const filter = reactive({ catalog: '', category: '', type: '' })
 
-const filteredRows = computed(() => rows.value.filter((event) => {
-  if (filter.type && event.type !== filter.type) return false
-  return true
-}))
+/**
+ * 是否完成过至少一次成功加载：空态提示只在这个前提下出现，否则和加载失败
+ * 分不开——页面挂载的第一次请求还没回来时 `total` 本来就是 0。
+ */
+const loaded = ref(false)
 
-const { page, pageSize, paged: pagedRows } = useLocalPaging(filteredRows)
+/**
+ * 一页事件的取数函数，交给 {@link useRemotePaging} 按当前页码调用。
+ *
+ * <p>服务端已经按 id 倒序（新在前）排好，前端不再反转：分页契约的一部分就是
+ * 排序稳定，否则翻到第 2 页会看到第 1 页漏掉的行。
+ */
+async function fetchPage({ page: index, pageSize: size }) {
+  const payload = await consoleApi.listEvents({
+    catalog: filter.catalog,
+    category: filter.category,
+    type: filter.type,
+    page: index,
+    pageSize: size,
+  })
+  loaded.value = true
+  return { items: payload.events || [], total: payload.page?.total ?? 0 }
+}
+
+const {
+  loading,
+  error,
+  rows,
+  total,
+  page,
+  pageSize,
+  load,
+  reload,
+  onPageChange,
+  onSizeChange,
+} = useRemotePaging(fetchPage)
 
 function typeOf(value) {
   return TYPES.find((item) => item.value === value) || { label: value, tag: 'info', category: undefined }
@@ -296,76 +307,14 @@ function attrSummary(event) {
     .join('  ')
 }
 
-/** 首次（或重置后）拉取：不带 since，取当前最新的一页，游标落在「现在」。 */
-async function initialLoad() {
-  loading.value = true
-  error.value = ''
-  try {
-    const payload = await consoleApi.listEvents({
-      catalog: filter.catalog,
-      category: filter.category,
-      limit: LIMIT,
-    })
-    rows.value = [...payload.events].reverse()
-    cursor.value = payload.nextCursor
-    loaded.value = true
-  } catch (cause) {
-    error.value = describeError(cause)
-  } finally {
-    loading.value = false
-  }
-}
-
 /**
- * 刷新：带游标增量拉，hasMore 为真就继续翻（目录过滤下某一页可能刚好拉满、
- * 后面还有同目录的事件），封顶十页防失控。成功只在新事件确实出现时提示——
- * 「没有新事件」是常态，弹一次提示就成噪音了。
+ * 换筛选就回第一页重取。
+ *
+ * <p>三个条件合成一个 watch：换 `category` 时会把不匹配的 `type` 清掉（见下一个
+ * watch），拆成两个 watch 会各发一次请求；合成后 Vue 的调度器只跑一次，且读到
+ * 的是 cleared 之后的最终值。
  */
-async function refresh() {
-  if (cursor.value === null) {
-    return initialLoad()
-  }
-  loading.value = true
-  try {
-    let since = cursor.value
-    let added = []
-    for (let round = 0; round < 10; round += 1) {
-      const payload = await consoleApi.listEvents({
-        catalog: filter.catalog,
-        category: filter.category,
-        since,
-        limit: LIMIT,
-      })
-      added = added.concat(payload.events)
-      since = payload.nextCursor
-      if (!payload.hasMore) break
-    }
-    cursor.value = since
-    if (added.length) {
-      rows.value = [...added].reverse().concat(rows.value).slice(0, MAX_ROWS)
-      notifySuccess(`新增 ${added.length} 条事件`)
-    }
-  } catch (cause) {
-    // 刷新失败不清空已有列表：旧数据还在，只是拿不到新增——报出来让人自己决定重试
-    notifyError(cause)
-  } finally {
-    loading.value = false
-  }
-}
-
-/** 重置游标：清掉列表与游标，重新取最新一页。不是「回放全部历史」。 */
-async function resetCursor() {
-  rows.value = []
-  cursor.value = null
-  await initialLoad()
-}
-
-// catalog 与 category 都是服务端过滤条件，换挡必须重置游标（见组件注释）；
-// 类型过滤是本地的，不动流。换挡重拉走 initialLoad 而不是 resetCursor：换筛选
-// 要的是「这个范围内现在最新的一页」，不是清屏等结果。分页归位交给 useLocalPaging。
-watch(() => filter.catalog, () => {
-  initialLoad()
-})
+watch(() => [filter.catalog, filter.category, filter.type], () => reload())
 
 // 换类别时把不匹配的类型筛选清掉：留着它只会得到一张空表，而看的人会以为
 // 「这个类别下没有事件」
@@ -373,19 +322,17 @@ watch(() => filter.category, (category) => {
   if (filter.type && typeOf(filter.type).category !== category) {
     filter.type = ''
   }
-  initialLoad()
 })
 
-// 顶栏的「刷新」也走增量拉取：事件页的刷新语义就是「把新事件补进来」，
-// 与页头那个刷新按钮是同一个动作
-onConsoleRefresh(() => refresh())
+// 顶栏的刷新与页头那个刷新按钮是同一个动作：重取当前页。事件 append-only，
+// 这一页不会出现「被改过」的行，但新事件会把旧的下挤一页——刷新后看到的仍
+// 是最新那一屏。
+onConsoleRefresh(() => load())
 
 // 进这一页时确保 catalog 列表已加载：过滤器里的 Catalog 候选来自它
 if (!session.state.catalogsLoaded && !session.state.loadingCatalogs) {
   session.loadCatalogs().catch(() => {})
 }
-
-initialLoad()
 </script>
 
 <style scoped>

@@ -30,8 +30,9 @@ public class IcebergFunctionController {
     public IcebergDtos.ListFunctionsResponse listFunctions(@PathVariable String prefix,
                                                            @PathVariable String namespace,
                                                            @RequestParam(required = false) Integer pageSize,
-                                                           @RequestParam(required = false) String pageToken) {
-        return functionService.list(prefix, levels(namespace), pageSize, pageToken);
+                                                           @RequestParam(required = false) String pageToken,
+        @RequestParam(name = "page", required = false) Integer page) {
+        return functionService.list(prefix, levels(namespace), pageSize, pageToken, page);
     }
 
     @GetMapping("/namespaces/{namespace}/functions/{function}")

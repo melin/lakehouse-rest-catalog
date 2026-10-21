@@ -28,8 +28,10 @@ public class FunctionController {
                                                             @PathVariable String database,
                                                             @RequestParam(required = false) Integer maxResults,
                                                             @RequestParam(required = false) String pageToken,
-                                                            @RequestParam(required = false) String functionNamePattern) {
-        return functionService.list(prefix, database, maxResults, pageToken, functionNamePattern);
+                                                            @RequestParam(required = false) String functionNamePattern,
+        @RequestParam(name = "page", required = false) Integer page,
+        @RequestParam(name = "pageSize", required = false) Integer pageSize) {
+        return functionService.list(prefix, database, maxResults, pageToken, functionNamePattern, page, pageSize);
     }
 
     @PostMapping("/databases/{database}/functions")

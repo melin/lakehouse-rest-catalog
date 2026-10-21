@@ -109,7 +109,7 @@ class CatalogFileBrowserTests {
             return;
         }
         try {
-            for (String table : tableService.list(PREFIX, database, null, null, null).tables()) {
+            for (String table : tableService.list(PREFIX, database, null, null, null, null, null).tables()) {
                 try {
                     tableService.drop(PREFIX, database, table);
                 } catch (RuntimeException ignored) {

@@ -20,6 +20,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
@@ -37,10 +38,17 @@ public class PrincipalController {
     private final AuthorizationService authorizationService;
 
     /** {@code GET /principals}。 */
+    /**
+     * {@code GET /principals?page=&pageSize=}：控制台的表格走远程分页。
+     *
+     * <p>不传分页参数时行为不变（一次给全量、{@code page} 为 {@code null}），
+     * 脚本与 Spark 客户端照旧。
+     */
     @GetMapping
-    public Principals list() {
+    public Principals list(@RequestParam(name = "page", required = false) Integer page,
+                           @RequestParam(name = "pageSize", required = false) Integer pageSize) {
         authorizationService.requireServiceAdmin("list principals");
-        return principalService.list();
+        return principalService.list(page, pageSize);
     }
 
     /** {@code POST /principals}：响应含明文密钥，仅此一次。 */
@@ -90,10 +98,13 @@ public class PrincipalController {
     }
 
     /** {@code GET /principals/{principalName}/principal-roles}。 */
+    /** {@code GET /principals/{principalName}/principal-roles?page=&pageSize=}。 */
     @GetMapping("/{principalName}/principal-roles")
-    public PrincipalRoles listRoles(@PathVariable String principalName) {
+    public PrincipalRoles listRoles(@PathVariable String principalName,
+                                    @RequestParam(name = "page", required = false) Integer page,
+                                    @RequestParam(name = "pageSize", required = false) Integer pageSize) {
         authorizationService.requireServiceAdmin("read a principal's roles");
-        return principalService.listRoles(principalName);
+        return principalService.listRoles(principalName, page, pageSize);
     }
 
     /** {@code PUT /principals/{principalName}/principal-roles}：被授予的角色名在请求体里。 */

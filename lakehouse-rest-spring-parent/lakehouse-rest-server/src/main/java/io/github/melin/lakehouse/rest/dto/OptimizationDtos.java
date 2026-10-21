@@ -2,6 +2,7 @@ package io.github.melin.lakehouse.rest.dto;
 
 import java.util.List;
 import java.util.Map;
+import io.github.melin.lakehouse.rest.support.PageMeta;
 
 /**
  * 表存储优化的请求与响应模型（管理 API 基址 {@code /api/management/v1}）。
@@ -146,7 +147,12 @@ public final class OptimizationDtos {
     }
 
     /** 批次列表。 */
-    public record Jobs(List<Job> jobs) {
+    /**
+     * {@code Jobs}。{@code page} 是远程分页元数据：控制台的批次表按页码取，
+     * 不传 {@code page}/{@code pageSize} 时为 {@code null}（一次给到
+     * {@code limit} 为止，与以前一致）。
+     */
+    public record Jobs(List<Job> jobs, PageMeta page) {
     }
 
     /**

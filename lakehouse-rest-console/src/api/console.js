@@ -23,8 +23,8 @@ export const consoleApi = {
    *   控制台不需要知道 scheme 与桶名，那是服务端按 catalog 的 warehouse 拼的。
    * @param {string} prefix 名称前缀过滤（服务端过滤后再截到上限）；空串表示不过滤
    */
-  listCatalogFiles: (catalogName, path = '', prefix = '') => get('listCatalogFiles', {
-    params: { catalogName, query: { path, prefix } },
+  listCatalogFiles: (catalogName, path = '', prefix = '', paging = {}) => get('listCatalogFiles', {
+    params: { catalogName, query: { path, prefix, page: paging.page, pageSize: paging.pageSize } },
   }),
 
   /**
@@ -36,8 +36,8 @@ export const consoleApi = {
    *   所以这个端点天生列不出表目录之外的东西，下钻出界是服务端挡的。
    * @param {string} prefix 名称前缀过滤（服务端过滤后再截到上限）；空串表示不过滤
    */
-  listTableFiles: (tableId, path = '', prefix = '') => get('listTableFiles', {
-    params: { tableId, query: { path, prefix } },
+  listTableFiles: (tableId, path = '', prefix = '', paging = {}) => get('listTableFiles', {
+    params: { tableId, query: { path, prefix, page: paging.page, pageSize: paging.pageSize } },
   }),
 
   /**

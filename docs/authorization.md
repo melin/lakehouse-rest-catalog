@@ -197,7 +197,13 @@ catalog API 的「路径 → 所需 access」映射集中在 `CatalogAccessRules
 | `POST /tables/rename` | `CATALOG_ALL` | `ALTER` |
 | `GET /tables/id/{id}` | `CATALOG_ALL` | `DESCRIBE` |
 | `GET /permissions` | `CATALOG_ALL` | `GRANT` |
+| `GET /permissions/scopes` | `CATALOG_ALL` | `GRANT`（控制台清单视图，只读，见下） |
 | `POST /permissions/grant`、`/revoke` | 请求体里的资源 | `GRANT`（deferred，见 §3.4） |
+
+`/permissions/scopes` 与 `/permissions` **判权同口径**（`CATALOG_ALL` 上的 `GRANT`），
+差别只在响应形状：前者是「主体 × 作用范围」折叠后的一行一份清单，带 `page` 元数据，
+供控制台翻页；后者是规格定义的赋权元素，Spark 过程也在读。两条都只读，
+权限不足时返回同一类 403，不会因为「换了条端点」放宽或收紧。
 
 「同一个表集合路径，读与写落在不同资源类型」不是笔误：官方对照表里 `LIST` 只在
 `CATALOG_ALL` / `DATABASE` / `TABLE` 上，`CREATEDATABASE` 只在 `CATALOG` 上，

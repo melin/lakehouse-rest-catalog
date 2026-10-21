@@ -81,7 +81,7 @@
           <!-- 工具条放在 ResourceState 之外：空态时组件里只剩 el-empty，
                而「这个命名空间还没有视图」正是最需要「新建视图」的时刻。 -->
           <div v-if="tab === 'tables'" class="pc-tools-row">
-            <el-input v-model="tableFilter" size="small" placeholder="过滤表名" clearable class="pc-filter">
+            <el-input v-model="tableFilter" size="small" placeholder="在当前页过滤表名" clearable class="pc-filter">
               <template #prefix><el-icon><Search /></el-icon></template>
             </el-input>
             <span class="pc-spacer" />
@@ -141,9 +141,9 @@
             </template>
 
             <template v-else-if="tab === 'views'">
-              <el-table v-loading="viewsList.loading.value" :data="viewsList.items.value" size="small">
+              <el-table v-loading="viewsList.loading.value" :data="viewsList.rows.value" size="small">
                 <el-table-column prop="name" label="视图名" min-width="220" />
-                <el-table-column label="操作" width="110" align="right">
+                <el-table-column label="操作" width="110" align="right" fixed="right">
                   <template #default="{ row }">
                     <IconAction icon="View" label="详情" @click="showView(row)" />
                     <IconAction icon="Delete" label="删除" type="danger" @click="confirmDropView(row.name)" />
@@ -153,9 +153,9 @@
             </template>
 
             <template v-else>
-              <el-table v-loading="functionsList.loading.value" :data="functionsList.items.value" size="small">
+              <el-table v-loading="functionsList.loading.value" :data="functionsList.rows.value" size="small">
                 <el-table-column prop="name" label="函数名" min-width="220" />
-                <el-table-column label="操作" width="90" align="right">
+                <el-table-column label="操作" width="90" align="right" fixed="right">
                   <template #default="{ row }">
                     <IconAction icon="View" label="详情" @click="showFunction(row)" />
                   </template>
@@ -163,12 +163,13 @@
               </el-table>
             </template>
 
-            <div v-if="currentList.token.value" class="pc-more">
-              <el-button size="small" :loading="currentList.loading.value" @click="currentList.load(false)">
-                加载更多
-              </el-button>
-              <span class="pc-dim">服务端返回了下一页令牌，当前列表未包含全部对象。</span>
-            </div>
+            <TablePager
+              :total="currentList.total.value"
+              :page="currentList.page.value"
+              :page-size="currentList.pageSize.value"
+              @page-change="currentList.onPageChange"
+              @size-change="currentList.onSizeChange"
+            />
           </ResourceState>
         </div>
       </section>
@@ -497,10 +498,10 @@ import PageHeader from '@/components/PageHeader.vue'
 import PropertiesEditor from '@/components/PropertiesEditor.vue'
 import ResourceState from '@/components/ResourceState.vue'
 import SectionTitle from '@/components/SectionTitle.vue'
+import TablePager from '@/components/TablePager.vue'
 import TipNote from '@/components/TipNote.vue'
 import { icebergApi, listAllNamespaces, namespaceLabel, namespaceLevels, namespacePath } from '@/api/iceberg.js'
-import { describeError } from '@/api/client.js'
-import { confirmDanger, notifyError, notifySuccess, useResource } from '@/composables/index.js'
+import { confirmDanger, notifyError, notifySuccess, useRemotePaging, useResource } from '@/composables/index.js'
 import { session } from '@/store/session.js'
 
 /**
@@ -609,73 +610,60 @@ function selectNamespace(label) {
 // ------------------------------------------------------------------ 表 / 视图
 
 /**
- * 分页列表：与服务端 `pageSize` + `next-page-token` 一一对应。
+ * 三个对象列表的取数函数：端点不同，回包字段同名（都是 `identifiers`）。
  *
- * <p>响应字段名表与视图不同（都是 `identifiers`），所以字段名当参数传。
+ * <p><b>远程分页</b>：页码与页大小下推。Iceberg 规格里的翻法是 `pageSize` +
+ * `next-page-token`，服务端另外认 `page` 这个控制台扩展参数（给了就切页码模式、
+ * 回 `total`）——两者互斥，见 `IcebergDtos.ListTablesResponse` 的注释。
+ *
+ * <p>没有选中命名空间时不发请求：`/namespaces//tables` 会被服务端当成 404，
+ * 页面上一串红色错误，看起来像故障而不像「还没选」。
  */
-function createPagedList(field, call) {
-  const items = ref([])
-  const token = ref('')
-  const loading = ref(false)
-  const error = ref('')
-  let sequence = 0
-
-  async function load(reset = true) {
-    const current = ++sequence
-    // 没有选中命名空间就不发请求：`/namespaces//tables` 会被服务端当成 404，
-    // 页面上一串红色错误，看起来像故障而不像「还没选」。
-    if (!prefix.value || !currentLevels.value.length) {
-      items.value = []
-      token.value = ''
-      return
-    }
-    loading.value = true
-    error.value = ''
-    if (reset) {
-      items.value = []
-      token.value = ''
-    }
-    try {
-      const payload = await call(currentLevels.value, {
-        pageSize: pageSize.value,
-        pageToken: token.value || undefined,
-      })
-      if (current !== sequence) return
-      const page = payload?.[field] || []
-      items.value = reset ? page : [...items.value, ...page]
-      token.value = payload?.['next-page-token'] || ''
-    } catch (cause) {
-      if (current === sequence) {
-        error.value = describeError(cause)
-      }
-    } finally {
-      if (current === sequence) loading.value = false
-    }
+async function fetchIdentifiers(call, { page, pageSize }) {
+  if (!prefix.value || !currentLevels.value.length) {
+    return { items: [], total: 0 }
   }
-
-  return { items, token, loading, error, load }
+  const payload = await call(currentLevels.value, { page, pageSize })
+  return { items: payload?.identifiers || [], total: payload?.total ?? 0 }
 }
 
-const tablesList = createPagedList('identifiers', (levels, query) => icebergApi.listTables(prefix.value, levels, query))
-const viewsList = createPagedList('identifiers', (levels, query) => icebergApi.listViews(prefix.value, levels, query))
-const functionsList = createPagedList('identifiers', (levels, query) => icebergApi.listFunctions(prefix.value, levels, query))
+const tablesList = useRemotePaging(
+  (paging) => fetchIdentifiers((levels, query) => icebergApi.listTables(prefix.value, levels, query), paging),
+  { immediate: false },
+)
+const viewsList = useRemotePaging(
+  (paging) => fetchIdentifiers((levels, query) => icebergApi.listViews(prefix.value, levels, query), paging),
+  { immediate: false },
+)
+const functionsList = useRemotePaging(
+  (paging) => fetchIdentifiers((levels, query) => icebergApi.listFunctions(prefix.value, levels, query), paging),
+  { immediate: false },
+)
 
 const lists = { tables: tablesList, views: viewsList, functions: functionsList }
 const currentList = computed(() => lists[tab.value] || tablesList)
 
+/**
+ * 表名过滤**只作用于当前页**。
+ *
+ * <p>Iceberg 的列表端点没有 `tableNamePattern` 这种参数——规格里翻页只认
+ * `pageSize` + `next-page-token`，过滤不在清单里。所以这里只能筛手上这一页，
+ * 输入框的提示写明了这一点：写「过滤表名」会让人以为筛的是整个命名空间，
+ * 而那需要服务端支持，不该由前端假装。
+ */
 const filteredTables = computed(() => {
   const keyword = tableFilter.value.trim().toLowerCase()
-  if (!keyword) return tablesList.items.value
-  return tablesList.items.value.filter((row) => row.name.toLowerCase().includes(keyword))
+  if (!keyword) return tablesList.rows.value
+  return tablesList.rows.value.filter((row) => row.name.toLowerCase().includes(keyword))
 })
 
-const visibleRows = computed(() => (tab.value === 'tables' ? filteredTables.value : currentList.value.items.value))
+const visibleRows = computed(() => (tab.value === 'tables' ? filteredTables.value : currentList.value.rows.value))
 
 const emptyText = computed(() => {
   // 还没选命名空间时「没有表」是假话：右侧面板此刻什么都没有，因为左侧还没点。
   // 两种情况给不同的下一步，避免用户去查是不是权限出了问题。
   if (!currentLabel.value) return '先选择左侧的命名空间'
-  if (tab.value === 'tables' && tableFilter.value.trim() && currentList.value.items.value.length) {
+  if (tab.value === 'tables' && tableFilter.value.trim() && currentList.value.rows.value.length) {
     return `没有匹配「${tableFilter.value.trim()}」的表`
   }
   return {
@@ -685,9 +673,12 @@ const emptyText = computed(() => {
   }[tab.value] || '暂无数据'
 })
 
+/** 哪些页签已经拉过：切来切去不该重复请求，也不该把页码打回第一页。 */
+const loadedTabs = new Set()
+
 function reloadAll() {
   namespacesResource.load()
-  currentList.value.load(true)
+  currentList.value.reload()
 }
 
 // 两个 watch 分开：换命名空间不需要重新拉整棵命名空间树（那是 N 次请求），
@@ -704,9 +695,11 @@ watch(
   [prefix, () => namespacePath(currentLevels.value)],
   ([, levels]) => {
     if (!prefix.value || !levels) return
-    tablesList.load(true)
-    viewsList.load(true)
-    functionsList.load(true)
+    // 换了命名空间，三个列表全部作废：页码、已加载标记都要归零
+    loadedTabs.clear()
+    tablesList.reload()
+    viewsList.reload()
+    functionsList.reload()
   },
   { immediate: true },
 )
@@ -718,8 +711,11 @@ watch(rows, (list) => {
   }
 })
 
-watch(tab, () => {
-  if (!currentList.value.items.value.length) currentList.value.load(true)
+watch(tab, (name) => {
+  // 首次切到某个页签时才拉数据；上面那个 watch 已经把三个都拉过了，这里只是兜底
+  if (!loadedTabs.has(name)) {
+    loadedTabs.add(name)
+  }
 })
 
 // ------------------------------------------------------------------ 命名空间增删

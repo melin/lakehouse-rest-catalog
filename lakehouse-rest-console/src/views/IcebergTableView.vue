@@ -182,7 +182,7 @@
               <el-table-column label="提交时间" width="170">
                 <template #default="{ row }"><TimeText :millis="row['timestamp-ms']" /></template>
               </el-table-column>
-              <el-table-column label="操作" width="110">
+              <el-table-column label="操作" width="110" fixed="right">
                 <template #default="{ row }">
                   <el-tag size="small" effect="plain">{{ row.summary?.operation || '—' }}</el-tag>
                 </template>
@@ -272,13 +272,13 @@
               </div>
 
               <el-alert
-                v-if="files.data.value?.truncated"
+                v-if="fileListing?.truncated"
                 type="warning"
                 :closable="false"
                 show-icon
                 class="pc-hint"
               >
-                <template #title>只显示了前 {{ files.data.value.maxEntries }} 条（共 {{ files.data.value.total }} 条）</template>
+                <template #title>只显示了前 {{ fileListing.maxEntries }} 条（共 {{ fileListing.total }} 条）</template>
                 <div>
                   排序是目录优先、名称升序，因此被截掉的是尾部的文件。下钻到更具体的子目录，
                   或调大 <span class="pc-mono">lakehouse.rest.file-browser.max-entries</span>。
@@ -286,9 +286,9 @@
               </el-alert>
 
               <ResourceState
-                :loading="files.loading.value"
-                :error="files.error.value"
-                :empty="!fileEntries.length"
+                :loading="filesLoading"
+                :error="filesError"
+                :empty="fileLoaded && !totalFileEntries"
                 :empty-text="filePrefix ? `没有以「${filePrefix}」开头的条目` : '这个目录里没有文件'"
               />
 
@@ -309,10 +309,10 @@
                   <code>{{ relativeFilesPath || '（表目录）' }}</code>。
                 </TipNote>
                 <span class="pc-spacer" />
-                <span class="pc-dim">共 {{ fileEntries.length }} 条</span>
+                <span class="pc-dim">共 {{ totalFileEntries }} 条</span>
               </div>
 
-              <el-table v-if="fileEntries.length || files.loading.value" :data="pagedFileEntries" size="small">
+              <el-table v-if="fileEntries.length || filesLoading" :data="fileEntries" size="small">
                 <el-table-column label="名称" min-width="280">
                   <template #default="{ row }">
                     <a v-if="row.directory" class="pc-link pc-file-name" @click.prevent="openFilesDirectory(row.path)">
@@ -343,7 +343,7 @@
                     <span class="pc-mono pc-dim pc-break">{{ row.path }}</span>
                   </template>
                 </el-table-column>
-                <el-table-column label="操作" width="90" align="center">
+                <el-table-column label="操作" width="90" align="center" fixed="right">
                   <template #default="{ row }">
                     <IconAction
                       v-if="!row.directory"
@@ -357,15 +357,12 @@
                 </el-table-column>
               </el-table>
 
-              <el-pagination
-                v-if="fileEntries.length > filePageSize"
-                v-model:current-page="filePage"
-                v-model:page-size="filePageSize"
-                :page-sizes="[10, 50, 100, 200, 500]"
-                :total="fileEntries.length"
-                layout="total, sizes, prev, pager, next"
-                size="small"
-                class="pc-pager"
+              <TablePager
+                :total="totalFileEntries"
+                :page="filePage"
+                :page-size="filePageSize"
+                @page-change="onFilePageChange"
+                @size-change="onFileSizeChange"
               />
             </template>
           </template>
@@ -404,6 +401,7 @@ import PageHeader from '@/components/PageHeader.vue'
 import PanelCard from '@/components/PanelCard.vue'
 import ResourceState from '@/components/ResourceState.vue'
 import SectionTitle from '@/components/SectionTitle.vue'
+import TablePager from '@/components/TablePager.vue'
 import TableOptimizationPanel from '@/components/TableOptimizationPanel.vue'
 import TimeText from '@/components/TimeText.vue'
 import TipNote from '@/components/TipNote.vue'
@@ -411,7 +409,7 @@ import { describeError } from '@/api/client.js'
 import { consoleApi } from '@/api/console.js'
 import { icebergApi, namespaceLevels } from '@/api/iceberg.js'
 import { managementApi } from '@/api/management.js'
-import { notifyError, useLocalPaging, useResource } from '@/composables/index.js'
+import { notifyError, useRemotePaging, useResource } from '@/composables/index.js'
 import { session } from '@/store/session.js'
 import { isIcebergCatalog } from '@/utils/catalogFormat.js'
 import {
@@ -587,25 +585,43 @@ const filePath = ref('') // 相对仓库根
 const filePrefixInput = ref('')
 const filePrefix = ref('')
 
-const files = useResource(async () => {
-  if (!metadata.value) return Promise.resolve(null)
+/** 最近一次列表响应：`maxEntries` / `truncated` / `total` 不是行级字段，单独留一份。 */
+const fileListing = ref(null)
+/** 是否成功列过至少一次目录：空态提示只在这个前提下出现，否则和「还没加载」分不开。 */
+const fileLoaded = ref(false)
+
+async function fetchFiles({ page, pageSize }) {
+  if (!metadata.value) return { items: [], total: 0 }
   // 列表依赖 warehouse（root 由 location 减它得出），而 catalog 信息要单独取一次：
   // 两个请求不能并发——并发时 root 还是 null，列表会静默返回空且不再重试
   if (!catalogInfo.data.value) {
     await catalogInfo.load()
   }
-  if (filesRoot.value === null) return Promise.resolve(null)
+  if (filesRoot.value === null) return { items: [], total: 0 }
   // filePath 为空串表示「还没导航过」——默认落在表目录，而不是仓库根
   const target = filePath.value || filesRoot.value
-  return consoleApi.listCatalogFiles(prefix.value, target, filePrefix.value)
-}, { immediate: false })
+  const payload = await consoleApi.listCatalogFiles(
+    prefix.value, target, filePrefix.value, { page, pageSize },
+  )
+  fileListing.value = payload
+  fileLoaded.value = true
+  return { items: payload.entries || [], total: payload.page?.total ?? payload.total ?? 0 }
+}
 
-const fileEntries = computed(() => files.data.value?.entries || [])
+// 翻页由服务端切：这一层有多少条目、第 M 页是什么，都只有列完这一层才知道；
+// 本地切片会先被 `max-entries` 截一刀，界面上的总数就比真实值小。
 const {
+  loading: filesLoading,
+  error: filesError,
+  rows: fileEntries,
+  total: totalFileEntries,
   page: filePage,
   pageSize: filePageSize,
-  paged: pagedFileEntries,
-} = useLocalPaging(fileEntries)
+  load: loadFiles,
+  reload: reloadFiles,
+  onPageChange: onFilePageChange,
+  onSizeChange: onFileSizeChange,
+} = useRemotePaging(fetchFiles, { immediate: false })
 
 /** 相对表目录的当前路径（面包屑与提示用；发请求用的是相对仓库根的 filePath）。 */
 const relativeFilesPath = computed(() => {
@@ -631,13 +647,14 @@ const parentFilesPath = computed(() => {
 
 function openFilesDirectory(path) {
   filePath.value = path
-  files.load()
+  // 换了目录就换了集合，页码必须归位（停在第 3 页会看到空表，而目录其实有 5 条）
+  reloadFiles()
 }
 
 /** 回车或点「查询」才发请求：逐字符过滤会把每次按键都变成一次存储列举。 */
 function applyFilePrefix() {
   filePrefix.value = filePrefixInput.value.trim()
-  files.load()
+  reloadFiles()
 }
 
 async function downloadEntry(row) {
@@ -650,8 +667,8 @@ async function downloadEntry(row) {
 
 /** 文件页签第一次打开时：loader 内部自己保证 catalog 信息先到（见 files 的注释）。 */
 function loadFilesIfFirst() {
-  if (!files.data.value && !files.loading.value) {
-    files.load()
+  if (!fileLoaded.value && !filesLoading.value) {
+    reloadFiles()
   }
 }
 
@@ -699,7 +716,7 @@ function reloadAll() {
   overview.load()
   loadedTabs.clear()
   onTabChange(tab.value)
-  if (tab.value === 'files') files.load()
+  if (tab.value === 'files') loadFiles()
 }
 
 watch([prefix, database, table], () => {
@@ -708,8 +725,8 @@ watch([prefix, database, table], () => {
   filePath.value = ''
   filePrefix.value = ''
   filePrefixInput.value = ''
-  files.data.value = null
-  files.error.value = ''
+  fileListing.value = null
+  fileLoaded.value = false
   overview.load()
   if (tab.value !== 'details') {
     loadedTabs.add(tab.value)

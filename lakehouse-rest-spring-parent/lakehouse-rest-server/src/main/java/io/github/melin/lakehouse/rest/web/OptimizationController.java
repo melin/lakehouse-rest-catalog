@@ -21,6 +21,7 @@ import io.github.melin.lakehouse.rest.service.OptimizationJobService;
 import io.github.melin.lakehouse.rest.service.TableOptimizationService;
 import io.github.melin.lakehouse.rest.support.ApiException;
 import io.github.melin.lakehouse.rest.support.OptimizationOptions;
+import io.github.melin.lakehouse.rest.support.Paging;
 import io.github.melin.lakehouse.rest.support.OptimizationOptions.Action;
 import io.github.melin.lakehouse.rest.support.ResourceType;
 import java.util.ArrayList;
@@ -145,7 +146,10 @@ public class OptimizationController {
     public Jobs jobs(@RequestParam(name = "catalog", required = false) String catalogName,
                      @RequestParam(name = "status", required = false) String status,
                      @RequestParam(name = "action", required = false) String action,
-                     @RequestParam(name = "limit", required = false) Integer limit) {
+                     @RequestParam(name = "trigger", required = false) String triggerType,
+                     @RequestParam(name = "limit", required = false) Integer limit,
+                     @RequestParam(name = "page", required = false) Integer page,
+                     @RequestParam(name = "pageSize", required = false) Integer pageSize) {
         Action actionFilter = null;
         if (action != null && !action.isBlank()) {
             actionFilter = Action.parse(action);
@@ -154,23 +158,30 @@ public class OptimizationController {
                         + ", supported: " + OptimizationOptions.actionNames());
             }
         }
-        int size = limit == null ? MAX_JOB_LIST : limit;
+        List<Job> visible;
         if (catalogName != null && !catalogName.isBlank()) {
             requireCatalog(catalogName, Access.DESCRIBE, "list optimization jobs");
-            return new Jobs(jobService.list(catalogName, status, actionFilter, size));
-        }
-        List<Job> visible = new ArrayList<>();
-        boolean filter = authorizationService.enabled()
-                && !authorizationService.isServiceAdmin(RequestContext.principal());
-        for (Job job : jobService.list(null, status, actionFilter, MAX_JOB_LIST)) {
-            if (!filter || hasCatalogAccess(job.catalog())) {
-                visible.add(job);
-                if (visible.size() >= size) {
-                    break;
+            visible = jobService.list(catalogName, status, actionFilter, triggerType, MAX_JOB_LIST);
+        } else {
+            // 可见性逐条判定，因此先把「这个人能看到的」收齐再切页：
+            // 先切页会让 total 变成全局批次数，等于把不可见 catalog 的存在感泄露出去。
+            visible = new ArrayList<>();
+            boolean filter = authorizationService.enabled()
+                    && !authorizationService.isServiceAdmin(RequestContext.principal());
+            for (Job job : jobService.list(null, status, actionFilter, triggerType, MAX_JOB_LIST)) {
+                if (!filter || hasCatalogAccess(job.catalog())) {
+                    visible.add(job);
                 }
             }
         }
-        return new Jobs(visible);
+        Paging.Paged<Job> paged = Paging.paged(visible, page, pageSize);
+        if (paged != null) {
+            return new Jobs(paged.items(), paged.meta());
+        }
+        // 不分页的老路径仍受 limit 约束（默认 MAX_JOB_LIST），顺带兜住「一次要全量」的调用方。
+        int cap = limit == null ? MAX_JOB_LIST : Math.min(Math.max(limit, 1), MAX_JOB_LIST);
+        List<Job> capped = visible.size() > cap ? visible.subList(0, cap) : visible;
+        return new Jobs(List.copyOf(capped), null);
     }
 
     /** {@code GET /optimization/jobs/{jobId}}：批次详情（含表级明细）。 */

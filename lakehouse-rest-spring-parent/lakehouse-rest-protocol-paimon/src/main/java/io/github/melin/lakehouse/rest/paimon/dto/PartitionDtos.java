@@ -38,7 +38,15 @@ public final class PartitionDtos {
             Integer totalBuckets) {
     }
 
-    public record ListPartitionsResponse(List<Partition> partitions, String nextPageToken) {
+    /**
+     * 分区列表。
+     *
+     * <p>两种翻法互斥，与其它列表端点同一口径（见 {@code Paging.paged}）：
+     * 不给 {@code page}/{@code pageSize} 是规格里的游标模式（{@code nextPageToken}
+     * 由引擎客户端消费），给了就是控制台表格的页码模式——此时
+     * {@code nextPageToken} 为 {@code null}，{@code total} 是过滤后的完整条数。
+     */
+    public record ListPartitionsResponse(List<Partition> partitions, String nextPageToken, Integer total) {
     }
 
     public record CreatePartitionsRequest(

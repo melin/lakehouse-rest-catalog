@@ -6,6 +6,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import com.fasterxml.jackson.annotation.JsonInclude;
+import io.github.melin.lakehouse.rest.support.PageMeta;
 
 /**
  * Paimon 官方 REST Management API 权限端点的 wire 契约。
@@ -148,7 +149,47 @@ public final class PermissionDtos {
                                        String expireTime, PermissionColumns columns) {
     }
 
-    /** {@code GET /v1/{prefix}/permissions} 的响应。 */
-    public record PermissionList(List<PermissionAssignment> assignments, String nextPageToken) {
+    /**
+     * {@code PermissionList}。两种分页口径并存，因为它们服务两类调用方：
+     *
+     * <ul>
+     *   <li>{@code nextPageToken}——规格里的游标翻页，Spark 过程与控制台以外的
+     *       客户端用它，一路向前、不关心总数；</li>
+     *   <li>{@code page}——控制台表格的远程分页（页码 + 总数），
+     *       {@code el-pagination} 要渲染「共 N 条、第几页」就必须有 total。</li>
+     * </ul>
+     *
+     * <p>两者互斥：给了 {@code page}/{@code pageSize} 就按页码切（此时
+     * {@code nextPageToken} 为 {@code null}），否则按游标切、{@code page} 为 {@code null}。
+     */
+    public record PermissionList(List<PermissionAssignment> assignments, String nextPageToken,
+                                 PageMeta page) {
+    }
+
+    /**
+     * 控制台授权清单的一行：**同一个「主体 × 作用范围」下的若干项权的聚合**。
+     *
+     * <p>为什么要服务端聚合：控制台的清单一行是「谁对什么有什么」，
+     * 由多条赋权（同范围不同 access）折叠而成。如果服务端只按赋权分页，
+     * 同一组的几条会被页边界切开，同一个主体在相邻两页各出现一次——
+     * 那不是分页，那是把一行拆成两行。所以折叠在服务端做，页再切在折叠之后。
+     *
+     * <p>{@code accesses} 里的每一项都是**可独立撤销**的赋权身份
+     * （资源 + access + principal），行内的 × 就用它去调撤销。
+     *
+     * @param principal    主体名（官方语义下的不透明字符串，如 {@code user:alice}）
+     * @param resourceType 资源类型（{@code CATALOG_ALL} / {@code DATABASE} / {@code TABLE} …）
+     * @param database     库名（catalog 级为空）
+     * @param object       对象名（表 / 视图 / 函数名；库级与 catalog 级为空）
+     * @param scope        界面上的「作用范围」文案：整个 catalog / 库名 / {@code 库.对象}
+     * @param accesses     这个范围内的逐项权限
+     */
+    public record PermissionScope(String principal, String resourceType, String database,
+                                  String object, String scope,
+                                  List<PermissionAssignment> accesses) {
+    }
+
+    /** {@code GET /v1/{prefix}/permissions/scopes} 的响应：一页 {@link PermissionScope}。 */
+    public record PermissionScopes(List<PermissionScope> scopes, PageMeta page) {
     }
 }

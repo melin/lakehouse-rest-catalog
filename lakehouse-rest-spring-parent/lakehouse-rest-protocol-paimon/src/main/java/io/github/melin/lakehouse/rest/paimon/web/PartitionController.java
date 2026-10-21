@@ -28,8 +28,11 @@ public class PartitionController {
                                                               @PathVariable String table,
                                                               @RequestParam(required = false) Integer maxResults,
                                                               @RequestParam(required = false) String pageToken,
-                                                              @RequestParam(required = false) String partitionNamePattern) {
-        return partitionService.list(prefix, database, table, maxResults, pageToken, partitionNamePattern);
+                                                              @RequestParam(required = false) String partitionNamePattern,
+                                                              @RequestParam(required = false) Integer page,
+                                                              @RequestParam(required = false) Integer pageSize) {
+        return partitionService.list(prefix, database, table, maxResults, pageToken, partitionNamePattern,
+                page, pageSize);
     }
 
     @PostMapping

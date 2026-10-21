@@ -305,6 +305,22 @@ POST /v1/lake/namespaces/ods/tables
 包含快照提交与回滚，不只是 schema 改动。控制台的表列表走的是 `table-details`，
 见 [`console.md`](console.md) 的 `/browse` 行。
 
+### 页码模式（控制台的翻法）
+
+每个列表端点（`/databases`、`/tables`、`/table-details`、`/partitions`、`/views`、
+`/functions`、`/snapshots`）除规格里的游标参数外，另认 `page` 与 `pageSize`：
+
+| 传什么 | 翻法 | 响应 |
+| --- | --- | --- |
+| 都不传 | 规格里的老路径：`maxResults` 截断 / `pageToken` 游标 | `nextPageToken`，`total` 缺席 |
+| 传 `page`（可带 `pageSize`） | 页码模式，1-based，默认 20、上限 200 | `nextPageToken` 为 `null`，多一个 `total`（过滤后的完整条数） |
+
+两者**互斥**，判据是 `page` 是否为空（`Paging.paged`）。这么做而不是改规格，是因为
+调用方不同：引擎客户端只会游标翻页，控制台的表格要的是「第几页 / 共几条」。
+不给 `page` 时行为与这个特性引入前**逐字节相同**，所以 Spark / Flink 客户端与既有脚本
+都不受影响。`total` 的语义随名字模式变——它是**过滤之后**的条数，不是库里的行数
+（`?tableNamePattern=` / `?partitionNamePattern=` 会先收窄再计数）。
+
 ---
 
 ## Iceberg 协议面（30 个端点）

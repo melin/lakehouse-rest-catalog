@@ -47,7 +47,7 @@ public final class FunctionDtos {
             String updatedBy) {
     }
 
-    public record ListFunctionsResponse(List<String> functions, String nextPageToken) {
+    public record ListFunctionsResponse(List<String> functions, String nextPageToken, Integer total ) {
     }
 
     public record ListFunctionDetailsResponse(List<GetFunctionResponse> functionDetails, String nextPageToken) {

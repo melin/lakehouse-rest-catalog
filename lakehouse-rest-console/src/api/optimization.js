@@ -86,8 +86,8 @@ export const optimizationApi = {
    *   `action` 取动作 wire 名（`compact` / `expire` / `orphan`）——**不是**显示名。
    *   留空表示不过滤（服务端会按调用者能看到的 catalog 过滤）。
    */
-  jobs: ({ catalog = '', status = '', action = '', limit = 0 } = {}) => get('listOptimizationJobs', {
-    params: { query: { catalog, status, action, limit: limit || '' } },
+  jobs: ({ catalog = '', status = '', action = '', trigger = '', limit = 0, page = null, pageSize = null } = {}) => get('listOptimizationJobs', {
+    params: { query: { catalog, status, action, trigger, limit: limit || '', page, pageSize } },
   }),
 
   /** 批次详情（含表级明细）。列表不带明细，展开某一批时才拉这一条。 */

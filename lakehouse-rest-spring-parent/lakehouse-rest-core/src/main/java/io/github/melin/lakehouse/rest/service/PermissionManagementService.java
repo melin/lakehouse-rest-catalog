@@ -9,12 +9,15 @@ import io.github.melin.lakehouse.rest.dto.PermissionDtos.PermissionAssignment;
 import io.github.melin.lakehouse.rest.dto.PermissionDtos.PermissionColumns;
 import io.github.melin.lakehouse.rest.dto.PermissionDtos.PermissionList;
 import io.github.melin.lakehouse.rest.dto.PermissionDtos.PermissionResource;
+import io.github.melin.lakehouse.rest.dto.PermissionDtos.PermissionScope;
+import io.github.melin.lakehouse.rest.dto.PermissionDtos.PermissionScopes;
 import io.github.melin.lakehouse.rest.dto.PermissionDtos.ResourceType;
 import io.github.melin.lakehouse.rest.event.CatalogEvent;
 import io.github.melin.lakehouse.rest.event.CatalogEventPublisher;
 import io.github.melin.lakehouse.rest.event.CatalogEventType;
 import io.github.melin.lakehouse.rest.support.ApiException;
 import io.github.melin.lakehouse.rest.support.Json;
+import io.github.melin.lakehouse.rest.support.PageMeta;
 import io.github.melin.lakehouse.rest.support.Paging;
 import java.time.Instant;
 import java.time.format.DateTimeParseException;
@@ -22,6 +25,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import lombok.RequiredArgsConstructor;
@@ -64,7 +68,8 @@ public class PermissionManagementService {
     @Transactional(readOnly = true)
     public PermissionList list(String catalogName, String resourceType, String database,
                                String table, String view, String function, String principal,
-                               String access, Integer maxResults, String pageToken) {
+                               String access, Integer maxResults, String pageToken,
+                               Integer page, Integer pageSize) {
         String catalogId = requireCatalogId(catalogName);
         List<PermissionAssignmentEntity> all = new ArrayList<>(
                 repository.findByCatalogId(catalogId));
@@ -77,12 +82,93 @@ public class PermissionManagementService {
                 .thenComparing(PermissionAssignmentEntity::getDatabaseName)
                 .thenComparing(PermissionAssignmentEntity::getObjectName)
                 .thenComparing(PermissionAssignmentEntity::getAccess));
+        // 控制台要页码与总数（el-pagination 的 current-page / total），
+        // 规格里的游标翻页留给 Spark 过程这类「一路向前」的调用方。两者互斥。
+        Paging.Paged<PermissionAssignmentEntity> paged = Paging.paged(all, page, pageSize);
+        if (paged != null) {
+            List<PermissionAssignment> pageAssignments = paged.items().stream()
+                    .map(PermissionManagementService::toAssignment)
+                    .toList();
+            return new PermissionList(pageAssignments, null, paged.meta());
+        }
         int size = Paging.pageSize(maxResults, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE);
         Paging.Slice<PermissionAssignmentEntity> slice = Paging.slice(all, Paging.offset(pageToken), size);
         List<PermissionAssignment> assignments = slice.items().stream()
                 .map(PermissionManagementService::toAssignment)
                 .toList();
-        return new PermissionList(assignments, slice.nextPageToken());
+        return new PermissionList(assignments, slice.nextPageToken(), null);
+    }
+
+    /**
+     * {@code GET /v1/{prefix}/permissions/scopes}：控制台授权清单的一页。
+     *
+     * <p><b>折叠在切页之前。</b>清单一行是「主体 × 作用范围」，由同范围的几条赋权
+     * 折叠而成；先按赋权切页会把一组切到两页上，同一个主体在相邻两页各出现一次。
+     * 因此先折叠、再过滤、再切页——`total` 也就是「有多少行」，与界面数的一致。
+     *
+     * <p>{@code keyword} 在服务端匹配「主体 + 作用范围」：客户端只有一页，
+     * 在浏览器里筛只能筛出这一页里匹配的，与「全站匹配的」是两回事。
+     */
+    @Transactional(readOnly = true)
+    public PermissionScopes scopes(String catalogName, String resourceType, String database,
+                                   String table, String view, String function, String principal,
+                                   String access, String keyword, Integer page, Integer pageSize) {
+        String catalogId = requireCatalogId(catalogName);
+        List<PermissionAssignmentEntity> all = new ArrayList<>(repository.findByCatalogId(catalogId));
+        all.removeIf(entity -> !matches(entity, resourceType, database, table, view, function,
+                principal, access));
+
+        // 分组键：主体 + 资源类型 + 库 + 对象。用 LinkedHashMap 保持首次出现的顺序，
+        // 排序在下面统一做（分页要求顺序稳定）。
+        Map<String, List<PermissionAssignmentEntity>> grouped = new LinkedHashMap<>();
+        for (PermissionAssignmentEntity entity : all) {
+            String key = String.join("\n",
+                    String.valueOf(entity.getPrincipal()),
+                    String.valueOf(entity.getResourceType()),
+                    String.valueOf(entity.getDatabaseName()),
+                    String.valueOf(entity.getObjectName()));
+            grouped.computeIfAbsent(key, ignored -> new ArrayList<>()).add(entity);
+        }
+
+        String needle = keyword == null ? "" : keyword.trim().toLowerCase(Locale.ROOT);
+        List<PermissionScope> scopes = new ArrayList<>(grouped.size());
+        for (List<PermissionAssignmentEntity> group : grouped.values()) {
+            PermissionAssignmentEntity head = group.get(0);
+            String scope = scopeOf(head);
+            if (!needle.isEmpty()
+                    && !(head.getPrincipal() + " " + scope).toLowerCase(Locale.ROOT).contains(needle)) {
+                continue;
+            }
+            List<PermissionAssignment> accesses = new ArrayList<>(group.size());
+            for (PermissionAssignmentEntity entity : group) {
+                accesses.add(toAssignment(entity));
+            }
+            // 行内按 access 名排序：同一范围下的标签顺序不该随建表顺序变
+            accesses.sort(Comparator.comparing(PermissionAssignment::access));
+            scopes.add(new PermissionScope(head.getPrincipal(), head.getResourceType(),
+                    head.getDatabaseName(), head.getObjectName(), scope, accesses));
+        }
+        scopes.sort(Comparator.comparing(PermissionScope::principal)
+                .thenComparing(PermissionScope::scope));
+
+        int size = Paging.pageSize(pageSize, Paging.DEFAULT_PAGE_SIZE, Paging.MAX_PAGE_SIZE);
+        int current = Paging.page(page);
+        Paging.Slice<PermissionScope> slice = Paging.slicePage(scopes, current, size);
+        return new PermissionScopes(slice.items(), PageMeta.of(scopes.size(), current, size));
+    }
+
+    /** 界面上的「作用范围」文案；规则与前端曾经的那份逐字一致。 */
+    private static String scopeOf(PermissionAssignmentEntity entity) {
+        String type = entity.getResourceType();
+        if ("CATALOG".equals(type) || "CATALOG_ALL".equals(type)) {
+            return "整个 catalog";
+        }
+        String databaseName = entity.getDatabaseName();
+        String objectName = entity.getObjectName();
+        if (objectName == null || objectName.isBlank()) {
+            return databaseName == null ? "" : databaseName;
+        }
+        return (databaseName == null || databaseName.isBlank() ? "" : databaseName + ".") + objectName;
     }
 
     /** {@code POST /v1/{prefix}/permissions/grant}。 */

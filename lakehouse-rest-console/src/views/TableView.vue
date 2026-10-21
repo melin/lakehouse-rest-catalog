@@ -187,7 +187,7 @@
                 :empty-text="`没有名称包含「${schemaFilter}」的字段`"
               />
 
-              <el-table :data="pagedFields" size="small">
+              <el-table :data="fieldRows" size="small">
                 <el-table-column prop="id" label="序号" width="64" align="right" />
                 <el-table-column prop="name" label="字段名称" min-width="150" />
                 <el-table-column label="类型" min-width="170">
@@ -214,15 +214,12 @@
                 </el-table-column>
               </el-table>
 
-              <el-pagination
-                v-if="filteredFields.length > fieldPageSize"
-                v-model:current-page="fieldPage"
-                v-model:page-size="fieldPageSize"
-                :page-sizes="[10, 50, 100, 200, 500]"
-                :total="filteredFields.length"
-                layout="total, sizes, prev, pager, next"
-                size="small"
-                class="pc-pager"
+              <TablePager
+                :total="fieldTotal"
+                :page="fieldPage"
+                :page-size="fieldPageSize"
+                @page-change="onFieldPageChange"
+                @size-change="onFieldSizeChange"
               />
 
             </template>
@@ -233,24 +230,24 @@
                   v-model="partitionFilterInput"
                   size="small"
                   class="pc-prefix-input"
-                  placeholder="输入分区名过滤"
+                  placeholder="按分区名前缀过滤，如 dt=2024"
                   clearable
                 />
               </div>
 
               <ResourceState
-                :loading="partitions.loading.value"
-                :error="partitions.error.value"
-                :empty="partitions.data.value !== null && !filteredPartitions.length"
+                :loading="partitionsLoading"
+                :error="partitionsError"
+                :empty="partitionsLoaded && !totalPartitions"
                 :empty-text="partitionFilterInput.trim()
-                  ? `没有包含「${partitionFilterInput.trim()}」的分区`
+                  ? `没有以「${partitionFilterInput.trim()}」开头的分区`
                   : '这张表没有分区，或还没有数据'"
               />
 
               <el-table
-                v-if="filteredPartitions.length || partitions.loading.value"
-                v-loading="partitions.loading.value"
-                :data="pagedPartitions"
+                v-if="partitionsRows.length || partitionsLoading"
+                v-loading="partitionsLoading"
+                :data="partitionsRows"
                 size="small"
                 empty-text="这张表没有分区，或还没有数据"
               >
@@ -280,15 +277,12 @@
                 </el-table-column>
               </el-table>
 
-              <el-pagination
-                v-if="filteredPartitions.length > partitionPageSize"
-                v-model:current-page="partitionPage"
-                v-model:page-size="partitionPageSize"
-                :page-sizes="[10, 50, 100, 200, 500]"
-                :total="filteredPartitions.length"
-                layout="total, sizes, prev, pager, next"
-                size="small"
-                class="pc-pager"
+              <TablePager
+                :total="totalPartitions"
+                :page="partitionPage"
+                :page-size="partitionPageSize"
+                @page-change="onPartitionPageChange"
+                @size-change="onPartitionSizeChange"
               />
             </template>
           </template>
@@ -385,7 +379,7 @@
               <el-table-column prop="branchName" label="分支名" min-width="200">
                 <template #default="{ row }">{{ row.branchName || row.name || row }}</template>
               </el-table-column>
-              <el-table-column label="操作" width="160" align="right">
+              <el-table-column label="操作" width="160" align="right" fixed="right">
                 <template #default="{ row }">
                   <IconAction icon="EditPen" label="重命名" @click="openRenameBranch(branchName(row))" />
                   <IconAction icon="DArrowRight" label="推进到最新" @click="forwardBranch(branchName(row))" />
@@ -414,13 +408,13 @@
             </div>
 
             <el-alert
-              v-if="tableFiles.data.value?.truncated"
+              v-if="tableFileListing?.truncated"
               type="warning"
               :closable="false"
               show-icon
               class="pc-hint"
             >
-              <template #title>只显示了前 {{ tableFiles.data.value.maxEntries }} 条（共 {{ tableFiles.data.value.total }} 条）</template>
+              <template #title>只显示了前 {{ tableFileListing.maxEntries }} 条（共 {{ tableFileListing.total }} 条）</template>
               <div>
                 排序是目录优先、名称升序，因此被截掉的是尾部的文件。下钻到更具体的子目录，
                 或调大 <span class="pc-mono">lakehouse.rest.file-browser.max-entries</span>。
@@ -428,9 +422,9 @@
             </el-alert>
 
             <ResourceState
-              :loading="tableFiles.loading.value"
-              :error="tableFiles.error.value"
-              :empty="!tableEntries.length"
+              :loading="tableFilesLoading"
+              :error="tableFilesError"
+              :empty="tableFilesLoaded && !totalTableEntries"
               :empty-text="tableFilePrefix ? `没有以「${tableFilePrefix}」开头的条目` : '这个目录里没有文件'"
             />
 
@@ -453,12 +447,12 @@
               </TipNote>
               <span class="pc-spacer" />
               <span class="pc-dim">
-                共 {{ tableEntries.length }} 条<span v-if="tableFiles.data.value?.truncated">（已达上限
-                {{ tableFiles.data.value.maxEntries }}，用前缀过滤缩小范围）</span>
+                共 {{ totalTableEntries }} 条<span v-if="tableFileListing?.truncated">（已达上限
+                {{ tableFileListing.maxEntries }}，用前缀过滤缩小范围）</span>
               </span>
             </div>
 
-            <el-table v-if="tableEntries.length || tableFiles.loading.value" :data="pagedTableEntries" size="small">
+            <el-table v-if="tableEntries.length || tableFilesLoading" :data="tableEntries" size="small">
               <el-table-column label="名称" min-width="280">
                 <template #default="{ row }">
                   <!-- 目录名可点，点进去看下一层；文件没有可点的动作（这一页只读） -->
@@ -493,7 +487,7 @@
                   <span class="pc-mono pc-dim pc-break">{{ row.path }}</span>
                 </template>
               </el-table-column>
-              <el-table-column label="操作" width="90" align="center">
+              <el-table-column label="操作" width="90" align="center" fixed="right">
                 <template #default="{ row }">
                   <!-- 只有文件可下载：目录用列表下钻；表目录里没有「下载整个目录」 -->
                   <IconAction
@@ -508,15 +502,12 @@
               </el-table-column>
             </el-table>
 
-            <el-pagination
-              v-if="tableEntries.length > tableFilePageSize"
-              v-model:current-page="tableFilePage"
-              v-model:page-size="tableFilePageSize"
-              :page-sizes="[10, 50, 100, 200, 500]"
+            <TablePager
               :total="totalTableEntries"
-              layout="total, sizes, prev, pager, next"
-              size="small"
-              class="pc-pager"
+              :page="tableFilePage"
+              :page-size="tableFilePageSize"
+              @page-change="onTableFilePageChange"
+              @size-change="onTableFileSizeChange"
             />
           </template>
 
@@ -632,12 +623,20 @@ import PageHeader from '@/components/PageHeader.vue'
 import PanelCard from '@/components/PanelCard.vue'
 import ResourceState from '@/components/ResourceState.vue'
 import TableOptimizationPanel from '@/components/TableOptimizationPanel.vue'
+import TablePager from '@/components/TablePager.vue'
 import TimeText from '@/components/TimeText.vue'
 import TipNote from '@/components/TipNote.vue'
 import { catalogApi } from '@/api/catalog.js'
 import { consoleApi } from '@/api/console.js'
 import { describeError } from '@/api/client.js'
-import { confirmDanger, notifyError, notifySuccess, useLocalPaging, useResource } from '@/composables/index.js'
+import {
+  confirmDanger,
+  notifyError,
+  notifySuccess,
+  useEmbeddedPaging,
+  useRemotePaging,
+  useResource,
+} from '@/composables/index.js'
 import { session } from '@/store/session.js'
 import { isIcebergCatalog } from '@/utils/catalogFormat.js'
 import {
@@ -781,10 +780,6 @@ const branches = useResource(
   () => catalogApi.listBranches(prefix.value, database.value, table.value),
   { immediate: false },
 )
-const partitions = useResource(
-  () => catalogApi.listPartitions(prefix.value, database.value, table.value),
-  { immediate: false },
-)
 
 // ------------------------------------------------------------------ 文件列表
 
@@ -795,23 +790,44 @@ const partitions = useResource(
  * 天生列不出表外的东西，下钻出界由服务端挡下；要看整个仓库去 Catalog 详情页。
  * 加载器里判一次 table0：概览还在加载时不会发出 id 为 undefined 的请求。
  *
- * <p>前缀过滤走服务端（回车触发一次请求）：过滤后的结果还要按同一个
- * `max-entries` 上限截断；翻页在本地做（服务端一次给一批，默认上限 1000 条）。
+ * <p>前缀过滤与翻页都在服务端（回车触发一次请求）：这一层有多少条目、第 M 页是什么，
+ * 只有列完才知道；本地切片会先被 `max-entries` 截一刀，界面上的总数就比真实值小。
  */
 const tableFilePath = ref('')
 const tableFilePrefixInput = ref('')
 const tableFilePrefix = ref('')
-const tableFiles = useResource(() => {
-  if (!table0.value) return Promise.resolve(null)
-  return consoleApi.listTableFiles(table0.value.id, tableFilePath.value, tableFilePrefix.value)
-}, { immediate: false })
-const tableEntries = computed(() => tableFiles.data.value?.entries || [])
+
+/** 最近一次列表响应：`maxEntries` / `truncated` / `total` 不是行级字段，单独留一份。 */
+const tableFileListing = ref(null)
+/** 是否成功列过至少一次目录：空态提示只在这个前提下出现，否则和「还没加载」分不开。 */
+const tableFilesLoaded = ref(false)
+
+async function fetchTableFiles({ page, pageSize }) {
+  // 概览还没回来时没有 tableId，先不发请求（返回空页而不是抛错）
+  if (!table0.value) return { items: [], total: 0 }
+  const payload = await consoleApi.listTableFiles(
+    table0.value.id,
+    tableFilePath.value,
+    tableFilePrefix.value,
+    { page, pageSize },
+  )
+  tableFileListing.value = payload
+  tableFilesLoaded.value = true
+  return { items: payload.entries || [], total: payload.page?.total ?? payload.total ?? 0 }
+}
+
 const {
+  loading: tableFilesLoading,
+  error: tableFilesError,
+  rows: tableEntries,
+  total: totalTableEntries,
   page: tableFilePage,
   pageSize: tableFilePageSize,
-  paged: pagedTableEntries,
-  total: totalTableEntries,
-} = useLocalPaging(tableEntries)
+  load: loadTableFiles,
+  reload: reloadTableFiles,
+  onPageChange: onTableFilePageChange,
+  onSizeChange: onTableFileSizeChange,
+} = useRemotePaging(fetchTableFiles, { immediate: false })
 
 const tableCrumbs = computed(() => {
   const segments = tableFilePath.value.split('/').filter(Boolean)
@@ -824,13 +840,14 @@ const tableParentPath = computed(
 
 function openTableDirectory(path) {
   tableFilePath.value = path
-  tableFiles.load()
+  // 换了目录就换了集合，页码必须归位（停在第 3 页会看到空表，而目录其实有 5 条）
+  reloadTableFiles()
 }
 
 /** 回车或点「查询」才发请求：逐字符过滤会把每次按键都变成一次存储列举。 */
 function applyTablePrefix() {
   tableFilePrefix.value = tableFilePrefixInput.value.trim()
-  tableFiles.load()
+  reloadTableFiles()
 }
 
 /**
@@ -900,21 +917,66 @@ const filteredFields = computed(() => {
   if (!keyword) return fields
   return fields.filter((field) => field.name.toLowerCase().includes(keyword))
 })
-const { page: fieldPage, pageSize: fieldPageSize, paged: pagedFields } = useLocalPaging(filteredFields)
+// 字段表跟着 `GET .../tables/{t}` 一次性回来，没有列表端点可翻——只做切片
+const {
+  page: fieldPage,
+  pageSize: fieldPageSize,
+  rows: fieldRows,
+  total: fieldTotal,
+  onPageChange: onFieldPageChange,
+  onSizeChange: onFieldSizeChange,
+} = useEmbeddedPaging(filteredFields)
 
+/**
+ * 分区过滤：**前缀**，不是子串。
+ *
+ * <p>服务端的分区名模式走 {@code Patterns.matches}——SQL LIKE 的「只支持前缀」实现，
+ * 于是 `dt=2024` 收成 `dt=2024%`。这与字段表的子串过滤不一样，提示文案里写清楚了：
+ * 分区名本来就是 `dt=2024-01-01/hour=12` 这种按键排序的路径，前缀比子串更接近
+ * 「我要看 2024 年的分区」这个意图，也不会把关键字中间的 `=` 当成通配。
+ */
 const partitionFilterInput = ref('')
-const filteredPartitions = computed(() => {
-  const keyword = partitionFilterInput.value.trim().toLowerCase()
-  const rows = partitions.data.value?.partitions || []
-  if (!keyword) return rows
-  return rows.filter((row) => inlineMap(row.spec).toLowerCase().includes(keyword))
+const partitionPattern = ref('')
+const partitionsLoaded = ref(false)
+
+async function fetchPartitions({ page, pageSize }) {
+  const payload = await catalogApi.listPartitions(prefix.value, database.value, table.value, {
+    partitionNamePattern: partitionPattern.value,
+    page,
+    pageSize,
+  })
+  partitionsLoaded.value = true
+  return { items: payload.partitions || [], total: payload.total ?? 0 }
+}
+
+const {
+  loading: partitionsLoading,
+  error: partitionsError,
+  rows: partitionsRows,
+  total: totalPartitions,
+  page: partitionPage,
+  pageSize: partitionPageSize,
+  load: loadPartitions,
+  reload: reloadPartitions,
+  onPageChange: onPartitionPageChange,
+  onSizeChange: onPartitionSizeChange,
+} = useRemotePaging(fetchPartitions, { immediate: false })
+
+// 逐字符过滤会把每次按键都变成一次分区查询：300ms 内的连续输入只在最后发一次
+let partitionFilterTimer = null
+watch(partitionFilterInput, (value) => {
+  if (partitionFilterTimer) clearTimeout(partitionFilterTimer)
+  partitionFilterTimer = setTimeout(() => {
+    const keyword = value.trim()
+    partitionPattern.value = keyword ? `${keyword}%` : ''
+    // 过滤条件变了，页码必须归位——停在第 3 页会得到一张空表
+    reloadPartitions()
+  }, 300)
 })
-const { page: partitionPage, pageSize: partitionPageSize, paged: pagedPartitions } =
-  useLocalPaging(filteredPartitions)
 
 function onDetailsSectionChange(name) {
-  if (name === 'partitions' && !partitions.data.value && !partitions.loading.value) {
-    partitions.load()
+  if (name === 'partitions' && !partitionsLoaded.value && !partitionsLoading.value) {
+    reloadPartitions()
   }
 }
 
@@ -942,8 +1004,8 @@ function onTabChange(name) {
   if (name === 'optimization') loadOptimization()
   // 文件列表要等概览回来才有 tableId：概览没到时先不请求（加载器会返回 null），
   // 等下次切到这个页签、或概览加载完成后的 reloadAll 再拉
-  if (name === 'files' && table0.value && !tableFiles.data.value && !tableFiles.loading.value) {
-    tableFiles.load()
+  if (name === 'files' && table0.value && !tableFilesLoaded.value && !tableFilesLoading.value) {
+    reloadTableFiles()
   }
 }
 
@@ -953,9 +1015,9 @@ function reloadAll() {
   onTabChange(tab.value)
   // 文件列表不在 onTabChange 的首次加载判定里：刷新要真的重新拉一次，
   // 否则刷新按钮在文件页签上什么也不做（数据还在，被判定成「已加载」）
-  if (tab.value === 'files') tableFiles.load()
+  if (tab.value === 'files') loadTableFiles()
   // 分区列表同理：数据在就重拉，让刷新在这个二级页签上也有效
-  if (tab.value === 'details' && detailsSection.value === 'partitions') partitions.load()
+  if (tab.value === 'details' && detailsSection.value === 'partitions') loadPartitions()
 }
 
 watch([prefix, database, table], () => {
@@ -965,11 +1027,12 @@ watch([prefix, database, table], () => {
   tableFilePath.value = ''
   tableFilePrefix.value = ''
   tableFilePrefixInput.value = ''
-  tableFiles.data.value = null
-  tableFiles.error.value = ''
+  tableFileListing.value = null
+  tableFilesLoaded.value = false
   // 分区列表同样换表即作废；二级页签回到「字段列表」（默认落点）
-  partitions.data.value = null
-  partitions.error.value = ''
+  partitionFilterInput.value = ''
+  partitionPattern.value = ''
+  partitionsLoaded.value = false
   detailsSection.value = 'fields'
   overview.load()
   if (!SELF_CONTAINED_TABS.has(tab.value)) {
@@ -1376,9 +1439,4 @@ async function confirmDrop() {
   width: 240px;
 }
 
-/* 分页条靠右；只在条目多于一页时才渲染（见模板里的 v-if） */
-.pc-pager {
-  margin-top: 12px;
-  justify-content: flex-end;
-}
 </style>

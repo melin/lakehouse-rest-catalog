@@ -70,7 +70,7 @@ public class IcebergNamespaceService {
      */
     @Transactional(readOnly = true)
     public IcebergDtos.ListNamespacesResponse list(String prefix, List<String> parent,
-                                                   Integer pageSize, String pageToken) {
+                                                   Integer pageSize, String pageToken, Integer page ) {
         CatalogEntity catalog = resolve(prefix);
         List<String> parentLevels = parent == null ? List.of() : parent;
         List<List<String>> namespaceList = new ArrayList<>();
@@ -81,9 +81,14 @@ public class IcebergNamespaceService {
             }
             namespaceList.add(levels);
         }
+        // 页码模式（控制台表格）：切页并带回总数；协议里的 pageToken 翻页保持原样。
+        Paging.Paged<List<String>> paged = Paging.paged(namespaceList, page, pageSize);
+        if (paged != null) {
+            return new IcebergDtos.ListNamespacesResponse(paged.items(), null, (int) paged.meta().total());
+        }
         Paging.Slice<List<String>> slice = Paging.slice(namespaceList, Paging.offset(pageToken),
                 Paging.pageSize(pageSize, properties.getDefaultPageSize(), properties.getMaxPageSize()));
-        return new IcebergDtos.ListNamespacesResponse(slice.items(), slice.nextPageToken());
+        return new IcebergDtos.ListNamespacesResponse(slice.items(), slice.nextPageToken(), null);
     }
 
     /** {@code levels} 是否是 {@code parentLevels} 的直接子级（比它正好深一层）。 */

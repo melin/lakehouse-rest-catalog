@@ -207,6 +207,74 @@ class PermissionManagementTests {
                 "第二页不应重复第一页的条目");
     }
 
+    /**
+     * 页码模式：控制台表格要 {@code total} 才能渲染分页器；而
+     * {@code /permissions/scopes} 的一行是**折叠后**的「主体 × 作用范围」。
+     *
+     * <p>钉三件事：页码模式的元数据自洽（total / page / hasNext），
+     * 不传分页参数时 {@code page} 仍为空（游标老路径没被改坏），
+     * 折叠发生在切页之前——同范围的几条赋权不会被页边界切开。
+     */
+    @Test
+    void pageModeReportsTotalAndScopesFoldBeforePaging() throws Exception {
+        String alice = "user:page-alice";
+        String bob = "user:page-bob";
+        grant("{\"resource\":{\"type\":\"DATABASE\",\"database\":\"pagedb\"},"
+                + "\"access\":\"CREATETABLE\",\"principal\":\"" + alice + "\"}");
+        grant("{\"resource\":{\"type\":\"DATABASE\",\"database\":\"pagedb\"},"
+                + "\"access\":\"DESCRIBE\",\"principal\":\"" + alice + "\"}");
+        grant("{\"resource\":" + tableResource("pagedb", "orders")
+                + ",\"access\":\"SELECT\",\"principal\":\"" + bob + "\"}");
+
+        String aliceFilter = "?principal=" + alice;
+
+        // 每页一条：两页走完，页码与 hasNext 自洽
+        JsonNode first = asRoot(200, "GET", BASE + aliceFilter + "&page=1&pageSize=1", null);
+        assertEquals(1, first.get("assignments").size());
+        assertEquals(2, first.get("page").get("total").asInt());
+        assertEquals(1, first.get("page").get("page").asInt());
+        assertEquals(1, first.get("page").get("pageSize").asInt());
+        assertTrue(first.get("page").get("hasNext").asBoolean(), "两条数据每页一条，第一页之后还有");
+        assertTrue(first.get("nextPageToken") == null || first.get("nextPageToken").isNull(),
+                "页码模式下不再给游标，两种翻法互斥");
+
+        JsonNode second = asRoot(200, "GET", BASE + aliceFilter + "&page=2&pageSize=1", null);
+        assertEquals(1, second.get("assignments").size());
+        assertEquals(2, second.get("page").get("page").asInt());
+        assertFalse(second.get("page").get("hasNext").asBoolean());
+        assertFalse(first.get("assignments").get(0).equals(second.get("assignments").get(0)),
+                "第二页不应重复第一页的条目");
+
+        // 不传 page/pageSize：一次拿全量、page 为空（脚本与 Spark 过程走这条）
+        JsonNode all = asRoot(200, "GET", BASE + aliceFilter, null);
+        assertEquals(2, all.get("assignments").size());
+        assertTrue(all.get("page") == null || all.get("page").isNull(),
+                "不分页路径不该凭空多出分页元数据");
+
+        // scopes：同范围的 CREATETABLE + DESCRIBE 折成一行，切页在折叠之后
+        String scopes = BASE + "/scopes";
+        JsonNode folded = asRoot(200, "GET", scopes + aliceFilter + "&page=1&pageSize=20", null);
+        assertEquals(1, folded.get("page").get("total").asInt(), "两条赋权同一范围，折叠后只有一行");
+        JsonNode row = folded.get("scopes").get(0);
+        assertEquals(alice, row.get("principal").asString());
+        assertEquals("pagedb", row.get("scope").asString());
+        assertEquals(2, row.get("accesses").size());
+
+        // 每页一行：total 数的是折叠后的行，不是赋权条数
+        JsonNode onePerPage = asRoot(200, "GET", scopes + "?page=1&pageSize=1", null);
+        assertEquals(1, onePerPage.get("scopes").size());
+        assertTrue(onePerPage.get("page").get("total").asInt() >= 2,
+                "total 应反映全站折叠后的行数，而不是这一页的条数");
+
+        // keyword 在服务端匹配「主体 + 作用范围」：客户端只有一页，筛不出全站结果
+        JsonNode byKeyword = asRoot(200, "GET", scopes + "?keyword=orders", null);
+        assertTrue(byKeyword.get("scopes").size() >= 1, "keyword=orders 应命中表级那一行");
+        for (JsonNode item : byKeyword.get("scopes")) {
+            assertTrue((item.get("principal").asString() + " " + item.get("scope").asString())
+                    .contains("orders"), "未命中的行不该出现在结果里");
+        }
+    }
+
     @Test
     void validationRejectsInvalidAssignments() throws Exception {
         // access 与资源类型不匹配（官方对照表：CREATETABLE 不适用于 TABLE）

@@ -28,8 +28,10 @@ public class DatabaseController {
     @GetMapping
     public DatabaseDtos.ListDatabasesResponse list(@PathVariable String prefix,
                                                    @RequestParam(required = false) Integer maxResults,
-                                                   @RequestParam(required = false) String pageToken) {
-        return databaseService.list(prefix, maxResults, pageToken);
+                                                   @RequestParam(required = false) String pageToken,
+        @RequestParam(name = "page", required = false) Integer page,
+        @RequestParam(name = "pageSize", required = false) Integer pageSize) {
+        return databaseService.list(prefix, maxResults, pageToken, page, pageSize);
     }
 
     @PostMapping

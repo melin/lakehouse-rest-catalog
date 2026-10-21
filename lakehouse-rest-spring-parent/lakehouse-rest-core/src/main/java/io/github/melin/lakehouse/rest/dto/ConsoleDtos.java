@@ -3,6 +3,7 @@ package io.github.melin.lakehouse.rest.dto;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import java.util.List;
 import java.util.Map;
+import io.github.melin.lakehouse.rest.support.PageMeta;
 
 /**
  * 控制台扩展端点（{@code /api/console/v1/**}）的响应与请求模型。
@@ -321,7 +322,8 @@ public final class ConsoleDtos {
             List<CatalogFileEntry> entries,
             int total,
             boolean truncated,
-            int maxEntries) {
+            int maxEntries,
+            PageMeta page) {
     }
 
     /**
@@ -378,7 +380,8 @@ public final class ConsoleDtos {
             List<CatalogFileEntry> entries,
             int total,
             boolean truncated,
-            int maxEntries) {
+            int maxEntries,
+            PageMeta page) {
     }
 
     /**
@@ -389,7 +392,18 @@ public final class ConsoleDtos {
      * {@code since} 时回当前最新的一页——事件页要的是「接下来发生了什么」，
      * 不是回放全部历史。
      */
-    public record EventPage(List<Event> events, long nextCursor, boolean hasMore) {
+    /**
+     * {@code EventPage}。两种翻法并存：
+     *
+     * <ul>
+     *   <li>{@code nextCursor}——增量流（「接下来发生了什么」），一路向前不回头；</li>
+     *   <li>{@code page}——控制台表格的远程分页，按时间倒序的第 N 页，带总数。</li>
+     * </ul>
+     *
+     * <p>互斥：给了 {@code page}/{@code pageSize} 就按页码取（倒序，最新在前），
+     * 否则按游标取、{@code page} 为 {@code null}。
+     */
+    public record EventPage(List<Event> events, long nextCursor, boolean hasMore, PageMeta page) {
     }
 
     /**

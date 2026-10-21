@@ -17,6 +17,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
@@ -36,10 +37,16 @@ public class PrincipalRoleController {
     private final AuthorizationService authorizationService;
 
     /** {@code GET /principal-roles}。 */
+    /**
+     * {@code GET /principal-roles?page=&pageSize=}：控制台的表格走远程分页。
+     *
+     * <p>不传分页参数时行为不变（一次给全量、{@code page} 为 {@code null}）。
+     */
     @GetMapping
-    public PrincipalRoles list() {
+    public PrincipalRoles list(@RequestParam(name = "page", required = false) Integer page,
+                               @RequestParam(name = "pageSize", required = false) Integer pageSize) {
         authorizationService.requireServiceAdmin("list principal roles");
-        return principalRoleService.list();
+        return principalRoleService.list(page, pageSize);
     }
 
     /** {@code POST /principal-roles}。 */
@@ -74,9 +81,12 @@ public class PrincipalRoleController {
     }
 
     /** {@code GET /principal-roles/{principalRoleName}/principals}。 */
+    /** {@code GET /principal-roles/{principalRoleName}/principals?page=&pageSize=}。 */
     @GetMapping("/{principalRoleName}/principals")
-    public Principals listPrincipals(@PathVariable String principalRoleName) {
+    public Principals listPrincipals(@PathVariable String principalRoleName,
+                                     @RequestParam(name = "page", required = false) Integer page,
+                                     @RequestParam(name = "pageSize", required = false) Integer pageSize) {
         authorizationService.requireServiceAdmin("read the principals of a principal role");
-        return principalRoleService.listPrincipals(principalRoleName);
+        return principalRoleService.listPrincipals(principalRoleName, page, pageSize);
     }
 }

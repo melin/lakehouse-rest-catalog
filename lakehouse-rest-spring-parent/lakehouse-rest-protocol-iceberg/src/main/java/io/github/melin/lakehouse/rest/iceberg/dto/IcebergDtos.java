@@ -57,7 +57,8 @@ public final class IcebergDtos {
     // ------------------------------------------------------------------ namespace
 
     public record ListNamespacesResponse(@JsonProperty("namespaces") List<List<String>> namespaces,
-                                         @JsonProperty("next-page-token") String nextPageToken) {
+                                         @JsonProperty("next-page-token") String nextPageToken,
+                                         @JsonProperty("total") Integer total ) {
     }
 
     public record CreateNamespaceRequest(@JsonProperty("namespace") List<String> namespace,
@@ -90,7 +91,8 @@ public final class IcebergDtos {
     // ------------------------------------------------------------------ table
 
     public record ListTablesResponse(@JsonProperty("identifiers") List<TableIdentifier> identifiers,
-                                     @JsonProperty("next-page-token") String nextPageToken) {
+                                     @JsonProperty("next-page-token") String nextPageToken,
+                                         @JsonProperty("total") Integer total ) {
     }
 
     /**
@@ -172,7 +174,8 @@ public final class IcebergDtos {
     // ------------------------------------------------------------------ view
 
     public record ListViewsResponse(@JsonProperty("identifiers") List<TableIdentifier> identifiers,
-                                    @JsonProperty("next-page-token") String nextPageToken) {
+                                    @JsonProperty("next-page-token") String nextPageToken,
+                                         @JsonProperty("total") Integer total ) {
     }
 
     public record CreateViewRequest(@JsonProperty("name") String name,
@@ -206,7 +209,8 @@ public final class IcebergDtos {
     // ------------------------------------------------------------------ function
 
     public record ListFunctionsResponse(@JsonProperty("identifiers") List<TableIdentifier> identifiers,
-                                        @JsonProperty("next-page-token") String nextPageToken) {
+                                        @JsonProperty("next-page-token") String nextPageToken,
+                                         @JsonProperty("total") Integer total ) {
     }
 
     /**

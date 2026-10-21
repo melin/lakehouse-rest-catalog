@@ -477,14 +477,18 @@ body {
  * 要放说明就得覆盖它的内部结构（`el-radio-button__inner`），
  * 而那串类名不是稳定的公开契约（见本文件开头）。三个 div 反而更耐久。
  * ---------------------------------------------------------------------- */
-.pc-opt-grid {
+/* 名字用 pick（挑一个）而不是 opt（option）：`pc-opt-*` 这套前缀已经归
+ * 「存储优化」面板（`TableOptimizationPanel`）所有，两边都用 opt 时，
+ * 面板的根 div 会静默吃下这里的选择卡样式——整整一屏的边框、内边距、
+ * pointer 光标，以及 hover 时边框变蓝。缩写撞车在类名里不报错，只变形。 */
+.pc-pick-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 10px;
   width: 100%;
 }
 
-.pc-opt {
+.pc-pick {
   padding: 10px 12px;
   border: 1px solid var(--pc-border);
   border-radius: var(--pc-radius);
@@ -493,18 +497,18 @@ body {
   transition: border-color 0.15s, background-color 0.15s;
 }
 
-.pc-opt:hover {
+.pc-pick:hover {
   border-color: var(--el-color-primary);
 }
 
 /* 选中态用主色描边 + 极浅底：只靠描边在浅色主题下不够显眼，
    只靠底色则打印或截图时看不出选的是哪个 */
-.pc-opt.is-on {
+.pc-pick.is-on {
   border-color: var(--el-color-primary);
   background: rgba(29, 78, 216, 0.05);
 }
 
-.pc-opt-name {
+.pc-pick-name {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -515,7 +519,7 @@ body {
 
 /* 单选圆点：未选中是空心，选中是实心。用 CSS 而不是图标，
    让「选中」这件事在两种主题下都靠边框与底色表达，不依赖图标字体 */
-.pc-opt-dot {
+.pc-pick-dot {
   width: 9px;
   height: 9px;
   border: 1.5px solid var(--pc-text-dim);
@@ -523,20 +527,20 @@ body {
   flex: none;
 }
 
-.pc-opt.is-on .pc-opt-dot {
+.pc-pick.is-on .pc-pick-dot {
   border-color: var(--el-color-primary);
   background: var(--el-color-primary);
   box-shadow: inset 0 0 0 1.5px var(--pc-surface);
 }
 
-.pc-opt-desc {
+.pc-pick-desc {
   margin-top: 5px;
   font-size: 12.5px;
   line-height: 1.7;
   color: var(--pc-text-dim);
 }
 
-.pc-opt-meta {
+.pc-pick-meta {
   margin-top: 5px;
   font-size: 12px;
   color: var(--pc-text-dim);
@@ -610,7 +614,7 @@ body {
  * 只做一件事：把「多数人不用填」的字段收起来，同时保证收起时也能看出
  * 「这里有东西 / 这里可以不管」。
  *
- * 为什么自绘而不用 el-collapse：与 `.pc-opt-grid` 不用 el-radio-group 同一个
+ * 为什么自绘而不用 el-collapse：与 `.pc-pick-grid` 不用 el-radio-group 同一个
  * 理由——Element Plus 的内部类名不是稳定公开契约，为了 2px 圆角与这套字号
  * 去覆盖 `.el-collapse-item__header` 的 padding、border、字号，升级会静默失效。
  * 键盘可达与语义由 `button` + `aria-expanded` 自己保证，代价是这二十行。

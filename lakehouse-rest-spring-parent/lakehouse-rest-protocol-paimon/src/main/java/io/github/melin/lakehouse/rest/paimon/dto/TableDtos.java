@@ -45,10 +45,10 @@ public final class TableDtos {
     public record RenameTableRequest(CommonDtos.Identifier source, CommonDtos.Identifier destination) {
     }
 
-    public record ListTablesResponse(List<String> tables, String nextPageToken) {
+    public record ListTablesResponse(List<String> tables, String nextPageToken, Integer total ) {
     }
 
-    public record ListTableDetailsResponse(List<GetTableResponse> tableDetails, String nextPageToken) {
+    public record ListTableDetailsResponse(List<GetTableResponse> tableDetails, String nextPageToken, Integer total ) {
     }
 
     public record ListTablesGloballyResponse(List<CommonDtos.Identifier> tables, String nextPageToken) {
@@ -106,7 +106,7 @@ public final class TableDtos {
     public record GetVersionSnapshotResponse(Snapshot snapshot) {
     }
 
-    public record ListSnapshotsResponse(List<Snapshot> snapshots, String nextPageToken) {
+    public record ListSnapshotsResponse(List<Snapshot> snapshots, String nextPageToken, Integer total ) {
     }
 
     /**

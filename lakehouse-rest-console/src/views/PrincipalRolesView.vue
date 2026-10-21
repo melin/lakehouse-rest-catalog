@@ -5,7 +5,7 @@
       subtitle="角色只是主体分组，不携带任何权限：主体持有角色，授权按 `role:&lt;角色名&gt;` 命中。因此改一个角色，会影响所有持有它的主体。"
     >
       <template #actions>
-        <el-button size="small" :loading="table.loading.value" @click="table.load">
+        <el-button size="small" :loading="loading" @click="load">
           <el-icon><Refresh /></el-icon>
           <span class="pc-btn-text">刷新</span>
         </el-button>
@@ -18,14 +18,14 @@
 
     <PanelCard flush>
       <div class="pc-list-head">
-        <span class="pc-list-title">角色（{{ rows.length }}）</span>
+        <span class="pc-list-title">角色（{{ total }}）</span>
         <span class="pc-list-tools">
           <span class="pc-mono pc-dim">管理 API /principal-roles</span>
         </span>
       </div>
       <ResourceState
-        :loading="table.loading.value"
-        :error="table.error.value"
+        :loading="loading"
+        :error="error"
         :empty="!rows.length"
         empty-text="还没有角色。新建一个，再把它授予主体。"
       >
@@ -35,7 +35,7 @@
             <span class="pc-btn-text">新建角色</span>
           </el-button>
         </template>
-        <el-table v-loading="table.loading.value" :data="rows" size="small">
+        <el-table v-loading="loading" :data="rows" size="small">
           <el-table-column prop="name" label="名称" min-width="160" />
           <el-table-column label="属性" min-width="170">
             <template #default="{ row }">
@@ -53,6 +53,13 @@
             </template>
           </el-table-column>
         </el-table>
+        <TablePager
+          :total="total"
+          :page="page"
+          :page-size="pageSize"
+          @page-change="onPageChange"
+          @size-change="onSizeChange"
+        />
       </ResourceState>
     </PanelCard>
 
@@ -101,6 +108,13 @@
             <template #default="{ row }"><CopyText :text="row.clientId" /></template>
           </el-table-column>
         </el-table>
+        <TablePager
+          :total="total"
+          :page="page"
+          :page-size="pageSize"
+          @page-change="onPageChange"
+          @size-change="onSizeChange"
+        />
       </ResourceState>
       <p v-if="detail.principals.length" class="pc-drawer-note">
         授予主体要在「主体」页面操作：那条接口按主体定位，这里只做展示。
@@ -110,7 +124,7 @@
 </template>
 
 <script setup>
-import { computed, reactive } from 'vue'
+import { reactive } from 'vue'
 
 import CopyText from '@/components/CopyText.vue'
 import SectionTitle from '@/components/SectionTitle.vue'
@@ -119,14 +133,28 @@ import PageHeader from '@/components/PageHeader.vue'
 import PanelCard from '@/components/PanelCard.vue'
 import PropertiesEditor from '@/components/PropertiesEditor.vue'
 import ResourceState from '@/components/ResourceState.vue'
+import TablePager from '@/components/TablePager.vue'
 import TimeText from '@/components/TimeText.vue'
 import { managementApi } from '@/api/management.js'
 import { describeError } from '@/api/client.js'
-import { confirmDanger, notifyError, notifySuccess, onConsoleRefresh, useResource } from '@/composables/index.js'
+import { confirmDanger, notifyError, notifySuccess, onConsoleRefresh, useRemotePaging } from '@/composables/index.js'
 import { inlineMap } from '@/utils/format.js'
 
-const table = useResource(() => managementApi.listPrincipalRoles())
-const rows = computed(() => table.data.value?.roles || [])
+// 角色表走远程分页：一页一条请求，`total` 是服务端数出来的。
+const {
+  rows,
+  total,
+  page,
+  pageSize,
+  loading,
+  error,
+  load,
+  reload,
+  onPageChange,
+  onSizeChange,
+} = useRemotePaging(({ page: current, pageSize: size }) => managementApi
+  .listPrincipalRoles({ page: current, pageSize: size })
+  .then((payload) => ({ items: payload.roles || [], total: payload.page?.total ?? 0 })))
 
 const dialog = reactive({
   open: false,
@@ -172,7 +200,7 @@ async function save() {
       notifySuccess(`已更新角色 ${dialog.name}`)
     }
     dialog.open = false
-    table.load()
+    reload()
   } catch (error) {
     notifyError(error)
   } finally {
@@ -190,7 +218,8 @@ async function confirmDelete(row) {
   try {
     await managementApi.deletePrincipalRole(row.name)
     notifySuccess(`已删除角色 ${row.name}`)
-    table.load()
+    // 删完可能正好少一页：回到第一页重取，页码永远落在存在的页上
+    reload()
   } catch (error) {
     notifyError(error)
   }
@@ -223,5 +252,5 @@ async function openDetail(row) {
   }
 }
 
-onConsoleRefresh(() => table.load())
+onConsoleRefresh(() => load())
 </script>

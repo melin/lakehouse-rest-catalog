@@ -42,17 +42,24 @@ public class PartitionService {
     @Transactional(readOnly = true)
     public PartitionDtos.ListPartitionsResponse list(String prefix, String database, String table,
                                                      Integer maxResults, String pageToken,
-                                                     String partitionNamePattern) {
+                                                     String partitionNamePattern,
+                                                     Integer page, Integer pageSize) {
         TableEntity target = tableLookup.requireTable(prefix, database, table);
         List<PartitionEntity> filtered = partitionRepository
                 .findAllByTableIdOrderBySpecKeyAsc(target.getId())
                 .stream()
                 .filter(partition -> Patterns.matches(partitionName(partition.getSpec()), partitionNamePattern))
                 .toList();
+        // 页码模式（控制台表格）：先按 specKey 排好的整份结果切页，total 是过滤后的条数
+        Paging.Paged<PartitionEntity> paged = Paging.paged(filtered, page, pageSize);
+        if (paged != null) {
+            return new PartitionDtos.ListPartitionsResponse(toResponses(paged.items()), null,
+                    (int) paged.meta().total());
+        }
         Paging.Slice<PartitionEntity> slice = Paging.slice(filtered,
                 Paging.offset(pageToken),
                 Paging.pageSize(maxResults, properties.getDefaultPageSize(), properties.getMaxPageSize()));
-        return new PartitionDtos.ListPartitionsResponse(toResponses(slice.items()), slice.nextPageToken());
+        return new PartitionDtos.ListPartitionsResponse(toResponses(slice.items()), slice.nextPageToken(), null);
     }
 
     /**
@@ -72,7 +79,7 @@ public class PartitionService {
             String key = specKey(spec);
             partitionRepository.findByTableIdAndSpecKey(target.getId(), key).ifPresent(result::add);
         }
-        return new PartitionDtos.ListPartitionsResponse(toResponses(result), null);
+        return new PartitionDtos.ListPartitionsResponse(toResponses(result), null, null);
     }
 
     /**
@@ -96,7 +103,7 @@ public class PartitionService {
                 Paging.offset(request == null ? null : request.pageToken()),
                 Paging.pageSize(request == null ? null : request.maxResults(),
                         properties.getDefaultPageSize(), properties.getMaxPageSize()));
-        return new PartitionDtos.ListPartitionsResponse(toResponses(slice.items()), slice.nextPageToken());
+        return new PartitionDtos.ListPartitionsResponse(toResponses(slice.items()), slice.nextPageToken(), null);
     }
 
     // ------------------------------------------------------------------ 变更

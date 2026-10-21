@@ -336,7 +336,8 @@ public class OptimizationJobService {
 
     /** 批次列表，最近的在前。不返回表级明细（列表页要的是批次级信息）。 */
     @Transactional(readOnly = true)
-    public List<OptimizationDtos.Job> list(String catalogName, String status, Action action, int limit) {
+    public List<OptimizationDtos.Job> list(String catalogName, String status, Action action,
+                                           String triggerType, int limit) {
         List<OptimizationJobEntity> jobs;
         if (catalogName == null || catalogName.isBlank()) {
             jobs = jobRepository.findAllByOrderByCreatedAtDesc();
@@ -354,6 +355,12 @@ public class OptimizationJobService {
                 continue;
             }
             if (action != null && !OptimizationOptions.fromWire(job.getActions()).contains(action)) {
+                continue;
+            }
+            // 触发方式（SCHEDULED / MANUAL）也在这里筛：它是批次自己的属性，
+            // 与状态、动作一样属于「列表要显示什么」，不是另一层数据。
+            if (triggerType != null && !triggerType.isBlank()
+                    && !triggerType.equalsIgnoreCase(job.getTriggerType())) {
                 continue;
             }
             result.add(toDto(job, null, false));

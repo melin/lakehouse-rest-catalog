@@ -22,7 +22,7 @@
 
     <PanelCard flush>
       <div class="pc-list-head">
-        <span class="pc-list-title">批次（{{ rows.length }}）</span>
+        <span class="pc-list-title">批次（{{ total }}）</span>
         <el-select v-model="filter.status" size="small" class="pc-opt-filter" placeholder="状态">
           <el-option label="全部状态" value="" />
           <el-option v-for="item in STATUS_OPTIONS" :key="item" :label="jobStatus(item).label" :value="item" />
@@ -46,31 +46,30 @@
           <el-option label="手动" value="MANUAL" />
         </el-select>
         <TipNote>
-          过滤在浏览器里做：批次接口一次只给最近 {{ LIMIT }} 个批次，因此这里的统计与过滤
-          都基于这个窗口。状态、动作、catalog 在服务端已有过滤条件（列出的是同一种结果），
-          控制台统一在本地过滤是为了让「统计卡」与「列表」口径一致——统计数的是同一个窗口，
-          不是另一次请求的结果。
+          过滤在服务端做：表格按页码取，四个条件都进查询参数，因此筛的是全部批次而不是当前页。
+          统计卡仍看<b>最近 {{ LIMIT }} 个批次</b>这个窗口（另一次请求），不随上面的筛选变化——
+          它们的口径不同，卡片脚下也写着这一点。
           <br /><br />
           「动作」按批次里出现过的动作过滤：一个批次可能同时做 Compaction 与快照清理。
         </TipNote>
         <span class="pc-spacer" />
-        <span class="pc-dim">共 {{ rows.length }} 个批次</span>
+        <span class="pc-dim">共 {{ total }} 个批次</span>
       </div>
 
       <ResourceState
-        :loading="jobs.loading.value"
-        :error="jobs.error.value"
+        :loading="loading"
+        :error="error"
         :empty="!rows.length"
         empty-text="还没有优化批次。在表详情的「存储优化」页签里开启策略，或直接点「立即优化」。"
       >
         <el-table
-          :data="pagedRows"
+          :data="rows"
           size="small"
           row-key="id"
           :expand-row-keys="expandedKeys"
           @expand-change="onExpandChange"
         >
-          <el-table-column type="expand">
+          <el-table-column type="expand" fixed="left">
             <template #default="{ row }">
               <div class="pc-opt-detail">
                 <div class="pc-opt-detail-head">
@@ -171,7 +170,7 @@
               <span v-else class="pc-dim">—</span>
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="150" align="right">
+          <el-table-column label="操作" width="150" align="right" fixed="right">
             <template #default="{ row }">
               <IconAction icon="View" label="详情" @click="openDetail(row)" />
               <IconAction
@@ -197,15 +196,12 @@
           </template>
         </el-table>
 
-        <el-pagination
-          v-if="rows.length > pageSize"
-          v-model:current-page="page"
-          v-model:page-size="pageSize"
-          :page-sizes="[10, 20, 50, 100]"
-          :total="rows.length"
-          layout="total, sizes, prev, pager, next"
-          size="small"
-          class="pc-pager"
+        <TablePager
+          :total="total"
+          :page="page"
+          :page-size="pageSize"
+          @page-change="onPageChange"
+          @size-change="onSizeChange"
         />
       </ResourceState>
     </PanelCard>
@@ -301,10 +297,17 @@ import JsonBlock from '@/components/JsonBlock.vue'
 import PageHeader from '@/components/PageHeader.vue'
 import PanelCard from '@/components/PanelCard.vue'
 import ResourceState from '@/components/ResourceState.vue'
+import TablePager from '@/components/TablePager.vue'
 import SectionTitle from '@/components/SectionTitle.vue'
 import TimeText from '@/components/TimeText.vue'
 import TipNote from '@/components/TipNote.vue'
-import { confirmDanger, notifyError, notifySuccess, useLocalPaging, useResource } from '@/composables/index.js'
+import {
+  confirmDanger,
+  notifyError,
+  notifySuccess,
+  useRemotePaging,
+  useResource,
+} from '@/composables/index.js'
 import { session } from '@/store/session.js'
 import { formatNumber, orPlaceholder } from '@/utils/format.js'
 import {
@@ -341,21 +344,46 @@ const LIMIT = 200
 /** 过滤器的候选状态。服务端新增状态时这里是空档——但表格仍会如实显示那个状态。 */
 const STATUS_OPTIONS = ['PENDING', 'SUBMITTING', 'RUNNING', 'SUCCESS', 'PARTIAL_SUCCESS', 'FAILED', 'CANCELED']
 
-const jobs = useResource(() => optimizationApi.jobs({ limit: LIMIT }))
-
 const filter = reactive({ status: '', action: '', catalog: '', trigger: '' })
 
-const allRows = computed(() => jobs.data.value?.jobs || [])
+/**
+ * 统计卡的窗口：最近 {@link LIMIT} 个批次，**不带分页、不受筛选影响**。
+ *
+ * <p>为什么要另取一次而不是复用表格那一页：卡片回答的是「这幅系统现在什么状态」，
+ * 看的是最近的批次；筛选回答的是「我在找某个批次」。把两者绑在一起，
+ * 一筛状态卡片就全变 0，读起来像系统出故障了。
+ */
+const statsSource = useResource(() => optimizationApi.jobs({ limit: LIMIT }))
+const allRows = computed(() => statsSource.data.value?.jobs || [])
 
-const rows = computed(() => allRows.value.filter((job) => {
-  if (filter.status && job.status !== filter.status) return false
-  if (filter.action && !(job.actions || []).includes(filter.action)) return false
-  if (filter.catalog && job.catalog !== filter.catalog) return false
-  if (filter.trigger && job.triggerType !== filter.trigger) return false
-  return true
-}))
+/**
+ * 表格：远程分页 + 服务端过滤。四个过滤条件全部下推——
+ * 只筛当前页等于没筛，而「共 N 个批次」也只能来自服务端的 `total`。
+ */
+const {
+  rows,
+  total,
+  page,
+  pageSize,
+  loading,
+  error,
+  load,
+  reload: reloadRows,
+  onPageChange,
+  onSizeChange,
+} = useRemotePaging(({ page: current, pageSize: size }) => optimizationApi
+  .jobs({
+    catalog: filter.catalog,
+    status: filter.status,
+    action: filter.action,
+    trigger: filter.trigger,
+    page: current,
+    pageSize: size,
+  })
+  .then((payload) => ({ items: payload.jobs || [], total: payload.page?.total ?? 0 })))
 
-const { page, pageSize, paged: pagedRows } = useLocalPaging(rows)
+// 任一过滤条件变化都回第一页重取（页码留在第 3 页会看到「空表」）
+watch(() => [filter.status, filter.action, filter.catalog, filter.trigger], () => reloadRows())
 
 /** 统计只看时间窗口，不看过滤器：过滤是「我在找某个批次」，不该把总数改掉。 */
 const stats = computed(() => {
@@ -386,7 +414,8 @@ function canRetry(job) {
 }
 
 function reload() {
-  jobs.load()
+  statsSource.load()
+  reloadRows()
   // 展开中的批次一起重拉：刷新后明细还停在上一次的结果上会误导人
   for (const id of expandedKeys.value) {
     loadItems(id)
@@ -486,7 +515,7 @@ async function retryJob(row) {
   try {
     const created = await optimizationApi.retry(row.id)
     notifySuccess(`已创建重试批次 ${shortId(created?.id)}`)
-    jobs.load()
+    reload()
   } catch (error) {
     notifyError(error)
   }

@@ -54,34 +54,141 @@ export function onConsoleRefresh(handler) {
 }
 
 /**
- * 本地分页：服务端一次给一批，翻页在浏览器里做。
+ * 远程分页：表格只持有一页，翻页 / 改页大小 / 过滤都下推服务端。
  *
- * <p><b>为什么不服务端分页。</b>列目录的端点按目录列举，本来就要把这一层读完才知道
- * 总数与排序，再切一次页等于让服务端对同一次列举多走一遍。这批数据有上限
- * （`max-entries`，默认 1000），在浏览器里切片足够了；真正用来缩范围的是
- * **名称前缀过滤**，而那是唯一需要走服务端的东西（见 `?prefix=`）。
+ * <p><b>有列表端点的表格一律走这一套。</b>以前这里还有个通用的 {@code useLocalPaging}——
+ * 服务端一次给一批、浏览器自己切片。它的问题不在实现，而在口径：页面上写的「共 N 条」是
+ * **这一批**的条数，不是库里的条数；过滤与排序也只能作用于已经拿到的那一批，
+ * 于是「筛出来 3 条」与「库里有 3000 条但只给了 200 条」在界面上长得一模一样。
+ * 现在每条列表端点都接 {@code page}/{@code pageSize} 并回 {@code page.total}，
+ * 客户端不再自己数。唯一的例外是**随详情一起下发、没有独立列表端点**的那份数据
+ * （表 schema 的字段表是典型），见 {@link useEmbeddedPaging}。
  *
- * @param {import('vue').Ref<Array>} entries 当前这批条目
- * @returns `page` / `pageSize`（双向绑定给 el-pagination）、`paged`（当前页的切片）、
- *          `total`（这批的条数，即分页总数）
+ * <p>拿到的一页由调用方从结果里取：服务端的响应形状各不相同（`catalogs` /
+ * `principals` / `roles` / `jobs` / `events` …），所以 {@code loader} 负责把
+ * 那一页与 {@code page} 元数据归一成 {@code {items, total}}，这个 composable
+ * 只管页码状态与请求生命周期。
+ *
+ * @param {(paging: {page: number, pageSize: number}) => Promise<{items: Array, total: number}>} loader
+ *        取一页；调用方在这里把 {@code page}/{@code pageSize} 塞进查询参数
+ * @param {object} [options]
+ * @param {number} [options.pageSize=20] 初始页大小
+ * @param {boolean} [options.immediate=true] 挂载时是否立刻取第一页
+ * @returns 页码状态（{@code page}/{@code pageSize} 双向绑定给 el-pagination）、
+ *          本页数据 {@code rows}、总条数 {@code total}、加载与错误状态，
+ *          以及 {@code load}（按当前页码重取）、{@code reload}（回第一页重取）、
+ *          {@code onPageChange} / {@code onSizeChange}（直接绑到分页器事件）
  */
-export function useLocalPaging(entries) {
+export function useRemotePaging(loader, { pageSize = 20, immediate = true } = {}) {
+  const loading = ref(false)
+  const error = ref('')
+  const rows = ref([])
+  const total = ref(0)
   const page = ref(1)
-  const pageSize = ref(10)
-  const total = computed(() => entries.value.length)
-  const paged = computed(() => {
-    const start = (page.value - 1) * pageSize.value
-    return entries.value.slice(start, start + pageSize.value)
-  })
+  const size = ref(pageSize)
+  let sequence = 0
 
-  // 换目录或换过滤条件后回到第一页。判据是「这批数据被整体替换」而不是「条数变了」：
-  // 后者会漏掉「新的这一批恰好也是 20 条」的情形，那时页码留在第 2 页，
-  // 界面表现是「明明有数据却停在空页上」。
-  watch(entries, () => {
+  async function load() {
+    const current = ++sequence
+    loading.value = true
+    error.value = ''
+    try {
+      const result = await loader({ page: page.value, pageSize: size.value })
+      if (current !== sequence) {
+        return null
+      }
+      rows.value = result?.items || []
+      total.value = result?.total || 0
+      // 删掉最后一页的最后一行后，页码会停在已经不存在的页上。往前退到最后一页，
+      // 而不是把表格清空——清空会被读成「数据没了」，而实际上只是少了一页。
+      if (!rows.value.length && total.value > 0 && page.value > 1) {
+        page.value = Math.max(1, Math.ceil(total.value / size.value))
+        return load()
+      }
+      return result
+    } catch (cause) {
+      if (current === sequence) {
+        error.value = describeError(cause)
+        rows.value = []
+        total.value = 0
+      }
+      return null
+    } finally {
+      if (current === sequence) {
+        loading.value = false
+      }
+    }
+  }
+
+  function onPageChange(value) {
+    page.value = value
+    load()
+  }
+
+  function onSizeChange(value) {
+    size.value = value
     page.value = 1
+    load()
+  }
+
+  /** 过滤条件变了、或增删改之后：回到第一页重取（总数也变了）。 */
+  function reload() {
+    page.value = 1
+    return load()
+  }
+
+  if (immediate) {
+    onMounted(load)
+  }
+
+  return { loading, error, rows, total, page, pageSize: size, load, reload, onPageChange, onSizeChange }
+}
+
+/**
+ * 随详情一起下发的数据的分页：全站唯一还在浏览器里切片的地方。
+ *
+ * <p>判据是「有没有独立的列表端点」，不是「数据量大不大」。表 schema 的字段表跟着
+ * `GET .../tables/{t}` 一次性回来，服务端没有 `?page=` 可给；为了一张几十行的字段表
+ * 造一个列表端点，只会多一条要维护的契约。这类数据因此只做**纯切片**：不排序、
+ * 不计数（总数就是数组长度），顺序完全由服务端那份结果决定。
+ *
+ * <p>与 {@link useRemotePaging} 的接口刻意对齐（`page` / `pageSize` / `rows` /
+ * `total` / `onPageChange` / `onSizeChange`），所以同一个 {@code TablePager}
+ * 既能接它也能接远程分页——页面不必关心数据是怎么来的。
+ *
+ * @param {import('vue').Ref<Array>} allRows 完整的行数组（通常是 computed）
+ */
+export function useEmbeddedPaging(allRows, { pageSize = 20 } = {}) {
+  const size = ref(pageSize)
+  const page = ref(1)
+
+  const total = computed(() => allRows.value?.length || 0)
+
+  const rows = computed(() => {
+    const all = allRows.value || []
+    const start = (page.value - 1) * size.value
+    return all.slice(start, start + size.value)
   })
 
-  return { page, pageSize, paged, total }
+  // 过滤条件变了或详情换了，总数会缩水：停在已经不存在的页上会看到一张空表，
+  // 而数据其实还在前面几页——「空」和「不在这一页」是两件事
+  watch(total, (value) => {
+    const last = Math.max(1, Math.ceil(value / size.value))
+    if (page.value > last) {
+      page.value = last
+    }
+  })
+
+  function onPageChange(value) {
+    page.value = value
+  }
+
+  function onSizeChange(value) {
+    size.value = value
+    page.value = 1
+  }
+
+  return { page, pageSize: size, rows, total, onPageChange, onSizeChange }
 }
 
 /** 请求顶栏刷新当前页面。 */

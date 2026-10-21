@@ -198,27 +198,46 @@ CatalogEventListener（Spring 收集全部 bean，逐个分发）
 `afterCompletion` 里一并清理。事件、审计字段与日志可以按它串起来；客户端不带这个头
 时服务端自己生成，因此这一列**永远有值**（调度路径除外）。
 
-## 4. 增量拉取契约
+## 4. 读取契约：增量流与远程分页
+
+同一个端点上有两种翻法，**互斥**（判据是 `page` 是否为空）：
 
 ```
-GET /api/console/v1/events?since=<id>&catalog=<name>&category=<name>&limit=100
+GET /api/console/v1/events?since=<id>&catalog=<name>&category=<name>&type=<wire>&limit=100
+GET /api/console/v1/events?page=2&pageSize=20&catalog=<name>&category=<name>&type=<wire>
 ```
+
+### 4.1 增量流（引擎客户端与脚本）
 
 - 响应：`{ events: [...升序...], nextCursor, hasMore }`；`nextCursor` 取最后一条的 `id`。
 - **首次不带 `since`**：返回当前最新的 `limit` 条（内部先倒序取再反转成升序），
   游标从「现在」开始——事件页要的是「接下来发生了什么」，不是回放全部历史。
 - `since` 给了：返回 `id > since` 的升序列表，`hasMore = 条数打满 limit`。
-- `catalog` / `category` 过滤可选、可同时给。`category` 大小写不敏感，
+- `catalog` / `category` / `type` 过滤可选、可同时给。`category` 大小写不敏感，
   **未知取值回 400 而不是空页**——空页会被读成「这一类还没发生过」，是最难排查的静默失败。
 - 查询用 `JpaSpecificationExecutor` 动态拼谓词：目录 × 类别 × 游标是组合条件，
   派生方法要写八条，加维度还得改接口。
 - 鉴权走控制台门禁（`/api/console/v1/**` 的 Bearer 拦截），不做 catalog 级 RBAC——
   与 `/meta`、文件浏览同一口径，理由见 `ConsoleDtos` 的类注释。
 
-控制台「事件」页（`EventsView.vue`）按这个契约做**游标增量拉**：本地保存游标，
-「刷新」只拉新增；换目录 / 换类别或点「重置游标」才重置游标。其余页面的全量刷新
-保持不变——那些页面要的是「当前状态」，只有事件页要的是「发生了什么」，
-两种语义不该共用一种刷新策略。
+### 4.2 页码模式（控制台表格）
+
+给了 `page`（1-based，可带 `pageSize`，默认 20、上限 200）就走页码模式：
+
+- 响应：`{ events: [...id 倒序...], page: { total, page, pageSize, hasNext } }`；
+  `nextCursor` 填本页最新一条的 `id`（诊断用），`hasMore` 由 `total` 替代。
+- **排序是 id 倒序**（新在前）。分页契约的一部分就是「排序稳定」——否则翻到第 2 页
+  会看到第 1 页漏掉的行。
+- `catalog` / `category` / `type` 三个过滤都在服务端做，与页码同一个请求。
+
+控制台「事件」页（`EventsView.vue`）走的是**页码模式**：三个筛选器全部下推，
+换任一个都回第一页重取，「刷新」重取当前页。
+
+**为什么页面不用增量流。** 游标只能往前看、回不去：想找「上周那次误删表」只能反复
+重置游标碰运气，而窗口只有 200 条。页码模式把「第 N 页」交给服务端，「看最新」与
+「往回翻」于是成了同一张表上的两件事。增量流本身没删——它是引擎侧与脚本的正确工具
+（只取新增、不漏事件），只是不适合一张要往回看的表格。其余页面仍是全量刷新：
+那些页面要的是「当前状态」，只有事件页要的是「发生了什么」。
 
 ## 5. 配置：启用哪些监听器、各自订阅什么
 

@@ -11,6 +11,8 @@ import io.github.melin.lakehouse.rest.dto.ConsoleDtos.CatalogFileEntry;
 import io.github.melin.lakehouse.rest.dto.ConsoleDtos.CatalogFileListing;
 import io.github.melin.lakehouse.rest.dto.ConsoleDtos.TableFileListing;
 import io.github.melin.lakehouse.rest.support.ApiException;
+import io.github.melin.lakehouse.rest.support.PageMeta;
+import io.github.melin.lakehouse.rest.support.Paging;
 import io.github.melin.lakehouse.rest.support.ResourceType;
 import java.io.IOException;
 import java.io.InputStream;
@@ -89,6 +91,21 @@ public class CatalogFileService {
      *               过滤后的结果同样按目录优先、名称升序排，再截到上限。
      */
     public CatalogFileListing list(String catalogName, String path, String prefix) {
+        return list(catalogName, path, prefix, null, null);
+    }
+
+    /**
+     * 同上，外加上远程分页。
+     *
+     * <p>{@code page}/{@code pageSize} 都不给时保持老行为：过滤 + 排序后按
+     * {@code max-entries} 截断，{@code page} 为 {@code null}。给了就按页码切，
+     * {@code total} 仍是过滤后的完整条数——目录表要显示「共几个、第几页」。
+     *
+     * <p>目录条目是先列举再过滤的，{@code total} 因此不需要额外的第二次列举：
+     * 一次 {@code listStatus} 已经把这一层读完了，切页只是切这个数组。
+     */
+    public CatalogFileListing list(String catalogName, String path, String prefix,
+                                   Integer page, Integer pageSize) {
         int maxEntries = requireEnabled();
         CatalogEntity catalog = catalogRepository.findByPrefix(catalogName)
                 .orElseThrow(() -> ApiException.managementNotExist(ResourceType.CATALOG, catalogName));
@@ -100,10 +117,10 @@ public class CatalogFileService {
         }
         String relative = resolve(path, "the catalog warehouse");
         String namePrefix = resolvePrefix(prefix);
-        DirPage page = listDirectory(catalog, new Path(trimTrailingSlash(warehouse)), relative,
-                "the warehouse " + warehouse, namePrefix);
-        return new CatalogFileListing(catalogName, warehouse, relative, namePrefix, page.entries(),
-                page.total(), page.truncated(), maxEntries);
+        DirPage listing = listDirectory(catalog, new Path(trimTrailingSlash(warehouse)), relative,
+                "the warehouse " + warehouse, namePrefix, page, pageSize);
+        return new CatalogFileListing(catalogName, warehouse, relative, namePrefix, listing.entries(),
+                listing.total(), listing.truncated(), maxEntries, listing.page());
     }
 
     /**
@@ -127,6 +144,12 @@ public class CatalogFileService {
      * @param prefix 只返回名称以它开头的条目；{@code null} 或空串表示不过滤
      */
     public TableFileListing listTable(String tableId, String path, String prefix) {
+        return listTable(tableId, path, prefix, null, null);
+    }
+
+    /** 同上，外加上远程分页（语义与 {@link #list} 的那条完全一致）。 */
+    public TableFileListing listTable(String tableId, String path, String prefix,
+                                      Integer page, Integer pageSize) {
         int maxEntries = requireEnabled();
         TableEntity table = tableRepository.findById(tableId)
                 .orElseThrow(() -> ApiException.managementNotExist(ResourceType.TABLE, tableId));
@@ -145,16 +168,23 @@ public class CatalogFileService {
                 .orElse(table.getDatabaseId());
         String relative = resolve(path, "the table directory");
         String namePrefix = resolvePrefix(prefix);
-        DirPage page = listDirectory(catalog, new Path(trimTrailingSlash(tablePath)), relative,
-                "the table directory " + tablePath, namePrefix);
+        DirPage listing = listDirectory(catalog, new Path(trimTrailingSlash(tablePath)), relative,
+                "the table directory " + tablePath, namePrefix, page, pageSize);
         return new TableFileListing(catalog.getPrefix(), databaseName, table.getName(), tablePath,
-                relative, namePrefix, page.entries(), page.total(), page.truncated(), maxEntries);
+                relative, namePrefix, listing.entries(), listing.total(), listing.truncated(),
+                maxEntries, listing.page());
     }
 
     // ------------------------------------------------------------------ 列举核心
 
-    /** 一次目录列举的产物：截断后的一页与发现的总数。 */
-    private record DirPage(List<CatalogFileEntry> entries, int total, boolean truncated) {}
+    /**
+     * 一次目录列举的产物：本页条目、过滤后的总数、是否还有下一页、分页元数据。
+     *
+     * <p>{@code page} 为 {@code null} 表示调用方没要分页——此时 {@code entries}
+     * 是按 {@code max-entries} 截断后的全量视图，{@code truncated} 说的是这件事。
+     */
+    private record DirPage(List<CatalogFileEntry> entries, int total, boolean truncated,
+                           PageMeta page) {}
 
     /**
      * 列出 {@code root} 下 {@code relative} 那一层，过滤、排序、截断都在这里收口。
@@ -169,7 +199,8 @@ public class CatalogFileService {
      *                   {@code the table directory s3://bucket/paimon/demo.db/orders}
      */
     private DirPage listDirectory(CatalogEntity catalog, Path root, String relative,
-                                  String rootLabel, String namePrefix) {
+                                  String rootLabel, String namePrefix,
+                                  Integer page, Integer pageSize) {
         Path target = relative.isEmpty() ? root : new Path(root, relative);
         FileIO fileIO = open(catalog, target);
 
@@ -216,12 +247,25 @@ public class CatalogFileService {
                 .thenComparing(CatalogFileEntry::name, String.CASE_INSENSITIVE_ORDER));
 
         int maxEntries = properties.getFileBrowser().getMaxEntries();
-        boolean truncated = entries.size() > maxEntries;
-        List<CatalogFileEntry> page = truncated ? List.copyOf(entries.subList(0, maxEntries)) : entries;
+        int total = entries.size();
+        // 分页模式下 total 是完整条数，本页条数由页码决定；不分页时仍按上限截断，
+        // 并如实说「被截断了」——那句话在界面上的位置不同（分页器 vs 提示条），
+        // 但都只能由服务端来说，客户端数不出没发给它的东西。
+        Paging.Paged<CatalogFileEntry> paged = Paging.paged(entries, page, pageSize);
+        if (paged != null) {
+            log.debug("listed page {} ({} of {} entries, prefix='{}') at {} under catalog {}",
+                    paged.meta().page(), paged.items().size(), total, namePrefix,
+                    describe(relative, rootLabel), catalog.getPrefix());
+            // 分页模式下「被截断」不成立：每一页都翻得到，`max-entries` 那道截断
+            // 只在不分页的老路径上才发生。hasNext 已经由 page 元数据自己说了。
+            return new DirPage(paged.items(), total, false, paged.meta());
+        }
+        boolean truncated = total > maxEntries;
+        List<CatalogFileEntry> capped = truncated ? List.copyOf(entries.subList(0, maxEntries)) : entries;
         log.debug("listed {} entries (of {}, truncated={}, prefix='{}') at {} under catalog {}",
-                page.size(), entries.size(), truncated, namePrefix,
+                capped.size(), total, truncated, namePrefix,
                 describe(relative, rootLabel), catalog.getPrefix());
-        return new DirPage(page, entries.size(), truncated);
+        return new DirPage(capped, total, truncated, null);
     }
 
     // ------------------------------------------------------------------ 下载

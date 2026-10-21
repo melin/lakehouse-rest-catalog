@@ -27,6 +27,7 @@ import io.github.melin.lakehouse.rest.paimon.service.DatabaseService;
 import io.github.melin.lakehouse.rest.support.ApiException;
 import io.github.melin.lakehouse.rest.support.CatalogFormat;
 import io.github.melin.lakehouse.rest.support.CredentialCipher;
+import io.github.melin.lakehouse.rest.support.PageMeta;
 import io.github.melin.lakehouse.rest.support.Paging;
 import io.github.melin.lakehouse.rest.support.ResourceType;
 import io.github.melin.lakehouse.rest.support.StorageConfigs;
@@ -79,14 +80,23 @@ public class ManagementCatalogService {
     private final CredentialCipher cipher;
     private final CatalogEventPublisher events;
 
-    /** {@code GET /catalogs}。 */
+    /**
+     * {@code GET /catalogs}：全量、按 catalog 名升序。
+     *
+     * <p>排序是**分页契约的一部分**而不是顺手加的：控制台的表格全部走远程分页
+     * （页由控制器切），分页要求顺序稳定，否则同一个 {@code page} 两次请求
+     * 拿到的东西可能不一样，翻页会漏也会重。因此全量与分页两条路径共用这一份顺序。
+     *
+     * <p>切页放在控制器而不是这里：catalog 列表要先按调用者的可见范围过滤，
+     * 「先过滤再切页」才能让 {@code total} 等于这个人真的能看到的条数。
+     */
     @Transactional(readOnly = true)
     public Catalogs list() {
         List<Catalog> result = new ArrayList<>();
-        for (CatalogEntity entity : catalogRepository.findAll()) {
+        for (CatalogEntity entity : catalogRepository.findAll(Sort.by(Sort.Direction.ASC, "prefix"))) {
             result.add(toDto(entity));
         }
-        return new Catalogs(result);
+        return new Catalogs(result, null);
     }
 
     /** {@code POST /catalogs}。 */
@@ -234,26 +244,44 @@ public class ManagementCatalogService {
     @Transactional(readOnly = true)
     public TableStats tableRows(String catalogName, String database, String keyword,
                                 boolean onlyPaimon, String sort, String order,
-                                Integer maxResults, String pageToken) {
+                                Integer maxResults, String pageToken,
+                                Integer page, Integer pageSize) {
         CatalogEntity catalog = require(catalogName);
         String db = database == null || database.isBlank() ? null : database;
         String kw = keyword == null || keyword.isBlank() ? null : keyword.trim();
         String key = sort != null && SORT_EXPRESSIONS.containsKey(sort) ? sort : "size";
         Sort.Direction dir = "asc".equalsIgnoreCase(order)
                 ? Sort.Direction.ASC : Sort.Direction.DESC;
-        int pageSize = Paging.pageSize(maxResults, 2000, 5000);
+        long total = snapshotRepository.countCatalogTableRows(catalog.getId(), db, onlyPaimon, kw);
+
+        // 两种翻法互斥，判据是「有没有页码」：控制台的表格给 page/pageSize（要渲染
+        // 「共 N 条」必须有 total），脚本与引擎侧给 maxResults/pageToken（一路向前）。
+        // 两种都在 SQL 里截断，不存在「先查全量再切页」。
+        if (page != null || pageSize != null) {
+            int size = Paging.pageSize(pageSize, Paging.DEFAULT_PAGE_SIZE, Paging.MAX_PAGE_SIZE);
+            int current = Paging.page(page);
+            List<TableStat> pageRows = snapshotRepository
+                    .findCatalogTableRows(catalog.getId(), db, onlyPaimon, kw,
+                            PageRequest.of(current - 1, size,
+                                    JpaSort.unsafe(dir, SORT_EXPRESSIONS.get(key))))
+                    .stream()
+                    .map(ManagementCatalogService::toTableStat)
+                    .toList();
+            return new TableStats(pageRows, total, null, PageMeta.of(total, current, size));
+        }
+
+        int size = Paging.pageSize(maxResults, 2000, 5000);
         int offset = Paging.offset(pageToken);
         // offset 换算成页号下推给数据库；token 是 base64url("offset:N")，页大小不变时
         // offset 恒为页大小的整数倍，整除不会失真。
-        Pageable pageable = PageRequest.of(offset / pageSize, pageSize,
+        Pageable pageable = PageRequest.of(offset / size, size,
                 JpaSort.unsafe(dir, SORT_EXPRESSIONS.get(key)));
         List<TableStat> rows = snapshotRepository
                 .findCatalogTableRows(catalog.getId(), db, onlyPaimon, kw, pageable).stream()
                 .map(ManagementCatalogService::toTableStat)
                 .toList();
-        long total = snapshotRepository.countCatalogTableRows(catalog.getId(), db, onlyPaimon, kw);
-        String next = offset + rows.size() < total ? Paging.encode(offset + pageSize) : null;
-        return new TableStats(rows, total, next);
+        String next = offset + rows.size() < total ? Paging.encode(offset + size) : null;
+        return new TableStats(rows, total, next, null);
     }
 
     private static TableStat toTableStat(Object[] row) {

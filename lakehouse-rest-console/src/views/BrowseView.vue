@@ -105,7 +105,7 @@
                按钮却消失了。表页签以前靠页头那颗按钮躲过这一点，现在三类对象
                一视同仁——工具条常驻，表格自己走加载 / 失败 / 空三态。 -->
           <div v-if="tab === 'tables'" class="pc-tools-row">
-            <el-input v-model="tableFilter" size="small" placeholder="过滤表名" clearable class="pc-filter">
+            <el-input v-model="tableFilter" size="small" placeholder="按表名前缀过滤" clearable class="pc-filter">
               <template #prefix><el-icon><Search /></el-icon></template>
             </el-input>
             <!-- 与其余页签一样把动作推到右边：那一行左边是「看什么」，右边是「做什么」 -->
@@ -142,7 +142,7 @@
           >
             <!-- 表 -->
             <template v-if="tab === 'tables'">
-              <el-table v-loading="tablesList.loading.value" :data="filteredTables" size="small">
+              <el-table v-loading="tablesList.loading.value" :data="tablesList.rows.value" size="small">
                 <el-table-column label="表名" min-width="160">
                   <template #default="{ row }">
                     <RouterLink
@@ -204,9 +204,9 @@
 
             <!-- 视图 -->
             <template v-else-if="tab === 'views'">
-              <el-table v-loading="viewsList.loading.value" :data="viewsList.items.value" size="small">
+              <el-table v-loading="viewsList.loading.value" :data="viewsList.rows.value" size="small">
                 <el-table-column prop="name" label="视图名" min-width="200" />
-                <el-table-column label="操作" width="150" align="right">
+                <el-table-column label="操作" width="150" align="right" fixed="right">
                   <template #default="{ row }">
                     <IconAction icon="View" label="详情" @click="showView(row)" />
                     <IconAction icon="EditPen" label="重命名" @click="openRenameView(row.name)" />
@@ -218,9 +218,9 @@
 
             <!-- 函数 -->
             <template v-else-if="tab === 'functions'">
-              <el-table v-loading="functionsList.loading.value" :data="functionsList.items.value" size="small">
+              <el-table v-loading="functionsList.loading.value" :data="functionsList.rows.value" size="small">
                 <el-table-column prop="name" label="函数名" min-width="200" />
-                <el-table-column label="操作" width="110" align="right">
+                <el-table-column label="操作" width="110" align="right" fixed="right">
                   <template #default="{ row }">
                     <IconAction icon="View" label="详情" @click="showFunction(row)" />
                     <IconAction icon="Delete" label="删除" type="danger" @click="confirmDropFunction(row.name)" />
@@ -229,12 +229,13 @@
               </el-table>
             </template>
 
-            <div v-if="currentList.token.value" class="pc-more">
-              <el-button size="small" :loading="currentList.loading.value" @click="currentList.load(false)">
-                加载更多
-              </el-button>
-              <span class="pc-dim">服务端返回了下一页令牌，当前列表未包含全部对象。</span>
-            </div>
+            <TablePager
+              :total="currentList.total.value"
+              :page="currentList.page.value"
+              :page-size="currentList.pageSize.value"
+              @page-change="currentList.onPageChange"
+              @size-change="currentList.onSizeChange"
+            />
           </ResourceState>
         </div>
       </section>
@@ -595,10 +596,10 @@ import ResourceState from '@/components/ResourceState.vue'
 import SectionTitle from '@/components/SectionTitle.vue'
 import TimeText from '@/components/TimeText.vue'
 import TipNote from '@/components/TipNote.vue'
+import TablePager from '@/components/TablePager.vue'
 import IcebergBrowseView from '@/views/IcebergBrowseView.vue'
 import { catalogApi } from '@/api/catalog.js'
-import { describeError } from '@/api/client.js'
-import { confirmDanger, notifyError, notifySuccess, useResource } from '@/composables/index.js'
+import { confirmDanger, notifyError, notifySuccess, useRemotePaging, useResource } from '@/composables/index.js'
 import { session } from '@/store/session.js'
 import { isIcebergCatalog } from '@/utils/catalogFormat.js'
 import { formatTime, orPlaceholder, prettyJson } from '@/utils/format.js'
@@ -608,9 +609,11 @@ import { tableDefaultsOf } from '@/utils/tableDefaults.js'
 /**
  * 目录浏览器：左侧数据库，右侧对象。
  *
- * <p>列表请求一律带 `maxResults`（取服务端 `max-page-size`），
- * 服务端仍可能回 `nextPageToken`——那时页面底部会出现「加载更多」，
- * 而不是把列表悄悄截断，让人以为对象就这么多。
+ * <p><b>右侧三个列表（表 / 视图 / 函数）走远程分页</b>：页码、页大小、表名前缀
+ * 全部下推，页面只持有一页，底部是统一的分页器。以前是「`maxResults` + 加载更多」
+ * 的追加式翻页——它的毛病是「共几个」永远说不出来，翻过第 3 次之后手上是哪一段
+ * 也说不清。左侧数据库面板是个很窄的侧栏，塞页码没有意义，仍旧一次取满并在
+ * 浏览器里按关键字过滤（见 `filteredDatabases`）。
  */
 
 const PAIMON_TYPES = [
@@ -698,8 +701,6 @@ async function ensureCatalogs() {
   await session.loadCatalogs().catch(() => null)
 }
 
-const pageSize = computed(() => session.state.meta?.service?.maxPageSize || 1000)
-
 // ------------------------------------------------------------------ 数据库
 
 // 由下面的 watch 驱动首次加载，这里不再 immediate，
@@ -709,7 +710,10 @@ const databaseResource = useResource(async () => {
   // 这一层守卫是必要的（而不是只靠 watch 里的那一处）：refresh 与「重试」
   // 都会直接调 load()，绕过 watch。守卫写在 loader 里，任何入口都盖得住。
   if (icebergCatalog.value) return []
-  const payload = await catalogApi.listDatabases(prefix.value, { maxResults: pageSize.value })
+  // 侧栏一次取满（服务端 max-page-size）：它是个窄栏，塞页码没有意义
+  const payload = await catalogApi.listDatabases(prefix.value, {
+    maxResults: session.state.meta?.service?.maxPageSize || 1000,
+  })
   return payload.databases || []
 }, { immediate: false })
 
@@ -735,65 +739,54 @@ function selectDatabase(name) {
 // ------------------------------------------------------------------ 对象列表
 
 /**
- * 造一个「支持翻页的列表」。
+ * 表名过滤：**前缀**，不是子串。
  *
- * <p>各自维护 items / nextPageToken，与服务端的 `nextPageToken` 约定一一对应。
- * `reset = false` 时把新一页追加到已有结果后。
+ * <p>服务端的 `tableNamePattern` 走 `Patterns.matches`——SQL LIKE 的「只支持前缀」实现，
+ * 于是 `ord` 收成 `ord%`。这与类型成串的库名不同：表名有命名前缀（`dim_` / `ods_` /
+ * `ads_`）的习惯，前缀过滤正好对得上；子串过滤要服务端改匹配语义，而那条路会被
+ * 引擎客户端共用，不该为控制台的一格输入框改。
  */
-function createPagedList(field, call) {
-  const items = ref([])
-  const token = ref('')
-  const loading = ref(false)
-  const error = ref('')
-  let sequence = 0
+function tableNamePattern() {
+  const keyword = tableFilter.value.trim()
+  return keyword ? `${keyword}%` : undefined
+}
 
-  async function load(reset = true) {
-    const current = ++sequence
-    // 第二个短路条件是 Iceberg catalog：这三条路径（表 / 视图 / 函数）
-    // 都是 Paimon 协议面的，对一个 Iceberg catalog 发出去只会拿到 404。
-    // 与数据库列表同一个策略——守卫收在 loader 里，页签切换、刷新、「重试」都盖得住。
-    if (!prefix.value || !database.value || icebergCatalog.value) {
-      items.value = []
-      token.value = ''
-      return
-    }
-    loading.value = true
-    error.value = ''
-    if (reset) {
-      items.value = []
-      token.value = ''
-    }
-    try {
-      const payload = await call(prefix.value, database.value, {
-        maxResults: pageSize.value,
-        pageToken: token.value || undefined,
-      })
-      if (current !== sequence) return
-      const page = payload[field] || []
-      items.value = reset ? page : [...items.value, ...page]
-      token.value = payload.nextPageToken || ''
-    } catch (cause) {
-      if (current === sequence) {
-        error.value = describeError(cause)
-      }
-    } finally {
-      if (current === sequence) {
-        loading.value = false
-      }
-    }
+/**
+ * 三个对象列表共用的取数函数：只差回包里的字段名与调用的端点。
+ *
+ * <p>Iceberg catalog 这一层短路是必要的——这三条路径都是 Paimon 协议面的，
+ * 对一个 Iceberg catalog 发出去只会拿到 404。守卫收在 loader 里，页签切换、
+ * 刷新、「重试」都盖得住。
+ */
+async function fetchObjects(field, call, { page, pageSize }) {
+  if (!prefix.value || !database.value || icebergCatalog.value) {
+    return { items: [], total: 0 }
   }
-
-  return { items, token, loading, error, load }
+  const payload = await call(prefix.value, database.value, {
+    tableNamePattern: tableNamePattern(),
+    page,
+    pageSize,
+  })
+  return { items: payload[field] || [], total: payload.total ?? 0 }
 }
 
 /**
  * 表列表走 `table-details` 而不是只回表名的 `/tables`：列表要显示表格式、表类型
  * （Managed / 外部表）与创建、更新时间，这些都在 `GetTableResponse` 里。
- * 两者分页约定一致（`maxResults` + `nextPageToken`），换成它不改变翻页行为。
+ * 两者的页码模式完全一致，换成它不改变翻页行为。
  */
-const tablesList = createPagedList('tableDetails', (p, d, q) => catalogApi.listTableDetails(p, d, q))
-const viewsList = createPagedList('views', (p, d, q) => catalogApi.listViews(p, d, q))
-const functionsList = createPagedList('functions', (p, d, q) => catalogApi.listFunctions(p, d, q))
+const tablesList = useRemotePaging(
+  (paging) => fetchObjects('tableDetails', catalogApi.listTableDetails, paging),
+  { immediate: false },
+)
+const viewsList = useRemotePaging(
+  (paging) => fetchObjects('views', catalogApi.listViews, paging),
+  { immediate: false },
+)
+const functionsList = useRemotePaging(
+  (paging) => fetchObjects('functions', catalogApi.listFunctions, paging),
+  { immediate: false },
+)
 
 const lists = {
   tables: tablesList,
@@ -806,7 +799,7 @@ const currentList = computed(() => lists[tab.value] || tablesList)
 const emptyText = computed(() => {
   // 表页签带过滤框，其余页签没有：过滤到空时要说明是过滤的结果，
   // 否则「这个数据库里还没有表」会让人以为真的没建表
-  if (tab.value === 'tables' && tableFilter.value.trim() && currentList.value.items.value.length) {
+  if (tab.value === 'tables' && tableFilter.value.trim() && currentList.value.rows.value.length) {
     return `没有匹配「${tableFilter.value.trim()}」的表`
   }
   return {
@@ -816,20 +809,28 @@ const emptyText = computed(() => {
   }[tab.value] || '暂无数据'
 })
 
-/** 当前页签真正要展示的行；表页签走过滤后的结果。 */
-const visibleRows = computed(() => (
-  tab.value === 'tables' ? filteredTables.value : currentList.value.items.value
-))
+/** 当前页签要展示的行：过滤与切页都在服务端，这里就是服务端给的这一页。 */
+const visibleRows = computed(() => currentList.value.rows.value)
 
-const filteredTables = computed(() => {
-  const keyword = tableFilter.value.trim().toLowerCase()
-  if (!keyword) return tablesList.items.value
-  return tablesList.items.value.filter((row) => row.name.toLowerCase().includes(keyword))
-})
+/** 哪些页签已经拉过：切来切去不该重复请求，也不该把页码打回第一页。 */
+const loadedTabs = new Set()
 
+/** 拉当前页签的第一页，并记下「这个页签已经拉过」。 */
 function loadCurrentList() {
-  currentList.value.load(true)
+  loadedTabs.add(tab.value)
+  currentList.value.reload()
 }
+
+// 表名前缀变化：回第一页重取。逐字符发请求会把每次按键都变成一次全表扫描，
+// 300ms 内的连续输入只在最后发一次。
+let tableFilterTimer = null
+watch(tableFilter, () => {
+  if (tableFilterTimer) clearTimeout(tableFilterTimer)
+  tableFilterTimer = setTimeout(() => {
+    loadedTabs.add('tables')
+    tablesList.reload()
+  }, 300)
+})
 
 watch([prefix, database], async ([nextPrefix]) => {
   if (nextPrefix && nextPrefix !== session.state.selectedCatalog) {
@@ -838,6 +839,8 @@ watch([prefix, database], async ([nextPrefix]) => {
   // 先确认 catalog 格式再决定发不发请求：格式在 catalog 列表里，
   // 而深链接直接打开本页时它可能还没到（见 ensureCatalogs 的说明）。
   await ensureCatalogs()
+  // 换了 catalog 或库，三个列表全部作废：页码、过滤条件、已加载标记都要归零
+  loadedTabs.clear()
   databaseResource.load()
   loadCurrentList()
 }, { immediate: true })
@@ -850,10 +853,10 @@ watch(databases, (list) => {
   }
 })
 
-watch(tab, () => {
+watch(tab, (name) => {
   // 首次切到某个页签时才拉数据，避免打开页面就发四个请求
-  if (!currentList.value.items.value.length) {
-    currentList.value.load(true)
+  if (!loadedTabs.has(name)) {
+    loadCurrentList()
   }
 })
 

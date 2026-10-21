@@ -5,6 +5,8 @@ import io.github.melin.lakehouse.rest.domain.repo.AuditEventRepository;
 import io.github.melin.lakehouse.rest.dto.ConsoleDtos;
 import io.github.melin.lakehouse.rest.event.CatalogEventCategory;
 import io.github.melin.lakehouse.rest.support.ApiException;
+import io.github.melin.lakehouse.rest.support.PageMeta;
+import io.github.melin.lakehouse.rest.support.Paging;
 import jakarta.persistence.criteria.Predicate;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -43,10 +45,26 @@ public class ConsoleEventService {
     private final AuditEventRepository repository;
 
     @Transactional(readOnly = true)
-    public ConsoleDtos.EventPage events(String catalog, String category, Long since, Integer limit) {
-        int size = limit == null ? DEFAULT_LIMIT : Math.min(Math.max(limit, 1), MAX_LIMIT);
-        Specification<AuditEventEntity> filter = filter(catalog, category);
+    public ConsoleDtos.EventPage events(String catalog, String category, String type, Long since,
+                                        Integer limit, Integer page, Integer pageSize) {
+        Specification<AuditEventEntity> filter = filter(catalog, category, type);
 
+        // 控制台的事件表是「倒序翻页」：第 1 页就是最新的那批，页码往前走就是往历史走。
+        // 与增量流用的是同一份过滤条件，只是排序方向与翻法不同——两者互斥。
+        if (page != null || pageSize != null) {
+            int size = Paging.pageSize(pageSize, Paging.DEFAULT_PAGE_SIZE, Paging.MAX_PAGE_SIZE);
+            int current = Paging.page(page);
+            long total = repository.count(filter);
+            List<AuditEventEntity> rows = repository.findAll(filter,
+                    PageRequest.of(current - 1, size, Sort.by(Sort.Direction.DESC, "id"))).getContent();
+            // nextCursor 在页码模式下没有意义（往回翻不靠游标），填本页最新的那条 id，
+            // 这样同一个响应在两个模式下都是自洽的：想接着「看更新的事件」就带它。
+            long cursor = rows.isEmpty() ? 0L : rows.get(0).getId();
+            return new ConsoleDtos.EventPage(toEvents(rows), cursor, (long) current * size < total,
+                    PageMeta.of(total, current, size));
+        }
+
+        int size = limit == null ? DEFAULT_LIMIT : Math.min(Math.max(limit, 1), MAX_LIMIT);
         if (since == null) {
             return latestPage(filter, size);
         }
@@ -54,7 +72,7 @@ public class ConsoleEventService {
                 filter.and((root, query, cb) -> cb.greaterThan(root.get("id"), since)),
                 PageRequest.of(0, size, Sort.by(Sort.Direction.ASC, "id"))).getContent();
         long cursor = rows.isEmpty() ? since : rows.get(rows.size() - 1).getId();
-        return new ConsoleDtos.EventPage(toEvents(rows), cursor, rows.size() >= size);
+        return new ConsoleDtos.EventPage(toEvents(rows), cursor, rows.size() >= size, null);
     }
 
     /**
@@ -65,24 +83,30 @@ public class ConsoleEventService {
         List<AuditEventEntity> rows = new ArrayList<>(repository.findAll(filter,
                 PageRequest.of(0, size, Sort.by(Sort.Direction.DESC, "id"))).getContent());
         if (rows.isEmpty()) {
-            return new ConsoleDtos.EventPage(List.of(), 0L, false);
+            return new ConsoleDtos.EventPage(List.of(), 0L, false, null);
         }
         long cursor = rows.get(0).getId();
         Collections.reverse(rows);
-        return new ConsoleDtos.EventPage(toEvents(rows), cursor, rows.size() >= size);
+        return new ConsoleDtos.EventPage(toEvents(rows), cursor, rows.size() >= size, null);
     }
 
     /** 可选过滤：{@code catalog} 精确匹配、{@code category} 按枚举规范化后匹配。 */
-    private static Specification<AuditEventEntity> filter(String catalog, String category) {
+    private static Specification<AuditEventEntity> filter(String catalog, String category, String type) {
         String catalogName = blankToNull(catalog);
         String categoryName = categoryOf(category);
+        String typeName = blankToNull(type);
         return (root, query, cb) -> {
-            List<Predicate> predicates = new ArrayList<>(2);
+            List<Predicate> predicates = new ArrayList<>(3);
             if (catalogName != null) {
                 predicates.add(cb.equal(root.get("catalog"), catalogName));
             }
             if (categoryName != null) {
                 predicates.add(cb.equal(root.get("category"), categoryName));
+            }
+            // 事件类型（38 种）也在这里筛：界面上的类型下拉是「看某一类事件」，
+            // 与类别一样属于筛选条件，不该退化成只筛当前页。
+            if (typeName != null) {
+                predicates.add(cb.equal(root.get("type"), typeName));
             }
             return predicates.isEmpty()
                     ? cb.conjunction()

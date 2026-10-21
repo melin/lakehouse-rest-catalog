@@ -52,7 +52,8 @@ public class ViewService {
 
     @Transactional(readOnly = true)
     public ViewDtos.ListViewsResponse list(String prefix, String databaseName, Integer maxResults,
-                                           String pageToken, String viewNamePattern) {
+                                           String pageToken, String viewNamePattern,
+                                           Integer page, Integer pageSize) {
         DatabaseEntity database = tableLookup.requireDatabase(prefix, databaseName);
         List<String> names = new ArrayList<>();
         for (ViewEntity view : viewRepository.findAllByDatabaseIdOrderByNameAsc(database.getId())) {
@@ -60,8 +61,12 @@ public class ViewService {
                 names.add(view.getName());
             }
         }
+        Paging.Paged<String> paged = Paging.paged(names, page, pageSize);
+        if (paged != null) {
+            return new ViewDtos.ListViewsResponse(paged.items(), null, (int) paged.meta().total());
+        }
         Paging.Slice<String> slice = Paging.slice(names, Paging.offset(pageToken), pageSize(maxResults));
-        return new ViewDtos.ListViewsResponse(slice.items(), slice.nextPageToken());
+        return new ViewDtos.ListViewsResponse(slice.items(), slice.nextPageToken(), null);
     }
 
     @Transactional(readOnly = true)

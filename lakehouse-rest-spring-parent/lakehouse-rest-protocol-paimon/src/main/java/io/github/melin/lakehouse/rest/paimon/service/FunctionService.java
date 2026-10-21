@@ -47,7 +47,8 @@ public class FunctionService {
 
     @Transactional(readOnly = true)
     public FunctionDtos.ListFunctionsResponse list(String prefix, String databaseName, Integer maxResults,
-                                                   String pageToken, String functionNamePattern) {
+                                                   String pageToken, String functionNamePattern,
+                                                   Integer page, Integer pageSize) {
         DatabaseEntity database = tableLookup.requireDatabase(prefix, databaseName);
         List<String> names = new ArrayList<>();
         for (FunctionEntity function : functionRepository.findAllByDatabaseIdOrderByNameAsc(database.getId())) {
@@ -55,8 +56,12 @@ public class FunctionService {
                 names.add(function.getName());
             }
         }
+        Paging.Paged<String> paged = Paging.paged(names, page, pageSize);
+        if (paged != null) {
+            return new FunctionDtos.ListFunctionsResponse(paged.items(), null, (int) paged.meta().total());
+        }
         Paging.Slice<String> slice = Paging.slice(names, Paging.offset(pageToken), pageSize(maxResults));
-        return new FunctionDtos.ListFunctionsResponse(slice.items(), slice.nextPageToken());
+        return new FunctionDtos.ListFunctionsResponse(slice.items(), slice.nextPageToken(), null);
     }
 
     @Transactional(readOnly = true)

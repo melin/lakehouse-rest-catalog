@@ -169,6 +169,10 @@ EXTENSION_ENDPOINTS = {
     ("GET", "/v1/{prefix}/permissions"): "Paimon 官方权限端点：列出 principal 直授",
     ("POST", "/v1/{prefix}/permissions/grant"): "Paimon 官方权限端点：授予 principal 直授",
     ("POST", "/v1/{prefix}/permissions/revoke"): "Paimon 官方权限端点：撤销 principal 直授（幂等）",
+    # 授权清单的「一行」：同主体同范围的多条赋权先折叠再分页。官方权限端点只给平铺的
+    # 逐条赋权，而折叠必须发生在切页之前——否则同一组被页边界切成两行，界面上就是
+    # 同一个主体出现两次。因此由控制台自己提供这层聚合视图（只读）。
+    ("GET", "/v1/{prefix}/permissions/scopes"): "控制台授权清单（服务端折叠 + 分页，只读聚合）",
     # 表存储优化（本工程扩展，挂管理 API 基址）。三份规格里都没有它：策略与批次是
     # 服务端自己的资源，不是 Paimon 元数据的一部分。服务端实现见 OptimizationController。
     #
@@ -779,11 +783,14 @@ check("列表有格式徽标与格式筛选",
       and 'v-model="formatFilter"' in catalogs_view,
       "CatalogsView 的清单需要「表格式」列（徽标）与一个格式筛选器")
 
-# 筛选用的是同一个归属函数（catalogFormatOf），不能裸比字段：裸比会让
-# 「旧数据没有这一列」的行在徽标上显示 Paimon、在筛选里却被漏掉。
-check("筛选与徽标用同一个归属函数（筛出来的集合与看到的集合一致）",
-      re.search(r"allRows\.value\.filter\(\(row\) => catalogFormatOf\(row\)", catalogs_view) is not None,
-      "筛选条件应为 catalogFormatOf(row) === formatFilter.value")
+# 筛选下推到服务端之后，「同一个归属」变成两处各一次回落：徽标走 catalogFormatOf()
+# （缺列按 Paimon），服务端 formatFiltered() 也必须按同一个方向回落。两边不一致时
+# 的现象是「筛 Paimon 出来一行，徽标却写着 Iceberg」——或者更常见的：那一行根本不出现。
+check("格式筛选与徽标走同一个归属（缺列按 Paimon 的回落两边一致）",
+      "catalogFormatTagType(row)" in catalogs_view
+      and "format: formatFilter.value" in catalogs_view
+      and "formatFiltered" in read(os.path.join(SERVER_JAVA, "web/ManagementCatalogController.java")),
+      "列表徽标用 catalogFormatOf、筛选参数随请求下推、服务端按同一回落过滤，三者缺一")
 
 # --- 12.4 三个页面按格式伸缩 ----------------------------------------------
 # 判据不是「模板里藏了内容」，而是**loader 里挡了请求**：只在模板上做 v-if
@@ -951,7 +958,9 @@ check("列表请求用 Iceberg 的 pageSize（不是 Paimon 的 maxResults）",
 # loadTable 属于表详情页（IcebergTableView），浏览页里出现它就是又在逐表拼列。
 iceberg_table_view = read(os.path.join(CONSOLE_DIR, "src/views/IcebergTableView.vue"))
 check("表、视图、函数列表都按 identifiers 取，逐表 load 只发生在表详情页",
-      iceberg_browse.count("createPagedList('identifiers'") == 3
+      "payload?.identifiers" in iceberg_browse
+      and all(f"icebergApi.list{name}(" in iceberg_browse
+              for name in ("Tables", "Views", "Functions"))
       and "icebergApi.loadTable" not in iceberg_browse
       and "icebergApi.loadTable" in iceberg_table_view,
       "三个列表都应以 identifiers 为字段；loadTable 应只在 IcebergTableView 里按需调用")
@@ -1164,13 +1173,14 @@ check("收起态给出计数徽标与「可以不管它」的说明",
 # ------------------------------------------------------------------ 15. 事件页契约
 
 print()
-print("15. 事件页（事件流的增量契约要前后端钉在一起）")
+print("15. 事件页（远程分页 + 清单覆盖服务端枚举）")
 
-# 起因：事件流的「刷新」是游标增量拉取而不是全量重拉——这个语义一旦在前端丢失
-# （比如有人把刷新改回不带 since 的请求），页面不会报错，只是每次刷新都把窗口
-# 重取一遍、增量契约（docs/event-framework.md §4）名存实亡。事件类型清单与目标
-# 类型显示名同样对着**服务端枚举/常量**比对：前端另抄一份名单，服务端加类型时
-# 的表现是新事件显示成 wire 原文——静默，且只有真发生那种事件才看得见。
+# 起因：事件页从「游标增量」改成「远程分页」之后，最容易退化的两件事是
+# 「页码没下推」（每次翻页都回同一批，界面表现为点了下一页内容没变）和
+# 「类型筛选回到本地」（本地只筛得到当页，筛出空页并不等于窗口里没有）。
+# 事件类型清单与目标类型显示名同样对着**服务端枚举/常量**比对：前端另抄一份
+# 名单，服务端加类型时的表现是新事件显示成 wire 原文——静默，且只有真发生
+# 那种事件才看得见。
 
 events_view = read(os.path.join(CONSOLE_DIR, "src/views/EventsView.vue"))
 event_type_source = read(os.path.join(CORE_JAVA, "event/CatalogEventType.java"))
@@ -1181,9 +1191,14 @@ check("endpoints.js 登记了 listEvents 且路径与端点一致",
       endpoints.get("listEvents") == ("GET", "/api/console/v1/events"),
       f"实际是 {endpoints.get('listEvents')}")
 
-check("EventsView 实现增量拉取（带 since 游标、消费 nextCursor）",
-      "listEvents" in events_view and "since" in events_view and "nextCursor" in events_view,
-      "刷新应带 since=游标 只取新事件；丢了 since 就是全量重拉，增量契约失效")
+check("EventsView 走远程分页（页码下推、total 取自响应）",
+      "listEvents" in events_view and "useRemotePaging" in events_view
+      and "payload.page?.total" in events_view,
+      "增量游标只能往前看；页码模式才能往回翻历史，总数也才有出处")
+
+check("事件类型筛选也下推服务端（换类型回到第一页重取）",
+      "type: filter.type" in events_view and "reload()" in events_view,
+      "类型只在前端筛时只筛得到当页；筛出空页会被读成「窗口里没有这种事件」")
 
 # 枚举里的 wire 值写在构造参数第二位上：`X(CatalogEventCategory.TABLE, "table.created")`，
 # 个别常量换行书写，所以匹配要允许空白跨越换行
@@ -1198,7 +1213,7 @@ check("事件类别清单覆盖 CatalogEventCategory 的全部取值",
       bool(categories) and all(f"'{category}'" in events_view for category in categories),
       "前端 CATEGORIES 少了服务端新增的类别时，该类事件只能靠类型筛")
 
-check("类别筛选走服务端参数（category 随游标一起发出）",
+check("类别筛选走服务端参数（category 随页码一起发出）",
       "category: filter.category" in events_view,
       "类别是服务端过滤条件；只在前端筛会让「换类别」仍沿用旧游标的整页数据")
 
@@ -1377,23 +1392,151 @@ check("Paimon 侧有「只统计 Paimon 表」开关，onlyPaimon 传给汇总�
 # 逐表明细是**远程分页**：打开页面不拉任何明细，选中了库才按页取数；
 # 分页 / 关键字 / 排序全部下推 SQL。排序仍用 sortable="custom"——排序键要传给服务端，
 # el-table 自带排序在分页下只排当前页。
-check("逐表明细远程分页：选库才请求、el-pagination 用服务端 total、排序 custom 下推",
+check("逐表明细远程分页：选库才请求、TablePager 用服务端 total、排序 custom 下推",
       "选择一个库，按需加载" in storage_panel_src
-      and 'el-pagination' in storage_panel_src and ':total="detail.total"' in storage_panel_src
+      and '<TablePager' in storage_panel_src and ':total="detail.total"' in storage_panel_src
       and "fetchDetail" in storage_panel_src and "onPageChange" in storage_panel_src
       and 'sortable="custom"' in storage_panel_src
-      and "database" in storage_api_src and "pageToken" in storage_api_src,
-      "缺: 按需加载提示 / 远程 total / fetchDetail / 自定义排序 / 服务端过滤参数之一")
+      and "database" in storage_api_src and "pageSize" in storage_api_src,
+      "缺: 按需加载提示 / 远程 total / fetchDetail / 自定义排序 / 服务端页码参数之一")
 
 check("按库/Top10 两卡在栅格并排且不吃堆叠边距（等高、顶部对齐）",
       ".pc-sto-grid > :deep(.pc-card + .pc-card)" in storage_panel_src
       and "margin-top: 0" in storage_panel_src,
       "缺: 栅格内边距回收规则——右卡会被全局堆叠边距推下 16px，顶部错位")
 
-# ------------------------------------------------------------------ 19. 文档计数
+# ------------------------------------------------------------------ 19. 表格远程分页
 
 print()
-print("19. 文档计数（文档写的「N 组 M 项」必须与脚本实际一致）")
+print("19. 表格远程分页（页码与过滤下推，页面只持有一页）")
+
+# 起因：这批表格原本都是「服务端一次给一批、浏览器自己切片」。它不抛异常，只是把
+# 三句话悄悄说错：界面上的「共 N 条」说的是这一批而不是库里；过滤只筛得到当页；
+# 翻到第 N 页时上一步的过滤条件还在、结果却已经换了一批。三种错法都只有拿真实
+# 数据核对才看得出来，所以在这里用静态校验把「谁在翻页、往哪里翻」钉住。
+PAGING_COMPOSABLES = os.path.join(CONSOLE_DIR, "src/composables/index.js")
+TABLE_PAGER = os.path.join(CONSOLE_DIR, "src/components/TablePager.vue")
+composables_source = read(PAGING_COMPOSABLES)
+
+check("composables 只导出远程分页，不再导出浏览器切片的通用分页器",
+      "export function useRemotePaging" in composables_source
+      and "export function useLocalPaging" not in composables_source,
+      "useLocalPaging 的产物是「共 N 条 = 这一批的条数」，留着就会被再一次用起来")
+
+# 名单是**显式**的：新加一个列表页却忘了接分页时，什么都不会报错，
+# 只是它的总数永远等于这一页的条数。要加列表页就得往这里加一行。
+REMOTE_PAGED_VIEWS = {
+    "CatalogsView.vue": "catalog 列表",
+    "PrincipalRolesView.vue": "主体角色列表",
+    "PrincipalsView.vue": "主体列表",
+    "PermissionsView.vue": "授权清单（服务端折叠后再切页）",
+    "OptimizationJobsView.vue": "优化批次列表",
+    "EventsView.vue": "事件流",
+    "CatalogDetailView.vue": "catalog 文件列表",
+    "TableView.vue": "表文件 / 分区列表",
+    "IcebergTableView.vue": "Iceberg 表文件列表",
+    "BrowseView.vue": "库 / 表 / 视图 / 函数",
+    "IcebergBrowseView.vue": "namespace / 表 / 视图 / 函数",
+}
+missing_paging = [name for name in REMOTE_PAGED_VIEWS
+                  if "useRemotePaging" not in read(os.path.join(CONSOLE_DIR, "src/views", name))]
+check(f"{len(REMOTE_PAGED_VIEWS)} 个列表视图都接了 useRemotePaging", not missing_paging,
+      f"这些视图还没接：{missing_paging}")
+
+# 分页器只有 TablePager 一个。各写一份 el-pagination 会漂出「这页能选 100、那页
+# 最大 50」和「这页显示总数、那页不显示」的差异，而它们本该是同一条口径。
+raw_pager_files = []
+pager_uses = []
+for folder in (os.path.join(CONSOLE_DIR, "src/views"), os.path.join(CONSOLE_DIR, "src/components")):
+    for name in sorted(os.listdir(folder)):
+        if not name.endswith(".vue") or name == "TablePager.vue":
+            continue
+        source = read(os.path.join(folder, name))
+        if "<el-pagination" in source:
+            raw_pager_files.append(name)
+        for block in re.findall(r"<TablePager\b([^>]*?)/>", source, re.S):
+            pager_uses.append((name, block))
+check("分页器统一走 TablePager（没有页面自己拼 el-pagination）", not raw_pager_files,
+      f"这些文件里还有裸 el-pagination：{raw_pager_files}")
+
+# 存储页的明细曾经在浏览器里把页号编成 pageToken（`base64url("offset:N")`），
+# 那是服务端 `Paging` 的私有编解码。抄一份到前端，等于把 token 格式变成前端契约：
+# 服务端换编码，这一页会安静地永远停在第一页（它不报错，只是第 2 页等于第 1 页）。
+STORAGE_HEALTH_API = os.path.join(CONSOLE_DIR, "src/api/storageHealth.js")
+storage_api_source = read(STORAGE_HEALTH_API)
+check("存储明细按页码取数（客户端不再自己编码 pageToken）",
+      "offsetToken" not in storage_api_source
+      and "pageToken" not in storage_api_source
+      and "pageSize" in storage_api_source
+      and "payload?.page?.total" in storage_api_source,
+      "客户端编码 token 意味着 token 格式成了前端契约；页码应当原样下推")
+
+check(f"{len(pager_uses)} 处 TablePager 用法都带了 total / page / page-size",
+      bool(pager_uses) and all(
+          prop in block for _, block in pager_uses
+          for prop in (":total=", ":page=", ":page-size=")),
+      "少一个 prop 就退化成「只能看第一页」或「总数显示 0」，而它不会报错")
+
+# 类名撞车：全局样式里的 `.pc-opt`（catalog 表格式的选择卡）曾经和
+# `TableOptimizationPanel` 的根节点同名，于是整整一屏「存储优化」被套上了
+# 选择卡的边框、内边距与 pointer 光标，hover 时边框还会变蓝；同一族里的
+# `.pc-opt-dot` 更隐蔽——面板拿它当分隔符 `·`，全局却把它画成 9px 圆点。
+# 现在选择卡改叫 `pc-pick*`，`pc-opt-*` 前缀归组件私有：全局样式里不该再出现它。
+GLOBAL_CSS = os.path.join(CONSOLE_DIR, "src/styles/index.css")
+global_css_source = read(GLOBAL_CSS)
+leaked = sorted(set(re.findall(r"\.pc-opt[\w-]*", global_css_source)))
+check("全局样式不占用组件私有的 pc-opt-* 前缀（缩写撞车会让整块面板变形）",
+      not leaked,
+      f"index.css 里仍有这些选择器：{leaked}；组件私有的类名请换前缀（选择卡用 pc-pick）")
+
+# 操作列钉在右侧。窄屏下列多必然横向滚，操作列若跟着内容滚，「滚到右边才找得到
+# 按钮、滚回来又不见了」；这一条只在真机上滚一遍才看得出来，所以静态钉住。
+FIXED_MISSING = []
+for folder in (os.path.join(CONSOLE_DIR, "src/views"), os.path.join(CONSOLE_DIR, "src/components")):
+    for name in sorted(os.listdir(folder)):
+        if not name.endswith(".vue"):
+            continue
+        source = read(os.path.join(folder, name))
+        for block in re.findall(r"<el-table-column[^>]*label=\"操作\"[^>]*>", source):
+            if 'fixed="right"' not in block:
+                FIXED_MISSING.append(f"{name}: {' '.join(block.split())[:70]}")
+check("带行内动作的表格把「操作」列钉在右侧（不随横向滚动跑掉）", not FIXED_MISSING,
+      f"这些操作列缺 fixed=\"right\"：{FIXED_MISSING}")
+
+# 端点在：每个分页列表端点都要收 page。少了它，前端的翻页请求会被当成「不分页」，
+# 结果是每次翻页都回同一批——界面上表现为「点了下一页，内容没变」。
+PAGED_CONTROLLERS = [
+    (os.path.join(SERVER_JAVA, "web/ManagementCatalogController.java"), "catalog 列表"),
+    (os.path.join(SERVER_JAVA, "web/PrincipalController.java"), "主体列表"),
+    (os.path.join(SERVER_JAVA, "web/PrincipalRoleController.java"), "主体角色列表"),
+    (os.path.join(SERVER_JAVA, "web/PermissionController.java"), "授权清单"),
+    (os.path.join(SERVER_JAVA, "web/OptimizationController.java"), "优化批次列表"),
+    (os.path.join(SERVER_JAVA, "web/ConsoleEventController.java"), "事件流"),
+    (os.path.join(SERVER_JAVA, "web/ConsoleFileController.java"), "文件列表"),
+    (os.path.join(ROOT, "lakehouse-rest-spring-parent/lakehouse-rest-protocol-paimon/src/main/java"
+                        "/io/github/melin/lakehouse/rest/paimon/web/DatabaseController.java"), "库列表"),
+    (os.path.join(ROOT, "lakehouse-rest-spring-parent/lakehouse-rest-protocol-paimon/src/main/java"
+                        "/io/github/melin/lakehouse/rest/paimon/web/TableController.java"), "表列表"),
+    (os.path.join(ROOT, "lakehouse-rest-spring-parent/lakehouse-rest-protocol-paimon/src/main/java"
+                        "/io/github/melin/lakehouse/rest/paimon/web/PartitionController.java"), "分区列表"),
+    (os.path.join(ROOT, "lakehouse-rest-spring-parent/lakehouse-rest-protocol-paimon/src/main/java"
+                        "/io/github/melin/lakehouse/rest/paimon/web/ViewController.java"), "视图列表"),
+    (os.path.join(ROOT, "lakehouse-rest-spring-parent/lakehouse-rest-protocol-paimon/src/main/java"
+                        "/io/github/melin/lakehouse/rest/paimon/web/FunctionController.java"), "函数列表"),
+]
+no_page_param = [label for path, label in PAGED_CONTROLLERS
+                 if not re.search(r"Integer\s+page\b", read(path))]
+check(f"{len(PAGED_CONTROLLERS)} 个分页端点都接受 page 参数", not no_page_param,
+      f"这些端点没接 page：{no_page_param}（翻页请求会被当成不分页）")
+
+check("TablePager 在 total 为 0 时不渲染（空态已经有说明文字）",
+      "total > 0" in read(TABLE_PAGER),
+      "空页面再挂一条「共 0 条」只会更吵")
+
+# ------------------------------------------------------------------ 20. 文档计数
+
+print()
+print("20. 文档计数（文档写的「N 组 M 项」必须与脚本实际一致）")
 
 # 这一组是**元校验**，起因是一次真实的漂移：docs/console.md 写「12 组 37 项」、
 # README 写「12 组 38 项」，而脚本实际是 38——两个数字都没人核对，因为脚本此前

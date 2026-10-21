@@ -285,7 +285,7 @@ class ConsoleEventTests {
     }
 
     private void createDatabase(String name) {
-        if (!databaseService.list(PREFIX, null, null).databases().contains(name)) {
+        if (!databaseService.list(PREFIX, null, null, null, null).databases().contains(name)) {
             databaseService.create(PREFIX,
                     new DatabaseDtos.CreateDatabaseRequest(name, Map.of("owner", "evt")));
         }

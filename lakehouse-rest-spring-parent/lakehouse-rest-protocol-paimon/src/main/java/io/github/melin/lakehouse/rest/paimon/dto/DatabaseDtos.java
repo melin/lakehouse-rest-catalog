@@ -29,7 +29,7 @@ public final class DatabaseDtos {
             String updatedBy) {
     }
 
-    public record ListDatabasesResponse(List<String> databases, String nextPageToken) {
+    public record ListDatabasesResponse(List<String> databases, String nextPageToken, Integer total ) {
     }
 
     /** removals 删除属性键，updates 覆盖属性。 */

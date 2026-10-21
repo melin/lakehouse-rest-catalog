@@ -54,8 +54,10 @@ public class ConsoleFileController {
     @GetMapping("/api/console/v1/catalogs/{catalogName}/files")
     public ConsoleDtos.CatalogFileListing files(@PathVariable String catalogName,
                                                 @RequestParam(name = "path", required = false) String path,
-                                                @RequestParam(name = "prefix", required = false) String prefix) {
-        return catalogFileService.list(catalogName, path, prefix);
+                                                @RequestParam(name = "prefix", required = false) String prefix,
+                                                @RequestParam(name = "page", required = false) Integer page,
+                                                @RequestParam(name = "pageSize", required = false) Integer pageSize) {
+        return catalogFileService.list(catalogName, path, prefix, page, pageSize);
     }
 
     /**
@@ -72,8 +74,10 @@ public class ConsoleFileController {
     @GetMapping("/api/console/v1/tables/{tableId}/files")
     public ConsoleDtos.TableFileListing tableFiles(@PathVariable String tableId,
                                                    @RequestParam(name = "path", required = false) String path,
-                                                   @RequestParam(name = "prefix", required = false) String prefix) {
-        return catalogFileService.listTable(tableId, path, prefix);
+                                                   @RequestParam(name = "prefix", required = false) String prefix,
+                                                   @RequestParam(name = "page", required = false) Integer page,
+                                                   @RequestParam(name = "pageSize", required = false) Integer pageSize) {
+        return catalogFileService.listTable(tableId, path, prefix, page, pageSize);
     }
 
     /**

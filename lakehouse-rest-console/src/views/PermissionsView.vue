@@ -9,7 +9,7 @@
           <el-icon><Plus /></el-icon>
           <span class="pc-btn-text">添加授权</span>
         </el-button>
-        <el-button size="small" :disabled="!catalogName" :loading="listState.loading" @click="loadList">
+        <el-button size="small" :disabled="!catalogName" :loading="listLoading" @click="loadList">
           <el-icon><Refresh /></el-icon>
           <span class="pc-btn-text">刷新</span>
         </el-button>
@@ -25,7 +25,7 @@
       <!------------------------------ 授权清单 ------------------------------>
       <PanelCard flush>
         <div class="pc-list-head">
-          <span class="pc-list-title">授权清单（{{ filteredRows.length }}）</span>
+          <span class="pc-list-title">授权清单（{{ listTotal }}）</span>
           <el-input
             v-model="filterText"
             size="small"
@@ -37,13 +37,13 @@
         </div>
 
         <ResourceState
-          :loading="listState.loading"
-          :error="listState.error"
+          :loading="listLoading"
+          :error="listError"
           :empty="!filteredRows.length"
           :empty-text="emptyText"
         >
           <el-table
-            v-loading="listState.loading"
+            v-loading="listLoading"
             :data="filteredRows"
             size="small"
           >
@@ -105,6 +105,14 @@
               <span />
             </template>
           </el-table>
+
+          <TablePager
+            :total="listTotal"
+            :page="page"
+            :page-size="pageSize"
+            @page-change="onPageChange"
+            @size-change="onSizeChange"
+          />
 
           <template #actions>
             <el-button size="small" type="primary" @click="openDialog">
@@ -278,12 +286,12 @@ import { useRoute, useRouter } from 'vue-router'
 import PageHeader from '@/components/PageHeader.vue'
 import PanelCard from '@/components/PanelCard.vue'
 import ResourceState from '@/components/ResourceState.vue'
+import TablePager from '@/components/TablePager.vue'
 import { catalogApi } from '@/api/catalog.js'
 import { icebergApi, listAllNamespaces, namespaceLabel, namespaceLevels } from '@/api/iceberg.js'
 import { managementApi } from '@/api/management.js'
 import { permissionApi } from '@/api/permission.js'
-import { describeError } from '@/api/client.js'
-import { confirmDanger, notifyError, notifySuccess, onConsoleRefresh } from '@/composables/index.js'
+import { confirmDanger, notifyError, notifySuccess, onConsoleRefresh, useRemotePaging } from '@/composables/index.js'
 import { session } from '@/store/session.js'
 import { isIcebergCatalog } from '@/utils/catalogFormat.js'
 import { formatDate, formatTime } from '@/utils/format.js'
@@ -339,8 +347,7 @@ const catalogName = computed(() => session.state.selectedCatalog || route.query.
 function resetForCatalog() {
   dialogOpen.value = false
   resetForm()
-  listState.rows = []
-  listState.error = ''
+  listRows.value = []
 }
 
 /** 清空表单：授权对象、作用范围、有效期、已勾选权限一起复位。 */
@@ -691,7 +698,6 @@ async function submit() {
 
 // ------------------------------------------------------------------ 授权清单
 
-const listState = reactive({ loading: false, rows: [], error: '' })
 const filterText = ref('')
 
 /**
@@ -739,39 +745,55 @@ const OBJECT_KINDS = {
 }
 
 /**
- * 拉全量授权：端点按页返回，这里循环翻页取完（授权是「人 × 资源」量级，
- * 全量拉回在控制台侧过滤，与服务端不做下推的口径一致）。
+ * 取清单的一页。
+ *
+ * <p>**一行由服务端折叠好**（同主体的同范围多条权限合成一行），因此这里不再
+ * 自己分组：客户端只有一页，跨页分组必然错——同一组被页边界切成两行，
+ * 界面上就是同一个主体出现两次。折叠与分页都在服务端，`total` 也就是「多少行」。
+ * 这正是为什么分页不能留在浏览器里：折叠与切页的顺序反了，`total` 与「一行」
+ * 的含义就都变了。
+ *
+ * <p>关键字也下推（`keyword`）：筛选要作用于全站，而不是这一页。
  */
-async function loadList() {
-  if (!catalogName.value) return
-  listState.loading = true
-  listState.error = ''
-  const rows = []
-  try {
-    let pageToken = ''
-    for (let page = 0; page < 50; page++) {
-      const payload = await permissionApi.list(catalogName.value, {
-        maxResults: 200,
-        pageToken: pageToken || undefined,
-      })
-      for (const item of payload?.assignments || []) {
-        rows.push(toRow(item))
-      }
-      pageToken = payload?.nextPageToken || ''
-      if (!pageToken) break
-    }
-    listState.rows = rows
-  } catch (error) {
-    listState.error = describeError(error)
-  } finally {
-    listState.loading = false
-  }
+async function fetchScopeRows({ page, pageSize }) {
+  if (!catalogName.value) return { items: [], total: 0 }
+  const payload = await permissionApi.scopes(catalogName.value, {
+    keyword: filterText.value.trim() || undefined,
+    page,
+    pageSize,
+  })
+  return { items: (payload.scopes || []).map(toScopeRow), total: payload.page?.total ?? 0 }
 }
 
-function toRow(item) {
-  const resource = item.resource || {}
-  const principal = item.principal || ''
-  // principal 是官方语义下的不透明字符串，类型只按前缀展示；前缀只是约定，认不出就归为「主体」
+// `immediate: false`：首次加载由下面的 catalog watch 触发，否则挂载时会发两次。
+const {
+  loading: listLoading,
+  error: listError,
+  rows: listRows,
+  total: listTotal,
+  page,
+  pageSize,
+  load: loadList,
+  reload: reloadList,
+  onPageChange,
+  onSizeChange,
+} = useRemotePaging(fetchScopeRows, { immediate: false })
+
+/** 关键字变化：回第一页重取（服务端筛，不是筛当前页）。 */
+let keywordTimer = null
+watch(filterText, () => {
+  clearTimeout(keywordTimer)
+  keywordTimer = setTimeout(() => reloadList(), 300)
+})
+
+/**
+ * 服务端折叠好的一行 → 界面行。
+ *
+ * <p>只补文案：作用范围由服务端算好（`scope`），这里加类型注解与过期时间的
+ * 合并规则。撤销按**逐项**身份处理，所以 `items` 里保留每条权限自己的原始对象。
+ */
+function toScopeRow(scope) {
+  const principal = scope.principal || ''
   const type = principal.startsWith('user:')
     ? { label: '用户', tag: '' }
     : principal.startsWith('role:')
@@ -779,86 +801,50 @@ function toRow(item) {
       : principal.startsWith('group:')
         ? { label: '组', tag: 'success' }
         : { label: '主体', tag: 'info' }
-  const resourceType = resource.type || ''
-  const database = resource.database || ''
-  // 对象定位符按类型放在不同字段，展示时拼成「库」或「库.对象」一个字符串
-  const object = resource.table || resource.view || resource.function || ''
-  // catalog 级授权没有库与对象：它的作用范围整个 catalog（服务端存的定位符只有 type）
-  const catalogWide = resourceType === 'CATALOG' || resourceType === 'CATALOG_ALL'
-  const expireRaw = item.expireTime || ''
-  const expireMillis = expireRaw ? Date.parse(expireRaw) : NaN
+  const catalogWide = scope.resourceType === 'CATALOG' || scope.resourceType === 'CATALOG_ALL'
+  const items = (scope.accesses || []).map((item) => {
+    const expireMillis = item.expireTime ? Date.parse(item.expireTime) : NaN
+    return {
+      access: item.access || '',
+      label: accessLabel(item.access),
+      expireRaw: item.expireTime || '',
+      expireMillis: Number.isFinite(expireMillis) ? expireMillis : null,
+      identity: item,
+    }
+  })
+  const stamps = [...new Set(items.map((item) => item.expireMillis).filter((m) => m != null))]
   return {
     principal,
     typeLabel: type.label,
     typeTag: type.tag,
-    resourceType,
-    database,
-    object,
-    // 作用范围：catalog 级给一句说明，库级给库名，对象级给「库.对象」
-    // （与 Flink/Spark 里写全限定名的习惯一致）
-    scope: catalogWide ? '整个 catalog' : (object ? `${database}.${object}` : database),
-    // 「库.对象」本身看不出是表还是视图，补一个类型注解把这句话说完整
+    resourceType: scope.resourceType,
+    database: scope.database || '',
+    object: scope.object || '',
+    scope: scope.scope,
     scopeKind: catalogWide
       ? '（整 catalog）'
-      : (object
-        ? (OBJECT_KINDS[resourceType] || '（单个对象）')
+      : (scope.object
+        ? (OBJECT_KINDS[scope.resourceType] || '（单个对象）')
         : (icebergCatalog.value ? '（整 namespace）' : '（整库）')),
-    access: item.access || '',
-    expireRaw,
-    // 只有能解析成时间的才按日期显示；解析不出来的原样显示，不假装是永久
-    expireMillis: Number.isFinite(expireMillis) ? expireMillis : null,
-    identity: item,
+    items,
+    expireMillis: stamps.length ? Math.min(...stamps) : null,
+    expireRaw: items.every((item) => item.expireRaw === items[0]?.expireRaw)
+      ? (items[0]?.expireRaw || '')
+      : '',
+    expireMixed: stamps.length > 1
+      || (stamps.length > 0 && items.some((item) => item.expireMillis == null)),
   }
 }
 
 /**
- * 清单一行 = 一个主体 × 一个作用范围：同一范围的若干项权限合并进同一行的
- * 「权限」单元格，并列成标签、逐个可撤销——读「谁对什么有什么」只需扫一列，
- * 不用把同一范围的五六行拼回一行。先按 principal / scope 排序保证同组相邻，
- * 再顺序折叠成组（服务端返回序是建表顺序，对看权限的人没有意义）。
+ * 清单的当前页。服务端已按 (principal, scope) 排好序，这里不再排序、不再折叠——
+ * 那些都在服务端做过一次了。
  */
-const filteredRows = computed(() => {
-  const keyword = filterText.value.trim().toLowerCase()
-  const rows = keyword
-    ? listState.rows.filter((row) => `${row.principal} ${row.scope}`.toLowerCase().includes(keyword))
-    : [...listState.rows]
-  rows.sort((a, b) => a.principal.localeCompare(b.principal)
-    || a.scope.localeCompare(b.scope)
-    || a.access.localeCompare(b.access))
-  const groups = []
-  const indexOf = new Map()
-  for (const row of rows) {
-    const key = `${row.principal}\n${row.scope}`
-    let group = indexOf.get(key)
-    if (!group) {
-      group = { ...row, items: [] }
-      indexOf.set(key, group)
-      groups.push(group)
-    }
-    group.items.push({
-      access: row.access,
-      label: accessLabel(row.access),
-      expireRaw: row.expireRaw,
-      expireMillis: row.expireMillis,
-    })
-  }
-  for (const group of groups) {
-    // 过期时间按权限项各自维护（官方语义里重复授予会覆盖单项的 expireTime），
-    // 合并后显示规则：全部相同显示原值；不一致取最早一个并标注，不假装统一
-    const stamps = [...new Set(group.items
-      .map((item) => item.expireMillis)
-      .filter((millis) => millis != null))]
-    group.expireMillis = stamps.length ? Math.min(...stamps) : null
-    group.expireRaw = group.items.every((item) => item.expireRaw === group.items[0].expireRaw)
-      ? group.items[0].expireRaw
-      : ''
-    group.expireMixed = stamps.length > 1
-      || (stamps.length > 0 && group.items.some((item) => item.expireMillis == null))
-  }
-  return groups
-})
+const filteredRows = computed(() => listRows.value)
 
-/** 空态的两种含义要分开说：筛掉了 / 一条都还没有，后者给出下一步动作。 */
+/**
+ * 空态的两种含义要分开说：筛掉了 / 一条都还没有，后者给出下一步动作。
+ */
 const emptyText = computed(() => (filterText.value.trim()
   ? `没有匹配「${filterText.value.trim()}」的授权`
   : '这个 catalog 上还没有任何授权'))
@@ -897,7 +883,7 @@ async function revokeAccess(row, item) {
 // ------------------------------------------------------------------ 初始化
 
 // watch 放在所有声明之后：immediate 回调会在 setup 期间同步执行，
-// 提前注册会踩到尚未初始化的 form / listState（TDZ）
+// 提前注册会踩到尚未初始化的 form / 分页状态（TDZ）
 watch(catalogName, (name, previous) => {
   if (previous !== undefined && name) {
     // 顶栏切换 catalog：同步进查询串，深链/刷新不丢上下文
@@ -907,7 +893,8 @@ watch(catalogName, (name, previous) => {
   resetForCatalog()
   loadGranteeOptions()
   loadDatabases()
-  loadList()
+  // 换 catalog 是换集合：页码必须归位，否则停在第 3 页会看到空表
+  reloadList()
 }, { immediate: true })
 </script>
 

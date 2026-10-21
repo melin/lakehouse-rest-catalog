@@ -32,7 +32,7 @@ public final class ViewDtos {
             String updatedBy) {
     }
 
-    public record ListViewsResponse(List<String> views, String nextPageToken) {
+    public record ListViewsResponse(List<String> views, String nextPageToken, Integer total ) {
     }
 
     public record ListViewDetailsResponse(List<GetViewResponse> viewDetails, String nextPageToken) {

@@ -212,19 +212,15 @@
             </template>
           </el-table-column>
         </el-table>
-        <div v-if="detail.total" class="pc-sto-page">
-          <el-pagination
-            :current-page="page"
-            :page-size="pageSize"
-            :total="detail.total"
-            :page-sizes="[20, 50, 100]"
-            layout="total, sizes, prev, pager, next"
-            size="small"
-            background
-            @current-change="onPageChange"
-            @size-change="onSizeChange"
-          />
-        </div>
+        <TablePager
+          v-if="detail.total"
+          class="pc-sto-pager"
+          :total="detail.total"
+          :page="page"
+          :page-size="pageSize"
+          @page-change="onPageChange"
+          @size-change="onSizeChange"
+        />
         </template>
       </PanelCard>
     </ResourceState>
@@ -239,6 +235,7 @@ import { describeError } from '@/api/client.js'
 import { loadCatalogSummary, loadCatalogTableRows } from '@/api/storageHealth.js'
 import PanelCard from '@/components/PanelCard.vue'
 import ResourceState from '@/components/ResourceState.vue'
+import TablePager from '@/components/TablePager.vue'
 import TimeText from '@/components/TimeText.vue'
 import { formatBytes, formatNumber } from '@/utils/format.js'
 import { SMALL_FILE_THRESHOLD, decorate } from '@/utils/storageHealth.js'
@@ -561,10 +558,11 @@ function tableLink(row) {
   width: 190px;
 }
 
-.pc-sto-page {
-  display: flex;
-  justify-content: flex-end;
-  padding: 12px 16px;
+/* 分页器与表格之间那条线：面板是 flush 的，表格与页脚原本靠 padding 分开，
+   换成统一分页器后这条线得自己给 */
+.pc-sto-pager {
+  margin: 0 16px;
+  padding-top: 12px;
   border-top: 1px solid var(--pc-border);
 }
 

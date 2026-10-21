@@ -254,13 +254,13 @@
             </div>
 
             <el-alert
-              v-if="files.data.value?.truncated"
+              v-if="fileListing?.truncated"
               type="warning"
               :closable="false"
               show-icon
               class="pc-hint"
             >
-              <template #title>只显示了前 {{ files.data.value.maxEntries }} 条（共 {{ files.data.value.total }} 条）</template>
+              <template #title>只显示了前 {{ fileListing.maxEntries }} 条（共 {{ fileListing.total }} 条）</template>
               <div>
                 排序是目录优先、名称升序，因此被截掉的是尾部的文件。需要看全部的话，
                 下钻到更具体的子目录，或调大 <span class="pc-mono">lakehouse.rest.file-browser.max-entries</span>。
@@ -268,9 +268,9 @@
             </el-alert>
 
             <ResourceState
-              :loading="files.loading.value"
-              :error="files.error.value"
-              :empty="!entries.length"
+              :loading="filesLoading"
+              :error="filesError"
+              :empty="fileLoaded && !totalEntries"
               :empty-text="filePrefix ? `没有以「${filePrefix}」开头的条目` : '这个目录里没有文件'"
             />
 
@@ -287,12 +287,12 @@
               <el-button size="small" @click="applyPrefix">查询</el-button>
               <span class="pc-spacer" />
               <span class="pc-dim">
-                共 {{ entries.length }} 条<span v-if="files.data.value?.truncated">（已达上限
-                {{ files.data.value.maxEntries }}，用前缀过滤缩小范围）</span>
+                共 {{ totalEntries }} 条<span v-if="fileListing?.truncated">（已达上限
+                {{ fileListing.maxEntries }}，用前缀过滤缩小范围）</span>
               </span>
             </div>
 
-            <el-table v-if="entries.length || files.loading.value" :data="pagedEntries" size="small">
+            <el-table v-if="fileRows.length || filesLoading" :data="fileRows" size="small">
               <el-table-column label="名称" min-width="280">
                 <template #default="{ row }">
                   <!-- 目录名可点，点进去看下一层；文件没有可点的动作（这一页只读） -->
@@ -327,7 +327,7 @@
                   <span class="pc-mono pc-dim pc-break">{{ row.path }}</span>
                 </template>
               </el-table-column>
-              <el-table-column label="操作" width="90" align="center">
+              <el-table-column label="操作" width="90" align="center" fixed="right">
                 <template #default="{ row }">
                   <!-- 只有文件可下载：目录用列表下钻，仓库根/子目录没有「下载整个目录」 -->
                   <IconAction
@@ -342,15 +342,12 @@
               </el-table-column>
             </el-table>
 
-            <el-pagination
-              v-if="entries.length > filePageSize"
-              v-model:current-page="filePage"
-              v-model:page-size="filePageSize"
-              :page-sizes="[10, 50, 100, 200, 500]"
+            <TablePager
               :total="totalEntries"
-              layout="total, sizes, prev, pager, next"
-              size="small"
-              class="pc-pager"
+              :page="filePage"
+              :page-size="filePageSize"
+              @page-change="onFilePageChange"
+              @size-change="onFileSizeChange"
             />
           </template>
 
@@ -497,9 +494,10 @@ import PageHeader from '@/components/PageHeader.vue'
 import PanelCard from '@/components/PanelCard.vue'
 import ResourceState from '@/components/ResourceState.vue'
 import SectionTitle from '@/components/SectionTitle.vue'
+import TablePager from '@/components/TablePager.vue'
 import TimeText from '@/components/TimeText.vue'
 import TipNote from '@/components/TipNote.vue'
-import { notifyError, notifySuccess, onConsoleRefresh, useLocalPaging, useResource } from '@/composables/index.js'
+import { notifyError, notifySuccess, onConsoleRefresh, useRemotePaging, useResource } from '@/composables/index.js'
 import { session } from '@/store/session.js'
 import {
   catalogFormatLabel,
@@ -622,20 +620,49 @@ const credentialNote = computed(() => {
  * <p>下钻到第几层不那么值得进 URL（刷新回到仓库根是合理的），但**必须**在会话内保留，
  * 否则每次切页签回来都要重新钻一遍。切换 catalog 时重置，见下面的 watch。
  *
- * <p><b>前缀过滤走服务端</b>（回车触发一次请求），因为过滤后的结果还要按同一个
- * `max-entries` 上限截断；**翻页在本地做**——服务端一次给一批（默认上限 1000 条），
- * 在浏览器里切片足够，且列目录本来就要把这一层读完才知道总数与排序。
+ * <p><b>前缀过滤与翻页都在服务端</b>（回车触发一次请求）。这一层到底有多少条目，
+ * 只有列完才知道；「共 N 条、第 M 页」也只能由服务端算——本地切片在对象存储上
+ * 会先被 `max-entries` 截一刀，界面上的总数就比真实值小。
  */
 const filePath = ref('')
 const filePrefixInput = ref('')
 const filePrefix = ref('')
-const files = useResource(
-  () => consoleApi.listCatalogFiles(catalogName.value, filePath.value, filePrefix.value),
-  { immediate: false },
-)
-const entries = computed(() => files.data.value?.entries || [])
-const { page: filePage, pageSize: filePageSize, paged: pagedEntries, total: totalEntries } =
-  useLocalPaging(entries)
+
+/**
+ * 最近一次列表响应。`maxEntries` / `truncated` / `total` 不是行级字段，
+ * 混不进 `rows`，单独留一份给提示条用。
+ */
+const fileListing = ref(null)
+/** 是否成功列过至少一次目录：空态提示只在这个前提下出现，否则和「还没加载」分不开。 */
+const fileLoaded = ref(false)
+
+async function fetchFiles({ page, pageSize }) {
+  const payload = await consoleApi.listCatalogFiles(
+    catalogName.value,
+    filePath.value,
+    filePrefix.value,
+    { page, pageSize },
+  )
+  fileListing.value = payload
+  fileLoaded.value = true
+  return { items: payload.entries || [], total: payload.page?.total ?? payload.total ?? 0 }
+}
+
+// `immediate: false`：概览页自己就能回答大部分问题，列目录要打一次存储
+// （对象存储上是一次前缀列举），不该在打开页面时就付这个代价——首次切到
+// 「文件列表」页签才发请求，见 `onTabChange`。
+const {
+  loading: filesLoading,
+  error: filesError,
+  rows: fileRows,
+  total: totalEntries,
+  page: filePage,
+  pageSize: filePageSize,
+  load: loadFiles,
+  reload: reloadFiles,
+  onPageChange: onFilePageChange,
+  onSizeChange: onFileSizeChange,
+} = useRemotePaging(fetchFiles, { immediate: false })
 
 const crumbs = computed(() => {
   const segments = filePath.value.split('/').filter(Boolean)
@@ -646,13 +673,15 @@ const parentPath = computed(() => crumbs.value.slice(0, -1).map((crumb) => crumb
 
 function openDirectory(path) {
   filePath.value = path
-  files.load()
+  // 换了目录就换了集合，页码必须归位：停在第 3 页会看到空表，而那个目录
+  // 其实有 5 条——「空」和「不在这一页」是两件事。
+  reloadFiles()
 }
 
 /** 回车或点「查询」才发请求：逐字符过滤会把每次按键都变成一次存储列举。 */
 function applyPrefix() {
   filePrefix.value = filePrefixInput.value.trim()
-  files.load()
+  reloadFiles()
 }
 
 /**
@@ -682,16 +711,16 @@ watch(catalogName, () => {
   filePath.value = ''
   filePrefix.value = ''
   filePrefixInput.value = ''
-  // data 显式置空，否则「文件列表」页签会因为 data 非空而跳过首次加载
-  files.data.value = null
-  files.error.value = ''
+  // 显式清空，否则「文件列表」页签会因为已经加载过而跳过首次加载
+  fileListing.value = null
+  fileLoaded.value = false
   // 能力清单同理：它是按 prefix 问出来的，留着上一个 catalog 的那份会显示错清单
   capabilities.data.value = null
   capabilities.error.value = ''
   overview.load()
   capabilities.load()
   if (tab.value === 'files') {
-    files.load()
+    reloadFiles()
   }
 })
 
@@ -700,8 +729,8 @@ watch(catalogName, () => {
  * 而列目录要打一次存储（对象存储上是一次前缀列举），不该在打开页面时就付这个代价。
  */
 function onTabChange(name) {
-  if (name === 'files' && !files.data.value && !files.loading.value) {
-    files.load()
+  if (name === 'files' && !fileLoaded.value && !filesLoading.value) {
+    reloadFiles()
   }
 }
 
@@ -709,7 +738,7 @@ function reloadAll() {
   overview.load()
   capabilities.load()
   if (tab.value === 'files') {
-    files.load()
+    loadFiles()
   }
   if (tab.value === 'storage') {
     storagePanel.value?.reload()
@@ -993,12 +1022,6 @@ async function saveDefaults() {
 
 .pc-prefix-input {
   width: 240px;
-}
-
-/* 分页条靠右；只在条目多于一页时才渲染（见模板里的 v-if） */
-.pc-pager {
-  margin-top: 12px;
-  justify-content: flex-end;
 }
 
 @media (max-width: 1100px) {

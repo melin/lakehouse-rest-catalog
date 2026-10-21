@@ -18,7 +18,8 @@ import { del, get, post, put } from './client.js'
  */
 export const managementApi = {
   // ------------------------------------------------------------------ catalog
-  listCatalogs: () => get('listCatalogs'),
+  /** catalog 列表。`query` 给 `page` / `pageSize` —— 控制台的表格走远程分页。 */
+  listCatalogs: (query = {}) => get('listCatalogs', { query }),
   createCatalog: (catalog) => post('createCatalog', { body: { catalog } }),
   getCatalog: (catalogName) => get('getCatalog', { params: { catalogName } }),
   updateCatalog: (catalogName, body) => put('updateCatalog', { params: { catalogName }, body }),
@@ -37,7 +38,8 @@ export const managementApi = {
   }),
 
   // ------------------------------------------------------------------ principal
-  listPrincipals: () => get('listPrincipals'),
+  /** 主体列表。`query` 给 `page` / `pageSize`。 */
+  listPrincipals: (query = {}) => get('listPrincipals', { query }),
   createPrincipal: (principal, credentialRotationRequired) => post('createPrincipal', {
     body: { principal, credentialRotationRequired },
   }),
@@ -46,8 +48,8 @@ export const managementApi = {
   deletePrincipal: (principalName) => del('deletePrincipal', { params: { principalName } }),
   rotatePrincipal: (principalName) => post('rotatePrincipal', { params: { principalName } }),
   resetPrincipal: (principalName, body) => post('resetPrincipal', { params: { principalName }, body }),
-  listPrincipalRolesOfPrincipal: (principalName) => get('listPrincipalRolesOfPrincipal', {
-    params: { principalName },
+  listPrincipalRolesOfPrincipal: (principalName, query = {}) => get('listPrincipalRolesOfPrincipal', {
+    params: { principalName, query },
   }),
   grantPrincipalRole: (principalName, principalRole) => put('grantPrincipalRole', {
     params: { principalName },
@@ -58,7 +60,8 @@ export const managementApi = {
   }),
 
   // ------------------------------------------------------------------ principal role
-  listPrincipalRoles: () => get('listPrincipalRoles'),
+  /** 角色列表。`query` 给 `page` / `pageSize`。 */
+  listPrincipalRoles: (query = {}) => get('listPrincipalRoles', { query }),
   createPrincipalRole: (principalRole) => post('createPrincipalRole', { body: { principalRole } }),
   getPrincipalRole: (principalRoleName) => get('getPrincipalRole', { params: { principalRoleName } }),
   updatePrincipalRole: (principalRoleName, body) => put('updatePrincipalRole', {
@@ -66,8 +69,8 @@ export const managementApi = {
     body,
   }),
   deletePrincipalRole: (principalRoleName) => del('deletePrincipalRole', { params: { principalRoleName } }),
-  listPrincipalsOfPrincipalRole: (principalRoleName) => get('listPrincipalsOfPrincipalRole', {
-    params: { principalRoleName },
+  listPrincipalsOfPrincipalRole: (principalRoleName, query = {}) => get('listPrincipalsOfPrincipalRole', {
+    params: { principalRoleName, query },
   }),
 }
 

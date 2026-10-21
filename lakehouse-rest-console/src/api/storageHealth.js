@@ -78,16 +78,6 @@ export function loadCatalogSummary({ catalogName, onlyPaimon = false }) {
   }))
 }
 
-/** 页号 → 不透明 pageToken（`base64url("offset:N")`，与服务端 `Paging` 同一编解码）。 */
-function offsetToken(page, pageSize) {
-  const offset = Math.max(0, (page - 1) * pageSize)
-  const text = `offset:${offset}`
-  if (typeof btoa === 'function') {
-    return btoa(text).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
-  }
-  return Buffer.from(text, 'binary').toString('base64url')
-}
-
 /**
  * 拉逐表明细的一页（远程分页）。
  *
@@ -98,7 +88,7 @@ function offsetToken(page, pageSize) {
  * @param {boolean} [options.onlyPaimon] 只看 Paimon 表（服务端按 `tableType` 过滤）
  * @param {string} [options.sort] 排序键：files / size / avgSize / records / updatedAt / table
  * @param {string} [options.order] `asc` / `desc`（缺省 desc）
- * @param {number} [options.page] 1 起的页号（内部换算成 offset token）
+ * @param {number} [options.page] 1 起的页号（原样下推，服务端按页码切）
  * @param {number} [options.pageSize] 页大小
  * @returns {Promise<{rows: Array<object>, total: number}>}
  */
@@ -112,10 +102,10 @@ export function loadCatalogTableRows({
     onlyPaimon,
     sort,
     order,
-    maxResults: pageSize,
-    pageToken: page > 1 ? offsetToken(page, pageSize) : undefined,
+    page,
+    pageSize,
   }).then((payload) => ({
     rows: (payload?.tables || []).map(toRow),
-    total: num(payload?.total) ?? 0,
+    total: num(payload?.page?.total ?? payload?.total) ?? 0,
   }))
 }

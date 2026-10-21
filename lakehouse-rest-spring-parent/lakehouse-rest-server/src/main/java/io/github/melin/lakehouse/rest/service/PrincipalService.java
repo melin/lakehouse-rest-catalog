@@ -24,6 +24,7 @@ import io.github.melin.lakehouse.rest.support.Paging;
 import io.github.melin.lakehouse.rest.support.ResourceType;
 import io.github.melin.lakehouse.rest.support.Secrets;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -53,14 +54,20 @@ public class PrincipalService {
     private final PrincipalRoleAssignmentRepository principalRoleAssignmentRepository;
     private final CatalogEventPublisher events;
 
-    /** {@code GET /principals}。 */
+    /**
+     * {@code GET /principals?page=&pageSize=}：远程分页。
+     *
+     * <p>排序键是名称（仓储的派生查询已经按它升序），因此同一页两次请求结果一致。
+     * 不传分页参数时给全量、{@code page} 为 {@code null}——脚本与 Spark 客户端不受影响。
+     */
     @Transactional(readOnly = true)
-    public Principals list() {
+    public Principals list(Integer page, Integer pageSize) {
         List<Principal> result = new ArrayList<>();
         for (PrincipalEntity entity : principalRepository.findAllByOrderByNameAsc()) {
             result.add(toDto(entity));
         }
-        return new Principals(result);
+        Paging.Paged<Principal> paged = Paging.paged(result, page, pageSize);
+        return paged == null ? new Principals(result, null) : new Principals(paged.items(), paged.meta());
     }
 
     /** {@code POST /principals}。返回的凭据是本主体密钥的唯一一次明文出现。 */
@@ -181,9 +188,15 @@ public class PrincipalService {
         return withCredentials(principalRepository.save(entity), secret);
     }
 
-    /** {@code GET /principals/{principalName}/principal-roles}。 */
+    /**
+     * {@code GET /principals/{principalName}/principal-roles?page=&pageSize=}。
+     *
+     * <p>一个主体挂的角色通常个位数，但表格一视同仁地走远程分页：页大小与翻页语义
+     * 只有一套，页面不需要为「这个小列表」另存一套本地切片逻辑。
+     * 顺序按角色名——{@code findAllById} 不保证顺序，分页会因此漂移。
+     */
     @Transactional(readOnly = true)
-    public PrincipalRoles listRoles(String principalName) {
+    public PrincipalRoles listRoles(String principalName, Integer page, Integer pageSize) {
         PrincipalEntity entity = require(principalName);
         List<String> roleIds = principalRoleAssignmentRepository.findByPrincipalId(entity.getId())
                 .stream().map(PrincipalRoleAssignmentEntity::getPrincipalRoleId).toList();
@@ -191,7 +204,9 @@ public class PrincipalService {
         for (PrincipalRoleEntity role : principalRoleRepository.findAllById(roleIds)) {
             roles.add(ManagementMappers.toDto(role));
         }
-        return new PrincipalRoles(roles);
+        roles.sort(Comparator.comparing(PrincipalRole::name));
+        Paging.Paged<PrincipalRole> paged = Paging.paged(roles, page, pageSize);
+        return paged == null ? new PrincipalRoles(roles, null) : new PrincipalRoles(paged.items(), paged.meta());
     }
 
     /**

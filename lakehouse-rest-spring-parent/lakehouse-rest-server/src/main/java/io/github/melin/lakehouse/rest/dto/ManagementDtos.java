@@ -2,6 +2,7 @@ package io.github.melin.lakehouse.rest.dto;
 
 import io.github.melin.lakehouse.rest.dto.ManagementEnums.CatalogType;
 import io.github.melin.lakehouse.rest.dto.StorageDtos.StorageConfigInfo;
+import io.github.melin.lakehouse.rest.support.PageMeta;
 import java.util.List;
 import java.util.Map;
 
@@ -28,8 +29,12 @@ public final class ManagementDtos {
 
     // ------------------------------------------------------------------ catalog
 
-    /** {@code Catalogs}。 */
-    public record Catalogs(List<Catalog> catalogs) {
+    /**
+     * {@code Catalogs}。{@code page} 是远程分页元数据：不传分页参数时为
+     * {@code null}（一次拿全量），传了 {@code page}/{@code pageSize} 时
+     * 带 {@code total}/{@code page}/{@code pageSize}/{@code hasNext}。
+     */
+    public record Catalogs(List<Catalog> catalogs, PageMeta page) {
     }
 
     /**
@@ -79,7 +84,11 @@ public final class ManagementDtos {
     // ------------------------------------------------------------------ principal
 
     /** {@code Principals}。 */
-    public record Principals(List<Principal> principals) {
+    /**
+     * {@code Principals}。{@code page} 是远程分页元数据，语义与 {@link Catalogs#page}
+     * 完全一致：不传 {@code page}/{@code pageSize} 时为 {@code null}（一次拿全量）。
+     */
+    public record Principals(List<Principal> principals, PageMeta page) {
     }
 
     /** {@code Principal}。{@code clientId} 可读，密钥永不出现在该模型里。 */
@@ -110,7 +119,8 @@ public final class ManagementDtos {
     // ------------------------------------------------------------------ principal role
 
     /** {@code PrincipalRoles}。 */
-    public record PrincipalRoles(List<PrincipalRole> roles) {
+    /** {@code PrincipalRoles}。{@code page} 同上。 */
+    public record PrincipalRoles(List<PrincipalRole> roles, PageMeta page) {
     }
 
     /** {@code PrincipalRole}。 */
@@ -144,7 +154,8 @@ public final class ManagementDtos {
      * 行是 {@code lakehouse_table} 与 {@code lakehouse_snapshot} 的投影 join，
      * 空表（还没有快照）也有一行、统计列为 {@code null}，与逐表端点的「无快照」语义一致。
      */
-    public record TableStats(List<TableStat> tables, long total, String nextPageToken) {
+    public record TableStats(List<TableStat> tables, long total, String nextPageToken,
+                             PageMeta page) {
     }
 
     /**

@@ -49,14 +49,20 @@ public class PrincipalRoleService {
     private final PrincipalRoleAssignmentRepository principalRoleAssignmentRepository;
     private final CatalogEventPublisher events;
 
-    /** {@code GET /principal-roles}。 */
+    /**
+     * {@code GET /principal-roles?page=&pageSize=}：远程分页。
+     *
+     * <p>排序键是角色名（仓储的派生查询已按它升序），分页因此稳定。
+     * 不传分页参数时给全量、{@code page} 为 {@code null}。
+     */
     @Transactional(readOnly = true)
-    public PrincipalRoles list() {
+    public PrincipalRoles list(Integer page, Integer pageSize) {
         List<PrincipalRole> roles = new ArrayList<>();
         for (PrincipalRoleEntity entity : principalRoleRepository.findAllByOrderByNameAsc()) {
             roles.add(ManagementMappers.toDto(entity));
         }
-        return new PrincipalRoles(roles);
+        Paging.Paged<PrincipalRole> paged = Paging.paged(roles, page, pageSize);
+        return paged == null ? new PrincipalRoles(roles, null) : new PrincipalRoles(paged.items(), paged.meta());
     }
 
     /** {@code POST /principal-roles}。 */
@@ -128,9 +134,14 @@ public class PrincipalRoleService {
                 Map.of());
     }
 
-    /** {@code GET /principal-roles/{principalRoleName}/principals}。 */
+    /**
+     * {@code GET /principal-roles/{principalRoleName}/principals?page=&pageSize=}。
+     *
+     * <p>按主体名排序后再切页：赋值表的行序不保证稳定，直接切会让同一页
+     * 两次请求拿到不同的成员。
+     */
     @Transactional(readOnly = true)
-    public Principals listPrincipals(String principalRoleName) {
+    public Principals listPrincipals(String principalRoleName, Integer page, Integer pageSize) {
         PrincipalRoleEntity role = require(principalRoleName);
         List<Principal> principals = new ArrayList<>();
         for (PrincipalRoleAssignmentEntity assignment
@@ -139,7 +150,9 @@ public class PrincipalRoleService {
                     .map(ManagementMappers::toDto)
                     .ifPresent(principals::add);
         }
-        return new Principals(principals);
+        principals.sort(java.util.Comparator.comparing(Principal::name));
+        Paging.Paged<Principal> paged = Paging.paged(principals, page, pageSize);
+        return paged == null ? new Principals(principals, null) : new Principals(paged.items(), paged.meta());
     }
 
     /** 按名称取 principal role，不存在则 404。 */
@@ -160,7 +173,7 @@ public class PrincipalRoleService {
             roles.add(ManagementMappers.toDto(entity));
         }
         roles.sort(java.util.Comparator.comparing(PrincipalRole::name));
-        return new PrincipalRoles(roles);
+        return new PrincipalRoles(roles, null);
     }
 
     /** 该 principal role 的成员主体主键，供诊断与测试读取。 */

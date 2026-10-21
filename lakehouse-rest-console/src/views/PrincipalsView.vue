@@ -5,7 +5,7 @@
       subtitle="主体是访问凭证的持有者，引擎客户端用它连接本服务。这一页的操作只有服务管理员能做，不受任何 catalog 的授权限制。"
     >
       <template #actions>
-        <el-button size="small" :loading="table.loading.value" @click="table.load">
+        <el-button size="small" :loading="loading" @click="load">
           <el-icon><Refresh /></el-icon>
           <span class="pc-btn-text">刷新</span>
         </el-button>
@@ -18,14 +18,14 @@
 
     <PanelCard flush>
       <div class="pc-list-head">
-        <span class="pc-list-title">主体（{{ rows.length }}）</span>
+        <span class="pc-list-title">主体（{{ total }}）</span>
         <span class="pc-list-tools">
           <span class="pc-mono pc-dim">管理 API /principals</span>
         </span>
       </div>
       <ResourceState
-        :loading="table.loading.value"
-        :error="table.error.value"
+        :loading="loading"
+        :error="error"
         :empty="!rows.length"
         empty-text="还没有主体。新建一个，再把角色授予它，它就能访问 catalog 了。"
       >
@@ -35,7 +35,7 @@
             <span class="pc-btn-text">新建主体</span>
           </el-button>
         </template>
-        <el-table v-loading="table.loading.value" :data="rows" size="small">
+        <el-table v-loading="loading" :data="rows" size="small">
           <el-table-column prop="name" label="名称" min-width="150" />
           <el-table-column label="Client ID" min-width="190">
             <template #default="{ row }">
@@ -59,6 +59,13 @@
             </template>
           </el-table-column>
         </el-table>
+        <TablePager
+          :total="total"
+          :page="page"
+          :page-size="pageSize"
+          @page-change="onPageChange"
+          @size-change="onSizeChange"
+        />
       </ResourceState>
     </PanelCard>
 
@@ -141,6 +148,13 @@
             </template>
           </el-table-column>
         </el-table>
+        <TablePager
+          :total="total"
+          :page="page"
+          :page-size="pageSize"
+          @page-change="onPageChange"
+          @size-change="onSizeChange"
+        />
       </ResourceState>
     </el-drawer>
 
@@ -153,7 +167,7 @@
 </template>
 
 <script setup>
-import { computed, reactive, ref } from 'vue'
+import { computed, reactive } from 'vue'
 
 import CopyText from '@/components/CopyText.vue'
 import FieldLabel from '@/components/FieldLabel.vue'
@@ -164,16 +178,32 @@ import PageHeader from '@/components/PageHeader.vue'
 import PanelCard from '@/components/PanelCard.vue'
 import PropertiesEditor from '@/components/PropertiesEditor.vue'
 import ResourceState from '@/components/ResourceState.vue'
+import TablePager from '@/components/TablePager.vue'
 import TimeText from '@/components/TimeText.vue'
 import { managementApi } from '@/api/management.js'
 import { describeError } from '@/api/client.js'
-import { confirmDanger, notifyError, notifySuccess, onConsoleRefresh, useResource } from '@/composables/index.js'
+import { confirmDanger, notifyError, notifySuccess, onConsoleRefresh, useRemotePaging, useResource } from '@/composables/index.js'
 import { inlineMap } from '@/utils/format.js'
 
-const table = useResource(() => managementApi.listPrincipals())
-const rolesResource = useResource(() => managementApi.listPrincipalRoles(), { immediate: false })
+// 主体表走远程分页：`total` 由服务端数，页面不再自己数已经拿到的那一批。
+const {
+  rows,
+  total,
+  page,
+  pageSize,
+  loading,
+  error,
+  load,
+  reload,
+  onPageChange,
+  onSizeChange,
+} = useRemotePaging(({ page: current, pageSize: size }) => managementApi
+  .listPrincipals({ page: current, pageSize: size })
+  .then((payload) => ({ items: payload.principals || [], total: payload.page?.total ?? 0 })))
 
-const rows = computed(() => table.data.value?.principals || [])
+// 授予角色用的候选**不分页**：那是一个下拉框，需要「所有能授予的角色」，
+// 拿到一页会让另一半角色选不到。角色数量本身是个位数到几十的量级。
+const rolesResource = useResource(() => managementApi.listPrincipalRoles(), { immediate: false })
 const allRoles = computed(() => rolesResource.data.value?.roles || [])
 
 const credentialDialog = reactive({ open: false, principal: '', credentials: {} })
@@ -209,7 +239,7 @@ async function saveCreate() {
     credentialDialog.principal = name
     credentialDialog.credentials = payload.credentials || {}
     credentialDialog.open = true
-    table.load()
+    reload()
   } catch (error) {
     notifyError(error)
   } finally {
@@ -232,7 +262,7 @@ async function rotate(row) {
     credentialDialog.principal = row.name
     credentialDialog.credentials = payload.credentials || {}
     credentialDialog.open = true
-    table.load()
+    reload()
   } catch (error) {
     notifyError(error)
   }
@@ -255,7 +285,7 @@ async function saveReset() {
     credentialDialog.principal = resetDialog.name
     credentialDialog.credentials = payload.credentials || {}
     credentialDialog.open = true
-    table.load()
+    reload()
   } catch (error) {
     notifyError(error)
   } finally {
@@ -273,7 +303,7 @@ async function confirmDelete(row) {
   try {
     await managementApi.deletePrincipal(row.name)
     notifySuccess(`已删除主体 ${row.name}`)
-    table.load()
+    reload()
   } catch (error) {
     notifyError(error)
   }
@@ -348,5 +378,5 @@ async function revokeRole(name) {
   }
 }
 
-onConsoleRefresh(() => table.load())
+onConsoleRefresh(() => load())
 </script>

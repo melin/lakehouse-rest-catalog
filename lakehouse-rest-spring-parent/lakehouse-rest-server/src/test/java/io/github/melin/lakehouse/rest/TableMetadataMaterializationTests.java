@@ -100,7 +100,7 @@ class TableMetadataMaterializationTests {
             return;
         }
         try {
-            for (String table : tableService.list(PREFIX, database, null, null, null).tables()) {
+            for (String table : tableService.list(PREFIX, database, null, null, null, null, null).tables()) {
                 try {
                     tableService.drop(PREFIX, database, table);
                 } catch (RuntimeException ignored) {
@@ -253,7 +253,7 @@ class TableMetadataMaterializationTests {
         tableService.commit(PREFIX, database, "orders", commitBody(1L, "uuid-1"));
         tableService.commit(PREFIX, database, "orders", commitBody(2L, "uuid-2"));
 
-        assertEquals(List.of(3, 3), tableService.listSnapshots(PREFIX, database, "orders", null, null)
+        assertEquals(List.of(3, 3), tableService.listSnapshots(PREFIX, database, "orders", null, null, null, null)
                         .snapshots().stream().map(TableDtos.Snapshot::version).toList(),
                 "客户端送的 version 是快照文件格式版本，每个快照都一样——所以它当不了查询键");
 

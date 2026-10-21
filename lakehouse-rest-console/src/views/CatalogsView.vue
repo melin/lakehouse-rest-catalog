@@ -5,7 +5,7 @@
       subtitle="catalog 是元数据与数据的命名空间，每个 catalog 指向一处存储位置。名称同时是客户端连接时用的 prefix，创建后不能改名；表格式（Paimon / Iceberg）决定它服务哪一套 REST 协议，同样是创建时选定、之后不能改。"
     >
       <template #actions>
-        <el-button size="small" :loading="table.loading.value" @click="table.load">
+        <el-button size="small" :loading="loading" @click="load">
           <el-icon><Refresh /></el-icon>
           <span class="pc-btn-text">刷新</span>
         </el-button>
@@ -19,7 +19,7 @@
     <PanelCard flush>
       <div class="pc-list-head">
         <span class="pc-list-title">
-          已登记的 catalog（{{ rows.length }}<template v-if="formatFilter"> / {{ allRows.length }}</template>）
+          已登记的 catalog（{{ total }}<template v-if="formatFilter"> / {{ unfilteredTotal }}</template>）
         </span>
         <span class="pc-list-tools">
           <!--
@@ -40,8 +40,8 @@
         </span>
       </div>
       <ResourceState
-        :loading="table.loading.value"
-        :error="table.error.value"
+        :loading="loading"
+        :error="error"
         :empty="!rows.length"
         :empty-text="emptyText"
       >
@@ -51,7 +51,7 @@
             <span class="pc-btn-text">新建 Catalog</span>
           </el-button>
         </template>
-        <el-table v-loading="table.loading.value" :data="rows" size="small">
+        <el-table v-loading="loading" :data="rows" size="small">
           <el-table-column label="名称" min-width="150">
             <template #default="{ row }">
               <RouterLink class="pc-link" :to="{ name: 'catalogDetail', params: { catalogName: row.name } }">
@@ -106,6 +106,13 @@
             </template>
           </el-table-column>
         </el-table>
+        <TablePager
+          :total="total"
+          :page="page"
+          :page-size="pageSize"
+          @page-change="onPageChange"
+          @size-change="onSizeChange"
+        />
       </ResourceState>
     </PanelCard>
 
@@ -142,20 +149,20 @@
               tip="决定这个 prefix 服务哪一套 REST 协议：Paimon REST 或 Iceberg REST。创建后不可更改，要换格式请删除重建。"
             />
           </template>
-          <div class="pc-opt-grid">
+          <div class="pc-pick-grid">
             <div
               v-for="option in formatOptions"
               :key="option.value"
-              class="pc-opt"
+              class="pc-pick"
               :class="{ 'is-on': dialog.catalogFormat === option.value }"
               @click="dialog.catalogFormat = option.value"
             >
-              <div class="pc-opt-name">
-                <span class="pc-opt-dot" />
+              <div class="pc-pick-name">
+                <span class="pc-pick-dot" />
                 {{ option.label }}
               </div>
-              <div class="pc-opt-desc">{{ option.desc }}</div>
-              <div class="pc-opt-meta pc-mono">{{ option.path }}</div>
+              <div class="pc-pick-desc">{{ option.desc }}</div>
+              <div class="pc-pick-meta pc-mono">{{ option.path }}</div>
             </div>
           </div>
           <div class="pc-field-note">{{ catalogFormatNote(dialog.catalogFormat) }}</div>
@@ -256,7 +263,7 @@
 </template>
 
 <script setup>
-import { computed, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
 
 import FieldLabel from '@/components/FieldLabel.vue'
@@ -267,9 +274,10 @@ import PanelCard from '@/components/PanelCard.vue'
 import PropertiesEditor from '@/components/PropertiesEditor.vue'
 import ResourceState from '@/components/ResourceState.vue'
 import StorageConfigFields from '@/components/StorageConfigFields.vue'
+import TablePager from '@/components/TablePager.vue'
 import TimeText from '@/components/TimeText.vue'
 import { managementApi } from '@/api/management.js'
-import { confirmDanger, notifyError, notifySuccess, onConsoleRefresh, useResource } from '@/composables/index.js'
+import { confirmDanger, notifyError, notifySuccess, onConsoleRefresh, useRemotePaging } from '@/composables/index.js'
 import { session } from '@/store/session.js'
 import {
   CATALOG_FORMATS,
@@ -283,11 +291,48 @@ import {
   PAIMON,
 } from '@/utils/catalogFormat.js'
 
-const table = useResource(() => managementApi.listCatalogs())
+/**
+ * catalog 表走远程分页。格式筛选**下推服务端**（`?format=`）：
+ * 客户端手里只有一页，在浏览器里筛只能筛出「这一页里的 Paimon」，
+ * 与「全站的 Paimon」是两回事——而且总数会随页码变化，看着就像分页坏了。
+ */
+const {
+  rows,
+  total,
+  page,
+  pageSize,
+  loading,
+  error,
+  load,
+  reload,
+  onPageChange,
+  onSizeChange,
+} = useRemotePaging(({ page: current, pageSize: size }) => managementApi
+  .listCatalogs({ page: current, pageSize: size, format: formatFilter.value })
+  .then((payload) => ({
+    items: payload.catalogs || [],
+    total: payload.page?.total ?? (payload.catalogs || []).length,
+  })))
 
 const router = useRouter()
 
-const allRows = computed(() => table.data.value?.catalogs || [])
+/**
+ * 不带筛选时的总数。只有筛选中才显示，用来在标题里说清「筛出来几个 / 一共几个」。
+ * 单独取一次（不分页，`total` 就是全量条数），筛过之后这个数不该跟着变。
+ */
+const unfilteredTotal = ref(0)
+
+// 一次轻量请求取回「一共几个 catalog」（`pageSize=1` 只为拿 `page.total`）。
+// 筛选之后标题要能写出「筛出 3 / 共 12」，而这个分母不能跟着筛选变。
+onMounted(async () => {
+  try {
+    const payload = await managementApi.listCatalogs({ page: 1, pageSize: 1 })
+    unfilteredTotal.value = payload.page?.total ?? 0
+  } catch {
+    // 分母取不到就不显示——比显示一个 0 强
+    unfilteredTotal.value = 0
+  }
+})
 
 /**
  * 顶部格式筛选器的候选。空串是「全部」，不是「不筛选」——见模板里的说明。
@@ -305,15 +350,13 @@ const FORMAT_FILTERS = [
 const formatFilter = ref('')
 
 /**
- * 按筛选值过一遍。
- *
- * <p>判据用 `catalogFormatOf`（认不出的取值按 PAIMON）而不是裸读字段：
- * 筛出来的集合必须与徽标显示的集合**逐行一致**，否则会出现
- * 「筛 Paimon 时那一行不出现、但它在表里写着 Paimon」这种自相矛盾的界面。
+ * 筛选值一变就回第一页重取。`total` 也随之变成「筛出来的条数」——
+ * 这正是界面要的：标题里写的是「已登记的 catalog」，筛选之后问的是
+ * 「Paimon 有几个」。
  */
-const rows = computed(() => (formatFilter.value
-  ? allRows.value.filter((row) => catalogFormatOf(row) === formatFilter.value)
-  : allRows.value))
+watch(formatFilter, () => {
+  reload()
+})
 
 /** 筛出 0 条与「一个都没登记」是两件事，空态文案要分开。 */
 const emptyText = computed(() => (formatFilter.value
@@ -480,7 +523,7 @@ async function save() {
       notifySuccess(`已更新 catalog ${dialog.name}`)
     }
     dialog.open = false
-    await table.load()
+    await reload()
     await session.loadCatalogs()
   } catch (error) {
     notifyError(error)
@@ -500,12 +543,12 @@ async function confirmDelete(row) {
   try {
     await managementApi.deleteCatalog(row.name)
     notifySuccess(`已删除 catalog ${row.name}`)
-    await table.load()
+    await reload()
     await session.loadCatalogs()
   } catch (error) {
     notifyError(error)
   }
 }
 
-onConsoleRefresh(() => table.load())
+onConsoleRefresh(() => reload())
 </script>
