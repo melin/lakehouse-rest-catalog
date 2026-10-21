@@ -263,6 +263,7 @@ USE `lakehouse_catalog`;
     create table lakehouse_snapshot (
         version_number integer comment '快照文件格式版本，不是自增序号',
         changelog_record_count bigint comment '本次提交的 changelog 记录数',
+        delete_file_count bigint comment 'Iceberg 的 total-delete-files；Paimon 快照与缺失键为空',
         delta_record_count bigint comment '本次提交的增量记录数',
         file_count bigint comment '文件数',
         file_size_in_bytes bigint comment '文件总字节数',

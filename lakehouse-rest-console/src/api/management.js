@@ -23,6 +23,18 @@ export const managementApi = {
   getCatalog: (catalogName) => get('getCatalog', { params: { catalogName } }),
   updateCatalog: (catalogName, body) => put('updateCatalog', { params: { catalogName }, body }),
   deleteCatalog: (catalogName) => del('deleteCatalog', { params: { catalogName } }),
+  // 存储页的两个聚合端点（服务端扩展，非官方规格）。
+  // 汇总：KPI / 按库 / Top 10 / 直方图服务端一次算完；`query.onlyPaimon` 过滤 format 类表。
+  getCatalogTableStats: (catalogName, query = {}) => get('catalogTableStats', {
+    params: { catalogName },
+    query,
+  }),
+  // 逐表明细的一页（远程分页）：`query` 给 database / keyword / onlyPaimon / sort / order /
+  // maxResults / pageToken，`total` 是过滤后的总行数，`nextPageToken` 翻页用。
+  listCatalogTableRows: (catalogName, query = {}) => get('catalogTableRows', {
+    params: { catalogName },
+    query,
+  }),
 
   // ------------------------------------------------------------------ principal
   listPrincipals: () => get('listPrincipals'),

@@ -15,31 +15,19 @@
         <el-option v-for="name in databases" :key="name" :label="name" :value="name" />
       </el-select>
       <!-- Format / Object / Lance 表没有快照，混进统计里只会变成一列「无快照」；
-           Paimon catalog 才有这几种表，所以开关只在这一侧出现。 -->
+           Paimon catalog 才有这几种表，所以开关只在这一侧出现。数据已全量在内存，
+           开关是纯客户端过滤，切换不再发起请求。 -->
       <el-checkbox v-if="format === 'PAIMON'" v-model="onlyPaimon" size="small">只统计 Paimon 表</el-checkbox>
-      <span v-if="loading" class="pc-dim pc-mono pc-sto-progress">
-        已统计 {{ progress.done }} / {{ progress.total || '?' }}
-      </span>
       <el-button size="small" :loading="loading" @click="reload">
         <el-icon><Refresh /></el-icon>
         <span class="pc-btn-text">重新统计</span>
       </el-button>
     </div>
 
-    <el-alert v-if="state.truncated" type="warning" :closable="false" show-icon class="pc-hint">
-      <template #title>只统计了前 {{ state.scanned }} 张表（这个 catalog 的表比这更多）</template>
-      <div>
-        逐表取统计是「一张表一次请求」，不设上限会让打开这一页变成对上百分接口的一次扫描。
-        超过 {{ MAX_TABLES }} 张时按库名与表名的稳定顺序取前 {{ MAX_TABLES }} 张——列表阶段数到第
-        {{ MAX_TABLES + 1 }} 张就停，因此这里说不出总共有多少张，也不该编一个。
-        下面所有合计都是这一批的合计，不是整个 catalog 的合计。
-      </div>
-    </el-alert>
-
     <ResourceState
       :loading="loading"
       :error="error"
-      :empty="!loading && !error && !state.rows.length"
+      :empty="!loading && !error && !totals.tables"
       empty-text="这个 catalog 下还没有表。建表并写入之后，这里会显示文件数与存储分布。"
     >
       <div class="pc-stats">
@@ -50,10 +38,11 @@
         </div>
       </div>
 
-      <p v-if="summary.unknown" class="pc-dim pc-sto-gap">
-        {{ summary.unknown }} 张表有快照但没带文件统计。Paimon 侧服务端已经用分区合计兜底过一次
-        （<code>TableService#getTableSnapshot</code>），两者都缺才是空；Iceberg 侧是当前快照的
-        <code>summary</code> 里没有 <code>total-data-files</code>（早期客户端写的元数据）。
+      <p v-if="totals.unknown" class="pc-dim pc-sto-gap">
+        {{ totals.unknown }} 张表有快照但没带文件统计。Paimon 侧是统计落库之前写下的快照行
+        （三列全空）；Iceberg 侧是当前快照的 <code>summary</code> 里没有
+        <code>total-data-files</code>（早期客户端写的元数据）。聚合端点读的是落库投影，
+        不做逐表读取时的分区合计兜底，所以老快照行会一直空到下一次提交。
         它们不计入平均文件大小与小文件判定——把「不知道」当 0 或当大表都会让这一页的两个比例同时失真。
       </p>
 
@@ -177,9 +166,15 @@
           />
           <el-checkbox v-model="onlySmall" size="small">只看小文件表</el-checkbox>
         </template>
+        <!-- 没选库不发请求：明细是远程分页，打开页面不去预取全部库的表 -->
+        <div v-if="!database" class="pc-dim pc-sto-empty">
+          选择一个库，按需加载这个库的逐表明细。
+        </div>
+        <template v-else>
         <!-- 排序用 custom：数据一加分页，el-table 自带的排序就只能排当前页那 20 行——
              「点存储排序，最大的一张表不见了」这种错必须拦在 computed 里。 -->
         <el-table
+          v-loading="detailLoading"
           :data="pagedRows"
           size="small"
           :default-sort="sortState"
@@ -217,17 +212,20 @@
             </template>
           </el-table-column>
         </el-table>
-        <div v-if="detailRows.length" class="pc-sto-page">
+        <div v-if="detail.total" class="pc-sto-page">
           <el-pagination
-            v-model:current-page="page"
-            v-model:page-size="pageSize"
-            :total="detailRows.length"
+            :current-page="page"
+            :page-size="pageSize"
+            :total="detail.total"
             :page-sizes="[20, 50, 100]"
             layout="total, sizes, prev, pager, next"
             size="small"
             background
+            @current-change="onPageChange"
+            @size-change="onSizeChange"
           />
         </div>
+        </template>
       </PanelCard>
     </ResourceState>
   </div>
@@ -238,19 +236,12 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 
 import { describeError } from '@/api/client.js'
-import { MAX_TABLES, loadCatalogStorage } from '@/api/storageHealth.js'
+import { loadCatalogSummary, loadCatalogTableRows } from '@/api/storageHealth.js'
 import PanelCard from '@/components/PanelCard.vue'
 import ResourceState from '@/components/ResourceState.vue'
 import TimeText from '@/components/TimeText.vue'
 import { formatBytes, formatNumber } from '@/utils/format.js'
-import {
-  SMALL_FILE_THRESHOLD,
-  decorate,
-  fileSizeBuckets,
-  groupByDatabase,
-  summarize,
-  topTables,
-} from '@/utils/storageHealth.js'
+import { SMALL_FILE_THRESHOLD, decorate } from '@/utils/storageHealth.js'
 
 /**
  * Catalog 详情页的「存储」页签。
@@ -261,8 +252,15 @@ import {
  * 三处口径差异（加权平均、表级近似、空表不进平均）写在 `utils/storageHealth.js` 的文件头，
  * 页面上也留了说明，因为算错的人不会去读源码。
  *
+ * <p>数据来自管理面两个聚合端点，各按各的量级取数：
+ * **汇总**（KPI / 按库 / Top 10 / 直方图）由服务端 SQL 聚合一次算完，永远是全量，
+ * 没有截断；**逐表明细**是远程分页——打开页面不拉任何明细，选中了库才按页取数，
+ * 分页 / 关键字 / 排序全部下推 SQL。「只统计 Paimon 表」交给服务端
+ * （`tableType` 过滤），切换开关重新取一次汇总。指标口径的差异说明见
+ * `utils/storageHealth.js` 的文件头。
+
  * <p><b>只读。</b>这一页不提供 compaction / 删快照这类动作：它们走表页的「存储优化」面板，
- * 那边有批次、并发与回滚。统计页只回答「该看哪几张表」，让它能动手会多出一条没有审计的写路径。
+ * 那边有批次、并发与回滚。
  */
 const props = defineProps({
   catalogName: { type: String, required: true },
@@ -272,74 +270,106 @@ const props = defineProps({
 
 const loading = ref(false)
 const error = ref('')
-const progress = ref({ done: 0, total: 0 })
-const state = ref({ rows: [], total: 0, scanned: 0, truncated: false, failed: 0 })
+// 汇总（服务端算完的全量）：KPI 读 totals，图表读 databases / topTables / histogram。
+const summary = ref({ totals: {}, databases: [], topTables: [], histogram: { buckets: [], counted: 0, unknown: 0 } })
+const totals = computed(() => summary.value.totals || {})
 
-// 库名全量列表来自采集层（列库便宜、没有早停），与 loading 状态分开存：
+// 库名候选来自汇总（有表的库才会出现），与 loading 状态分开存：
 // 统计失败重试时下拉里已有的选项不该闪没。
 const databases = ref([])
 
 const database = ref('')
-/** 只统计 Paimon 表。Format / Object / Lance 表没有快照，默认不进统计（Iceberg 侧没有这个概念）。 */
+/** 只统计 Paimon 表。Format / Object / Lance 表没有快照，默认不进统计（Iceberg 侧没有这个概念）。
+ *  过滤在服务端按 tableType 做，切换开关重新取一次汇总（一次请求，与表数无关）。 */
 const onlyPaimon = ref(true)
 
+// ---------------------------------------------------------------- 逐表明细（远程分页）
 const keyword = ref('')
 const onlySmall = ref(false)
-
-// ---------------------------------------------------------------- 明细分页与排序
-// 数据侧已经有两个上限（MAX_TABLES 截断 + 早停），分页是**本地**的：把 200 行一次
-// 渲染成 DOM 才是要避免的事，不是把请求切碎。
 const page = ref(1)
 const pageSize = ref(20)
 const sortState = ref({ prop: 'size', order: 'descending' })
+const detail = ref({ rows: [], total: 0 })
+const detailLoading = ref(false)
 
 async function reload() {
   if (!props.catalogName) return
   loading.value = true
   error.value = ''
-  progress.value = { done: 0, total: 0 }
   try {
-    const result = await loadCatalogStorage({
+    // 汇总永远是全量的（服务端 SQL 聚合），onlyPaimon 是服务端过滤参数。
+    const result = await loadCatalogSummary({
       catalogName: props.catalogName,
-      format: props.format,
-      database: database.value,
-      onlyPaimon: onlyPaimon.value,
-      onProgress: (value) => { progress.value = value },
+      onlyPaimon: props.format === 'PAIMON' && onlyPaimon.value,
     })
-    state.value = result
-    databases.value = result.databases || []
+    summary.value = result
+    databases.value = (result.databases || []).map((row) => row.db)
   } catch (cause) {
     error.value = describeError(cause)
-    state.value = { rows: [], total: 0, scanned: 0, truncated: false, failed: 0 }
+    summary.value = { totals: {}, databases: [], topTables: [], histogram: { buckets: [], counted: 0, unknown: 0 } }
   } finally {
     loading.value = false
   }
 }
 
+/** 明细的一页。没选库不请求——打开页面不去预取全部库的表。 */
+async function fetchDetail() {
+  if (!props.catalogName || !database.value) return
+  detailLoading.value = true
+  try {
+    detail.value = await loadCatalogTableRows({
+      catalogName: props.catalogName,
+      database: database.value,
+      keyword: keyword.value,
+      onlyPaimon: props.format === 'PAIMON' && onlyPaimon.value,
+      sort: sortState.value.prop,
+      order: sortState.value.order === 'ascending' ? 'asc' : 'desc',
+      page: page.value,
+      pageSize: pageSize.value,
+    })
+  } catch (cause) {
+    error.value = describeError(cause)
+    detail.value = { rows: [], total: 0 }
+  } finally {
+    detailLoading.value = false
+  }
+}
+
 onMounted(reload)
 // 切 catalog 时组件不会重建（同一条路由、只有参数变），所以这里要显式重来一次。
-// 库名属于 catalog，先清掉——清掉本身会触发下面那个 watcher 去重新统计，别来两次。
+// 库名属于 catalog，先清掉——清掉本身会触发下面那个 watcher，别来两次。
 watch(() => [props.catalogName, props.format], () => {
   if (database.value) database.value = ''
   else reload()
 })
-// 库与表格式开关改变**采集范围**，所以要重新统计；关键字与小文件过滤只是前端筛选。
-watch([database, onlyPaimon], () => {
+// 开关改的是服务端过滤参数：汇总重取；明细换第一页（选了库才有请求）。
+watch(onlyPaimon, () => {
   page.value = 1
   reload()
+  fetchDetail()
 })
-watch([keyword, onlySmall], () => { page.value = 1 })
+// 选中库才触发明细查询；清空库回到「按需」提示，不发请求。
+watch(database, () => {
+  page.value = 1
+  if (database.value) fetchDetail()
+  else detail.value = { rows: [], total: 0 }
+})
+// 关键字是服务端 LIKE：换词取第一页。
+let keywordTimer = null
+watch(keyword, () => {
+  clearTimeout(keywordTimer)
+  if (!database.value) return
+  keywordTimer = setTimeout(() => {
+    page.value = 1
+    fetchDetail()
+  }, 300)
+})
 
 defineExpose({ reload })
 
-const sourceNote = computed(() => (props.format === 'ICEBERG'
-  ? '每张表读一次表元数据（loadTable），取当前快照 summary 里的文件数、大小与记录数'
-  : '每张表读一次快照（/snapshot），取该快照累计的文件数、大小与记录数'))
-
-const summary = computed(() => summarize(state.value.rows))
-
 const cards = computed(() => {
-  const item = summary.value
+  const item = totals.value
+  const withData = (item.tables || 0) - (item.empty || 0) - (item.unknown || 0)
   const emptyFoot = item.empty ? `其中 ${formatNumber(item.empty)} 张还没有快照` : '全部表都有快照'
   return [
     {
@@ -368,23 +398,37 @@ const cards = computed(() => {
     },
     {
       label: '小文件表',
-      value: item.withData ? `${(item.smallShare * 100).toFixed(1)}%` : '—',
-      foot: item.withData
-        ? `${item.smallTables} / ${item.withData} 张，合计 ${formatBytes(item.smallSize)}`
+      value: withData ? `${((item.smallShare || 0) * 100).toFixed(1)}%` : '—',
+      foot: withData
+        ? `${formatNumber(item.smallTables)} / ${formatNumber(withData)} 张，合计 ${formatBytes(item.smallSize)}`
         : '没有可判定的表',
     },
   ]
 })
 
 const dbHint = computed(() => {
-  const count = new Set(state.value.rows.map((row) => row.db)).size
+  const count = summary.value.databases.length
   return count > databaseRows.value.length ? `按存储降序，${count} 个库里只画前 ${databaseRows.value.length} 行` : '按存储降序'
 })
 
-const databaseRows = computed(() => groupByDatabase(state.value.rows))
+/** 按库的存储条：服务端已按存储降序给全量库；超出 8 个的尾部并成一行，防止细线海。 */
+const databaseRows = computed(() => {
+  const list = summary.value.databases
+  if (list.length <= 8) return list
+  const rest = list.slice(7)
+  return [...list.slice(0, 7), {
+    db: `其余 ${rest.length} 个库`,
+    tables: rest.reduce((sum, row) => sum + row.tables, 0),
+    files: rest.reduce((sum, row) => sum + row.files, 0),
+    size: rest.reduce((sum, row) => sum + row.size, 0),
+    small: rest.reduce((sum, row) => sum + row.small, 0),
+    unknown: rest.reduce((sum, row) => sum + row.unknown, 0),
+    merged: true,
+  }]
+})
 const dbMax = computed(() => Math.max(1, ...databaseRows.value.map((row) => row.size)))
 
-const topRows = computed(() => topTables(decorate(state.value.rows), 10, 'size'))
+const topRows = computed(() => decorate(summary.value.topTables))
 const topMax = computed(() => Math.max(1, ...topRows.value.map((row) => row.size)))
 
 function barWidth(value, max) {
@@ -398,27 +442,34 @@ const HIST_WIDTH = 760
 const HIST_HEIGHT = 200
 const HIST_PAD = { left: 38, right: 16, top: 26, bottom: 34 }
 
+const HISTOGRAM_LABELS = ['< 1 MB', '1–10 MB', '10–100 MB', '100 MB–1 GB', '≥ 1 GB']
+
 const histogram = computed(() => {
-  const { buckets, counted, unknown } = fileSizeBuckets(state.value.rows)
+  // 五档计数由服务端聚合给出（表级平均；缺统计的表不计入任何一档）。
+  const counts = summary.value.histogram.buckets
+  const unknown = summary.value.histogram.unknown
+  const counted = summary.value.histogram.counted
   const innerWidth = HIST_WIDTH - HIST_PAD.left - HIST_PAD.right
   const innerHeight = HIST_HEIGHT - HIST_PAD.top - HIST_PAD.bottom
-  const slot = innerWidth / buckets.length
+  const slot = innerWidth / counts.length
   const barWidthPx = Math.min(64, Math.max(26, slot * 0.44))
-  const peak = Math.max(1, ...buckets.map((bucket) => bucket.count))
+  const peak = Math.max(1, ...counts)
   // 刻度取整：峰值 7 时按 1 步长会画 8 条线，按 ceil(7/4)=2 就只画 4 条。
   const step = Math.max(1, Math.ceil(peak / 4))
   const ceiling = Math.max(step, Math.ceil(peak / step) * step)
   const scale = (value) => Math.round((value / ceiling) * innerHeight)
   const baseline = HIST_PAD.top + innerHeight
-  const bars = buckets.map((bucket, index) => {
-    const height = scale(bucket.count)
+  const bars = counts.map((count, index) => {
+    const height = scale(count)
     return {
-      ...bucket,
+      label: HISTOGRAM_LABELS[index],
+      count,
       x: HIST_PAD.left + index * slot + (slot - barWidthPx) / 2,
       y: baseline - height,
       w: barWidthPx,
       h: height,
       cx: HIST_PAD.left + index * slot + slot / 2,
+      small: index < 3,
     }
   })
   const ticks = []
@@ -438,36 +489,31 @@ const histogram = computed(() => {
 
 const histogramHint = computed(() => `分桶按「表的平均文件大小」；阈值 ${formatBytes(SMALL_FILE_THRESHOLD)} 与上面小文件判定同一个来源`)
 
-const detailHint = computed(() => {
-  const failed = state.value.failed ? `，${state.value.failed} 张读取失败` : ''
-  return `统计了 ${state.value.scanned} 张表的当前状态${failed}`
-})
-
-/** 排序键归一：`null`（没拿到）排最后，不参与大小比较时当 -1。 */
-function numOf(key, row) {
-  const value = row[key]
-  return value === null || value === undefined ? -1 : value
-}
+const detailHint = computed(() => (database.value
+  ? `${database.value} · 共 ${formatNumber(detail.value.total)} 张表`
+  : '选中库后按需加载，分页与过滤都在服务端完成'))
 
 function onSortChange({ prop, order }) {
-  // 点第三下取消排序时回默认：按存储降序。
+  // 点第三下取消排序时回默认：按存储降序。排序下推 SQL，换了排序键就取第一页。
   sortState.value = order ? { prop, order } : { prop: 'size', order: 'descending' }
   page.value = 1
+  fetchDetail()
 }
 
-const detailRows = computed(() => {
-  const text = keyword.value.trim().toLowerCase()
-  const { prop, order } = sortState.value
-  const dir = order === 'ascending' ? 1 : -1
-  return decorate(state.value.rows)
-    .filter((row) => (onlySmall.value ? row.small : true))
-    .filter((row) => !text || `${row.db}.${row.table}`.toLowerCase().includes(text))
-    .sort((left, right) => (numOf(prop, left) - numOf(prop, right)) * dir)
-})
+/** 明细的当前页：服务端已分好页，本地只做「只看小文件表」这一层展示过滤。 */
+const pagedRows = computed(() => decorate(detail.value.rows)
+  .filter((row) => (onlySmall.value ? row.small : true)))
 
-const pagedRows = computed(() => (
-  detailRows.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value)
-))
+function onPageChange(value) {
+  page.value = value
+  fetchDetail()
+}
+
+function onSizeChange(value) {
+  pageSize.value = value
+  page.value = 1
+  fetchDetail()
+}
 
 function tableLink(row) {
   return props.format === 'ICEBERG'
@@ -489,10 +535,6 @@ function tableLink(row) {
 }
 
 .pc-sto-source {
-  font-size: 12.5px;
-}
-
-.pc-sto-progress {
   font-size: 12.5px;
 }
 

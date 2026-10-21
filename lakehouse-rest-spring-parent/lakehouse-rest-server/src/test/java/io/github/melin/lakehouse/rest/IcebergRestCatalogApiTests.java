@@ -794,6 +794,69 @@ class IcebergRestCatalogApiTests {
                 "消息要点出这个 prefix 是什么格式: " + mismatch.get("error").get("message").asString());
     }
 
+    /**
+     * 提交的 snapshot summary 必须投影进 {@code lakehouse_snapshot} 行。
+     *
+     * <p>存储页的聚合端点（{@code /api/management/v1/catalogs/{c}/table-stats}）读的就是
+     * 这些投影行，因此本用例直接从该端点断言：add-snapshot 的 summary 里的
+     * {@code total-data-files} / {@code total-files-size} / {@code total-records} /
+     * {@code total-delete-files} 四个键逐个落列；还没有快照的表同样有一行、
+     * 统计列为 {@code null}（「无快照」是正常状态，不能从统计里消失）。
+     */
+    @Test
+    @Order(13)
+    void commitSummaryIsProjectedIntoSnapshotRows() throws Exception {
+        // 独立 namespace，不与前面用例共享表状态（前面用例的收尾动作会把 orders 删掉）
+        json(200, "POST", BASE + "/namespaces", "{\"namespace\":[\"ice_stats\"]}");
+        json(200, "POST", BASE + "/namespaces/ice_stats/tables", createTableBody("summary_tbl"));
+        json(200, "POST", BASE + "/namespaces/ice_stats/tables", createTableBody("empty_tbl"));
+
+        // 真实客户端写入数据后的提交就是这两个 update：add-snapshot（带 summary）+ set-snapshot-ref
+        String manifestList = WAREHOUSE + "/ice_stats.db/summary_tbl/metadata/manifest-list-0.avro";
+        json(200, "POST", BASE + "/namespaces/ice_stats/tables/summary_tbl", """
+                {"requirements":[],
+                 "updates":[
+                   {"action":"add-snapshot","snapshot":{
+                      "snapshot-id":555000001,"parent-snapshot-id":-1,"sequence-number":1,
+                      "schema-id":0,"timestamp-ms":1730000000000,
+                      "manifest-list":"%s",
+                      "summary":{"operation":"append","total-records":"42",
+                                 "total-data-files":"7","total-files-size":"999999",
+                                 "total-delete-files":"2"}}},
+                   {"action":"set-snapshot-ref","ref-name":"main","type":"branch",
+                    "snapshot-id":555000001}
+                 ]}
+                """.formatted(manifestList));
+
+        JsonNode loaded = json(200, "GET", BASE + "/namespaces/ice_stats/tables/summary_tbl", null);
+        assertEquals(555000001L, loaded.get("metadata").get("current-snapshot-id").asLong());
+
+        JsonNode stats = json(200, "GET", M + "/catalogs/" + CATALOG + "/table-stats/tables", null);
+        JsonNode withData = null;
+        JsonNode emptyRow = null;
+        for (JsonNode row : stats.get("tables")) {
+            if ("summary_tbl".equals(row.get("table").asString())) {
+                withData = row;
+            }
+            if ("empty_tbl".equals(row.get("table").asString())) {
+                emptyRow = row;
+            }
+        }
+        assertNotNull(withData, "写过的表必须出现在统计里");
+        assertEquals("ICEBERG", withData.get("tableType").asString());
+        assertEquals("ice_stats", withData.get("database").asString());
+        assertEquals(555000001L, withData.get("snapshotId").asLong());
+        assertEquals(7L, withData.get("fileCount").asLong());
+        assertEquals(999999L, withData.get("fileSizeInBytes").asLong());
+        assertEquals(42L, withData.get("recordCount").asLong());
+        assertEquals(2L, withData.get("deleteFileCount").asLong());
+        assertEquals(1730000000000L, withData.get("timeMillis").asLong());
+
+        assertNotNull(emptyRow, "没有快照的表也要有一行——left join 的语义");
+        assertTrue(emptyRow.get("snapshotId") == null, "无快照的表统计列为 null");
+        assertTrue(emptyRow.get("fileCount") == null);
+    }
+
     private static List<String> strings(JsonNode array) {
         List<String> values = new ArrayList<>();
         array.forEach(node -> values.add(node.isObject() ? node.get("name").asString() : node.asString()));

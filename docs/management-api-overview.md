@@ -5,7 +5,7 @@
 | 半边 | 基址 | 依据 | operation |
 | --- | --- | --- | --- |
 | **权限端点**（官方） | `/v1/{prefix}/permissions` | Paimon REST Management API 的 Permission model | 3 |
-| **扩展端点**（本服务端） | `/api/management/v1/**` | catalog / principal / principal role 的生命周期 + 存储优化 | 33 |
+| **扩展端点**（本服务端） | `/api/management/v1/**` | catalog / principal / principal role 的生命周期 + 存储优化 + 表统计聚合 | 35 |
 
 官方 Paimon 管理 API 只有 10 个 operation（labels / permissions / policies），其中
 labels 与 policies 本服务端未实现；权限那 3 个是**当前唯一的契约**，规格见
@@ -31,7 +31,7 @@ labels 与 policies 本服务端未实现；权限那 3 个是**当前唯一的�
 | `PermissionController` | 3 | **官方**：列赋权、授予、撤销（`/v1/{prefix}/permissions**`） |
 | `PrincipalController` | 10 | 主体的增删改查、`reset` / `rotate` 凭据、主体 ↔ principal role 装配 |
 | `PrincipalRoleController` | 6 | principal role 的增删改查、其下的主体查询 |
-| `ManagementCatalogController` | 5 | 管理面的 catalog 列表、创建、查询、更新、删除 |
+| `ManagementCatalogController` | 7 | 管理面的 catalog 列表、创建、查询、更新、删除，以及存储页的两个聚合端点：`GET /catalogs/{catalogName}/table-stats`（KPI / 按库 / Top 10 / 直方图 SQL 聚合一次算完，全量）与 `GET …/table-stats/tables`（逐表明细远程分页，按库 / 关键字 / onlyPaimon 过滤与排序下推 SQL，`maxResults` 默认 2000 / 上限 5000）。替代控制台逐表 snapshot / loadTable 的扫描 |
 | `OptimizationController` | 12 | 存储优化的 catalog 设置、表策略、批次与回调 |
 
 `PrincipalRoleController` 从 9 降到 6：`listCatalogRolesOfPrincipalRole`、

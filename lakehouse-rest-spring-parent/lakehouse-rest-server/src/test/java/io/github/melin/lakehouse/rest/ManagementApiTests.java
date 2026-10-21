@@ -358,6 +358,94 @@ class ManagementApiTests {
                 "消息要点出这个 prefix 是什么格式: " + reverse.get("error").get("message").asString());
     }
 
+    /**
+     * {@code GET /catalogs/{catalogName}/table-stats}：整个 catalog 的存储汇总（SQL 聚合）。
+     *
+     * <p>为控制台「存储」页服务。这里覆盖 HTTP 形状：汇总把全部表各计入一次、
+     * 空表进 {@code empty} 而不是消失（left join 语义，投影数值的逐列断言在
+     * {@code IcebergRestCatalogApiTests#commitSummaryIsProjectedIntoSnapshotRows}）、
+     * onlyPaimon 滤掉 format 表、未知 catalog 404。
+     */
+    @Test
+    @Order(8)
+    void tableStatsSummaryCoversWholeCatalog() throws Exception {
+        // fmt-default（PAIMON）在 Order 7 已建；两张表：普通表 + format 表
+        json(200, "POST", "/v1/fmt-default/databases", "{\"name\":\"stats_db\"}");
+        json(200, "POST", "/v1/fmt-default/databases/stats_db/tables", """
+                {"identifier":{"database":"stats_db","object":"stats_tbl"},
+                 "schema":{"fields":[{"id":0,"name":"id","type":"INT"}],
+                           "partitionKeys":[],"primaryKeys":[],"options":{}}}
+                """);
+        json(200, "POST", "/v1/fmt-default/databases/stats_db/tables", """
+                {"identifier":{"database":"stats_db","object":"stats_fmt"},
+                 "schema":{"fields":[{"id":0,"name":"id","type":"INT"}],
+                           "partitionKeys":[],"primaryKeys":[],"options":{"type":"format-table"}}}
+                """);
+
+        // 汇总端点：全部表各计入一次；两张表都还没快照 → empty=2
+        JsonNode summary = json(200, "GET", M + "/catalogs/fmt-default/table-stats", null);
+        JsonNode totals = summary.get("totals");
+        assertEquals(2, totals.get("tables").asLong());
+        assertEquals(2, totals.get("empty").asLong());
+        assertEquals(0, totals.get("files").asLong());
+        assertNull(totals.get("avgFileSize"));
+
+        JsonNode dbRow = summary.get("databases").get(0);
+        assertEquals("stats_db", dbRow.get("database").asString());
+        assertEquals(2, dbRow.get("tables").asLong());
+
+        assertTrue(summary.get("topTables").isEmpty(), "没有写入过数据的表不进 Top 10");
+        assertEquals(0, summary.get("histogram").get("counted").asLong());
+
+        // onlyPaimon=true：format 表被滤掉（它们没有快照）
+        JsonNode filtered = json(200, "GET", M + "/catalogs/fmt-default/table-stats?onlyPaimon=true", null);
+        assertEquals(1, filtered.get("totals").get("tables").asLong());
+        assertEquals(1, filtered.get("databases").get(0).get("tables").asLong());
+
+        json(404, "GET", M + "/catalogs/does-not-exist/table-stats", null);
+
+        // ---- 逐表明细：远程分页、按库 / 关键字过滤、onlyPaimon，全部下推 SQL。
+        // （与汇总同一个用例：测试类有事务回滚，拆开的话第二个用例看不到这里建的数据。）
+        // 明细端点：全量两行，带 total
+        JsonNode all = json(200, "GET", M + "/catalogs/fmt-default/table-stats/tables", null);
+        assertEquals(2, all.get("total").asLong());
+        assertEquals(2, all.get("tables").size());
+        assertTrue(all.get("tables").toString().contains("PAIMON"));
+        assertTrue(all.get("tables").toString().contains("format-table"),
+                "tableType 回实体的原始取值，格式判定交给调用方");
+        for (JsonNode row : all.get("tables")) {
+            assertTrue(row.get("snapshotId") == null, "还没提交过快照，统计列为 null");
+        }
+
+        // 远程分页：一页 1 行，token 翻到第二页
+        JsonNode firstPage = json(200, "GET",
+                M + "/catalogs/fmt-default/table-stats/tables?maxResults=1", null);
+        assertEquals(1, firstPage.get("tables").size());
+        String token = firstPage.get("nextPageToken").asString();
+        assertFalse(token.isBlank());
+        JsonNode secondPage = json(200, "GET",
+                M + "/catalogs/fmt-default/table-stats/tables?maxResults=1&pageToken=" + token, null);
+        assertEquals(1, secondPage.get("tables").size());
+        assertNull(secondPage.get("nextPageToken"), "翻完就没有下一页 token");
+
+        // 按库过滤 / 关键字过滤 / onlyPaimon
+        assertEquals(2, json(200, "GET",
+                M + "/catalogs/fmt-default/table-stats/tables?database=stats_db", null)
+                .get("total").asLong());
+        assertEquals(1, json(200, "GET",
+                M + "/catalogs/fmt-default/table-stats/tables?keyword=stats_fmt", null)
+                .get("total").asLong());
+        JsonNode paimonOnly = json(200, "GET",
+                M + "/catalogs/fmt-default/table-stats/tables?onlyPaimon=true", null);
+        assertEquals(1, paimonOnly.get("total").asLong());
+        assertEquals("PAIMON", paimonOnly.get("tables").get(0).get("tableType").asString());
+
+        // 空 catalog：0 行；未知 catalog：404
+        assertEquals(0, json(200, "GET", M + "/catalogs/fmt-iceberg/table-stats/tables", null)
+                .get("total").asLong());
+        json(404, "GET", M + "/catalogs/does-not-exist/table-stats/tables", null);
+    }
+
     private static List<String> strings(JsonNode array) {
         List<String> values = new ArrayList<>();
         array.forEach(node -> values.add(node.asString()));

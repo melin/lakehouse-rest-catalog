@@ -1,6 +1,7 @@
 package io.github.melin.lakehouse.rest.web;
 
 import io.github.melin.lakehouse.rest.config.RequestContext;
+import io.github.melin.lakehouse.rest.dto.ManagementDtos;
 import io.github.melin.lakehouse.rest.dto.ManagementDtos.Catalog;
 import io.github.melin.lakehouse.rest.dto.ManagementDtos.Catalogs;
 import io.github.melin.lakehouse.rest.dto.ManagementDtos.CreateCatalogRequest;
@@ -21,6 +22,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
@@ -84,6 +86,43 @@ public class ManagementCatalogController {
         authorizationService.require(catalogName, ResourceType.CATALOG_ALL, List.of(), null,
                 Access.DESCRIBE, "read the catalog");
         return catalogService.get(catalogName);
+    }
+
+    /**
+     * {@code GET /catalogs/{catalogName}/table-stats}：整个 catalog 的存储汇总（SQL 聚合）。
+     *
+     * <p>为控制台「存储」页服务：KPI、按库、Top 10、直方图四块在服务端一次算完，
+     * 替代「一张表一个请求」的逐表扫描，响应大小与表数无关。
+     * 授权与 {@link #get} 同一判法——catalog 视角的读，落在 {@code CATALOG_ALL} 的
+     * {@code DESCRIBE} 上。
+     */
+    @GetMapping("/{catalogName}/table-stats")
+    public ManagementDtos.TableStatsSummary tableStats(@PathVariable String catalogName,
+                                                       @RequestParam(defaultValue = "false") boolean onlyPaimon) {
+        authorizationService.require(catalogName, ResourceType.CATALOG_ALL, List.of(), null,
+                Access.DESCRIBE, "read the catalog");
+        return catalogService.tableStatsSummary(catalogName, onlyPaimon);
+    }
+
+    /**
+     * {@code GET /catalogs/{catalogName}/table-stats/tables}：逐表明细的一页（远程分页）。
+     *
+     * <p>分页 / 过滤 / 排序下推到 SQL；浏览器只在选中库之后按页取数，
+     * 打开存储页不再把全表行搬过去。授权与汇总端点同判。
+     */
+    @GetMapping("/{catalogName}/table-stats/tables")
+    public ManagementDtos.TableStats tableRows(@PathVariable String catalogName,
+                                               @RequestParam(required = false) String database,
+                                               @RequestParam(required = false) String keyword,
+                                               @RequestParam(defaultValue = "false") boolean onlyPaimon,
+                                               @RequestParam(required = false) String sort,
+                                               @RequestParam(required = false) String order,
+                                               @RequestParam(required = false) Integer maxResults,
+                                               @RequestParam(required = false) String pageToken) {
+        authorizationService.require(catalogName, ResourceType.CATALOG_ALL, List.of(), null,
+                Access.DESCRIBE, "read the catalog");
+        return catalogService.tableRows(catalogName, database, keyword, onlyPaimon,
+                sort, order, maxResults, pageToken);
     }
 
     /** {@code PUT /catalogs/{catalogName}}。 */

@@ -184,6 +184,11 @@ EXTENSION_ENDPOINTS = {
     ("GET", "/api/management/v1/optimization/jobs/{jobId}"): "优化：批次详情（含表级明细）",
     ("POST", "/api/management/v1/optimization/jobs/{jobId}/retry"): "优化：重试失败的表（新建批次）",
     ("POST", "/api/management/v1/optimization/jobs/{jobId}/cancel"): "优化：取消批次",
+    # 存储页的聚合端点（本工程扩展，挂管理 API 基址）：一次查询取 catalog 下全部表的
+    # 当前快照统计，替代「一张表一个请求」的逐表扫描。服务端实现见
+    # ManagementCatalogController#tableStats。
+    ("GET", "/api/management/v1/catalogs/{catalogName}/table-stats"): "存储页：catalog 存储汇总（SQL 聚合，只读）",
+    ("GET", "/api/management/v1/catalogs/{catalogName}/table-stats/tables"): "存储页：逐表明细的一页（远程分页，只读）",
     # 目录事件流：游标增量拉取（`?since=` 只回比它新的事件），契约见
     # docs/event-framework.md §4。两份规格都不涉及事件——这是本工程自己的
     # 审计面，服务端实现见 ConsoleEventController。只读。
@@ -1320,6 +1325,12 @@ CATALOG_DETAIL = os.path.join(CONSOLE_DIR, "src/views/CatalogDetailView.vue")
 STORAGE_PANEL = os.path.join(CONSOLE_DIR, "src/components/CatalogStoragePanel.vue")
 STORAGE_API = os.path.join(CONSOLE_DIR, "src/api/storageHealth.js")
 STORAGE_UTIL = os.path.join(CONSOLE_DIR, "src/utils/storageHealth.js")
+SERVICE_JAVA = os.path.join(
+    ROOT, "lakehouse-rest-spring-parent/lakehouse-rest-server/src/main/java",
+    "io/github/melin/lakehouse/rest/service/ManagementCatalogService.java")
+REPO_JAVA = os.path.join(
+    ROOT, "lakehouse-rest-spring-parent/lakehouse-rest-core/src/main/java",
+    "io/github/melin/lakehouse/rest/domain/repo/TableSnapshotRepository.java")
 
 catalog_detail_src = read(CATALOG_DETAIL)
 storage_panel_src = read(STORAGE_PANEL)
@@ -1332,44 +1343,47 @@ check("详情页有「存储」页签，两种格式传同一个组件（格式�
       and "isIceberg ? 'ICEBERG' : 'PAIMON'" in catalog_detail_src,
       "缺: 页签 / 组件引用 / 格式参数之一")
 
-# 元数据表（`t.files` 那类）只在引擎侧存在，HTTP 接口拿不到。采集文件里一旦多出别的调用，
-# 说明有人把它当成「再补一个端点就能查」——那会是一条永远 404 的路径。
-# `listTableDetails` 是「只统计 Paimon 表」开关的判定来源（表格式在 schema.options.type 里），
-# 取代了只回表名的 `listTables`。
-paimon_calls = set(re.findall(r'catalogApi\.(\w+)', storage_api_src))
-iceberg_calls = set(re.findall(r'icebergApi\.(\w+)', storage_api_src))
-paimon_allowed = {"listDatabases", "listTableDetails", "tableSnapshot"}
-iceberg_allowed = {"listTables", "loadTable"}
-check("存储页的读数只取已有端点（Paimon 快照 / Iceberg loadTable），不查元数据表",
-      paimon_calls <= paimon_allowed and iceberg_calls <= iceberg_allowed
-      and {"tableSnapshot"} <= paimon_calls and {"loadTable"} <= iceberg_calls,
-      f"Paimon 调用: {sorted(paimon_calls)}（允许 {sorted(paimon_allowed)}）；"
-      f"Iceberg 调用: {sorted(iceberg_calls)}（允许 {sorted(iceberg_allowed)}）")
+# 数据源是管理面两个聚合端点：汇总（table-stats，SQL 聚合）+ 逐表明细（table-stats/tables，
+# 远程分页）。采集文件里不允许再出现协议面的逐表调用——非快照管理的表
+# （Format / Object / Lance）尤其不该被问到快照端点。
+mgmt_calls = set(re.findall(r'managementApi\.(\w+)', storage_api_src))
+check("存储页读数走管理面聚合端点（汇总 + 远程分页明细），不再逐表调 snapshot / loadTable",
+      mgmt_calls == {"getCatalogTableStats", "listCatalogTableRows"}
+      and "catalogApi" not in storage_api_src and "icebergApi" not in storage_api_src,
+      f"managementApi 调用: {sorted(mgmt_calls)}（应为 getCatalogTableStats + listCatalogTableRows）；"
+      "采集文件里不得残留 catalogApi / icebergApi 的逐表调用")
 
-check("平均文件大小是加权的（总字节 ÷ 文件数，不是各表平均再平均）",
-      "size / filesWithSize" in storage_util_src and "row.size / row.files" in storage_util_src,
+# 汇总口径已下沉到服务端 SQL：加权平均在 ManagementCatalogService，
+# 小文件判据（表级平均 < 阈值）在聚合 SQL 里——前端只剩行级派生值。
+service_src = read(SERVICE_JAVA)
+repo_src = read(REPO_JAVA)
+check("平均文件大小是加权的、小文件是表级平均判据（口径在服务端聚合里）",
+      "(double) size / filesWithSize" in service_src
+      and "s.fileSizeInBytes / s.fileCount < :smallThreshold" in repo_src,
       "加权口径被改成了「各表平均值的平均」——1 张 10 万文件的大表会与 1000 张单文件表等权")
 
 check("存储页只读：面板不直接调协议面或管理面（写动作留在表页的「存储优化」）",
       "catalogApi" not in storage_panel_src and "icebergApi" not in storage_panel_src,
       "面板里出现了直接的 API 调用；取数应当只经 api/storageHealth.js")
 
-# 「只统计 Paimon 表」的判定必须读 schema（`isSnapshotManaged`），不能猜表名：
+# 「只统计 Paimon 表」由服务端按 `tableType` 过滤（onlyPaimon 参数）：
 # Format / Object / Lance 表没有快照，混进来只会把「有数据的表」的分母撑大。
-check("Paimon 侧有「只统计 Paimon 表」开关，判定读 table-details 的 schema 而不是猜表名",
+check("Paimon 侧有「只统计 Paimon 表」开关，onlyPaimon 传给汇总与明细两个端点",
       "只统计 Paimon 表" in storage_panel_src
-      and "isSnapshotManaged" in storage_api_src
-      and "listTableDetails" in storage_api_src,
-      "缺: 面板开关 / schema 判定 / table-details 调用之一")
+      and "onlyPaimon: props.format === 'PAIMON' && onlyPaimon.value" in storage_panel_src
+      and "onlyPaimon" in storage_api_src,
+      "缺: 面板开关 / onlyPaimon 参数传递之一")
 
-# 明细分页是**本地**的（数据侧已有 MAX_TABLES 截断 + 列表早停两道闸，不再把请求切碎）。
-# 同时排序必须跨页生效：el-table 自带排序在分页下只排当前页那 20 行，要用 sortable="custom"
-# 把排序收进 computed。
-check("逐表明细本地分页（el-pagination + pagedRows），排序用 custom 跨页生效",
-      "el-pagination" in storage_panel_src and "pagedRows" in storage_panel_src
+# 逐表明细是**远程分页**：打开页面不拉任何明细，选中了库才按页取数；
+# 分页 / 关键字 / 排序全部下推 SQL。排序仍用 sortable="custom"——排序键要传给服务端，
+# el-table 自带排序在分页下只排当前页。
+check("逐表明细远程分页：选库才请求、el-pagination 用服务端 total、排序 custom 下推",
+      "选择一个库，按需加载" in storage_panel_src
+      and 'el-pagination' in storage_panel_src and ':total="detail.total"' in storage_panel_src
+      and "fetchDetail" in storage_panel_src and "onPageChange" in storage_panel_src
       and 'sortable="custom"' in storage_panel_src
-      and "sortState" in storage_panel_src,
-      "缺: 分页器 / 分页数据 / 自定义排序之一")
+      and "database" in storage_api_src and "pageToken" in storage_api_src,
+      "缺: 按需加载提示 / 远程 total / fetchDetail / 自定义排序 / 服务端过滤参数之一")
 
 check("按库/Top10 两卡在栅格并排且不吃堆叠边距（等高、顶部对齐）",
       ".pc-sto-grid > :deep(.pc-card + .pc-card)" in storage_panel_src

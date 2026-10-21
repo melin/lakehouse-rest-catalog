@@ -78,6 +78,7 @@ public class IcebergProjections {
     private static final String KEY_TOTAL_RECORDS = "total-records";
     private static final String KEY_TOTAL_DATA_FILES = "total-data-files";
     private static final String KEY_TOTAL_FILES_SIZE = "total-files-size";
+    private static final String KEY_TOTAL_DELETE_FILES = "total-delete-files";
     private static final String KEY_OPERATION = "operation";
 
     private final TableSnapshotRepository snapshotRepository;
@@ -220,6 +221,8 @@ public class IcebergProjections {
                     entity::setFileCount);
             touched |= assign(entity::getFileSizeInBytes, longOf(summary.get(KEY_TOTAL_FILES_SIZE)),
                     entity::setFileSizeInBytes);
+            touched |= assign(entity::getDeleteFileCount, longOf(summary.get(KEY_TOTAL_DELETE_FILES)),
+                    entity::setDeleteFileCount);
             if (touched) {
                 changed.add(entity);
             }

@@ -134,6 +134,81 @@ public final class ManagementDtos {
     public record GrantPrincipalRoleRequest(PrincipalRole principalRole) {
     }
 
+    // ------------------------------------------------------------------ 表统计
+
+    /**
+     * {@code GET /catalogs/{catalogName}/table-stats}：catalog 下全部表的**当前快照**统计。
+     *
+     * <p>为控制台「存储」页而生：一次请求替代逐表的 snapshot / loadTable 循环
+     * （表多时那是一条请求队列，Iceberg 侧还要解析整份 metadata JSON）。
+     * 行是 {@code lakehouse_table} 与 {@code lakehouse_snapshot} 的投影 join，
+     * 空表（还没有快照）也有一行、统计列为 {@code null}，与逐表端点的「无快照」语义一致。
+     */
+    public record TableStats(List<TableStat> tables, long total, String nextPageToken) {
+    }
+
+    /**
+     * {@code GET /catalogs/{catalogName}/table-stats}：整个 catalog 的存储汇总。
+     *
+     * <p>四块都在服务端算完（SQL 聚合），浏览器不做任何逐行计算——表再多，
+     * 响应大小也是常数。`totals` 是 KPI 五张卡；`databases` 是「按库的存储」
+     * 条形图（全量库、存储降序）；`topTables` 是 Top 10；`histogram` 是
+     * 平均文件大小的五档分布。
+     */
+    public record TableStatsSummary(Totals totals,
+                                    List<DatabaseStat> databases,
+                                    List<TableStat> topTables,
+                                    Histogram histogram) {
+    }
+
+    /** 汇总读数。口径：无快照（`empty`）与缺统计（`unknown`）分开；小文件是表级平均判据。 */
+    public record Totals(long tables,
+                         long empty,
+                         long unknown,
+                         long files,
+                         long size,
+                         long records,
+                         long deleteFiles,
+                         long filesWithSize,
+                         Double avgFileSize,
+                         long smallTables,
+                         long smallFiles,
+                         long smallSize,
+                         Double smallShare) {
+    }
+
+    /** 一个库的聚合（「按库的存储」条形图的一行）。 */
+    public record DatabaseStat(String database,
+                               long tables,
+                               long files,
+                               long size,
+                               long small,
+                               long unknown) {
+    }
+
+    /** 平均文件大小的五档分布：`buckets` 依次是 &lt;1MB / 1–10MB / 10–100MB / 100MB–1GB / ≥1GB。 */
+    public record Histogram(List<Long> buckets, long counted, long unknown) {
+    }
+
+    /**
+     * 一张表的当前快照统计。
+     *
+     * <p>{@code tableType} 是实体的原始取值（{@code PAIMON} / {@code ICEBERG} /
+     * {@code format-table} / {@code object-table} / {@code lance-table}），
+     * 判「是不是快照管理的表」由调用方做——映射规则属于前端（{@code utils/tableKind.js}），
+     * 服务端不替它解释。
+     */
+    public record TableStat(String database,
+                            String table,
+                            String tableType,
+                            Long snapshotId,
+                            Long fileCount,
+                            Long fileSizeInBytes,
+                            Long recordCount,
+                            Long deleteFileCount,
+                            Long timeMillis) {
+    }
+
     // ------------------------------------------------------------------ 权限
     //
     // 权限不在这里建模：官方 management API 把「资源 + access + principal」定义在

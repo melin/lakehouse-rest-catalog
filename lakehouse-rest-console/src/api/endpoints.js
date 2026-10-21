@@ -161,6 +161,10 @@ export const ENDPOINTS = {
   getCatalog: { method: 'GET', path: '/api/management/v1/catalogs/{catalogName}' },
   updateCatalog: { method: 'PUT', path: '/api/management/v1/catalogs/{catalogName}' },
   deleteCatalog: { method: 'DELETE', path: '/api/management/v1/catalogs/{catalogName}' },
+  // 控制台「存储」页的两个聚合端点（服务端扩展）：汇总一次算完 KPI/按库/Top10/直方图，
+  // 逐表明细远程分页（分页/过滤/排序下推 SQL），替代逐表的 snapshot / loadTable。
+  catalogTableStats: { method: 'GET', path: '/api/management/v1/catalogs/{catalogName}/table-stats' },
+  catalogTableRows: { method: 'GET', path: '/api/management/v1/catalogs/{catalogName}/table-stats/tables' },
 
   // ------------------------------------------------------------------ 管理 API：principal
   listPrincipals: { method: 'GET', path: '/api/management/v1/principals' },

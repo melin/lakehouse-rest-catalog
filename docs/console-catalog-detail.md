@@ -56,11 +56,11 @@ schema 物化没生效：客户端建表成功、写入时报
 「配置」页签不发新请求：Paimon 侧的数据来自已取回的 `getCatalog`，Iceberg 侧复用
 概览已经读过的 `capabilities`（`/v1/config`）。
 
-「存储」页签按需加载，且是这一页唯一的**重**请求：**每张表一次**（Paimon 读
-`/tables/{t}/snapshot`，Iceberg 读 `loadTable` 的元数据），加上列库/列命名空间的那几次。
-因此它有自己的两道闸：最多统计 `MAX_TABLES`（200）张表、同时最多 6 个请求在飞；列表阶段
-数到第 201 张就停，页面不显示「共有 N 张」（早停之后这个数字没人知道，编一个比不写更糟）。
-详细口径见 §3.2。
+「存储」页签按需加载，且只有**常数次**请求：汇总来自管理面的聚合端点
+`GET /api/management/v1/catalogs/{catalogName}/table-stats`（KPI / 按库 / Top 10 /
+直方图在服务端 SQL 里一次算完，永远是全量，与表数无关）；逐表明细走
+`GET …/table-stats/tables` 的**远程分页**——打开页面不拉任何明细，
+选中了库才按页取数。不再有「每张表一次」的 snapshot / `loadTable` 循环。详细口径见 §3.2。
 
 ### 2.1 当前目录是页面状态，不是路由参数
 
@@ -88,7 +88,7 @@ schema 物化没生效：客户端建表成功、写入时报
 | 页签 | 数据来源 | 一句话 |
 | --- | --- | --- |
 | 概览 | `getCatalog` + `config` | 名称 / 类型 / **表格式** / 存储类型 / 仓库位置 / 属性 / 版本 / 创建 / 更新，右侧是 `storageConfigInfo` 与 `properties` 的原始 JSON；下方是「协议与能力」卡片 |
-| 存储 | Paimon：每张表的 `/snapshot`；Iceberg：每张表的 `loadTable` | 文件数与存储的四个汇总、按库的存储条、Top 10 表、平均文件大小的分布、逐表明细；**只读**，动手的入口在表页的「存储优化」 |
+| 存储 | 管理面 `/table-stats`（汇总聚合）+ `/table-stats/tables`（明细远程分页） | 文件数与存储的四个汇总、按库的存储条、Top 10 表、平均文件大小的分布、逐表明细；**只读**，动手的入口在表页的「存储优化」 |
 | 文件列表 | `listCatalogFiles` | 仓库物理目录的一层内容，目录名可点下钻 |
 | 配置 | `getCatalog` + `updateCatalog`（+ 概览的 `config`） | Paimon：编辑「表默认参数（`table-default.*`）」；Iceberg：只读展示 `/v1/config` 的 `defaults` / `overrides`。其余 catalog 属性不在这里重复展示，见 §3.4 |
 
@@ -147,18 +147,36 @@ schema 物化没生效：客户端建表成功、写入时报
 
 #### 3.2.1 指标与数据来源
 
-| 读数 | Paimon | Iceberg |
+两种格式同源：管理面聚合端点 `GET /api/management/v1/catalogs/{catalogName}/table-stats`
+（服务端扩展，非官方规格）。它对 `lakehouse_table` 与**当前快照行**（`latest_snapshot_id`
+join 上的那行 `lakehouse_snapshot`）的投影做 **SQL 聚合**，四块结果一次算完：
+KPI 五张读数（`totals`）、按库的存储条（`databases`，全量库、存储降序）、
+Top 10 表（`topTables`）、平均文件大小的五档分布（`histogram`）。
+**统计永远是全量的**——响应大小与表数无关，浏览器不做任何逐行计算。
+
+这是一次聚合查询而不是预计算任务：投影行本身就是写路径维护好的中间产物，
+单表聚合是毫秒级扫描；真到了成为热点的规模，在投影上加物化即可，契约不需要变。
+
+逐表明细另有端点 `GET …/table-stats/tables`：每表一行、可按库 / 关键字过滤、
+可排序，分页下推 SQL（`maxResults` 默认 2000 / 上限 5000）。还没有快照的表也有一行、
+统计列为 `null`，与逐表端点的「无快照」语义一致。行上另带 `tableType`
+（`PAIMON` / `ICEBERG` / `format-table` / `object-table` / `lance-table`），
+`onlyPaimon` 参数在服务端滤掉 Format / Object / Lance 表。
+
+| 读数 | Paimon（投影列） | Iceberg（投影列） |
 | --- | --- | --- |
-| 活跃数据文件 | `GET …/tables/{t}/snapshot` → `snapshot.fileCount` | `loadTable` → 当前快照 `summary['total-data-files']` |
-| 活跃存储 | 同上 `fileSizeInBytes` | `summary['total-files-size']` |
-| 记录数 | 同上 `recordCount` | `summary['total-records']` |
-| delete 文件 | 无（Paimon 没有 delete file 这一层） | `summary['total-delete-files']` |
-| 最近写入 | `lastFileCreationTime` | `metadata['last-updated-ms']` |
+| 活跃数据文件 | `file_count`（快照统计累计） | `total-data-files`（提交 summary 投影） |
+| 活跃存储 | `file_size_in_bytes` | `total-files-size` |
+| 记录数 | `record_count` | `total-records` |
+| delete 文件 | 无（Paimon 没有 delete file 这一层） | `total-delete-files`（`delete_file_count`） |
+| 最近写入 | `time_millis` | 同列（快照生成时刻） |
+
+非快照管理的表（Format / Object / Lance）**不会再被问到任何单表端点**——它们的行统计列为
+`null`，这一列空着就是它们的全部统计。
 
 那篇让客户端跑 `select count(*) from t.files` 这类**元数据表**查询。元数据表是**引擎侧**能力
-（Spark / Athena 才有），控制台的 HTTP 接口拿不到文件清单，因此这一页只用目录接口里已有的
-聚合统计。Iceberg 的 `summary` 值是 kebab-case 的字符串，且可能是字符串也可能是数字
-（取决于写元数据的是哪个客户端），前端一律归一化后再算。
+（Spark / Athena 才有），控制台的 HTTP 接口拿不到文件清单，因此这一页只用落库投影里已有的
+聚合统计。
 
 #### 3.2.2 三处口径差异
 
@@ -175,12 +193,13 @@ schema 物化没生效：客户端建表成功、写入时报
 
 | 状态 | 含义 | 是不是错误 |
 | --- | --- | --- |
-| `无快照` | 表刚建、还没写过（Paimon 侧 404 `SNAPSHOT`；Iceberg 侧 `current-snapshot-id` 缺席） | 不是，正常状态 |
-| `缺统计` | 写过，但聚合统计缺失（Paimon 侧分区合计也缺；Iceberg 侧老客户端写的 `summary` 里没有 `total-*`） | 采集缺口，页面单独一行说明 |
+| `无快照` | 表刚建、还没写过（聚合行的 `snapshotId` 为 `null`） | 不是，正常状态 |
+| `缺统计` | 写过（有快照行），但统计列缺失（Paimon 侧统计落库前的老行；Iceberg 侧老客户端写的 `summary` 里没有 `total-*`） | 采集缺口，页面单独一行说明 |
 | `—` | 整页还在加载 / 失败了 | 由 `ResourceState` 统一处理 |
 
-Paimon 侧还有一层兜底：快照行的累计统计为空时，服务端改用分区合计
-（`TableService#getTableSnapshot`），所以「缺统计」在 Paimon 上已经是两层都缺之后才出现。
+注意与逐表端点的一处差异：逐表的 `GET …/tables/{t}/snapshot` 在快照行累计统计为空时，
+服务端会用分区合计兜底（`TableService#getTableSnapshot` 读路径现算）；聚合端点读的是
+**落库投影**，没有这层兜底——统计落库之前写下的老快照行会一直空到下一次提交。
 
 **「不知道」不能当 0**：把它算成 0 会把平均文件大小压低、把小文件比例抬高，两边同时失真。
 
@@ -199,12 +218,12 @@ Paimon 侧还有一层兜底：快照行的累计统计为空时，服务端改�
 
 | 交互 | 行为 | 为什么这样做 |
 | --- | --- | --- |
-| 按库过滤（下拉，可清空） | 过滤发生在**采集阶段**：选中库后列表只列这个库，全页统计随之缩小 | 对已采回的行做筛选等于「为看一张表把另外 199 张的快照都请求一遍」。下拉候选是**全量**库名——列库是便宜请求，没有早停 |
-| 只统计 Paimon 表（开关，仅 Paimon catalog 显示） | 默认开启。判定读 `table-details` 的 `schema.options.type`（`isSnapshotManaged`），不是猜表名 | Format / Object / Lance 表没有快照，混进统计只会变成一列「无快照」，把「有数据的表」的分母撑大。表列表因此从 `/tables` 换成 `/table-details`（分页约定一致，请求次数不变） |
-| 逐表明细分页 | 本地分页，每页 20 / 50 / 100 可选 | 数据侧已有 `MAX_TABLES = 200` 截断 + 列表早停两道闸，分页要避免的是把 200 行一次渲染成 DOM，不是把请求切碎 |
-| 明细排序 | `sortable="custom"`，排序在 computed 里跨全量数据生效 | el-table 自带排序在分页下只排当前页那 20 行——「点存储排序，最大的一张表不见了」 |
+| 按库过滤（下拉，可清空） | **选中库才发明细请求**；清空回到「按需」提示，不发请求 | 打开存储页不去预取全部库的逐表明细——汇总已经覆盖全量口径，明细只是下钻。下拉候选来自汇总的按库聚合（有表的库才会出现） |
+| 只统计 Paimon 表（开关，仅 Paimon catalog 显示） | 默认开启，服务端按 `tableType` 过滤，切换重取一次汇总 | Format / Object / Lance 表没有快照，混进统计只会变成一列「无快照」，把「有数据的表」的分母撑大。过滤在 SQL 里做，开关切换只多一次聚合请求 |
+| 逐表明细分页 | **远程分页**：每页 20 / 50 / 100 可选，分页 / 关键字 / 排序全部下推 SQL | 表十万张也不把行搬到浏览器——每次只取一页；`total` 由服务端 count 给出 |
+| 明细排序 | `sortable="custom"`，排序键传给服务端（白名单映射，含「平均文件大小」的派生表达式） | el-table 自带排序在分页下只排当前页那 20 行——「点存储排序，最大的一张表不见了」 |
 
-切 catalog 时库过滤自动清空（库名属于 catalog）；清空本身会触发一次重新统计，不会来两次。
+切 catalog 时库过滤自动清空（库名属于 catalog），并重新取一次聚合。
 
 「按库的存储」与「存储 Top 10 表」两张卡**等高且顶部对齐**：全局 `.pc-card + .pc-card`
 的堆叠边距是给纵向堆叠用的，会误伤并排栅格，`.pc-sto-grid` 内已回收（右卡原本被推下 16px）。

@@ -258,7 +258,7 @@ Paimon 的 branch/tag 都源自「给某个快照起名字」这一件事。
 | `snapshot_id` / `schema_id` / `time_millis` | `snapshot-id` / `schema-id` / `timestamp-ms` |
 | `base_manifest_list` | **`manifest-list`**（Iceberg 每个快照只有一个清单，复用 Paimon 的「base」列，其余三列留空） |
 | `total_record_count` | `summary["total-records"]` |
-| `file_count` / `file_size_in_bytes` | `summary["total-data-files"]` / `summary["total-files-size"]`（v1 无前者 → `null`） |
+| `file_count` / `file_size_in_bytes` / `delete_file_count` | `summary["total-data-files"]` / `summary["total-files-size"]` / `summary["total-delete-files"]`（v1 无前两者中缺的 → `null`；`total-delete-files` 只有 v2 及以后的等值/定位删除才有） |
 | `commit_user` | **认证主体**（服务端自己知道是谁发的 commit，比从 summary 里猜可靠） |
 
 这一列映射让控制台「详细信息」的四张统计卡片对 Iceberg 表**零改动就能出数**。

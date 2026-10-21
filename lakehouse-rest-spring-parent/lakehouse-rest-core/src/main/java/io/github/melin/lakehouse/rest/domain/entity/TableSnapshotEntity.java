@@ -112,11 +112,11 @@ public class TableSnapshotEntity {
     @Column(name = "last_file_creation_time", comment = "最近一次文件创建时刻（epoch 毫秒）")
     private Long lastFileCreationTime;
 
-    // ------------------------------------------------------- Iceberg 侧的三列
+    // ------------------------------------------------------- Iceberg 侧的四列
     //
     // 只对 Iceberg 表的快照行有值。Iceberg 的 snapshots[] 与 Paimon 的快照在
     // 「快照 id、schema id、时间戳、清单文件、记录数」这五处本来就同构，因此复用既有列
-    // （映射关系见 docs/iceberg-rest-catalog-design.md §4.2），只有下面三样 Paimon 没有。
+    // （映射关系见 docs/iceberg-rest-catalog-design.md §4.2），只有下面四样 Paimon 没有。
 
     /** Iceberg 的 {@code parent-snapshot-id}：快照链的前驱。Paimon 的快照没有这个字段。 */
     @Column(name = "parent_snapshot_id", comment = "Iceberg 的 parent-snapshot-id；Paimon 快照为空")
@@ -138,9 +138,20 @@ public class TableSnapshotEntity {
      *
      * <p>原样存 JSON 而不是挑几个键建列：summary 的键集合由 Iceberg 的
      * {@code SnapshotSummary} 定义，且随版本增删（v1 没有 {@code total-data-files}）。
-     * 挑键建列等于把一个会漂移的集合固化进表结构。控制台需要的三个数
-     * （记录数 / 文件数 / 体积）已经从 summary 派生到了既有列上。
+     * 挑键建列等于把一个会漂移的集合固化进表结构。控制台需要的四个数
+     * （记录数 / 文件数 / 体积 / delete 文件数）已经从 summary 派生到了
+     * 既有列或 {@link #deleteFileCount} 上。
      */
     @Column(name = "summary_json", length = 65535, comment = "Iceberg snapshot summary 原文 JSON")
     private String summaryJson;
+
+    /**
+     * Iceberg 的 {@code total-delete-files}：当前快照引用的定位/等值删除文件数。
+     *
+     * <p>v1 表与早期客户端写的 summary 没有这个键，取不到就是 {@code null}——
+     * 不要编成 0：0 是「确实没有 delete 文件」，与「summary 里没写」是两件事
+     * （与 {@code file_count} 的口径一致，见 {@code console-catalog-detail.md} §3.2.3）。
+     */
+    @Column(name = "delete_file_count", comment = "Iceberg 的 total-delete-files；Paimon 快照与缺失键为空")
+    private Long deleteFileCount;
 }

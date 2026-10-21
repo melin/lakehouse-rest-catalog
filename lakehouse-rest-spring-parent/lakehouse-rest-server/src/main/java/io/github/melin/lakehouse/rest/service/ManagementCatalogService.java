@@ -6,9 +6,16 @@ import io.github.melin.lakehouse.rest.domain.entity.CatalogEntity;
 import io.github.melin.lakehouse.rest.domain.entity.PermissionAssignmentEntity;
 import io.github.melin.lakehouse.rest.domain.repo.CatalogRepository;
 import io.github.melin.lakehouse.rest.domain.repo.PermissionAssignmentRepository;
+import io.github.melin.lakehouse.rest.domain.repo.TableSnapshotRepository;
 import io.github.melin.lakehouse.rest.dto.ManagementDtos.Catalog;
 import io.github.melin.lakehouse.rest.dto.ManagementDtos.Catalogs;
 import io.github.melin.lakehouse.rest.dto.ManagementDtos.CreateCatalogRequest;
+import io.github.melin.lakehouse.rest.dto.ManagementDtos.DatabaseStat;
+import io.github.melin.lakehouse.rest.dto.ManagementDtos.Histogram;
+import io.github.melin.lakehouse.rest.dto.ManagementDtos.TableStat;
+import io.github.melin.lakehouse.rest.dto.ManagementDtos.TableStats;
+import io.github.melin.lakehouse.rest.dto.ManagementDtos.TableStatsSummary;
+import io.github.melin.lakehouse.rest.dto.ManagementDtos.Totals;
 import io.github.melin.lakehouse.rest.dto.ManagementDtos.UpdateCatalogRequest;
 import io.github.melin.lakehouse.rest.dto.ManagementEnums.CatalogType;
 import io.github.melin.lakehouse.rest.dto.ManagementEnums.StorageType;
@@ -30,6 +37,10 @@ import java.util.List;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
+import org.springframework.data.jpa.domain.JpaSort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -61,6 +72,7 @@ public class ManagementCatalogService {
 
     private final CatalogRepository catalogRepository;
     private final PermissionAssignmentRepository permissionAssignmentRepository;
+    private final TableSnapshotRepository snapshotRepository;
     private final DatabaseService databaseService;
     private final RestServerProperties properties;
     private final StorageRuntimePolicy storagePolicy;
@@ -121,6 +133,138 @@ public class ManagementCatalogService {
     @Transactional(readOnly = true)
     public Catalog get(String name) {
         return toDto(require(name));
+    }
+
+    /** 小文件阈值：100 MB。与控制台的口径同一个数（前端 `utils/storageHealth.js`）。 */
+    static final long SMALL_FILE_THRESHOLD = 100L * 1024 * 1024;
+
+    /**
+     * 逐表明细的排序白名单：前端排序键 → JPQL 表达式。
+     *
+     * <p>「平均文件大小」是派生列（没有实体字段），用 {@code JpaSort#unsafe} 的原始表达式排序；
+     * 表达式只出自这张白名单，前端传什么都不能拼进 SQL 之外的东西。
+     */
+    private static final Map<String, String> SORT_EXPRESSIONS = Map.of(
+            "files", "s.fileCount",
+            "size", "s.fileSizeInBytes",
+            "records", "s.recordCount",
+            "updatedAt", "s.timeMillis",
+            "table", "t.name",
+            "avgSize", "case when s.fileCount > 0 then s.fileSizeInBytes / s.fileCount end");
+
+    /**
+     * {@code GET /catalogs/{catalogName}/table-stats}：整个 catalog 的存储汇总，SQL 里算完。
+     *
+     * <p>为控制台的「存储」页而生。此前那一页是「一张表一个请求」（快照 / loadTable），
+     * 表多时是一条请求队列；而统计需要的每个数本来就以投影行的形式躺在
+     * {@code lakehouse_snapshot} 里（Paimon 与 Iceberg 共表，写入点分别是
+     * 提交链路与 {@code IcebergProjections}），所以这里的成本就是几次对同一份
+     * 投影 join 的**聚合**——KPI、按库、Top 10、直方图四块一次算完，
+     * 响应大小与表数无关，浏览器不再做任何逐行计算。
+     *
+     * <p>**left join**：还没有快照的表也有一行，统计列为 null——「无快照」
+     * 是正常状态，不能因为它把表从统计里抹掉。{@code onlyPaimon} 过滤掉
+     * Format / Object / Lance 表（它们没有快照，混进来只会变成一列「无快照」）。
+     *
+     * <p>这是一次聚合查询而不是预计算任务：投影行本身就是写路径维护好的中间产物，
+     * 单表聚合走索引是毫秒级；真到了成为热点的规模，再在这份投影上加物化即可，
+     * 契约不需要变。
+     */
+    @Transactional(readOnly = true)
+    public TableStatsSummary tableStatsSummary(String catalogName, boolean onlyPaimon) {
+        CatalogEntity catalog = require(catalogName);
+        // 单行聚合：Spring Data 会把「一行本身是 Object[]」的结果再包一层，取首行。
+        Object[] sums = snapshotRepository.summarizeCatalogTables(
+                catalog.getId(), onlyPaimon, SMALL_FILE_THRESHOLD).get(0);
+        long tables = num(sums[0]);
+        long empty = num(sums[1]);
+        long unknown = num(sums[2]);
+        long files = num(sums[3]);
+        long size = num(sums[4]);
+        long filesWithSize = num(sums[7]);
+        long smallTables = num(sums[8]);
+        long smallFiles = num(sums[9]);
+        long smallSize = num(sums[10]);
+
+        List<DatabaseStat> databases = new ArrayList<>();
+        for (Object[] row : snapshotRepository.groupCatalogTablesByDatabase(
+                catalog.getId(), onlyPaimon, SMALL_FILE_THRESHOLD)) {
+            databases.add(new DatabaseStat((String) row[0], num(row[1]), num(row[2]),
+                    num(row[3]), num(row[4]), num(row[5])));
+        }
+
+        // Top 10：复用逐表明细查询（存储降序取前若干行，Java 里滤掉空表后截 10），
+        // 不用再写一条 SQL。多取一些是因为空表（统计列 null）也占行，按旧口径它们不进 Top 10。
+        PageRequest top = PageRequest.of(0, 100,
+                JpaSort.unsafe(Sort.Direction.DESC, SORT_EXPRESSIONS.get("size")));
+        List<TableStat> topTables = snapshotRepository
+                .findCatalogTableRows(catalog.getId(), null, onlyPaimon, null, top).stream()
+                .map(ManagementCatalogService::toTableStat)
+                .filter(stat -> stat.fileSizeInBytes() != null && stat.fileSizeInBytes() > 0)
+                .limit(10)
+                .toList();
+
+        Object[] buckets = snapshotRepository.bucketCatalogTables(catalog.getId(), onlyPaimon).get(0);
+        List<Long> counts = new ArrayList<>(5);
+        long counted = 0;
+        for (int i = 0; i < 5; i++) {
+            long value = num(buckets[i]);
+            counts.add(value);
+            counted += value;
+        }
+
+        Totals totals = new Totals(tables, empty, unknown, files, size,
+                num(sums[5]), num(sums[6]), filesWithSize,
+                filesWithSize > 0 ? (double) size / filesWithSize : null,
+                smallTables, smallFiles, smallSize,
+                smallTables > 0 || tables - empty - unknown > 0
+                        ? (double) smallTables / Math.max(1, tables - empty - unknown) : 0.0);
+        return new TableStatsSummary(totals, databases, topTables,
+                new Histogram(counts, counted, num(buckets[5])));
+    }
+
+    /**
+     * {@code GET /catalogs/{catalogName}/table-stats/tables}：逐表明细的**一页**（远程分页）。
+     *
+     * <p>分页 / 过滤 / 排序全部下推到 SQL（limit/offset 在数据库里截断），
+     * 打开存储页不再把全表行搬到浏览器——浏览器只在选中库之后按页取数。
+     * 分页默认值刻意大于通用端点（{@code RestServerProperties} 的 100/1000）：
+     * 一行就是几个数字，一页 2000 行约 200 KB，控制台一屏 20 行可以少翻几次页。
+     */
+    @Transactional(readOnly = true)
+    public TableStats tableRows(String catalogName, String database, String keyword,
+                                boolean onlyPaimon, String sort, String order,
+                                Integer maxResults, String pageToken) {
+        CatalogEntity catalog = require(catalogName);
+        String db = database == null || database.isBlank() ? null : database;
+        String kw = keyword == null || keyword.isBlank() ? null : keyword.trim();
+        String key = sort != null && SORT_EXPRESSIONS.containsKey(sort) ? sort : "size";
+        Sort.Direction dir = "asc".equalsIgnoreCase(order)
+                ? Sort.Direction.ASC : Sort.Direction.DESC;
+        int pageSize = Paging.pageSize(maxResults, 2000, 5000);
+        int offset = Paging.offset(pageToken);
+        // offset 换算成页号下推给数据库；token 是 base64url("offset:N")，页大小不变时
+        // offset 恒为页大小的整数倍，整除不会失真。
+        Pageable pageable = PageRequest.of(offset / pageSize, pageSize,
+                JpaSort.unsafe(dir, SORT_EXPRESSIONS.get(key)));
+        List<TableStat> rows = snapshotRepository
+                .findCatalogTableRows(catalog.getId(), db, onlyPaimon, kw, pageable).stream()
+                .map(ManagementCatalogService::toTableStat)
+                .toList();
+        long total = snapshotRepository.countCatalogTableRows(catalog.getId(), db, onlyPaimon, kw);
+        String next = offset + rows.size() < total ? Paging.encode(offset + pageSize) : null;
+        return new TableStats(rows, total, next);
+    }
+
+    private static TableStat toTableStat(Object[] row) {
+        return new TableStat((String) row[0], (String) row[1], (String) row[2],
+                (Long) row[3], (Long) row[4], (Long) row[5], (Long) row[6], (Long) row[7],
+                (Long) row[8]);
+    }
+
+    /** SQL 聚合结果归一：空 catalog 的 sum 回 null，按 0 记。 */
+    private static long num(Object value) {
+        return value instanceof Number number ? number.longValue() : 0L;
     }
 
     /** {@code PUT /catalogs/{catalogName}}。 */
