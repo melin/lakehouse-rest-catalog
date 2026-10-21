@@ -1,5 +1,6 @@
 package io.github.melin.lakehouse.rest.iceberg.service;
 
+import io.github.melin.lakehouse.rest.support.LineageRefs;
 import io.github.melin.lakehouse.rest.config.RequestContext;
 import io.github.melin.lakehouse.rest.config.RestServerProperties;
 import io.github.melin.lakehouse.rest.domain.entity.CatalogEntity;
@@ -197,6 +198,7 @@ public class IcebergTableService {
         CatalogEntity catalog = resolve(prefix);
         DatabaseEntity database = namespaceService.require(catalog, levels);
         String tableName = requireName(request == null ? null : request.name(), "name");
+        LineageRefs.requireNotReserved(tableName, "table");
         if (tableRepository.existsByDatabaseIdAndName(database.getId(), tableName)) {
             throw tableAlreadyExists(levels, tableName);
         }

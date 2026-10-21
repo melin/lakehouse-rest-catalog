@@ -223,6 +223,19 @@ export const ENDPOINTS = {
   // 重试只重跑失败的表，因此它会**新建**一个批次（返回 201 与新的批次号，`retryOf` 指向原批次）。
   retryOptimizationJob: { method: 'POST', path: '/api/management/v1/optimization/jobs/{jobId}/retry' },
   cancelOptimizationJob: { method: 'POST', path: '/api/management/v1/optimization/jobs/{jobId}/cancel' },
+
+  // ------------------------------------------------------------------ 管理 API：血缘
+  // 挂管理 API 而不是 catalog API：血缘是**跨 catalog** 的关系（prefix 只是其中一个维度），
+  // 而 catalog API 的每个端点都必须在 `CatalogAccessRules` 登记权限映射——
+  // 血缘不是「表上的操作」，不该挤进那张表（`LineageController` 的类注释有完整理由）。
+  //
+  // 两条都是 GET、都按 `ref`（`catalog.namespace.table`）寻址，区别只在粒度：表级结构给图，
+  // 列级映射给「列映射」表格。分成两条是因为合起来会让边的数量变成「表数 × 列数」。
+  //
+  // 有意**不**包含的三条：`POST /lineage/runs` 是引擎侧上报入口（控制台手工上报等于
+  // 让人写一条假依赖），`GET /lineage/runs` 与 `/runs/{runId}` 目前没有界面在用它们。
+  lineageTables: { method: 'GET', path: '/api/management/v1/lineage/tables' },
+  lineageColumns: { method: 'GET', path: '/api/management/v1/lineage/columns' },
 }
 
 /** 端点名 → `METHOD path`，供校验脚本与调试输出复用。 */

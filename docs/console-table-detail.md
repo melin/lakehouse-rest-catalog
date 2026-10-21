@@ -40,10 +40,14 @@ Paimon 表为此多付一个往返；Format / Object / Lance 表则**完全不�
 
 | 表格式 | 页签 |
 | --- | --- |
-| Paimon 表（`options` 里没有 `type`） | 详细信息 / 快照 / 标签 / 分支 / 文件列表 / 数据访问 / 存储优化 |
-| Format 表（`type=format-table`） | 详细信息 / 文件列表 |
-| Object 表（`type=object-table`） | 详细信息 / 文件列表 |
-| Lance 表（`type=lance-table`） | 详细信息 / 文件列表 |
+| Paimon 表（`options` 里没有 `type`） | 详细信息 / 血缘 / 数据预览 / 快照 / 标签 / 分支 / 文件列表 / 数据访问 / 存储优化 |
+| Format 表（`type=format-table`） | 详细信息 / 血缘 / 文件列表 |
+| Object 表（`type=object-table`） | 详细信息 / 血缘 / 文件列表 |
+| Lance 表（`type=lance-table`） | 详细信息 / 血缘 / 文件列表 |
+
+**「血缘」是唯一不跟着表格式伸缩的页签**：依赖关系由引擎上报，Format / Object / Lance
+表同样可能被 Spark 写过，因此四种格式都有它——没采集到时它自己给「还没有血缘」的空态，
+那比「页签凭空消失」更能说明问题（页签在、内容是空的，指向「去跑一条 INSERT」）。
 
 后三种表没有快照，快照 / 标签 / 分支三个页签自然无处可落；「数据访问」在当前约定里
 也只随 Paimon 表出现。**Lance 表仍要认出来**：控制台的新建表表单已不给这个入口
@@ -57,7 +61,7 @@ Lance 表）不渲染一行只有一个页签的栏，字段列表直接跟着�
 「这张表实际有哪些列」，与当初有没有手填无关（主键 / 分区字段两列对它恒为「否」，不渲染）。
 页面上有一条说明写清少掉的那几个页签去哪了，免得看起来像加载失败。
 
-**页签按需加载。** Paimon 表的七个页签里只有五个需要额外请求，切过去才发：
+**页签按需加载。** Paimon 表的九个页签里只有七个需要额外请求，切过去才发：
 
 | 页签 / 二级页签 | 切过去时的请求 |
 | --- | --- |
@@ -67,8 +71,12 @@ Lance 表）不渲染一行只有一个页签的栏，字段列表直接跟着�
 | 详细信息 → 分区列表（二级页签） | `listPartitions` |
 | 文件列表 | `listTableFiles`（`GET /api/console/v1/tables/{tableId}/files?path=`） |
 | 存储优化 | `tableOptimizationPolicy` + `tableOptimizationHistory`（一次取齐三块历史） |
+| 数据预览 | `previewTable`（`POST /api/console/v1/tables/{tableId}/preview`，默认锁最新分区；见 [table-data-preview-design.md](table-data-preview-design.md)） |
+| 血缘 | `lineageTables`（挂载即查一跳；展开按时），切到「列映射」视图才发 `lineageColumns`（见 [lineage-design.md](lineage-design.md) §9） |
 
 「详细信息」（含字段列表）与「数据访问」只用 `overview` 已有数据，不发请求。
+「血缘」登记在 `SELF_CONTAINED_TABS` 里：它的数据由面板自己拉（不是 `useResource` 的一份），
+父组件没有可调的 `load()`——替它发请求就是每个页签两次。
 已加载过的页签不重复请求，直到点「刷新」或路由参数变化——`reloadAll()` 清空
 已加载标记并重载当前页签。存储优化页签的加载请求有一个时序细节（`@tab-change`
 在组件挂载前抛出，直接调用会被吞掉），见 [`console.md` §7](console.md) 的说明与

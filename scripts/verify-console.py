@@ -47,7 +47,16 @@ spec/rest-catalog-open-api-iceberg.yaml）。路径写错时前端只表现为�
  16. 提示图标     问号图标必须「悬停即显示」：trigger 显式写成 hover、show-after 为 0，
                   且命中区比 14px 的图标本身大一圈。加延迟或要求点击时，用户看到的
                   现象是「移到图标上没反应」，而页面不会报任何错
- 17. 文档计数     文档里写的「N 组 M 项」与脚本实际一致——加校验组的人要顺手改文档，
+ 17. 目录浏览入口  工具条常驻、页头不重复、Iceberg catalog 下能建视图
+ 18. 存储页       两种格式同一套读法：KPI 来自管理面聚合端点，口径（加权平均、
+                  小文件判据）钉在服务端的聚合里，前端不另算一遍
+ 19. 表格远程分页  页码、页大小与过滤全部下推服务端，页面只持有一页数据
+ 20. 数据预览     分区默认锁最新、采样必须标注、只走一个端点（不绕过判权另开读路径）
+ 21. 血缘         表详情页的「血缘」页签：图/邻接表/列映射三视图共用一次响应，
+                  绘制层不依赖 UI 库、格式色只读 CSS 变量、布局是纯函数、
+                  LOD 阈值只有一处（带滞回）。这些错法都不报错——图会画歪、
+                  颜色会与图例不一致、刷新一次位置全变
+ 22. 文档计数     文档里写的「N 组 M 项」与脚本实际一致——加校验组的人要顺手改文档，
                   而这条约定此前没人执行（真漂过一次：docs/console.md 37、实际 38）
 
 用法：
@@ -209,6 +218,13 @@ EXTENSION_ENDPOINTS = {
     # （LoadTableResult 里没有本服务端的 id），而预览的两个端点按 id 寻址。
     # 判权与预览同一道门（TABLE 级 SELECT），不另开一条"能确认表存在"的路。
     ("GET", "/api/console/v1/tables/lookup"): "按名字查表的内部 id（供 Iceberg 表详情页调预览）",
+    # 血缘读端点（本工程扩展，挂管理 API 基址）：表级上下游与列级映射。
+    # 三份规格都没有它——血缘是**跨 catalog** 的关系，不是某张表上的操作，
+    # 而 catalog API 的每个端点都必须在 CatalogAccessRules 登记权限映射。
+    # 服务端实现见 LineageController；两条都只读，写入口（POST /lineage/runs）
+    # 只给引擎侧上报器用，控制台不登记。
+    ("GET", "/api/management/v1/lineage/tables"): "表详情页血缘图（表级上下游，一次一跳，只读）",
+    ("GET", "/api/management/v1/lineage/columns"): "表详情页血缘图的列映射视图（按目标列分组，只读）",
 }
 
 problems = []
@@ -1721,10 +1737,131 @@ check("换表或刷新时作废已换到的内部 id",
       ice_source.count("previewTableId.value = null") >= 2,
       "拿旧表的 id 去预览新表，读到的是别人的数据——比报错严重得多")
 
-# ------------------------------------------------------------------ 21. 文档计数
+# ------------------------------------------------------------------ 21. 血缘
 
 print()
-print("21. 文档计数（文档写的「N 组 M 项」必须与脚本实际一致）")
+print("21. 血缘（表详情页的「血缘」页签：图 / 邻接表 / 列映射）")
+
+# 这一个特性横跨「两个详情页 + 七个组件 + 三个纯函数模块 + 一个组合式 + 两个端点」，
+# 而它的错法几乎都不报错：图能画出来但是歪的、颜色与图例不一致、刷新一次位置全变、
+# 页签挂上了但发两次请求。因此钉的是**结构性的那几条**，不是像素。
+LINEAGE_DIR = os.path.join(CONSOLE_DIR, "src/components/lineage")
+LINEAGE_PANEL = os.path.join(LINEAGE_DIR, "LineagePanel.vue")
+LINEAGE_GRAPH = os.path.join(LINEAGE_DIR, "LineageGraph.vue")
+LINEAGE_ADJACENCY = os.path.join(LINEAGE_DIR, "LineageAdjacency.vue")
+LINEAGE_COLUMNS = os.path.join(LINEAGE_DIR, "LineageColumnTable.vue")
+LINEAGE_LAYOUT_JS = os.path.join(CONSOLE_DIR, "src/utils/lineageLayout.js")
+LINEAGE_RENDER_JS = os.path.join(CONSOLE_DIR, "src/utils/lineageRender.js")
+LINEAGE_COMPOSABLE_JS = os.path.join(CONSOLE_DIR, "src/composables/lineage.js")
+LINEAGE_CONTROLLER = os.path.join(SERVER_JAVA, "web/LineageController.java")
+LINEAGE_LISTENER = os.path.join(CORE_JAVA, "event/LineageEdgeCleanupListener.java")
+STYLE_INDEX = os.path.join(CONSOLE_DIR, "src/styles/index.css")
+
+lineage_panel_source = read(LINEAGE_PANEL)
+graph_source = read(LINEAGE_GRAPH)
+layout_source = read(LINEAGE_LAYOUT_JS)
+render_source = read(LINEAGE_RENDER_JS)
+lineage_composable = read(LINEAGE_COMPOSABLE_JS)
+lineage_controller = read(LINEAGE_CONTROLLER)
+style_source = read(STYLE_INDEX)
+table_detail = read(TABLE_VIEW)
+
+# 同步 import 会让「打开一张表」的成本因为多了一个页签而变高：面板带着 Canvas、
+# 布局与两个表格组件（约 35KB gzip 前）。两个详情页都要异步。
+async_import = "defineAsyncComponent(() => import('@/components/lineage/LineagePanel.vue'))"
+check("两个表详情页都用异步组件挂血缘面板",
+      table_detail.count(async_import) == 1 and ice_source.count(async_import) == 1,
+      "同步 import 等于让每张表的详情页都为一块多数人不看的图付下载与解析成本")
+
+check("两个详情页都有「血缘」页签，且正文按页签名渲染",
+      all('label="血缘" name="lineage"' in src and "tab === 'lineage'" in src
+          for src in (table_detail, ice_source)),
+      "页签点了没反应，通常是因为正文的条件写的是另一个 name")
+
+# 面板自己查数据（挂载即查一跳），父组件没有可调的 load()；不登记就会在换表时
+# 被当成「需要重新加载」而调一次不存在的加载器。
+check("血缘页签登记为「自带数据」的页签，父组件不替它发请求",
+      re.search(r"SELF_CONTAINED_TABS\s*=\s*new Set\(\[[^\]]*'lineage'", table_detail)
+      is not None,
+      "面板的数据不是 useResource 的一份，父组件替它发请求只会发两次")
+
+# Canvas 里画不出组件库：图与绘制层一旦 import element-plus，就意味着把布局逻辑
+# 写进了一个只能靠 Vue 运行时才能测的组件里。
+check("图与绘制层不 import element-plus（渲染层与 UI 库解耦）",
+      not re.search(r"""from\s+['"]element-plus['"]""", graph_source + render_source),
+      "绘制层要能被 tools/lineage-tests 直接调用——它不该依赖 Vue 运行时")
+
+check("三个格式色只从 CSS 变量读，且变量在全局样式里有定义",
+      all(f"--fmt-{name}" in render_source and f"--fmt-{name}" in style_source
+          for name in ("paimon", "iceberg", "external")),
+      "硬编码色值会让画布与图例、目录页徽标三处渐渐不同色，而没人会去比对")
+
+# 确定性：图的空间记忆靠位置。随机数、时钟、DOM 读数都会让同一份数据画到不同地方。
+check("布局是纯函数：不读 DOM、不用 Math.random 与 Date.now",
+      not any(token in layout_source
+              for token in ("document", "window.", "Math.random", "Date.now")),
+      "同一份数据两次布局出不同坐标，用户刷新一次就得重新找表")
+
+check("LOD 阈值只有一处实现（带滞回的那一处）",
+      "export function lodFor" in render_source
+      and "lodFor" not in layout_source,
+      "两处阈值一旦不同，缩放停在临界点上会来回换档——视觉上是闪")
+
+check("边按「颜色 + 线宽」分组后用 Path2D 批量描边",
+      "new Path2D()" in render_source and "ctx.stroke(group.path)" in render_source,
+      "1500 条边逐条 stroke 会越过 16ms 的帧预算，拖拽时表现为掉帧")
+
+check("面板只经 lineageApi 取数（不手拼管理面地址）",
+      "lineageApi" in lineage_panel_source
+      and "/api/management/v1/lineage" not in lineage_panel_source,
+      "路径散在组件里之后，服务端改一次路径就要全文搜索")
+
+check("控制台不声明血缘的写入口（上报只给引擎侧）",
+      "/api/management/v1/lineage/runs" not in endpoints_source,
+      "手工上报等于让人手写一条假的依赖关系")
+
+check("列映射切到「列」视图才发第二次请求（图与邻接表共用同一次响应）",
+      "if (next === 'columns') loadColumns()" in lineage_panel_source,
+      "三视图各发一次请求时，「切过去看一眼再切回来」要白等两次网络")
+
+check("节点超过 500 自动落邻接表，且留一个「仍要看图」的出口",
+      "GRAPH_NODE_LIMIT = 500" in lineage_composable
+      and "forceGraph" in lineage_panel_source and "仍要看图" in lineage_panel_source,
+      "超大图直接画会卡住主线程；只降级不给出口，等于把功能关掉")
+
+check("邻接表与列映射表用 el-table-v2（虚拟滚动，也是 Canvas 的无障碍替代）",
+      "el-table-v2" in read(LINEAGE_ADJACENCY) and "el-table-v2" in read(LINEAGE_COLUMNS),
+      "Canvas 对读屏是空白，表格是唯一的可达路径；不分页的表格在 500 行上会卡")
+
+check("抽屉打开时画布让位（按让位后的宽度重排，而不是被压扁）",
+      "padding-right: 340px" in lineage_panel_source and "lp-shifted" in lineage_panel_source,
+      "被压扁的图比不看更糟：坐标还在，只是挤成一团")
+
+check("血缘的五个端点在服务端都有实现",
+      all(mapping in lineage_controller for mapping in (
+          '@PostMapping("/runs")', '@GetMapping("/runs")', '@GetMapping("/runs/{runId}")',
+          '@GetMapping("/tables")', '@GetMapping("/columns")')),
+      "前端加了端点、服务端没实现时，页签里只有一句「加载失败」")
+
+# 图的 ETag 只随边表变化，绝大多数请求该命中 304。控制器处理条件请求（不在服务层）：
+# 要不要短路是 HTTP 语义，与「图怎么算」无关。
+check("图端点处理 If-None-Match：命中回 304，且允许缓存但每次验证",
+      "If-None-Match" in lineage_controller and "NOT_MODIFIED" in lineage_controller
+      and "noCache()" in lineage_controller,
+      "写成 no-store 会让每次切页签都重新序列化整张图")
+
+# 边表是状态、run 是事件：表被删时由事件监听器级联删边，否则图上会留下一堆
+# 打不开的节点，而且永远清不掉（清理任务只清 run）。
+lineage_listener = read(LINEAGE_LISTENER)
+check("表被删除时级联清理边表",
+      "TABLE_DROPPED" in lineage_listener and "TABLE_UNREGISTERED" in lineage_listener
+      and "dropEdges" in lineage_listener,
+      "留下的是查不到、点不开、也不会自己消失的节点")
+
+# ------------------------------------------------------------------ 22. 文档计数
+
+print()
+print("22. 文档计数（文档写的「N 组 M 项」必须与脚本实际一致）")
 
 # 这一组是**元校验**，起因是一次真实的漂移：docs/console.md 写「12 组 37 项」、
 # README 写「12 组 38 项」，而脚本实际是 38——两个数字都没人核对，因为脚本此前

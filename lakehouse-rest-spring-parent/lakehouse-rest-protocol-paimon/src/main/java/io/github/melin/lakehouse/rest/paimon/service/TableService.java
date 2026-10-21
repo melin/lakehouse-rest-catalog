@@ -1,5 +1,6 @@
 package io.github.melin.lakehouse.rest.paimon.service;
 
+import io.github.melin.lakehouse.rest.support.LineageRefs;
 import io.github.melin.lakehouse.rest.config.RequestContext;
 import io.github.melin.lakehouse.rest.config.RestServerProperties;
 import io.github.melin.lakehouse.rest.domain.entity.CatalogEntity;
@@ -198,6 +199,8 @@ public class TableService {
     public void create(String prefix, String databaseName, TableDtos.CreateTableRequest request) {
         DatabaseEntity database = tableLookup.requireDatabase(prefix, databaseName);
         String tableName = requireObjectName(request == null ? null : request.identifier(), databaseName);
+        // 见 DatabaseService.create 里的同一条校验：`~` 开头的表名会与血缘的外部节点撞名
+        LineageRefs.requireNotReserved(tableName, "table");
         if (tableRepository.existsByDatabaseIdAndName(database.getId(), tableName)) {
             throw ApiException.tableAlreadyExist(tableName);
         }

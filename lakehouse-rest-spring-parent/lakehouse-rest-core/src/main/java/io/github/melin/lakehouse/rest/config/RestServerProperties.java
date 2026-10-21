@@ -83,6 +83,9 @@ public class RestServerProperties {
     /** {@code lakehouse.rest.optimization.*}：表存储优化（见 {@link Optimization}）。 */
     private final Optimization optimization = new Optimization();
 
+    /** {@code lakehouse.rest.lineage.*}：Spark SQL 血缘（见 {@link Lineage}）。 */
+    private final Lineage lineage = new Lineage();
+
     /** Bearer 鉴权开关。关闭时所有请求以 {@code principal} 身份通过。 */
     @Getter
     @Setter
@@ -913,5 +916,55 @@ public class RestServerProperties {
          * （{@code AccessTokenService} 已具备签发能力），属于后续优化项。
          */
         private String catalogToken = "";
+    }
+
+    /**
+     * {@code lakehouse.rest.lineage.*}：Spark SQL 血缘（设计见 {@code docs/lineage-design.md}）。
+     *
+     * <p><b>默认关。</b>两个理由：没有客户端埋点就没有数据，写了也只是一张空表；
+     * 而边表<b>不按时间清</b>（§7.5），一旦开始写就只剩「删表时级联删边」一条回收路径，
+     * 因此量级要先在测试环境跑准。读端点不受这个开关限制——关闭只影响写入，
+     * 已有的边仍然能查（关掉采集的部署不该连带看不见历史图）。
+     */
+    @Getter
+    @Setter
+    public static class Lineage {
+
+        /** 是否接受 {@code POST /api/management/v1/lineage/runs}。 */
+        private boolean enabled = false;
+
+        /**
+         * {@code lineage_run} 的保留天数。
+         *
+         * <p>只清 run，不清边：边是「现在谁依赖谁」的状态，它是图本身。
+         * 保留期到了之后「历史上某次执行用了什么列映射」查不到，但
+         * 「最近一次是谁写的」仍在边表的 {@code last_seen} 上（§7.1 已声明这个代价）。
+         */
+        private int runRetentionDays = 90;
+
+        /** 单次上报最多几条 run。超了 400，不静默截断——客户端该自己切批。 */
+        private int maxRunsPerBatch = 50;
+
+        /**
+         * 单个目标表的列级边上限。超了服务端降级为「只有表级」并给 run 标
+         * {@code truncated}（§6.2）：宽表 1000 列 × 5 张源表能到 5000 条边，
+         * 一次请求写入它的代价远大于图上的收益。
+         */
+        private int maxColumnsPerTarget = 2000;
+
+        /** 图遍历深度上限（{@code depth} 参数超过它时 400，不静默截断）。 */
+        private int maxDepth = 5;
+
+        /** 单次图查询返回节点数上限（硬上限 2000，见 {@code LineageService}）。 */
+        private int maxNodes = 500;
+
+        /**
+         * 过期 run 的清理节拍（cron）。
+         *
+         * <p>与优化调度同一个理由，这个键在 {@code @Scheduled} 的占位符里也出现一次：
+         * 注解的占位符在 bean 绑定之前解析，注入不了本对象。改的时候两处都要动
+         * （两处默认值相同，漂移的表现是「配置写了但节拍没变」）。
+         */
+        private String cleanupCron = "0 30 3 * * *";
     }
 }

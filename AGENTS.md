@@ -145,10 +145,11 @@ python3 scripts/gen-management-contract.py                # 重生成 docs/manag
 python3 scripts/verify-management-contract.py             # 反解文档与规格逐行比对
 python3 scripts/verify-spark-sql-doc.py                   # Spark SQL 文档 ↔ 语法文件/PermissionDtos/客户端
 python3 scripts/verify-k8s-manifests.py                   # K8s 清单
+python3 scripts/verify-lineage-doc.py                     # 血缘文档 ↔ 控制器映射 / 配置键
 ./scripts/gen-mysql-ddl.sh                                # 重生成 sql/schema-mysql.sql
 ```
 
-- 这些 Python 脚本都解析 OpenAPI 规格，依赖 **PyYAML**（`python3 -m pip install --user PyYAML`）。
+- 这些 Python 脚本除 `verify-lineage-doc.py` 外都解析 OpenAPI 规格，依赖 **PyYAML**
   宿主机常有多个解释器，装了 PyYAML 的未必是默认那个——用
   `PYTHON=/path/to/python3 ./scripts/xxx.sh` 指定。
 - `-o`（离线）在依赖已缓存时可用。
@@ -236,10 +237,10 @@ deploy/kubernetes/      kustomize 清单（有独立 README）
 spec/                   两份 OpenAPI 规格的仓库副本（运行时可从 /<name> 下载）
 sql/                    MySQL 建表语句（生成物）
 scripts/                验收 / 生成 / 校验 / 镜像构建脚本
-docs/                   23 份设计文档（另有一份配套效果图 HTML）
+docs/                   23 份设计文档（另有两份配套效果图 HTML）
 ```
 
-服务端四模块的**类数**：core 86 · storage 8 · protocol-paimon 35 · server 39（共 168）。
+服务端四模块的**类数**：core 117 · storage 9 · protocol-paimon 38 · server 46（共 210）。
 core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.rest.*`），所以「按包扫描」
 的 Spring 组件扫描与 JPA 实体扫描在拆分前后**行为完全一致**，搬类不需要改任何 `import`——
 编译通过本身就是搬对了的证据（详见 [`docs/maven-module-design.md`](docs/maven-module-design.md) §8）。
@@ -260,12 +261,12 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
 | `catalog-api-endpoints.md` | Catalog API 的端点、基址、前缀、授权映射；**两个协议面各一章**——Paimon 的 60 个与 Iceberg 的 30 个（含 5 个不声明的、各端点的成功码、错误模型） |
 | `management-api-overview.md` | 官方权限端点与扩展端点落在哪几个控制器、易读错的语义 |
 | `management-api-contract.md` | 管理 API 字段与权限枚举**逐字契约**（生成物，勿手改） |
-| `data-model.md` | 改实体 / 看 20 张表划分、摘要列与审计列的理由、实体与仓储分在哪两个模块、Iceberg 协议面新增的 9 个列（§1.1） |
+| `data-model.md` | 改实体 / 看 23 张表划分、摘要列与审计列的理由、实体与仓储分在哪两个模块、Iceberg 协议面新增的 9 个列（§1.1）、血缘三表（§2.3） |
 | `table-optimization.md` | 改表存储优化：三层配置合并、批次与调度游标、组批与提交、前后指标；**两种表格式共用一套策略表与批次表**，参数键按格式分派（§2.5 是 Iceberg 的对应物，§6.5 是执行侧差异） |
 | `event-framework.md` | 加事件 / 接 listener：9 类 33 个领域事件与触发点、与 Polaris 枚举的映射、`audit_event` 表、发布监听链路、按监听器的类别/类型订阅、增量拉取契约（`?since=` / `?category=`）与不发清单 |
 | `generic-table-design.md` | parquet / orc / lance / vortex 纳入目录（**设计稿，未实现**）：格式能力矩阵、`table_kind` 方案取舍、端点与权限、Spark 接入、影响面与风险 |
 | `metrics-design.md` | 加指标 / 接 Prometheus / 排查「指标太贵」：**设计稿，未实现**——Polaris telemetry 的事实基线（四类来源、realm 基数闸门、SLO 桶、Iceberg 用量报告与运维指标的区别）、`lakehouse.*` 指标目录与基数预算（<1500）、标签黑名单与 catalog 折叠规则、切面替代逐端点 `@Timed`、管理端口暴露与 ServiceMonitor、告警/看板示例、`verify-metrics-doc.py` 一致性校验 |
-| `lineage-design.md` | 做 Spark SQL 血缘 / 评审血缘方案：**设计稿，未实现**——为什么在引擎侧抽而不是服务端重解析（五个错法）、为什么必须 `analyzed`（CTE 要再跑一次 optimizer）、参考实现 `kyuubi-spark-lineage` 的机制拆解（属性集下推 / 16 行节点规则 / `__count__` 等三个占位属性 / 表名归一化 / 六个短板）与我们改的 10 处、归一化模型（`~` 前缀、五种列 `kind`、视图口径）、上报契约（幂等 / 异步 / 队列满丢弃）、run 与边两张语义不同的表、图查询（环、`depth`、`truncated`）、展现（分层布局 / Canvas LOD / 折叠 / 列级虚拟列表 / 性能预算）、前端落地视角（§9.11–9.14：组件清单与 0 新增依赖、表详情页「血缘」页签集成、数据流；效果图 `docs/lineage-mockup.html` 五个状态）与配置；**只做 Spark，Flink 不做** |
+| `lineage-design.md` | 做 Spark SQL 血缘 / 评审血缘方案：**服务端与控制台已实现，§5 的 Spark 侧抽取器未做**——为什么在引擎侧抽而不是服务端重解析（五个错法）、为什么必须 `analyzed`（CTE 要再跑一次 optimizer）、参考实现 `kyuubi-spark-lineage` 的机制拆解（属性集下推 / 16 行节点规则 / `__count__` 等三个占位属性 / 表名归一化 / 六个短板）与我们改的 10 处、归一化模型（`~` 前缀、五种列 `kind`、视图口径）、上报契约（幂等 / 异步 / 队列满丢弃）、run 与边两张语义不同的表、图查询（环、`depth`、`truncated`）、展现（分层布局 / Canvas LOD / 折叠 / 列级虚拟列表 / 性能预算）、前端落地视角（§9.11–9.14：组件清单与 0 新增依赖、表详情页「血缘」页签集成、数据流；效果图 `docs/lineage-mockup.html` 五个状态）与配置；**只做 Spark，Flink 不做** |
 | `maven-module-design.md` | 改模块划分 / 加模块（再加一个格式面就照 §12 那份清单走）：依赖图、两条父 POM、三条 enforcer 不变量、五段落地记录（§8–§12） |
 | `spark-sql-reference.md` | 语句级参考（第 10 节示例会被测试真跑） |
 | `spark-sql-extension.md` | 改 Spark 扩展：做法、两个约束、测试分层 |
@@ -335,7 +336,7 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
 | 层 | 命令 | 抓什么 |
 | --- | --- | --- |
 | 单元/集成 | `mvn -o test`（服务端 344 + Spark 107，共 451；Spark 侧 37 个跳过，其中 35 个是需要真实服务端的六类；optimizer 另有 25 个，`-pl :lakehouse-rest-optimizer` 单独跑） | 行为回归。注意 Spark 模块的 `example/PaimonS3Test` 当前会在 BUILD FAILURE 停下（缺 `spark.sql.extensions`，与 S3 环境无关）；要单独看服务端结果用 `mvn -o test -pl :lakehouse-rest-server` |
-| 端点多面 | `verify-console.py`、`verify-management-contract.py`、`verify-spark-sql-doc.py`、`verify-k8s-manifests.py` | **跨文件的机械一致性**：前端字段名 vs 服务端 record、文档表格 vs 规格、语法文件 vs PermissionDtos vs 客户端 |
+| 端点多面 | `verify-console.py`、`verify-management-contract.py`、`verify-spark-sql-doc.py`、`verify-k8s-manifests.py`、`verify-lineage-doc.py`
 | 契约（桩） | `ManagementSqlExecutionTests`（真实 SparkSession + 桩服务端） | 扩展真被加载、真执行 |
 | 契约（真服务端） | `./scripts/e2e-spark-sql.sh` | 客户端与服务端的**实际**契约（桩只能证明客户端与自己的假设自洽） |
 | HTTP 冒烟 | `api-sweep.sh` / `management-sweep.sh` / `sweep-console-auth.sh` | 规格端点全覆盖、真实报文与错误码 |
@@ -346,7 +347,7 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
 - **写了机械校验就要做变异测试**：故意把被校验的东西改错（DTO 字段改名、前端类型列表少一项），
   确认校验脚本**报得出来**。不做的校验往往是空跑。
 - 新增校验组要顺手把「总数」写进 `README.md` / `docs/console.md`。**这条现在由机制兜着**
-  （`verify-console.py` 第 19 组断言这两处写的「N 组 M 项」与脚本实际一致，也断言那一组自己）——
+  （`verify-console.py` 第 22 组断言这两处写的「N 组 M 项」与脚本实际一致，也断言那一组自己）——
   在此之前它只是句人情话，真漏过一次：`docs/console.md` 写 37、`README.md` 写 38、实际 38。
 - **前端字段分层的改动要连 `build()` 一起看**：catalog 表单的字段拆成了
   `BASIC_FIELDS` / `ADVANCED_FIELDS`（高级那张进折叠区），而 `build()` 读的是两者合并后的
@@ -459,6 +460,6 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
 - 事件框架：[`docs/event-framework.md`](docs/event-framework.md)（9 类 33 个领域事件、与 Polaris 枚举的映射、发布点清单与不发清单、按监听器的类别/类型订阅、增量拉取契约；加事件或接 listener 先读它）
 - 通用表（设计稿）：[`docs/generic-table-design.md`](docs/generic-table-design.md)（parquet / orc / lance / vortex 纳入目录：格式能力矩阵、`table_kind` 方案取舍、端点与权限、Spark 接入、影响面与风险；**未实现**）
 - 指标（设计稿）：[`docs/metrics-design.md`](docs/metrics-design.md)（Polaris telemetry 基线、`lakehouse.*` 指标目录与基数预算、标签闸门、管理端口与 ServiceMonitor；**未实现**）
-- 血缘（设计稿）：[`docs/lineage-design.md`](docs/lineage-design.md)（为什么在引擎侧抽、为什么是 `analyzed`、参考实现 `kyuubi-spark-lineage` 的机制拆解与差异清单、归一化模型与五种列 `kind`、上报契约、run（事件）与边（状态）、图查询口径、展现（分层布局 / Canvas LOD / 折叠 / 性能预算）、前端组件与依赖清单及效果图 `docs/lineage-mockup.html`；**只做 Spark，未实现**）
+- 血缘：[`docs/lineage-design.md`](docs/lineage-design.md)（为什么在引擎侧抽、为什么是 `analyzed`、参考实现 `kyuubi-spark-lineage` 的机制拆解与差异清单、归一化模型与五种列 `kind`、上报契约、run（事件）与边（状态）、图查询口径、展现（分层布局 / Canvas LOD / 折叠 / 性能预算）、前端组件与依赖清单及效果图 `docs/lineage-mockup.html`；**服务端与控制台已实现，只做 Spark、§5 的引擎侧抽取器未做**）
 - 数据模型：[`docs/data-model.md`](docs/data-model.md)
 - 控制台：[`docs/console.md`](docs/console.md)、[`docs/console-auth.md`](docs/console-auth.md)

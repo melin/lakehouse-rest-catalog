@@ -1,5 +1,6 @@
 package io.github.melin.lakehouse.rest.paimon.service;
 
+import io.github.melin.lakehouse.rest.support.LineageRefs;
 import io.github.melin.lakehouse.rest.config.RequestContext;
 import io.github.melin.lakehouse.rest.config.RestServerProperties;
 import io.github.melin.lakehouse.rest.domain.entity.CatalogEntity;
@@ -80,6 +81,9 @@ public class DatabaseService {
         if (request == null || request.name() == null || request.name().isBlank()) {
             throw ApiException.badRequest("Database name must not be blank");
         }
+        // `~` 是血缘里外部节点的保留前缀（docs/lineage-design.md §4.1）：库名一旦以它开头，
+        // 血缘的 ref 就会把这张库里的表解析成「点不开的外部节点」，判权也被跳过
+        LineageRefs.requireNotReserved(request.name(), "database");
         CatalogEntity catalog = catalogService.resolveForFormat(prefix, CatalogFormat.PAIMON);
         if (databaseRepository.existsByCatalogIdAndName(catalog.getId(), request.name())) {
             throw ApiException.databaseAlreadyExist(request.name());

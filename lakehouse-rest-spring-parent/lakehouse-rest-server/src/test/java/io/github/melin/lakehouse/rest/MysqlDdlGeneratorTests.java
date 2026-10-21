@@ -111,12 +111,13 @@ class MysqlDdlGeneratorTests {
     /**
      * 实体的表数量；新增/删除实体时应同步调整，否则本测试会失败提醒。
      *
-     * <p>2026-10 删掉 catalog role 整层后从 23 降到 20
+     * <p>2026-10 删掉 catalog role 整层后从 23 降到 20；随后血缘三张表
+     * （run / table_edge / column_edge）加回来，又是 23
      * （{@code lakehouse_catalog_role} / {@code lakehouse_catalog_role_grant} /
      * {@code lakehouse_resource_grant} 三张表随之移除，授权只剩
      * {@code lakehouse_permission_assignment} 一张）。
      */
-    private static final int EXPECTED_TABLES = 20;
+    private static final int EXPECTED_TABLES = 23;
 
     /** MySQL 一张表一行的最大字节数（存储层上限，与列长度上限是两件事）。 */
     private static final long MYSQL_ROW_SIZE_LIMIT = 65535L;

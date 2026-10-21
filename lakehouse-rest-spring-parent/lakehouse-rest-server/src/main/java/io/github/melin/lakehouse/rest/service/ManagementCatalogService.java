@@ -1,5 +1,6 @@
 package io.github.melin.lakehouse.rest.service;
 
+import io.github.melin.lakehouse.rest.support.LineageRefs;
 import io.github.melin.lakehouse.rest.config.RequestContext;
 import io.github.melin.lakehouse.rest.config.RestServerProperties;
 import io.github.melin.lakehouse.rest.domain.entity.CatalogEntity;
@@ -110,6 +111,9 @@ public class ManagementCatalogService {
         if (name == null || name.isBlank()) {
             throw ApiException.badRequest("catalog.name is required");
         }
+        // `~` 是血缘里外部节点的保留前缀（docs/lineage-design.md §4.1）：catalog 名以它开头，
+        // 这个 catalog 下的所有表在血缘图里都会变成「点不开」的节点
+        LineageRefs.requireNotReserved(name, "catalog");
         if (catalogRepository.findByPrefix(name).isPresent()) {
             throw ApiException.managementAlreadyExist(ResourceType.CATALOG, name);
         }

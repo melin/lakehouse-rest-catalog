@@ -64,6 +64,10 @@
       <PanelCard flush>
         <el-tabs v-model="tab" class="pc-tabs" @tab-change="onTabChange">
           <el-tab-pane label="详细信息" name="details" />
+          <!-- 血缘：唯一一个「数据不在本页 composable 里」的页签（面板挂载即查，见 LineagePanel）。
+               它不跟着 isPaimonTable 伸缩——依赖关系由引擎上报，Format / Object 表同样可能被
+               Spark 写过；没采集到时面板自己给空态，比「页签凭空消失」更能说明问题 -->
+          <el-tab-pane label="血缘" name="lineage" />
           <!-- 数据预览放在「详细信息」之后、「快照」之前：它是详情页里第二个"第一眼要看"的东西。
                只给快照托管表（Paimon / table）——Format / Object / Lance 表的数据文件不是
                快照托管的 parquet 族，显示一个"不支持"不如不显示（与快照/标签/分支同一条伸缩规则） -->
@@ -528,6 +532,14 @@
             />
           </template>
 
+          <!------------------------------- 血缘 -------------------------------->
+          <!-- 面板自己管数据（挂载即查一跳、展开按需、列映射切过去才发），父组件只给一个 ref。
+               ref 是点拼全名 `catalog.namespace.table`：服务端按这个口径存边，两处必须一致。
+               注意不是 `:ref`——那是模板 ref 的保留属性，传不进 prop -->
+          <template v-else-if="tab === 'lineage'">
+            <LineagePanel :table-ref="lineageRef" />
+          </template>
+
           <!------------------------------- 数据预览 -------------------------------->
           <!-- 面板自身不判断格式：格式差异（读取器、分区拼法、hidden 分区）全在服务端。
                因此这里只传 tableId 与全量列名（投影多选框的选项来源） -->
@@ -624,7 +636,7 @@
 </template>
 
 <script setup>
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
 import CopyText from '@/components/CopyText.vue'
@@ -688,6 +700,23 @@ const database = computed(() => route.params.database)
 const table = computed(() => route.params.table)
 
 /**
+ * 血缘面板按需加载。
+ *
+ * <p>它是本页最重的组件（Canvas 渲染 + 布局 + 顶点/边表 + 图纸抽派），而大多数人打开表详情
+ * 并不看血缘。同步 import 会让「打开一张表的成本」因为多了一个页签而变高——这与
+ * 本页「页签之外一个请求都不多发」是同一条理由。异步组件把它的代码一起推迟到切过去那一刻。
+ */
+const LineagePanel = defineAsyncComponent(() => import('@/components/lineage/LineagePanel.vue'))
+
+/**
+ * 传给血缘面板的表名：`catalog.database.table`（点拼）。
+ *
+ * <p>服务端按这个口径存边（`LineageRefs`），不能在这里换成「内部 id」或「带引号的名字」——
+ * 血缘记录由引擎侧上报，它只知道名字。
+ */
+const lineageRef = computed(() => [prefix.value, database.value, table.value].join('.'))
+
+/**
  * 这个 catalog 是不是 Iceberg 协议面。
  *
  * <p>**本页整个建立在 Paimon 协议面上**：表详情、快照、标签、分支、分区与数据访问
@@ -715,8 +744,13 @@ async function ensureCatalogs() {
 
 const tab = ref('details')
 
-/** 不需要额外请求的页签：切过去不触发 load。 */
-const SELF_CONTAINED_TABS = new Set(['details', 'access'])
+/**
+ * 不需要父组件替它发请求的页签：切过去不触发 load。
+ *
+ * <p>「血缘」在这里是因为数据由面板自己拉（挂载即查，见 `LineagePanel` 的 `loadGraph`）：
+ * 它不是 `useResource` 的一份数据，父组件没有可调的 `load()`。
+ */
+const SELF_CONTAINED_TABS = new Set(['details', 'access', 'lineage'])
 
 /**
  * 概览：表详情 +（仅 Paimon 表）最新快照。

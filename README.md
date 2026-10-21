@@ -18,7 +18,7 @@
   Management API 的 **3 个权限端点**（官方）+ 扩展端点（catalog / principal / 角色 / 优化）
   （概览见 [`docs/management-api-overview.md`](docs/management-api-overview.md)）
 - 元数据存储：**MySQL 8.0**（建表语句由实体生成，见 `sql/schema-mysql.sql`；
-  20 张表的划分与设计取舍见 [`docs/data-model.md`](docs/data-model.md)），
+23 张表的划分与设计取舍见 [`docs/data-model.md`](docs/data-model.md)），
   通过 JPA 访问；另有 H2 内存库与 PostgreSQL 两个 profile 可选
 - 模块：**12 个 Maven 模块**——服务端拆为 `core`（与格式无关的地基）/ `storage`（FileIO）/
   `protocol-paimon`（Catalog API）/ `protocol-iceberg`（Iceberg REST）/ `server`（可执行）五个，
@@ -152,7 +152,7 @@ k8s 资源名的 `paimon-` 前缀**故意不改**：它不是产品名，是历�
 | [`catalog-api-endpoints.md`](docs/catalog-api-endpoints.md) | 要查 Catalog API 有哪些端点——Paimon 的 60 个与 Iceberg 的 26 个按资源分组，含基址、前缀与授权映射说明 |
 | [`management-api-overview.md`](docs/management-api-overview.md) | 要读 Management API——官方权限端点与扩展端点各落在哪几个控制器上、几处容易读错的语义 |
 | [`management-api-contract.md`](docs/management-api-contract.md) | 要查管理 API 的端点、字段、权限枚举——由规格生成，逐字对照 |
-| [`data-model.md`](docs/data-model.md) | 要改实体或看表结构——20 张表的划分、摘要列与审计列的设计理由、实体与仓储分在哪两个模块、`lakehouse_` 前缀（原 `paimon_`）的来历与 §6 的迁移方案（原子 rename、回滚、验收） |
+| [`data-model.md`](docs/data-model.md) | 要改实体或看表结构——23 张表的划分、摘要列与审计列的设计理由、实体与仓储分在哪两个模块、`lakehouse_` 前缀（原 `paimon_`）的来历与 §6 的迁移方案（原子 rename、回滚、验收） |
 | [`spark-sql-reference.md`](docs/spark-sql-reference.md) | 要用 SQL 管理主体与授权——语句级参考，含完整示例 |
 | [`spark-sql-extension.md`](docs/spark-sql-extension.md) | 要改这个 Spark 扩展——语法扩展的做法、两个必须知道的约束、测试分层 |
 | [`spark-paimon-rest-e2e.md`](docs/spark-paimon-rest-e2e.md) | 要让 Spark 通过本服务端建 Paimon 表——连接配置、可执行的 SQL、报错对照表 |
@@ -170,7 +170,7 @@ k8s 资源名的 `paimon-` 前缀**故意不改**：它不是产品名，是历�
 | [`metrics-design.md`](docs/metrics-design.md) | 要加指标、接 Prometheus 或判断「这个指标该不该打标签」——**设计稿，未实现**：Polaris telemetry 的事实基线（HTTP / API / 持久化 / 缓存四类来源，`realm_id` 基数闸门与「超限即停记」、SLO 显式桶、Iceberg 客户端用量报告与运维指标的区别）、`lakehouse.*` 指标目录与 <1500 的基数预算、标签黑名单与 catalog 折叠成 `__other__`、切面替代逐端点 `@Timed`、管理端口 8081 + ServiceMonitor、告警与看板、`verify-metrics-doc.py` 一致性校验 |
 | [`maven-module-design.md`](docs/maven-module-design.md) | 要改模块布局或 artifact 名——`lakehouse-rest-*` 命名定案、两个父 POM / 两个依赖世界、三条用 enforcer 守住的依赖不变量、改名清单与「哪四处故意不改」（§8.6），以及**已落地**的实测记录（§8，含与设计不一致的六处及原因） |
 | [`table-optimization.md`](docs/table-optimization.md) | 要改表存储优化或排查优化任务——三个动作的语义、批次与并发两道闸门、k8s 提交与状态跟踪、控制台两处页面 |
-| [`lineage-design.md`](docs/lineage-design.md) | 要做 Spark SQL 血缘（表级 / 列级）或评审方案——**设计稿，未实现**：为什么必须在引擎侧抽而不是服务端重解析（五个错法）、为什么是 `analyzed` 而不是 `optimized`、参考实现 `kyuubi-spark-lineage` 的机制拆解（属性集下推、16 行节点规则、`__count__` 等三个占位、表名归一化）与「抄了什么 / 改了 10 处」、归一化模型（`~` 保留前缀、五种列的 `kind`）、上报契约与异步丢弃、run（事件）与边（状态）两张语义不同的表、图查询口径与环、控制台展现（跳数即层号的分层布局、单张 Canvas + 三档 LOD、折叠与按需展开、列级聚合与虚拟列表、性能预算）、前端落地视角（§9.11–9.14：组件清单与 0 新增依赖、表详情页「血缘」页签集成、数据流；效果图 `docs/lineage-mockup.html`）、配置与验收；**只做 Spark，Flink 留位** |
+| [`lineage-design.md`](docs/lineage-design.md) | 要做 Spark SQL 血缘（表级 / 列级）或评审方案——**服务端与控制台已实现**（三张表、5 个端点、表详情页「血缘」页签；§5 的 Spark 侧抽取器未做）：为什么必须在引擎侧抽而不是服务端重解析（五个错法）、为什么是 `analyzed` 而不是 `optimized`、参考实现 `kyuubi-spark-lineage` 的机制拆解（属性集下推、16 行节点规则、`__count__` 等三个占位、表名归一化）与「抄了什么 / 改了 10 处」、归一化模型（`~` 保留前缀、五种列的 `kind`）、上报契约与异步丢弃、run（事件）与边（状态）两张语义不同的表、图查询口径与环、控制台展现（跳数即层号的分层布局、单张 Canvas + 三档 LOD、折叠与按需展开、列级聚合与虚拟列表、性能预算）、前端落地视角（§9.11–9.14：组件清单与 0 新增依赖、表详情页「血缘」页签集成、数据流；效果图 `docs/lineage-mockup.html`）、配置与验收；**只做 Spark，Flink 留位** |
 | [`table-data-preview-design.md`](docs/table-data-preview-design.md) | 要在表详情页加「数据预览」或评审该方案——**两种格式都已实现**（里程碑 M1 / M2 done；M3 / M4 待做）：为什么不能靠外部引擎、四种读法选型（格式自带 reader / `parquet-avro` 直读 / 嵌入式 DuckDB / 复用优化任务执行器——前三者各有「主键表读出幽灵行」之类的否决理由）、`POST /api/console/v1/tables/{tableId}/preview` 契约、三段式过滤（分区 → 裁文件 → 筛行）、**分区默认锁最新**（有序性判定 / 按文件数预算的级联收敛 / 哈希分区不编「最新」/ 空分区回退 / `partition` 与 `filters` 双通道）、无状态游标、采样与限额的口径、TABLE 级 `SELECT` 判权与 `table.previewed` 审计；配套效果图 [`table-data-preview-mockup.html`](docs/table-data-preview-mockup.html)（右上角可切换四种演示状态） |
 
 ---
@@ -189,7 +189,7 @@ mysql -h 127.0.0.1 -u root -p < sql/schema-mysql.sql
 ```
 
 `sql/schema-mysql.sql` 由 `scripts/gen-mysql-ddl.sh` 从 JPA 实体生成（23 张表、21 个唯一约束、
-26 个索引），**不要手工修改**——下次生成会覆盖。它会建出 `lakehouse_catalog` 库并切过去，
+30 个索引），**不要手工修改**——下次生成会覆盖。它会建出 `lakehouse_catalog` 库并切过去，
 库名与 `application.yml` 里的 `spring.datasource.url` 必须一致（用 `DB_NAME=... ` 重新生成可改）。
 
 连接信息默认是 `127.0.0.1:3306`、库 `lakehouse_catalog`、账号 `paimon/paimon`，
@@ -312,7 +312,7 @@ lakehouse-rest-spring-parent/
   lakehouse-rest-core/          与格式无关的地基
     web/          两套协议共用的端点：/v1/config、/v1/oauth/tokens、两条同路径 rename
     service/      协议分派（CatalogFormat / CatalogProtocol / CatalogProtocols）、错误形状判定、RBAC 判定
-    domain/       JPA 实体与仓储（22 张表）
+    domain/       JPA 实体与仓储（23 张表）
     dto/          两套规格共用的 DTO 词表、管理 API 与远程控制台契约
     support/      公共设施：JSON 编解码、schema 字段树、分页、路径、错误、存储配置
     config/       服务端配置、Bearer 鉴权、授权拦截器、启动初始化
@@ -958,6 +958,9 @@ python3 scripts/verify-management-contract.py
 # Spark SQL 参考文档：比对语法文件、规格枚举、客户端代码
 python3 scripts/verify-spark-sql-doc.py
 
+# 血缘文档：端点双向一致 + 配置键与默认值对照 RestServerProperties（不读规格，不需要 PyYAML）
+python3 scripts/verify-lineage-doc.py
+
 # MySQL 建表语句（改实体后必须重跑，否则启动时 validate 会失败）
 ./scripts/gen-mysql-ddl.sh                   # sql/schema-mysql.sql
 
@@ -966,14 +969,15 @@ python3 scripts/verify-spark-sql-doc.py
 python3 scripts/verify-console.py            # 只校验，不构建（多解释器时用 PYTHON=... 指定）
 ```
 
-这几个 Python 脚本都要解析 OpenAPI 规格，因此需要 PyYAML：
+上面除 `verify-lineage-doc.py` 外的几个脚本都要解析 OpenAPI 规格，因此需要 PyYAML
+（`verify-lineage-doc.py` 只读本仓的 Java 源码与 Markdown，不读规格）：
 
 ```bash
 python3 -m pip install --user PyYAML
 ```
 
 `gen-mysql-ddl.sh` 内部跑 `MysqlDdlGeneratorTests`：DDL 由 Hibernate 依实体元数据生成，
-**不手工维护**——22 张表、21 个唯一约束、23 个索引，手工维护必然漂移。生成器连的是 H2
+**不手工维护**——23 张表、21 个唯一约束、30 个索引，手工维护必然漂移。生成器连的是 H2
 但方言被钉在 MySQL 8.0（`MySql8DialectResolver`），因此生成过程不需要 MySQL，
 产出则已用真实 MySQL 8.0.46 验证过可直接执行。`DB_NAME=...` 可改建库语句里的库名。
 Iceberg 协议面落地的 9 个新列也由它产出（`catalog_format` 是
@@ -1178,10 +1182,11 @@ http://localhost:8080/console/
   用 `./scripts/build-console.sh` 一条命令完成构建与校验。
 - **路径不靠人工比对。** 全部端点收在 `lakehouse-rest-console/src/api/endpoints.js` 一张表里，
   由 `scripts/verify-console.py` 与三份 OpenAPI 规格（Paimon / Iceberg / 管理 API）机械比对
-  （21 组 111 项：端点存在性、引用完整性、五处基址一致、产物新鲜度、对话框状态、下拉候选来源、
+  （22 组 128 项：端点存在性、引用完整性、五处基址一致、产物新鲜度、对话框状态、下拉候选来源、
   静态凭据字段与服务端的一致性、两种格式的优化参数键、**catalog 表格式**、**Iceberg 目录浏览的契约形状**、
   存储字段分层、事件页的远程分页与类型筛选、问号图标悬停即显、**全站表格的远程分页（页码与过滤下推、
-  分页器只有 `TablePager` 一个）**，最后由一组「文档计数」盯住这个数字本身与脚本一致）；
+  分页器只有 `TablePager` 一个）**、**血缘页签的异步挂载与纯函数布局**，最后由一组「文档计数」盯住
+  这个数字本身与脚本一致）；
   服务端侧 `ConsoleApiTests` 守住静态资源托管与 SPA 深链回退。
 - **表格式（Paimon / Iceberg）在创建 Catalog 时就选定，之后不可改。** 新建弹窗里用
   **选项卡片**而不是下拉：每个选项要能读出「客户端走哪段路径」与一句话影响面；

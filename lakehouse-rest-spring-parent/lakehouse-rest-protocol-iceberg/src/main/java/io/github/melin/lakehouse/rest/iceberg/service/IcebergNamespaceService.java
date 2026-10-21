@@ -1,5 +1,6 @@
 package io.github.melin.lakehouse.rest.iceberg.service;
 
+import io.github.melin.lakehouse.rest.support.LineageRefs;
 import io.github.melin.lakehouse.rest.config.RequestContext;
 import io.github.melin.lakehouse.rest.config.RestServerProperties;
 import io.github.melin.lakehouse.rest.domain.entity.CatalogEntity;
@@ -112,6 +113,10 @@ public class IcebergNamespaceService {
             throw ApiException.badRequest("namespace must not be empty");
         }
         List<String> levels = normalized(request.namespace());
+        // 多级 namespace 用点号拼进血缘的 ref，`~` 在任意一级出现都会让整条路径变成外部节点
+        for (String level : levels) {
+            LineageRefs.requireNotReserved(level, "namespace");
+        }
         CatalogEntity catalog = resolve(prefix);
         String name = NamespacePaths.toStorageName(levels);
         if (databaseRepository.existsByCatalogIdAndName(catalog.getId(), name)) {

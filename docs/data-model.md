@@ -1,18 +1,20 @@
 # 数据模型
 
-服务端把 catalog 元数据与授权关系全部放进关系库，共 **20 张表、20 个 JPA 仓储接口**。
+服务端把 catalog 元数据与授权关系全部放进关系库，共 **23 张表、23 个 JPA 仓储接口**。
 本文件说明表的划分，以及三个容易看错或踩坑的设计点：摘要列、审计列、JSON 文档列。
 
 - 实体与仓储按模块分两处（模块划分见 [`maven-module-design.md`](maven-module-design.md) §8，
   目录层级见其 §9.1；下面两个路径里的 `lakehouse-rest-spring-parent/` 就是那层嵌套）：
-  - `lakehouse-rest-spring-parent/lakehouse-rest-core/.../domain/entity/` —— **17 个实体**
-    （catalog 侧 12 + 管理侧 4 + 事件审计 1），
-    另含 `AuditedEntity` 基类与 `JsonConverters`；同级 `domain/repo/` 有 **17 个仓储接口**
+  - `lakehouse-rest-spring-parent/lakehouse-rest-core/.../domain/entity/` —— **20 个实体**
+    （catalog 侧 12 + 管理侧 4 + 事件审计 1 + 血缘 3），
+    另含 `AuditedEntity` 基类与 `JsonConverters`；同级 `domain/repo/` 有 **20 个仓储接口**
   - `lakehouse-rest-spring-parent/lakehouse-rest-server/.../domain/entity/` —— **3 个表存储优化实体**
     （`TableOptimization` / `OptimizationJob` / `OptimizationJobItem`）；同级 `domain/repo/` 有 3 个仓储接口
-  - 合计 20 个实体 + 20 个仓储接口。分家的依据是**谁读它**而不是谁写它：
+  - 合计 23 个实体 + 23 个仓储接口。分家的依据是**谁读它**而不是谁写它：
     优化三表只有 server 侧的调度与控制器会读，留在 server；其余实体被协议层（`protocol-paimon`）
-    的面复用，所以下沉到 core，否则协议层要反向依赖 server
+    的面复用，所以下沉到 core，否则协议层要反向依赖 server。血缘三表虽然只由 core 的
+    `LineageService` 读，但**删表要顺手清边**——那件事挂在 core 的
+    `LineageEdgeCleanupListener`（订阅目录事件）上，跟着事件框架留在 core 才不用把关系反过来
 - **表名统一用 `lakehouse_` 前缀**（2026-10 由 `paimon_` 迁来，见 **§6**）。服务端早期只服务
   Paimon 一种格式，表名带的是 `paimon_`；加 Iceberg REST 支持时**没有另建一套元数据表**，
   而是在 `lakehouse_catalog` 上加一列 `catalog_format`（PAIMON / ICEBERG，
@@ -135,6 +137,26 @@
 对外接口一律用 catalog 名与「catalog.库.表」三段名，实体里存的是 id —— 转换只发生在
 `OptimizationJobService` 一处，见 [`table-optimization.md`](table-optimization.md) §5。
 
+## 2.3 血缘（3 张）
+
+三张表都不是 catalog 元数据，而是**引擎上报的依赖关系**，只由 `LineageService` 读写；
+`GET /lineage/tables|columns` 是它们的唯一出口（端点、判权与图的形状见
+[`lineage-design.md`](lineage-design.md) §6–§7）。
+
+| 表 | 对应资源 | 说明 |
+| --- | --- | --- |
+| `lakehouse_lineage_run` | 一次执行（事件） | 一次 INSERT / MERGE / CTAS 一行，**只插入、不更新**（`uk_lineage_run(run_id)` 兼作幂等键）；记引擎与版本、语句与写模式、`target_refs`（竖线包夹，供 `?ref=` 过滤）、`columns_truncated` |
+| `lakehouse_lineage_table_edge` | 表级边（状态） | 一对 `(源, 目标, 引擎)` 一行，重复执行只累加 `run_count` 并推进 `last_seen`；`uk_lineage_table_edge` 用两个 ref 的 SHA-256（`varchar(1024)` 在 utf8mb4 下超单列索引上限，见 §3） |
+| `lakehouse_lineage_column_edge` | 列级边（状态） | 一对 `(源表.列, 目标表.列)` 一行，取**最近一次**的 `transform_kind` / `expression`；常量列与静态分区列没有源，用空 `source_ref` + 空 `source_column` 占一行（唯一键因此仍成立，「没有源」是显式的一行而不是「查不到」） |
+
+两条语义值得单独记，理由都在 [`lineage-design.md`](lineage-design.md) §7：
+
+- **run 是事件、边是状态，刻意分成两类表。** 合成一张的话，「同一对表被跑了 1 万次」
+  就是 1 万行，而图上要的只是「谁依赖谁」加一个新鲜度。保留清理只按
+  `lakehouse.rest.lineage.run-retention-days` 删 run，边按 `last_seen` 老化、
+  由删表事件级联清——因此**清完 run 图还在**，这正是两张表分开的意义。
+- **`engine` 进唯一键。** 本期恒为 `SPARK`，但同一对表将来可能被不同引擎写过，
+  那是两条边（「哪个引擎在写」是有效信息）。唯一键里少一列，将来加引擎就是一次数据迁移。
 ---
 
 ## 3. 为什么有两个摘要列

@@ -30,5 +30,7 @@ public enum ResourceType {
     /** 存储优化策略与优化批次（本服务自己的一组资源，管理 API 的一部分）。 */
     TABLE_OPTIMIZATION,
     OPTIMIZATION_JOB,
+    /** 血缘的一次执行记录（{@code /api/management/v1/lineage/runs/{runId}} 的 404 用它定位）。 */
+    LINEAGE_RUN,
     UNKNOWN
 }

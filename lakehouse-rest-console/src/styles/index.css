@@ -27,6 +27,14 @@
   --pc-text: #1f2937;
   --pc-text-dim: #6b7280;
   --pc-accent: #1d4ed8;
+  /* 表格式色：血缘图的节点描边与图例、目录页的格式徽标共用这一组。
+   * 为什么不写在 canvas 里：Canvas 读不到 scoped 样式，而「格式色」要跟
+   * 页面配色（含深色主题）一起变——`lineageRender.readTheme()` 读的就是这三个变量，
+   * 换主题只需重读一次，不用改代码。三个取值的色相拉得开（蓝 / 青 / 灰）：
+   * 血缘图里两种格式同屏是常态，靠明度差区分在缩小时会糊。 */
+  --fmt-paimon: #2563eb;
+  --fmt-iceberg: #0f9d8f;
+  --fmt-external: #8b93a3;
   /* 卡片、面板等自有组件的圆角。为什么是 2px：见下方「圆角：统一 2px」 */
   --pc-radius: 2px;
   --pc-shadow: 0 1px 2px rgba(16, 24, 40, 0.05), 0 1px 3px rgba(16, 24, 40, 0.05);
@@ -119,6 +127,12 @@ html.dark {
   --pc-text-dim: #90a0b8;
   --pc-accent: #7ba7f7;
   --pc-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+
+  /* 深色底上要提亮一档：`#2563eb` 在 `#111a2b` 上偏暗，细描边会看不见
+   * （血缘图的节点描边是 1.5px，比徽标填充更吃对比度）。 */
+  --fmt-paimon: #6ea8fe;
+  --fmt-iceberg: #3ecfc0;
+  --fmt-external: #9aa3b2;
 
   --el-color-primary: #4b83f0;
 }

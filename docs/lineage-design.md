@@ -1,6 +1,9 @@
 # Spark SQL 血缘设计：从「执行过的 INSERT」里抽出表级与列级依赖
 
-> 状态：**设计稿，未实现**。本文只定方案、模型与契约，不含代码。
+> 状态：**服务端与控制台已实现**（三张表、五个端点、表详情页「血缘」页签；落地清单与
+> 与本文不一致的几处见 §13）。**§5 的 Spark 侧抽取器还没写**——它属于客户端埋点
+> （`spark.paimon.rest.lineage.*`，见 §10.2），放在引擎仓库而不是本仓；因此现在
+> 「上报方」这一环是空的，接收、归一、存储、查询与展现都已跑通并有测试。
 > 参考实现：[`apache/kyuubi` 的 `kyuubi-spark-lineage`](https://github.com/apache/kyuubi/tree/master/extensions/spark/kyuubi-spark-lineage)
 > ——§3 把它逐节点拆了一遍（算法骨架、16 行节点规则、三个占位属性、表名归一化），
 > §5.8 列出「抄了什么、改了什么、为什么改」。
@@ -14,7 +17,7 @@
 > [`docs/lineage-mockup.html`](lineage-mockup.html)——表详情页新增「血缘」页签的五个状态）。
 > **Flink 本期不做**：理由与「将来接进来要不要改模型」见 §10.3（结论：不用改）。
 > 与已有文档的关系：`event-framework.md`（**不塞进 `audit_event`**，理由见 §7.6）、
-> `data-model.md`（落地后表数 20 → 23）、`spark-sql-extension.md`（SQL 文本的唯一来源，
+> `data-model.md`（表数 20 → 23，三张表见其 §2.3）
 > 见 §2.4）、`console-table-detail.md`（页签伸缩规则）。
 
 ---
@@ -722,6 +725,7 @@ POST /api/management/v1/lineage/runs          # 批量上报，单次最多 50 �
 GET  /api/management/v1/lineage/tables        # 表级上下游（§8.1）
 GET  /api/management/v1/lineage/columns       # 列级映射（§8.2）
 GET  /api/management/v1/lineage/runs          # 运行历史（§8.3）
+GET  /api/management/v1/lineage/runs/{runId}  # 一条 run 的明细（含 SQL 与列映射，§8.3）
 ```
 
 为什么挂在**管理 API** 而不是 catalog API（`/v1/{prefix}/...`）：
@@ -814,6 +818,17 @@ onSuccess（driver 线程）                    reporter 线程（单线程，�
 判权复用 `AuthorizationService.coversScope` + `NamespacePaths` 那套（与 Iceberg 侧的
 `…/tables/{t}/metrics` 判 `TABLE_WRITE_DATA` 同口径），不新造一套判定。
 
+**落地时的权限名映射**：上表的 `TABLE_WRITE_DATA` / `TABLE_READ_PROPERTIES` 是 Polaris 原始
+权限名，本仓的 `Access` 枚举只有 12 项，落地取的是**目标表 `Access.UPDATE` + 源表
+`Access.DESCRIBE`**——与 Iceberg 侧 `…/tables/{t}/metrics` 判 `UPDATE`、读表结构判 `DESCRIBE`
+同一口径（见 [`authorization.md`](authorization.md) §2.4）。判权收在
+`LineageService#requirePermission` 一处：`authorizationService.enabled()` 为假时整段跳过
+（与目录 API 一致——鉴权关掉的部署不该只有血缘报 403），外部 `~` 节点直接放行。
+
+**读端点不判表级权限**：`GET /tables|columns|runs` 只走管理 API 的既有门禁（认证 +
+服务管理员），与事件页、`/meta` 一致——能看见目录的人就能看见这张表的上游。若哪天要按
+「看不见的表不出现在图里」收紧，得在 `LineageService` 里逐节点判、并且**先过滤再算预算**
+（否则 `budget` 会泄露不可见邻居的数量），这是 §8.6 那套契约的一次性改动。
 两条刻意的取舍：
 
 1. **整条 run 拒绝，不做部分接受。** 部分接受会让图出现「只有半边」的假象：目标表有边、
@@ -853,7 +868,7 @@ onSuccess（driver 线程）                    reporter 线程（单线程，�
 ### 7.2 三张表
 
 均放 `lakehouse-rest-core`（被协议面与 server 共用，理由同 `data-model.md`：按「谁读它」分家）。
-表名接 `lakehouse_` 前缀，落地后 `data-model.md` 的表数从 20 变 23。
+表名接 `lakehouse_` 前缀，落地后 `data-model.md` 的表数从 20 变 23（已落地，见其 §2.3）。
 
 **`lakehouse_lineage_run`**
 
@@ -872,6 +887,8 @@ onSuccess（driver 线程）                    reporter 线程（单线程，�
 | `sql_text` | text | 截断 8KB |
 | `started_at` / `finished_at` | bigint | epoch 毫秒 |
 | `attributes_json` | text | 自由属性，`ObjectMap` 转换器（与 `audit_event` 同款） |
+| `target_refs` | text | **本文原先没有这一列**（见 §13.1）：目标表全名列表，存成 `|ref1|ref2|`，供 `GET /runs?ref=` 过滤——run 自己不存表名的话，「历史」这个问题只能靠边表答「最近一次」 |
+| `columns_truncated` | boolean | 列级边是否因 `max-columns-per-target` 被丢弃（降级为表级）。上报侧的事实，落地成列而不是塞 `attributes_json`：响应里要回它，索引里不用，但查询要看 |
 
 索引：`uk (run_id)`、`(catalog, finished_at)`、`(finished_at)`（清理用）。
 
@@ -1588,7 +1605,7 @@ ResourceState 的用法不变，差别在动作条放不放。
 图里的数据是编的，但**渲染是真的 Canvas**——布局、贝塞尔边、LOD、徽标都按 9.2 / 9.3 的规则
 绘制，所以它不只是视觉稿，还是渲染规则的图形化说明（实现时对着它核对第一帧）。
 
-**verify-console（将来加第 21 组，本轮不动脚本）**，断言项先记在这里：
+**verify-console 第 21 组**（17 条，已落地；下面五条都在里面，另有异步组件、格式色变量、布局纯函数、LOD 单点实现、`Path2D` 批量描边、只经 `lineageApi` 取数、列映射按需加载、500 阈值、画布让位、五个端点、`If-None-Match`/304）：
 
 1. 两个表详情页都以 `defineAsyncComponent` 挂 `LineagePanel`，页签名「血缘」、name=`lineage`；
 2. `SELF_CONTAINED_TABS`（Paimon）/ `loadedTabs`（Iceberg）包含 `lineage`；
@@ -1613,6 +1630,7 @@ ResourceState 的用法不变，差别在动作条放不放。
 | `max-columns-per-target` | `2000` | 单目标列级边上限，超了降级为表级并标 `truncated` |
 | `max-depth` | `5` | 图遍历深度上限 |
 | `max-nodes` | `500` | 单次图查询返回节点上限 |
+| `cleanup-cron` | `0 30 3 * * *` | 过期 run 的清理节拍（cron）。`@Scheduled` 的占位符里也出现一次，改两处 |
 
 默认关的另一个原因：血缘表一旦开始写，就**只能靠时间清理**（边表不按时间清），
 先在测试环境把量跑准再开。
@@ -1740,11 +1758,10 @@ LineageExtractor.extract(plan: LogicalPlan, sqlText: Option[String]): Option[Lin
 
 本仓的做法是「文档里的数字与清单由脚本钉住」，这份文档同样要：
 
-- `scripts/verify-lineage-doc.py`：比对本文档 §6.1 / §8 的端点表与
-  `LineageController` 上的 `@*Mapping`（漏写一个端点 → 构建红）；
-- 表数：落地后 `data-model.md` 的「20 张表」→ 23，`README.md` §1 同步；
+- `scripts/verify-lineage-doc.py`（已落地）：端点双向一致——`LineageController` 上的每个 `@*Mapping` 都必须在本文档里出现（漏写一个端点 → 红），文档里写的每个血缘端点也必须在控制器上（写了没实现 → 红）；§10.1 的配置键与默认值逐一对照`RestServerProperties.Lineage` 的字段（改名不改文档 → 红）；
+- 表数：`data-model.md` 已是 23 张（§2.3 记血缘三表），`README.md` §1 同步；
 - 文档计数：本文件已在 `docs/`（23 份）里，**加内容不改计数**；但 `AGENTS.md` §3 与
-  `README.md` §9 那两行的描述要跟着改（现在写的是「Spark / Flink 两套原料」）。
+  `README.md` §9 那两行的描述要跟着改（已改成「服务端与控制台已实现、§5 抽取器未做」）。
 
 ### 11.6 展现层
 
@@ -1789,3 +1806,112 @@ LineageExtractor.extract(plan: LogicalPlan, sqlText: Option[String]): Option[Lin
 4. **不做跨集群血缘**：一个服务端实例的图只含上报到它的那些执行；多云 / 多集群要合并是另一个课题。
 5. **不做图上的手工增删边**：手工维护的血缘会与真实执行漂移，而没有人会维护它（§9.10）。
 6. **不做 Flink**：见 §10.3——不是永久不做，是这一期只把一个引擎做对。
+
+---
+
+## 13. 实现记录
+
+落地范围：**服务端 + 控制台已完成**（三张表、五个端点、表详情页「血缘」页签，
+外加删表级联与保留清理）；**§5 的 Spark 侧抽取器未写**——它是客户端埋点
+（`spark.paimon.rest.lineage.*`，见 §10.2），归属引擎仓库。没有上报方时三个读端点
+返回空图而不是报错，因此这一环缺着也不影响已落地的部分被验证。
+
+### 13.1 与本文不一致的四处（都是落地时才发现的）
+
+1. **`lineage_run` 多了 `target_refs` 与 `columns_truncated` 两列**（已补进 §7.2）。
+   §7.2 原定的列集里 run 不存表名，于是 `GET /runs?ref=…`（§8.3）只能「先查边表拿
+   `lastRunId` 再回查 run」——那只答得了「最近一次」，答不出历史，而这个端点存在的
+   理由就是历史。存成 `|ref1|ref2|` 而不是 JSON 数组，是为了让等值过滤退化成一次
+   `like '%|ref|%'`：两端各带一个分隔符，`paimon.dw.t1` 就不会命中 `paimon.dw.t10`。
+   `columns_truncated` 同理是上报侧的事实，要回给客户端（「你的列映射被降级了」），
+   不该沉在 `attributes_json` 里。
+2. **权限名映射**：`TABLE_WRITE_DATA` / `TABLE_READ_PROPERTIES` 落到本仓 12 项模型上是
+   `Access.UPDATE`（目标表）/ `Access.DESCRIBE`（源表），见 §6.5 的补注；
+   **读端点不判表级权限**，只走管理 API 的既有门禁。
+3. **紧凑节点从 4 位扩到 5 位**：`n = [ref, format, kind, more, stale]`。§8.6 原定 4 位，
+   但服务端在目录里查不到某张表时给的是 `stale = true` 而不是报错（图的半边比 404 有用），
+   而图只走紧凑编码——不带这一位，前端就永远画不出「这张表可能已被删」。
+   `e` 仍是 8 位：`[src, dst, kind, writeMode, engine, lastSeen, runCount, columnCount]`。
+4. **控制台不调 `POST /runs`、也不调 `GET /runs`**：写入口在管理 API 上，但「控制台
+   手工上报一条依赖」等于伪造血缘；运行历史这一期没有页面，也就不在 `endpoints.js`
+   登记——第 4 组「无死条目」会把声明了却没调用的端点判死。两件事都写进了
+   `src/api/lineage.js` 的注释。
+
+### 13.2 落到了哪些文件
+
+| 位置 | 内容 |
+| --- | --- |
+| `lakehouse-rest-core/**/domain/entity/Lineage{Run,TableEdge,ColumnEdge}Entity.java` | 三张表（`@Table(comment=…)` 与每列注释齐全，`MysqlDdlGeneratorTests` 会查） |
+| `lakehouse-rest-core/**/domain/repo/Lineage*Repository.java` | 三个仓储（边表按 ref 摘要查、run 按 `(finishedAt, id)` 倒序翻页） |
+| `lakehouse-rest-core/**/support/LineageRefs.java` | `catalog.namespace.table` 的解析与归一化、`~` 保留前缀、`of`/`parse` 往返 |
+| `lakehouse-rest-core/**/dto/LineageDtos.java` | 上报报文、`GraphPayload`、`CompactNode` / `CompactEdge`。两者都标了 `@JsonFormat(shape = ARRAY)`——**record 默认序列化成对象**，前端按数组下标解码会全崩 |
+| `lakehouse-rest-core/**/service/LineageService.java` | 幂等入库、边 upsert、宽表降级、判权、图遍历、预算与 `more`、ETag 摘要 |
+| `lakehouse-rest-core/**/event/LineageEdgeCleanupListener.java` | 订阅目录事件，删表/删库时按前缀清边（这就是三表放 core 的原因） |
+| `lakehouse-rest-server/**/web/LineageController.java` | 五个端点 + `If-None-Match` 短路（`Cache-Control: no-cache`，304 不带 body） |
+| `lakehouse-rest-server/**/service/LineageRetentionJob.java` | 按 `cleanup-cron` 删过期 run，只删 run 不动边 |
+| `lakehouse-rest-console/src/api/lineage.js`、`api/endpoints.js` | 只有两个读方法；不发 `If-None-Match`（见文件头注释：`client.js` 把 304 当成功，`decode({})` 会得到一张空图） |
+| `lakehouse-rest-console/src/utils/lineageGraph.js` / `lineageLayout.js` / `lineageRender.js` | 解码、布局、绘制三层，全是纯函数（不读 DOM、无随机数、无时钟） |
+| `lakehouse-rest-console/src/components/lineage/*` | `LineagePanel` + `LineageGraph` / `LineageAdjacency` / `LineageColumnTable` / `LineageFilterBar` / `LineageLegend` / `LineageNodeDrawer`，**0 个新增 npm 依赖** |
+| `lakehouse-rest-console/src/views/TableView.vue` / `IcebergTableView.vue` | 「血缘」页签，面板用 `defineAsyncComponent` 挂（两种格式都有这个页签，因为它不跟表格式伸缩） |
+
+### 13.3 验收
+
+| 层 | 用例 | 钉住什么 |
+| --- | --- | --- |
+| 仓储/服务（`LineageApiTests`，11 例） | 入库拆表/列边、重复上报幂等、第二次上报累加同一行、宽表降级为表级、未知引擎与语句类型 400、列图按目标列归组、`budget` 报真实邻居数且 `depth` 被上限截断、紧凑形状与 ETag 304、运行历史按表过滤与翻页、清理只删 run、删边不留悬空节点 | 语义，不是形状 |
+| 开关（`LineageDisabledTests`） | `enabled=false` 时 `POST /runs` → 403，`GET /tables` → 200 空图 | 「没打开」与「没采集到」在界面上可区分 |
+| 归一化（`LineageRefsTests`，8 例） | 多级 namespace、两段名、空段、外部节点、大小写、`~` 保留前缀、`of`/`parse` 往返 | 名称归一化是全部边的前提 |
+| 前端纯函数（`npm run test:lineage`，29 例） | 两种编码形状、索引、隐藏与淡化两类过滤、跳数即层号、多路径取 `min abs`、打乱输入坐标不变、环进 `ring`、折叠 `37 → 8 + "+29"`、坐标锁定、LOD 三档与滞回、边宽对数、`ellipsizeMiddle` | 布局与绘制可以脱离浏览器测 |
+| 机械一致性（`scripts/verify-console.py` 第 21 组，17 条） | 异步组件、页签名与正文条件一致、不 import element-plus、格式色只读 CSS 变量、布局纯函数、LOD 只有一处实现、`Path2D` 批量描边、只经 `lineageApi` 读、不声明写入口、列映射按需加载、500 阈值、画布让位、五个端点、`If-None-Match`/304 | 这些错法都不会报错 |
+
+`MysqlDdlGeneratorTests` 的表数从 20 改为 23，`sql/schema-mysql.sql` 重新生成
+（23 张表 / 21 条唯一约束 / 30 条索引）。
+
+### 13.4 默认配置
+
+```yaml
+lakehouse:
+  rest:
+    lineage:
+      enabled: false              # 默认关：没有客户端埋点就没有数据
+      run-retention-days: 90      # 只清 run，边不按时间清
+      max-runs-per-batch: 50      # 超了 400，不静默截断
+      max-columns-per-target: 2000
+      max-depth: 5                # 参数超上限 400
+      max-nodes: 500              # 硬上限 2000
+      cleanup-cron: "0 30 3 * * *"
+```
+
+`cleanup-cron` 在 `@Scheduled` 的占位符里也出现一次（注解占位符在 bean 绑定之前解析），
+改的时候两处都要动。
+
+### 13.5 还没做的
+
+1. **§5 的 Spark 抽取器**（含 §11.1–11.4 的抽取器测试与 e2e）：客户端埋点，独立仓库。
+2. **视图口径（§4.6 的 `AS_WRITTEN` 边）**：仍只有「展开到底表」一种口径，
+   所以图上看得见底表、看不见 SQL 里写的视图名。控制台已在血缘页脚注说明。
+3. **运行历史页面**：端点与服务端能力都在（`GET /runs`、`GET /runs/{runId}`），
+   控制台只是不给入口——手工上报更不该给。
+4. **Flink**：仍按 §10.3，模型不用改，只是不做。
+
+### 13.6 一个踩过的坑：`@Modifying(clearAutomatically = true)` 会吞掉同一个事务里的删表
+
+`LineageEdgeCleanupListener` 是**同步**监听器（`AuditEventPersistListener` 的邻居），
+所以 `dropEdges` 跑在**删表那个事务里**。而删边的两个仓储方法最初写的是
+`@Modifying(clearAutomatically = true)`：
+
+- 外层事务此时刚排完队：`delete projections`、`delete table`（都还只在持久化上下文里，
+  没到数据库）；
+- `clear()` 把整个持久化上下文清空——那两条 delete 一起消失；
+- 提交时什么都没删，而 HTTP 仍然返回 204/200。
+
+症状的迷惑性在于**日志全绿**：`Dropped lineage edges of ice.db.orders: 0 table edges`，
+没有异常、没有回滚。只有"删完再读还在"这个断言能抓住它——`IcebergRestCatalogApiTests`
+与 `IcebergClientEndToEndTests` 正是这么红的（13 分钟的全量跑里就这两条 + 两条既有失败）。
+
+结论：这两个 `deleteByRef`（以及 `deleteOlderThan`）**不加 `clearAutomatically`**。
+"删完边后读到脏实体"在这里不成立——边是按 ref 现查的，上下文里本来就没有它们；
+而"清空上下文"的代价是让调用方的事务静默失效。
+
+> 这条也给全仓提了个醒：**凡是会在别人事务里被调用（事件监听器、`@Transactional` 服务内部复用）
+> 的 bulk 操作，都不要 `clearAutomatically`。** 需要清的话，让调用方在外层事务结束后自己清。

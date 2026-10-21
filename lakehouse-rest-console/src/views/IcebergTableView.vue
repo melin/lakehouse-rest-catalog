@@ -50,6 +50,8 @@
     <PanelCard v-else flush>
       <el-tabs v-model="tab" class="pc-tabs" @tab-change="onTabChange">
         <el-tab-pane label="详细信息" name="details" />
+        <!-- 血缘与表格式无关：依赖关系由引擎上报，两种协议面的表在同一个图里 -->
+        <el-tab-pane label="血缘" name="lineage" />
         <el-tab-pane label="数据预览" name="preview" />
         <el-tab-pane label="快照" name="snapshots" />
         <el-tab-pane label="文件列表" name="files" />
@@ -398,6 +400,11 @@
             format="ICEBERG"
           />
         </template>
+
+        <!------------------------------- 血缘 -------------------------------->
+        <!-- **在 `v-if="metadata"` 之外**：面板的数据来自 `/lineage/**`，与 loadTable 无关。
+             放进那个 v-if 里，一次失败的 loadTable 会连带把一块本来能用的内容也藏掉 -->
+        <LineagePanel v-if="tab === 'lineage'" :table-ref="lineageRef" />
       </div>
     </PanelCard>
 
@@ -409,7 +416,7 @@
 </template>
 
 <script setup>
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
 import CopyText from '@/components/CopyText.vue'
@@ -467,6 +474,17 @@ const route = useRoute()
 const prefix = computed(() => route.params.prefix)
 const database = computed(() => route.params.database)
 const table = computed(() => route.params.table)
+
+/** 血缘面板按需加载（理由与 Paimon 版表详情页同一处注释：本页不该因为多一个页签而变重）。 */
+const LineagePanel = defineAsyncComponent(() => import('@/components/lineage/LineagePanel.vue'))
+
+/**
+ * 血缘里的表名：`catalog.namespace.table`。
+ *
+ * <p>`database` 路由参数是多级 namespace 的点拼显示名（`ns1.ns2`），直接接在 catalog
+ * 后面就是服务端认可的四段以内的全名——与引擎上报时用的名字一致。
+ */
+const lineageRef = computed(() => [prefix.value, database.value, table.value].join('.'))
 
 /**
  * 命名空间层级：URL 上是点号拼接的显示名，按点号切。

@@ -116,6 +116,57 @@ USE `lakehouse_catalog`;
         primary key (id)
     ) comment='函数定义（sql / file / lambda）' engine=InnoDB;
 
+    create table lakehouse_lineage_column_edge (
+        id bigint not null auto_increment comment '自增主键（列边按 ref 摘要 + 列名查，不用它）',
+        last_seen bigint not null comment '最近一次观测时刻（epoch 毫秒）',
+        transform_kind varchar(16) not null comment 'DIRECT / DERIVED / AGGREGATE / CONSTANT / UNRESOLVED',
+        last_run_id varchar(64) comment '最近一次写它的 run，供下钻',
+        source_ref_hash varchar(64) not null comment 'source_ref 的 SHA-256',
+        target_ref_hash varchar(64) not null comment 'target_ref 的 SHA-256',
+        expression varchar(512) comment '最近一次的规范化表达式文本，仅供展示',
+        source_ref varchar(1024) not null comment '上游表全名；常量列（无源）为空串',
+        target_ref varchar(1024) not null comment '下游表全名',
+        source_column varchar(255) not null comment '上游列名；常量列为空串',
+        target_column varchar(255) not null comment '下游列名',
+        primary key (id)
+    ) comment='列级血缘边：一对 (源列, 目标列) 一行；常量列用空 source 占一行' engine=InnoDB;
+
+    create table lakehouse_lineage_run (
+        columns_truncated bit not null comment '列级边是否因超上限被丢弃',
+        finished_at bigint not null comment '结束时刻（epoch 毫秒），列表与清理都按它',
+        id bigint not null auto_increment comment '自增主键，同时是游标的第二段（同毫秒靠它定序）',
+        started_at bigint not null comment '开始时刻（epoch 毫秒）',
+        engine varchar(16) not null comment '引擎：本期恒为 SPARK，枚举留扩展位',
+        mode varchar(16) not null comment 'BATCH / STREAMING',
+        statement_type varchar(16) not null comment 'INSERT / MERGE / CTAS',
+        write_mode varchar(16) not null comment 'APPEND / OVERWRITE / UPSERT / CREATE',
+        engine_version varchar(32) not null comment '引擎自报版本',
+        run_id varchar(64) not null comment '客户端生成的 UUID，幂等键',
+        sql_hash varchar(64) comment 'SQL 文本的 SHA-256；没有 SQL 文本时为空',
+        attributes_json text comment '自由属性（JSON 对象）',
+        catalog varchar(255) not null comment '主 catalog（第一个目标表所在的那个），供按目录过滤',
+        principal varchar(255) not null comment '上报者，由服务端从令牌解析（不采信报文）',
+        sql_text text comment 'SQL 文本，截断 8KB',
+        target_refs text comment '目标表列表（竖线包夹，供 ?ref= 过滤）',
+        primary key (id)
+    ) comment='血缘执行记录：一行一次执行，只增不改（边表才是状态）' engine=InnoDB;
+
+    create table lakehouse_lineage_table_edge (
+        first_seen bigint not null comment '首次观测时刻（epoch 毫秒）',
+        id bigint not null auto_increment comment '自增主键（不做外键引用，边表按 ref 的摘要查）',
+        last_seen bigint not null comment '最近一次观测时刻，图的「新鲜度」靠它',
+        run_count bigint not null comment '累计被观测到的次数',
+        edge_kind varchar(16) not null comment 'TABLE / EXTERNAL',
+        engine varchar(16) not null comment '上报引擎；进唯一键，将来加引擎不改表',
+        write_mode varchar(16) not null comment '最近一次的写模式',
+        last_run_id varchar(64) comment '最近一次写它的 run，供下钻',
+        source_ref_hash varchar(64) not null comment 'source_ref 的 SHA-256，唯一键的一半',
+        target_ref_hash varchar(64) not null comment 'target_ref 的 SHA-256',
+        source_ref varchar(1024) not null comment '源表全名（可含 ~ 前缀的外部节点）',
+        target_ref varchar(1024) not null comment '目标表全名',
+        primary key (id)
+    ) comment='表级血缘边：一对 (源, 目标) 一行，重复执行只累加计数' engine=InnoDB;
+
     create table lakehouse_optimization_job (
         table_count integer not null comment '批次覆盖的表数',
         created_at bigint comment '创建时刻（epoch 毫秒）',
@@ -407,6 +458,33 @@ USE `lakehouse_catalog`;
 
     alter table lakehouse_function 
        add constraint uk_function unique (catalog_id, database_id, name);
+
+    create index ix_lineage_column_edge_target 
+       on lakehouse_lineage_column_edge (target_ref_hash);
+
+    create index ix_lineage_column_edge_source 
+       on lakehouse_lineage_column_edge (source_ref_hash);
+
+    alter table lakehouse_lineage_column_edge 
+       add constraint uk_lineage_column_edge unique (source_ref_hash, source_column, target_ref_hash, target_column);
+
+    create index ix_lineage_run_catalog 
+       on lakehouse_lineage_run (catalog, finished_at);
+
+    create index ix_lineage_run_finished 
+       on lakehouse_lineage_run (finished_at);
+
+    alter table lakehouse_lineage_run 
+       add constraint uk_lineage_run unique (run_id);
+
+    create index ix_lineage_table_edge_target 
+       on lakehouse_lineage_table_edge (target_ref_hash);
+
+    create index ix_lineage_table_edge_source 
+       on lakehouse_lineage_table_edge (source_ref_hash);
+
+    alter table lakehouse_lineage_table_edge 
+       add constraint uk_lineage_table_edge unique (source_ref_hash, target_ref_hash, engine);
 
     create index ix_optimization_job_catalog 
        on lakehouse_optimization_job (catalog_id);
