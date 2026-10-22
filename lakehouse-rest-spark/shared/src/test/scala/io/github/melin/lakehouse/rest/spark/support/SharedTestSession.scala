@@ -15,7 +15,7 @@ import org.apache.spark.sql.SparkSession
  * 和血缘抽取器的测试（{@code LineageExtractorTests}）都从这里拿。桩服务端也跟着放在一起——
  * 会话的地址配置必须指向它，两者拆开就会各建一个。
  *
- * <p>会话里装了本仓的管理扩展，但**没有**开血缘上报（`spark.paimon.rest.lineage.enabled`
+ * <p>会话里装了本仓的管理扩展，但**没有**开血缘上报（`spark.lakehouse.rest.lineage.enabled`
  * 保持默认的 `false`）：抽取器测试直接对 `analyzed` 计划做断言，不需要真的发 HTTP；
  * 开着反而会让每个用例都往桩服务端发一遍。
  */

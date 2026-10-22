@@ -18,7 +18,7 @@
 #   - 这里显式打开 lakehouse.rest.lineage.enabled=true；那个脚本不开（默认关，
 #     关的时候 POST /lineage/runs 会被拒，普通 e2e 不必为它买单）；
 #   - 这里的 SparkSession 用 -De2e.lineage.enabled=true 打开客户端的采集开关，
-#     LiveSparkSession 据此设置 spark.paimon.rest.lineage.enabled。
+#     LiveSparkSession 据此设置 spark.lakehouse.rest.lineage.enabled。
 #
 # 注意 lineage.enabled 必须出现在 SparkConf 里（.config(...) / --conf），
 # 不能靠 spark.conf.set：监听器的注册发生在会话状态构建期，那时只有 SparkConf 读得到。

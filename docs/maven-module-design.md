@@ -297,7 +297,7 @@ public interface CatalogProtocolFace {
 - 运行时告警与前端文案里「请设置 `paimon.rest.x`」这类**指向参数的提示**——不同步的话，
   提示会把运维引到一个不存在的键上。
 
-**没有一起改的**：`spark.paimon.rest.{token,management.url,catalog.url,management.timeoutSeconds}`。
+**没有一起改的**：`spark.lakehouse.rest.{token,management.url,catalog.url,management.timeoutSeconds}`。
 那四个是 Spark 侧的配置键（`ManagementSparkExtensions` 读 `SparkConf`），与 Spring 的
 `Environment` 不同源，属于客户端契约，改它们要另行评估 Spark 部署的兼容性。
 
@@ -1056,7 +1056,7 @@ Java 包        ：paimonrest → paimon.rest → io.github.melin.lakehouse.rest
                  协议面再各加一层格式子包：core/storage/server 共用 rest.*，
                  Paimon 面独占 rest.paimon.{web,service,dto,support}，Iceberg 面对称   ✅ §11 / §12
                  拆包必查「同包直呼」的引用——它们不写 import，编译器才会告诉你      （§11.2）
-对外名字的分层 ：能不能改看「谁写它」——spark.sql.extensions 要留壳；spark.paimon.rest.* 客户端键
+对外名字的分层 ：能不能改看「谁写它」——spark.sql.extensions 要留壳；spark.lakehouse.rest.* 客户端键
                  与 k8s 资源名都不动；Spring 配置前缀已对齐 lakehouse.rest（§4.3(1)），
                  表前缀已对齐 lakehouse_（§4.3(4)）
 不改的两处     ：k8s 资源名 · Spark 客户端键（§4.3(1)(3)）；表前缀已改（§4.3(4)）

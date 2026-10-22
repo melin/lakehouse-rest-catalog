@@ -332,7 +332,7 @@ lakehouse:
     # 数据从哪来：Spark 作业侧的抽取器（lakehouse-rest-spark 模块）把每次写入的
     # 表级 / 列级依赖 POST 到 /api/management/v1/lineage/runs，服务端只管收、存、查。
     # 没有客户端埋点就没有数据——这里开着也不会自己长出图来；Spark 侧要配
-    #   spark.paimon.rest.lineage.enabled=true
+    #   spark.lakehouse.rest.lineage.enabled=true
     #   spark.sql.queryExecutionListeners=io.github.melin.lakehouse.rest.spark.lineage.LakehouseLineageListener
     # （或本仓 ManagementSparkExtensions 的扩展懒注册，见 docs/lineage-design.md §10.2）
     #

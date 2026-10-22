@@ -44,7 +44,7 @@ class PaimonS3Test {
       .config("spark.sql.catalog." + catalog + ".s3.access-key", "McvVnpOziVsWv7Qlyut7")
       .config("spark.sql.catalog." + catalog + ".s3.secret-key", "PbICbD6H7iyq0PuefHa383YoqJn3JCjedQHSYmbp")
       .config("spark.sql.catalog." + catalog + ".s3.path.style.access", "true")
-      .config("spark.paimon.rest.lineage.enabled", "true")
+      .config("spark.lakehouse.rest.lineage.enabled", "true")
 
       .config(PaimonRestManagement.MANAGEMENT_URL, "http://127.0.0.1:8080/api/management/v1")
       .config(PaimonRestManagement.TOKEN, token)

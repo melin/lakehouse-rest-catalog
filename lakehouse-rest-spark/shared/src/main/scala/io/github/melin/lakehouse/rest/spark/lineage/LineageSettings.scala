@@ -5,7 +5,7 @@ import org.apache.spark.SparkConf
 import org.apache.spark.sql.SparkSession
 
 /**
- * `spark.paimon.rest.lineage.*` 的取值（§10.2）。
+ * `spark.lakehouse.rest.lineage.*` 的取值（§10.2）。
  *
  * <p><b>两个入口，不是两个实现。</b>取值逻辑只有一份（{@code resolve}），差别只在
  * 「去哪儿找原始字符串」：
@@ -24,7 +24,7 @@ import org.apache.spark.sql.SparkSession
  * `buildParser` → 工厂 → 又读 `sessionState`……表现为 `StackOverflowError`，栈顶落在
  * `ClassLoader.defineClass1` 上，看起来像类加载问题，实际是重入。
  *
- * <p>由此推出一条使用约束：{@code spark.paimon.rest.lineage.enabled} 决定「挂不挂监听器」，
+ * <p>由此推出一条使用约束：{@code spark.lakehouse.rest.lineage.enabled} 决定「挂不挂监听器」，
  * 而挂载发生在会话状态构建期间，因此这一位**只能从头到尾靠 `SparkConf` 给**（`--conf`、
  * `spark-submit --conf`、`SparkSession.builder().config(...)`）。运行期
  * `spark.conf.set(..., "true")` 改不动它——那时会话状态已经建好，监听器要么已经挂上、
@@ -44,7 +44,7 @@ private[spark] final case class LineageSettings(enabled: Boolean,
 
 private[spark] object LineageSettings {
 
-  val PREFIX = "spark.paimon.rest.lineage."
+  val PREFIX = "spark.lakehouse.rest.lineage."
 
   val ENABLED = PREFIX + "enabled"
   val COLUMN_LEVEL = PREFIX + "column-level"

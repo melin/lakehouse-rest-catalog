@@ -20,11 +20,11 @@ import scala.util.control.NonFatal
  * <pre>
  * # 1) 配置（用户零代码，spark-sql / spark-submit 的常规做法）
  * spark.sql.queryExecutionListeners=io.github.melin.lakehouse.rest.spark.lineage.LakehouseLineageListener
- * spark.paimon.rest.lineage.enabled=true
+ * spark.lakehouse.rest.lineage.enabled=true
  *
  * # 2) 扩展懒注册（用了本仓 ManagementSparkExtensions 的会话自动生效）
  * spark.sql.extensions=io.github.melin.lakehouse.rest.spark.ManagementSparkExtensions
- * spark.paimon.rest.lineage.enabled=true
+ * spark.lakehouse.rest.lineage.enabled=true
  * </pre>
  *
  * <p><b>为什么监听器里没有构造函数。</b>`spark.sql.queryExecutionListeners` 是反射实例化的，
@@ -165,7 +165,7 @@ class LakehouseLineageListener extends QueryExecutionListener {
               log.info(s"Lineage collection enabled (columnLevel=${settings.columnLevel}, "
                 + s"queueSize=${settings.queueSize}, flushIntervalMs=${settings.flushIntervalMs})")
             } else {
-              log.debug("Lineage collection is disabled (spark.paimon.rest.lineage.enabled=false)")
+              log.debug("Lineage collection is disabled (spark.lakehouse.rest.lineage.enabled=false)")
             }
           } catch {
             case NonFatal(e) =>

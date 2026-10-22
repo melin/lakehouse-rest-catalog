@@ -33,8 +33,8 @@ SHOW PERMISSIONS IN CATALOG paimon FOR USER svc_etl;
 ```bash
 spark-sql \
   --conf spark.sql.extensions=io.github.melin.lakehouse.rest.spark.ManagementSparkExtensions \
-  --conf spark.paimon.rest.management.url=http://catalog-host:8080/api/management/v1 \
-  --conf spark.paimon.rest.token=<执行这些语句的主体的令牌>
+  --conf spark.lakehouse.rest.management.url=http://catalog-host:8080/api/management/v1 \
+  --conf spark.lakehouse.rest.token=<执行这些语句的主体的令牌>
 ```
 
 编程方式等价：
@@ -56,10 +56,10 @@ val spark = PaimonRestManagement.install(SparkSession.builder())
 
 | 配置 | 默认值 | 说明 |
 | --- | --- | --- |
-| `spark.paimon.rest.management.url` | `http://127.0.0.1:8080/api/management/v1` | 管理 API 基址，须含 `/api/management/v1` 前缀 |
-| `spark.paimon.rest.catalog.url` | 空（从管理 API 基址推导） | catalog API 基址，资源授权语句用它；空值时按「去掉 `/api/management/v1`」推导 |
-| `spark.paimon.rest.token` | 空 | 作为 `Authorization: Bearer <token>` 发出；为空时不发送该头 |
-| `spark.paimon.rest.management.timeoutSeconds` | `30` | 单次请求超时；非数字或非正数时退化为默认值 |
+| `spark.lakehouse.rest.management.url` | `http://127.0.0.1:8080/api/management/v1` | 管理 API 基址，须含 `/api/management/v1` 前缀 |
+| `spark.lakehouse.rest.catalog.url` | 空（从管理 API 基址推导） | catalog API 基址，资源授权语句用它；空值时按「去掉 `/api/management/v1`」推导 |
+| `spark.lakehouse.rest.token` | 空 | 作为 `Authorization: Bearer <token>` 发出；为空时不发送该头 |
+| `spark.lakehouse.rest.management.timeoutSeconds` | `30` | 单次请求超时；非数字或非正数时退化为默认值 |
 
 > **令牌应当填「执行这些语句的主体」的令牌，而不是管理员令牌。** 管理服务按调用者身份判定
 > 权限，用管理员令牌会让所有 SQL 绕过权限判定，也就失去了用 SQL 管理权限的意义。

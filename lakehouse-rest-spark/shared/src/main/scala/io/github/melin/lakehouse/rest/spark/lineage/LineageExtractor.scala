@@ -675,7 +675,7 @@ object LineageExtractor {
   /** 表达式文本上限，与服务端 `MAX_EXPRESSION` 一致。 */
   val MAX_EXPRESSION = 512
 
-  /** 单目标列数上限（`spark.paimon.rest.lineage.max-columns`）。 */
+  /** 单目标列数上限（`spark.lakehouse.rest.lineage.max-columns`）。 */
   val DEFAULT_MAX_COLUMNS = 2000
 
   /**

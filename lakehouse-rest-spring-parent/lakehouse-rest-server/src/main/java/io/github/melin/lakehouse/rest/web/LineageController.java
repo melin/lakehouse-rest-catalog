@@ -28,7 +28,7 @@ import org.springframework.web.bind.annotation.RestController;
  *
  * <p><b>为什么挂在管理 API 而不是 catalog API（{@code /v1/{prefix}/…}）。</b>三个理由：
  * 血缘是<b>跨 catalog</b> 的元数据（{@code {prefix}} 只是其中一个维度）；上报器已经在用
- * 管理 API 的地址与令牌（{@code spark.paimon.rest.management.url}）；而 catalog API 的每个
+ * 管理 API 的地址与令牌（{@code spark.lakehouse.rest.management.url}）；而 catalog API 的每个
  * 端点都必须在 {@code CatalogAccessRules} 登记权限映射并在
  * {@code CatalogEndpointAuthorizationTests} 里覆盖——血缘是「关于表的关系」，
  * 不是「表上的操作」，不该挤进那张表。

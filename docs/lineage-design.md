@@ -2,7 +2,7 @@
 
 > 状态：**服务端与控制台已实现**（三张表、五个端点、表详情页「血缘」页签；落地清单与
 > 与本文不一致的几处见 §13）。**§5 的 Spark 侧抽取器还没写**——它属于客户端埋点
-> （`spark.paimon.rest.lineage.*`，见 §10.2），放在引擎仓库而不是本仓；因此现在
+> （`spark.lakehouse.rest.lineage.*`，见 §10.2），放在引擎仓库而不是本仓；因此现在
 > 「上报方」这一环是空的，接收、归一、存储、查询与展现都已跑通并有测试。
 > 参考实现：[`apache/kyuubi` 的 `kyuubi-spark-lineage`](https://github.com/apache/kyuubi/tree/master/extensions/spark/kyuubi-spark-lineage)
 > ——§3 把它逐节点拆了一遍（算法骨架、16 行节点规则、三个占位属性、表名归一化），
@@ -750,8 +750,8 @@ GET  /api/management/v1/lineage/runs/{runId}  # 一条 run 的明细（含 SQL �
 为什么挂在**管理 API** 而不是 catalog API（`/v1/{prefix}/...`）：
 
 1. 血缘是**跨 catalog** 的元数据，`{prefix}` 只是其中一个维度；
-2. 客户端已经有管理 API 的地址与令牌（`spark.paimon.rest.management.url` /
-   `spark.paimon.rest.token`），上报器直接复用那个 HTTP 客户端（`ManagementApiClient`），
+2. 客户端已经有管理 API 的地址与令牌（`spark.lakehouse.rest.management.url` /
+   `spark.lakehouse.rest.token`），上报器直接复用那个 HTTP 客户端（`ManagementApiClient`），
    不需要新的配置世界；
 3. catalog API 的每个端点都必须在 `CatalogAccessRules` 登记权限映射、并在
    `CatalogEndpointAuthorizationTests` 里覆盖——血缘不该挤进那张表（它是「关于表的关系」，
@@ -1726,7 +1726,7 @@ ResourceState 的用法不变，差别在动作条放不放。
 默认关的另一个原因：血缘表一旦开始写，就**只能靠时间清理**（边表不按时间清），
 先在测试环境把量跑准再开。
 
-### 10.2 Spark 侧（`spark.paimon.rest.lineage.*`）
+### 10.2 Spark 侧（`spark.lakehouse.rest.lineage.*`）
 
 | 键 | 默认 | 说明 |
 | --- | --- | --- |
@@ -1735,7 +1735,7 @@ ResourceState 的用法不变，差别在动作条放不放。
 | `max-columns` | `2000` | 超过则本地降级为表级 |
 | `queue-size` | `500` | 内存队列长度，满了丢弃 |
 | `flush-interval-ms` | `2000` | 攒批间隔 |
-| `url` / `token` | 空 | 留空则复用 `spark.paimon.rest.management.url` / `.token` |
+| `url` / `token` | 空 | 留空则复用 `spark.lakehouse.rest.management.url` / `.token` |
 
 两种安装方式，**推荐第一种**（与参考实现一致，用户零代码）：
 
@@ -1918,7 +1918,7 @@ constructor` → `Error while instantiating 'SessionStateBuilder'`），一条�
 
 落地范围：**服务端 + 控制台已完成**（三张表、五个端点、表详情页「血缘」页签，
 外加删表级联与保留清理）；**§5 的 Spark 侧抽取器未写**——它是客户端埋点
-（`spark.paimon.rest.lineage.*`，见 §10.2），归属引擎仓库。没有上报方时三个读端点
+（`spark.lakehouse.rest.lineage.*`，见 §10.2），归属引擎仓库。没有上报方时三个读端点
 返回空图而不是报错，因此这一环缺着也不影响已落地的部分被验证。
 
 ### 13.1 与本文不一致的四处（都是落地时才发现的）

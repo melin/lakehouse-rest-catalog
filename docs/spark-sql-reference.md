@@ -27,8 +27,8 @@ SHOW PERMISSIONS IN CATALOG paimon FOR USER svc_etl;
 ```bash
 spark-sql \
   --conf spark.sql.extensions=io.github.melin.lakehouse.rest.spark.ManagementSparkExtensions \
-  --conf spark.paimon.rest.management.url=http://catalog-host:8080/api/management/v1 \
-  --conf spark.paimon.rest.token=<执行这些语句的主体的令牌>
+  --conf spark.lakehouse.rest.management.url=http://catalog-host:8080/api/management/v1 \
+  --conf spark.lakehouse.rest.token=<执行这些语句的主体的令牌>
 ```
 
 ### 1.2 编程方式
@@ -46,10 +46,10 @@ val spark = PaimonRestManagement.install(SparkSession.builder())
 
 | 配置键 | 默认值 | 说明 |
 | --- | --- | --- |
-| `spark.paimon.rest.management.url` | `http://127.0.0.1:8080/api/management/v1` | 管理 API 基址，须含 `/api/management/v1` 前缀。末尾多余的 `/` 会被去掉 |
-| `spark.paimon.rest.catalog.url` | 空（从管理 API 基址推导） | catalog API 基址，资源授权语句（第 7 节）用它。空值时按「去掉 `/api/management/v1`」推导；推导不出来（基址不以该前缀结尾）会报错并点名这个键 |
-| `spark.paimon.rest.token` | 空 | 作为 `Authorization: Bearer <token>` 发出；为空时**不发送**该请求头 |
-| `spark.paimon.rest.management.timeoutSeconds` | `30` | 单次请求超时秒数；非数字或非正数时退化为默认值，不会让会话启动失败 |
+| `spark.lakehouse.rest.management.url` | `http://127.0.0.1:8080/api/management/v1` | 管理 API 基址，须含 `/api/management/v1` 前缀。末尾多余的 `/` 会被去掉 |
+| `spark.lakehouse.rest.catalog.url` | 空（从管理 API 基址推导） | catalog API 基址，资源授权语句（第 7 节）用它。空值时按「去掉 `/api/management/v1`」推导；推导不出来（基址不以该前缀结尾）会报错并点名这个键 |
+| `spark.lakehouse.rest.token` | 空 | 作为 `Authorization: Bearer <token>` 发出；为空时**不发送**该请求头 |
+| `spark.lakehouse.rest.management.timeoutSeconds` | `30` | 单次请求超时秒数；非数字或非正数时退化为默认值，不会让会话启动失败 |
 
 配置读取顺序是「会话 SQL 配置 → `SparkConf` → 默认值」，因此 `spark.conf.set(...)`、
 `.config(...)` 与命令行 `--conf` 三种写法都有效。
@@ -91,8 +91,8 @@ val spark = PaimonRestManagement.install(SparkSession.builder())
 
 - **资源授权打在 catalog API 而不是管理 API 上。** 第 13、14 行的端点是
   `/v1/{prefix}/permissions/{grant,revoke}`——官方把权限端点归在管理 API 里，但路径挂在
-  catalog API 之下。因此这两条语句的基址由 `spark.paimon.rest.management.url` **推导**
-  （去掉 `/api/management/v1`），需要指向别处时用 `spark.paimon.rest.catalog.url` 显式覆盖；
+  catalog API 之下。因此这两条语句的基址由 `spark.lakehouse.rest.management.url` **推导**
+  （去掉 `/api/management/v1`），需要指向别处时用 `spark.lakehouse.rest.catalog.url` 显式覆盖；
   推不出来（基址不以 `/api/management/v1` 结尾）会在发出请求前报错并点名这个配置项。
 - **`ALTER` 是两次调用。** 规格的 `PUT` 整体替换 `properties`，而 SQL 的 `ALTER` 是增量语义，
   客户端先 `GET` 当前值与 `entityVersion`、合并后再 `PUT` 回写。

@@ -301,12 +301,12 @@ parquet/orc/lance/vortex 目录表，名字与内容彻底脱钩，那时再改�
 | --- | --- |
 | `<paimon.version>`、`org.apache.paimon:*` 依赖坐标 | 上游项目坐标，改了构建就废 |
 | `PAIMON` / `ICEBERG` 枚举值、`catalog_format` 列的取值 | 是**表格式**，不是表前缀 |
-| `spark.paimon.rest.{token,management.url,catalog.url}` | SparkConf 命名空间，客户端契约 |
+| `spark.lakehouse.rest.{token,management.url,catalog.url}` | SparkConf 命名空间，客户端契约 |
 | k8s 资源名 `paimon-rest-server` / `paimon-mysql` / ConfigMap 名 | 「重命名部署单元」要动 StatefulSet 与 PVC 引用，单独一轮 |
 | Spark 测试里名为 `paimon_catalog` 的 catalog | 那是 catalog 名（`spark.sql.catalog.paimon_catalog`），不是库名 |
 
 > ⚠️ **不要用 `sed s/paimon/lakehouse/` 全局替换。** 会同时改掉 `paimon.version`、
-> `org.apache.paimon:paimon-spark-3.5_2.12`、`PAIMON` 枚举、`spark.paimon.rest.*`、
+> `org.apache.paimon:paimon-spark-3.5_2.12`、`PAIMON` 枚举、`spark.lakehouse.rest.*`、
 > `paimon-rest-*` 资源名。只替换 **`paimon_`（带下划线、小写）**，改完用
 > `git diff | grep -c 'PAIMON\|paimon\.version\|org\.apache\.paimon'` 断言为 0。
 
@@ -420,7 +420,7 @@ k8s 部署单独提一句：`deploy/kubernetes/mysql.yaml` 的 `seed-initdb` 只
 
 | 风险 | 触发 | 影响 | 应对 |
 | --- | --- | --- | --- |
-| 全局 `sed s/paimon/lakehouse/` | 图快 | 依赖坐标、`PAIMON` 枚举、`spark.paimon.rest.*` 一起被改，构建或客户端直接废 | 只替换 `paimon_`；6.8 的「误伤」检查 |
+| 全局 `sed s/paimon/lakehouse/` | 图快 | 依赖坐标、`PAIMON` 枚举、`spark.lakehouse.rest.*` 一起被改，构建或客户端直接废 | 只替换 `paimon_`；6.8 的「误伤」检查 |
 | 分多条 rename | 逐表执行 | 一半新一半旧，`validate` 失败且难以判断进度 | 单条 `RENAME TABLE`（原子） |
 | 库级授权漏授 | 换库没重授 | 应用连上但 `SELECT` 被拒（`1142`） | 脚本第 3 步 + 冒烟里的建表动作 |
 | 下游订阅旧表名 | DBA 的监控 / Debezium / 备份 | 静默断流，几周后才发现 | 6.8 的映射表直接发给运维 |

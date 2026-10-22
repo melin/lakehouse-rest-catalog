@@ -120,7 +120,7 @@ public final class LineageReporter implements AutoCloseable {
         if (dropWarnings.incrementAndGet() == 1 || total % 100 == 0) {
             LOG.warn("Lineage queue is full ({} entries); dropped {} run(s) so far. "
                     + "Lineage is best-effort: the job itself is unaffected. "
-                    + "Raise spark.paimon.rest.lineage.queue-size or flush-interval-ms if this repeats.",
+                    + "Raise spark.lakehouse.rest.lineage.queue-size or flush-interval-ms if this repeats.",
                     queue.size() + batchSize, total);
         }
         return false;

@@ -491,7 +491,7 @@ class ManagementApiClientTests {
     val error = assertThrows(classOf[ManagementApiException], () =>
       custom.listPermissions("paimon", null))
 
-    assertTrue(error.getMessage.contains("spark.paimon.rest.catalog.url"), error.getMessage)
+    assertTrue(error.getMessage.contains("spark.lakehouse.rest.catalog.url"), error.getMessage)
     assertEquals(0, error.status(), "没发出请求，状态码为 0")
   }
 

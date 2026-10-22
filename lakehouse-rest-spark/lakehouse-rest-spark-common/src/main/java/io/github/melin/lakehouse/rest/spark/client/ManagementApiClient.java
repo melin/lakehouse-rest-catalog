@@ -140,7 +140,7 @@ public final class ManagementApiClient {
      * 下不需要用户配第二个地址。
      *
      * <p>基址被部署在非标准路径下时推不出来（后缀对不上），此时返回 {@code null}，
-     * 由使用者显式配 {@code spark.paimon.rest.catalog.url}；报错比猜一个错的地址好。
+     * 由使用者显式配 {@code spark.lakehouse.rest.catalog.url}；报错比猜一个错的地址好。
      */
     private static String deriveCatalogBase(String managementBaseUrl) {
         if (managementBaseUrl == null || managementBaseUrl.isEmpty()) {
@@ -1252,7 +1252,7 @@ public final class ManagementApiClient {
                     "cannot locate the permissions endpoint: the management API base URL '"
                             + baseUrl + "' does not end with " + MANAGEMENT_SUFFIX
                             + ", so the catalog API base URL cannot be derived; set"
-                            + " spark.paimon.rest.catalog.url to the catalog API base"
+                            + " spark.lakehouse.rest.catalog.url to the catalog API base"
                             + " (for example http://host:8080/v1)", null, null);
         }
         return URI.create(permissionBaseUrl + path);

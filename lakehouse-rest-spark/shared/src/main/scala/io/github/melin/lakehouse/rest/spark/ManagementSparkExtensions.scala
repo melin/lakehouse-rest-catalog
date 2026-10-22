@@ -15,11 +15,11 @@ import java.util.Locale
  * <pre>
  * # 1) 配置（推荐，对 spark-sql / spark-submit / PySpark 都有效）
  * spark.sql.extensions=io.github.melin.lakehouse.rest.spark.ManagementSparkExtensions
- * spark.paimon.rest.management.url=http://catalog-host:8080/api/management/v1
- * spark.paimon.rest.token=&lt;调用者主体的令牌&gt;
+ * spark.lakehouse.rest.management.url=http://catalog-host:8080/api/management/v1
+ * spark.lakehouse.rest.token=&lt;调用者主体的令牌&gt;
  * # 权限语句（GRANT ... TO USER ...）需要 catalog API 基址；默认由上面那个推导，
  * # 服务部署在非标准路径下时才需要显式指定：
- * # spark.paimon.rest.catalog.url=http://catalog-host:8080/v1
+ * # spark.lakehouse.rest.catalog.url=http://catalog-host:8080/v1
  *
  * # 2) 编程方式
  * val spark = PaimonRestManagement.install(SparkSession.builder())
@@ -27,7 +27,7 @@ import java.util.Locale
  * </pre>
  *
  * <p><b>令牌的作用。</b>管理服务按调用者身份判定权限，因此
- * {@code spark.paimon.rest.token} 应当填「执行这些语句的主体」的令牌，
+ * {@code spark.lakehouse.rest.token} 应当填「执行这些语句的主体」的令牌，
  * 而不是随便一个管理员令牌——用管理员令牌会让所有 SQL 都绕过权限判定。
  */
 class ManagementSparkExtensions extends (SparkSessionExtensions => Unit) {
@@ -45,7 +45,7 @@ class ManagementSparkExtensions extends (SparkSessionExtensions => Unit) {
 object PaimonRestManagement {
 
   /** 管理 API 基址，须包含 {@code /api/management/v1} 前缀。 */
-  val MANAGEMENT_URL = "spark.paimon.rest.management.url"
+  val MANAGEMENT_URL = "spark.lakehouse.rest.management.url"
 
   /**
    * catalog API 基址，须包含 {@code /v1} 前缀。
@@ -56,13 +56,13 @@ object PaimonRestManagement {
    * 常规部署下不需要配它。服务被部署在非标准路径下时推导不出来，此时必须显式配这一个，
    * 否则权限语句会报一条指向本配置项的错。
    */
-  val CATALOG_URL = "spark.paimon.rest.catalog.url"
+  val CATALOG_URL = "spark.lakehouse.rest.catalog.url"
 
   /** 调用者令牌，会作为 {@code Authorization: Bearer <token>} 发出。 */
-  val TOKEN = "spark.paimon.rest.token"
+  val TOKEN = "spark.lakehouse.rest.token"
 
   /** 单次请求超时（秒）。 */
-  val TIMEOUT_SECONDS = "spark.paimon.rest.management.timeoutSeconds"
+  val TIMEOUT_SECONDS = "spark.lakehouse.rest.management.timeoutSeconds"
 
   /** 扩展类名，供 {@code spark.sql.extensions} 使用。 */
   val EXTENSION_CLASS = classOf[ManagementSparkExtensions].getName
@@ -87,8 +87,8 @@ object PaimonRestManagement {
    * <p><b>每个会话一个客户端。</b>{@link LakehouseRestSqlParser} 内部把它持有为
    * `lazy val`，因此它是在该会话的**第一条**管理语句到来时创建的，之后整会话复用——
    * `HttpClient` 自带连接池与选择器线程，每条语句新建一个并不划算。
-   * 由此推出一个使用上的约束：{@code spark.paimon.rest.management.url} 与
-   * {@code spark.paimon.rest.token} 必须在第一条管理语句执行**之前**设好；
+   * 由此推出一个使用上的约束：{@code spark.lakehouse.rest.management.url} 与
+   * {@code spark.lakehouse.rest.token} 必须在第一条管理语句执行**之前**设好；
    * 之后再改不会生效，需要重建会话。
    */
   def clientFor(session: SparkSession): ManagementApiClient = {
