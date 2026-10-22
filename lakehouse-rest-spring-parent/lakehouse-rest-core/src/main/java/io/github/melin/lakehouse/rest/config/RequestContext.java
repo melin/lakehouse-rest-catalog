@@ -36,6 +36,21 @@ public final class RequestContext {
         return principal == null || principal.isBlank() ? AuditPrincipal.ANONYMOUS : principal;
     }
 
+    /**
+     * 要写进 {@code owner} / {@code created_by} / {@code updated_by} 三列的取值：
+     * 与 {@link #principal()} 的区别是**已按列宽归一化**（超长的记摘要而非截断）。
+     *
+     * <p>实体走 {@code touch(principal, now)} / {@code markCreated} 时内部已经归一化过，
+     * 这个方法只给**绕开实体**的写入用——JPQL 的 {@code update ... set updated_by = :updatedBy}
+     * 不经过持久化上下文，不触发任何实体回调，传什么进去就存什么
+     * （见 {@code TableRepository#updateIcebergMetadata} 与 {@code ViewRepository#updateViewMetadata}）。
+     * 这两处曾经直接传 {@link #principal()}，于是「令牌被当成主体名」时整次提交以
+     * {@code Data too long for column 'updated_by'} 失败——而错误信息里看不出与认证有关。
+     */
+    public static String auditPrincipal() {
+        return AuditPrincipal.of(principal());
+    }
+
     /** 当前请求的关联 ID；没有 HTTP 请求的路径（调度器、优化回调之外的线程）为 {@code null}。 */
     public static String requestId() {
         return REQUEST_ID.get();

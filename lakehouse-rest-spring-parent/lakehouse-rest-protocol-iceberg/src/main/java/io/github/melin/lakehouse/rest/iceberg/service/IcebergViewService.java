@@ -246,7 +246,7 @@ public class IcebergViewService {
         fileAccess.write(catalog.getId(), newLocation, document);
 
         int rows = viewRepository.updateViewMetadata(view.getId(), expectedLocation, newLocation,
-                document, RequestContext.now(), RequestContext.principal());
+                document, RequestContext.now(), RequestContext.auditPrincipal());
         if (rows == 0) {
             // 读到基线之后、写回之前被别人提交过：仓库里的孤儿文件无害，库里仍指旧版本
             throw new ApiException(409, ResourceType.VIEW, viewName,

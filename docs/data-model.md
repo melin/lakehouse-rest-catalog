@@ -222,6 +222,15 @@ not counting BLOBs, is 65535. ... You have to change some columns to TEXT or BLO
 - 超长时启动日志告警一次，给出的解法是配 `lakehouse.rest.auth.token-principals`
   把令牌映射成真正的名字。
 - 归一化放在实体层而非 `RequestContext`：授权判定读的是**未归一化**的主体名，两者互不影响。
+- **两条写入路径，收口方式不同**（2026-10-22 补）：
+  - 实体写入（`save`）：`touch` / `markCreated` 之外还有一处 `@PrePersist` / `@PreUpdate`
+    回调兜底——Lombok 的 `setUpdatedBy` 是公开的，绕过 `touch` 直接赋值的调用点
+    （例如按批次取消优化任务）也能被拦住。
+  - **批量更新（JPQL `update ...`）不触发实体回调**：`TableRepository#updateIcebergMetadata`
+    与 `ViewRepository#updateViewMetadata` 直接发 SQL，传什么进 `varchar(255)` 就是什么。
+    这两处必须自己归一化，一律用 `RequestContext.auditPrincipal()`——曾经直接传
+    `RequestContext.principal()`，于是 Iceberg 的每次 commit 都以
+    `Data too long for column 'updated_by'` 失败，而错误信息里看不出与认证有关。
 - **刻意不通过加宽这三列来解决**：它们会被接口原样返回，加宽等于让凭据明文入库并可被读回；
   且主体名长度没有上界，加宽只是把溢出推后，还要对 14 张表共 42 个列做迁移。
 

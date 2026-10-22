@@ -118,6 +118,17 @@
 			<artifactId>${iceberg.spark.artifact}</artifactId>
 			<scope>test</scope>
 		</dependency>
+		<!--
+			Iceberg 的 S3 FileIO 依赖（AWS SDK v2 的 shade 包）。
+			与 3.5 模块同一条、同一个理由：bundle 里有 S3FileIO，没有 awssdk；
+			缺它时 `s3://` 写入会在 `ResolvingFileIO` 静默回退之后才炸，
+			报错离原因两跳远（详见根 POM 里这条依赖的说明）。
+		-->
+		<dependency>
+			<groupId>org.apache.iceberg</groupId>
+			<artifactId>iceberg-aws-bundle</artifactId>
+			<scope>test</scope>
+		</dependency>
 		<dependency>
 			<groupId>org.apache.spark</groupId>
 			<artifactId>spark-hive_${scala.binary.version}</artifactId>

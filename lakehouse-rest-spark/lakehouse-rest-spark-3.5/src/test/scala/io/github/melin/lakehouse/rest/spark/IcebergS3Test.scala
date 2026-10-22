@@ -1,0 +1,62 @@
+package io.github.melin.lakehouse.rest.spark
+
+import io.github.melin.lakehouse.rest.spark.LiveSparkSession.{catalog, icebergCatalog}
+import org.apache.spark.sql.SparkSession
+
+class IcebergS3Test {
+
+  def baseUrl: String = s"http://127.0.0.1:8080/api/management/v1"
+
+  /*
+    获取 token:
+    curl -s -X POST http://127.0.0.1:8080/api/catalog/v1/oauth/tokens \
+      -d grant_type=client_credentials \
+      -d client_id="230698be-b91b-4262-b208-179cc530e54c" -d client_secret="nUmM_Y2nvcCLNxqBP7U-TM9uA3bENYFW1_Io2Cjumss" \
+      -d scope=PRINCIPAL_ROLE:ALL | jq -r .access_token
+   */
+  val token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJwYWltb24tcmVzdCIsInN1YiI6InJlZ3Jlc3MtcHJpbmNpcGFsIiwiaWF0IjoxNzkxNTk1ODI2LCJleHAiOjE3OTE1OTk0MjYsImp0aSI6Ijg3MmVlYWUwLTQxYzctNDE2Ni04OGI3LTAzNDgwMWMxNjcyMCIsInNjb3BlIjoiUFJJTkNJUEFMX1JPTEU6QUxMIn0.OonQtdHvb-scEg2zk2ijGKiZDFEyXAdauDXM06FsXG8"
+
+  @org.junit.jupiter.api.Test
+  def test(): Unit = {
+    val warehouse = java.nio.file.Files.createTempDirectory("paimon-rest-warehouse")
+    val spark = SparkSession.builder()
+      .master("local[1]")
+      .appName("lakehouse-rest-spark")
+      .config("spark.ui.enabled", "false")
+      .config("spark.driver.host", "127.0.0.1")
+      .config("spark.driver.bindAddress", "127.0.0.1")
+      .config("spark.sql.shuffle.partitions", "1")
+      .config("spark.sql.shuffle.partitions", "1")
+      .config("spark.sql.warehouse.dir", warehouse.toString)
+      .config("spark.sql.extensions", LiveSparkSession.extensions)
+      // Paimon 自己的扩展：建表/读写等 Paimon SQL 由它落地
+      .config("spark.sql.catalog." + icebergCatalog, "org.apache.iceberg.spark.SparkCatalog")
+      .config("spark.sql.catalog." + icebergCatalog + ".type", "rest")
+      .config("spark.sql.catalog." + icebergCatalog + ".uri", "http://127.0.0.1:8080")
+      // warehouse 传的是 catalog 的 prefix：服务端 GET /v1/config 会用仓库名换回 prefix，
+      // 客户端后续路径都以它开头。这里两侧同名
+      .config("spark.sql.catalog." + icebergCatalog + ".warehouse", icebergCatalog)
+      .config("spark.sql.catalog." + icebergCatalog + ".rest.auth.type", "oauth2")
+      .config("spark.sql.catalog." + icebergCatalog + ".token", token)
+
+      .config("spark.sql.catalog." + icebergCatalog + ".s3.endpoint", "http://172.18.6.181:9330")
+      .config("spark.sql.catalog." + icebergCatalog + ".s3.access-key-id", "McvVnpOziVsWv7Qlyut7")
+      .config("spark.sql.catalog." + icebergCatalog + ".s3.secret-access-key", "PbICbD6H7iyq0PuefHa383YoqJn3JCjedQHSYmbp")
+      .config("spark.sql.catalog." + icebergCatalog + ".s3.path.style.access", "true")
+      .config("spark.lakehouse.rest.lineage.enabled", "true")
+
+      .config(PaimonRestManagement.MANAGEMENT_URL, "http://127.0.0.1:8080/api/management/v1")
+      .config(PaimonRestManagement.TOKEN, token)
+      .getOrCreate()
+
+    spark.catalog.setCurrentCatalog(icebergCatalog)
+
+    val insertSql = "insert into table default.iceberg_demo values(1, 'zhangsan')"
+    spark.sql(insertSql)
+
+    val insertSql2 = "insert into table default.iceberg_users select * from default.iceberg_demo"
+    spark.sql(insertSql2)
+
+    //spark.sql("select * from demo.paimon_sample4").show()
+  }
+}

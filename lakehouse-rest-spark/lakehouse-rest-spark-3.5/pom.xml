@@ -142,6 +142,27 @@
 			<scope>test</scope>
 		</dependency>
 		<!--
+			Iceberg 的 S3 FileIO 依赖（AWS SDK v2 的 shade 包）。
+
+			与上面 `paimon-s3` 同一个位置、同一个理由，只是给 Iceberg 用：
+			`iceberg-spark-runtime` bundle 里有 `S3FileIO` 这个类，却没有它要用的
+			AWS SDK——Iceberg 把 awssdk 当 compileOnly，官方的部署单元就是
+			`iceberg-aws-bundle`。少了它，`s3://` 上写入会以
+			`Cannot find constructor for interface org.apache.iceberg.io.FileIO`
+			+ `NoClassDefFoundError: software/amazon/awssdk/core/exception/SdkException`
+			失败，并被 `ResolvingFileIO` 静默降级成 HadoopFileIO，故障点离原因两跳远
+			（详见根 POM 里这条依赖的说明）。
+
+			test scope 的理由与上面两份一致：本模块运行时不碰 Iceberg，
+			只在测试里真的往对象存储写表时才需要；生产上它要放进 `spark/jars`
+			（见 docs/spark-iceberg-rest-e2e.md §1.6 与 optimizer 的 Dockerfile）。
+		-->
+		<dependency>
+			<groupId>org.apache.iceberg</groupId>
+			<artifactId>iceberg-aws-bundle</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<!--
 			Paimon 的 Spark 扩展初始化时会引用 spark-hive 中的 HiveUDFExpressionBuilder。
 			提交到集群时 spark-hive 由发行版提供，直接跑 JUnit 时没有，因此测试期引入。
 		-->

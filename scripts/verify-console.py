@@ -383,6 +383,16 @@ check("client.js 的默认 API 基址是同源（空串）",
       "return localStorage.getItem(BASE_URL_KEY) || ''" in read(CLIENT_JS),
       "默认基址不是同源，会让生产构建后的相对路径请求打到别处")
 
+# 查询串只能住在 params.query：buildPath 只从那里取。曾有调用方把 prefix/database/table
+# 平铺在 params 顶层——buildPath 只替换路径占位符，多余的键被静默丢掉，请求原样发出
+# （GET /api/console/v1/tables/lookup 一个参数都没带），服务端回
+# "Required parameter 'prefix' is not present"，从 400 里看不出前端少传了什么。
+# 顶层 query 已有守卫（request 里那个 throw），这一条钉的是 buildPath 对
+# 「既不是路径占位符也不是 query 的键」的当场抛错——错形状在拼 URL 这最后一道口上响。
+check("buildPath 拒收既非路径参数也非 query 的 params 键（静默丢弃会变成无参请求）",
+      "placeholders.includes(key)" in read(CLIENT_JS) and "请写进 params.query" in read(CLIENT_JS),
+      "守卫不在，错形状的参数会静默丢掉，服务端只看到一个缺参 400")
+
 # 令牌端点的路径在两处出现：控制台的契约表，以及服务端下发给前端的 tokenEndpoint
 # （外部 OAuth 客户端按它对接）。控制台实际上用的是自己的契约表，两者不一致时
 # 外部客户端打的是对的、浏览器登录打的是错的——「只有登录按钮坏」这种故障
@@ -1766,6 +1776,14 @@ check("Iceberg 表详情页挂同一个预览面板（先按名字换 id，不�
 check("换表或刷新时作废已换到的内部 id",
       ice_source.count("previewTableId.value = null") >= 2,
       "拿旧表的 id 去预览新表，读到的是别人的数据——比报错严重得多")
+
+# lookup 的三个参数是查询串（端点没有路径占位符）。它们曾平铺在 params 顶层被
+# buildPath 静默丢掉，Iceberg 表详情页的「数据预览」于是固定回 400
+# "Required parameter 'prefix' is not present"——正是 buildPath 那条守卫的起因。
+check("lookupTable 的三个查询参数写进 params.query（prefix 不是路径参数）",
+      "get('lookupPreviewTable', { params: { query: { prefix, database, table } } })"
+      in preview_api_source,
+      "平铺在 params 顶层会被静默丢掉，请求变成无参 lookup，服务端回缺 prefix 的 400")
 
 # ------------------------------------------------------------------ 21. 血缘
 

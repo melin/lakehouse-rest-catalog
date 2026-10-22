@@ -185,6 +185,11 @@
 				<artifactId>iceberg-parquet</artifactId>
 				<version>${iceberg.version}</version>
 			</dependency>
+			<dependency>
+				<groupId>org.apache.iceberg</groupId>
+				<artifactId>iceberg-orc</artifactId>
+				<version>${iceberg.version}</version>
+			</dependency>
 
 			<!-- Paimon：只有 storage（FileIO）与各协议面（元数据读写）会用到 -->
 			<dependency>

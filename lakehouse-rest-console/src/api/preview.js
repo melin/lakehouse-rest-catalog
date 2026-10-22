@@ -23,7 +23,7 @@ export const previewApi = {
    * @param {string} table 表名
    */
   lookupTable: (prefix, database, table) =>
-    get('lookupPreviewTable', { params: { prefix, database, table } }),
+    get('lookupPreviewTable', { params: { query: { prefix, database, table } } }),
 
   /**
    * 读一页数据。

@@ -303,7 +303,7 @@ public class IcebergTableService {
         int rows = tableRepository.updateIcebergMetadata(table.getId(), expectedLocation, newLocation,
                 document, updated.uuid(), updated.formatVersion(), updated.currentSchemaId(),
                 SchemaParser.toJson(updated.schema()), TABLE_TYPE_ICEBERG, updated.location(),
-                snapshotIdOf(updated), null, RequestContext.now(), RequestContext.principal());
+                snapshotIdOf(updated), null, RequestContext.now(), RequestContext.auditPrincipal());
         if (rows == 0) {
             // 读到基线之后、写回之前被别人提交过：仓库里的孤儿文件无害，库里仍指旧版本
             throw new ApiException(409, ResourceType.TABLE, tableName,
@@ -418,7 +418,7 @@ public class IcebergTableService {
                     change.updated().currentSchemaId(),
                     SchemaParser.toJson(change.updated().schema()), TABLE_TYPE_ICEBERG,
                     change.updated().location(), snapshotIdOf(change.updated()), null,
-                    RequestContext.now(), RequestContext.principal());
+                    RequestContext.now(), RequestContext.auditPrincipal());
             if (rows == 0) {
                 throw new ApiException(409, ResourceType.TABLE, change.name(),
                         "Commit failed: the table metadata changed concurrently (expected"

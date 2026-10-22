@@ -77,6 +77,18 @@ export function buildPath(name, params = {}) {
   if (!endpoint) {
     throw new Error(`unknown endpoint: ${name}`)
   }
+  // params 里混进既不是路径占位符、也不是 query 的键 = 调用方把它当查询串传了，
+  // 而这里只会静默丢掉——「lookup 不带 prefix」那类 400 就是这么来的
+  // （GET /tables/lookup 一个参数都没带上，服务端回 "Required parameter
+  // 'prefix' is not present"，从报错看不出前端少传了什么）。
+  // 编译期抓不到，只能在拼 URL 这最后一道口上让它当场响。
+  const placeholders = [...endpoint.path.matchAll(/\{(\w+)\}/g)].map((m) => m[1])
+  for (const key of Object.keys(params)) {
+    if (key !== 'query' && !placeholders.includes(key)) {
+      throw new Error(`${name}：params.${key} 不是路径参数（占位符：${placeholders.join('、') || '无'}）。`
+        + '要当查询串传，请写进 params.query')
+    }
+  }
   const path = endpoint.path.replace(/\{(\w+)\}/g, (match, key) => {
     const value = params[key]
     if (value === undefined || value === null || value === '') {

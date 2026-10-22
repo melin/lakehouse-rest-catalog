@@ -34,6 +34,11 @@ public interface ViewRepository extends JpaRepository<ViewEntity, String> {
      * <p>这里只写两列（元数据文件位置与 {@code ViewMetadata} 文档）。视图没有
      * 快照、没有 refs、没有数据文件，因此不像表那样还要同步一批投影列——
      * 这是 {@code view_schema_doc} 复用为 ViewMetadata JSON 的直接收益。
+     *
+     * <p><b>{@code updatedBy} 必须由调用方先归一化</b>（用
+     * {@code RequestContext.auditPrincipal()}）：批量更新不触发
+     * {@code AuditedEntity} 的 {@code @PreUpdate}，原始主体名会原样撞
+     * {@code varchar(255)}。理由同 {@code TableRepository#updateIcebergMetadata}。
      */
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query("update ViewEntity v set"

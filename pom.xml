@@ -201,6 +201,32 @@
 				<artifactId>iceberg-spark-runtime-3.5_${scala.binary.version}</artifactId>
 				<version>${iceberg.version}</version>
 			</dependency>
+			<!--
+				Iceberg 的 AWS 支持包：`iceberg-aws` 连同 AWS SDK v2（含一个同步
+				HTTP 客户端实现）一起 shade 进来的部署单元。
+
+				**它是独立于上面那个 bundle 的第二份 jar**，原因在 Iceberg 的打包方式：
+				`iceberg-spark-runtime` 里**有** `org.apache.iceberg.aws.s3.S3FileIO`，
+				但**没有** `software.amazon.awssdk.*`——Iceberg 把 AWS SDK 当 compileOnly，
+				由使用者自己提供。于是 `s3://` 上建表时的报错是
+				`Cannot find constructor for interface org.apache.iceberg.io.FileIO
+				 Missing org.apache.iceberg.aws.s3.S3FileIO
+				 [NoClassDefFoundError: software/amazon/awssdk/core/exception/SdkException]`，
+				接着 `ResolvingFileIO` 只打一行 WARN 就**静默回退到 HadoopFileIO**
+				（它同样不认 `s3://`，真正的失败要再往后两跳才爆出来）。
+				也就是说：缺这个 jar 的报错指向的地方，离真正缺的依赖有两跳远。
+
+				与 `paimon-s3` 是对称的两份，但**互不通用**：Paimon 的那份以插件形式
+				自带 shade 过的 hadoop-aws，Iceberg 走的是自己的 iceberg-aws + awssdk。
+
+				版本与 `iceberg.version` 同一个值：bundle 里的 iceberg-aws 与服务端
+				iceberg-core 是同一份发布，拆开会有两边元数据/客户端行为不一致的风险。
+			-->
+			<dependency>
+				<groupId>org.apache.iceberg</groupId>
+				<artifactId>iceberg-aws-bundle</artifactId>
+				<version>${iceberg.version}</version>
+			</dependency>
 			<dependency>
 				<groupId>org.junit.jupiter</groupId>
 				<artifactId>junit-jupiter</artifactId>

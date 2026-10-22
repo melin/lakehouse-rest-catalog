@@ -38,6 +38,12 @@ public interface TableRepository extends JpaRepository<TableEntity, String> {
      * <p>{@code clearAutomatically = true}：批量更新绕过持久化上下文，同一次事务里
      * 之前 load 出来的实体已经过期，必须清掉，否则后续任何一次脏检查写出旧值，
      * 就会把刚提交的元数据**改回去**。
+     *
+     * <p><b>{@code updatedBy} 必须由调用方先归一化。</b>批量更新直接发 SQL，不加载实体、
+     * 不触发 {@code AuditedEntity} 上的 {@code @PreUpdate}，传进来的字符串原样进
+     * {@code varchar(255)}——直接传 {@code RequestContext.principal()}（原始主体名，
+     * 可能是整条令牌）会以 {@code Data too long for column 'updated_by'} 失败。
+     * 调用方一律用 {@code RequestContext.auditPrincipal()}。
      */
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query("update TableEntity t set"
