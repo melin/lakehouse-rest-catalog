@@ -2,10 +2,10 @@
   <div class="lc-wrap">
     <div class="lc-head">
       <span class="pc-dim">
-        按目标列分组（{{ groups.length }} 列），来源表不限；常量与同名列直通默认折叠。
+        按目标列分组（{{ groups.length }} 列），来源表不限；直通与常量列默认展开，可一键折叠。
       </span>
       <el-button v-if="foldableCount" size="small" text @click="toggleFolded">
-        {{ showFolded ? '折叠回去' : `展开 ${foldableCount} 列直通/常量` }}
+        {{ showFolded ? `折叠 ${foldableCount} 列直通/常量` : `展开 ${foldableCount} 列直通/常量` }}
       </el-button>
     </div>
     <ResourceState :loading="loading" :error="error" :empty="!loading && !error && rows.length === 0"
@@ -33,9 +33,9 @@
  * 是 90000 条，语义上没有人能看），列级只在「列」这个页签里以列表形式出现。
  *
  * <p>四类列的处理不同：变换列（DERIVED / AGGREGATE）展开——那是人真正要看的
- * 「这列是谁算出来的」；`DIRECT` 同名列与常量列折叠成一行（宽表里常占 70%，
- * 信息量最低却恰好把列表撑到 300 行）；`UNRESOLVED` 展开并标灰——
- * 它代表「我不知道」，必须显眼，否则会被误读成「没有上游」。
+ * 「这列是谁算出来的」；`DIRECT` 同名列与常量列**默认也展开**（按用户要求改的：
+ * 核对字段时逐列都在，折叠只作为可选的降噪手段留在按钮里）；`UNRESOLVED`
+ * 展开并标灰——它代表「我不知道」，必须显眼，否则会被误读成「没有上游」。
  *
  * <p>不做行内展开：`el-table-v2` 的虚拟滚动建立在定高假设上，
  * 展开三行就会把后续所有行的位置算错（§9.5）。
@@ -53,7 +53,8 @@ const props = defineProps({
 
 const host = ref(null)
 const width = ref(820)
-const showFolded = ref(false)
+/** true = 直通/常量也逐列展开（默认）；按钮切到 false 收成汇总行降噪。 */
+const showFolded = ref(true)
 let observer = null
 
 const DIRECT_HINT = '同名列直通'

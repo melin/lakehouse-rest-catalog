@@ -1,6 +1,7 @@
 package io.github.melin.lakehouse.rest.spark
 
 import io.github.melin.lakehouse.rest.spark.client.ManagementApiClient
+import io.github.melin.lakehouse.rest.spark.lineage.SqlTextRegistry
 import io.github.melin.lakehouse.rest.spark.parser.ManagementSqlLexer
 import io.github.melin.lakehouse.rest.spark.parser.ManagementSqlParser
 import org.antlr.v4.runtime.misc.ParseCancellationException
@@ -36,7 +37,8 @@ import org.apache.spark.sql.types.{DataType, StructType}
  */
 abstract class AbstractLakehouseRestSqlParser(
     protected val delegate: ParserInterface,
-    clientFactory: () => ManagementApiClient) extends ParserInterface {
+    clientFactory: () => ManagementApiClient,
+    onFirstParse: () => Unit = () => ()) extends ParserInterface {
 
   /**
    * 客户端延迟创建：构造解析器时配置可能还没设，等第一条管理语句到来时再读。
@@ -46,8 +48,47 @@ abstract class AbstractLakehouseRestSqlParser(
    */
   private lazy val client: ManagementApiClient = clientFactory()
 
-  override def parsePlan(sqlText: String): LogicalPlan =
-    parseManagementStatement(sqlText).getOrElse(delegate.parsePlan(sqlText))
+  /**
+   * 解析计划，并顺手把 SQL 文本留给血缘的监听器（§2.4）。
+   *
+   * <p>为什么在这里「记事」而不是在监听器里想办法：`onSuccess` 只拿到动作名与计划树，
+   * 文本在解析之后就没了。解析器是唯一同时握着「文本」与「计划」的地方，而**只有写计划**
+   * 才值得记（`SqlTextRegistry.record` 自己判）——否则同线程随后一次 DataFrame 写入
+   * 会捡到上一条 SELECT 的文本。
+   */
+  override def parsePlan(sqlText: String): LogicalPlan = {
+    // 第一次解析时挂血缘监听器。为什么拖到这里：见 onFirstParse 的说明
+    armListener()
+    val plan = parseManagementStatement(sqlText).getOrElse(delegate.parsePlan(sqlText))
+    SqlTextRegistry.record(sqlText, plan)
+    plan
+  }
+
+  /**
+   * 「会话第一次解析 SQL」这个时刻，是本扩展**唯一**能安全拿到 `listenerManager` 的地方。
+   *
+   * <p>`injectParser` 的工厂函数由 `BaseSessionStateBuilder#sqlParser` 调用，也就是
+   * `sessionState` 正在构建的时刻；而 `SparkSession#listenerManager` 本身就要读
+   * `sessionState`——在工厂里挂监听器会形成
+   * `sessionState → buildParser → 工厂 → listenerManager → sessionState` 的环，
+   * 表现为 `StackOverflowError`，栈顶还落在 `ClassLoader.defineClass1` 上（§13.7 第 6 条）。
+   *
+   * <p>代价要写清楚：**只有解析过 SQL 的会话才会被挂上**。纯 DataFrame 作业
+   * （`df.write.saveAsTable(...)`，一次 `spark.sql` 都没有）不会被自动挂载，那种场景请用
+   * `spark.sql.queryExecutionListeners` 那条路（§10.2 的推荐方式）。
+   */
+  private def armListener(): Unit = {
+    if (!armed) {
+      armed = true
+      try {
+        onFirstParse()
+      } catch {
+        case scala.util.control.NonFatal(_) => // 挂不上就不采集，绝不影响这条语句
+      }
+    }
+  }
+
+  @volatile private var armed = false
 
   // ------------------------------------------------------------------ 其余方法一律委托
 

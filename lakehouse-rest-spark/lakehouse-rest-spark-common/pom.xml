@@ -31,6 +31,19 @@
 
 	<dependencies>
 		<!--
+			日志用 slf4j-api，运行时由 Spark 提供（provided）。
+			为什么不用 java.util.logging：Spark 的日志配置（log4j2 / logback）只接管 slf4j，
+			JUL 写出来的东西在 spark-submit 的日志里看不到——而血缘的丢弃与失败计数
+			**只有**通过日志才能被发现（§6.4），写了看不见等于没写。
+		-->
+		<dependency>
+			<groupId>org.slf4j</groupId>
+			<artifactId>slf4j-api</artifactId>
+			<version>2.0.13</version>
+			<scope>provided</scope>
+		</dependency>
+
+		<!--
 			JSON 编解码用 Spark 自带的 Jackson 2（同名同版本由 Spark 提供）。
 			provided：本模块编译期需要它，但不随产物分发——运行时由集群上的
 			Spark 提供，版本由那边决定，我们不去改写。

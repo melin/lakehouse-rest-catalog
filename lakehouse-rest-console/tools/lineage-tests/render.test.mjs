@@ -8,7 +8,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { colorOf, edgeWidth, ellipsizeMiddle, lodFor, tailOf } from '../../src/utils/lineageRender.js'
+import { colorOf, edgeWidth, ellipsizeMiddle, lodFor, prefixOf, tailOf } from '../../src/utils/lineageRender.js'
 
 test('LOD 三档：进档要「明显够大」，退档要「明显变小」', () => {
   assert.equal(lodFor(1, 0), 0)
@@ -54,6 +54,14 @@ test('短名取末段；外部节点也照末段显示', () => {
   assert.equal(tailOf('paimon.dw.orders'), 'orders')
   assert.equal(tailOf('~file:8c1f'), '~file:8c1f')
   assert.equal(tailOf(''), '')
+})
+
+test('prefixOf：ref 去掉末段表名，剩 catalog.namespace；裸表名没有可提示的前缀', () => {
+  assert.equal(prefixOf('paimon.dw.orders'), 'paimon.dw')
+  // 多级 namespace：中间段全保留（tooltip 要能完整还原 catalog 与库）
+  assert.equal(prefixOf('paimon.a.b.orders'), 'paimon.a.b')
+  assert.equal(prefixOf('orders'), '')
+  assert.equal(prefixOf(''), '')
 })
 
 test('取色：外部节点单列一色（「点不开」比「哪种格式」更重要）', () => {

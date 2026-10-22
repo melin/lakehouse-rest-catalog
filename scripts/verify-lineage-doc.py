@@ -13,7 +13,7 @@
 
 校验项（与 `docs/lineage-design.md` §11.5 对应）：
 
-  1. 端点数              `LineageController` 上解析出 5 个映射（加端点要同步这里与文档）
+  1. 端点数              `LineageController` 上解析出 6 个映射（加端点要同步这里与文档）
   2. 实现 → 文档         每个 `@*Mapping` 都能在文档里找到 `方法 路径`
   3. 文档 → 实现         文档里出现的每个血缘端点都在控制器上
   4. 注解解析完整性       控制器里 `@*Mapping` 的注解行数 == 解析出的端点数
@@ -145,8 +145,8 @@ def main():
     documented = doc_endpoints(args.doc)
 
     print("\n1. 端点数")
-    check("控制器上解析出 5 个血缘端点（加端点要同步本脚本与文档 §6.1 / §8）",
-          len(impl) == 5, "实际 %d 个：%s" % (len(impl), sorted(impl)))
+    check("控制器上解析出 6 个血缘端点（加端点要同步本脚本与文档 §6.1 / §8）",
+          len(impl) == 6, "实际 %d 个：%s" % (len(impl), sorted(impl)))
 
     print("\n2. 实现 → 文档")
     missing = sorted(impl - documented)

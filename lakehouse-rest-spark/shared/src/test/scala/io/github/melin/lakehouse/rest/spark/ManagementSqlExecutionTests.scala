@@ -1,7 +1,7 @@
 package io.github.melin.lakehouse.rest.spark
 
 import io.github.melin.lakehouse.rest.spark.client.ManagementApiException
-import io.github.melin.lakehouse.rest.spark.support.{RecordedRequest, StubManagementServer}
+import io.github.melin.lakehouse.rest.spark.support.{RecordedRequest, SharedTestSession, StubManagementServer}
 import org.apache.spark.sql.catalyst.parser.ParseException
 import org.apache.spark.sql.SparkSession
 import org.junit.jupiter.api.Assertions._
@@ -24,36 +24,18 @@ import org.junit.jupiter.api.{BeforeEach, Test}
  */
 object ManagementSqlExecutionTests {
 
-  /** 桩服务端：必须在会话之前起好，因为会话要拿它的地址当配置。 */
-  lazy val stub: StubManagementServer = {
-    val server = StubManagementServer.start()
-    Runtime.getRuntime.addShutdownHook(new Thread(() => server.stop()))
-    server
-  }
+  /**
+   * 会话与桩服务端都来自 {@link SharedTestSession}。
+   *
+   * <p>一个 JVM 只能有一个 `SparkContext`，而会话配置（尤其是 `spark.sql.extensions`）
+   * 只在建会话那一刻生效——所以「谁先建谁说了算」。把这份会话集中到一个对象里，
+   * 血缘抽取器的测试才能和这里共用同一个，而不是各自静默拿到别人的会话。
+   */
+  lazy val stub: StubManagementServer = SharedTestSession.stub
 
-  val token = "spark-session-token"
+  val token: String = SharedTestSession.token
 
-  lazy val session: SparkSession = {
-    // 先确认 JDK 跑得了 Spark 3.5 的会话（JDK 24+ 会在 Hadoop 内部以
-    // 「getSubject is not supported」炸掉），否则这里就给出该换哪个 JDK
-    SparkJdkRequirement.requireHadoopCompatibleJdk()
-    val warehouse = java.nio.file.Files.createTempDirectory("paimon-rest-warehouse")
-    val session = SparkSession.builder()
-      .master("local[1]")
-      .appName("lakehouse-rest-spark-e2e")
-      .config("spark.ui.enabled", "false")
-      .config("spark.driver.host", "127.0.0.1")
-      .config("spark.driver.bindAddress", "127.0.0.1")
-      .config("spark.sql.shuffle.partitions", "1")
-      .config("spark.sql.warehouse.dir", warehouse.toString)
-      .config(PaimonRestManagement.MANAGEMENT_URL, stub.baseUrl)
-      .config(PaimonRestManagement.TOKEN, token)
-      .config("spark.sql.extensions", PaimonRestManagement.EXTENSION_CLASS)
-      .getOrCreate()
-    // 主动触发一次解析器构造，让配置错误的报错发生在建会话时而不是第一个测试里
-    session.sessionState.sqlParser
-    session
-  }
+  lazy val session: SparkSession = SharedTestSession.session
 }
 
 class ManagementSqlExecutionTests {

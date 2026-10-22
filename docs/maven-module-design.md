@@ -1025,10 +1025,15 @@ mvn -o -f lakehouse-rest-spark/pom.xml -DskipTests install
 ### 13.6 4.1 侧的已知边界
 
 1. **Paimon 还没有 Spark 4.1 的 bundle。** Paimon 2.0.0 只发布到 `paimon-spark-4.0_2.13`，
-   4.1 模块用它（同属 Spark 4 的 API 面）。因此 4.1 上真正建 Paimon 表的用例
-   （`PaimonTableDdlTests` 等 6 个类）需要 `-De2e.management.url` 起真服务端才跑，
-   本次只验证到「扩展加载 + 解析 + 对桩执行」这一层。Paimon 发布 4.1 bundle 后改
-   `-4.1/pom.xml` 的 `paimon.spark.artifact` 一行即可。
+   4.1 模块用它（同属 Spark 4 的 API 面）。因此 4.1 上**凡是真建 SparkSession 的用例一例也跑不了**
+   （`PaimonTableDdlTests`、`ManagementSqlLiveServerTests`、`LineageLiveServerTests` 等）：
+   Paimon 的 Spark 扩展在装配会话状态时加载 `org.apache.spark.sql.paimon.shims.Spark4Shim` 失败
+   （`java.util.ServiceConfigurationError: … Unable to get public no-arg constructor`），
+   包上去的表现是 `IllegalArgumentException: Error while instantiating
+   'org.apache.spark.sql.internal.SessionStateBuilder'`，栈里一个 Paimon 的类名都不在头顶，
+   极具误导性。**这条一度写成「起真服务端就能跑」，实测不成立**——服务端起不起都在同一个地方炸。
+   4.1 侧能验的只有「不建整会话」的那部分（抽取器单测、解析、对桩执行）。Paimon 发布 4.1 bundle
+   后改 `-4.1/pom.xml` 的 `paimon.spark.artifact` 一行即可。
 2. **JDK 上限照旧**：两个版本都只能在 JDK 17 / 21 上跑测试（JDK 24 移除了 Security
    Manager，Hadoop 的 `getSubject` 会失败），由 `SparkJdkRequirement` 在建会话前拦下。
 3. **`spark-hive` 仍是测试期依赖**：Paimon 的 Spark 扩展初始化时会引用

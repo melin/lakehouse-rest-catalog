@@ -10,10 +10,18 @@ import test from 'node:test'
 
 import { decode } from '../../src/utils/lineageGraph.js'
 import {
+  CARD_BODY_MAX_H,
+  CARD_HEADER_H,
+  CARD_PAD,
+  CARD_ROW_H,
   FOLD_THRESHOLD,
   GAP_Y,
   NODE_H,
+  NODE_W,
+  cardBodyHeight,
+  cardHeight,
   fitScale,
+  fitView,
   layout,
 } from '../../src/utils/lineageLayout.js'
 
@@ -192,4 +200,104 @@ test('fitScale：图比视口高很多时缩到一屏，但有 0.25 的下限', 
   const scaled = fitScale({ height: 2_000 }, 460)
   assert.ok(scaled < 1 && scaled >= 0.25)
   assert.equal(fitScale({ height: 100_000 }, 460), 0.25)
+})
+
+test('fitView：小图在视口里垂直居中（view.y 必须是负的）', () => {
+  // 两节点图：高 44，视口 460。world 0 应画在屏幕 (460-44)/2 = 208 处。
+  // 回归：第一版把符号写反，view.y=+208 把整张图平移出画布顶部，只能拖回来看。
+  const { k, y } = fitView({ width: 480, height: 44 }, 1_200, 460)
+  assert.equal(k, 1)
+  assert.equal(y, (44 - 460) / 2)
+  // 验证语义：world 0 的屏幕 y = (0 - view.y) * k = 208，正好居中
+  assert.equal((0 - y) * k, (460 - 44) / 2)
+})
+
+test('fitView：小图同样水平居中；窄出视口的量直接由 view.x 承担', () => {
+  // 图宽 480 < 视口 1200 → world 0 应画在屏幕 (1200-480)/2 = 360 处
+  const { x } = fitView({ width: 480, height: 44 }, 1_200, 460)
+  assert.equal(x, (480 - 1_200) / 2)
+  assert.equal((0 - x) * 1, (1_200 - 480) / 2)
+})
+
+test('fitView：大图不居中，顶行贴上沿向右下看；缩放后的小图同理', () => {
+  // 图高超过 1.5 倍视口 → 缩到一屏，缩完的高度是 viewport-24，仍比视口矮 → 居中留 12px 边
+  const tall = fitView({ width: 300, height: 1_000 }, 1_200, 460)
+  assert.equal(tall.k, (460 - 24) / 1_000)
+  assert.equal(tall.y, (1_000 - 460 / tall.k) / 2)
+  assert.ok(tall.y < 0)
+  assert.ok(Math.abs((0 - tall.y) * tall.k - 12) < 1e-9, 'world 0 应落在屏幕 12px 处')
+  // 图缩到 0.25 下限仍然比视口高 → 顶行贴上沿（y 截到 0），向下滚
+  const huge = fitView({ width: 300, height: 100_000 }, 1_200, 460)
+  assert.equal(huge.k, 0.25)
+  assert.equal(huge.y, 0)
+  // 宽图不居中：world 0 贴左沿，向右滚
+  const wide = fitView({ width: 5_000, height: 100 }, 1_200, 460)
+  assert.equal(wide.x, 0)
+})
+
+test('cardOf：收起的卡只有头部两行，展开的卡多一块固定高度的滚动体', () => {
+  const graph = graphOf(
+    ['c.s.src', 'c.s.a', 'c.s.b', 'c.s.dst'],
+    [
+      ['c.s.src', 'c.s.a'],
+      ['c.s.src', 'c.s.b'],
+      ['c.s.a', 'c.s.dst'],
+      ['c.s.b', 'c.s.dst'],
+    ],
+  )
+  const cards = new Map([
+    ['c.s.src', { rows: [], overflow: 0 }],
+    // a 有 5 行（展开后内容不足一屏，滚动体按内容收）
+    ['c.s.a', { rows: Array.from({ length: 5 }, (_, i) => ({ name: `col${i}`, kind: 'DIRECT' })), overflow: 0 }],
+    ['c.s.b', { rows: [{ name: 'x', kind: 'DIRECT' }], overflow: 0 }],
+    ['c.s.dst', { rows: [], overflow: 0 }],
+  ])
+  // a 展开，其余收起（面板默认展开根卡，其余收起）
+  const result = layout(graph, { cardOf: cards, expandedRefs: new Set(['c.s.a']) })
+
+  // 收起的卡：高度只含头部（标题 + 元信息）+ 底部留白，与行数无关
+  const collapsedH = CARD_HEADER_H + CARD_PAD
+  assert.equal(cardHeight(cards.get('c.s.b'), false), collapsedH)
+  assert.equal(result.positions.get('c.s.b').h, collapsedH)
+  // 展开的卡：多一块滚动体（5 行 × 行高 + 内边距，不足一屏按内容收）
+  const bodyA = 5 * CARD_ROW_H + 8
+  const expandedH = CARD_HEADER_H + bodyA + CARD_PAD
+  assert.equal(cardHeight(cards.get('c.s.a'), true), expandedH)
+  assert.equal(result.positions.get('c.s.a').h, expandedH)
+  // 不折叠：就算层里超过阈值也不收（每张卡都要露出列清单）
+  assert.equal(result.hidden.size, 0)
+
+  // 中间层两张卡按实际高度堆叠：b 紧跟 a，间距正好 GAP_Y
+  const a = result.positions.get('c.s.a')
+  const b = result.positions.get('c.s.b')
+  assert.equal(b.y - a.y, expandedH + GAP_Y)
+
+  // height 是各层跨度的最大值（层是横排的），中间层的跨度 = 两卡高 + 间距
+  assert.equal(result.height, Math.max(expandedH + GAP_Y + collapsedH, collapsedH))
+})
+
+test('cardOf：列太多时滚动体高度封顶（固定高度 + 滚动，而不是撑成长卡）', () => {
+  // 30 行：内容远超一屏，展开后的滚动体固定为 CARD_BODY_MAX_H
+  const card = {
+    rows: Array.from({ length: 30 }, (_, i) => ({ name: `col${i}`, kind: 'DIRECT' })),
+    overflow: 0,
+  }
+  assert.equal(cardBodyHeight(card), CARD_BODY_MAX_H)
+  assert.equal(cardHeight(card, true), CARD_HEADER_H + CARD_BODY_MAX_H + CARD_PAD)
+  // 同一张卡收起时只有头部——展开与否的高度差就是一块滚动体
+  assert.equal(cardHeight(card, false), CARD_HEADER_H + CARD_PAD)
+})
+
+test('cardOf：锁定坐标被忽略——卡片高度一变，旧 y 只会把新卡钉在错位上', () => {
+  const graph = graphOf(['c.s.a', 'c.s.b'], [['c.s.a', 'c.s.b']])
+  const locked = new Map([['c.s.a', { x: 0, y: 400 }]])
+  const cards = new Map([['c.s.a', { rows: [], overflow: 0 }], ['c.s.b', { rows: [], overflow: 0 }]])
+  const result = layout(graph, { cardOf: cards, locked })
+  // 表模式下 a 会被钉在 y=400；卡片模式下两层各只有一张卡，各层独立居中，
+  // 归一化后 y 都是 0——**层是横排的（x = rank 步进）**，竖直方向只有一张卡
+  const a = result.positions.get('c.s.a')
+  const b = result.positions.get('c.s.b')
+  assert.equal(a.y, 0)
+  assert.equal(b.y, 0)
+  assert.equal(b.x, NODE_W + 80, 'b 在 a 右边一层')
 })

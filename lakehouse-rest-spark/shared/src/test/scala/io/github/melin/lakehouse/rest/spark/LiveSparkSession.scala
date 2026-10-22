@@ -2,6 +2,7 @@ package io.github.melin.lakehouse.rest.spark
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import io.github.melin.lakehouse.rest.spark.client.{ManagementApiClient, ManagementApiException}
+import io.github.melin.lakehouse.rest.spark.lineage.LineageSettings
 import org.apache.spark.sql.SparkSession
 
 import java.net.URI
@@ -76,6 +77,15 @@ object LiveSparkSession {
 
     /** 是否给了目标地址。没给就说明没打算跑端到端用例。 */
     def isAvailable: Boolean = managementUrl.nonEmpty
+
+    /**
+     * 是否要连血缘一起验（`scripts/e2e-lineage.sh` 设 `-De2e.lineage.enabled=true`）。
+     *
+     * <p>默认不验：每一条写入都会多一次上报请求，普通 e2e 没必要为它买单；
+     * 而服务端那边要是没开血缘，上报会稳定失败，日志里会多出一串 WARN。
+     */
+    private[spark] val lineageEnabled: Boolean =
+        System.getProperty("e2e.lineage.enabled", "").trim.equalsIgnoreCase("true")
 
     /**
      * 用 root 令牌直连管理 API 的客户端。
@@ -308,6 +318,15 @@ object LiveSparkSession {
             .config("spark.sql.catalog." + icebergCatalog + ".cache-enabled", "false")
             .config(PaimonRestManagement.MANAGEMENT_URL, managementUrl)
             .config(PaimonRestManagement.TOKEN, token)
+            // 血缘采集（§10.2）：默认关，`scripts/e2e-lineage.sh` 打开。
+            //
+            // 必须走 `.config(...)`（写进 SparkConf），不能靠 `spark.conf.set`：
+            // 监听器的注册发生在**会话状态构建期**（`injectParser` 的工厂里），那一刻
+            // 只有 SparkConf 读得到——读 SQLConf 会重入构建流程并栈溢出（见 LineageSettings）。
+            .config(LineageSettings.ENABLED, if (lineageEnabled) "true" else "false")
+            // 上报间隔压到 200ms：用例要在几秒内看到结果，而不是等默认的 2 秒一批
+            .config(LineageSettings.FLUSH_INTERVAL_MS,
+                if (lineageEnabled) "200" else LineageSettings.DEFAULT_FLUSH_INTERVAL_MS.toString)
             .getOrCreate()
 
         // 守住会话复用这个坑：若本进程里已经有别的 SparkSession（例如用桩服务端的

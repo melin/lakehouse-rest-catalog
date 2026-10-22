@@ -266,7 +266,7 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
 | `event-framework.md` | 加事件 / 接 listener：9 类 33 个领域事件与触发点、与 Polaris 枚举的映射、`audit_event` 表、发布监听链路、按监听器的类别/类型订阅、增量拉取契约（`?since=` / `?category=`）与不发清单 |
 | `generic-table-design.md` | parquet / orc / lance / vortex 纳入目录（**设计稿，未实现**）：格式能力矩阵、`table_kind` 方案取舍、端点与权限、Spark 接入、影响面与风险 |
 | `metrics-design.md` | 加指标 / 接 Prometheus / 排查「指标太贵」：**设计稿，未实现**——Polaris telemetry 的事实基线（四类来源、realm 基数闸门、SLO 桶、Iceberg 用量报告与运维指标的区别）、`lakehouse.*` 指标目录与基数预算（<1500）、标签黑名单与 catalog 折叠规则、切面替代逐端点 `@Timed`、管理端口暴露与 ServiceMonitor、告警/看板示例、`verify-metrics-doc.py` 一致性校验 |
-| `lineage-design.md` | 做 Spark SQL 血缘 / 评审血缘方案：**服务端与控制台已实现，§5 的 Spark 侧抽取器未做**——为什么在引擎侧抽而不是服务端重解析（五个错法）、为什么必须 `analyzed`（CTE 要再跑一次 optimizer）、参考实现 `kyuubi-spark-lineage` 的机制拆解（属性集下推 / 16 行节点规则 / `__count__` 等三个占位属性 / 表名归一化 / 六个短板）与我们改的 10 处、归一化模型（`~` 前缀、五种列 `kind`、视图口径）、上报契约（幂等 / 异步 / 队列满丢弃）、run 与边两张语义不同的表、图查询（环、`depth`、`truncated`）、展现（分层布局 / Canvas LOD / 折叠 / 列级虚拟列表 / 性能预算）、前端落地视角（§9.11–9.14：组件清单与 0 新增依赖、表详情页「血缘」页签集成、数据流；效果图 `docs/lineage-mockup.html` 五个状态）与配置；**只做 Spark，Flink 不做** |
+| `lineage-design.md` | 做 Spark SQL 血缘 / 评审血缘方案：**服务端、控制台与 Spark 侧抽取器（3.5/4.1）都已实现**——为什么在引擎侧抽而不是服务端重解析（五个错法）、为什么必须 `analyzed`（CTE 要再跑一次 optimizer）、参考实现 `kyuubi-spark-lineage` 的机制拆解（属性集下推 / 16 行节点规则 / `__count__` 等三个占位属性 / 表名归一化 / 六个短板）与我们改的 10 处、归一化模型（`~` 前缀、五种列 `kind`、视图口径）、上报契约（幂等 / 异步 / 队列满丢弃）、run 与边两张语义不同的表、图查询（环、`depth`、`truncated`）、展现（分层布局 / Canvas LOD / 折叠 / 列级虚拟列表 / 性能预算）、前端落地视角（§9.11–9.14：组件清单与 0 新增依赖、表详情页「血缘」页签集成、数据流；效果图 `docs/lineage-mockup.html` 五个状态）与配置；**只做 Spark，Flink 不做** |
 | `maven-module-design.md` | 改模块划分 / 加模块（再加一个格式面就照 §12 那份清单走）：依赖图、两条父 POM、三条 enforcer 不变量、五段落地记录（§8–§12） |
 | `spark-sql-reference.md` | 语句级参考（第 10 节示例会被测试真跑） |
 | `spark-sql-extension.md` | 改 Spark 扩展：做法、两个约束、测试分层 |
@@ -460,6 +460,6 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
 - 事件框架：[`docs/event-framework.md`](docs/event-framework.md)（9 类 33 个领域事件、与 Polaris 枚举的映射、发布点清单与不发清单、按监听器的类别/类型订阅、增量拉取契约；加事件或接 listener 先读它）
 - 通用表（设计稿）：[`docs/generic-table-design.md`](docs/generic-table-design.md)（parquet / orc / lance / vortex 纳入目录：格式能力矩阵、`table_kind` 方案取舍、端点与权限、Spark 接入、影响面与风险；**未实现**）
 - 指标（设计稿）：[`docs/metrics-design.md`](docs/metrics-design.md)（Polaris telemetry 基线、`lakehouse.*` 指标目录与基数预算、标签闸门、管理端口与 ServiceMonitor；**未实现**）
-- 血缘：[`docs/lineage-design.md`](docs/lineage-design.md)（为什么在引擎侧抽、为什么是 `analyzed`、参考实现 `kyuubi-spark-lineage` 的机制拆解与差异清单、归一化模型与五种列 `kind`、上报契约、run（事件）与边（状态）、图查询口径、展现（分层布局 / Canvas LOD / 折叠 / 性能预算）、前端组件与依赖清单及效果图 `docs/lineage-mockup.html`；**服务端与控制台已实现，只做 Spark、§5 的引擎侧抽取器未做**）
+- 血缘：[`docs/lineage-design.md`](docs/lineage-design.md)（为什么在引擎侧抽、为什么是 `analyzed`、参考实现 `kyuubi-spark-lineage` 的机制拆解与差异清单、归一化模型与五种列 `kind`、上报契约、run（事件）与边（状态）、图查询口径、展现（分层布局 / Canvas LOD / 折叠 / 性能预算）、前端组件与依赖清单及效果图 `docs/lineage-mockup.html`；**服务端、控制台、Spark 3.5/4.1 抽取器都已实现；只做 Spark**）
 - 数据模型：[`docs/data-model.md`](docs/data-model.md)
 - 控制台：[`docs/console.md`](docs/console.md)、[`docs/console-auth.md`](docs/console-auth.md)

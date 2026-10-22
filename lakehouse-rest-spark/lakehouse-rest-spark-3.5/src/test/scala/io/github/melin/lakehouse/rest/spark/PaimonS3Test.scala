@@ -44,6 +44,7 @@ class PaimonS3Test {
       .config("spark.sql.catalog." + catalog + ".s3.access-key", "McvVnpOziVsWv7Qlyut7")
       .config("spark.sql.catalog." + catalog + ".s3.secret-key", "PbICbD6H7iyq0PuefHa383YoqJn3JCjedQHSYmbp")
       .config("spark.sql.catalog." + catalog + ".s3.path.style.access", "true")
+      .config("spark.paimon.rest.lineage.enabled", "true")
 
       .config(PaimonRestManagement.MANAGEMENT_URL, "http://127.0.0.1:8080/api/management/v1")
       .config(PaimonRestManagement.TOKEN, token)
@@ -52,9 +53,9 @@ class PaimonS3Test {
     spark.catalog.setCurrentCatalog(catalog)
     //spark.sql("SELECT current_catalog()").show()
     //spark.sql("CREATE DATABASE IF NOT EXISTS demo")
-    spark.sql("SHOW TABLES IN demo").show()
+    // spark.sql("SHOW TABLES IN demo").show()
 
-    spark.sql("show PRINCIPAL ROLES").show(false)
+    // spark.sql("show PRINCIPAL ROLES").show(false)
 
     // spark.sql("DROP TABLE if exists demo.paimon_sample2")
     val paimonCreateTableDdl =
@@ -72,14 +73,32 @@ class PaimonS3Test {
     // query paimon table
     // spark.sql(paimonCreateTableDdl)
 
-    spark.sql("show create table demo.paimon_sample2").show(false)
+
+    val paimonCreateTableDdl3 =
+      """
+        |create table if not exists demo.paimon_sample4 (
+        |    k int,
+        |    v string,
+        |    pt string
+        |) USING paimon
+        |PARTITIONED BY (pt)
+        |tblproperties (
+        |    'primary-key' = 'k, pt'
+        |)
+        |""".stripMargin
+    //spark.sql(paimonCreateTableDdl3)
+
+    // spark.sql("show create table demo.paimon_sample2").show(false)
 
     val insertSql = "insert into table demo.paimon_sample2 values(1, 'xx', '20240813')"
-    spark.sql(insertSql)
+    //spark.sql(insertSql)
 
     val insertSql1 = "insert into table demo.paimon_sample2 values(1, 'yy', '20240813')"
-    spark.sql(insertSql1)
+    //spark.sql(insertSql1)
 
-    spark.sql("select * from demo.paimon_sample2").show()
+    val insertSql2 = "insert into table demo.paimon_sample4 select * from demo.paimon_sample2"
+    spark.sql(insertSql2)
+
+    //spark.sql("select * from demo.paimon_sample4").show()
   }
 }

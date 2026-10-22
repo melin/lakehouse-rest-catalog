@@ -16,6 +16,12 @@
 
 const FONT_STACK = '-apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif'
 
+const MONO_STACK = 'ui-monospace, SFMono-Regular, Menlo, monospace'
+
+// 卡片模式的尺寸常量与布局层同源（单一出处）；NODE_W 也供列连线的起点用
+import { CARD_HEADER_H, CARD_META_H, CARD_ROW_H, CARD_TITLE_H, NODE_W, cardBodyHeight } from './lineageLayout.js'
+import { typeKindOf } from './lineageColumns.js'
+
 /** 三档 LOD 的视觉参数。数值与 §9.3 的表一一对应。 */
 const LOD = [
   { node: 'round', label: 'full', edge: 2, arrow: true, bar: 4 },
@@ -82,7 +88,16 @@ export function edgeWidth(columnCount) {
  *
  * @param ctx      Canvas 2D 上下文
  * @param snapshot `{positions, virtual, edges, labels, view, width, height, dpr, theme, lod,
- *                   hoverRef, hoverEdge, faded, ring, focusRef, reducedMotion}`
+ *                   hoverRef, hoverEdge, faded, ring, focusRef, neighbours,
+ *                   cards, columnEdges, hoverCol, selectedRef, expandedRefs, scrolls, degrees}`
+ *
+ *                   后五项是列级视图：`cards` 是 `lineageColumns.buildCards` 的产物
+ *                   （卡片列清单），给出时节点画成卡片；`columnEdges` 非空时再叠一层
+ *                   列-列贝塞尔，表级边同时淡化成引导线（没有列边就按正常强度画）；
+ *                   `hoverCol` 是悬停的列（`{ref, name}`），它的连线用强调色补画一次；
+ *                   `selectedRef` 是点选的表（只高亮表头）；`expandedRefs` 是「N列」开关
+ *                   点开的 ref 集合（决定卡片有没有滚动体）；`scrolls` 是各卡滚动体的
+ *                   滚动位移；`degrees` 是 `ref → {up, down}`（上下游表计数，画在标题行）。
  */
 export function drawFrame(ctx, snapshot) {
   const {
@@ -102,7 +117,19 @@ export function drawFrame(ctx, snapshot) {
     ring = new Set(),
     focusRef = null,
     neighbours = null,
+    cards = null,
+    columnEdges = [],
+    hoverCol = null,
+    selectedRef = '',
+    expandedRefs = new Set(),
+    scrolls = new Map(),
+    degrees = null,
   } = snapshot
+
+  const cardMode = cards instanceof Map && cards.size > 0
+  // 「画卡片」与「画列边」是两件事：卡片是常态，列-列连线是开关（§9.5(1)）。
+  // 没有列边时表级边按正常强度画——淡成 0.15 的引导线在没有列线的图里等于看不见关系
+  const columnFlow = cardMode && columnEdges.length > 0
 
   const style = LOD[lod] || LOD[0]
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
@@ -141,14 +168,18 @@ export function drawFrame(ctx, snapshot) {
     path.moveTo(geometry.x0, geometry.y0)
     path.bezierCurveTo(geometry.c1x, geometry.c1y, geometry.c2x, geometry.c2y, geometry.x1, geometry.y1)
     // 箭头单独收集：`fill` 不能与 `stroke` 共用一个 path（线宽与填充色的语义不同）。
-    // 悬停边不再换色——它的颜色已经是目标表的格式色，再加深就与「选中」混淆了
-    if (style.arrow && !isFaded) {
+    // 悬停边不再换色——它的颜色已经是目标表的格式色，再加深就与「选中」混淆了。
+    // 卡片模式下表级边退化为引导线，箭头一并省掉（落点不再是表中心）
+    // 卡片模式下表级边只是「这两张表之间有关系」的引导线，列连线才是主角
+    if (style.arrow && !isFaded && !columnFlow) {
       arrows.push({ ...geometry, color })
     }
   }
 
   for (const group of groups.values()) {
     ctx.globalAlpha = group.faded ? 0.22 : 1
+    // 有列连线时表级边退成引导线；没有列连线时它就是主角，不淡化
+    ctx.globalAlpha = (group.faded ? 0.22 : 1) * (columnFlow ? 0.15 : 1)
     ctx.strokeStyle = group.color
     ctx.lineWidth = group.width
     ctx.stroke(group.path)
@@ -157,7 +188,7 @@ export function drawFrame(ctx, snapshot) {
 
   // 悬停的那条边补画一次：批量描边之后它的颜色与其余同格式边完全一样，不补就看不出
   // 「这个 tooltip 说的是哪一条」。只多一次 draw call，而且只在悬停时发生
-  if (hoverEdge) {
+  if (hoverEdge && !columnFlow) {
     const a = place(hoverEdge.source)
     const b = place(hoverEdge.target)
     if (a && b) {
@@ -169,6 +200,42 @@ export function drawFrame(ctx, snapshot) {
       ctx.bezierCurveTo(geometry.c1x, geometry.c1y, geometry.c2x, geometry.c2y,
         geometry.x1, geometry.y1)
       ctx.stroke()
+    }
+  }
+
+  // ---- 列级连线（卡片 + 开关打开） ---------------------------------------------
+  // 常量行（无源）在面板侧已被滤掉：它们只有卡片上的行，没有画出来的线
+  if (columnFlow) {
+    const batch = new Path2D()
+    const hot = new Path2D()
+    let hotCount = 0
+    for (const edge of columnEdges) {
+      const a = place(edge.s)
+      const b = place(edge.t)
+      if (!a || !b) continue
+      const ia = rowIndexAt(cards.get(edge.s), edge.sCol)
+      const ib = rowIndexAt(cards.get(edge.t), edge.tCol)
+      if (ia < 0 || ib < 0) continue
+      const isHot = !!hoverCol
+        && ((hoverCol.ref === edge.s && hoverCol.name === edge.sCol)
+          || (hoverCol.ref === edge.t && hoverCol.name === edge.tCol))
+      const path = isHot ? hot : batch
+      const x0 = a.x + NODE_W
+      const y0 = rowAnchorY(a, cards.get(edge.s), ia, expandedRefs.has(edge.s), scrolls.get(edge.s) || 0)
+      const x1 = b.x
+      const y1 = rowAnchorY(b, cards.get(edge.t), ib, expandedRefs.has(edge.t), scrolls.get(edge.t) || 0)
+      const mid = (x0 + x1) / 2
+      path.moveTo(x0, y0)
+      path.bezierCurveTo(mid, y0, mid, y1, x1, y1)
+      if (isHot) hotCount += 1
+    }
+    ctx.strokeStyle = theme.border
+    ctx.lineWidth = 1
+    ctx.stroke(batch)
+    if (hotCount) {
+      ctx.strokeStyle = theme.accent
+      ctx.lineWidth = 1.6
+      ctx.stroke(hot)
     }
   }
 
@@ -190,13 +257,20 @@ export function drawFrame(ctx, snapshot) {
   for (const node of order) {
     const at = place(node.ref)
     if (!at) continue
-    if (!visible(at, { x: at.x + 200, y: at.y + 44 }, bounds)) continue
+    if (!visible(at, { x: at.x + NODE_W, y: at.y + (at.h || 44) }, bounds)) continue
     const color = colorOf(node, theme)
     const dimmed = hoverRef && neighbours && !neighbours.has(node.ref)
     ctx.globalAlpha = dimmed ? 0.18 : 1
-    drawNode(ctx, at, node, color, theme, style, node.ref === focusRef)
-    if (style.label !== 'none') {
-      drawLabel(ctx, at, node, theme, style.label, labelBoxes, node.ref === hoverRef)
+    if (cardMode) {
+      drawCard(ctx, at, node, cards.get(node.ref) || EMPTY_CARD, color, theme,
+        node.ref === focusRef, hoverCol,
+        expandedRefs.has(node.ref), scrolls.get(node.ref) || 0,
+        node.ref === selectedRef, degrees)
+    } else {
+      drawNode(ctx, at, node, color, theme, style, node.ref === focusRef)
+      if (style.label !== 'none') {
+        drawLabel(ctx, at, node, theme, style.label, labelBoxes, node.ref === hoverRef)
+      }
     }
     ctx.globalAlpha = 1
   }
@@ -224,6 +298,201 @@ export function drawFrame(ctx, snapshot) {
 
 function edgeKey(edge) {
   return `${edge.source}\u0000${edge.target}\u0000${edge.engine}`
+}
+
+const EMPTY_CARD = { rows: [], overflow: 0, rowIndexOf: new Map() }
+
+/** 列在卡片上的行号；查不到（被 `+N` 折掉）钳到最后一行，连线落在 `+N` 上。 */
+function rowIndexAt(card, name) {
+  if (!card) return -1
+  const index = card.rowIndexOf.get(name)
+  if (index !== undefined) return index
+  return card.rows.length ? card.rows.length - 1 : -1
+}
+
+/**
+ * 列连线的落点纵坐标。
+ *
+ * <p>展开的卡：随行走、随滚动走，滚出滚动体的部分钳回体沿——连线永远指向卡片，
+ * 不会悬在卡片外面的空白上。收起的卡：落在卡片竖直中点（此时没有列行可指，
+ * 这条线只是「两张表之间有关系」的提示）。
+ */
+function rowAnchorY(at, card, index, expanded, scrollTop) {
+  if (!expanded) return at.y + (at.h || 44) / 2
+  const top = at.y + CARD_HEADER_H
+  const bodyH = cardBodyHeight(card)
+  const raw = top + index * CARD_ROW_H + CARD_ROW_H / 2 - scrollTop
+  const min = top + CARD_ROW_H / 2
+  const max = top + bodyH - CARD_ROW_H / 2
+  return Math.min(Math.max(raw, Math.min(min, max)), Math.max(min, max))
+}
+
+/** 列 kind 的点色：直通用中性色，变换/聚合强调，常量与未解析用外部色（同目录页语义）。 */
+function kindColor(kind, theme) {
+  if (kind === 'DERIVED' || kind === 'AGGREGATE') return theme.accent
+  if (kind === 'CONSTANT' || kind === 'UNRESOLVED') return theme.external
+  return theme.dim
+}
+
+/** 数据类型图标：一个字母/符号，类别不同字形与颜色都不同（§9.5(1)）。 */
+const TYPE_GLYPHS = { num: '#', str: 'T', bool: 'B', complex: '{}', other: '·' }
+
+function typeGlyphOf(type) {
+  return TYPE_GLYPHS[typeKindOf(type)] || ''
+}
+
+function typeColorOf(type, theme) {
+  const kind = typeKindOf(type)
+  if (kind === 'num') return theme.paimon
+  if (kind === 'str') return theme.iceberg
+  if (kind === 'bool') return theme.accent
+  if (kind === 'complex') return theme.external
+  return theme.dim
+}
+
+/**
+ * ref 去掉末段的表名，剩下的 `catalog.namespace`。
+ *
+ * <p>卡片标题只显示表短名（§9.5(1)），catalog 与库名放在这里：元信息行的库徽标与
+ * 悬停 tooltip 都用它。没有中间段（裸表名）返回空串——那种 ref 没什么可提示的。
+ */
+export function prefixOf(ref) {
+  const parts = (ref || '').split('.')
+  return parts.length > 1 ? parts.slice(0, -1).join('.') : ''
+}
+
+/** 滚动体内容高度：可见行（含 `+N` 行）× 行高 + 底部留白，与 cardBodyHeight 的 8 对齐。 */
+function cardContentHeight(card) {
+  const count = Array.isArray(card?.rows) ? card.rows.length : (card?.rows || 0)
+  return (count + (card?.overflow ? 1 : 0)) * CARD_ROW_H + 8
+}
+
+/**
+ * 列级卡片：标题行（表短名 + 上下游计数）+ 元信息行（库徽标 + 「N列」开关）
+ * + 展开时的固定高度滚动体（类型图标 + 列名 + kind 点，滚轮上下滚）。
+ *
+ * <p>标题只画表短名（`tailOf`）——catalog 与库名在元信息行与 tooltip 里；
+ * 点选的高亮**只覆盖表头**（标题行 + 元信息行），且是一层很淡的强调色：整卡填充强调色
+ * 太刺眼，而列清单正是点选后要读的东西——它比表头更需要对比度（§9.5(1)）。
+ */
+function drawCard(ctx, at, node, card, color, theme, isFocus, hoverCol, expanded, scrollTop, selected, degrees) {
+  const h = at.h || NODE_H
+  const radius = 6
+  // 卡体恒为普通背景：高亮不铺满整卡
+  ctx.fillStyle = theme.surface
+  ctx.beginPath()
+  roundRect(ctx, at.x, at.y, NODE_W, h, radius)
+  ctx.fill()
+
+  // 选中：只在表头那一块叠一层淡强调色。clip 到卡片圆角里，左上的圆角不被方角切掉
+  if (selected) {
+    ctx.save()
+    ctx.beginPath()
+    roundRect(ctx, at.x, at.y, NODE_W, h, radius)
+    ctx.clip()
+    ctx.globalAlpha *= 0.16
+    ctx.fillStyle = theme.accent
+    ctx.fillRect(at.x, at.y, NODE_W, CARD_HEADER_H)
+    ctx.restore()
+  }
+
+  ctx.strokeStyle = (selected || isFocus) ? theme.accent : theme.border
+  ctx.lineWidth = (selected || isFocus) ? 2 : 1
+  ctx.beginPath()
+  roundRect(ctx, at.x, at.y, NODE_W, h, radius)
+  ctx.stroke()
+  // 左侧格式色条：与表模式同源，是「这是什么表」的唯一视觉线索
+  ctx.fillStyle = color
+  ctx.fillRect(at.x, at.y, 4, h)
+  const textColor = theme.text
+  const dimColor = theme.dim
+
+  // ---- 标题行：表短名 + 上下游计数 ----
+  const titleY = at.y + CARD_TITLE_H / 2
+  ctx.font = `600 12px ${FONT_STACK}`
+  ctx.fillStyle = textColor
+  ctx.textBaseline = 'middle'
+  ctx.fillText(clipText(ctx, tailOf(node.ref), NODE_W - 76), at.x + 12, titleY)
+  const degree = degrees instanceof Map ? degrees.get(node.ref) : null
+  if (degree) {
+    ctx.font = `10px ${FONT_STACK}`
+    ctx.fillStyle = dimColor
+    ctx.textAlign = 'right'
+    ctx.fillText(`↑${degree.up} ↓${degree.down}`, at.x + NODE_W - 10, titleY)
+    ctx.textAlign = 'left'
+  }
+
+  // ---- 元信息行：库徽标 + 「N列」开关 ----
+  const metaY = at.y + CARD_TITLE_H + CARD_META_H / 2
+  const prefix = prefixOf(node.ref)
+  if (prefix) {
+    ctx.font = `10px ${FONT_STACK}`
+    ctx.fillStyle = dimColor
+    ctx.fillText(ellipsizeMiddle(prefix, 16), at.x + 12, metaY)
+  }
+  if (card.total) {
+    ctx.font = `600 10.5px ${FONT_STACK}`
+    ctx.fillStyle = theme.accent
+    ctx.textAlign = 'right'
+    ctx.fillText(`${card.total}列 ${expanded ? '⌃' : '⌄'}`, at.x + NODE_W - 10, metaY)
+    ctx.textAlign = 'left'
+  }
+
+  // ---- 滚动体：固定高度，列多时滚（§9.5(1)）----
+  const bodyH = expanded ? cardBodyHeight(card) : 0
+  if (!bodyH) return
+  ctx.strokeStyle = theme.border
+  ctx.lineWidth = 1
+  ctx.beginPath()
+  ctx.moveTo(at.x + 0.5, at.y + CARD_HEADER_H + 0.5)
+  ctx.lineTo(at.x + NODE_W - 0.5, at.y + CARD_HEADER_H + 0.5)
+  ctx.stroke()
+
+  ctx.save()
+  ctx.beginPath()
+  ctx.rect(at.x + 1, at.y + CARD_HEADER_H + 1, NODE_W - 2, bodyH - 2)
+  ctx.clip()
+  const drawRow = (index, name, kind, type) => {
+    const y = at.y + CARD_HEADER_H + index * CARD_ROW_H + CARD_ROW_H / 2 - scrollTop
+    if (y < at.y + CARD_HEADER_H || y > at.y + CARD_HEADER_H + bodyH) return
+    const isHot = !!hoverCol && hoverCol.ref === node.ref && hoverCol.name === name
+    const glyph = typeGlyphOf(type)
+    if (glyph) {
+      ctx.font = `700 10px ${MONO_STACK}`
+      ctx.fillStyle = typeColorOf(type, theme)
+      ctx.textAlign = 'center'
+      ctx.fillText(glyph, at.x + 18, y)
+      ctx.textAlign = 'left'
+    }
+    ctx.fillStyle = isHot ? theme.accent : (kind ? textColor : dimColor)
+    ctx.font = `${isHot ? 600 : 400} 11px ${MONO_STACK}`
+    ctx.fillText(ellipsizeMiddle(name, 20), at.x + 28, y)
+    if (kind) {
+      ctx.fillStyle = kindColor(kind, theme)
+      ctx.beginPath()
+      ctx.arc(at.x + NODE_W - 14, y, 2.5, 0, Math.PI * 2)
+      ctx.fill()
+    }
+  }
+  card.rows.forEach((row, index) => drawRow(index, row.name, row.kind, row.type))
+  if (card.overflow) {
+    ctx.fillStyle = dimColor
+    ctx.font = `400 11px ${FONT_STACK}`
+    ctx.fillText(`+${card.overflow}`, at.x + 28,
+      at.y + CARD_HEADER_H + card.rows.length * CARD_ROW_H + CARD_ROW_H / 2 - scrollTop)
+  }
+  ctx.restore()
+
+  // 滚动条：内容超出一屏才画，细条贴右缘
+  const contentH = cardContentHeight(card)
+  if (contentH > bodyH) {
+    const trackTop = at.y + CARD_HEADER_H + 2
+    const trackH = bodyH - 4
+    const thumbH = Math.max(14, trackH * bodyH / contentH)
+    const thumbY = trackTop + (trackH - thumbH) * (scrollTop / (contentH - bodyH))
+    ctx.fillStyle = theme.border
+    ctx.fillRect(at.x + NODE_W - 4, thumbY, 2.5, thumbH)
+  }
 }
 
 function visible(a, b, bounds) {
@@ -386,9 +655,20 @@ function roundRect(ctx, x, y, w, h, r) {
   ctx.closePath()
 }
 
-/** 命中测试：视口内最多几百个节点，线性扫描比维护空间索引更不容易写错。 */
+/**
+ * 命中测试：视口内最多几百个节点，线性扫描比维护空间索引更不容易写错。
+ *
+ * <p>卡片模式（`snapshot.cards` 给出时）命中分四类：
+ * <ul>
+ *   <li>`{type:'colcount', ref}`：元信息行右侧的「N列」开关（点它展开/收起滚动体）；</li>
+ *   <li>`{type:'column', ref, name}`：滚动体里的一列（滚动位移算进行号）；</li>
+ *   <li>`{type:'node', ref, zone}`：其余卡片区域，`zone` 是 `title` / `meta` / `body`
+ *       （滚轮滚动要靠 `zone === 'body'` 判断指针在不在滚动体上）；</li>
+ *   <li>折叠占位与表模式命中不变。</li>
+ * </ul>
+ */
 export function hitTest(snapshot, point) {
-  const { positions, virtual, view } = snapshot
+  const { positions, virtual, view, cards, expandedRefs, scrolls } = snapshot
   const x = point.x / view.k + view.x
   const y = point.y / view.k + view.y
   for (const fold of virtual) {
@@ -396,10 +676,27 @@ export function hitTest(snapshot, point) {
       return { type: 'fold', fold }
     }
   }
+  const cardMode = cards instanceof Map && cards.size > 0
+  const expandedSet = expandedRefs instanceof Set ? expandedRefs : new Set()
   for (const [ref, at] of positions) {
-    const height = 44
-    if (x >= at.x && x <= at.x + 200 && y >= at.y && y <= at.y + height) {
-      return { type: 'node', ref }
+    const height = at.h || 44
+    if (x >= at.x && x <= at.x + NODE_W && y >= at.y && y <= at.y + height) {
+      if (!cardMode || !cards.has(ref)) return { type: 'node', ref }
+      const card = cards.get(ref)
+      const expanded = expandedSet.has(ref)
+      const bodyTop = at.y + CARD_HEADER_H
+      if (y < at.y + CARD_TITLE_H) return { type: 'node', ref, zone: 'title' }
+      if (y < bodyTop) {
+        // 元信息行右侧 ~72px 是「N列」开关；其余按节点算（tooltip / 选中）
+        if (card.total && x > at.x + NODE_W - 72) return { type: 'colcount', ref }
+        return { type: 'node', ref, zone: 'meta' }
+      }
+      if (!expanded || !cardBodyHeight(card)) return { type: 'node', ref, zone: 'body' }
+      const index = Math.floor((y - bodyTop + (scrolls instanceof Map ? (scrolls.get(ref) || 0) : 0)) / CARD_ROW_H)
+      if (index >= 0 && index < card.rows.length) {
+        return { type: 'column', ref, name: card.rows[index].name }
+      }
+      return { type: 'node', ref, zone: 'body' }
     }
   }
   return null

@@ -1,6 +1,7 @@
 package io.github.melin.lakehouse.rest.spark
 
 import io.github.melin.lakehouse.rest.spark.client.ManagementApiClient
+import io.github.melin.lakehouse.rest.spark.lineage.LakehouseLineageListener
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.parser.ParserInterface
 import org.apache.spark.sql.types.StructType
@@ -16,11 +17,15 @@ import org.apache.spark.sql.types.StructType
  * 本扩展不接管这类语句，直接交给原生解析器：管理语句的入口是 `parsePlan`，
  * 走到这里说明调用方要的就是 Spark 自己的例行参数解析。
  */
-class LakehouseRestSqlParser(delegate: ParserInterface, clientFactory: () => ManagementApiClient)
-  extends AbstractLakehouseRestSqlParser(delegate, clientFactory) {
+class LakehouseRestSqlParser(delegate: ParserInterface,
+                             clientFactory: () => ManagementApiClient,
+                             onFirstParse: () => Unit = () => ())
+  extends AbstractLakehouseRestSqlParser(delegate, clientFactory, onFirstParse) {
 
   def this(delegate: ParserInterface, session: SparkSession) =
-    this(delegate, () => PaimonRestManagement.clientFor(session))
+    this(delegate, () => PaimonRestManagement.clientFor(session),
+      // 第一次解析时挂血缘监听器：这是扩展唯一能安全拿到 listenerManager 的时刻
+      () => LakehouseLineageListener.registerIfEnabled(session))
 
   override def parseRoutineParam(sqlText: String): StructType = delegate.parseRoutineParam(sqlText)
 }

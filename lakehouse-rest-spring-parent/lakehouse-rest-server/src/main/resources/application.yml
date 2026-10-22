@@ -325,3 +325,42 @@ lakehouse:
       # 需要这一份。留空表示本部署没开认证；开了认证必须配一个专用主体（optimizer）的令牌。
       # 待办：改成服务端为每批签发的短期令牌（见 docs/table-optimization.md §9.5）
       catalog-token: ""
+
+    # -----------------------------------------------------------------------
+    # Spark SQL 血缘（docs/lineage-design.md）。
+    #
+    # 数据从哪来：Spark 作业侧的抽取器（lakehouse-rest-spark 模块）把每次写入的
+    # 表级 / 列级依赖 POST 到 /api/management/v1/lineage/runs，服务端只管收、存、查。
+    # 没有客户端埋点就没有数据——这里开着也不会自己长出图来；Spark 侧要配
+    #   spark.paimon.rest.lineage.enabled=true
+    #   spark.sql.queryExecutionListeners=io.github.melin.lakehouse.rest.spark.lineage.LakehouseLineageListener
+    # （或本仓 ManagementSparkExtensions 的扩展懒注册，见 docs/lineage-design.md §10.2）
+    #
+    # 读端点（/lineage/tables、/lineage/columns、/lineage/runs...）不受 enabled 限制：
+    # 关闭只影响写入，已有的边仍然能查——关掉采集的部署不该连带看不见历史图。
+    # 注意边表不按时间清（只有 run 按 run-retention-days 清），一旦开始写，
+    # 回收路径只有「删表时级联删边」，量级要先在测试环境跑准。
+    # -----------------------------------------------------------------------
+    lineage:
+      # 是否接受血缘上报（POST /lineage/runs）。默认 false（与 RestServerProperties 的
+      # 代码默认一致——yml 里写非默认值会盖掉「缺省关闭」的语义，测试与安全基线都按
+      # 默认关来验）。要采集的部署用启动参数显式打开：
+      #   --lakehouse.rest.lineage.enabled=true
+      # 读端点不受它限制：关掉采集的部署仍然查得到已有的边与运行历史。
+      enabled: true
+      # lineage_run 表的保留天数（清理只删 run，不清边；边的 last_seen 自带「最近一次」）。
+      # 默认 90。
+      run-retention-days: 90
+      # 单次上报最多几条 run，超了直接 400（不静默截断，客户端该自己切批）。默认 50。
+      max-runs-per-batch: 50
+      # 单个目标表的列级边上限；超了服务端降级为「只有表级边」并把该 run 标记 truncated。
+      # 宽表 1000 列 × 5 张源表能到 5000 条边，一次写完的代价远大于图上的收益。默认 2000。
+      max-columns-per-target: 2000
+      # 图遍历深度上限；请求的 depth 超过它时报 400（不静默截断）。默认 5。
+      max-depth: 5
+      # 单次图查询返回节点数上限（服务端硬上限 2000，这里配的是默认档位）。默认 500。
+      max-nodes: 500
+      # 过期 run 的清理节拍（cron，秒 分 时 日 月 周）。默认每天 03:30。
+      # 注意：这个键在 LineageRetentionJob 的 @Scheduled 占位符里还出现一次，
+      # 改默认值时两处要同步（占位符在 bean 绑定前解析，注入不了本对象）。
+      cleanup-cron: "0 30 3 * * *"

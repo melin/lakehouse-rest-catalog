@@ -152,12 +152,11 @@ export function isFaded(edge, now) {
   return Boolean(edge.lastSeen) && now - edge.lastSeen > STALE_FADE_MS
 }
 
-/** 过滤条件的默认值：全选、不限、关。 */
+/** 过滤条件的默认值：全选、不限。 */
 export function defaultFilters() {
   return {
     engines: [],          // 空 = 全选
     showExternal: true,   // 外部节点（~file: / ~values / ~external:）
-    onlyWithColumns: false,
   }
 }
 
@@ -175,14 +174,9 @@ export function defaultFilters() {
 export function applyFilters(graph, filters, now = Date.now()) {
   const engines = filters?.engines?.length ? new Set(filters.engines) : null
   const showExternal = filters?.showExternal !== false
-  const onlyWithColumns = Boolean(filters?.onlyWithColumns)
 
   const keepNode = (node) => showExternal || node.kind !== 'EXTERNAL'
-  const keepEdge = (edge) => {
-    if (engines && !engines.has(edge.engine)) return false
-    if (onlyWithColumns && !edge.columnCount) return false
-    return true
-  }
+  const keepEdge = (edge) => !engines || engines.has(edge.engine)
 
   const nodes = graph.nodes.filter(keepNode)
   const kept = new Set(nodes.map((node) => node.ref))

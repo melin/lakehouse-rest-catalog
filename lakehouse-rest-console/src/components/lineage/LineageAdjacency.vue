@@ -71,7 +71,11 @@ const columns = [
     dataKey: 'kind',
     title: '类型',
     width: 110,
-    cellRenderer: ({ rowData }) => h('span', rowData.kind === 'EXTERNAL' ? 'la-dim' : '',
+    cellRenderer: ({ rowData }) => h('span',
+      // 注意 props 必须是对象：把 class 字符串直接放进 props 位（h('span', 'la-dim', ...)）
+      // 会把字符串原样写进 vnode.ref，生产构建的 setRef 对它解构时直接崩
+      // （Cannot read properties of undefined (reading 'refs')，且图整个渲染不出来）。
+      { class: rowData.kind === 'EXTERNAL' ? 'la-dim' : '' },
       rowData.kind === 'EXTERNAL' ? '外部（不可点开）' : '目录表'),
   },
   { key: 'upstream', dataKey: 'upstream', title: '上游', width: 80, align: 'right' },

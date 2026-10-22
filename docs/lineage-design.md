@@ -185,10 +185,15 @@ Paimon 与 Iceberg（都走 V2 `AppendData` 家族），认了反而会为不存
 **但解析器拿到的只是文本**，此时名字未解析、`SELECT *` 未展开、视图未内联、类型未转换。
 从文本到「哪一列来自哪一列」之间差着整个 analyzer。
 
-那这个既有扩展在血缘里扮演什么角色？**只做一件事：把最近一次 `parsePlan` 的 SQL 文本留在
-`ThreadLocal` 里**，供同线程随后触发的 `onSuccess` 取走（`spark.sql(...)` 是同步的，
-解析与执行同线程；`DataFrame` 写入路径没有解析，`sqlText` 留空即可）。
+那这个既有扩展在血缘里扮演什么角色？**只做一件事：把最近一次 `parsePlan` 的 SQL 文本记在旁路里**，
+供随后触发的 `onSuccess` 取走（`DataFrame` 写入路径没有解析，`sqlText` 留空即可）。
 一句话：解析器负责「记事」，监听器负责「算账」。
+
+原稿说「留在 `ThreadLocal` 里，因为 `spark.sql(...)` 解析与执行同线程」——**这条不成立**：
+`QueryExecutionListener` 的回调是被 `ExecutionListenerManager` 投递到
+`spark-listener-group-shared` 线程上的。落地改成一张按**计划实例**索引的表
+（`SqlTextRegistry`，`IdentityHashMap`），键就是 `spark.sql` 交给 `QueryExecution` 的那个对象
+（§13.7 第 10 条）。
 
 参考实现没有这个问题——它寄生在 Kyuubi 服务里，SQL 文本本来就在自己的 `statement` 上。
 我们是独立部署的 REST catalog，只能靠这条旁路。
@@ -514,19 +519,32 @@ GROUP BY o.user_id
 ### 5.1 入口与时序
 
 ```
-QueryExecutionListener#onSuccess(funcName, qe, durationNs)     ← driver 线程
+QueryExecutionListener#onSuccess(funcName, qe, durationNs)     ← spark-listener-group-shared 线程
     │
     ├── 0. 总开关关着 → 立刻返回（监听器根本没注册，§10.2）
-    ├── 1. 判语句类型：qe.analyzed() 的根节点（或 CommandResult 里的 commandLogicalPlan）
+    ├── 1. 判语句类型：qe.analyzed 的根节点（或 CommandResult 里的 commandLogicalPlan）
     │      不是 §2.1 的八类之一 → 返回（SELECT / DDL / DCL 全部跳过）
+    ├── 1b. 是命令的就地执行（qe.logical eq qe.analyzed）→ 记为待定（§13.7 第 11 条）
     ├── 2. 走查计划，得到：列级映射 + 源表集合（§5.2）
     ├── 3. 取目标表与目标列，按 §5.3 对齐，补静态分区常量
-    ├── 4. 取 SQL 文本（ThreadLocal，可能为空）
+    ├── 4. 取 SQL 文本（按计划实例索引的旁路，可能为空）
     └── 5. 组装 LineageRun → 入队（§6.4）
 ```
 
 第 1 步**只认节点类型，不认 SQL 前缀**：`INSERT` 的文本经 analyzer 之后可能变成 `AppendData`
 （`writeTo` 路径）或 `InsertIntoHadoopFsRelationCommand`（`saveAsTable` 路径），按前缀判断会漏。
+
+第 1b 步是落地时才补的：**一次写入会回调两次**。外层的 `logical` 是解析出来的
+`InsertIntoStatement`，内层由 `QueryExecution#eagerlyExecuteCommands` 产生——Dataset 创建期把
+命令就地执行一遍，另走一次 `SQLExecution.withNewExecutionId`，于是又回调一次（`funcName` 是
+`QueryExecution#commandExecutionName` 给的 `append` / `create` / `overwrite`）。两次说的是同一次
+写入。
+
+去重不能简单地「跳过内层」：`spark.sql("INSERT ...")` 不接 `collect()` 时，就地执行就是
+**唯一一次**回调，跳过它 = 这次写入的血缘整个丢了（线上报障正是这个形态）。落地的规矩是
+「待定 + 合并 + 兜底」：就地回调先记为待定 run（此刻取不到 SQL 文本，旁路的键是解析产物）；
+语句级回调到达时撤掉待定、上报带文本的那条；宽限期（2s）内语句级回调没来，由守护定时器把
+待定 run 兜底上报。判据见 §13.7 第 11 条。
 
 `onFailure` 什么都不做——除了打一条 `WARN`（`executionId` + 异常摘要）。理由：失败的 INSERT
 没有让任何依赖成立；记进去只会让图上出现「一次没写完却存在的边」。参考实现在 `onFailure` 里
@@ -724,6 +742,7 @@ query 的第 2 列而不是第 1 列。按位置对齐会得到一张完全反�
 POST /api/management/v1/lineage/runs          # 批量上报，单次最多 50 条 run
 GET  /api/management/v1/lineage/tables        # 表级上下游（§8.1）
 GET  /api/management/v1/lineage/columns       # 列级映射（§8.2）
+GET  /api/management/v1/lineage/column-edges  # 图视图的批量列边（§8.7）
 GET  /api/management/v1/lineage/runs          # 运行历史（§8.3）
 GET  /api/management/v1/lineage/runs/{runId}  # 一条 run 的明细（含 SQL 与列映射，§8.3）
 ```
@@ -805,6 +824,23 @@ onSuccess（driver 线程）                    reporter 线程（单线程，�
    `spark.sql` 报一个与 SQL 无关的错，那是灾难性的——用户会去查 SQL。
 3. **队列满就丢**。血缘是「可以缺一条，不能拖慢作业」的数据。丢弃计数通过客户端的
    日志与（将来的）指标暴露；服务端也能从 `run_count` 的异常分布看出漏报。
+
+**JVM 退出兜底（2026-10-22 补，短命作业的最后一块）**。守护线程不阻塞作业的另一面是：
+「语句结束 → JVM 退出」的窗口比「监听总线投递 → 待定宽限期 2s → 攒批间隔 2s → POST」短时
+（单元测试、`spark.sql` 一条 INSERT 就收工的脚本作业），最后一批 run 会被守护线程的死一起
+带走。两处修复，都在实测复现之后落地（`PaimonS3Test` 连续 5 次丢 run）：
+
+1. **退出兜底 hook**（`LakehouseLineageListener#armShutdownHook`）：扩展路径在注册监听器时
+   挂 JVM shutdown hook，等「已解析写语句 → 已送达回调」的差值归零（正常毫秒级，上限 5s、
+   `SparkContext.isStopped` 止损），再把仍在宽限期里的待定 run 立即入队并 `close()` 上报器
+   （flushRemaining 会把积压发完）。解析是同步的，`SqlTextRegistry.record` 顺手记下
+   「一条 run 应该会来」——回调走异步总线，JVM 退出时可能来不及，这个差值是退出时刻
+   唯一可靠的「还有 run 在路上」信号。
+2. **重试不吃中断位**（`LineageReporter#send`）：`close()` 用 interrupt 叫醒 poll，但
+   interrupt 若落在 worker 正在发送的窗口，残留的中断位会让 `HttpClient.send` 立刻抛
+   InterruptedException，且 sleep 刻意保留中断位——三次重试全部秒废，表现为「hook 明明
+   入了队、close 也调了，run 还是没到」。每次尝试前 `Thread.interrupted()` 清位。
+   实测复现的失败信息：`interrupted while calling the management API`。
 
 ### 6.5 谁可以上报（判权）
 
@@ -1101,6 +1137,33 @@ GET /api/management/v1/lineage/runs?ref=paimon.dws.order_daily&engine=SPARK&sinc
 对象快，低端机上差 20–40ms。若将来真要省带宽，该换的是列式编码（每字段一个数组），不是继续压对象
 ——但那是 5000 节点以上才值得做的事，本方案不做。
 
+### 8.7 图视图的批量列边
+
+```
+GET /api/management/v1/lineage/column-edges?refs=paimon.ods.orders,paimon.dws.order_daily
+```
+
+§8.2 回答的是「**一张表**的列从哪来」（单表视角，按目标列分组）；图上要画「**展示中的这些表**
+之间，列与列怎么连」（图视角），那是另一个问题——所以单独一条端点，不往 `/columns` 上堆参数。
+
+节点集合由**调用方给**（逗号分隔、服务端去重、最多 64 个，超了 400）：控制台上的图已经
+经过过滤、展开与截断，服务端按根重算一遍得到的集合与它对不上——多出来的边在图上没有落点，
+少了的边让卡片缺行。集合由持有最新图的一方给，是最不容易错的口径。列级图本来就只为小图
+准备（§9.5(3)），64 个 ref 足够。
+
+响应沿用紧凑约定，`refs` 的下标即节点号：
+
+```json
+{"refs": ["paimon.ods.orders", "paimon.dws.order_daily"],
+ "edges": [[0, "amount", 1, "gmv", "AGGREGATE"], [0, "id", 1, "id", "DIRECT"]]}
+```
+
+每条边是 `[源下标, 源列, 目标下标, 目标列, kind]`，按 `(目标下标, 目标列, 源下标, 源列)`
+排序（确定性，§9.2 同一条规矩）。**常量列 `s = -1`、`sc` 为空串**：它们不产生画出来的线，
+但让目标卡片的列清单里有一行「被写过、无上游」的列——缺了它，`PARTITION (dt=...)` 的
+分区列会从卡片上消失，用户会以为这条 INSERT 没写它。**源不在集合里的边不回**：
+那半条边在图上没有落点；表级图不受影响（`/tables` 照常返回这条边）。
+
 ---
 
 ## 9. 展现
@@ -1294,7 +1357,10 @@ function frame() {
 | 引擎 | 全选 | 只看 Spark 写的链路 |
 | 节点类型 | 全选 | 只看目录里点得开的表，隐藏 `~file:` / `~temp:` / `~external:` |
 | 最近写过 | 不限 | > 30 天没更新的边**淡化**（不隐藏） |
-| 有列级映射 | 关 | 只留 `columnCount > 0` 的边——**这条最有用**，它滤掉的全是「跑过但没记到列」的弱关系 |
+
+初稿还有一个「只看有列级映射」（`columnCount > 0`）的开关，**已删**：卡片列清单默认就在图上，
+「哪些边真的带了列」看卡片有没有列、有没有列连线即可判断；再放一个过滤器等于让用户
+为一个已经被看见的事实多做一次操作。
 
 过滤在前端做（数据已在内存），**不重新请求**：过滤是探索动作，一分钟要做几十次。
 
@@ -1309,10 +1375,35 @@ function frame() {
 一张 300 列的表，上下游各 300 列，笛卡尔展开是 **90000 条列边**。这不是"渲染慢"，是**语义上没有人
 能看**。所以列级不做「全展开的图」，做三层：
 
-**(1) 表层永远不画列边**
+**(1) 表层默认不画列边，列边是小图上的显式开关**
 
 表与表之间一条边，线宽 ∝ `log10(columnCount + 1)`（1 列 → 1px、10 → 2px、100 → 3.5px、1000 → 5px）。
 任何规模下边数都是 O(表数)，与列数无关。
+
+图视图有一个「列级血缘」开关（§9.13 的 `LineageFilterBar`），**默认开**：它只管**画不画列-列连线**。
+卡片（列清单、类型图标、`N列` 开关）与开关无关——关掉只是少一层线，节点形态、位置、高度一个都不变，
+同一张图的两种读法。形状随之变化会让「刚才找到的那张表」在切换瞬间跳位，那种闪断比多看一层线更贵。
+有列连线时表级边淡化成引导线；没有列连线时表级边按正常强度画（0.15 透明度的引导线在没有列边的图里
+等于看不见关系）。**卡片只在节点数 ≤ 24 时出现**——超过它，卡片高度会把布局撑到不可读，这正是本节开头
+90000 条边结论的另一种表述；那时退回表模式并顺手关掉列级开关（没有卡片就没有线可指）。
+数据来自 §8.7 的批量端点（一次请求，不分表逐个拉）。落地时对初稿的修正：初稿写
+「表与表之间永远不画列边」，实际小图（几张大宽表核对字段映射）恰恰是最需要列边的场景，
+一刀切禁掉是把「防 90000 条边」错放大成「防一切列边」。
+
+卡片（§9.5(1) 的落地形态）自上而下三块：
+
+| 区域 | 内容 | 交互 |
+| --- | --- | --- |
+| 标题行 | 表**短名**（catalog 与库名不占标题）+ `↑上游数 ↓下游数`（按去重后的邻居表算，不按边算） | 悬停 tooltip 补全 `catalog.namespace`；点击选中：**只给表头**（标题行 + 元信息行）叠一层很淡的强调色 + 强调色描边，列清单区不着色，点空白取消 |
+| 元信息行 | 库徽标（去掉 catalog 的 `namespace` 前缀）+ `N列 ⌄` 开关 | 点 `N列` 展开/收起；根卡默认展开；过滤条上另有「展开全部列 / 收起全部列」一键到底（几十张卡不该一张张点） |
+| 滚动体 | 类型图标 + 列名 + `kind` 点；超 `MAX_CARD_ROWS` 收 `+N` 行 | **固定高度**（6 行封顶），列多时滚轮在卡片内滚（不缩放画布）；列连线锚点随滚动移动，滚出视口的钳回体沿 |
+
+选中为什么只染表头：点选之后人要看的是**这张卡的列清单**（以及它两侧的列边），整卡铺满强调色
+只会把真正的内容压成反白小字；表头是「我点的是这张表」的标识，染它就够了。
+
+列类型图标分五类：数字 `#`、字符 `T`、boolean `B`、复杂类型 `{}`（array / map / struct / binary 等）、
+其余 `·`。类型不在 §8.7 的列边报文里——是面板**第二轮**并行拉各 ref 的表详情（`schema.fields`）
+现查的：卡片先出（无图标），类型到了再补；表不在目录里（外部源）就那一列不画图标，不为它失败整批。
 
 **(2) 列链路只画「聚焦的那一列」**
 
@@ -1322,13 +1413,13 @@ function frame() {
 列边的端点不落在节点中点，而是按列在该表中的**相对行号**分布纵向偏移（节点高 44px，最少留 3 行
 间距）。否则 20 条列边全挤在节点中心，看起来像一束。
 
-**(3) 字段列表才是主视图，且「直通列」默认折叠**
+**(3) 字段列表才是主视图，且默认全部展开（2026-10-22 按用户要求改）**
 
 | 分组 | 默认 | 为什么 |
 | --- | --- | --- |
 | 变换列（`DERIVED` / `AGGREGATE`） | 展开 | 人真正要看的：这列是谁算出来的 |
-| 直通列（`DIRECT` 且同名） | **折叠成一行**：`38 个同名列直通` | 数量最多（宽表里常占 70%）、信息量最低，但恰好是它把列表撑到 300 行 |
-| 常量列（`CONSTANT`） | 折叠成一行 | 分区列通常走这里 |
+| 直通列（`DIRECT` 且同名） | 展开（可一键折叠成 `38 个同名列直通`） | 初稿按「数量最多、信息量最低」默认折叠，实际核对字段时逐列都在更符合直觉——折叠降级为可选的降噪按钮 |
+| 常量列（`CONSTANT`） | 展开（可一键折叠成一行） | 分区列通常走这里 |
 | 未解析（`UNRESOLVED`） | 展开并标灰 | 它代表「我不知道」，必须显眼，否则会被误读成「没有上游」 |
 
 列表用 `el-table-v2`（Element Plus 自带虚拟滚动，**不引新依赖**）。列定义：列名 / 类型 / `kind` 徽标 /
@@ -1353,7 +1444,7 @@ function frame() {
 | 双击节点 | 以它为根重查，面包屑 `… › orders › order_daily` 可回退 |
 | hover 节点 | 高亮它的直接边与邻居，其余淡化到 12% |
 | hover 边 | tooltip：`engine` / `writeMode` / `runCount` / `lastSeen` / `columnCount` |
-| 滚轮 | 以光标为锚点缩放，`k ∈ [0.25, 2]` |
+| 滚轮 | 以光标为锚点缩放，`k ∈ [0.25, 2]`；指针落在展开卡的滚动体上时改为滚卡片内容（不缩放画布） |
 | 拖拽空白 / 中键拖 | 平移 |
 | 搜索框 | 按表名在**当前图里**定位并居中（不上服务端） |
 
@@ -1456,7 +1547,7 @@ function frame() {
 | --- | --- |
 | 运行期 npm 依赖 | **0 个新增**。第 5 个运行期依赖都不加 |
 | 开发期 npm 依赖 | **0 个新增**。纯函数模块的单测用 Node 22 内置的 `node --test` 跑（`tools/lineage-tests/*.test.mjs`，`package.json` 加一条 `test:lineage` 脚本），不引 vitest——要测的只有两个无依赖的 ESM 模块，为此挂一个测试框架不划算 |
-| 复用的 Element Plus 组件 | `el-table-v2`（邻接表与列映射，自带虚拟滚动）、`el-drawer`（节点抽屉，overlay 不挤压画布）、`el-select`（引擎 / 深度 / 最近写过）、`el-switch`（「只看有列级映射」）、`el-tooltip`（边 hover）、`el-alert`（超预算降级提示）、icons |
+| 复用的 Element Plus 组件 | `el-table-v2`（邻接表与列映射，自带虚拟滚动）、`el-drawer`（节点抽屉，overlay 不挤压画布）、`el-select`（引擎 / 深度 / 最近写过）、`el-switch`（「列级血缘」开关）、`el-button`（「展开全部列 / 收起全部列」）、`el-tooltip`（边 hover）、`el-alert`（超预算降级提示）、icons |
 | 复用的自有组件 | `ResourceState`（空 / 错 / 载三态；空态时动作条必须写在它外面，`docs/console.md` §10 钉着）、`TimeText`（`lastSeen` 的「3 分钟前」口径）、`CopyText`（抽屉里的 ref 复制） |
 | 浏览器 API | Canvas 2D、`ResizeObserver`（DPR 重建）、`matchMedia('prefers-reduced-motion')`。不上 Web Worker——布局 O(n log n)，300 节点 < 5ms，`postMessage` 的结构化克隆比计算本身还贵 |
 
@@ -1480,7 +1571,7 @@ src/
 │   ├── LineagePanel.vue         # 页签入口：一次请求、三视图切换、ResourceState
 │   ├── LineageGraph.vue         # Canvas 宿主：pan/zoom/hover、命中测试、MORE 徽标
 │   ├── LineageAdjacency.vue     # 邻接表（同一份图数据，零请求）
-│   ├── LineageColumnTable.vue   # 列映射表（§8.2，分组折叠行）
+│   ├── LineageColumnTable.vue   # 列映射表（§8.2，直通/常量可折叠汇总行）
 │   ├── LineageNodeDrawer.vue    # 节点抽屉（表摘要 + 以它为根 / 打开表详情）
 │   ├── LineageFilterBar.vue     # 过滤条（纯受控，不发请求）
 │   └── LineageLegend.vue        # 图例 + budget 条（§8.6 的预算块在这里显形）
@@ -1499,7 +1590,7 @@ src/
 | `LineagePanel.vue` | 页签入口。挂载时发**一次** `GET /lineage/tables?compact=1&columnCount=1&depth=1&maxNodes=300`，此后展开按需 | props: `ref`（归一化全名）；切「列」页签才发 §8.2 | ~180 |
 | `LineageGraph.vue` | 唯一持有可变交互状态（`view` / `hover`）的地方；把 DOM 事件翻译成语义 | emits: `select` / `expand` / `reroot` / `hover-edge`；**不 import 任何 element-plus 组件**（渲染层与 UI 库解耦，这条会进 verify-console） | ~260 |
 | `LineageAdjacency.vue` | `el-table-v2` 渲染同一份图数据；超 500 节点自动降级的落点，也是无障碍路径 | props: `graph, filters` | ~120 |
-| `LineageColumnTable.vue` | §8.2 按目标列分组；`DIRECT` 同名直通 / 常量折叠成一行（9.5 的四行分组表） | props: `columns` | ~170 |
+| `LineageColumnTable.vue` | §8.2 按目标列分组；直通/常量默认展开、按钮一键折叠成汇总行（9.5 的四行分组表） | props: `columns` | ~170 |
 | `LineageNodeDrawer.vue` | 表摘要 + 入边最近三次 + 两个动作。`el-drawer` 是浮层，**画布布局按「让位后的可用宽」重算**而不是被压扁 | props: `node`；emits: `reroot` / `open-detail` | ~140 |
 | `LineageFilterBar.vue` | 9.4 的四项过滤 + 视图切换 + 图内搜索，全部受控 | `v-model:filters` / `v-model:view`；过滤**不重新请求** | ~110 |
 | `LineageLegend.vue` | 图例 + budget 显形（「上游 812 张、已画 4」） | props: `budget, counts` | ~80 |
@@ -1599,7 +1690,7 @@ ResourceState 的用法不变，差别在动作条放不放。
 | ① 首屏（双向 1 跳） | 首屏规模 = root 的邻居数，不是 2 跳子图；折叠节点 `+8` / `+43`；选中根节点的高亮态 | 9.4(1)(2)、9.6 |
 | ② 展开 2 跳 | 按需展开后 5 层；`›` MORE 徽标；budget 条（上游 12 / 下游 45）；节点抽屉是 overlay；回刷环画在层外并带 `↺`；k=0.58 自动落中档 LOD（只画末段名） | 9.4(1)、8.6、9.2、9.3 |
 | ③ 邻接表 | > 500 节点自动降级：顶部提示条 + 「仍要看图」出口；同一份数据零请求；外部节点「不可点开」 | 9.1、8.4 |
-| ④ 列映射 | 按目标列分组；`gmv` 的 AGGREGATE 明细与表达式；`DIRECT` 直通 38 列折叠成一行；`UNRESOLVED` 标灰显眼 | 9.5 |
+| ④ 列映射 | 按目标列分组；`gmv` 的 AGGREGATE 明细与表达式；直通列默认展开、可一键折叠；`UNRESOLVED` 标灰显眼 | 9.5 |
 | ⑤ 空态 | 「还没有血缘」+ 为什么（只记执行成功的 INSERT）；采集点脚注 | 9.6、§12 #3 |
 
 图里的数据是编的，但**渲染是真的 Canvas**——布局、贝塞尔边、LOD、徽标都按 9.2 / 9.3 的规则
@@ -1651,10 +1742,16 @@ ResourceState 的用法不变，差别在动作条放不放。
 | 方式 | 写法 | 说明 |
 | --- | --- | --- |
 | 配置项 | `spark.sql.queryExecutionListeners=io.github.melin.lakehouse.rest.spark.lineage.LakehouseLineageListener` | 用户自己起 `spark-sql` / `spark-submit` 时唯一可行的方式 |
-| 扩展懒注册 | `ManagementSparkExtensions` 在第一次 `injectParser` 时 `listenerManager.register(...)` | 只对用了本仓扩展的会话生效；`apply(extensions)` 拿不到 session，`injectParser` 的工厂函数才有 |
+| 扩展懒注册 | `ManagementSparkExtensions` 注入的解析器在**第一次 `parsePlan`** 时 `listenerManager.register(...)` | 只对用了本仓扩展的会话生效。不能在 `injectParser` 的工厂里注册：那一刻 `sessionState` 正在构建，而 `listenerManager` 又要读 `sessionState`，会栈溢出（§13.7 第 6 条）。**代价：纯 DataFrame 作业（一次 SQL 都没解析过）不会被自动挂载**，那种场景请用上一种 |
 
 `enabled=false` 时两条路都不注册——**监听器本身有成本**（每次查询都进一次回调），
 关掉要真的不挂上去，不能靠回调里 `if (!enabled) return`。
+
+**`enabled` 只能来自 `SparkConf`**（`--conf`、`spark-submit --conf`、`SparkSession.builder().config(...)`），
+`spark.conf.set` 改不动它：扩展式注册发生在**会话状态构建期**（`injectParser` 的工厂里），
+那一刻只有 `SparkConf` 读得到——读 SQLConf 会重入构建流程并栈溢出（§13.7 第 6 条）。
+其余各项（`column-level`、`queue-size`、`url`）在第一次回调时才读，那时两处都能读，
+仍是「SQLConf 优先、`SparkConf` 兜底」。
 
 ### 10.3 为什么这一期不做 Flink（以及将来接进来要改什么）
 
@@ -1711,7 +1808,7 @@ LineageExtractor.extract(plan: LogicalPlan, sqlText: Option[String]): Option[Lin
 | SQL | 断言的重点 |
 | --- | --- |
 | `INSERT INTO t SELECT * FROM s` | 全列按位置；每列 `DIRECT` |
-| `INSERT INTO t (a, b) SELECT x, y FROM s` | 列清单对齐；`s` 的多余列不出现 |
+| `INSERT INTO t (a, b) SELECT x, y FROM s` | 列清单在 `analyzed` 里已被展开：`t` 的其余列是 `CONSTANT` + `CAST(NULL AS INT)`（§13.7 第 5 条） |
 | `INSERT INTO t BY NAME SELECT b, a FROM s` | 名字对齐（**顺序反了也必须对**，这是最容易写反的一条） |
 | `INSERT OVERWRITE t PARTITION (dt='2026-10-20')` | `dt` 是 `CONSTANT`，`sources` 为空 |
 | `INSERT INTO t PARTITION (dt) SELECT ..., dt FROM s` | 动态分区按普通列解析 |
@@ -1743,16 +1840,24 @@ LineageExtractor.extract(plan: LogicalPlan, sqlText: Option[String]): Option[Lin
 
 ### 11.4 e2e
 
-`scripts/e2e-lineage.sh`（骨架照抄 `spark-paimon-rest-e2e.sh`）：
+`scripts/e2e-lineage.sh`（骨架照抄 `spark-paimon-rest-e2e.sh`，用例是
+`LineageLiveServerTests`——4 例，默认跳过，需要 `-De2e.lineage.enabled=true` 与一个开了血缘的服务端）：
 
 ```
-起 h2（16082，开 lineage）→ 建 PAIMON / ICEBERG 各一个 catalog
-  ├── Spark（3.5）：spark-sql 建表 + 一条 INSERT ... SELECT（带 queryExecutionListeners）
-  ├── Spark（4.1）：同上
-  └── 断言：GET /lineage/tables?ref=... 三类边都在；GET /lineage/columns 的 kind 正确
+起 h2（18081，开 lineage、auto-create-catalog）→ 一个 PAIMON catalog
+  ├── 建一个随机后缀的库 + src/dst/agg 三张 Paimon 表（每个用例各建一份）
+  ├── 4 例：列级 kind（含 CAST）、count(*) 的 AGGREGATE、SQL 文本旁路、不接 collect() 的写入
+  └── 断言：GET /lineage/runs|tables|columns 上的报文与 §4 的模型一致
 ```
 
 无 `-De2e.management.url` 时整体 skip（与现有两个 e2e 脚本同规矩）。
+
+**只在 3.5 上能跑。** 4.1 侧卡在建会话那一刻：Paimon 2.0.0 没有 Spark 4.1 的 bundle，4.1 模块
+用 `paimon-spark-4.0_2.13`，它的 Spark 扩展加载 `Spark4Shim` 失败（`Unable to get public no-arg
+constructor` → `Error while instantiating 'SessionStateBuilder'`），一条语句都发不出去。既有的
+`ManagementSqlLiveServerTests` 在 4.1 上一模一样地红，可以拿它做对照——**这不是血缘的问题**。
+4.1 侧靠 24 条抽取器单测（不建整会话）覆盖。Paimon 发布 4.1 bundle 后把脚本里的
+`VERSIONS` 改回 `"3.5 4.1"` 即可（`docs/maven-module-design.md` §13.6）。
 
 ### 11.5 文档与契约一致性
 
@@ -1761,7 +1866,7 @@ LineageExtractor.extract(plan: LogicalPlan, sqlText: Option[String]): Option[Lin
 - `scripts/verify-lineage-doc.py`（已落地）：端点双向一致——`LineageController` 上的每个 `@*Mapping` 都必须在本文档里出现（漏写一个端点 → 红），文档里写的每个血缘端点也必须在控制器上（写了没实现 → 红）；§10.1 的配置键与默认值逐一对照`RestServerProperties.Lineage` 的字段（改名不改文档 → 红）；
 - 表数：`data-model.md` 已是 23 张（§2.3 记血缘三表），`README.md` §1 同步；
 - 文档计数：本文件已在 `docs/`（23 份）里，**加内容不改计数**；但 `AGENTS.md` §3 与
-  `README.md` §9 那两行的描述要跟着改（已改成「服务端与控制台已实现、§5 抽取器未做」）。
+  `README.md` §9 那两行的描述要跟着改（已改成「三层都已实现」，抽取器落地后不能再写「§5 未做」）。
 
 ### 11.6 展现层
 
@@ -1861,6 +1966,9 @@ LineageExtractor.extract(plan: LogicalPlan, sqlText: Option[String]): Option[Lin
 | 仓储/服务（`LineageApiTests`，11 例） | 入库拆表/列边、重复上报幂等、第二次上报累加同一行、宽表降级为表级、未知引擎与语句类型 400、列图按目标列归组、`budget` 报真实邻居数且 `depth` 被上限截断、紧凑形状与 ETag 304、运行历史按表过滤与翻页、清理只删 run、删边不留悬空节点 | 语义，不是形状 |
 | 开关（`LineageDisabledTests`） | `enabled=false` 时 `POST /runs` → 403，`GET /tables` → 200 空图 | 「没打开」与「没采集到」在界面上可区分 |
 | 归一化（`LineageRefsTests`，8 例） | 多级 namespace、两段名、空段、外部节点、大小写、`~` 保留前缀、`of`/`parse` 往返 | 名称归一化是全部边的前提 |
+| 抽取器（`LineageExtractorTests` 24 + `PlanFieldsTests` 4 例） | 24 张表驱动的计划 → 模型（§11.2）、`kind` 五种口径、`CAST`/`Alias` 不算变换、子查询只出表级边、V1/V2/CTAS/多路插入、常量的「最内层表达式」判据；反射访问器 4 例钉版本差异 | 计划 → 模型这一步，两个 Spark 版本各跑一遍 |
+| 上报器（`LineageReporterTests`，4 例） | 攒批、队列满就丢、失败重试两次后计数、关机前 flush | 队列语义；不依赖网络 |
+| 端到端（`LineageLiveServerTests`，4 例，需真服务端） | 列级 `kind` 一路报到服务端、`count(*)` 的 `AGGREGATE`、SQL 文本旁路、**一条语句一条 run**、**不接 `collect()` 也有 run** | 三段拼起来还对不对（见 §13.7 第 10/11 条） |
 | 前端纯函数（`npm run test:lineage`，29 例） | 两种编码形状、索引、隐藏与淡化两类过滤、跳数即层号、多路径取 `min abs`、打乱输入坐标不变、环进 `ring`、折叠 `37 → 8 + "+29"`、坐标锁定、LOD 三档与滞回、边宽对数、`ellipsizeMiddle` | 布局与绘制可以脱离浏览器测 |
 | 机械一致性（`scripts/verify-console.py` 第 21 组，17 条） | 异步组件、页签名与正文条件一致、不 import element-plus、格式色只读 CSS 变量、布局纯函数、LOD 只有一处实现、`Path2D` 批量描边、只经 `lineageApi` 读、不声明写入口、列映射按需加载、500 阈值、画布让位、五个端点、`If-None-Match`/304 | 这些错法都不会报错 |
 
@@ -1887,12 +1995,16 @@ lakehouse:
 
 ### 13.5 还没做的
 
-1. **§5 的 Spark 抽取器**（含 §11.1–11.4 的抽取器测试与 e2e）：客户端埋点，独立仓库。
-2. **视图口径（§4.6 的 `AS_WRITTEN` 边）**：仍只有「展开到底表」一种口径，
+> **§5 的 Spark 抽取器已经落地**（原第 1 条已完成）：`lakehouse-rest-spark` 里
+> `shared/` 一份源码 + `-common` 纯 Java，`-3.5` / `-4.1` 两个版本模块各跑 24 + 4 + 4 例，
+> 端到端在 `scripts/e2e-lineage.sh`。与前面几节**不一致的地方统一记在 §13.7**——
+> 那些是落地时才知道的，照原稿写会写出错的东西。剩下三条：
+
+1. **视图口径（§4.6 的 `AS_WRITTEN` 边）**：仍只有「展开到底表」一种口径，
    所以图上看得见底表、看不见 SQL 里写的视图名。控制台已在血缘页脚注说明。
-3. **运行历史页面**：端点与服务端能力都在（`GET /runs`、`GET /runs/{runId}`），
+2. **运行历史页面**：端点与服务端能力都在（`GET /runs`、`GET /runs/{runId}`），
    控制台只是不给入口——手工上报更不该给。
-4. **Flink**：仍按 §10.3，模型不用改，只是不做。
+3. **Flink**：仍按 §10.3，模型不用改，只是不做。
 
 ### 13.6 一个踩过的坑：`@Modifying(clearAutomatically = true)` 会吞掉同一个事务里的删表
 
@@ -1915,3 +2027,141 @@ lakehouse:
 
 > 这条也给全仓提了个醒：**凡是会在别人事务里被调用（事件监听器、`@Transactional` 服务内部复用）
 > 的 bulk 操作，都不要 `clearAutomatically`。** 需要清的话，让调用方在外层事务结束后自己清。
+
+### 13.7 抽取器落地时与前面章节不一致的地方
+
+写代码时才发现的，逐条列出，免得下一个读 §5 的人照着实现又踩一遍。
+
+**1. `kind` 的判定顺序必须反过来（§4.3 / §5.5 的表格）**
+
+原稿顺序是 `DIRECT` → `DERIVED` → `AGGREGATE` → `CONSTANT` → `UNRESOLVED`，那样
+`SUM(x)` 会先命中 `DERIVED`，`AGGREGATE` 永远判不出来。落地顺序：
+
+```
+DIRECT → AGGREGATE → DERIVED → CONSTANT → UNRESOLVED
+```
+
+`AGGREGATE` 还必须排在「`sources` 为空 → `CONSTANT`」之前，因为 `count(*)` 一个源列都没有。
+
+**2. `CAST` / `Alias` 不算「变换」**
+
+analyzer 会给每次写入补一层「对齐到目标表类型」的 `Project`：`INSERT INTO t SELECT a FROM s`
+里 `t.x` 那个位置上是 `CAST(s.a AS INT) AS x`。若严格按「不是裸属性就是 `DERIVED`」判，
+**几乎所有真实边都会变成 `DERIVED`**，图上再也看不出哪几列是抄过去的。落地按：
+剥掉 `Alias` / `Cast` 后只剩一个属性 → `DIRECT`。真正的变换里仍有 `Add` 之类的运算，
+剥完还是 `DERIVED`。
+
+**3. `CommandResult#commandLogicalPlan` 不需要反射（§5.4 说「反射取」）**
+
+`javap` 核对 3.5.9 与 4.1.2：两个版本上它都是 **public** 方法，直接调用即可。
+`PlanFieldsTests` 把这个事实钉住了——将来某版本把它改小，用例先红。
+
+**4. `InMemoryRelation` 背后的逻辑计划在 3.5 上取不到**
+
+原稿说「反射 12 个访问器」。实际只需两处：`InMemoryRelation` 的 `output`（读不到再退回反射），
+以及它背后的逻辑计划——4.1 在 `CachedRDDBuilder.logicalPlan`（private，反射可取），
+3.5 的 `cacheBuilder.cachedPlan` 已经是 `SparkPlan`、`logicalLink` 已删，**取不到就返回 `None`**。
+后果：3.5 上 `df.cache()` 之后的写入，血缘会在缓存那一层断掉（少一层，不是错一层）。
+
+**5. 列清单在 `analyzed` 里已经被展开**
+
+`INSERT INTO t (x, z) SELECT ...` 分析之后，`userSpecifiedCols` / `outputColumnNames` 都是空，
+取而代之的是 `Project` 里多出一列 `CAST(NULL AS INT) AS y`。所以上报的是**全部目标列**，
+没写的那几列是 `CONSTANT` + 表达式 `CAST(NULL AS INT)`。
+
+不按 SQL 原文只报 x、z 是刻意的：这一趟确实把 `y` 写成了 NULL，漏报它会让历史上那条
+`y ← 某列` 的边看起来还活着。表达式文本也让「这列为什么是常量」在图上自解释。
+
+**6. 扩展式注册只能在「第一次解析 SQL」时做（原稿说 `injectParser` 工厂里就能注册）**
+
+`injectParser` 的工厂由 `BaseSessionStateBuilder#sqlParser` 调用，也就是 `sessionState` 正在
+构建的时刻。而：
+
+- 读 `session.sessionState.conf` 会重新进入构建流程；
+- 连 `session.listenerManager` 也不行——它内部就是 `sessionState.listenerManager`。
+
+于是 `sessionState → buildParser → 工厂 → listenerManager → sessionState` 成环，表现为
+`StackOverflowError`，栈顶落在 `ClassLoader.defineClass1` 上，看起来像类加载问题。**两次**都栽在
+这里：先以为是配置读早了（改成只读 `SparkConf`），仍然溢出，才发现注册本身就要 `sessionState`。
+
+落地做法：注册挪到 `AbstractLakehouseRestSqlParser#armListener`——会话第一次 `parsePlan` 时调
+`registerIfEnabled`。那时会话状态已建好，且**它一定早于第一条语句的执行**，所以第一条语句的
+`onSuccess` 也能被采到。
+
+两条推论，都要记住：
+
+1. `enabled` 只能写在 `SparkConf`（`--conf` / `.config(...)`），`spark.conf.set` 改不动它；
+2. **纯 DataFrame 作业不会被自动挂载**（一次 `parsePlan` 都不走）——那种场景用
+   `spark.sql.queryExecutionListeners`，也就是 §10.2 里本来就推荐的方式。
+
+**7. `max-columns` 是本地先截**
+
+超上限时客户端就不发列级了（而不是发过去让服务端截）。理由很实际：宽表 2000 列 × 5 源表
+的报文要先序列化、走网络、再被服务端丢掉，代价全在客户端这边。服务端仍会独立判一次
+（防的是别的客户端）。
+
+**8. `analyzed` 里的写命令比 §5.4 列的多**
+
+V1 表的 `INSERT` 不是 `AppendData`，而是 `InsertIntoHadoopFsRelationCommand`；
+V1 的 CTAS 是 `CreateDataSourceTableAsSelectCommand`（不是 `CreateTableAsSelect`）；
+多路插入（`FROM s INSERT INTO a ... INSERT INTO b ...`）是一个 **`Union` 套着两个写命令**，
+不是「`InsertIntoStatement` 套 `InsertIntoStatement`」。`writeOf` 因此认十种节点 + `Union`，
+`isWritePlan` 同步（解析阶段的 CTAS 还是 `CreateTableAsSelectStatement`，与解析后不同名，
+按类名补了一条）。
+
+**9. 子查询的表级依赖要靠 `plan.expressions` 找**
+
+`Filter#condition` 里的 `EXISTS (...)` / `IN (SELECT ...)` **不是 `children`** 的一员。
+只走 `children` 会让右表彻底消失，可它确实让「结果可能变」。落地在 `walk` 的入口统一扫
+`plan.expressions` 里的 `SubqueryExpression`，用**空 parent** 下去：叶子登记表级 `inputs`，
+产生不出列级边——正好是 §5.7 要的「有表级、无列级」。
+
+**10. SQL 文本旁路要按「计划实例」关联，不能按线程（§2.4 / §5.1）**
+
+原稿的 `ThreadLocal` 方案基于一个错误前提：`spark.sql(...)` 解析完就地执行、同线程。实际上
+`QueryExecutionListener` 的回调由 `ExecutionListenerManager` 投递到
+**`spark-listener-group-shared`** 线程——解析在 `main`，取文本在监听线程，`ThreadLocal` 永远读到
+空。症状极具误导性：图完全正确，只有 `sqlText`（和 `sqlHash`）是空的，看上去像服务端没存。
+
+改成 `IdentityHashMap[LogicalPlan, String]`，键是 `spark.sql` 交给 `QueryExecution` 的那个对象
+（监听器里就是 `qe.logical`）。键必须按身份——`LogicalPlan#equals` 会做结构比较，既慢，又会把两条
+一模一样但先后执行的 SQL 合成一条。容量上限 64，超了整体清空：宁可丢几条文本，也不要让它无限攒。
+
+诊断方法也记一下：在 `record` 与 `onSuccess` 各打一行线程名 + 计划身份，一眼就能看出「记录」与
+「取」不在同一个键上——这比盯着服务端日志猜快得多。
+
+**11. 一次写入会回调两次，就地那次不能直接跳过（§5.1）**
+
+`INSERT INTO` 会产生两次 `onSuccess`：
+
+| | `qe.logical` | `qe.analyzed` | `funcName` | SQL 文本 |
+| --- | --- | --- | --- | --- |
+| 就地执行（Dataset 创建期） | `AppendData` | 同一个实例 | `append` | 无（键对不上） |
+| 语句级（用户的 action） | `InsertIntoStatement` | `AppendData` | `collect` | 有 |
+
+内层来自 `QueryExecution#eagerlyExecuteCommands`：`spark.sql(...)` 创建 Dataset 时就把命令就地
+执行掉，另走一次 `SQLExecution.withNewExecutionId`，于是再回调一次。不去重的后果是运行历史里
+每条 `INSERT` 两条、边上 `run_count` 翻倍。
+
+**但去重不能是「跳过就地那次」。**第一版就是这么写的（判据 `qe.logical eq qe.analyzed`，
+就地拿到的是分析后计划里的命令节点，两个字段是同一个实例），线上立刻翻车：
+`spark.sql("INSERT ...")` **不接 `collect()`** 时，就地执行就是唯一一次回调——跳过它，
+这次写入的血缘整个丢了，而图、运行历史什么都对，只是少一条。两种情况（后面还有没有
+语句级回调）在回调那一刻分不出来。
+
+落地的规矩是「**待定 + 合并 + 兜底**」：
+
+- 就地回调：把 run 先算好**记为待定**（此刻取不到 SQL 文本——旁路的键是解析产物
+  `InsertIntoStatement`，就地回调手里只有 `AppendData`），宽限期 2s 内不上报；
+- 语句级回调：SQL 文本只有它取得到。到达时撤掉同一次写入的待定（`qe.analyzed` 是同一个
+  实例，按身份配对），上报带文本的这条；
+- 宽限期过完语句级回调还没来 → 用户就是不接 `collect()`，守护定时器把待定 run 兜底上报
+  （`sqlText` 为空——文本旁路确实够不着，可接受的损失）。
+
+已知的不完美：`sql()` 之后隔了很久才 `collect()`（超过宽限期）会出两条 run。宁可偶发重复
+也不能丢——血缘丢边是图错了，重复只是运行历史里多一行。
+
+判据本身（`qe.logical eq qe.analyzed`，不看 `funcName`、不看计划形状；纯 DataFrame 的
+`df.writeTo(t).append()` 同样成立）不变，变的只是对命中它的回调的处理。e2e 里
+`sqlTextSurvivesTheParserSideChannel` 钉住「一条语句一条 run」，
+`insertWithoutCollectIsStillReported` 钉住「不接 `collect()` 也有 run」。

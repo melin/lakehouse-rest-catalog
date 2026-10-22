@@ -186,6 +186,23 @@ public final class LineageDtos {
     public record ColumnGraph(String ref, String direction, List<ColumnGroup> columns) {
     }
 
+    /**
+     * 图视图用的批量列边（§8.4）：控制台把**当前展示的节点集合**原样发回来，
+     * 这里只回「两端的表都在集合里」的列边——跨出集合的那半截边在图上没有落点。
+     *
+     * <p>形状沿用紧凑约定：{@code refs} 是去重后的表全名（下标即节点号），
+     * {@code edges} 每行是 {@code [源下标, 源列, 目标下标, 目标列, kind]}。
+     * <b>常量列没有源</b>：{@code s = -1}、{@code sc = ""}，它们不产生画出来的线，
+     * 但让目标卡片的列清单里有一行「被写过」的列。
+     */
+    public record ColumnEdgeGraph(List<String> refs, List<ColumnEdgeRow> edges) {
+    }
+
+    /** {@code [源下标, 源列, 目标下标, 目标列, kind]}；{@code s = -1} 表示常量列。 */
+    @JsonFormat(shape = JsonFormat.Shape.ARRAY)
+    public record ColumnEdgeRow(int s, String sc, int t, String tc, String kind) {
+    }
+
     // ------------------------------------------------------------------ 运行历史
 
     /**

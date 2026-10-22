@@ -221,10 +221,11 @@ EXTENSION_ENDPOINTS = {
     # 血缘读端点（本工程扩展，挂管理 API 基址）：表级上下游与列级映射。
     # 三份规格都没有它——血缘是**跨 catalog** 的关系，不是某张表上的操作，
     # 而 catalog API 的每个端点都必须在 CatalogAccessRules 登记权限映射。
-    # 服务端实现见 LineageController；两条都只读，写入口（POST /lineage/runs）
+    # 服务端实现见 LineageController；三条都只读，写入口（POST /lineage/runs）
     # 只给引擎侧上报器用，控制台不登记。
     ("GET", "/api/management/v1/lineage/tables"): "表详情页血缘图（表级上下游，一次一跳，只读）",
     ("GET", "/api/management/v1/lineage/columns"): "表详情页血缘图的列映射视图（按目标列分组，只读）",
+    ("GET", "/api/management/v1/lineage/column-edges"): "血缘图列级开关的批量列边（节点集合由调用方给，只读）",
 }
 
 problems = []
@@ -1837,10 +1838,10 @@ check("抽屉打开时画布让位（按让位后的宽度重排，而不是被�
       "padding-right: 340px" in lineage_panel_source and "lp-shifted" in lineage_panel_source,
       "被压扁的图比不看更糟：坐标还在，只是挤成一团")
 
-check("血缘的五个端点在服务端都有实现",
+check("血缘的六个端点在服务端都有实现",
       all(mapping in lineage_controller for mapping in (
           '@PostMapping("/runs")', '@GetMapping("/runs")', '@GetMapping("/runs/{runId}")',
-          '@GetMapping("/tables")', '@GetMapping("/columns")')),
+          '@GetMapping("/tables")', '@GetMapping("/columns")', '@GetMapping("/column-edges")')),
       "前端加了端点、服务端没实现时，页签里只有一句「加载失败」")
 
 # 图的 ETag 只随边表变化，绝大多数请求该命中 304。控制器处理条件请求（不在服务层）：

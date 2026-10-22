@@ -1,5 +1,6 @@
 package io.github.melin.lakehouse.rest.web;
 
+import io.github.melin.lakehouse.rest.dto.LineageDtos.ColumnEdgeGraph;
 import io.github.melin.lakehouse.rest.dto.LineageDtos.ColumnGraph;
 import io.github.melin.lakehouse.rest.dto.LineageDtos.IngestResult;
 import io.github.melin.lakehouse.rest.dto.LineageDtos.ReportBatch;
@@ -7,6 +8,7 @@ import io.github.melin.lakehouse.rest.dto.LineageDtos.RunDetail;
 import io.github.melin.lakehouse.rest.dto.LineageDtos.RunList;
 import io.github.melin.lakehouse.rest.service.LineageService;
 import io.github.melin.lakehouse.rest.service.LineageService.GraphPayload;
+import java.util.List;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.CacheControl;
 import org.springframework.http.HttpStatus;
@@ -129,6 +131,20 @@ public class LineageController {
                               @RequestParam(value = "direction", required = false) String direction,
                               @RequestParam(value = "engine", required = false) String engine) {
         return lineageService.columns(ref, direction, engine);
+    }
+
+    /**
+     * {@code GET /lineage/column-edges}：图视图的批量列边（§8.4）。
+     *
+     * <p>与 {@code /columns} 分开是刻意的：列映射回答「这张表的列从哪来」（单表视角），
+     * 这里回答「**展示中的这些表**之间，列与列怎么连」（图视角）。节点集合由调用方给
+     * （逗号分隔、去重、最多 64 个）——图已经被过滤、展开与截断过，服务端按根重算
+     * 得到的集合与它对不上。响应是紧凑的 {@code [源下标, 源列, 目标下标, 目标列, kind]} 行，
+     * 常量列 {@code s = -1}（有行无线）。
+     */
+    @GetMapping("/column-edges")
+    public ColumnEdgeGraph columnEdges(@RequestParam("refs") List<String> refs) {
+        return lineageService.columnEdges(refs);
     }
 
     /** {@code 1} / {@code true} 都算真：控制台的开关会发字符串，curl 习惯写 true。 */

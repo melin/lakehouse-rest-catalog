@@ -1,9 +1,9 @@
 import { get } from './client.js'
 
 /**
- * 血缘的两条**读**端点（`/api/management/v1/lineage/**`，设计见 `docs/lineage-design.md` §8）。
+ * 血缘的**读**端点（`/api/management/v1/lineage/**`，设计见 `docs/lineage-design.md` §8）。
  *
- * <p>为什么单独一个模块而不是塞进 `management.js`：这两条是控制台里唯一「一次请求
+ * <p>为什么单独一个模块而不是塞进 `management.js`：这几条是控制台里唯一「一次请求
  * 回答一整张图」的端点（响应里同时有节点、边、预算与 ETag），形状与其余管理端点的
  * 「一页列表」完全不同；放在一起读者会以为它们也是分页列表，从而去找 `page`/`pageSize`。
  *
@@ -46,4 +46,21 @@ function columns(query) {
   return get('lineageColumns', { params: { query } })
 }
 
-export const lineageApi = { tables, columns }
+/**
+ * 图视图的批量列边（§8.7）。
+ *
+ * <p>与 {@link columns} 回答的是两个问题：columns 是「**这张表**的列从哪来」（单表视角），
+ * 这里是「**展示中的这些表**之间，列与列怎么连」（图视角）。节点集合由调用方给——
+ * 图已经被过滤、展开与截断过，服务端按根重算的集合与它对不上。上限 64 个 ref，
+ * 列级图只为小图准备（面板在节点超限时直接不给开开关）。
+ *
+ * <p>响应是紧凑形状：`{ refs: string[], edges: [[源下标, 源列, 目标下标, 目标列, kind]] }`，
+ * 常量列 `s = -1`（有行无线）。
+ *
+ * @param {object} query `{ refs: string[] }`
+ */
+function columnEdges(query) {
+  return get('lineageColumnEdges', { params: { query } })
+}
+
+export const lineageApi = { tables, columns, columnEdges }

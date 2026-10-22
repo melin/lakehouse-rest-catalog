@@ -10,11 +10,16 @@
         :filters="filters"
         :view="view"
         :engines="engines"
-        :has-columns="hasColumns"
         :search="search"
+        :column-mode="columnMode"
+        :column-available="hasColumns && cardMode"
+        :card-available="cardMode"
+        :all-expanded="allRowsExpanded"
         @update:filters="patchFilters"
         @update:view="changeView"
         @update:search="search = $event"
+        @update:column-mode="toggleColumnMode"
+        @toggle-all-rows="toggleAllRows"
       />
       <div class="lp-actions">
         <el-button size="small" :loading="loading" @click="reload">刷新</el-button>
@@ -61,7 +66,14 @@
           :layout="layout"
           :faded="filtered.faded"
           :focus-ref="focusRef"
+          :cards="cardMode ? cardState.cards : null"
+          :column-edges="columnMode ? cardState.edges : []"
+          :selected-ref="selectedRef"
+          :expanded-refs="expandedRefs"
+          :degrees="degrees"
           @select="select"
+          @deselect="deselect"
+          @toggle-rows="toggleRows"
           @expand="expand"
           @fold="unfoldLayer"
           @reroot="reroot"
@@ -120,7 +132,7 @@
  * 第一种要去跑一条 INSERT，第二种点「清除过滤」，第三种重试。混成一句「暂无数据」
  * 时，用户唯一能做的就是刷新，而其中两种刷新是没用的（§9.6）。
  */
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, nextTick, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import ResourceState from '@/components/ResourceState.vue'
@@ -130,9 +142,11 @@ import LineageFilterBar from '@/components/lineage/LineageFilterBar.vue'
 import LineageGraph from '@/components/lineage/LineageGraph.vue'
 import LineageLegend from '@/components/lineage/LineageLegend.vue'
 import LineageNodeDrawer from '@/components/lineage/LineageNodeDrawer.vue'
+import { catalogApi } from '@/api/catalog.js'
 import { describeError } from '@/api/client.js'
 import { lineageApi } from '@/api/lineage.js'
 import { GRAPH_NODE_LIMIT, useLineageView } from '@/composables/lineage.js'
+import { buildCards, decodeColumnEdges } from '@/utils/lineageColumns.js'
 import { engineOptions, hasColumnInfo } from '@/utils/lineageGraph.js'
 // 别名成 `computeLayout`：本组件里还要声明一个同名的计算属性（模板与子组件都叫它 `layout`），
 // 直接 import 会撞名——`<script setup>` 的顶层作用域是同一个
@@ -183,6 +197,203 @@ const drawer = reactive({ open: false, tableRef: '' })
 const columnState = reactive({ loading: false, error: '', groups: [], loaded: false })
 
 /**
+ * 列级连线开关（§9.5(1)）：**只决定画不画列-列连线**。
+ *
+ * <p>卡片（列清单 + 类型图标 + 「N列」开关）与它无关——一进来就有，关掉它只是少一层线。
+ * 两种状态是同一张图的两种读法，不是两张图：形状变化会让「我刚才看到的那张表」
+ * 在切换瞬间跳位，那种闪断比多看一层线更贵。
+ *
+ * <p>默认**开**：来看血缘的人九成是在核对「这一列是从哪来的」，默认关掉等于让每个
+ * 人都先点一下。只在**小图**上可用（不超过 {@link COLUMN_MODE_LIMIT} 个节点）：宽表的
+ * 卡片高度会把布局撑到不可读，这正是设计稿 §9.5 开头 90000 条边结论的另一种表述。
+ * 数据走 §8.7 的批量端点——一次请求带回展示集合内的全部列边，不分表逐个拉。
+ */
+const COLUMN_MODE_LIMIT = 24
+const columnMode = ref(true)
+const cardState = reactive({ seq: 0, loading: false, error: '', edges: [], cards: new Map() })
+
+/** 图上有卡片（列清单已拉到）。表模式的回落判据，模板里也要用。 */
+const cardMode = computed(() => cardState.cards.size > 0)
+
+/**
+ * 「N列」开关已点开的卡片（§9.5(1)）：布局高度与渲染都跟着它走，所以归面板持有。
+ * 默认展开根卡——打开列级模式就能直接看到根写了哪些列，不用每次先点一下。
+ */
+const expandedRefs = ref(new Set())
+
+/** 全部卡片都展开（决定「展开全部列 / 收起全部列」按钮的文案与动作）。 */
+const allRowsExpanded = computed(() => cardMode.value
+  && [...cardState.cards.keys()].every((ref) => expandedRefs.value.has(ref)))
+
+/** 点选高亮的表（整卡强调色）。点空白取消；不影响抽屉的开关。 */
+const selectedRef = ref('')
+
+function toggleColumnMode(value) {
+  // 布局与卡片都不动，只是多一层线或少一层线；重绘由 `columnEdges` 的 watch 触发
+  columnMode.value = value
+  if (!value) notice.value = ''
+}
+
+/** 全量展开 / 收起列清单（§9.5(1)）：几十张卡一张张点太慢。展开后把图拉回可视区。 */
+function toggleAllRows(expand) {
+  expandedRefs.value = expand ? new Set(cardState.cards.keys()) : new Set()
+  nextTick(() => graphRef.value?.fit())
+}
+
+/**
+ * 每张表的上下游表数（§9.5(1)）：按**去重后的邻居表**算，不按边算——
+ * 同一对表跑过十次的 INSERT 也只是「1 张上游表」。
+ */
+const degrees = computed(() => {
+  const source = filtered.value.graph
+  const ups = new Map()
+  const downs = new Map()
+  for (const edge of source.edges) {
+    if (!downs.has(edge.source)) downs.set(edge.source, new Set())
+    downs.get(edge.source).add(edge.target)
+    if (!ups.has(edge.target)) ups.set(edge.target, new Set())
+    ups.get(edge.target).add(edge.source)
+  }
+  const result = new Map()
+  for (const node of source.nodes) {
+    result.set(node.ref, {
+      up: ups.get(node.ref)?.size || 0,
+      down: downs.get(node.ref)?.size || 0,
+    })
+  }
+  return result
+})
+
+/** 卡片数据拉失败时的提示文案（成功时按它清掉，不误清别的提示）。 */
+const CARD_ERROR_NOTICE = '列信息没拉到，图按表模式显示（列清单与列连线都缺）'
+
+/**
+ * 拉一次列边。节点集合就是**当前展示的**节点（§8.7：图已被过滤/展开/截断过，
+ * 服务端按根重算的集合与它对不上）；响应里的下标以服务端去重后的 `refs` 为准，
+ * 这里把它解码回表名再交给卡片与渲染层。
+ *
+ * <p>**不看 `columnMode`**：卡片是图的常态，列-列连线才是开关。因此这里照常拉，
+ * 只有渲染层按开关决定画不画线（`drawFrame` 的 `columnFlow`）。
+ *
+ * <p>列类型是第二次往返：卡片先出（无图标），随后并行拉各 ref 的表详情把类型
+ * 并进卡片（`fetchColumnTypes`）。类型图标是锦上添花，不值得让首屏多等一轮。
+ */
+async function loadColumnEdges() {
+  const nodes = filtered.value.graph.nodes
+  if (!nodes.length) return
+  const seq = ++cardState.seq
+  cardState.loading = true
+  cardState.error = ''
+  try {
+    const payload = await lineageApi.columnEdges({ refs: nodes.map((node) => node.ref) })
+    if (seq !== cardState.seq) return
+    const names = payload.refs || []
+    const decoded = decodeColumnEdges(payload)
+    cardState.edges = decoded.edges
+      .filter((edge) => edge.s >= 0)
+      .map((edge) => ({
+        s: names[edge.s],
+        sCol: edge.sCol,
+        t: names[edge.t],
+        tCol: edge.tCol,
+        kind: edge.kind,
+      }))
+      .filter((edge) => edge.s && edge.t)
+    cardState.cards = buildCards(names, decoded.edges)
+    // 根卡默认展开（§9.5(1)）；根没有列边时不在卡片里，就全部收起
+    expandedRefs.value = new Set(cardState.cards.has(root.value) ? [root.value] : [])
+    if (notice.value === CARD_ERROR_NOTICE) notice.value = ''
+    fetchColumnTypes(nodes, names, decoded.edges, seq)
+  } catch (cause) {
+    if (seq === cardState.seq) {
+      cardState.error = describeError(cause)
+      // 卡片是默认形态：拉不到就得说一声，否则用户以为这些表没有列信息
+      notice.value = CARD_ERROR_NOTICE
+    }
+  } finally {
+    if (seq === cardState.seq) cardState.loading = false
+  }
+}
+
+/**
+ * 并行拉各 ref 的表详情，把列类型并进卡片（类型图标的数据源）。
+ *
+ * <p>ref 是 `catalog.namespace.table`（§4.1 的点拼口径）；`~file:` 这类外部 ref
+ * 与不在目录里的表（外部源、已注销）拉不到 schema——那一列就不画图标，
+ * 不为它失败整批。
+ */
+async function fetchColumnTypes(nodes, names, rawEdges, seq) {
+  const types = new Map()
+  await Promise.all(nodes.map(async (node) => {
+    const parts = node.ref.split('.')
+    if (parts.length < 2 || node.kind === 'EXTERNAL') return
+    const catalog = parts[0]
+    const table = parts[parts.length - 1]
+    const database = parts.slice(1, -1).join('.')
+    try {
+      const detail = await catalogApi.getTable(catalog, database, table)
+      const fields = detail?.schema?.fields || []
+      if (fields.length) types.set(node.ref, new Map(fields.map((field) => [field.name, field.type])))
+    } catch {
+      // 没有 schema 就没有类型图标；卡片其余能力不受影响
+    }
+  }))
+  if (seq !== cardState.seq || !types.size) return
+  const typesOf = (ref, colName) => types.get(ref)?.get(colName) || ''
+  cardState.cards = buildCards(names, rawEdges, { typesOf })
+}
+
+/** 「N列」开关：展开/收起一张卡的滚动体。换新 Set 实例——布局与渲染靠引用变化感知。 */
+function toggleRows(ref) {
+  const next = new Set(expandedRefs.value)
+  if (next.has(ref)) next.delete(ref)
+  else next.add(ref)
+  expandedRefs.value = next
+}
+
+/** 上一轮是因为节点超限被自动关掉的列级开关：图变小了要自己开回来（默认是开的）。 */
+let columnSuppressed = false
+
+/**
+ * 卡片跟着「展示集合」走：图换根、展开、过滤，任何一样变了都要重拉（§8.7）。
+ *
+ * <p>不看 `columnMode` —— 卡片的获取与「画不画列线」是两件事。节点太多时卡片撑不下
+ * （布局高度按行数算），退回纯表模式，并把列级开关一起关掉：那时候开关打开也没有线可画。
+ */
+watch([filtered, root], () => {
+  const nodes = filtered.value.graph.nodes
+  if (!nodes.length) {
+    cardState.seq += 1
+    cardState.cards = new Map()
+    cardState.edges = []
+    return
+  }
+  if (nodes.length > COLUMN_MODE_LIMIT) {
+    cardState.seq += 1
+    cardState.cards = new Map()
+    cardState.edges = []
+    columnSuppressed = true
+    columnMode.value = false
+    notice.value = `这张图有 ${nodes.length} 个节点，卡片列清单只支持不超过 ${COLUMN_MODE_LIMIT} 个节点的图`
+    return
+  }
+  loadColumnEdges()
+  if (columnSuppressed) {
+    columnSuppressed = false
+    columnMode.value = true
+  }
+})
+
+// 重新打开列级开关而卡片还没拉到（上次失败过）时补一次。加载中不重入：
+// 上面那条 watch 已经发出去的那次会带回卡片
+watch(columnMode, (on) => {
+  if (on && !cardState.cards.size && !cardState.loading
+    && filtered.value.graph.nodes.length <= COLUMN_MODE_LIMIT) {
+    loadColumnEdges()
+  }
+})
+
+/**
  * URL 状态：`?tab=lineage&lview=table&lfocus=<ref>`。
  *
  * <p>只写 `replaceState`：pan / zoom 一律不进历史栈（那会让后退按钮变成「撤销一次拖拽」）。
@@ -213,11 +424,20 @@ function reload() {
   columnState.loaded = false
   load(root.value || props.tableRef)
   if (view.value === 'columns') loadColumns()
+  // 卡片不用显式重拉：新图落到 `filtered` 会触发上面那条 watch
 }
 
 function select(ref) {
+  // 点击即高亮（§9.5(1)）；抽屉照常打开，两者不冲突——
+  // 高亮是图上的状态，抽屉是这要张表的详情
+  selectedRef.value = ref
   drawer.tableRef = ref
   drawer.open = true
+}
+
+/** 点空白取消高亮。抽屉不动：关抽屉是抽屉自己的交互。 */
+function deselect() {
+  selectedRef.value = ''
 }
 
 function reroot(ref) {
@@ -257,7 +477,11 @@ const locked = ref(new Map())
 const layoutResult = computed(() => computeLayout(filtered.value.graph, {
   root: root.value,
   expandedLayers: expandedLayers.value,
-  locked: locked.value,
+  // 卡片模式：布局按卡片高度算，旧的表级坐标锁没有意义（卡片一变高就错位）
+  locked: cardMode.value ? undefined : locked.value,
+  cardOf: cardMode.value ? cardState.cards : null,
+  // 「N列」开关点开的卡多一块固定高度的滚动体，高度跟着展开集合走
+  expandedRefs: cardMode.value ? expandedRefs.value : undefined,
 }))
 
 /**
@@ -266,8 +490,10 @@ const layoutResult = computed(() => computeLayout(filtered.value.graph, {
  * <p>**必须有这个相等判断**：写回 `locked` 会让 `layoutResult` 失效，于是又算一遍、
  * 又想写回。没有判断就是一个无限重算的循环（Vue 不会报错，只会卡住主线）。
  * 收敛过程是最多两遍：第一遍用上一轮的锁，第二遍的产物与锁一致。
+ * 卡片模式不记——坐标跟着卡片高度走，锁了反而把新卡钉在错位上。
  */
 watch(layoutResult, (value) => {
+  if (cardMode.value) return
   const previous = locked.value
   let changed = value.positions.size !== previous.size
   if (!changed) {
@@ -309,9 +535,17 @@ const emptyText = computed(() => (emptyKind.value === 'filtered'
 const showToolbar = computed(() => !(emptyKind.value === 'none' && !loading.value))
 
 watch(() => props.tableRef, (next) => {
-  // 换表：作废面板状态（列映射与抽屉），但保留 ?tab=lineage——用户可能是在连续核对多张表
+  // 换表：作废面板状态（列映射、卡片与抽屉），但保留 ?tab=lineage——用户可能是在连续核对多张表
   columnState.loaded = false
   columnState.groups = []
+  // 列级连线回到默认（开）：卡片换表后照样会拉，开关状态没有理由跟着上一张表走
+  columnMode.value = true
+  columnSuppressed = false
+  cardState.seq += 1
+  cardState.edges = []
+  cardState.cards = new Map()
+  expandedRefs.value = new Set()
+  selectedRef.value = ''
   drawer.open = false
   forceGraph.value = false
   search.value = ''

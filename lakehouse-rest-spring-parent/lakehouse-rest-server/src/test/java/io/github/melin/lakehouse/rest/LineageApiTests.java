@@ -9,12 +9,15 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 
 import io.github.melin.lakehouse.rest.dto.LineageDtos.Budget;
+import io.github.melin.lakehouse.rest.dto.LineageDtos.ColumnEdgeGraph;
+import io.github.melin.lakehouse.rest.dto.LineageDtos.ColumnEdgeRow;
 import io.github.melin.lakehouse.rest.dto.LineageDtos.ColumnGraph;
 import io.github.melin.lakehouse.rest.dto.LineageDtos.RunDetail;
 import io.github.melin.lakehouse.rest.dto.LineageDtos.RunList;
 import io.github.melin.lakehouse.rest.dto.LineageDtos.TableEdge;
 import io.github.melin.lakehouse.rest.dto.LineageDtos.TableGraph;
 import io.github.melin.lakehouse.rest.service.LineageService;
+import java.util.List;
 import org.junit.jupiter.api.MethodOrderer;
 import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
@@ -268,6 +271,52 @@ class LineageApiTests {
         // 只剩根自己：节点集合是从边表走出来的，边没了节点也就没了
         assertEquals(1, graph.nodes().size());
         assertTrue(lineageService.columns("paimon.dw.t3", "upstream", null).columns().isEmpty());
+    }
+
+    @Test
+    @Order(12)
+    void columnEdgesReturnsRowsForTheRequestedNodeSet() throws Exception {
+        // refs 顺序即下标：t7=0、t1=1
+        ingest(run("run-ce", "paimon.dw.t7", "paimon.dw.t1", 2));
+        // t8 只有一条常量列（无源）：有行、无线
+        ingest("{\"runs\":[{\"runId\":\"run-ce-const\",\"engine\":\"SPARK\",\"engineVersion\":\"3.5\","
+                + "\"statementType\":\"INSERT\",\"writeMode\":\"APPEND\",\"mode\":\"BATCH\","
+                + "\"targets\":[{\"table\":\"paimon.dw.t8\",\"columns\":[{"
+                + "\"targetColumn\":\"dt\",\"kind\":\"CONSTANT\",\"expression\":\"'2026-10-22'\","
+                + "\"sources\":[]}]}],\"sources\":[]}]}");
+
+        // 两端都在集合里：两条列边按 (目标下标, 目标列) 排序
+        ColumnEdgeGraph graph = lineageService.columnEdges(List.of("paimon.dw.t7", "paimon.dw.t1"));
+        assertEquals(List.of("paimon.dw.t7", "paimon.dw.t1"), graph.refs());
+        assertEquals(2, graph.edges().size());
+        ColumnEdgeRow first = graph.edges().get(0);
+        assertEquals(1, first.s(), "源是 t1，在 refs 里的下标是 1");
+        assertEquals(0, first.t());
+        assertEquals("id", first.tc());
+        assertEquals("DIRECT", first.kind());
+
+        // 源不在集合里 → 这条边不回；表级图上这条边仍在
+        ColumnEdgeGraph trimmed = lineageService.columnEdges(List.of("paimon.dw.t7"));
+        assertTrue(trimmed.edges().isEmpty());
+
+        // 常量列（无源）也有一行：s = -1、sc 为空串
+        ColumnEdgeGraph constants = lineageService.columnEdges(List.of("paimon.dw.t8"));
+        assertEquals(1, constants.edges().size());
+        assertEquals(-1, constants.edges().get(0).s());
+        assertEquals("", constants.edges().get(0).sc());
+        assertEquals("CONSTANT", constants.edges().get(0).kind());
+
+        // 参数校验：缺参、空集合、超上限
+        json(400, "GET", M + "/column-edges", null);
+        json(400, "GET", M + "/column-edges?refs=", null);
+        StringBuilder tooMany = new StringBuilder();
+        for (int i = 0; i < 65; i += 1) {
+            if (i > 0) {
+                tooMany.append(',');
+            }
+            tooMany.append("paimon.dw.t").append(i);
+        }
+        json(400, "GET", M + "/column-edges?refs=" + tooMany, null);
     }
 
     // ------------------------------------------------------------------ 辅助

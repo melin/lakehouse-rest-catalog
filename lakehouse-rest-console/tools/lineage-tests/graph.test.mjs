@@ -110,12 +110,6 @@ test('隐藏类过滤：外部节点关掉之后，连着它的边一起消失',
   assert.equal(result.removed, 2)
 })
 
-test('隐藏类过滤：只看有列映射时按边的 columnCount 判，不按表', () => {
-  const graph = decode(compactPayload())
-  const result = applyFilters(graph, { ...defaultFilters(), onlyWithColumns: true })
-  assert.deepEqual(result.graph.edges.map((edge) => edge.columnCount), [3, 12])
-})
-
 test('淡化类过滤只标记、不删边（布局不能因它改变）', () => {
   const graph = decode(compactPayload())
   const now = 1_000 + STALE_FADE_MS + 1

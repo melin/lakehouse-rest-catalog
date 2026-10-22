@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import io.github.melin.lakehouse.rest.spark.lineage.LineageRun;
 import java.io.IOException;
 import java.net.URI;
 import java.net.URLEncoder;
@@ -74,6 +75,9 @@ public final class ManagementApiClient {
     private static final String PRINCIPAL_ROLES = "/principal-roles";
     private static final String CATALOG_ROLES = "/catalog-roles";
     private static final String GRANTS = "/grants";
+
+    /** 血缘上报端点（挂在管理 API 下：它是跨 catalog 的元数据，不是 catalog 上的操作，§6.1）。 */
+    private static final String LINEAGE_RUNS = "/lineage/runs";
 
     /** 管理 API 基址的后缀，用来反推 catalog API 基址（见 {@link #deriveCatalogBase}）。 */
     private static final String MANAGEMENT_SUFFIX = "/api/management/v1";
@@ -160,6 +164,29 @@ public final class ManagementApiClient {
                     properties(node), integer(node, "entityVersion")));
         }
         return result;
+    }
+
+    // ------------------------------------------------------------------ lineage
+
+    /**
+     * {@code POST /lineage/runs}：批量上报血缘（§6.2）。
+     *
+     * <p>报文形状就是 {@link LineageRun} 本身——服务端的 {@code RunReport} 与它一一对应，
+     * 因此这里不做任何转换。{@code 200} 与 {@code 200 + deduplicated} 都算成功：
+     * 重复上报（重试）本该是幂等的，客户端不需要区分「这条是新入库的还是命中了幂等键」。
+     *
+     * <p>调用方是 {@link io.github.melin.lakehouse.rest.spark.lineage.LineageReporter}
+     * 的后台线程，不在 driver 的关键路径上；超时由构造时的 {@code timeout} 决定。
+     *
+     * @param runs 一批 run；调用方保证不超过服务端的 {@code max-runs-per-batch}
+     */
+    public void ingestLineage(List<LineageRun> runs) {
+        ObjectNode body = mapper.createObjectNode();
+        ArrayNode array = body.putArray("runs");
+        for (LineageRun run : runs) {
+            array.add(mapper.valueToTree(run));
+        }
+        post(LINEAGE_RUNS, body, 200);
     }
 
     // ------------------------------------------------------------------ principal

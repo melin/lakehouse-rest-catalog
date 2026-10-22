@@ -15,6 +15,8 @@ import io.github.melin.lakehouse.rest.domain.repo.LineageRunRepository;
 import io.github.melin.lakehouse.rest.domain.repo.LineageTableEdgeRepository;
 import io.github.melin.lakehouse.rest.domain.repo.TableRepository;
 import io.github.melin.lakehouse.rest.dto.LineageDtos.Budget;
+import io.github.melin.lakehouse.rest.dto.LineageDtos.ColumnEdgeGraph;
+import io.github.melin.lakehouse.rest.dto.LineageDtos.ColumnEdgeRow;
 import io.github.melin.lakehouse.rest.dto.LineageDtos.ColumnGraph;
 import io.github.melin.lakehouse.rest.dto.LineageDtos.ColumnGroup;
 import io.github.melin.lakehouse.rest.dto.LineageDtos.ColumnLink;
@@ -87,6 +89,9 @@ public class LineageService {
 
     /** 图节点数的硬上限。超过它 400 而不是静默截断（§8.6）。 */
     public static final int MAX_NODES_HARD_LIMIT = 2000;
+
+    /** 批量列边（§8.4）一次最多多少个 ref。列级图只为小图准备，超过 400。 */
+    public static final int MAX_COLUMN_EDGE_REFS = 64;
 
     /** {@code sqlText} 的入库上限，与设计文档 §6.2 一致。 */
     public static final int MAX_SQL_TEXT = 8192;
@@ -888,6 +893,73 @@ public class LineageService {
         }
         groups.sort(Comparator.comparing(ColumnGroup::column));
         return new ColumnGraph(target, dir.name().toLowerCase(java.util.Locale.ROOT), groups);
+    }
+
+    /**
+     * 图视图的批量列边（§8.4）：调用方把**当前展示的节点集合**发回来，
+     * 这里只回「两端的表都在集合里」的列边。
+     *
+     * <p>为什么不做成「按根展开」：控制台的图已经经过过滤、展开与截断，
+     * 服务端再按根重算一遍得到的节点集合与它对不上，多出来的边在图上没有落点、
+     * 少了的边让卡片缺行。集合由持有最新图的一方（控制台）给，是最不容易错的口径。
+     * 上限 {@value #MAX_COLUMN_EDGE_REFS} 个 ref——列级图本来就只为小图准备，
+     * URL 也装不下几百个全名。
+     *
+     * <p>常量列（{@code source_ref} 为空串的行）保留：它们不产生画出来的线，
+     * 但让目标卡片的列清单里有一行「被写过、无上游」的列。
+     */
+    public ColumnEdgeGraph columnEdges(List<String> refs) {
+        if (refs == null) {
+            throw ApiException.badRequest("refs must not be empty");
+        }
+        List<String> nodes = refs.stream()
+                .map(String::trim)
+                .filter(ref -> !ref.isEmpty())
+                .distinct()
+                .toList();
+        if (nodes.isEmpty()) {
+            throw ApiException.badRequest("refs must not be empty");
+        }
+        if (nodes.size() > MAX_COLUMN_EDGE_REFS) {
+            throw ApiException.badRequest("refs must not exceed " + MAX_COLUMN_EDGE_REFS + " entries");
+        }
+
+        Map<String, Integer> indexByRef = new HashMap<>();
+        for (int i = 0; i < nodes.size(); i += 1) {
+            indexByRef.put(nodes.get(i), i);
+        }
+        Set<String> hashes = new HashSet<>();
+        for (String ref : nodes) {
+            hashes.add(Digests.sha256Hex(ref));
+        }
+
+        List<ColumnEdgeRow> edges = new ArrayList<>();
+        for (LineageColumnEdgeEntity edge : columnEdgeRepository.findByTargetRefHashIn(hashes)) {
+            Integer targetIndex = indexByRef.get(edge.getTargetRef());
+            if (targetIndex == null) {
+                continue;
+            }
+            String sourceRef = edge.getSourceRef();
+            if (sourceRef.isEmpty()) {
+                // 常量列：占一个「被写过」的行，不画线（前端按 s = -1 识别）
+                edges.add(new ColumnEdgeRow(-1, "", targetIndex, edge.getTargetColumn(),
+                        edge.getTransformKind()));
+                continue;
+            }
+            Integer sourceIndex = indexByRef.get(sourceRef);
+            if (sourceIndex == null) {
+                // 源不在展示集合里：这条边在图上没有落点
+                continue;
+            }
+            edges.add(new ColumnEdgeRow(sourceIndex, edge.getSourceColumn(),
+                    targetIndex, edge.getTargetColumn(), edge.getTransformKind()));
+        }
+        // 确定性排序（§9.2 同一条）：目标表、目标列、源表、源列
+        edges.sort(Comparator.comparingInt(ColumnEdgeRow::t)
+                .thenComparing(ColumnEdgeRow::tc)
+                .thenComparingInt(ColumnEdgeRow::s)
+                .thenComparing(ColumnEdgeRow::sc));
+        return new ColumnEdgeGraph(nodes, edges);
     }
 
     // ================================================================== 运行历史

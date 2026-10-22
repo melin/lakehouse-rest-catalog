@@ -1,6 +1,7 @@
 package io.github.melin.lakehouse.rest.spark
 
 import io.github.melin.lakehouse.rest.spark.client.ManagementApiClient
+import io.github.melin.lakehouse.rest.spark.lineage.LakehouseLineageListener
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.parser.ParserInterface
 
@@ -15,9 +16,13 @@ import org.apache.spark.sql.catalyst.parser.ParserInterface
  *
  * <p>4.1 侧的同一个类还多一个 `parseRoutineParam`，见 -4.1 模块。
  */
-class LakehouseRestSqlParser(delegate: ParserInterface, clientFactory: () => ManagementApiClient)
-  extends AbstractLakehouseRestSqlParser(delegate, clientFactory) {
+class LakehouseRestSqlParser(delegate: ParserInterface,
+                             clientFactory: () => ManagementApiClient,
+                             onFirstParse: () => Unit = () => ())
+  extends AbstractLakehouseRestSqlParser(delegate, clientFactory, onFirstParse) {
 
   def this(delegate: ParserInterface, session: SparkSession) =
-    this(delegate, () => PaimonRestManagement.clientFor(session))
+    this(delegate, () => PaimonRestManagement.clientFor(session),
+      // 第一次解析时挂血缘监听器：这是扩展唯一能安全拿到 listenerManager 的时刻
+      () => LakehouseLineageListener.registerIfEnabled(session))
 }

@@ -33,6 +33,10 @@ import java.util.Locale
 class ManagementSparkExtensions extends (SparkSessionExtensions => Unit) {
 
   override def apply(extensions: SparkSessionExtensions): Unit = {
+    // 血缘监听器**不在这里**注册：这个工厂由 `BaseSessionStateBuilder#sqlParser` 调用，
+    // 也就是 `sessionState` 正在构建的时刻，而 `session.listenerManager` 本身要读
+    // `sessionState`——在这里注册会重入构建流程并栈溢出。改由解析器在第一次 `parsePlan`
+    // 时挂载（见 `AbstractLakehouseRestSqlParser#armListener`，§13.7 第 6 条）。
     extensions.injectParser { (session, parser) => new LakehouseRestSqlParser(parser, session) }
   }
 }

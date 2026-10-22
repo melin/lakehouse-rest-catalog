@@ -33,13 +33,22 @@
       <span class="lf-label">显示外部节点</span>
     </div>
 
-    <div v-if="hasColumns" class="lf-group">
+    <!-- 列级图（§9.5(1)）：开关只管「画不画列-列连线」。卡片、列清单、类型图标与开关无关，
+         关掉只是少一层线——同一张图两种读法，不是两种图（§9.5(1)(1)） -->
+    <div v-if="view === 'graph' && columnAvailable" class="lf-group">
       <el-switch
-        :model-value="filters.onlyWithColumns"
+        :model-value="columnMode"
         size="small"
-        @update:model-value="patch({ onlyWithColumns: $event })"
+        @update:model-value="$emit('update:columnMode', $event)"
       />
-      <span class="lf-label">只看有列级映射</span>
+      <span class="lf-label" title="开启后在图里画列与列的连线；卡片与列清单的展示不变">列级血缘</span>
+    </div>
+
+    <!-- 全量展开 / 收起（§9.5(1)）：几十张卡一张张点太慢；有卡片才出现 -->
+    <div v-if="view === 'graph' && cardAvailable" class="lf-group">
+      <el-button size="small" @click="$emit('toggle-all-rows', !allExpanded)">
+        {{ allExpanded ? '收起全部列' : '展开全部列' }}
+      </el-button>
     </div>
 
     <div class="lf-group lf-search">
@@ -69,11 +78,18 @@ defineProps({
   filters: { type: Object, required: true },
   view: { type: String, default: 'graph' },
   engines: { type: Array, default: () => [] },
-  hasColumns: { type: Boolean, default: false },
   search: { type: String, default: '' },
+  /** 列级连线开关（仅图视图展示）。它不影响卡片形态，只管列-列连线。 */
+  columnMode: { type: Boolean, default: false },
+  /** 图里有没有列级映射可看（边上的 columnCount > 0）。 */
+  columnAvailable: { type: Boolean, default: false },
+  /** 图上有卡片（列清单已拉到）：决定「展开全部列」按钮出不出现。 */
+  cardAvailable: { type: Boolean, default: false },
+  /** 所有卡片都已展开：按钮文案与动作都跟着它翻转。 */
+  allExpanded: { type: Boolean, default: false },
 })
 
-const emit = defineEmits(['update:filters', 'update:view', 'update:search'])
+const emit = defineEmits(['update:filters', 'update:view', 'update:search', 'update:columnMode', 'toggle-all-rows'])
 
 /** 逐字段合并：父组件的 filters 是同一个 reactive 对象，这里不改它的引用。 */
 function patch(changes) {
