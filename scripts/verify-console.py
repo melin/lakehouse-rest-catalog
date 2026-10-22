@@ -1808,6 +1808,15 @@ check("LOD 阈值只有一处实现（带滞回的那一处）",
       and "lodFor" not in layout_source,
       "两处阈值一旦不同，缩放停在临界点上会来回换档——视觉上是闪")
 
+# 拖动单张卡片是用户此刻的意图，不是数据：写回布局就会破坏「同一份输入出同一份坐标」，
+# 而且换根之后旧位移会把新图钉在毫无关系的错位上。因此偏移留在组件里、只在画与命中时叠加。
+check("拖卡片只叠加视图位移，布局仍只吃数据（偏移不进 layout）",
+      "shiftPositions" in graph_source
+      and re.search(r"export function shiftPositions\(", layout_source) is not None
+      and "dragOrigin.kind === 'card'" in graph_source
+      and "offsets.clear()" in graph_source,
+      "把拖动结果写回布局，刷新一次位置全变——图的空间记忆就没了")
+
 check("边按「颜色 + 线宽」分组后用 Path2D 批量描边",
       "new Path2D()" in render_source and "ctx.stroke(group.path)" in render_source,
       "1500 条边逐条 stroke 会越过 16ms 的帧预算，拖拽时表现为掉帧")

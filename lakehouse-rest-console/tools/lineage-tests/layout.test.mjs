@@ -23,6 +23,7 @@ import {
   fitScale,
   fitView,
   layout,
+  shiftPositions,
 } from '../../src/utils/lineageLayout.js'
 
 const STEP = NODE_H + GAP_Y
@@ -300,4 +301,44 @@ test('cardOf：锁定坐标被忽略——卡片高度一变，旧 y 只会把�
   assert.equal(a.y, 0)
   assert.equal(b.y, 0)
   assert.equal(b.x, NODE_W + 80, 'b 在 a 右边一层')
+})
+
+test('shiftPositions：没有位移时返回原 Map（每帧不拷一份坐标）', () => {
+  const graph = graphOf(['c.s.a', 'c.s.b'], [['c.s.a', 'c.s.b']])
+  const result = layout(graph)
+  assert.equal(shiftPositions(result.positions, new Map()), result.positions)
+  assert.equal(shiftPositions(result.positions, null), result.positions)
+})
+
+test('shiftPositions：只动被拖的那张，其余节点原样（不重排邻居）', () => {
+  const graph = graphOf(['c.s.a', 'c.s.b', 'c.s.c'], [
+    ['c.s.a', 'c.s.b'], ['c.s.b', 'c.s.c'],
+  ])
+  const before = layout(graph)
+  const moved = shiftPositions(before.positions, new Map([['c.s.b', { dx: 37, dy: -12 }]]))
+  const b0 = before.positions.get('c.s.b')
+  const b1 = moved.get('c.s.b')
+  assert.equal(b1.x, b0.x + 37)
+  assert.equal(b1.y, b0.y - 12)
+  // 其余节点是同一个对象——连线的另一头不该因为拖了别人而跳位
+  assert.equal(moved.get('c.s.a'), before.positions.get('c.s.a'))
+  assert.equal(moved.get('c.s.c'), before.positions.get('c.s.c'))
+})
+
+test('shiftPositions：不修改布局产物（布局仍是纯函数）', () => {
+  const graph = graphOf(['c.s.a', 'c.s.b'], [['c.s.a', 'c.s.b']])
+  const before = layout(graph)
+  const snapshot = coords(before)
+  shiftPositions(before.positions, new Map([['c.s.a', { dx: 100, dy: 100 }]]))
+  // 第一次布局的结果没被就地改写：第二次算出来的坐标仍与第一次一致
+  assert.deepEqual(coords(layout(graph)), snapshot)
+  assert.deepEqual(coords(before), snapshot)
+})
+
+test('shiftPositions：指向不在图里的 ref 被忽略（换根后残留的位移）', () => {
+  const graph = graphOf(['c.s.a'], [])
+  const result = layout(graph)
+  const moved = shiftPositions(result.positions, new Map([['c.s.ghost', { dx: 9, dy: 9 }]]))
+  assert.deepEqual([...moved.keys()], [...result.positions.keys()])
+  assert.equal(moved.get('c.s.a'), result.positions.get('c.s.a'))
 })

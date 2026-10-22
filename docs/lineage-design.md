@@ -1445,7 +1445,8 @@ function frame() {
 | hover 节点 | 高亮它的直接边与邻居，其余淡化到 12% |
 | hover 边 | tooltip：`engine` / `writeMode` / `runCount` / `lastSeen` / `columnCount` |
 | 滚轮 | 以光标为锚点缩放，`k ∈ [0.25, 2]`；指针落在展开卡的滚动体上时改为滚卡片内容（不缩放画布） |
-| 拖拽空白 / 中键拖 | 平移 |
+| 拖拽空白 | 平移 |
+| 拖拽卡片 | **只移动这一张**（连线端点跟着走，邻居不重排）；工具栏 `↺` 一键复位。位移是视图层叠加，不进 `layout()`——否则「同一份输入同一份坐标」这条就破了，换根 / 换数据时整份清掉 |
 | 搜索框 | 按表名在**当前图里**定位并居中（不上服务端） |
 
 **URL 状态**：`?tab=lineage&lref=<ref>&ldir=both&ldepth=1&lfocus=<ref>&lview=graph`。

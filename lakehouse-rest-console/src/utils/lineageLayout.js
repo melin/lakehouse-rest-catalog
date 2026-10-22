@@ -265,6 +265,31 @@ export function layout(graph, options = {}) {
   }
 }
 
+/**
+ * 手动位移：把 `ref → {dx, dy}` 叠在布局坐标上，返回一份新的 positions。
+ *
+ * <p><b>为什么偏移不进 `layout()`。</b>这一层的卖点是确定性——同一份输入两次算出同样的坐标
+ * （刷新一次位置全变，用户就得重新找表）。用户手动拖过的卡片如果写回布局，确定性立刻破掉，
+ * 而且没有任何自然的清除时机。所以拖动是**视图层**的叠加：布局照旧算，画与命中时加一次
+ * 位移；换根 / 换数据时由调用方把偏移整份丢掉。
+ *
+ * <p>没有偏移时返回**原来那个 Map**（不是拷贝）：每帧都拷一份 positions 在 500 节点下
+ * 是白花的内存与 GC。返回值的元素仍是布局里那些对象（没有偏移的节点不复制）。
+ *
+ * @param positions `layout()` 的产物
+ * @param offsets   `ref → {dx, dy}`，缺项的节点不动
+ * @returns 叠加后的 Map（无偏移时就是入参本身）
+ */
+export function shiftPositions(positions, offsets) {
+  if (!(offsets instanceof Map) || !offsets.size) return positions
+  const shifted = new Map()
+  for (const [ref, at] of positions) {
+    const offset = offsets.get(ref)
+    shifted.set(ref, offset ? { ...at, x: at.x + offset.dx, y: at.y + offset.dy } : at)
+  }
+  return shifted
+}
+
 function emptyLayout() {
   return {
     positions: new Map(),

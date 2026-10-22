@@ -1,5 +1,9 @@
 <template>
-  <div ref="host" class="lg-host" :class="{ 'lg-grabbing': dragging }">
+  <div
+    ref="host"
+    class="lg-host"
+    :class="{ 'lg-grabbing': dragging, 'lg-over-card': !dragging && hover.ref }"
+  >
     <!--
       Canvas 对屏幕阅读器是空白，三条兜底缺一不可（§9.6）：role + aria-label 说明
       「这张图有多大」，邻接表是真正的无障碍路径，键盘能换焦点。
@@ -24,11 +28,12 @@
       <button type="button" title="放大" @click="zoomBy(1.25)">+</button>
       <button type="button" title="缩小" @click="zoomBy(0.8)">−</button>
       <button type="button" title="适应窗口" @click="fit()">⤢</button>
+      <button type="button" title="重置卡片位置" @click="resetOffsets()">↺</button>
     </div>
     <div v-if="hoverTip" class="lg-tip" :style="{ left: `${hoverTip.x}px`, top: `${hoverTip.y}px` }">
       {{ hoverTip.text }}
     </div>
-    <div class="lg-hint">滚轮缩放 · 拖拽平移 · 双击以该表为根</div>
+    <div class="lg-hint">滚轮缩放 · 拖空白平移 · 拖卡片单独移动 · 双击以该表为根</div>
   </div>
 </template>
 
@@ -46,7 +51,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 
 import { theme } from '@/store/theme.js'
-import { CARD_ROW_H, cardBodyHeight, fitView } from '@/utils/lineageLayout.js'
+import { CARD_ROW_H, cardBodyHeight, fitView, shiftPositions } from '@/utils/lineageLayout.js'
 import { drawFrame, hitEdge, hitTest, lodFor, prefixOf, readTheme } from '@/utils/lineageRender.js'
 
 const props = defineProps({
@@ -88,6 +93,17 @@ const palette = ref(null)
 // 走 schedule() 的 rAF 合帧；Vue 的深度响应在这里只会白花开销
 const scrolls = new Map()
 
+/**
+ * 手动拖动的位移（ref → `{dx, dy}`，单位是图坐标）。
+ *
+ * <p>**不是布局数据。**它只在画与命中时叠加一次（`shiftPositions`），布局层永远看不到它——
+ * 布局要保持「同一份输入出同一份坐标」，而拖动是用户此时此刻的意图。换根 / 换数据时整份清掉，
+ * 否则旧位移会把新图钉在毫无关系的错位上。
+ */
+const offsets = new Map()
+let offsetsVersion = 0
+let shiftedCache = null
+
 let ctx = null
 let observer = null
 let frameHandle = 0
@@ -95,6 +111,23 @@ let dirty = true
 let dragOrigin = null
 let userAdjusted = false
 let keyboardIndex = -1
+
+/**
+ * 画与命中统一用的坐标：布局坐标 + 手动位移。无位移时就是布局那份 Map（不拷贝）。
+ *
+ * <p>缓存按「布局对象 + 位移版本号」失效：拖动一帧里 `shiftPositions` 会被
+ * 绘帧、hitTest、hitEdge 各问一次，500 节点下每帧拷三遍是白花的。
+ */
+function positionsOf() {
+  if (!offsets.size) return props.layout.positions
+  if (shiftedCache && shiftedCache.layout === props.layout
+    && shiftedCache.version === offsetsVersion) {
+    return shiftedCache.positions
+  }
+  const positions = shiftPositions(props.layout.positions, offsets)
+  shiftedCache = { layout: props.layout, version: offsetsVersion, positions }
+  return positions
+}
 
 const ariaLabel = computed(() => {
   const upstream = props.graph?.budget?.upstream ?? 0
@@ -149,7 +182,7 @@ function schedule() {
     const nextLod = lodFor(view.k, lod.value)
     lod.value = nextLod
     drawFrame(ctx, {
-      positions: props.layout.positions,
+      positions: positionsOf(),
       virtual: props.layout.virtual,
       ring: props.layout.ring,
       nodes: props.graph.nodes,
@@ -248,11 +281,42 @@ function onWheel(event) {
   zoomAt(event.deltaY < 0 ? 1.1 : 1 / 1.1, point.x, point.y)
 }
 
+/**
+ * 按下：落在卡片/节点上就是「拖这张卡」，落在空白处才是「平移画布」。
+ *
+ * <p>元信息行右侧的「N列」开关与折叠徽标不参与拖动——它们是按钮，按下的意图是点，
+ * 不是拖。拖动的判定与平移共用 3px 阈值，之后 pointerup 才能区分「拖」与「点」。
+ */
 function onPointerDown(event) {
   canvas.value?.focus()
-  dragOrigin = { x: event.clientX, y: event.clientY, vx: view.x, vy: view.y, moved: false }
+  const rect = canvas.value.getBoundingClientRect()
+  const point = { x: event.clientX - rect.left, y: event.clientY - rect.top }
+  const hit = hitTest(snapshot(), point)
+  const grab = hit && (hit.type === 'node' || hit.type === 'column') ? hit.ref : ''
+  if (grab) {
+    const offset = offsets.get(grab) || { dx: 0, dy: 0 }
+    // 记住按下时的位移做基线：拖动中每次都是「基线 + 总位移」，不累积浮点误差
+    dragOrigin = {
+      kind: 'card',
+      ref: grab,
+      x: event.clientX,
+      y: event.clientY,
+      dx: offset.dx,
+      dy: offset.dy,
+      moved: false,
+    }
+  } else {
+    dragOrigin = { kind: 'pan', x: event.clientX, y: event.clientY, vx: view.x, vy: view.y, moved: false }
+  }
   dragging.value = true
   canvas.value.setPointerCapture?.(event.pointerId)
+}
+
+/** 单张卡的位移：只动这一张，邻居与连线跟着它的新位置画（连线端点取自同一份坐标）。 */
+function moveCard(ref, dx, dy) {
+  offsets.set(ref, { dx, dy })
+  offsetsVersion += 1
+  schedule()
 }
 
 function onPointerMove(event) {
@@ -261,12 +325,16 @@ function onPointerMove(event) {
   if (dragOrigin) {
     const dx = event.clientX - dragOrigin.x
     const dy = event.clientY - dragOrigin.y
-    if (Math.abs(dx) + Math.abs(dy) > 3) {
-      dragOrigin.moved = true
-      view.x = dragOrigin.vx - dx / view.k
-      view.y = dragOrigin.vy - dy / view.k
-      schedule()
+    if (!dragOrigin.moved && Math.abs(dx) + Math.abs(dy) > 3) dragOrigin.moved = true
+    if (!dragOrigin.moved) return
+    if (dragOrigin.kind === 'card') {
+      // 屏幕位移折回图坐标：缩放 0.5 倍时手移 10px，卡片只该走 20 个图单位
+      moveCard(dragOrigin.ref, dragOrigin.dx + dx / view.k, dragOrigin.dy + dy / view.k)
+      return
     }
+    view.x = dragOrigin.vx - dx / view.k
+    view.y = dragOrigin.vy - dy / view.k
+    schedule()
     return
   }
   const hit = hitTest(snapshot(), point)
@@ -290,6 +358,7 @@ function onPointerUp(event) {
   const origin = dragOrigin
   dragOrigin = null
   dragging.value = false
+  // 拖过就不算点击：否则松手会在拖动终点顺手选中一张表、弹出一个抽屉
   if (!origin || origin.moved) return
   const rect = canvas.value.getBoundingClientRect()
   const point = { x: event.clientX - rect.left, y: event.clientY - rect.top }
@@ -313,7 +382,7 @@ function onPointerUp(event) {
     emit('select', hit.ref)
     return
   }
-  const at = props.layout.positions.get(hit.ref)
+  const at = positionsOf().get(hit.ref)
   const node = props.graph.byRef?.get(hit.ref)
   // 右端的 MORE 徽标是「展开」而不是「选中」：两者在同一个矩形里，靠位置分开。
   // 卡片模式没有这个徽标（标题行右侧是上下游计数），整块让给「选中」
@@ -347,7 +416,7 @@ function onKeyDown(event) {
     const step = event.key === 'ArrowRight' ? 1 : -1
     keyboardIndex = (keyboardIndex + step + refs.length) % refs.length
     const ref = refs[keyboardIndex]
-    const at = props.layout.positions.get(ref)
+    const at = positionsOf().get(ref)
     // 把焦点节点挪到视口中央：键盘用户没有鼠标，只能靠「图在动」感知位置
     view.x = at.x - size.w / view.k / 2 + 100
     view.y = at.y - size.h / view.k / 2 + 22
@@ -364,7 +433,7 @@ function onKeyDown(event) {
 
 function snapshot() {
   return {
-    positions: props.layout.positions,
+    positions: positionsOf(),
     virtual: props.layout.virtual,
     edges: props.graph.edges,
     view,
@@ -372,6 +441,15 @@ function snapshot() {
     expandedRefs: props.expandedRefs,
     scrolls,
   }
+}
+
+/** 工具栏的「↺」：把拖过的卡片全部放回布局算出来的位置。 */
+function resetOffsets() {
+  if (!offsets.size) return
+  offsets.clear()
+  offsetsVersion += 1
+  shiftedCache = null
+  schedule()
 }
 
 onMounted(() => {
@@ -392,7 +470,13 @@ watch(() => props.layout, () => {
   if (!userAdjusted) fit()
   else schedule()
 })
-watch(() => props.graph, schedule)
+watch(() => props.graph, () => {
+  // 换根 / 换数据：节点集合都不一样了，旧的手动位移会把新图钉在毫无关系的错位上
+  offsets.clear()
+  offsetsVersion += 1
+  shiftedCache = null
+  schedule()
+})
 watch(() => props.faded, schedule)
 watch(() => props.focusRef, schedule)
 watch(() => props.cards, () => {
@@ -433,6 +517,11 @@ defineExpose({ fit })
   display: block;
   cursor: grab;
   outline: none;
+}
+
+/* 悬停在卡片上：光标改成「可移动」，与「拖空白平移」的抓手区分开 */
+.lg-over-card .lg-canvas {
+  cursor: move;
 }
 
 .lg-grabbing .lg-canvas {
