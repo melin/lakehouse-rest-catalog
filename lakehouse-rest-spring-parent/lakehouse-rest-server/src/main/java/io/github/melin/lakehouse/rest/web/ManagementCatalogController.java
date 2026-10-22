@@ -30,7 +30,8 @@ import org.springframework.web.bind.annotation.RestController;
  * 管理面的 catalog 端点（服务端扩展）。
  *
  * <p>官方 Paimon 管理 API 不含 catalog 生命周期（它把 catalog 看作部署配置），
- * 这里保留路径与形状与 {@code spec/polaris-management-service.yml} 一致的一组端点，
+ * 这里保留的一组端点，路径与形状沿用已移除的 Polaris 管理规格（快照见
+ * {@code docs/management-api-contract.md}），
  * 基址为 {@code /api/management/v1}。**权限不在这条链上**：
  * catalog 内「谁能读什么」由 {@code /v1/{prefix}/permissions} 的 access 决定，
  * 本控制器只判读（{@code CATALOG_ALL:DESCRIBE}）与改/删（{@code CATALOG:ALTER|DROP}）。

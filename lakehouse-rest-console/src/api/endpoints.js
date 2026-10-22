@@ -2,8 +2,9 @@
  * 控制台调用的**全部**服务端端点，集中在这一处声明。
  *
  * <p>为什么不把路径散在各个视图里：控制台是用字符串拼 URL 的，
- * 而服务端的路径属于契约的一部分（catalog API 与权限管理见
- * `spec/rest-catalog-open-api.yaml` / `spec/paimon-rest-management-api.yaml`）。
+ * 而服务端的路径属于契约的一部分（catalog API 见 `spec/rest-catalog-open-api-paimon.yaml`，
+ * 管理面官方部分见 `spec/rest-management-open-api.yaml`，扩展端点见
+ * `scripts/verify-console.py` 的白名单）。
  * 路径写错时前端的表现是 404 空列表，看不出是前端拼错了还是服务端改了，
  * 因此把它们收成一张表，交给 `scripts/verify-console.py` 与服务端路由逐条比对——
  * 前端引用了服务端不存在的路径，或者服务端路由改名后前端没跟上，都能在离线状态下查出来。

@@ -9,12 +9,17 @@
 
 官方 Paimon 管理 API 只有 10 个 operation（labels / permissions / policies），其中
 labels 与 policies 本服务端未实现；权限那 3 个是**当前唯一的契约**，规格见
-`spec/paimon-rest-management-api.yaml`。
+`spec/rest-management-open-api.yaml`（Paimon REST Management API，OpenAPI 3.1.1）。
 
-> **已不是契约的文件。** `spec/polaris-management-service.yml` 与
-> `docs/management-api-contract.md` 保留为**形状来源与历史对照**：catalog / principal /
-> principal role 这三组扩展端点的报文形状沿用了它，但里面的 catalog role、grants、
-> 64 项 privilege 都已不存在。阅读实际行为请看本文与
+> 规格里 `info.description` 自己写着 **experimental**：路径写法会不兼容演进
+> （例如 labels 在官方 master 上已改成 `GET /labels?entityType=…`，而本仓副本还是
+> `/labels/{entityType}/{entityName}`）。因此这里钉的是**副本**，升级副本时
+> `verify-console.py` 第 1 组会立刻报出与 `endpoints.js` 的差异。
+
+> **已不是契约、且已不在仓库里的文件。** Polaris 的 `polaris-management-service.yml`
+> 已从仓库移除，只剩 `docs/management-api-contract.md` 这份**快照**作形状来源与历史对照：
+> catalog / principal / principal role 这三组扩展端点的报文形状沿用了它，但里面的
+> catalog role、grants、64 项 privilege 都已不存在。阅读实际行为请看本文与
 > [`authorization.md`](authorization.md)。
 
 | 想知道什么 | 看哪份 |

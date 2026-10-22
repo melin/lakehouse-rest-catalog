@@ -5,7 +5,8 @@
 #   BASE=http://127.0.0.1:8080 ./scripts/management-sweep.sh
 #
 # 说明：
-#   - 路径与请求体形状取自 spec/polaris-management-service.yml；
+#   - 路径与请求体形状取自 Paimon 官方 REST Management API（spec/rest-management-open-api.yaml）
+#     与 legacy 扩展端点的既有实现；Polaris 那份规格已从仓库移除；
 #   - 脚本会创建并清理 catalog mgmt 及其下的主体与角色，
 #     因此要求目标实例上不存在名为 mgmt 的 catalog；
 #   - 每行格式为 <标记>[实际状态码/期望状态码] 说明 响应片段。
@@ -250,8 +251,9 @@ ok 404 "GET    /catalogs/mgmt（已删除）-> 404" "$M/catalogs/mgmt"
 
 echo "========== 7. 两套 API 并存 =========="
 ok 200 "GET    /v1/config（管理 API 不影响 catalog API）" "$B/v1/config"
-ok 200 "GET    /rest-catalog-open-api.yaml" "$B/rest-catalog-open-api.yaml"
-ok 200 "GET    /polaris-management-service.yml" "$B/polaris-management-service.yml"
+# 两份规格副本不再随服务端分发（在仓库根 spec/ 下），静态路径应为 404。
+ok 404 "GET    /rest-catalog-open-api.yaml（已不下发）" "$B/rest-catalog-open-api.yaml"
+ok 404 "GET    /polaris-management-service.yml（已不下发）" "$B/polaris-management-service.yml"
 
 echo
 printf '通过 %d 项，失败 %d 项\n' "$pass" "$fail"

@@ -5,7 +5,7 @@ LakeHouse Catalog API 在本服务端的全部端点，按资源分组列出。
 
 | 协议面 | 规格来源 | 端点 |
 | --- | --- | --- |
-| **Paimon**（本文档第 1–10 节） | Apache Paimon `docs/static/rest-catalog-open-api.yaml`（副本 `spec/rest-catalog-open-api.yaml`，运行时可从 `/rest-catalog-open-api.yaml` 下载） | **60 个**（规格全部实现）、144 个 schema |
+| **Paimon**（本文档第 1–10 节） | Apache Paimon `docs/static/rest-catalog-open-api.yaml`（副本 `spec/rest-catalog-open-api-paimon.yaml`） | **60 个**（规格全部实现）、144 个 schema |
 | **Iceberg**（本文档末尾） | Apache Iceberg `rest-catalog-open-api.yaml`（副本 `spec/rest-catalog-open-api-iceberg.yaml`） | **30 个**（规格共 35 个「路径 × 方法」组合，5 个不声明） |
 
 一个 catalog 只有一种格式（`lakehouse_catalog.catalog_format`，创建时定下、**不可变**），
@@ -26,7 +26,7 @@ LakeHouse Catalog API 在本服务端的全部端点，按资源分组列出。
 > [`console-auth.md`](console-auth.md)。
 
 > 还有三个 Paimon **官方 REST Management API** 的权限端点，同在 `/v1/{prefix}` 之下
-> （wire 契约来自官方 `rest-management-open-api.yaml`，不在本仓库规格副本里）：
+> （wire 契约来自官方 `rest-management-open-api.yaml`，副本 `spec/rest-management-open-api.yaml`）：
 > `GET /v1/{prefix}/permissions`、`POST /v1/{prefix}/permissions/grant`、
 > `POST /v1/{prefix}/permissions/revoke`。授权直接面向 principal
 > （`user:alice` / `role:sales_writer`），与下方 Polaris 管理面 RBAC 并行生效，

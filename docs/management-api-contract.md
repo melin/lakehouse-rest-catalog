@@ -1,7 +1,7 @@
 # Polaris Management API 契约基线（存档）
 
 > **本文件已不是当前契约。** 管理接口已切换到 Paimon 官方的
-> REST Management API（`spec/paimon-rest-management-api.yaml`），权限项、资源类型
+> REST Management API（`spec/rest-management-open-api.yaml`），权限项、资源类型
 > 与授权链路全部按官方定义落地，catalog role 整层移除。
 >
 > 保留本文件只为两件事：一是 catalog / principal / principal role 这三组**服务端扩展
@@ -9,11 +9,12 @@
 > `docs/authorization.md` 与 `docs/management-api-overview.md` 为准；
 > 本文件里出现的 catalog role、grants、64 项 privilege 都已不存在。
 
-本文档由 `spec/polaris-management-service.yml` 直接生成，用于实现与验收对照，
-表格内容与规格逐字一致，不含人工推断。生成方式见 `scripts/gen-management-contract.py`。
+本文档由 Polaris 的 `polaris-management-service.yml` 直接生成（**该规格文件已从仓库移除**，
+本文是它的快照），表格内容与规格逐字一致，不含人工推断。生成方式见
+`scripts/gen-management-contract.py`（需要自备那份规格才能重新生成）。
 §4.5 末尾有一处标为「实现侧说明」的段落，是本文件唯一的非规格内容。
 
-- 规格来源：Apache Polaris `spec/polaris-management-service.yml`（`main` 分支）
+- 规格来源：Apache Polaris `polaris-management-service.yml`（`main` 分支；**已从本仓库移除**）
 - 规模：**17 个路径、33 个 operation、56 个 schema**
 - 服务基址：`{scheme}://{host}/api/management/v1`（规格 `servers[0].url`）
 

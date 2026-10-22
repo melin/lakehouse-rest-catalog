@@ -7,8 +7,9 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 管理面的 catalog / 主体 / principal role 模型，字段形状沿用
- * {@code spec/polaris-management-service.yml}（该规格只作**形状来源**，不再是契约）。
+ * 管理面的 catalog / 主体 / principal role 模型，字段形状沿用 Polaris 的管理规格
+ * （该规格已**从仓库移除**，只作形状来源，不再是契约；快照见
+ * {@code docs/management-api-contract.md}）。
  *
  * <p>权限与授权不在这份文件里：官方 Paimon REST Management API 只定义
  * labels / permissions / policies 三族端点，主体与 catalog 的生命周期归服务端，

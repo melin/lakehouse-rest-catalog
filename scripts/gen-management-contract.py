@@ -68,11 +68,11 @@ w = lines.append
 
 w("# Polaris Management API 契约基线")
 w("")
-w("本文档由 `spec/polaris-management-service.yml` 直接生成，用于实现与验收对照，")
+w("本文档由 Polaris 的 `polaris-management-service.yml` 直接生成（**该规格文件已从仓库移除**，")
 w("表格内容与规格逐字一致，不含人工推断。生成方式见 `scripts/gen-management-contract.py`。")
 w("§4.5 末尾有一处标为「实现侧说明」的段落，是本文件唯一的非规格内容。")
 w("")
-w(f"- 规格来源：Apache Polaris `spec/polaris-management-service.yml`（`main` 分支）")
+w("- 规格来源：Apache Polaris `polaris-management-service.yml`（`main` 分支；**已从本仓库移除**）")
 w(f"- 规模：**{len(PATHS)} 个路径、{sum(1 for p in PATHS.values() for m in p if m in METHODS)} 个 operation、{len(S)} 个 schema**")
 w("- 服务基址：`{scheme}://{host}/api/management/v1`（规格 `servers[0].url`）")
 w("")

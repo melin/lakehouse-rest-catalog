@@ -4,18 +4,22 @@
 服务扮演目录（catalog）角色：集中保存 database、表 schema、快照、分支、标签、分区、
 视图与函数的元数据，供 Flink / Spark 等支持 LakeHouse Catalog 协议的引擎通过 HTTP 读写。
 
-同时实现了 Apache Polaris 的 **REST Management API**（`/api/management/v1`）：
-主体、principal role、catalog role 与资源授权的完整 RBAC 管理面，
+同时实现了 Apache Paimon 的 **REST Management API**（`/api/management/v1`）：
+官方 `permissions` 三个端点 + 服务端扩展的 catalog / principal / principal-role / 存储优化
+与表统计聚合端点，构成完整的 RBAC 管理面，
 既是管理接口，也是 catalog API 上权限判定的依据。
 
-- 规格来源：
+- 规格来源（两份官方 OpenAPI，副本在仓库根 `spec/`）：
   - Catalog API：[`docs/static/rest-catalog-open-api.yaml`](https://github.com/apache/paimon/blob/master/docs/static/rest-catalog-open-api.yaml)
-    （随仓库副本：`spec/rest-catalog-open-api.yaml`，运行时也可从 `/rest-catalog-open-api.yaml` 下载）
-  - Management API：`spec/polaris-management-service.yml`（随仓库副本，运行时可从
-    `/polaris-management-service.yml` 下载）
+    （副本 `spec/rest-catalog-open-api-paimon.yaml`）
+  - Management API：**Paimon REST Management API**，[`docs/static/rest-management-open-api.yaml`](https://github.com/apache/paimon/blob/master/docs/static/rest-management-open-api.yaml)
+    （副本 `spec/rest-management-open-api.yaml`，**拉取时的快照**：该规格在官方仍标
+    experimental，路径写法会不兼容演进——本仓实现与副本对齐，与 master 可能有差异）
+  - Polaris 的 `polaris-management-service.yml` 已**从仓库移除**：它只是服务端扩展端点的
+    形状来源与历史对照，生成的快照留在 [`docs/management-api-contract.md`](docs/management-api-contract.md)
 - 规格规模：Catalog API **60 个端点、144 个 schema**
   （端点清单见 [`docs/catalog-api-endpoints.md`](docs/catalog-api-endpoints.md)）；
-  Management API 的 **3 个权限端点**（官方）+ 扩展端点（catalog / principal / 角色 / 优化）
+  Management API 的 **3 个官方权限端点**（`permissions`）+ 服务端扩展端点（catalog / principal / 角色 / 优化）
   （概览见 [`docs/management-api-overview.md`](docs/management-api-overview.md)）
 - 元数据存储：**MySQL 8.0**（建表语句由实体生成，见 `sql/schema-mysql.sql`；
 23 张表的划分与设计取舍见 [`docs/data-model.md`](docs/data-model.md)），
@@ -150,8 +154,8 @@ k8s 资源名的 `paimon-` 前缀**故意不改**：它不是产品名，是历�
 | 文档 | 读它的时机 |
 | --- | --- |
 | [`catalog-api-endpoints.md`](docs/catalog-api-endpoints.md) | 要查 Catalog API 有哪些端点——Paimon 的 60 个与 Iceberg 的 26 个按资源分组，含基址、前缀与授权映射说明 |
-| [`management-api-overview.md`](docs/management-api-overview.md) | 要读 Management API——官方权限端点与扩展端点各落在哪几个控制器上、几处容易读错的语义 |
-| [`management-api-contract.md`](docs/management-api-contract.md) | 要查管理 API 的端点、字段、权限枚举——由规格生成，逐字对照 |
+| [`management-api-overview.md`](docs/management-api-overview.md) | 要读 Management API——Paimon 官方权限端点与服务端扩展端点各落在哪几个控制器上、几处容易读错的语义 |
+| [`management-api-contract.md`](docs/management-api-contract.md) | **存档**：由已移除的 Polaris 管理规格生成的字段与权限枚举（catalog role、64 项 privilege 已不存在）；当前契约看上一行与 [`authorization.md`](docs/authorization.md) |
 | [`data-model.md`](docs/data-model.md) | 要改实体或看表结构——23 张表的划分、摘要列与审计列的设计理由、实体与仓储分在哪两个模块、`lakehouse_` 前缀（原 `paimon_`）的来历与 §6 的迁移方案（原子 rename、回滚、验收） |
 | [`spark-sql-reference.md`](docs/spark-sql-reference.md) | 要用 SQL 管理主体与授权——语句级参考，含完整示例 |
 | [`spark-sql-extension.md`](docs/spark-sql-extension.md) | 要改这个 Spark 扩展——语法扩展的做法、两个必须知道的约束、测试分层 |
@@ -619,8 +623,9 @@ Azure 只下发定位元数据是个明确的缺口：Polaris 的 `polaris.stora
     立刻就能调管理 API 或进控制台——不需要改配置、不需要重启。
     需要接入统一登录时用 `console.oidc`（外部身份提供方）。
     详见 [`console-auth.md`](docs/console-auth.md)。
-11. **行过滤与列脱敏策略尚未实现**。Polaris 治理面中的这两项不在当前范围，
-    `auth` 端点返回空的过滤表达式与脱敏映射，只做列存在性校验。
+11. **行过滤与列脱敏策略尚未实现**。Paimon 官方管理 API 的 `policies`（与
+    `labels` 同属治理面）不在当前范围，`auth` 端点返回空的过滤表达式与脱敏映射，
+    只做列存在性校验。
 12. **多权限授权不是原子的**。规格没有批量授权端点，`GRANT a, b ON ...` 会顺序发出多次调用，
     中途失败时前面的已经生效。
 13. **`{prefix}` 的校验语义由服务端自行约定**。规格把 `prefix` 声明为必填路径参数，

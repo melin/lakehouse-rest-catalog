@@ -250,7 +250,7 @@ public interface CatalogProtocolFace {
 | 7 | `scripts/build-console.sh` | `CONSOLE=`、`OUT=`（指向 server 的 `resources/static/console`） |
 | 8 | `scripts/e2e-spark-sql.sh` | `JAR=`、`mvn -pl :lakehouse-rest-spark` |
 | 9 | `scripts/gen-mysql-ddl.sh` | `mvn -pl` |
-| 10 | `scripts/verify-console.py` | 6 处：console 目录、`static/console`、`static/rest-catalog-open-api.yaml`、Java 源目录、两个具体文件路径 |
+| 10 | `scripts/verify-console.py` | 跨模块定位：console 目录、`static/console`、`spec/` 下三份规格（catalog-paimon / catalog-iceberg / management）、core 与 server 两个 Java 源目录 |
 | 11 | `scripts/verify-spark-sql-doc.py` | 5 处路径（含 server 里的 `PermissionDtos.java`） |
 | 12 | `scripts/sweep-console-auth.sh` | 启动命令里的 jar 名（`api-sweep.sh` / `management-sweep.sh` 是纯 HTTP 扫描，不引用模块名，核对即可） |
 | 13 | `deploy/kubernetes/` | `deployment.yaml` 镜像名、各清单的 `app.kubernetes.io/name`、`kustomization.yaml`、`README.md` 里的命令 |

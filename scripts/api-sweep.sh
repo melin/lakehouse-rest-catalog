@@ -9,7 +9,7 @@
 #   PREFIX  catalog prefix，默认 paimon（须与 GET /v1/config 下发的 defaults.prefix 一致）
 #
 # 说明：
-#   - 请求体形状取自 spec/rest-catalog-open-api.yaml，字段名与规格一致；
+#   - 请求体形状取自 spec/rest-catalog-open-api-paimon.yaml，字段名与规格一致；
 #   - 脚本假定目标实例为初始状态（database sales 尚不存在），
 #     结尾会级联删除自己创建的资源，但中途失败会留下残留；
 #   - 每行格式为 <标记>[实际状态码/期望状态码] 说明 响应片段，
@@ -200,7 +200,8 @@ ok 400 "POST /databases malformed json -> 400" -X POST -H "$J" -d '{not json' "$
 ok 200 "GET  /v1/nosuchprefix/databases（auto-create 默认开启，按设计自动登记）" "$B/v1/nosuchprefix/databases"
 ok 404 "GET  /v1/paimon/nonsense (未知路径)" "$P/nonsense"
 ok 405 "POST /v1/config (方法不允许)" -X POST "$B/v1/config"
-ok 200 "GET  /rest-catalog-open-api.yaml (静态规格)" "$B/rest-catalog-open-api.yaml"
+# 规格副本不再随服务端分发（两份官方 OpenAPI 在仓库根 spec/，只随源码分发）。
+ok 404 "GET  /rest-catalog-open-api.yaml (规格副本已不下发)" "$B/rest-catalog-open-api.yaml"
 ok 200 "DELETE /databases/sales/tables/orders_v2" -X DELETE "$P/databases/sales/tables/orders_v2"
 ok 200 "DELETE /databases/sales (级联)" -X DELETE "$P/databases/sales"
 

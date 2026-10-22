@@ -3,7 +3,7 @@ import { del, get, post } from './client.js'
 /**
  * catalog API（`/v1/**`）的调用面。
  *
- * <p>规格见 `lakehouse-rest-spring-parent/lakehouse-rest-server/src/main/resources/static/rest-catalog-open-api.yaml`。
+ * <p>规格见 `spec/rest-catalog-open-api-paimon.yaml`（官方 Paimon REST Catalog OpenAPI 的副本）。
  * 路径中的 `{prefix}` 就是 catalog 名——服务端的
  * `CatalogService.resolve(prefix)` 按 prefix 查 catalog，两侧是同一份数据。
  * 因此控制台里的「选中某个 catalog」等价于「后续调用都用它的名字作 prefix」。

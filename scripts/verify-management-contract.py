@@ -6,8 +6,15 @@
 用于发现生成器自身的推导错误（生成器与校验器共用代码时，错误会互相掩盖）。
 
 用法：
-    python3 scripts/verify-management-contract.py spec/polaris-management-service.yml docs/management-api-contract.md
+    python3 scripts/verify-management-contract.py <polaris-规格> docs/management-api-contract.md
+
+注意：Polaris 的 `polaris-management-service.yml` 已从本仓库移除（管理面契约换成
+Paimon 官方 REST Management API，`spec/rest-management-open-api.yaml`）；
+`docs/management-api-contract.md` 是那份规格的**快照**。要重新生成或复核它，
+需要自备一份 Polaris 规格并从参数传进来。
+
 """
+import os
 import re
 import sys
 from collections import Counter
@@ -15,6 +22,12 @@ from collections import Counter
 import yaml
 
 SPEC = sys.argv[1] if len(sys.argv) > 1 else "spec/polaris-management-service.yml"
+if not os.path.exists(SPEC):
+    print(f"找不到规格文件：{SPEC}")
+    print("Polaris 规格已从本仓库移除（当前契约是 Paimon 官方 REST Management API，"
+          "spec/rest-management-open-api.yaml）。")
+    print("docs/management-api-contract.md 是它的快照；要复核请自备规格并从参数传入。")
+    sys.exit(2)
 DOC = sys.argv[2] if len(sys.argv) > 2 else "docs/management-api-contract.md"
 
 METHODS = ("get", "post", "put", "delete", "head", "patch")

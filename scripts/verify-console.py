@@ -2,8 +2,8 @@
 """校验控制台与接口规格、服务端静态资源三者一致。
 
 为什么需要它：控制台是用字符串拼 URL 的，而服务端的路径属于契约
-（catalog API 见 static/rest-catalog-open-api.yaml，管理 API 见
-static/polaris-management-service.yml，Iceberg 协议面见
+（catalog API 见 spec/rest-catalog-open-api-paimon.yaml，管理 API 见
+spec/rest-management-open-api.yaml，Iceberg 协议面见
 spec/rest-catalog-open-api-iceberg.yaml）。路径写错时前端只表现为「空列表」或 404，
 看不出是拼错了还是服务端改了；而这批路径分散在几十个端点里，靠人工比对不现实。
 
@@ -90,17 +90,18 @@ VITE_CONFIG = os.path.join(CONSOLE_DIR, "vite.config.js")
 ROUTER = os.path.join(CONSOLE_DIR, "src/router/index.js")
 CLIENT_JS = os.path.join(CONSOLE_DIR, "src/api/client.js")
 
-CATALOG_SPEC = os.path.join(
-    ROOT, "lakehouse-rest-spring-parent/lakehouse-rest-server/src/main/resources/static/rest-catalog-open-api.yaml")
+CATALOG_SPEC = os.path.join(ROOT, "spec/rest-catalog-open-api-paimon.yaml")
 # Iceberg 协议面另有一份规格副本。控制台在 Iceberg catalog 下走的是这一套路径
 # （namespaces / identifiers / kebab-case 报文），因此端点比对必须把两份规格
 # 并起来——只比 Paimon 那份的话，新加的 Iceberg 端点会被判成「规格里没有」。
 ICEBERG_SPEC = os.path.join(ROOT, "spec/rest-catalog-open-api-iceberg.yaml")
-# 管理面的规格副本随服务端分发（运行时可从 /polaris-management-service.yml 下载）。
-# spec/ 下的同名副本已删除——官方 Paimon 管理 API 只剩权限 3 个 operation（见
-# docs/management-api-overview.md），那份副本是另一回事，不能拿来比对管理面端点。
-MANAGEMENT_SPEC = os.path.join(
-    ROOT, "lakehouse-rest-spring-parent/lakehouse-rest-server/src/main/resources/static/polaris-management-service.yml")
+# 管理面的当前契约是 Paimon 官方 REST Management API（spec/rest-management-open-api.yaml）：
+# 只有 labels / permissions / policies 共 7 条路径，服务端实现的 3 个 `permissions`
+# 端点落在里面。catalog / principal / principal-role / 优化 / 表统计这些**扩展端点**
+# 没有规格可对（Polaris 那份已从仓库移除），因此全部登记在 EXTENSION_ENDPOINTS 里，
+# 第 1 组的「端点存在性」靠它们兜底。Polaris 规格的快照只剩
+# docs/management-api-contract.md 一份，不再参与机械比对。
+MANAGEMENT_SPEC = os.path.join(ROOT, "spec/rest-management-open-api.yaml")
 
 CONSOLE_ASSETS = os.path.join(
     ROOT, "lakehouse-rest-spring-parent/lakehouse-rest-server/src/main/resources/static/console")
@@ -141,7 +142,6 @@ ICEBERG_OPTIMIZATION_OPTIONS = os.path.join(SERVER_JAVA, "support/IcebergOptimiz
 OPTIMIZATION_UTIL = os.path.join(CONSOLE_DIR, "src/utils/optimization.js")
 
 # 管理规格的 servers[0].url 是 {scheme}://{host}/api/management/v1，路径要去掉基址才可比
-MANAGEMENT_BASE = "/api/management/v1"
 
 CONSOLE_BASE = "/console/"
 
@@ -182,6 +182,33 @@ EXTENSION_ENDPOINTS = {
     # 逐条赋权，而折叠必须发生在切页之前——否则同一组被页边界切成两行，界面上就是
     # 同一个主体出现两次。因此由控制台自己提供这层聚合视图（只读）。
     ("GET", "/v1/{prefix}/permissions/scopes"): "控制台授权清单（服务端折叠 + 分页，只读聚合）",
+    # ---- 管理面扩展端点（catalog / principal / principal-role 三组）----
+    # 这三组的报文形状源自 Polaris 的管理规格，但**那份规格已从仓库移除**：官方 Paimon
+    # 管理 API 只规范 labels / permissions / policies，catalog 与主体的生命周期是本工程
+    # 自己的扩展。没有规格可比，就只能按白名单登记——这也是第 1 组「端点存在性」对它们
+    # 唯一的保障（漏登记 = 前端拼错路径也查不出来）。服务端实现见 ManagementCatalogController
+    # 与 Principal / PrincipalRole 两个控制器。
+    ("GET", "/api/management/v1/catalogs"): "管理面扩展：catalog 列表",
+    ("POST", "/api/management/v1/catalogs"): "管理面扩展：建 catalog",
+    ("GET", "/api/management/v1/catalogs/{catalogName}"): "管理面扩展：catalog 详情",
+    ("PUT", "/api/management/v1/catalogs/{catalogName}"): "管理面扩展：整体替换 catalog 属性（PUT 语义）",
+    ("DELETE", "/api/management/v1/catalogs/{catalogName}"): "管理面扩展：删 catalog（级联范围见事件框架）",
+    ("GET", "/api/management/v1/principals"): "管理面扩展：主体列表",
+    ("POST", "/api/management/v1/principals"): "管理面扩展：建主体（返回一次性 client_secret）",
+    ("GET", "/api/management/v1/principals/{principalName}"): "管理面扩展：主体详情",
+    ("PUT", "/api/management/v1/principals/{principalName}"): "管理面扩展：改主体属性",
+    ("DELETE", "/api/management/v1/principals/{principalName}"): "管理面扩展：删主体",
+    ("POST", "/api/management/v1/principals/{principalName}/reset"): "管理面扩展：重置主体凭据",
+    ("POST", "/api/management/v1/principals/{principalName}/rotate"): "管理面扩展：轮换主体凭据",
+    ("GET", "/api/management/v1/principal-roles"): "管理面扩展：principal role 列表",
+    ("POST", "/api/management/v1/principal-roles"): "管理面扩展：建 principal role",
+    ("GET", "/api/management/v1/principal-roles/{principalRoleName}"): "管理面扩展：principal role 详情",
+    ("PUT", "/api/management/v1/principal-roles/{principalRoleName}"): "管理面扩展：改 principal role",
+    ("DELETE", "/api/management/v1/principal-roles/{principalRoleName}"): "管理面扩展：删 principal role",
+    ("GET", "/api/management/v1/principal-roles/{principalRoleName}/principals"): "管理面扩展：角色下的主体",
+    ("GET", "/api/management/v1/principals/{principalName}/principal-roles"): "管理面扩展：主体所属的角色",
+    ("PUT", "/api/management/v1/principals/{principalName}/principal-roles"): "管理面扩展：装配主体的角色（整体替换）",
+    ("DELETE", "/api/management/v1/principals/{principalName}/principal-roles/{principalRoleName}"): "管理面扩展：解除单个角色绑定",
     # 表存储优化（本工程扩展，挂管理 API 基址）。三份规格里都没有它：策略与批次是
     # 服务端自己的资源，不是 Paimon 元数据的一部分。服务端实现见 OptimizationController。
     #
@@ -273,9 +300,11 @@ for path, operations in catalog_paths.items():
 for path, operations in iceberg_paths.items():
     for method in operations:
         spec_routes.add((method.upper(), path))
+# 官方管理规格的路径自带 `/v1/{prefix}`（catalog API 的基址），不拼管理面基址；
+# 扩展端点在 `/api/management/v1/**` 下、没有规格，靠 EXTENSION_ENDPOINTS 兜底。
 for path, operations in management_paths.items():
     for method in operations:
-        spec_routes.add((method.upper(), MANAGEMENT_BASE + path))
+        spec_routes.add((method.upper(), path))
 
 console_routes = {(method, path) for method, path in endpoints.values()}
 all_problems_before = len(problems)

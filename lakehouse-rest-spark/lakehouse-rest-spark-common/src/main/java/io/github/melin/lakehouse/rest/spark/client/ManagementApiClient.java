@@ -28,9 +28,10 @@ import java.util.Set;
  * <p>只依赖 JDK 自带的 {@link HttpClient} 与 Spark 自带的 Jackson 2，不引入额外 HTTP 库：
  * 这个模块最终会被放进 Spark 的 classpath，额外依赖会与集群已有版本冲突。
  *
- * <p><b>路径与规格一致。</b>端点、动词、请求体字段名都取自
- * {@code spec/polaris-management-service.yml}，由服务端同一份规格实现，
- * 因此这里不做任何形状转换，避免两侧各自演化。
+ * <p><b>路径与规格一致。</b>官方部分（三个 {@code permissions} 端点）取自
+ * Paimon REST Management API 的 {@code spec/rest-management-open-api.yaml}；
+ * catalog / principal / principal role 是服务端扩展，形状沿用已移除的 Polaris 规格
+ * （快照在 {@code docs/management-api-contract.md}）。两侧不做任何形状转换，避免各自演化。
  *
  * <p><b>响应体有两套形状，极易读错。</b>规格对「单个资源」的响应**大多不套外壳**：
  *

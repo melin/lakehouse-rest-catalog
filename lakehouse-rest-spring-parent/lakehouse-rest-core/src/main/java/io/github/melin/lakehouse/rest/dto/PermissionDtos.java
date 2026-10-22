@@ -13,7 +13,7 @@ import io.github.melin.lakehouse.rest.support.PageMeta;
  *
  * <p>规格来源：{@code https://paimon.apache.org/docs/master/concepts/rest/management-api}
  * 的 Permission model 一节（完整 wire 契约在官方 {@code rest-management-open-api.yaml}）。
- * 与 {@code spec/polaris-management-service.yml} 的 RBAC 是**两套并行的模型**：
+ * 与扩展端点上那套 RBAC（形状源自已移除的 Polaris 规格）是**两套并行的模型**：
  * Polaris 把授权挂在 catalog role 上，Paimon 原生模型把授权直接挂在 principal
  * （`user:alice` / `role:sales_writer` 这类不透明字符串）上。
  *

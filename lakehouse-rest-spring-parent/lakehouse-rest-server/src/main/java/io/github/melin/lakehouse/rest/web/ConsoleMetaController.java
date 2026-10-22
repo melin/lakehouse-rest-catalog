@@ -14,9 +14,9 @@ import org.springframework.web.bind.annotation.RestController;
  * 语义与取舍写在 {@link ConsoleDtos} 的类注释里。
  *
  * <p>刻意放在 {@code /api/console/} 而不是 {@code /api/management/} 下：
- * 后者是管理规格的镜像，路径与会话状态码都被规格约束，往里塞规格外端点
- * 会让「管理 API 与 spec/polaris-management-service.yml 一一对应」这个不变量
- * 变得需要额外解释。控制台自己的端点单列一个命名空间，边界更清楚。
+ * 后者是管理面的镜像（官方 Paimon 管理规格 + 本仓扩展端点），往里塞控制台诉求
+ * 会让「这个端点属于管理面还是控制台」变得需要额外解释。
+ * 控制台自己的端点单列一个命名空间，边界更清楚。
  */
 @RestController
 @RequestMapping("/api/console/v1")

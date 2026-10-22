@@ -21,7 +21,7 @@ import org.springframework.web.bind.annotation.RestController;
  * 语义与取舍写在 {@link ConsoleDtos.CatalogFileListing}、
  * {@link ConsoleDtos.TableFileListing} 与 {@code RestServerProperties.FileBrowser}
  * 的注释里。刻意放在 {@code /api/console/} 下：{@code /api/management/} 那个命名空间要与
- * {@code spec/polaris-management-service.yml} 一一对应，往里塞规格外端点会让
+ * 管理面（官方 Paimon 管理规格 + 本仓扩展端点）一一对应，往里塞规格外端点会让
  * 这条不变量需要额外解释。
  *
  * <p><b>只有读，没有写。</b>这里不提供删除文件、创建目录一类的操作：

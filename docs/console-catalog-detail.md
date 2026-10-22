@@ -460,7 +460,7 @@ GET /api/console/v1/catalogs/{catalogName}/files?path=<相对仓库根>&prefix=<
 | 存储 IO 失败 | 500 | 消息里带异常链最里面那条的消息；堆栈落日志 |
 
 **为什么放在 `/api/console/` 而不是 `/api/management/`。** 管理 API 那个命名空间
-要与 `spec/polaris-management-service.yml` 一一对应，往里塞规格外端点会让这条
+只放与本仓扩展端点一一对应的管理动作（规格外的控制台诉求一律进 `/api/console/`），往里塞别的会让这条
 不变量需要额外解释。控制台扩展端点统一在 `/api/console/v1/**` 下（见 `console.md` §5）。
 
 ### 4.1 凭据来源必须与引擎一致

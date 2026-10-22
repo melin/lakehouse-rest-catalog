@@ -3,10 +3,10 @@ import { get, post, put } from './client.js'
 /**
  * 表存储优化（`/api/management/v1/optimization/**`）的调用面。
  *
- * <p>单独一个模块而不是并进 `management.js`：那一个是 Polaris 管理规格的镜像
- * （字段名与 `spec/polaris-management-service.yml` 逐字一致），而优化是本工程自己
- * 加的扩展——挂在管理 API 的基址下，但两份规格里都没有它。混在一起会让
- * 「哪些接口是上游规格的」变得看不出来，改规格的时候也就说不清哪些能动。
+ * <p>单独一个模块而不是并进 `management.js`：那一个是管理规格的镜像
+ * （字段名与官方 `spec/rest-management-open-api.yaml` 及扩展端点的既有形状一致），
+ * 而优化是本工程自己加的扩展——挂在管理 API 的基址下，但任何规格里都没有它。
+ * 混在一起会让「哪些接口是上游规格的」变得看不出来，改规格的时候也就说不清哪些能动。
  *
  * <p>路径里的 catalog 一律是**名字**（即 prefix），不是内部主键：
  * 优化任务拿它去建 REST catalog 连接，服务端权限判定也按名字走。

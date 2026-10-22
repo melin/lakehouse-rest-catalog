@@ -10,7 +10,7 @@
 
 ## 0. 一句话
 
-用 Spring Boot + JPA 实现 **Apache Paimon 的 REST Catalog API**、**Apache Polaris 的
+用 Spring Boot + JPA 实现 **Apache Paimon 的 REST Catalog API**、**Apache Paimon 的
 REST Management API**（RBAC 管理面）与一个 **Vue 3 管理控制台**；另有 Spark SQL 语法扩展，
 用 SQL 管理主体、角色与授权。
 
@@ -18,8 +18,8 @@ REST Management API**（RBAC 管理面）与一个 **Vue 3 管理控制台**；�
 
 | 面 | 基址 | 规格来源 | 鉴权 |
 | --- | --- | --- | --- |
-| Catalog API（数据面） | `/v1/{prefix}/...` + `/v1/config` | `spec/rest-catalog-open-api.yaml` | `lakehouse.rest.auth.*` |
-| Management API | `/api/management/v1/...` | `spec/polaris-management-service.yml` | 同上 |
+| Catalog API（数据面） | `/v1/{prefix}/...` + `/v1/config` | `spec/rest-catalog-open-api-paimon.yaml` | `lakehouse.rest.auth.*` |
+| Management API | `/api/management/v1/...` | Paimon REST Management API：`spec/rest-management-open-api.yaml`（官方只覆盖 `permissions` 3 个；扩展端点的形状源自已移除的 Polaris 规格） | 同上 |
 | Console API + OAuth | `/api/console/v1/...`、`/api/catalog/v1/oauth/tokens` | 自有（`docs/console-auth.md`） | 同上（登录端点豁免） |
 | 控制台界面 | `/console/`（SPA 深链回退 `index.html`） | — | 开关 `lakehouse.rest.auth.console.required` |
 
@@ -193,7 +193,7 @@ lakehouse-rest-spring-parent/   服务端世界的父 POM（继承 Boot 4.1.1）
                         Partition / Consumer / SemanticView），路径与规格一一对应
     paimon/service/       同名资源的 service，及 TableMetadataService（schema/快照物化）、
                         SchemaChangeService、TableLookup、CredentialService
-    paimon/dto/           与 rest-catalog-open-api.yaml 的 schema 对应的 9 个 DTO 文件
+    paimon/dto/           与 rest-catalog-open-api-paimon.yaml 的 schema 对应的 9 个 DTO 文件
     paimon/support/       Codecs、SchemaSupport、TableDefaults、TableKinds
     ↑ 唯一一个包名比 core / storage / server 多一层 `.paimon` 的模块，理由见第 7 节
 
@@ -209,8 +209,8 @@ lakehouse-rest-spring-parent/   服务端世界的父 POM（继承 Boot 4.1.1）
     dto/                  ManagementDtos、OptimizationDtos
     support/              OptimizationOptions、OptimizationStatus
     config/               ConsoleWebConfig、DataInitializer、OptimizationSchedulingConfig
-    resources/            application*.yml；static/rest-catalog-open-api.yaml 与
-                        polaris-management-service.yml（运行时可从 /<name> 下载）、
+    resources/            application*.yml；static/console/（前端构建产物）。
+                        规格副本不再随服务端分发——两份官方 OpenAPI 在仓库根 spec/：
                         console/（前端构建产物，见第 8 节陷阱 1）
 
 lakehouse-rest-console/    Vue 3 + Vite（Element Plus），构建产物直接落进服务端 classpath
@@ -234,7 +234,9 @@ lakehouse-rest-flink/      Flink SQL 读写 Paimon / Iceberg，一份源码、�
 lakehouse-rest-optimizer/  表优化执行体（被 k8s 提交起来跑，不经服务端 classpath）：
                         PaimonProcedures、TableOptimizerJob、OptimizerOptions、OptimizationApiClient
 deploy/kubernetes/      kustomize 清单（有独立 README）
-spec/                   两份 OpenAPI 规格的仓库副本（运行时可从 /<name> 下载）
+spec/                   三份 OpenAPI 规格的仓库副本（不随服务端分发）：
+                        rest-catalog-open-api-paimon.yaml / -iceberg.yaml /
+                        rest-management-open-api.yaml（Paimon 官方 REST Management API）
 sql/                    MySQL 建表语句（生成物）
 scripts/                验收 / 生成 / 校验 / 镜像构建脚本
 docs/                   23 份设计文档（另有两份配套效果图 HTML）
@@ -259,8 +261,8 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
 | 文档 | 什么时候读 |
 | --- | --- |
 | `catalog-api-endpoints.md` | Catalog API 的端点、基址、前缀、授权映射；**两个协议面各一章**——Paimon 的 60 个与 Iceberg 的 30 个（含 5 个不声明的、各端点的成功码、错误模型） |
-| `management-api-overview.md` | 官方权限端点与扩展端点落在哪几个控制器、易读错的语义 |
-| `management-api-contract.md` | 管理 API 字段与权限枚举**逐字契约**（生成物，勿手改） |
+| `management-api-overview.md` | Paimon 官方权限端点与服务端扩展端点落在哪几个控制器、易读错的语义 |
+| `management-api-contract.md` | **存档**（勿手改）：由已移除的 Polaris 管理规格生成的字段与权限枚举；catalog role 与 64 项 privilege 已不存在 |
 | `data-model.md` | 改实体 / 看 23 张表划分、摘要列与审计列的理由、实体与仓储分在哪两个模块、Iceberg 协议面新增的 9 个列（§1.1）、血缘三表（§2.3） |
 | `table-optimization.md` | 改表存储优化：三层配置合并、批次与调度游标、组批与提交、前后指标；**两种表格式共用一套策略表与批次表**，参数键按格式分派（§2.5 是 Iceberg 的对应物，§6.5 是执行侧差异） |
 | `event-framework.md` | 加事件 / 接 listener：9 类 33 个领域事件与触发点、与 Polaris 枚举的映射、`audit_event` 表、发布监听链路、按监听器的类别/类型订阅、增量拉取契约（`?since=` / `?category=`）与不发清单 |

@@ -7,7 +7,7 @@
 | --- | --- | --- |
 | Catalog API | `/v1/{prefix}/**` | database / table / view / function / semantic view / tag / branch / partition / snapshot / 数据令牌与查询授权 |
 | Management API | `/api/management/v1/**` | catalog / principal / principal-role；catalog-role 与 grants 既没有页面、也没有 Spark SQL 语句，只剩管理 API 本身（见 [§4](#4-页面清单)） |
-| 控制台扩展 | `/api/console/v1/meta` | 只读：导出枚举取值与服务端配置摘要，**非 Polaris 规格** |
+| 控制台扩展 | `/api/console/v1/meta` | 只读：导出枚举取值与服务端配置摘要，**非官方规格** |
 
 它是**运维与排查工具**，不是数据写入入口：不提供 `commitTable`（`.../tables/{table}/commit`），
 理由见 [§7](#7-端点的取舍为什么没有-committable)。对快照的介入只做「读」与「回滚」两件事。
@@ -168,7 +168,8 @@ lakehouse-rest-console/
   database / table / view）各有自己的一组权限词，全部在这一页里授与撤。Polaris 的
   RBAC（主体 → 角色 → catalog 角色 → 资源授权）不再有页面——它的三件套在
   控制台里只留下被引用的一小部分（授权对象的 `role:` 候选、角色页的装配），
-  管理面只剩管理 API 一个入口（catalog role 的建档与装配在 Spark SQL 侧也已经
+  管理面只剩管理 API（Paimon 官方 REST Management API + 服务端扩展端点）一个入口
+  （catalog role 的建档与装配在 Spark SQL 侧也已经
   没有语句了）。服务端判定不变：两路取并集。
 - **表单只有一种形态。** 全站表单统一走全局基元 `.pc-form`（标签在控件上方、
   13px 弱化色、字段间距 14px），字段多且语义并列时加 `.pc-form-grid` 自动折行，
@@ -318,7 +319,7 @@ meta 只暴露枚举取值与服务端自身的配置，不含任何主体、cat
   要做「任意键」得先扩服务端契约。
 - **这 10 项里服务端当前只消费 2 项**（`pathStyleAccess` → 下发 `s3.path-style-access`，
   `stsUnavailable` → 决定是否下发密钥）。其余 8 项接收、落库、回显，但不参与行为——
-  它们仍是 Polaris 管理 API 契约的一部分，所以不能删控件。前端判断不了「哪几个真的生效」，
+  它们仍是管理 API 契约的一部分（形状沿用存档的那份 Polaris 规格），所以不能删控件。前端判断不了「哪几个真的生效」，
   因此折叠区里只给了一句中立说明（「是否影响引擎行为，取决于服务端的凭据实现」），
   不点名字段、不加徽标：把服务端的实现细节抄进前端，正是 §10 反对的做法。
 
@@ -445,8 +446,9 @@ Iceberg 的 drop 非级联、非空回 409，误触成本高，已按需求把�
 ### 5.1 为什么要有一张端点表
 
 控制台是用字符串拼 URL 的，而服务端的路径属于**契约**（catalog API 见
-`lakehouse-rest-spring-parent/lakehouse-rest-server/src/main/resources/static/rest-catalog-open-api.yaml`，
-管理 API 见 `spec/polaris-management-service.yml`）。路径写错时前端的表现是
+`spec/rest-catalog-open-api-paimon.yaml`，管理面的官方部分是 Paimon REST Management API，
+见 `spec/rest-management-open-api.yaml`；catalog / principal 等扩展端点的形状源自已移除的
+Polaris 规格）。路径写错时前端的表现是
 「404 空列表」，看不出是前端拼错了还是服务端改了——而这批路径有 85 条，
 靠人工比对不现实。
 
@@ -534,13 +536,13 @@ PYTHON=/path/to/python3 scripts/verify-console.py   # 多解释器时指定装�
 EXTENSION_ENDPOINTS = {
     ("GET", "/api/console/v1/meta"): "控制台元数据（枚举取值与服务配置摘要），非 Polaris 规格",
     # 仓库文件浏览：列 catalog 仓库里某个目录的一层内容（`?path=` 相对仓库根）。
-    # 它读的是物理目录（表目录下有哪些文件、有没有残留），两份规格都不涉及文件系统
+    # 它读的是物理目录（表目录下有哪些文件、有没有残留），三份规格都不涉及文件系统
     ("GET", "/api/console/v1/catalogs/{catalogName}/files"): "控制台仓库文件浏览（列一层目录，只读，可配置关闭）",
     ("GET", "/api/console/v1/auth"): "控制台登录引导（可用认证方式、令牌端点、当前令牌状态）",
     ("POST", "/api/console/v1/login"): "控制台用户名密码登录（默认方式，响应是驼峰字段而非 OAuth 形状）",
     ("POST", "/api/catalog/v1/oauth/tokens"): "OAuth 2.0 客户端凭据令牌端点（RFC 6749 第 4.4 节）",
     # Paimon 官方 REST Management API 的权限端点（principal 直授）。
-    # wire 契约在官方 rest-management-open-api.yaml，不在本仓库的两份规格副本里
+    # wire 契约在官方 rest-management-open-api.yaml（副本 spec/ 下）
     ("GET", "/v1/{prefix}/permissions"): "Paimon 官方权限端点：列出 principal 直授",
     ("POST", "/v1/{prefix}/permissions/grant"): "Paimon 官方权限端点：授予 principal 直授",
     ("POST", "/v1/{prefix}/permissions/revoke"): "Paimon 官方权限端点：撤销 principal 直授（幂等）",

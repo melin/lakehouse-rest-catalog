@@ -14,7 +14,7 @@ import scala.collection.JavaConverters._
  *
  * <p>桩服务端见 {@link StubManagementServer}。这里验证两件容易写错、且写错了只会
  * 在真实服务端上暴露的事：请求的**方法与路径**、请求体的**字段形状**——
- * 主体与角色那部分必须与 {@code spec/polaris-management-service.yml} 一致，
+ * 主体与角色那部分必须与服务端扩展端点的既有形状一致（源自已移除的 Polaris 规格），
  * 直授那部分必须与 Paimon 官方权限端点（{@code /v1/{prefix}/permissions}，
  * 服务端实现见 {@code PermissionDtos}）一致。
  */

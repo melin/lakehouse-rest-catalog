@@ -3,9 +3,9 @@
 本文说明本服务如何实现 Paimon 官方 REST Management API 的权限模型，以及这套模型
 如何作用到 LakeHouse Catalog API（`/v1/**`）与管理面扩展端点（`/api/management/v1/**`）上。
 
-- 规格基线：`spec/paimon-rest-management-api.yaml`（官方 `rest-management-open-api`）
+- 规格基线：`spec/rest-management-open-api.yaml`（Paimon 官方 REST Management API）
 - 权限语义出处：<https://paimon.apache.org/docs/master/concepts/rest/management-api>
-- 历史对照：`docs/management-api-contract.md`（Polaris 规格存档，**不是当前契约**）
+- 历史对照：`docs/management-api-contract.md`（Polaris 规格快照，**不是当前契约**；规格文件已从仓库移除）
 
 > **只有一套权限模型。** Polaris 的 64 项 privilege、catalog role、
 > `lakehouse_resource_grant` 已全部移除。授权唯一的落库形态是

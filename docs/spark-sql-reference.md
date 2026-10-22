@@ -6,7 +6,9 @@ catalog role 没有 SQL 入口——它只剩管理 API 一条路（控制台也
 
 本文是**语句级参考**：每条语句的语法、参数、等价 REST 调用、结果集、错误与注意事项。
 设计动机、语法扩展的实现方式、测试分层见 [`spark-sql-extension.md`](spark-sql-extension.md)；
-管理 API 的端点与字段定义见 [`management-api-contract.md`](management-api-contract.md)。
+管理 API 的端点与语义见 [`management-api-overview.md`](management-api-overview.md)
+（当前契约是 Paimon 官方 REST Management API，`spec/rest-management-open-api.yaml`；
+[`management-api-contract.md`](management-api-contract.md) 是已移除的 Polaris 规格的**快照**）。
 
 ```sql
 CREATE PRINCIPAL IF NOT EXISTS svc_etl PROPERTIES ('owner' = 'data-platform');

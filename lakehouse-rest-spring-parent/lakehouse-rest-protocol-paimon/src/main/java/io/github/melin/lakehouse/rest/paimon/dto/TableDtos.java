@@ -113,7 +113,7 @@ public final class TableDtos {
      * `GET .../tables/{table}/token` 的响应：一份范围限定到单表的存储凭据与它的失效时刻。
      *
      * <p><b>为什么同一个时刻回两个名字。</b>规格把有效期字段定义为 `expiresAt`
-     * （`spec/rest-catalog-open-api.yaml` 的 `GetTableDataTokenResponse`），
+     * （`spec/rest-catalog-open-api-paimon.yaml` 的 `GetTableDataTokenResponse`），
      * 而 Paimon 客户端读的是 `expiresAtMillis`
      * （`paimon-api` 的 `org.apache.paimon.rest.responses.GetTableTokenResponse`
      * 上写着 `@JsonProperty("expiresAtMillis")`）——两侧不自洽，只有后一个名字能被客户端认出来。
