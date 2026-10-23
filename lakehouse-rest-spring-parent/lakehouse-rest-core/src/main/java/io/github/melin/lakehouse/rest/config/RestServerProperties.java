@@ -86,6 +86,26 @@ public class RestServerProperties {
     /** {@code lakehouse.rest.lineage.*}：Spark SQL 血缘（见 {@link Lineage}）。 */
     private final Lineage lineage = new Lineage();
 
+    /** {@code lakehouse.rest.policy.*}：行过滤 / 列脱敏策略（见 {@link DataPolicy}）。 */
+    private final DataPolicy policy = new DataPolicy();
+
+    /**
+     * 行过滤 / 列脱敏的写入口开关（{@code docs/row-filter-column-mask-design.md} §5.4）。
+     *
+     * <p><b>默认关闭，只锁写入口、读照常</b>——与血缘开关同一模式：把「功能没开」与
+     * 「没建策略」分开。读侧（resolve、策略详情、列表）如果也被关掉，「上下文包 404」
+     * 和「本来就没策略」就混成一件事了，引擎侧的 fail-closed 无法区分故障与空态。
+     * yml 里不要写非默认值（血缘的 {@code LineageDisabledTests} 教训）：要开的部署
+     * 用启动参数显式打开。
+     */
+    @Getter
+    @Setter
+    public static class DataPolicy {
+
+        /** 是否允许创建 / 修改 / 删除策略（PUT / DELETE）。默认 false。 */
+        private boolean enabled = false;
+    }
+
     /** Bearer 鉴权开关。关闭时所有请求以 {@code principal} 身份通过。 */
     @Getter
     @Setter

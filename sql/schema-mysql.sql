@@ -73,6 +73,21 @@ USE `lakehouse_catalog`;
         primary key (id)
     ) comment='catalog 实例，REST 路径中的 {prefix} 即其对外标识' engine=InnoDB;
 
+    create table lakehouse_column_mask (
+        allow_null_on_required bit not null comment '置空 mask 落在非空列时的显式确认（默认 false = 拒绝）',
+        created_at bigint comment '创建时刻（epoch 毫秒）',
+        id bigint not null auto_increment comment '自增主键',
+        policy_id bigint not null comment '所属表级策略的 id（DataPolicyEntity 的自增主键）',
+        updated_at bigint comment '最后更新时刻（epoch 毫秒）',
+        column_name varchar(512) not null comment '被脱敏的列名；与 policy_id 组成唯一键（一列一个 mask）',
+        mask_sql varchar(2048) comment 'mask 的 SQL 渲染（展示用）',
+        created_by varchar(255) comment '创建者主体名（写入前已按列宽归一化）',
+        owner varchar(255) comment '记录归属主体（展示与过滤用，不参与授权判定）',
+        updated_by varchar(255) comment '最后更新者主体名（写入前已按列宽归一化）',
+        mask_json text comment 'mask 定义（标准集 fn/args 或白名单表达式 expr；类型规则见设计稿 §5.3.3）',
+        primary key (id)
+    ) comment='列脱敏定义（一列一个 mask，挂在表级策略下）' engine=InnoDB;
+
     create table lakehouse_consumer (
         next_snapshot bigint comment '该消费者下一次应读取的快照 id',
         updated_at bigint comment '进度最后更新时刻（epoch 毫秒）',
@@ -81,6 +96,26 @@ USE `lakehouse_catalog`;
         consumer_id varchar(512) not null comment '消费者标识，由客户端生成的字符串',
         primary key (id)
     ) comment='流式消费进度：消费者下一次应读取的快照' engine=InnoDB;
+
+    create table lakehouse_data_policy (
+        enabled_flag bit not null comment '策略开关；false = 暂停执行但定义保留（只在控制台提供）',
+        entity_version integer not null comment '乐观并发版本号；改策略时比对，下发时作为 etag',
+        created_at bigint comment '创建时刻（epoch 毫秒）',
+        id bigint not null auto_increment comment '自增主键',
+        updated_at bigint comment '最后更新时刻（epoch 毫秒）',
+        enforced_scope varchar(16) not null comment '强制范围声明：engine（引擎内强制）；表达谁承诺执行，不是实际强度',
+        catalog_name varchar(64) not null comment '绑定的 catalog 名；列表页按它过滤',
+        full_name_hash varchar(64) not null comment 'catalog.database.table 的 SHA-256，唯一键（索引长度与值长度解耦）',
+        table_name varchar(512) not null comment '绑定的表名',
+        row_filter_sql varchar(2048) comment '行过滤的 SQL 渲染（展示用；语义以 row_filter_json 为准）',
+        created_by varchar(255) comment '创建者主体名（写入前已按列宽归一化）',
+        database_name varchar(255) not null comment '绑定的库名（Iceberg 多级 namespace 按点号拼成一段）',
+        owner varchar(255) comment '记录归属主体（展示与过滤用，不参与授权判定）',
+        updated_by varchar(255) comment '最后更新者主体名（写入前已按列宽归一化）',
+        exempt_json text comment '豁免主体名单（JSON 字符串数组；名单内的人不走策略）',
+        row_filter_json text comment '行过滤表达式（白名单 AST 的 JSON；空 = 不过滤行）',
+        primary key (id)
+    ) comment='行过滤/列脱敏的表级策略（一表一行，行过滤 + 豁免名单 + 版本）' engine=InnoDB;
 
     create table lakehouse_database (
         created_at bigint comment '创建时刻（epoch 毫秒）',
@@ -441,11 +476,20 @@ USE `lakehouse_catalog`;
     alter table lakehouse_catalog 
        add constraint uk_catalog_prefix unique (prefix_value);
 
+    alter table lakehouse_column_mask 
+       add constraint uk_column_mask_column unique (policy_id, column_name);
+
     create index ix_consumer_table 
        on lakehouse_consumer (table_id);
 
     alter table lakehouse_consumer 
        add constraint uk_consumer unique (table_id, consumer_id);
+
+    create index ix_data_policy_catalog 
+       on lakehouse_data_policy (catalog_name);
+
+    alter table lakehouse_data_policy 
+       add constraint uk_data_policy_table unique (full_name_hash);
 
     create index ix_database_catalog 
        on lakehouse_database (catalog_id);

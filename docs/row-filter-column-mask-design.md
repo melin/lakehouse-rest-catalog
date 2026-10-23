@@ -1,6 +1,10 @@
 # 行过滤与列脱敏（Row Filter / Column Mask）技术方案
 
-> 状态：**设计稿，未实现**。本文只回答「能不能做、做到什么程度、代价在哪」，不含实现。
+> 状态：**服务端 P0 已实现**（两张策略表 + 表达式 AST 校验 + 管理与下发端点 + 预览 / 文件下载收口 +
+> 表生命周期联动，测试见 README 第 7 节的 `DataPolicyApiTests` / `DataPolicyDisabledTests`）。
+> **未实现**：Spark 引擎侧扩展（PolicyRelation，§4）、服务端 AST 求值器（预览仍拒绝，§6）、
+> 控制台页面（§7）与 §13 的 SQL 语句——本文相应小节仍是它们的实现依据。
+> 本文先回答「能不能做、做到什么程度、代价在哪」，实现取舍与设计稿的差异以代码为准。
 >
 > 关联文档：[`authorization.md`](authorization.md)（12 项 access 与判权链）、  
 > [`table-data-preview-design.md`](table-data-preview-design.md) §10/§15（预览的判权与「行级/列级列为后续」两条开放项）、  

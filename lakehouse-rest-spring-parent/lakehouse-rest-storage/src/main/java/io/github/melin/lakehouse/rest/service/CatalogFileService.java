@@ -10,6 +10,7 @@ import io.github.melin.lakehouse.rest.domain.repo.TableRepository;
 import io.github.melin.lakehouse.rest.dto.ConsoleDtos.CatalogFileEntry;
 import io.github.melin.lakehouse.rest.dto.ConsoleDtos.CatalogFileListing;
 import io.github.melin.lakehouse.rest.dto.ConsoleDtos.TableFileListing;
+import io.github.melin.lakehouse.rest.service.DataPolicyService;
 import io.github.melin.lakehouse.rest.support.ApiException;
 import io.github.melin.lakehouse.rest.support.PageMeta;
 import io.github.melin.lakehouse.rest.support.Paging;
@@ -71,6 +72,8 @@ public class CatalogFileService {
     private final StorageFileIoFactory fileIoFactory;
 
     private final RestServerProperties properties;
+
+    private final DataPolicyService dataPolicyService;
 
     /**
      * 列出仓库里某个目录的一层内容（根 = catalog 的 {@code warehouse}）。
@@ -328,6 +331,9 @@ public class CatalogFileService {
         }
         CatalogEntity catalog = catalogRepository.findById(table.getCatalogId())
                 .orElseThrow(() -> ApiException.managementNotExist(ResourceType.CATALOG, table.getCatalogId()));
+        // 带行过滤 / 列脱敏策略的表：文件下载必须禁止（设计 §7.2，优先级最高的绕过面——
+        // 一个 parquet 原文件就是全表明文，任何「预览已收口」都拦不住这条路）
+        requireDownloadAllowed(catalog, table);
         String relative = resolve(path, "the table directory");
         if (relative.isEmpty()) {
             throw ApiException.badRequest("download needs a file path, but got the table directory,"
@@ -335,6 +341,17 @@ public class CatalogFileService {
         }
         return openForDownload(catalog, new Path(trimTrailingSlash(tablePath)), relative,
                 "the table directory " + tablePath);
+    }
+
+    /** 表挂了启用中的策略 → 下载 403（带原因；表级与 catalog 级下载共用同一口径）。 */
+    private void requireDownloadAllowed(CatalogEntity catalog, TableEntity table) {
+        String databaseName = databaseRepository.findById(table.getDatabaseId())
+                .map(DatabaseEntity::getName).orElse(null);
+        if (databaseName != null
+                && dataPolicyService.hasActivePolicy(catalog.getPrefix(), databaseName, table.getName())) {
+            throw ApiException.forbidden("file download is not available for this table:"
+                    + " a row filter / column mask policy is active (design §7.2)");
+        }
     }
 
     /** 下载与列举共用的「找到那个文件并打开流」；错误语义与列举一致（404 / 400 / 500）。 */

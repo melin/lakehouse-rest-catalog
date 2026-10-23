@@ -155,6 +155,19 @@ public enum CatalogEventType {
      */
     OPTIMIZATION_POLICY_UPDATED(CatalogEventCategory.POLICY, "optimization.policy_updated"),
 
+    /**
+     * 行过滤 / 列脱敏策略变化（增、改、删、启停，{@code docs/row-filter-column-mask-design.md} §8.2）。
+     *
+     * <p><b>与优化策略分开一个类型</b>而不是共用 {@code optimization.policy_updated}：
+     * 两者的「变化」严重级完全不同——优化策略改错最多是「该合并的没合并」，数据策略改错
+     * 是「该保护的保护没了」，合规审计要把后者单独拉出来看。
+     *
+     * <p><b>属性里只有变更前后的摘要，不记表达式的字面量值</b>（§8.2 的「不记什么」）：
+     * 谓词里的 {@code region = 'CN'} 可能换成黑名单成员或手机号，字面量进事件表等于
+     * 把敏感值复制了一份。要看变化全文，走策略自己的版本号与操作者定位。
+     */
+    POLICY_CHANGED(CatalogEventCategory.POLICY, "policy.changed"),
+
     // ------------------------------------------------------------------ OPTIMIZATION
 
     /** 优化批次全部成功。 */

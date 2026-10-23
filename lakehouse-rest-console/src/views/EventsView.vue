@@ -228,13 +228,14 @@ const TYPES = [
   { value: 'catalog_role.updated', label: '改 Catalog 角色', tag: 'warning', category: 'CATALOG_ROLE' },
   { value: 'catalog_role.dropped', label: '删 Catalog 角色', tag: 'danger', category: 'CATALOG_ROLE' },
   { value: 'optimization.policy_updated', label: '优化策略变更', tag: 'info', category: 'POLICY' },
+  { value: 'policy.changed', label: '数据策略变更', tag: 'warning', category: 'POLICY' },
   { value: 'optimization.job_succeeded', label: '优化成功', tag: 'success', category: 'OPTIMIZATION' },
   { value: 'optimization.job_partially_succeeded', label: '优化部分成功', tag: 'warning', category: 'OPTIMIZATION' },
   { value: 'optimization.job_failed', label: '优化失败', tag: 'danger', category: 'OPTIMIZATION' },
   { value: 'optimization.job_canceled', label: '优化取消', tag: 'info', category: 'OPTIMIZATION' },
 ]
 
-/** 类型下拉按类别分组：38 个类型平铺成一列太长，分组后是「先想类别、再想动作」。 */
+/** 类型下拉按类别分组：39 个类型平铺成一列太长，分组后是「先想类别、再想动作」。 */
 const TYPE_GROUPS = computed(() => CATEGORIES
   .map((category) => ({
     label: category.label,

@@ -73,6 +73,8 @@ class CatalogFileBrowserTests {
     @Autowired
     private CatalogFileService catalogFileService;
     @Autowired
+    private io.github.melin.lakehouse.rest.service.DataPolicyService dataPolicyService;
+    @Autowired
     private CatalogService catalogService;
     @Autowired
     private DatabaseService databaseService;
@@ -492,7 +494,7 @@ class CatalogFileBrowserTests {
         RestServerProperties custom = new RestServerProperties();
         customise.accept(custom.getFileBrowser());
         return new CatalogFileService(catalogRepository, tableRepository, databaseRepository,
-                fileIoFactory, custom);
+                fileIoFactory, custom, dataPolicyService);
     }
 
     private static ConsoleDtos.CatalogFileEntry entry(ConsoleDtos.CatalogFileListing listing, String name) {

@@ -213,7 +213,7 @@ JAVA_HOME=/path/to/jdk-21 mvn -o -DskipTests install
 # 只要服务端可执行 jar：-am 会一并构建它依赖的 core / storage / 两个协议面
 JAVA_HOME=/path/to/jdk-21 mvn -o -DskipTests -pl :lakehouse-rest-server -am clean package
 
-# 运行全部测试（服务端 432 + Spark 107，共 539 个用例；Spark 侧有 1 个示例用例
+# 运行全部测试（服务端 440 + Spark 107，共 547 个用例；Spark 侧有 1 个示例用例
 # 在本地缺 spark.sql.extensions 时会失败，见第 7 节）。Flink 侧另有 12 个端到端用例，
 # 没给 e2e 地址时整体跳过，用 scripts/e2e-flink-sql.sh 跑真实服务端
 JAVA_HOME=/path/to/jdk-21 mvn test
@@ -825,7 +825,7 @@ Azure 只下发定位元数据是个明确的缺口：Polaris 的 `polaris.stora
 
 ## 7. 测试
 
-### 单元与集成测试（539 个用例）
+### 单元与集成测试（547 个用例）
 
 ```bash
 JAVA_HOME=/path/to/jdk-21 mvn test
@@ -834,7 +834,7 @@ JAVA_HOME=/path/to/jdk-21 mvn test
 测试连的是内存 H2（`test` profile，见 `src/test/resources/application-test.yml`），
 **不依赖本机是否有 MySQL**。
 
-服务端（432 个）：
+服务端（440 个）：
 
 | 测试类 | 覆盖 |
 | --- | --- |
@@ -872,6 +872,8 @@ JAVA_HOME=/path/to/jdk-21 mvn test
 | `PaimonRestServerApplicationTests` | 上下文加载 |
 | `ApiDocEndpointTests` | 接口文档页在**真容器**里（`RANDOM_PORT`，不是 MockMvc——`/doc.html` 是 UI jar 里 `META-INF/resources` 的静态文件，MockMvc 走不到那条链路，测了也是假绿）：`auth.enabled=true` 时 `/doc.html` 与 `/v3/api-docs` 匿名 200、三组（paimon / iceberg / management）各自取得到且非空、而 `/api/management/v1/**` 与 `/v1/**` 仍然 401——**文档公开不等于端点公开**；组名写错（`/v3/api-docs/no-such-group`）回 **404** 而不是 500 |
 | `AuditColumnGuardTests` | 审计列不被超长主体名撑破的两条写入路径：实体 `save` 经 `@PrePersist` / `@PreUpdate` 归一化（连绕过 `touch` 直接 `setUpdatedBy` 的调用点也拦）、批量更新只能由调用方传 `RequestContext.auditPrincipal()`（JPQL 不触发实体回调——Iceberg 每次 commit 都曾以 `Data too long for column 'updated_by'` 失败）；`null` 保持 `null`，不填 `anonymous` |
+| `DataPolicyApiTests` | 行过滤 / 列脱敏策略（`/api/management/v1/policies`，见 `docs/row-filter-column-mask-design.md`）：PUT 整份替换与乐观锁（首建 version 1、缺 `baseVersion` / 陈旧 409、整份替换语义——这次少提交的 mask 就是被删掉的）、表达式 fail-closed 的 HTTP 面（白名单外函数 / 非布尔行过滤 / 未知列 / 嵌套字段 / LIKE 模式非字面量 / mask 类型不匹配 / 标准集外 mask / 字符串 mask 落数值列 / hash 算法不在白名单 / 非空列置空未确认——每条都 400 且指认形状，校验失败**什么都不落**）、批量下发个性化（`$principal` 折叠、豁免 EXEMPT、NONE / DISABLED 与 FOUND 如实分开、version 即 etag）、读路径收口（受保护表预览与分区 403 且说明原因、文件下载 403、删策略后同步放开）、表生命周期联动（走协议面真改名 / 真删表：策略跟随并递增版本、删表级联删策略）、`policy.changed` 审计事件落库 |
+| `DataPolicyDisabledTests` | 数据策略默认关闭（`lakehouse.rest.policy.enabled` 缺省 false）时**只锁写入口、读照常**：PUT / DELETE 403 且报错写明配置项，详情与 resolve 照常可达（没策略 NONE）——「功能没开」与「没建策略」保持可区分（§5.4 的失败模型） |
 
 Spark 子模块（107 个，其中 6 个类共 35 个用例需要显式指向服务端）：
 

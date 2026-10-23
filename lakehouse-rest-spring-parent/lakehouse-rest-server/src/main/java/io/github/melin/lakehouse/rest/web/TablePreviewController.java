@@ -8,6 +8,7 @@ import io.github.melin.lakehouse.rest.dto.PreviewDtos.PreviewRequest;
 import io.github.melin.lakehouse.rest.dto.PreviewDtos.PreviewResponse;
 import io.github.melin.lakehouse.rest.preview.PreviewTarget;
 import io.github.melin.lakehouse.rest.service.AuthorizationService;
+import io.github.melin.lakehouse.rest.service.DataPolicyService;
 import io.github.melin.lakehouse.rest.service.TablePreviewService;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
@@ -42,6 +43,8 @@ public class TablePreviewController {
 
     private final AuthorizationService authorizationService;
 
+    private final DataPolicyService dataPolicyService;
+
     /**
      * {@code POST /api/console/v1/tables/{tableId}/preview}：读一页数据。
      *
@@ -53,6 +56,9 @@ public class TablePreviewController {
                                                    @RequestBody(required = false) PreviewRequest request) {
         PreviewTarget target = previewService.resolve(tableId);
         requireSelect(target, "preview table data");
+        // 带行过滤 / 列脱敏策略的表：预览直接拒绝（设计 §6）。P0 没有「按策略渲染」的
+        // 求值器，而「悄悄返回明文」等于把控制台变成策略的后门——403 并说明原因
+        requireNotProtected(target);
         return ResponseEntity.ok()
                 .cacheControl(CacheControl.noStore())
                 .body(previewService.preview(target, request));
@@ -76,6 +82,8 @@ public class TablePreviewController {
             @RequestParam(name = "pageSize", required = false) Integer pageSize) {
         PreviewTarget target = previewService.resolve(tableId);
         requireSelect(target, "list the partitions of a table");
+        // 与预览同一道门：分区值本身就是数据分布信息，策略的读路径在 P0 一律收口（§6）
+        requireNotProtected(target);
         return ResponseEntity.ok()
                 .cacheControl(CacheControl.noStore())
                 .body(previewService.partitions(target, page, pageSize, keyword, snapshotId));
@@ -113,5 +121,11 @@ public class TablePreviewController {
     private void requireSelect(PreviewTarget target, String action) {
         authorizationService.require(target.catalog().getPrefix(), ResourceType.TABLE,
                 List.of(target.database()), target.table().getName(), Access.SELECT, action);
+    }
+
+    /** 表挂了启用中的行过滤 / 列脱敏策略时拒绝数据面请求（预览与分区共用，§6）。 */
+    private void requireNotProtected(PreviewTarget target) {
+        dataPolicyService.requirePreviewAllowed(target.catalog().getPrefix(),
+                target.database(), target.table().getName());
     }
 }
