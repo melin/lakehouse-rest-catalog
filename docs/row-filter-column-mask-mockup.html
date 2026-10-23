@@ -1,0 +1,1476 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>数据保护（行过滤 / 列脱敏） · 产品原型（lakehouse-rest 控制台）</title>
+<style>
+  :root {
+    --sidebar-w: 252px;
+    --sidebar-bg: #0e1626;
+    --sidebar-fg: #c7d2e3;
+    --sidebar-dim: #7b8aa3;
+    --sidebar-active: rgba(59, 130, 246, 0.18);
+    --page-bg: #f3f5f9;
+    --surface: #ffffff;
+    --surface-2: #f7f9fc;
+    --border: #e2e7f0;
+    --text: #1f2937;
+    --dim: #6b7280;
+    --accent: #1d4ed8;
+    --radius: 2px;
+    --warn: #d97706;
+    --danger: #dc2626;
+    --ok: #047857;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; }
+  body {
+    font: 13.5px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", sans-serif;
+    color: var(--text);
+    background: var(--page-bg);
+  }
+  .app { display: flex; min-height: 100vh; transition: padding-right .18s; }
+
+  /* ---------------- 侧边栏 ---------------- */
+  .sidebar {
+    width: var(--sidebar-w); flex: 0 0 var(--sidebar-w);
+    background: var(--sidebar-bg); color: var(--sidebar-fg);
+    padding: 14px 0 20px; position: sticky; top: 0; height: 100vh; overflow: auto;
+  }
+  .brand { display: flex; align-items: center; gap: 10px; padding: 6px 18px 18px; }
+  .brand-mark {
+    width: 30px; height: 30px; border-radius: 3px; background: #1e40af;
+    display: grid; place-items: center; color: #fff; font-weight: 700; font-size: 13px;
+  }
+  .brand-text strong { display: block; color: #eaf1ff; font-size: 14.5px; }
+  .brand-text span { font-size: 11.5px; color: var(--sidebar-dim); }
+  .nav-group { padding: 12px 18px 4px; font-size: 11px; letter-spacing: .08em; color: #5f6f88; }
+  .nav-item {
+    display: flex; align-items: center; gap: 9px; padding: 8px 18px;
+    font-size: 13px; color: var(--sidebar-fg); cursor: pointer; border-left: 2px solid transparent;
+  }
+  .nav-item:hover { color: #e6efff; }
+  .nav-item.on { background: var(--sidebar-active); color: #dce9ff; border-left-color: #3b82f6; padding-left: 16px; }
+  .nav-item .ico { width: 15px; text-align: center; opacity: .85; font-size: 12px; }
+  .nav-item .new {
+    margin-left: auto; font-size: 10px; padding: 0 4px; height: 15px; line-height: 15px;
+    background: #1e3a8a; color: #bfdbfe; border-radius: 2px; letter-spacing: .04em;
+  }
+
+  /* ---------------- 主区 ---------------- */
+  .main { flex: 1; min-width: 0; padding: 16px 24px 44px; }
+  .topbar { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--dim); margin-bottom: 12px; }
+  .topbar .sep { color: #cbd5e1; }
+  .topbar .current { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+  .topbar select {
+    font: inherit; padding: 4px 10px; border: 1px solid var(--border); border-radius: var(--radius);
+    background: #fff; color: var(--text);
+  }
+
+  .page-head { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 14px; }
+  .page-head h1 { font-size: 20px; margin: 0 0 4px; font-weight: 650; letter-spacing: -.01em; }
+  .page-head .sub { font-size: 12.5px; color: var(--dim); }
+  .page-head .actions { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
+
+  .btn {
+    display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px;
+    border: 1px solid var(--border); background: #fff; color: var(--text);
+    border-radius: var(--radius); font: inherit; font-size: 13px; cursor: pointer;
+  }
+  .btn:hover { border-color: #c7d2e3; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn.primary:hover { background: #1a45c0; }
+  .btn.ghost { background: var(--surface-2); }
+  .btn.danger { color: var(--danger); border-color: #f3c7c7; background: #fff; }
+  .btn.sm { height: 26px; padding: 0 9px; font-size: 12.5px; }
+  .btn.link { border-color: transparent; background: none; color: var(--accent); padding: 0 4px; height: auto; }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+
+  .card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+    box-shadow: 0 1px 2px rgba(16,24,40,.05), 0 1px 3px rgba(16,24,40,.05);
+  }
+  .tabs { display: flex; gap: 2px; padding: 0 14px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+  .tab {
+    padding: 11px 12px 9px; font-size: 13.5px; color: var(--dim); cursor: pointer;
+    border-bottom: 2px solid transparent; margin-bottom: -1px; white-space: nowrap;
+  }
+  .tab.on { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+  .tab-body { padding: 14px 16px 16px; }
+
+  .tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+  .field { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--dim); }
+  .control {
+    display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px;
+    border: 1px solid var(--border); border-radius: var(--radius); background: #fff;
+    font-size: 13px; color: var(--text); min-width: 110px;
+  }
+  .control .caret { margin-left: auto; color: #9aa5b6; font-size: 10px; }
+  .control.mono { font-family: var(--mono); font-size: 12.5px; }
+  .spacer { flex: 1; }
+
+  /* ---------------- KPI ---------------- */
+  .kpis { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; }
+  .kpi { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px 9px; }
+  .kpi .l { font-size: 11.5px; color: var(--dim); letter-spacing: .02em; }
+  .kpi .v { font-size: 21px; font-weight: 650; letter-spacing: -.02em; margin-top: 2px; font-variant-numeric: tabular-nums; }
+  .kpi .v small { font-size: 12px; font-weight: 500; color: var(--dim); margin-left: 3px; }
+  .kpi .d { font-size: 11.5px; color: var(--dim); margin-top: 1px; }
+  .kpi.alert { border-color: #f6c9c9; background: #fff7f7; }
+  .kpi.alert .v { color: var(--danger); }
+
+  /* ---------------- 徽标 ---------------- */
+  .badge {
+    display: inline-flex; align-items: center; gap: 4px; height: 19px; padding: 0 6px;
+    border-radius: 2px; font-size: 11.5px; white-space: nowrap; border: 1px solid transparent;
+  }
+  .badge.ok { background: #ecfdf5; color: #047857; border-color: #bbf7d0; }
+  .badge.warn { background: #fffbeb; color: #b45309; border-color: #fde68a; }
+  .badge.danger { background: #fef2f2; color: #b91c1c; border-color: #fecaca; }
+  .badge.mute { background: #f1f5f9; color: #64748b; border-color: #e2e8f0; }
+  .badge.info { background: #eff6ff; color: #1e40af; border-color: #dbeafe; }
+  .lv {
+    display: inline-flex; align-items: center; gap: 4px; font-family: var(--mono);
+    font-size: 11.5px; color: #1e3a8a; background: #eef4ff; border: 1px solid #cfdff9;
+    border-radius: 2px; padding: 0 5px; height: 19px;
+  }
+  .fmt { font-family: var(--mono); font-size: 11px; color: #64748b; background: #eef2f7; padding: 0 4px; border-radius: 2px; }
+
+  /* ---------------- 提示条 ---------------- */
+  .banner {
+    display: flex; align-items: flex-start; gap: 8px; padding: 8px 12px; margin-bottom: 12px;
+    border-left: 3px solid var(--warn); background: #fffbeb; color: #7c4a03;
+    font-size: 12.5px; border-radius: var(--radius);
+  }
+  .banner .tag { font-weight: 600; white-space: nowrap; }
+  .banner.info { border-left-color: var(--accent); background: #eff6ff; color: #1e3a8a; }
+  .banner.danger { border-left-color: var(--danger); background: #fef2f2; color: #991b1b; }
+  .banner.ok { border-left-color: var(--ok); background: #f0fdf4; color: #065f46; }
+  .banner a { color: inherit; }
+
+  /* ---------------- 数据表 ---------------- */
+  .tablewrap { border: 1px solid var(--border); border-radius: var(--radius); overflow: auto; }
+  table.dtable { width: 100%; border-collapse: collapse; font-size: 12.8px; }
+  table.dtable thead th {
+    position: sticky; top: 0; z-index: 1; background: var(--surface-2);
+    text-align: left; font-weight: 600; color: #475569; padding: 8px 12px;
+    border-bottom: 1px solid var(--border); white-space: nowrap;
+  }
+  table.dtable tbody td {
+    padding: 8px 12px; border-bottom: 1px solid #f0f3f8; vertical-align: middle;
+    font-variant-numeric: tabular-nums;
+  }
+  table.dtable tbody tr:hover td { background: #f8fbff; }
+  table.dtable tbody tr:last-child td { border-bottom: none; }
+  table.dtable tr.row-alert td { background: #fffafa; }
+  table.dtable tr.row-alert:hover td { background: #fff5f5; }
+  .tname { font-family: var(--mono); font-size: 12.5px; color: #111827; }
+  .tname .db { color: #94a3b8; }
+  .num { font-family: var(--mono); font-size: 12.5px; }
+  .dim2 { color: var(--dim); font-size: 12px; }
+  .nowrap { white-space: nowrap; }
+
+  /* 条件 / 列 chips */
+  .chips { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 4px; height: 21px; padding: 0 6px;
+    border: 1px solid #cfd9ea; background: #f4f8ff; color: #1e3a8a;
+    border-radius: 2px; font-size: 12px; font-family: var(--mono); white-space: nowrap;
+  }
+  .chip.mask { border-color: #d8c9f3; background: #f7f3ff; color: #5b21b6; }
+  .chip.plain { border-color: #e2e8f0; background: #f8fafc; color: #64748b; }
+  .chip .x { color: #94a3b8; cursor: pointer; font-family: sans-serif; }
+  .chip .x:hover { color: var(--danger); }
+  .op { font-family: var(--mono); font-size: 12px; color: #334155; }
+
+  /* ---------------- 两栏 / 右栏 ---------------- */
+  .split { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(300px, .95fr); gap: 12px; align-items: start; }
+  .split.even { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .rail { position: sticky; top: 12px; }
+  .card-h { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--border); }
+  .card-h h3 { margin: 0; font-size: 13.5px; font-weight: 650; }
+  .card-h .hint { font-size: 11.5px; color: var(--dim); margin-left: auto; }
+  .card-b { padding: 12px 14px 14px; }
+  .kv { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 6px 10px; font-size: 12.8px; }
+  .kv dt { color: var(--dim); font-size: 12.3px; }
+  .kv dd { margin: 0; }
+
+  /* ---------------- 表达式 / 计划 ---------------- */
+  pre.code {
+    margin: 0; padding: 10px 12px; background: #0f172a; color: #dbe4f3; border-radius: var(--radius);
+    font-family: var(--mono); font-size: 12px; line-height: 1.65; overflow: auto;
+  }
+  pre.code .k { color: #93c5fd; }
+  pre.code .s { color: #86efac; }
+  pre.code .n { color: #fbbf24; }
+  pre.code .c { color: #7b8aa3; }
+  pre.code .hl { background: rgba(59,130,246,.22); border-radius: 2px; padding: 0 3px; }
+  .sql {
+    font-family: var(--mono); font-size: 12.5px; background: var(--surface-2);
+    border: 1px dashed #cfd9ea; border-radius: var(--radius); padding: 9px 11px; color: #1e293b;
+    white-space: pre-wrap; word-break: break-word;
+  }
+  .sql .kw { color: #1d4ed8; }
+  .sql .st { color: #b45309; }
+  .plan { font-family: var(--mono); font-size: 11.8px; line-height: 1.75; white-space: pre; overflow: auto; }
+  .plan .node { color: #334155; }
+  .plan .hit { background: rgba(59,130,246,.14); color: #1e40af; font-weight: 600; border-radius: 2px; padding: 0 2px; }
+  .plan .mute { color: #94a3b8; }
+
+  /* ---------------- 步骤条 ---------------- */
+  .stepper { display: flex; align-items: center; gap: 0; margin-bottom: 14px; flex-wrap: wrap; }
+  .step { display: flex; align-items: center; gap: 8px; padding-right: 14px; color: var(--dim); font-size: 13px; }
+  .step .n {
+    width: 21px; height: 21px; border-radius: 50%; display: grid; place-items: center;
+    background: #eef2f7; color: #64748b; font-size: 11.5px; font-weight: 600; border: 1px solid #e2e8f0;
+  }
+  .step.on { color: var(--accent); font-weight: 600; }
+  .step.on .n { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .step.done { color: var(--ok); }
+  .step.done .n { background: #ecfdf5; color: var(--ok); border-color: #bbf7d0; }
+  .step .line { width: 26px; height: 1px; background: var(--border); margin-left: 4px; }
+
+  /* ---------------- 表单 ---------------- */
+  .frow { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 0; padding: 12px 0; border-bottom: 1px solid #f0f3f8; }
+  .frow:last-child { border-bottom: none; }
+  .frow > label { flex: 0 0 104px; font-size: 12.8px; color: #334155; padding-top: 6px; }
+  .frow .body { flex: 1; min-width: 0; }
+  .frow .note { font-size: 11.8px; color: var(--dim); margin-top: 5px; line-height: 1.55; }
+  .input, .select {
+    height: 32px; padding: 0 9px; border: 1px solid var(--border); border-radius: var(--radius);
+    font: inherit; font-size: 13px; color: var(--text); background: #fff; min-width: 120px;
+  }
+  .input:focus, .select:focus { outline: 2px solid rgba(29,78,216,.14); border-color: var(--accent); }
+  .input.mono, .select.mono { font-family: var(--mono); font-size: 12.5px; }
+  .inline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .radio-row { display: flex; gap: 14px; flex-wrap: wrap; font-size: 13px; }
+  .radio { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+  .radio input { accent-color: var(--accent); }
+  .cb { display: inline-flex; align-items: flex-start; gap: 7px; font-size: 12.5px; cursor: pointer; }
+  .cb input { margin-top: 3px; accent-color: var(--accent); }
+
+  /* 行过滤条件行 */
+  .cond {
+    display: grid; grid-template-columns: minmax(0,1.25fr) 116px minmax(0,1.1fr) 26px;
+    gap: 7px; align-items: center; margin-bottom: 7px;
+  }
+  .cond .sel, .cond .val {
+    height: 31px; border: 1px solid var(--border); border-radius: var(--radius);
+    font: inherit; font-size: 12.8px; padding: 0 8px; background: #fff; min-width: 0;
+  }
+  .cond .val { font-family: var(--mono); font-size: 12.3px; }
+  .cond .rm { color: #94a3b8; cursor: pointer; text-align: center; }
+  .cond .rm:hover { color: var(--danger); }
+  .cond-group { border-left: 2px solid #dbe4f3; padding-left: 10px; margin: 8px 0 8px 2px; }
+  .join { display: flex; align-items: center; gap: 8px; margin: 2px 0 8px; font-size: 11.5px; color: var(--dim); }
+  .join .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 2px; overflow: hidden; }
+  .join .seg span { padding: 1px 8px; font-family: var(--mono); font-size: 11.5px; color: #64748b; cursor: pointer; background: #fff; }
+  .join .seg span.on { background: #eef4ff; color: #1e40af; font-weight: 600; }
+
+  /* ---------------- 试算预览表 ---------------- */
+  table.ptable { width: 100%; border-collapse: collapse; font-size: 12.3px; font-family: var(--mono); }
+  table.ptable th {
+    text-align: left; font-family: -apple-system, sans-serif; font-size: 11.8px; font-weight: 600;
+    color: #475569; background: var(--surface-2); padding: 6px 9px; border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  table.ptable td { padding: 5px 9px; border-bottom: 1px solid #f1f5f9; }
+  table.ptable td.masked { background: #fef9ec; color: #92400e; }
+  table.ptable td.nulled { background: #fef2f2; color: #b91c1c; font-style: italic; }
+  table.ptable td.hidden-row { color: #94a3b8; text-decoration: line-through; }
+  .celltag {
+    display: inline-block; margin-left: 5px; font-family: -apple-system, sans-serif; font-size: 10px;
+    padding: 0 3px; border-radius: 2px; background: #fde68a; color: #92400e; vertical-align: 1px;
+  }
+
+  /* ---------------- 校验清单 ---------------- */
+  .checks { display: grid; gap: 7px; }
+  .check { display: flex; align-items: flex-start; gap: 8px; font-size: 12.8px; }
+  .check .ic { width: 16px; flex: 0 0 16px; text-align: center; font-size: 12px; }
+  .check.ok .ic { color: var(--ok); }
+  .check.warn .ic { color: var(--warn); }
+  .check.err .ic { color: var(--danger); }
+  .check .t { color: #334155; }
+  .check .h { color: var(--dim); font-size: 11.8px; }
+
+  /* ---------------- 影响面 ---------------- */
+  .impact { display: grid; gap: 0; }
+  .impact .item { display: flex; gap: 9px; padding: 8px 0; border-bottom: 1px dashed #eef2f7; font-size: 12.6px; }
+  .impact .item:last-child { border-bottom: none; }
+  .impact .item .lb { flex: 0 0 132px; color: #334155; }
+  .impact .item .vv { flex: 1; color: var(--dim); }
+
+  /* ---------------- 标注 ---------------- */
+  .pin {
+    display: inline-grid; place-items: center; width: 15px; height: 15px; border-radius: 50%;
+    background: #f59e0b; color: #fff; font-size: 10px; font-family: -apple-system, sans-serif;
+    font-weight: 700; vertical-align: 2px; margin-left: 4px; cursor: help;
+  }
+  .notes {
+    display: none; position: fixed; right: 0; top: 0; bottom: 0; width: 320px; z-index: 40;
+    background: #0f172a; color: #d7e1f2; padding: 16px 16px 40px; overflow: auto;
+    font-size: 12.3px; line-height: 1.62; box-shadow: -8px 0 24px rgba(15,23,42,.18);
+  }
+  body.notes-on .notes { display: block; }
+  body.notes-on .app { padding-right: 320px; }
+  .notes h4 { margin: 0 0 4px; font-size: 12.5px; color: #fff; letter-spacing: .02em; }
+  .notes .lead { color: #8ea0bd; font-size: 11.5px; margin-bottom: 12px; }
+  .notes .n { display: flex; gap: 8px; margin-bottom: 11px; }
+  .notes .n b {
+    flex: 0 0 16px; height: 16px; border-radius: 50%; background: #f59e0b; color: #1f2937;
+    font-size: 10px; display: grid; place-items: center; margin-top: 2px;
+  }
+  .notes .n span { color: #c7d3e6; }
+  .notes .n code { font-family: var(--mono); font-size: 11px; color: #93c5fd; }
+
+  /* ---------------- 演示控制条 ---------------- */
+  .demo {
+    position: fixed; right: 18px; bottom: 18px; z-index: 50;
+    display: flex; align-items: center; gap: 6px; padding: 8px 10px; flex-wrap: wrap; max-width: calc(100vw - 36px);
+    background: #111827; color: #e5e7eb; border-radius: 3px; font-size: 12px;
+    box-shadow: 0 8px 24px rgba(0,0,0,.18);
+  }
+  .demo span { color: #9ca3af; margin-right: 2px; }
+  .demo button {
+    font: inherit; padding: 4px 9px; border-radius: 2px; border: 1px solid transparent;
+    background: rgba(255,255,255,.08); color: #e5e7eb; cursor: pointer;
+  }
+  .demo button.on { background: #1d4ed8; border-color: #3b82f6; color: #fff; }
+  .demo .sep { width: 1px; height: 16px; background: #374151; margin: 0 4px; }
+
+  /* ---------------- 画面切换 ---------------- */
+  .screen { display: none; }
+  .screen.on { display: block; }
+  .crumb-link { color: var(--accent); cursor: pointer; }
+
+  .statebox { padding: 40px 20px; text-align: center; color: var(--dim); }
+  .statebox .ico { font-size: 24px; margin-bottom: 8px; opacity: .7; }
+  .statebox strong { display: block; color: var(--text); font-size: 14px; margin-bottom: 4px; }
+  .statebox p { margin: 0 auto 12px; font-size: 12.5px; max-width: 460px; }
+
+  .footerbar {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding-top: 10px; margin-top: 12px; border-top: 1px solid var(--border);
+    font-size: 12.3px; color: var(--dim);
+  }
+  .footerbar b { color: var(--text); font-weight: 600; }
+  .footerbar .grow { flex: 1; }
+
+  @media (max-width: 1280px) {
+    .kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .split { grid-template-columns: minmax(0, 1fr); }
+    .rail { position: static; }
+  }
+  @media (max-width: 1024px) {
+    .sidebar { display: none; }
+    .main { padding: 14px; }
+    .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
+</style>
+</head>
+<body>
+
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">LH</div>
+      <div class="brand-text"><strong>LakeHouse Catalog</strong><span>管理控制台</span></div>
+    </div>
+    <div class="nav-group">概览</div>
+    <div class="nav-item"><span class="ico">▦</span>控制台概览</div>
+    <div class="nav-group">目录（CATALOG API）</div>
+    <div class="nav-item"><span class="ico">▤</span>目录浏览</div>
+    <div class="nav-group">治理（MANAGEMENT API）</div>
+    <div class="nav-item"><span class="ico">▥</span>Catalogs</div>
+    <div class="nav-item"><span class="ico">◔</span>主体</div>
+    <div class="nav-item"><span class="ico">◑</span>角色</div>
+    <div class="nav-item"><span class="ico">◈</span>权限管理</div>
+    <div class="nav-item on" data-go="list"><span class="ico">⛨</span>数据保护<span class="new">新</span></div>
+    <div class="nav-item"><span class="ico">▧</span>优化任务</div>
+    <div class="nav-group">审计</div>
+    <div class="nav-item"><span class="ico">◎</span>事件</div>
+    <div class="nav-group">系统</div>
+    <div class="nav-item"><span class="ico">⚙</span>连接设置</div>
+  </aside>
+
+  <main class="main">
+    <div class="topbar">
+      <span>治理</span><span class="sep">/</span><span id="crumb">数据保护</span>
+      <span class="current">
+        <span>当前目录</span>
+        <select><option>lakehouse</option><option>iceberg_prod</option></select>
+        <span class="badge mute">只读身份 · 可编辑策略</span>
+      </span>
+    </div>
+
+    <!-- ============================================================ 画面 1：策略总览 -->
+    <section class="screen on" id="s-list">
+      <div class="page-head">
+        <div>
+          <h1>数据保护<span class="pin">1</span></h1>
+          <div class="sub">按表绑定的行过滤与列脱敏策略。策略在 Spark 会话内生效，改动后新查询 60 秒内自动加载。</div>
+        </div>
+        <div class="actions">
+          <button class="btn ghost" data-go="tabletab">在表详情中查看</button>
+          <button class="btn primary" data-go="wizard">新建策略</button>
+        </div>
+      </div>
+
+      <div class="banner">
+        <span class="tag">强制等级 L0</span>
+        <div>
+          当前部署为「引擎内强制」：策略只改写 Spark 的执行计划，<b>存储凭据仍在客户端</b>，
+          持有凭据的人用 <span class="num">spark.read.parquet()</span> 直读文件仍可看到明文。
+          要升级到 L1（网关代理、用户只有 SQL 连接），需要把 Spark 会话收进网关——
+          <span class="crumb-link">查看部署要求</span><span class="pin">2</span>
+        </div>
+      </div>
+
+      <div class="kpis">
+        <div class="kpi">
+          <div class="l">受保护表</div>
+          <div class="v">12<small>/ 34</small></div>
+          <div class="d">已授权表中覆盖率 35%</div>
+        </div>
+        <div class="kpi">
+          <div class="l">脱敏列</div>
+          <div class="v">27</div>
+          <div class="d">分布在 9 张表</div>
+        </div>
+        <div class="kpi alert">
+          <div class="l">悬空策略</div>
+          <div class="v">1</div>
+          <div class="d">列已删除，查询会被拒绝</div>
+        </div>
+        <div class="kpi">
+          <div class="l">近 7 天按策略返回</div>
+          <div class="v">1,284</div>
+          <div class="d">次查询 · 覆盖 6 个作业</div>
+        </div>
+        <div class="kpi">
+          <div class="l">整列不可见</div>
+          <div class="v" style="font-size:15px;line-height:26px;color:#64748b">未支持</div>
+          <div class="d">见说明<span class="pin">3</span></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="tab-body" style="padding-bottom:10px">
+          <div class="tools">
+            <div class="control" style="min-width:210px"><span style="color:#9aa5b6">⌕</span><span class="mono" style="color:#9aa5b6">表名 / 列名 / 条件</span></div>
+            <div class="control">全部 Catalog<span class="caret">▾</span></div>
+            <div class="control">全部状态<span class="caret">▾</span></div>
+            <div class="control">全部格式<span class="caret">▾</span></div>
+            <div class="spacer"></div>
+            <label class="field"><input type="checkbox" checked /> 只看有策略的表</label>
+            <span class="dim2">共 12 条 · 每页 20</span>
+          </div>
+
+          <div class="tablewrap">
+            <table class="dtable">
+              <thead>
+                <tr>
+                  <th style="width:24%">表</th>
+                  <th style="width:26%">行过滤</th>
+                  <th style="width:19%">列脱敏</th>
+                  <th style="width:9%">强制范围</th>
+                  <th style="width:8%">状态</th>
+                  <th style="width:6%">版本</th>
+                  <th style="width:8%">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>
+                    <div class="tname">sales.orders</div>
+                    <div class="dim2"><span class="fmt">PAIMON</span> lakehouse · 8,932 行</div>
+                  </td>
+                  <td>
+                    <div class="chips">
+                      <span class="chip">region = 'CN'</span>
+                      <span class="op">AND</span>
+                      <span class="chip">status ≠ 'void'</span>
+                    </div>
+                  </td>
+                  <td>
+                    <div class="chips">
+                      <span class="chip mask">customer_phone</span>
+                      <span class="chip mask">id_card</span>
+                      <span class="chip plain">+1</span>
+                    </div>
+                  </td>
+                  <td><span class="lv">L0</span></td>
+                  <td><span class="badge ok">生效中</span></td>
+                  <td class="num">v8</td>
+                  <td><button class="btn sm" data-go="detail">详情</button></td>
+                </tr>
+                <tr class="row-alert">
+                  <td>
+                    <div class="tname">sales.orders_v1</div>
+                    <div class="dim2"><span class="fmt">PAIMON</span> lakehouse · 备份表</div>
+                  </td>
+                  <td>
+                    <div class="chips">
+                      <span class="chip" style="border-color:#fecaca;background:#fef2f2;color:#b91c1c">status ≠ 'void'</span>
+                    </div>
+                    <div class="dim2" style="color:#b91c1c;margin-top:3px">列 status 已被删除，策略无法求值<span class="pin">4</span></div>
+                  </td>
+                  <td><span class="chip mask">id_card</span></td>
+                  <td><span class="lv">L0</span></td>
+                  <td><span class="badge danger">悬空</span></td>
+                  <td class="num">v3</td>
+                  <td><button class="btn sm">修复</button></td>
+                </tr>
+                <tr>
+                  <td>
+                    <div class="tname">sales.customers</div>
+                    <div class="dim2"><span class="fmt">PAIMON</span> lakehouse · 41,208 行</div>
+                  </td>
+                  <td><span class="dim2">未设置（全表可见）</span></td>
+                  <td>
+                    <div class="chips">
+                      <span class="chip mask">email</span>
+                      <span class="chip mask">id_card</span>
+                    </div>
+                  </td>
+                  <td><span class="lv">L0</span></td>
+                  <td><span class="badge ok">生效中</span></td>
+                  <td class="num">v3</td>
+                  <td><button class="btn sm" data-go="detail">详情</button></td>
+                </tr>
+                <tr>
+                  <td>
+                    <div class="tname">finance.payroll</div>
+                    <div class="dim2"><span class="fmt">ICEBERG</span> lakehouse · 1,946 行</div>
+                  </td>
+                  <td>
+                    <div class="chips">
+                      <span class="chip">tenant_id IN (...)</span>
+                    </div>
+                  </td>
+                  <td>
+                    <div class="chips">
+                      <span class="chip mask">salary</span>
+                      <span class="chip mask">bank_account</span>
+                    </div>
+                  </td>
+                  <td><span class="lv">L0</span></td>
+                  <td><span class="badge ok">生效中</span></td>
+                  <td class="num">v5</td>
+                  <td><button class="btn sm">详情</button></td>
+                </tr>
+                <tr>
+                  <td>
+                    <div class="tname">web.events_raw</div>
+                    <div class="dim2"><span class="fmt">PAIMON</span> lakehouse · 2.4 亿行</div>
+                  </td>
+                  <td>
+                    <div class="chips">
+                      <span class="chip">dt &gt;= '2026-01-01'</span>
+                    </div>
+                  </td>
+                  <td><span class="dim2">—</span></td>
+                  <td><span class="lv">L0</span></td>
+                  <td><span class="badge ok">生效中</span></td>
+                  <td class="num">v2</td>
+                  <td><button class="btn sm">详情</button></td>
+                </tr>
+                <tr>
+                  <td>
+                    <div class="tname">hr.candidates</div>
+                    <div class="dim2"><span class="fmt">ICEBERG</span> lakehouse · 3,012 行</div>
+                  </td>
+                  <td><span class="dim2">未设置</span></td>
+                  <td><span class="chip mask">phone</span></td>
+                  <td><span class="lv">L0</span></td>
+                  <td><span class="badge mute">已停用</span></td>
+                  <td class="num">v1</td>
+                  <td><button class="btn sm">详情</button></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="footerbar">
+            <span>共 <b>12</b> 条</span>
+            <span class="sep">·</span>
+            <span class="dim2">悬空策略会让整张表不可读，优先级最高</span>
+            <span class="grow"></span>
+            <button class="btn sm ghost">上一页</button>
+            <span class="num">1 / 1</span>
+            <button class="btn sm ghost">下一页</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="banner info" style="margin-top:12px">
+        <span class="tag">默认语义</span>
+        <div>
+          <b>没有策略 = 不保护</b>（默认放行）。「取不到策略就拒绝」只发生在策略服务不可达或版本校验失败时，
+          两者在界面上必须分开表达，否则运维会以为「建了策略就全拦住了」。
+        </div>
+      </div>
+
+      <aside class="notes">
+        <h4>策略总览 · 设计要点</h4>
+        <div class="lead">列表以「表」为主语，一表一条策略、版本化。</div>
+        <div class="n"><b>1</b><span>入口放治理分组，与「权限管理」并列：权限管「谁能读」，数据保护管「读到什么」。两者是同一层治理决策，不该藏进表详情。</span></div>
+        <div class="n"><b>2</b><span>强制等级是<b>部署属性</b>，不是策略属性。徽标只能看不能改——改字段不会让 L0 变 L1（设计文档 §7.1、§2.3）。</span></div>
+        <div class="n"><b>3</b><span>「整列不可见」故意不放入口：注入点晚于 <code>SELECT *</code> 展开，做不了（§5.8）。放一个开关然后默默不生效，比不放更糟。</span></div>
+        <div class="n"><b>4</b><span>悬空策略单独成行样式：DDL 删列后 fail-closed 会把整张表读死，这是事故不是配置。列表必须能一眼看到并「修复」。</span></div>
+        <div class="n"><b>5</b><span>「已停用」与「悬空」用不同颜色：前者是人做的，后者是系统发现的。</span></div>
+        <div class="n"><b>6</b><span>行过滤只显示条件，不显示「命中行数占比」——那本身就是关于数据分布的信息。</span></div>
+      </aside>
+    </section>
+
+    <!-- ============================================================ 画面 2：新建策略 -->
+    <section class="screen" id="s-wizard">
+      <div class="page-head">
+        <div>
+          <div class="dim2" style="margin-bottom:2px">
+            <span class="crumb-link" data-go="list">数据保护</span> <span style="color:#cbd5e1">/</span> 新建策略
+          </div>
+          <h1>为 sales.orders 新建策略</h1>
+          <div class="sub">发布后对新查询生效；同一张表只有一条策略，改动会生成新版本（v9）。</div>
+        </div>
+        <div class="actions">
+          <button class="btn ghost" data-go="list">取消</button>
+          <button class="btn primary" id="btn-publish" data-go="detail">发布 v9</button>
+        </div>
+      </div>
+
+      <div class="stepper">
+        <div class="step done"><span class="n">1</span>目标与主体</div><span class="line"></span>
+        <div class="step done"><span class="n">2</span>行过滤</div><span class="line"></span>
+        <div class="step on"><span class="n">3</span>列脱敏</div><span class="line"></span>
+        <div class="step"><span class="n">4</span>校验与发布</div>
+      </div>
+
+      <div class="split">
+        <div>
+          <!-- 步骤 1 -->
+          <div class="card" style="margin-bottom:12px">
+            <div class="card-h">
+              <h3>1 · 目标与主体</h3>
+              <span class="hint">已选：lakehouse.sales.orders</span>
+            </div>
+            <div class="card-b" style="padding-top:2px">
+              <div class="frow">
+                <label>目标表</label>
+                <div class="body">
+                  <div class="inline">
+                    <span class="select mono">lakehouse</span><span class="op">.</span>
+                    <span class="select mono">sales</span><span class="op">.</span>
+                    <span class="select mono">orders</span>
+                    <span class="badge info">PAIMON</span>
+                    <span class="dim2">34 列 · 8,932 行 · 上次更新 12 分钟前</span>
+                  </div>
+                  <div class="note">策略按 <span class="num">catalog.database.table</span> 绑定：表被 <span class="num">DROP</span> 时策略级联删除，<span class="num">RENAME</span> 时跟随改名，同名重建<b>不会</b>继承旧策略。</div>
+                </div>
+              </div>
+              <div class="frow">
+                <label>主体范围</label>
+                <div class="body">
+                  <div class="radio-row">
+                    <label class="radio"><input type="radio" name="who" checked /> 全部主体（推荐）</label>
+                    <label class="radio"><input type="radio" name="who" /> 仅以下主体</label>
+                  </div>
+                  <div class="note">选择「全部主体」时，任何能通过 <span class="num">TABLE:SELECT</span> 判权的人都按这套规则读数据。单个主体的例外要另建策略——同一张表不叠加多条。</div>
+                </div>
+              </div>
+              <div class="frow">
+                <label>失败行为</label>
+                <div class="body">
+                  <div class="inline">
+                    <span class="badge ok">fail-closed · 拒绝查询</span>
+                    <span class="dim2">策略取不到 / 版本校验失败 / 表达式引用的列不存在 → 查询报错，不降级为明文</span>
+                  </div>
+                  <div class="note">不可关闭。与 Lake Formation「列被排除时返回 NULL」相反，理由见右侧说明。</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 步骤 2 -->
+          <div class="card" style="margin-bottom:12px">
+            <div class="card-h">
+              <h3>2 · 行过滤</h3>
+              <span class="hint">可选 · 不设置则全表行可见</span>
+            </div>
+            <div class="card-b">
+              <div class="cond">
+                <select class="sel"><option>region</option></select>
+                <select class="sel"><option>=</option><option>≠</option><option>&gt;</option><option>&lt;</option><option>IN</option><option>LIKE</option><option>IS NULL</option></select>
+                <input class="val" value="'CN'" />
+                <span class="rm">✕</span>
+              </div>
+              <div class="join">
+                <span>与下一组的关系</span>
+                <span class="seg"><span class="on">AND</span><span>OR</span></span>
+              </div>
+              <div class="cond">
+                <select class="sel"><option>status</option></select>
+                <select class="sel"><option>≠</option></select>
+                <input class="val" value="'void'" />
+                <span class="rm">✕</span>
+              </div>
+              <button class="btn sm ghost" style="margin:4px 0 10px">+ 添加条件</button>
+
+              <div class="sql">WHERE <span class="kw">coalesce</span>(<span class="kw">region</span> = <span class="st">'CN'</span> AND <span class="kw">status</span> &lt;&gt; <span class="st">'void'</span>, <span class="kw">false</span>)</div>
+              <div class="note" style="margin-top:6px">
+                表达式结果为空（NULL）时按「不通过」处理，界面会自动包一层 <span class="num">coalesce(..., false)</span>：
+                否则「被过滤」与「条件写错了」在结果里长得一样。
+              </div>
+            </div>
+          </div>
+
+          <!-- 步骤 3 -->
+          <div class="card">
+            <div class="card-h">
+              <h3>3 · 列脱敏</h3>
+              <span class="hint">已选 3 列 · 共 34 列</span>
+            </div>
+            <div class="card-b" style="padding-top:8px">
+              <div class="tablewrap" style="max-height:none">
+                <table class="dtable">
+                  <thead>
+                    <tr>
+                      <th style="width:26%">列</th>
+                      <th style="width:16%">类型</th>
+                      <th style="width:7%">非空</th>
+                      <th style="width:30%">脱敏方式</th>
+                      <th style="width:21%">结果示意</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td><span class="tname">customer_phone</span></td>
+                      <td class="num dim2">string</td>
+                      <td><span class="badge mute">是</span></td>
+                      <td>
+                        <div class="inline">
+                          <select class="select" style="height:28px;font-size:12.5px"><option>show_first_n</option><option>show_last_n</option><option>mask_alphanum</option><option>replace_with_null</option><option>hash</option><option>truncate_to_month</option></select>
+                          <span class="dim2">保留</span><input class="input" style="height:28px;width:52px;text-align:center" value="3" />
+                        </div>
+                      </td>
+                      <td class="num" style="color:#92400e">138xxxxxxxx</td>
+                    </tr>
+                    <tr>
+                      <td><span class="tname">id_card</span></td>
+                      <td class="num dim2">string</td>
+                      <td><span class="badge mute">是</span></td>
+                      <td>
+                        <select class="select" style="height:28px;font-size:12.5px"><option>replace_with_null</option></select>
+                      </td>
+                      <td class="num" style="color:#b91c1c">NULL<span class="pin">7</span></td>
+                    </tr>
+                    <tr>
+                      <td colspan="5" style="background:#fffbeb;border-bottom:1px solid #fde68a">
+                        <label class="cb">
+                          <input type="checkbox" checked />
+                          <span><b>id_card 是 NOT NULL 列，置空后该列会返回 NULL。</b>我确认这是策略语义，而不是数据质量问题的误报。</span>
+                        </label>
+                      </td>
+                    </tr>
+                    <tr>
+                      <td><span class="tname">email</span></td>
+                      <td class="num dim2">string</td>
+                      <td><span class="badge mute">否</span></td>
+                      <td>
+                        <div class="inline">
+                          <select class="select" style="height:28px;font-size:12.5px"><option>hash</option></select>
+                          <select class="select mono" style="height:28px;font-size:12px"><option>SHA-256</option><option>SHA-512</option></select>
+                        </div>
+                      </td>
+                      <td class="num" style="color:#92400e">9f2c7a1e…</td>
+                    </tr>
+                    <tr style="opacity:.55">
+                      <td><span class="tname">profile</span><span class="pin">8</span></td>
+                      <td class="num dim2">struct&lt;city,zip&gt;</td>
+                      <td><span class="badge mute">否</span></td>
+                      <td><span class="dim2">嵌套字段暂不支持</span></td>
+                      <td class="dim2">—</td>
+                    </tr>
+                    <tr>
+                      <td><span class="tname">amount</span></td>
+                      <td class="num dim2">decimal(12,2)</td>
+                      <td><span class="badge mute">否</span></td>
+                      <td><select class="select" style="height:28px;font-size:12.5px"><option>不脱敏</option></select></td>
+                      <td class="dim2">原值</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <div class="note" style="margin-top:8px">
+                哈希算法必须显式选：不提供「跟随集群配置」，否则同一份策略在两个集群给出不同结果，且不会报错。
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 右侧：实时试算 -->
+        <div class="rail">
+          <div class="card" style="margin-bottom:12px">
+            <div class="card-h">
+              <h3>实时试算</h3>
+              <span class="hint">服务端按同一份 AST 求值</span>
+            </div>
+            <div class="card-b">
+              <div class="kv" style="margin-bottom:10px">
+                <dt>样本行数</dt><dd class="num">8,932 → <b>1,204</b> <span class="dim2">（13.5%）</span></dd>
+                <dt>脱敏列</dt><dd class="num">3</dd>
+                <dt>试算耗时</dt><dd class="num">312 ms</dd>
+              </div>
+              <table class="ptable">
+                <thead>
+                  <tr><th>order_id</th><th>customer_phone</th><th>id_card</th><th>region</th></tr>
+                </thead>
+                <tbody>
+                  <tr><td>100238</td><td class="masked">138xxxxxxxx</td><td class="nulled">NULL</td><td>CN</td></tr>
+                  <tr><td>100241</td><td class="masked">139xxxxxxxx</td><td class="nulled">NULL</td><td>CN</td></tr>
+                  <tr><td>100256</td><td class="masked">137xxxxxxxx</td><td class="nulled">NULL</td><td>CN</td></tr>
+                </tbody>
+              </table>
+              <div class="note" style="margin-top:8px">
+                试算只读、不落库。<b>它必须与 Spark 实际结果逐行一致</b>——不一致即视为缺陷，不是「预览精度问题」。
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-h"><h3>这份策略能挡住什么</h3></div>
+            <div class="card-b">
+              <div class="impact">
+                <div class="item"><span class="lb">Spark 读写</span><span class="vv">按策略返回（本方案覆盖）<span class="pin">6</span></span></div>
+                <div class="item"><span class="lb">控制台数据预览</span><span class="vv">按策略渲染</span></div>
+                <div class="item"><span class="lb">文件下载</span><span class="vv">拒绝（403）</span></div>
+                <div class="item"><span class="lb">列 min/max 统计</span><span class="vv">拒绝（可反推原值范围）</span></div>
+                <div class="item"><span class="lb">直读文件 / Trino / Flink</span><span class="vv" style="color:#b91c1c">不覆盖</span></div>
+              </div>
+              <div class="note" style="margin-top:8px;color:#b45309">
+                前三条是控制台必须自己收的口子——它们都不经过 Spark 计划，注入再正确也管不到。
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="banner" style="margin-top:12px">
+        <span class="tag">发布前请确认</span>
+        <div>这一步之后<b>没有「预览模式」</b>：策略一发布就对新查询生效。要小范围验证，先在「试算」里换几个主体看结果，再发布。</div>
+      </div>
+
+      <aside class="notes">
+        <h4>新建向导 · 设计要点</h4>
+        <div class="lead">四步一条直线，右侧恒有试算——表单与结果同屏，才敢点发布。</div>
+        <div class="n"><b>1</b><span>行过滤用<b>结构化构建器</b>，不是自由 SQL。AST 白名单是唯一可校验、可下发的形状；自由 SQL 无法保证「两版 Spark 结果一致」。</span></div>
+        <div class="n"><b>2</b><span>主体范围只给两档（全部 / 指定）。不做「按标签 ABAC」——那是 P2 的事，提前放进来会让人以为已经支持。</span></div>
+        <div class="n"><b>3</b><span>fail-closed 显示为不可编辑的徽标，不是开关。能被关掉的安全默认值等于没有。</span></div>
+        <div class="n"><b>4</b><span>值控件要按列类型换（日期用选择器、枚举列给下拉）。原型里统一成输入框，是为了不把实现细节画死。</span></div>
+        <div class="n"><b>5</b><span>mask 走<b>标准集下拉</b>，参数内联。名字直接用社区 SPIP 的那套（<code>show_last_n</code> 等），将来切官方 API 是改名不是重构。</span></div>
+        <div class="n"><b>6</b><span>「能挡住什么」常驻右栏：用户在这里第一次意识到「直读文件拦不住」，比发布后在告警里发现好。</span></div>
+        <div class="n"><b>7</b><span>NOT NULL + 置空必须<b>逐条勾选确认</b>，默认不勾。硬拒会让「身份证置空」这个最常见需求做不了；默认允许会产出注定失效的策略。</span></div>
+        <div class="n"><b>8</b><span>struct 列置灰并写明「不支持」，不能让用户选中后静默不生效——那是最坏的失败形态。</span></div>
+        <div class="n"><b>9</b><span>发布按钮上带版本号（v9）：策略是版本化对象，操作者点下去之前就该知道自己在改第几版。</span></div>
+      </aside>
+    </section>
+
+    <!-- ============================================================ 画面 3：策略详情 -->
+    <section class="screen" id="s-detail">
+      <div class="page-head">
+        <div>
+          <div class="dim2" style="margin-bottom:2px">
+            <span class="crumb-link" data-go="list">数据保护</span> <span style="color:#cbd5e1">/</span> sales.orders
+          </div>
+          <h1>sales.orders <span class="badge ok" style="vertical-align:4px">生效中</span> <span class="num" style="font-size:14px;color:#64748b">v8</span></h1>
+          <div class="sub">lakehouse.sales.orders · <span class="fmt">PAIMON</span> · 最后修改 2026-10-23 14:12 by 张伟</div>
+        </div>
+        <div class="actions">
+          <button class="btn ghost" data-go="dryrun">试算</button>
+          <button class="btn" data-go="wizard">编辑（生成 v9）</button>
+          <button class="btn danger">停用</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="tabs" id="detail-tabs">
+          <div class="tab on" data-dtab="overview">概览</div>
+          <div class="tab" data-dtab="expr">表达式与计划<span class="pin">4</span></div>
+          <div class="tab" data-dtab="impact">影响面</div>
+          <div class="tab" data-dtab="versions">版本历史</div>
+          <div class="tab" data-dtab="audit">变更审计</div>
+        </div>
+
+        <!-- 概览 -->
+        <div class="tab-body dbody" data-dbody="overview">
+          <div class="split">
+            <div>
+              <div class="card" style="margin-bottom:12px;box-shadow:none">
+                <div class="card-h"><h3>行过滤</h3><span class="hint">作用于所有主体</span></div>
+                <div class="card-b">
+                  <div class="sql">WHERE <span class="kw">coalesce</span>(<span class="kw">region</span> = <span class="st">'CN'</span> AND <span class="kw">status</span> &lt;&gt; <span class="st">'void'</span>, <span class="kw">false</span>)</div>
+                  <div class="note">最近 7 天：该表 6 个作业共 342 次读取按此条件裁剪，平均跳过 86% 的行。</div>
+                </div>
+              </div>
+
+              <div class="card" style="box-shadow:none">
+                <div class="card-h"><h3>列脱敏</h3><span class="hint">3 列 · 均为确定性内置函数</span></div>
+                <div class="card-b" style="padding-top:8px">
+                  <div class="tablewrap" style="max-height:none">
+                    <table class="dtable">
+                      <thead>
+                        <tr><th style="width:30%">列</th><th style="width:26%">方式</th><th style="width:20%">参数</th><th style="width:24%">示意</th></tr>
+                      </thead>
+                      <tbody>
+                        <tr><td><span class="tname">customer_phone</span></td><td><span class="chip mask">show_first_n</span></td><td class="num">3</td><td class="num" style="color:#92400e">138xxxxxxxx</td></tr>
+                        <tr><td><span class="tname">id_card</span> <span class="badge warn">NOT NULL</span></td><td><span class="chip mask">replace_with_null</span></td><td class="dim2">—</td><td class="num" style="color:#b91c1c">NULL</td></tr>
+                        <tr><td><span class="tname">email</span></td><td><span class="chip mask">hash</span></td><td class="num">SHA-256</td><td class="num" style="color:#92400e">9f2c7a1e…</td></tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="rail">
+              <div class="card" style="margin-bottom:12px">
+                <div class="card-h"><h3>生效证据</h3><span class="hint">EXPLAIN EXTENDED</span></div>
+                <div class="card-b">
+                  <div class="plan"><span class="node">Project [order_id, <span class="mute">…</span>]</span>
+<span class="node">+- Project [<span class="mute">mask_alphanum</span>(customer_phone#12) AS customer_phone#12, <span class="mute">…</span>]</span>
+<span class="node">   +- Filter <span class="mute">coalesce((region#4 = CN), false)</span></span>
+<span class="node">      +- <span class="hit">PolicyRelation</span>(lakehouse.sales.orders, v8)</span>
+<span class="node">         +- BatchScan <span class="mute">[…filters=region IS NOT NULL]</span></span></div>
+                  <div class="note" style="margin-top:8px">
+                    判断策略有没有真的注入，只看一件事：计划里有没有 <span class="num">PolicyRelation</span>。
+                    没有就是缺陷——「配了但不生效」在别的系统里是静默放行的前兆。<span class="pin">3</span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="card">
+                <div class="card-h"><h3>强制等级</h3></div>
+                <div class="card-b">
+                  <div class="inline" style="margin-bottom:8px">
+                    <span class="lv">L0</span>
+                    <span class="badge mute">引擎内强制 · 凭据在客户端</span>
+                  </div>
+                  <dl class="kv">
+                    <dt>提升到 L1</dt><dd>把 Spark 会话收进网关，用户只有 SQL 连接</dd>
+                    <dt>提升到 L2</dt><dd>凭据唯一来源，存储层拒绝旁路（需云侧配合）</dd>
+                    <dt>等 Spark 5.0</dt><dd class="dim2">不会改变等级：官方提案明确不涉及信任边界</dd>
+                  </dl>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 表达式与计划 -->
+        <div class="tab-body dbody" data-dbody="expr" style="display:none">
+          <div class="split even">
+            <div class="card" style="box-shadow:none">
+              <div class="card-h"><h3>策略 AST</h3><span class="hint">服务端下发到 Spark 的形状</span></div>
+              <div class="card-b">
+<pre class="code">{
+  <span class="k">"version"</span>: <span class="n">8</span>,
+  <span class="k">"table"</span>: <span class="s">"lakehouse.sales.orders"</span>,
+  <span class="k">"rowFilter"</span>: {
+    <span class="k">"op"</span>: <span class="s">"and"</span>,
+    <span class="k">"args"</span>: [
+      { <span class="k">"op"</span>: <span class="s">"eq"</span>,  <span class="k">"col"</span>: <span class="s">"region"</span>, <span class="k">"lit"</span>: <span class="s">"CN"</span> },
+      { <span class="k">"op"</span>: <span class="s">"neq"</span>, <span class="k">"col"</span>: <span class="s">"status"</span>, <span class="k">"lit"</span>: <span class="s">"void"</span> }
+    ]
+  },
+  <span class="k">"columnMasks"</span>: [
+    { <span class="k">"col"</span>: <span class="s">"customer_phone"</span>, <span class="k">"fn"</span>: <span class="s">"show_first_n"</span>, <span class="k">"args"</span>: [<span class="n">3</span>] },
+    { <span class="k">"col"</span>: <span class="s">"id_card"</span>,        <span class="k">"fn"</span>: <span class="s">"replace_with_null"</span> },
+    { <span class="k">"col"</span>: <span class="s">"email"</span>,          <span class="k">"fn"</span>: <span class="s">"hash"</span>, <span class="k">"args"</span>: [<span class="s">"SHA-256"</span>] }
+  ],
+  <span class="k">"subjects"</span>: <span class="s">"*"</span>,
+  <span class="k">"failClosed"</span>: <span class="n">true</span>,
+  <span class="k">"enforcedScope"</span>: <span class="s">"engine"</span>
+}</pre>
+                <div class="note" style="margin-top:8px">
+                  AST 只允许白名单算子：比较、逻辑、<span class="num">IN</span>、<span class="num">LIKE</span>、<span class="num">IS NULL</span>、
+                  字符串/日期截断、哈希。禁止聚合、窗口、子查询、非确定性函数与任何自定义 UDF。
+                </div>
+              </div>
+            </div>
+
+            <div class="card" style="box-shadow:none">
+              <div class="card-h"><h3>注入后的计划</h3><span class="hint">逻辑计划 / 物理计划</span></div>
+              <div class="card-b">
+                <div class="dim2" style="margin-bottom:4px">逻辑计划（发布前即可看到）</div>
+                <div class="plan" style="background:var(--surface-2);border:1px solid var(--border);padding:10px;border-radius:2px"><span class="node">Project [<span class="mute">…</span>]</span>
+<span class="node">+- Filter <span class="mute">coalesce(and(region=CN, status&lt;&gt;void), false)</span></span>
+<span class="node">   +- <span class="hit">PolicyRelation</span>(v8)</span>
+<span class="node">      +- SubqueryAlias orders</span>
+<span class="node">         +- BatchScan</span></div>
+
+                <div class="dim2" style="margin:12px 0 4px">物理计划（Strategy 展开后）</div>
+                <div class="plan" style="background:var(--surface-2);border:1px solid var(--border);padding:10px;border-radius:2px"><span class="node">Project [order_id#11, <span class="mute">mask…</span>(customer_phone#12) AS customer_phone#12, <span class="mute">null</span> AS id_card#13, <span class="mute">hash</span>(email#14) AS email#14, region#4, amount#9]</span>
+<span class="node">+- Filter <span class="mute">(isnotnull(region#4) AND (region#4 = CN) AND (status#5 &lt;&gt; void))</span></span>
+<span class="node">   +- BatchScan lakehouse.sales.orders <span class="mute">[filters=region IS NOT NULL]</span></span></div>
+                <div class="note" style="margin-top:8px">
+                  三条不变式：① 所有 mask 在同一层 Project，参数读原值、不链式；② Filter 在 Project 下面，
+                  所以「先脱敏再筛」写不出来；③ 策略行过滤可以下推到 scan（省 IO），用户谓词不能穿过 mask 下推。
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="banner" style="margin-top:12px">
+            <span class="tag">EXPLAIN 会打印条件文本</span>
+            <div>物理计划里的 <span class="num">region = 'CN'</span> 对执行者可见。当前版本按「逻辑计划遮蔽、物理计划可见」交付；
+              如果条件里含黑名单成员或其它租户标识，先别写进策略——P1 会给表达式加打码包装。<span class="pin">5</span></div>
+          </div>
+        </div>
+
+        <!-- 影响面 -->
+        <div class="tab-body dbody" data-dbody="impact" style="display:none">
+          <div class="split">
+            <div class="card" style="box-shadow:none">
+              <div class="card-h"><h3>哪些入口会读到这张表</h3></div>
+              <div class="card-b" style="padding-top:6px">
+                <div class="impact">
+                  <div class="item"><span class="lb">Spark 作业（3 个）</span><span class="vv">etl_orders_daily · orders_report · ads_user_value　<span class="badge ok">下一查询生效</span></span></div>
+                  <div class="item"><span class="lb">控制台数据预览</span><span class="vv">按策略渲染，脱敏列右上角标注「已脱敏」　<span class="badge ok">已收口</span></span></div>
+                  <div class="item"><span class="lb">文件下载</span><span class="vv">整份 parquet 就是全表，直接 403　<span class="badge ok">已收口</span><span class="pin">7</span></span></div>
+                  <div class="item"><span class="lb">列 min/max 统计</span><span class="vv">可反推原值范围，403　<span class="badge ok">已收口</span></span></div>
+                  <div class="item"><span class="lb">Trino / Flink / 直读</span><span class="vv" style="color:#b91c1c">不覆盖：需要在各自引擎实现，或升级到 L1 网关</span></div>
+                </div>
+              </div>
+            </div>
+            <div class="card" style="box-shadow:none">
+              <div class="card-h"><h3>近 7 天</h3></div>
+              <div class="card-b">
+                <dl class="kv">
+                  <dt>读取次数</dt><dd class="num">342</dd>
+                  <dt>命中行过滤</dt><dd class="num">342（100%）</dd>
+                  <dt>被拒绝</dt><dd class="num">0</dd>
+                  <dt>平均额外延迟</dt><dd class="num">+2.8%</dd>
+                  <dt>涉及主体</dt><dd class="num">11 个（4 用户 / 2 组 / 5 服务账号）</dd>
+                </dl>
+                <div class="note" style="margin-top:10px">
+                  性能开销主要来自多一层 Project 与不可下推的表达式；纯列脱敏比行过滤便宜。
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 版本历史 -->
+        <div class="tab-body dbody" data-dbody="versions" style="display:none">
+          <div class="tablewrap">
+            <table class="dtable">
+              <thead>
+                <tr><th style="width:8%">版本</th><th style="width:12%">时间</th><th style="width:12%">修改人</th><th style="width:44%">变更</th><th style="width:10%">状态</th><th style="width:14%">操作</th></tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td class="num">v8</td><td class="num dim2">10-23 14:12</td><td>张伟</td>
+                  <td>新增 <span class="num">email</span> 的 hash(SHA-256)；行过滤不变</td>
+                  <td><span class="badge ok">当前</span></td>
+                  <td><button class="btn sm">对比 v7</button></td>
+                </tr>
+                <tr>
+                  <td class="num">v7</td><td class="num dim2">10-20 10:05</td><td>张伟</td>
+                  <td>行过滤加 <span class="num">status &lt;&gt; 'void'</span>（原只有 region）</td>
+                  <td><span class="badge mute">历史</span></td>
+                  <td><button class="btn sm">对比 v6</button></td>
+                </tr>
+                <tr>
+                  <td class="num">v6</td><td class="num dim2">10-14 16:41</td><td>李静</td>
+                  <td><span class="num">customer_phone</span> 从 mask_alphanum 改为 show_first_n(3)（可读性）</td>
+                  <td><span class="badge mute">历史</span></td>
+                  <td><button class="btn sm">对比 v5</button></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="footerbar"><span class="dim2">保留最近 50 个版本；被引用的旧版本不会被清理（查询侧可能仍在用）。</span></div>
+        </div>
+
+        <!-- 审计 -->
+        <div class="tab-body dbody" data-dbody="audit" style="display:none">
+          <div class="tablewrap">
+            <table class="dtable">
+              <thead>
+                <tr><th style="width:16%">时间</th><th style="width:18%">主体</th><th style="width:14%">动作</th><th style="width:38%">详情</th><th style="width:14%">来源</th></tr>
+              </thead>
+              <tbody>
+                <tr><td class="num dim2">10-23 14:12:07</td><td class="num">user:zhangwei</td><td><span class="badge info">更新策略</span></td><td>v7 → v8，新增 email 脱敏</td><td class="num dim2">10.12.4.31</td></tr>
+                <tr><td class="num dim2">10-23 14:05:52</td><td class="num">user:zhangwei</td><td><span class="badge mute">试算</span></td><td>主体 group:bi_readers，样本 200 行</td><td class="num dim2">10.12.4.31</td></tr>
+                <tr><td class="num dim2">10-20 10:05:11</td><td class="num">user:zhangwei</td><td><span class="badge info">更新策略</span></td><td>v6 → v7，行过滤加 status 条件</td><td class="num dim2">10.12.4.31</td></tr>
+                <tr><td class="num dim2">10-14 16:41:33</td><td class="num">user:lijing</td><td><span class="badge info">更新策略</span></td><td>v5 → v6，phone 改为 show_first_n</td><td class="num dim2">10.12.5.8</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <aside class="notes">
+        <h4>策略详情 · 设计要点</h4>
+        <div class="lead">这一页回答两个运维最常问的问题：生效了吗、会影响谁。</div>
+        <div class="n"><b>1</b><span>头部把「表名 + 状态 + 版本」放在一行：版本号是操作对象，不是元数据。</span></div>
+        <div class="n"><b>2</b><span>编辑不做原地覆盖，直接写「编辑（生成 v9）」——版本化必须体现在按钮上，否则用户以为在改历史。</span></div>
+        <div class="n"><b>3</b><span>「生效证据」直接贴计划片段。这是唯一能自证「配了确实生效」的东西（对应 Kyuubi 那种静默放行的失败模式）。</span></div>
+        <div class="n"><b>4</b><span>表达式的 JSON 给人看也给人复制：排障时运维要把它贴进工单。</span></div>
+        <div class="n"><b>5</b><span>物理计划如实展示，并明说会泄露字面量。假装看不见，用户第一次 EXPLAIN 就会来问。</span></div>
+        <div class="n"><b>6</b><span>「影响面」按入口列，不按组件列——用户关心的是「哪个入口还能看到明文」。</span></div>
+        <div class="n"><b>7</b><span>三条控制台读路径各自给结论（已收口 / 拒绝），不让读者自己推断。</span></div>
+        <div class="n"><b>8</b><span>版本历史保留旧版本，是因为运行中的查询可能还握着旧版本号。</span></div>
+      </aside>
+    </section>
+
+    <!-- ============================================================ 画面 4：主体视角试算 -->
+    <section class="screen" id="s-dryrun">
+      <div class="page-head">
+        <div>
+          <div class="dim2" style="margin-bottom:2px">
+            <span class="crumb-link" data-go="list">数据保护</span> <span style="color:#cbd5e1">/</span>
+            <span class="crumb-link" data-go="detail">sales.orders</span> <span style="color:#cbd5e1">/</span> 试算
+          </div>
+          <h1>以某个主体的视角看这张表</h1>
+          <div class="sub">只读 · 不落库 · 服务端按与 Spark 完全相同的 AST 求值</div>
+        </div>
+        <div class="actions">
+          <button class="btn ghost" data-go="detail">返回详情</button>
+        </div>
+      </div>
+
+      <div class="card" style="margin-bottom:12px">
+        <div class="card-b" style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;padding:12px 14px">
+          <div>
+            <div class="dim2" style="margin-bottom:3px">主体</div>
+            <select class="select mono" id="dr-subject" style="min-width:220px">
+              <option value="bi">group:bi_readers</option>
+              <option value="audit">group:audit_team（未匹配任何策略）</option>
+              <option value="adm">user:zhangwei（表 owner）</option>
+            </select>
+          </div>
+          <div style="flex:1;min-width:260px">
+            <div class="dim2" style="margin-bottom:3px">模拟语句</div>
+            <input class="input mono" style="width:100%" value="SELECT * FROM lakehouse.sales.orders LIMIT 20" />
+          </div>
+          <button class="btn primary">运行试算</button>
+        </div>
+      </div>
+
+      <div class="banner ok" id="dr-ok">
+        <span class="tag">命中策略</span>
+        <div><b>group:bi_readers</b> 命中 <span class="num">lakehouse.sales.orders v8</span>（主体范围「全部主体」）：
+          隐藏 <b>7,728</b> 行，脱敏 <b>3</b> 列。</div>
+      </div>
+      <div class="banner danger" id="dr-none" style="display:none">
+        <span class="tag">未命中策略</span>
+        <div><b>group:audit_team</b> 没有匹配到任何策略 → <b>按默认放行，全部为明文</b>。
+          「取不到策略就拒绝」只发生在策略服务不可达时，与「本来就没有策略」是两件事。<span class="pin">2</span></div>
+      </div>
+
+      <div class="card">
+        <div class="card-h">
+          <h3>返回 20 行（共 1,204 行可见）</h3>
+          <span class="hint" id="dr-hint">试算耗时 412 ms · 采样 8,932 行判定</span>
+        </div>
+        <div class="card-b" style="padding-top:10px">
+          <div class="tablewrap" style="max-height:none">
+            <table class="ptable">
+              <thead>
+                <tr>
+                  <th>order_id</th><th>customer_phone</th><th>id_card</th><th>email</th><th>region</th><th>amount</th><th>status</th>
+                </tr>
+              </thead>
+              <tbody id="dr-rows">
+                <tr>
+                  <td>100238</td>
+                  <td class="masked">138xxxxxxxx<span class="celltag">脱敏</span></td>
+                  <td class="nulled">NULL<span class="celltag">置空</span></td>
+                  <td class="masked">9f2c7a1e4b…<span class="celltag">哈希</span></td>
+                  <td>CN</td><td>1,280.00</td><td>paid</td>
+                </tr>
+                <tr>
+                  <td>100241</td>
+                  <td class="masked">139xxxxxxxx<span class="celltag">脱敏</span></td>
+                  <td class="nulled">NULL<span class="celltag">置空</span></td>
+                  <td class="masked">3d81b0c27e…<span class="celltag">哈希</span></td>
+                  <td>CN</td><td>640.50</td><td>paid</td>
+                </tr>
+                <tr>
+                  <td>100256</td>
+                  <td class="masked">137xxxxxxxx<span class="celltag">脱敏</span></td>
+                  <td class="nulled">NULL<span class="celltag">置空</span></td>
+                  <td class="masked">c07f9e2a15…<span class="celltag">哈希</span></td>
+                  <td>CN</td><td>2,415.00</td><td>shipped</td>
+                </tr>
+                <tr>
+                  <td>100263</td>
+                  <td class="masked">135xxxxxxxx<span class="celltag">脱敏</span></td>
+                  <td class="nulled">NULL<span class="celltag">置空</span></td>
+                  <td class="masked">55aa3e81fd…<span class="celltag">哈希</span></td>
+                  <td>CN</td><td>380.00</td><td>paid</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="footerbar">
+            <span>被行过滤隐藏的示例（不返回给主体）：</span>
+            <span class="num" style="color:#94a3b8;text-decoration:line-through">100239 · region=US · 860.00</span>
+            <span class="num" style="color:#94a3b8;text-decoration:line-through">100247 · status=void · 1,100.00</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="banner info" style="margin-top:12px">
+        <span class="tag">一致性要求</span>
+        <div>试算结果与 Spark 实际返回必须<b>逐行一致</b>（同一份 AST、两套求值器）。不一致就是缺陷，
+          要按同一份用例表逐条比对——包括类型、NULL 语义、时区、哈希编码。</div>
+      </div>
+
+      <aside class="notes">
+        <h4>主体视角试算 · 设计要点</h4>
+        <div class="lead">给治理方一个「用他的眼睛看一次」的工具，避免上线后才发现条件写反。</div>
+        <div class="n"><b>1</b><span>主体选择在前、语句在后：试算的主角是「人」，不是 SQL。</span></div>
+        <div class="n"><b>2</b><span>「未命中策略」必须是红色，并且明确说「明文」。这是最容易误解的一档，含糊过去等于埋雷。</span></div>
+        <div class="n"><b>3</b><span>脱敏单元格加角标（脱敏 / 置空 / 哈希），颜色区分「改了值」和「没了」。</span></div>
+        <div class="n"><b>4</b><span>把被过滤的行以删除线示例展示，让人确认条件方向没写反——这是最高频的低级错误。</span></div>
+        <div class="n"><b>5</b><span>试算只读、不落库，界面上写明：否则没人敢在生产表上点。</span></div>
+        <div class="n"><b>6</b><span>服务端求值与 Spark 求值是同一套逻辑的两份实现，一致性只能靠用例表钉住，不能靠「看起来对」。</span></div>
+      </aside>
+    </section>
+
+    <!-- ============================================================ 画面 5：表详情页签 -->
+    <section class="screen" id="s-tabletab">
+      <div class="page-head">
+        <div>
+          <div class="dim2" style="margin-bottom:2px">
+            <span class="crumb-link" data-go="list">目录浏览</span> <span style="color:#cbd5e1">/</span>
+            lakehouse <span style="color:#cbd5e1">/</span> sales <span style="color:#cbd5e1">/</span> orders
+          </div>
+          <h1>sales.orders <span class="fmt" style="font-size:11px;vertical-align:4px">PAIMON</span></h1>
+          <div class="sub">34 列 · 8,932 行 · 分区 dt · 最后写入 12 分钟前</div>
+        </div>
+        <div class="actions">
+          <button class="btn ghost" data-go="list">数据保护总览</button>
+          <button class="btn primary">查询数据</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="tabs">
+          <div class="tab">详细信息</div>
+          <div class="tab">血缘</div>
+          <div class="tab">数据预览</div>
+          <div class="tab">快照</div>
+          <div class="tab">标签</div>
+          <div class="tab">文件列表</div>
+          <div class="tab">数据访问</div>
+          <div class="tab on">数据保护</div>
+          <div class="tab">存储优化</div>
+          <div class="tab">字段列表</div>
+        </div>
+        <div class="tab-body">
+          <div class="split">
+            <div class="card" style="box-shadow:none">
+              <div class="card-h">
+                <h3>策略已绑定</h3>
+                <span class="badge ok">生效中</span>
+                <span class="hint num">v8</span>
+              </div>
+              <div class="card-b">
+                <dl class="kv">
+                  <dt>行过滤</dt><dd class="sql" style="padding:6px 9px">coalesce(region = 'CN' AND status &lt;&gt; 'void', false)</dd>
+                  <dt style="margin-top:6px">列脱敏</dt><dd><div class="chips"><span class="chip mask">customer_phone · show_first_n(3)</span><span class="chip mask">id_card · 置空</span><span class="chip mask">email · hash(SHA-256)</span></div></dd>
+                  <dt style="margin-top:6px">主体范围</dt><dd>全部主体</dd>
+                  <dt style="margin-top:6px">最后修改</dt><dd class="dim2">2026-10-23 14:12 · 张伟</dd>
+                </dl>
+                <div class="inline" style="margin-top:12px">
+                  <button class="btn sm" data-go="detail">查看策略</button>
+                  <button class="btn sm ghost" data-go="dryrun">试算</button>
+                  <button class="btn sm ghost" data-go="wizard">编辑</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="rail">
+              <div class="banner info" style="margin-bottom:10px">
+                <span class="tag">预览已收口</span>
+                <div>本页「数据预览」与「字段统计」都按策略渲染：行被过滤、列被脱敏。<b>文件下载已禁用</b>。</div>
+              </div>
+              <div class="card" style="box-shadow:none">
+                <div class="card-h"><h3>这张表的读取方</h3></div>
+                <div class="card-b">
+                  <div class="impact">
+                    <div class="item"><span class="lb">Spark 作业</span><span class="vv">3 个（近 7 天 342 次）</span></div>
+                    <div class="item"><span class="lb">控制台用户</span><span class="vv">11 个主体</span></div>
+                    <div class="item"><span class="lb">最近一次生效</span><span class="vv num">10-23 14:13:04</span></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:12px">
+        <div class="tab-body">
+          <div class="statebox" style="padding:24px 16px">
+            <div class="ico">⛨</div>
+            <strong>未绑定策略时，这里只显示一张空态卡</strong>
+            <p>本图上半部分是已绑定的样子；未绑定时只保留下面这张卡：一句话说明「该表不受数据保护策略约束」并给「新建策略」入口，跨表对比与治理去总览页。</p>
+            <button class="btn sm primary" data-go="wizard">为这张表新建策略</button>
+          </div>
+        </div>
+      </div>
+
+      <aside class="notes">
+        <h4>表详情页签 · 设计要点</h4>
+        <div class="lead">与「存储优化」同构：策略配在表上，总览页做跨表治理。</div>
+        <div class="n"><b>1</b><span>页签位置在「数据访问」之后、「存储优化」之前：先看谁能读，再看读到什么，最后看怎么存。</span></div>
+        <div class="n"><b>2</b><span>页签内不做完整列表，只做「当前绑定 + 三个动作」——避免与总览页重复维护两套 UI。</span></div>
+        <div class="n"><b>3</b><span>右侧常驻「预览已收口 / 下载已禁用」：用户在这里最可能点预览，必须就地解释为什么数据长得不一样。</span></div>
+        <div class="n"><b>4</b><span>这张表的读取方是判断「改了会影响谁」的依据，与策略详情的影响面同源，不重复造数据。</span></div>
+      </aside>
+    </section>
+
+  </main>
+</div>
+
+<div class="demo">
+  <span>画面</span>
+  <button data-go="list" class="on">策略总览</button>
+  <button data-go="wizard">新建策略</button>
+  <button data-go="detail">策略详情</button>
+  <button data-go="dryrun">主体试算</button>
+  <button data-go="tabletab">表详情页签</button>
+  <span class="sep"></span>
+  <button id="toggle-notes">设计标注</button>
+</div>
+
+<script>
+(function () {
+  var crumb = {
+    list: '数据保护',
+    wizard: '数据保护 / 新建策略',
+    detail: '数据保护 / sales.orders',
+    dryrun: '数据保护 / sales.orders / 试算',
+    tabletab: '目录浏览 / lakehouse.sales.orders'
+  };
+  var screens = document.querySelectorAll('.screen');
+  var navItems = document.querySelectorAll('.nav-item');
+  var demoBtns = document.querySelectorAll('.demo button[data-go]');
+
+  function show(id) {
+    screens.forEach(function (s) { s.classList.toggle('on', s.id === 's-' + id); });
+    demoBtns.forEach(function (b) { b.classList.toggle('on', b.getAttribute('data-go') === id); });
+    document.getElementById('crumb').textContent = crumb[id] || '数据保护';
+    navItems.forEach(function (n) {
+      if (n.getAttribute('data-go')) { n.classList.toggle('on', id !== 'tabletab'); }
+    });
+    if (history.replaceState) { history.replaceState(null, '', '#' + id); }
+    window.scrollTo(0, 0);
+  }
+
+  // 支持用 hash 直接打开某个画面（评审时可直接发链接）
+  var initial = (location.hash || '').replace('#', '');
+  if (initial && document.getElementById('s-' + initial)) { show(initial); }
+
+  document.addEventListener('click', function (e) {
+    var el = e.target.closest('[data-go]');
+    if (el) { show(el.getAttribute('data-go')); }
+  });
+
+  // 详情页内部页签
+  document.querySelectorAll('[data-dtab]').forEach(function (t) {
+    t.addEventListener('click', function () {
+      var key = t.getAttribute('data-dtab');
+      document.querySelectorAll('[data-dtab]').forEach(function (x) { x.classList.toggle('on', x === t); });
+      document.querySelectorAll('[data-dbody]').forEach(function (b) {
+        b.style.display = b.getAttribute('data-dbody') === key ? 'block' : 'none';
+      });
+    });
+  });
+
+  // 试算主体切换
+  var sel = document.getElementById('dr-subject');
+  var ok = document.getElementById('dr-ok');
+  var none = document.getElementById('dr-none');
+  var rows = document.getElementById('dr-rows');
+  var hint = document.getElementById('dr-hint');
+
+  var plain = [
+    ['100238', '13800138888', '110101199003078888', 'zhang.wei@acme.cn', 'CN', '1,280.00', 'paid'],
+    ['100241', '13900139999', '310101198811124444', 'li.na@acme.cn', 'CN', '640.50', 'paid'],
+    ['100256', '13700137777', '440101199507211111', 'wang.qiang@acme.cn', 'CN', '2,415.00', 'shipped'],
+    ['100263', '13500135555', '510101200001019999', 'zhao.min@acme.cn', 'CN', '380.00', 'paid']
+  ];
+  var masked = [
+    ['100238', '138xxxxxxxx', 'NULL', '9f2c7a1e4b…', 'CN', '1,280.00', 'paid'],
+    ['100241', '139xxxxxxxx', 'NULL', '3d81b0c27e…', 'CN', '640.50', 'paid'],
+    ['100256', '137xxxxxxxx', 'NULL', 'c07f9e2a15…', 'CN', '2,415.00', 'shipped'],
+    ['100263', '135xxxxxxxx', 'NULL', '55aa3e81fd…', 'CN', '380.00', 'paid']
+  ];
+
+  function render(list, mode) {
+    rows.innerHTML = list.map(function (r) {
+      var cells = r.map(function (v, i) {
+        if (mode === 'plain') {
+          return '<td' + (i >= 1 && i <= 3 ? ' style="color:#b91c1c"' : '') + '>' + v + '</td>';
+        }
+        if (i === 1) { return '<td class="masked">' + v + '<span class="celltag">脱敏</span></td>'; }
+        if (i === 2) { return '<td class="nulled">' + v + '<span class="celltag">置空</span></td>'; }
+        if (i === 3) { return '<td class="masked">' + v + '<span class="celltag">哈希</span></td>'; }
+        return '<td>' + v + '</td>';
+      }).join('');
+      return '<tr>' + cells + '</tr>';
+    }).join('');
+  }
+
+  sel.addEventListener('change', function () {
+    var v = sel.value;
+    var seePlain = v === 'audit' || v === 'adm';
+    ok.style.display = seePlain ? 'none' : 'flex';
+    none.style.display = seePlain ? 'flex' : 'none';
+    if (v === 'adm') {
+      none.innerHTML = '<span class="tag">owner 不例外</span>'
+        + '<div><b>user:zhangwei</b> 是这张表的 owner，但策略的主体范围是「全部主体」，所以<b>他也按策略读</b>：'
+        + '行过滤与脱敏对 owner 不例外。要给自己留明文，得改策略——「owner 例外」是最容易被当成后门的设计。</div>';
+    } else {
+      none.innerHTML = '<span class="tag">未命中策略</span>'
+        + '<div><b>group:audit_team</b> 没有匹配到任何策略 → <b>按默认放行，全部为明文</b>。'
+        + '「取不到策略就拒绝」只发生在策略服务不可达时，与「本来就没有策略」是两件事。'
+        + '<span class="pin">2</span></div>';
+    }
+    hint.textContent = seePlain ? '试算耗时 96 ms · 未应用任何策略' : '试算耗时 412 ms · 采样 8,932 行判定';
+    render(seePlain ? plain : masked, seePlain ? 'plain' : 'masked');
+  });
+
+  document.getElementById('toggle-notes').addEventListener('click', function () {
+    document.body.classList.toggle('notes-on');
+    this.classList.toggle('on');
+  });
+
+  // 发布按钮：跳到详情并轻提示
+  document.getElementById('btn-publish').addEventListener('click', function () {
+    show('detail');
+    setTimeout(function () {
+      var b = document.createElement('div');
+      b.className = 'banner ok';
+      b.style.position = 'fixed';
+      b.style.right = '20px';
+      b.style.bottom = '70px';
+      b.style.zIndex = 60;
+      b.style.margin = '0';
+      b.style.boxShadow = '0 8px 24px rgba(0,0,0,.12)';
+      b.innerHTML = '<span class="tag">已发布</span><div>v9 已发布，新查询 60 秒内生效；运行中的查询仍用 v8。</div>';
+      document.body.appendChild(b);
+      setTimeout(function () { b.remove(); }, 4200);
+    }, 120);
+  });
+})();
+</script>
+</body>
+</html>

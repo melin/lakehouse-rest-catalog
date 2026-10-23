@@ -24,7 +24,7 @@
 | JOIN / 聚合 / ORDER BY | 这已经是查询引擎的职责。用户可以点「数据访问」拿到连接信息去用 Spark |
 | 导出 / 下载结果集 | 导出走「文件列表」的下载（物理文件视角），预览只负责看 |
 | 全表精确扫描 | 没有 LIMIT 的请求一律拒绝（见 §9）。"预览"承诺的是抽样，不是正确性 |
-| 行级权限 / 列级脱敏 | 需要权限模型先支持谓词与列遮蔽（见 §10、§15）。第一版靠 TABLE 级 `SELECT` 把门守住 |
+| 行级权限 / 列级脱敏 | 需要权限模型先支持谓词与列遮蔽（方案见 [`row-filter-column-mask-design.md`](row-filter-column-mask-design.md)）。第一版靠 TABLE 级 `SELECT` 把门守住 |
 
 ---
 
@@ -717,7 +717,7 @@ Paimon 抢 guava。代价是 50 MB；换 `hadoop-common` + `hadoop-client-core` 
 | 分区字段是 STRING 但值不是规范日期（`2024-1-5`） | 只按元数据类型 + 值的严格格式判定时间族，猜不中就写「最大分区值」——宁可不智能，不要错 |
 | 审计事件要不要记分区值 | 分区值本身可能是敏感信息（如 `region` 或按手机号前缀分区）。建议只记 `resolved` 的**字段名**与 `partitionsMatched`，值不落库；这条要跟安全一起定 |
 | 宽表（数百列）的投影默认值 | 默认前 30 列 + 明确的「已省略 N 列」提示，而不是悄悄少给 |
-| 行级权限（按过滤条件限制可见行） | 需要权限模型支持谓词，`PermissionAssignmentEntity` 目前只有范围（catalog/db/table/column），没有行谓词。列为后续独立设计 |
-| 列级脱敏策略（手机号/身份证正则、哈希） | 与 M4 一起做；接口里的 `COLUMN` 级 `SELECT` 已经留好挂点 |
+| 行级权限（按过滤条件限制可见行） | 需要权限模型支持谓词，`PermissionAssignmentEntity` 目前只有范围（catalog/db/table/column），没有行谓词。已单独出方案：[`row-filter-column-mask-design.md`](row-filter-column-mask-design.md)（设计稿，未实现） |
+| 列级脱敏策略（手机号/身份证正则、哈希） | 与 M4 一起做；接口里的 `COLUMN` 级 `SELECT` 已经留好挂点。执行侧方案见 [`row-filter-column-mask-design.md`](row-filter-column-mask-design.md) §6（带策略的表在 P0 直接拒绝预览） |
 | 是否最终开放 SQL | 建议长期不做。若业务强需求，走「数据访问」页签交给外部引擎，控制台不做查询入口 |
 | 预览与「文件列表下载」的权限一致性 | 两者都只读、都需 TABLE 级权限；下载是 `DESCRIBE` 还是 `SELECT` 目前不一致，M1 顺手统一到 `SELECT` |

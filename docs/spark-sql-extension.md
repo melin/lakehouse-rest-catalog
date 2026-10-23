@@ -295,3 +295,8 @@ Spark 3.5.9 的 `spark-sql-api` 依赖 `antlr4-runtime` **4.9.3**，其自带的
    拒掉，后者在语法阶段就失败。挂在那条链上的存量授权仍然生效，只是再没有界面能清点它。
 7. **令牌映射是服务端的静态配置。** 用 SQL 新建的主体不能立即取到可用的调用令牌，
    详见 `docs/authorization.md` 的「已知边界」。
+8. **数据保护（行过滤 / 列脱敏）的策略语句不在本文档范围内。** 目前只有设计稿：
+   [`row-filter-column-mask-design.md`](row-filter-column-mask-design.md) §13 规划了
+   `SET ROW FILTER` / `SET MASK` / `SHOW POLICY` 等 7 条语句，将来会进同一份
+   `ManagementSql.g4`（保留字要加 `ROW / FILTER / MASK / POLICY`，届时同步 §3.3 的
+   保留字计数）。本文档的语句清单、示例与端点校验不包含它们。

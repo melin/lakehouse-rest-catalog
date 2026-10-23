@@ -241,7 +241,7 @@ spec/                   三份 OpenAPI 规格的仓库副本（不随服务端�
                         rest-management-open-api.yaml（Paimon 官方 REST Management API）
 sql/                    MySQL 建表语句（生成物）
 scripts/                验收 / 生成 / 校验 / 镜像构建脚本
-docs/                   23 份设计文档（另有两份配套效果图 HTML）
+docs/                   24 份设计文档（另有三份配套效果图 HTML）
 ```
 
 服务端四模块的**类数**：core 117 · storage 9 · protocol-paimon 38 · server 46（共 210）。
@@ -281,6 +281,7 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
 | `console.md` | 改控制台 / 排查「页面空列表」：分层、端点契约表、机械校验、加页面清单 |
 | `console-table-detail.md` | 改表详情页：页签随**表格式**（表级 `schema.options.type`）伸缩的数据来源（详细信息含字段/分区列表、表目录文件列表、「为什么没有权限页签」）、按需加载与非 Paimon 表不问快照端点、破坏性操作 |
 | `table-data-preview-design.md` | 做「数据预览」页签 / 评审预览方案（**两种格式都已实现**，见 §14 里程碑 M1/M2）：为什么不能靠外部引擎、四种读法选型（格式自带 reader / `parquet-avro` 直读 / 嵌入式 DuckDB / 复用优化任务执行器——前三者各有「主键表读出幽灵行」之类的否决理由）、`POST /api/console/v1/tables/{tableId}/preview` 契约、三段式过滤（分区 → 裁文件 → 筛行）、**分区默认锁最新**（有序性判定 / 按文件数预算的级联收敛 / 哈希分区不编「最新」/ 空分区回退 / `partition` 与 `filters` 双通道 / 游标绑定解析结果）、无状态游标、采样与限额的口径（`filesInScope` 与 `filesInTable` 两个分母）、TABLE 级 `SELECT` 判权与 `table.previewed` 审计；配套效果图 `table-data-preview-mockup.html`（右上角可切换四种演示状态，工具行有分区控件与下拉） |
+| `row-filter-column-mask-design.md` | 做行过滤 / 列脱敏（行级安全、列脱敏）或评审该方案——**设计稿，未实现**：Spark 3.5.9 / 4.1.2 / 4.2.0 的 `spark-catalyst` 里都没有 `RowFilter` / `ColumnMask` / `SupportsAccessControl`（jar 实测），官方 SPIP SPARK-59726 才指向 5.0.0 → 只能靠 `SparkSessionExtensions` 注入；为什么必须用**自定义逻辑节点**而不是裸 `Project`（优化器会把 mask 吃掉或把谓词挪到 mask 下面）；AST 表达式白名单 + `$principal` 占位符（不注册 UDF，两版共用一份源码）；策略下发 TTL 60s 与 **fail-closed**；服务端三条读路径（预览 / 文件下载 / 列统计）各自怎么堵；**能力边界**：凭据一旦下发到客户端，`spark.read.parquet(...)` 直读就是明文，本层拦不住（§7.1）；三家生产实现（Databricks / Kyuubi+Ranger / EMR+Lake Formation）横向对照与**强制等级 L0–L3**（§2.2、§2.3）、Kyuubi #3186 的 DSv2 静默放行教训（§3.4）、**Spark SQL 管理语句的语法设计**（§13：7 条语句进 `ManagementSql.g4`、表达式片段走 `parseExpression` 再按白名单转 AST、`current_user()` 折成 `$principal`、`DROP POLICY` 的会话级防呆）、与 SPIP 的逐条差距清单（附录 A） |
 | `console-catalog-detail.md` | 改 Catalog 详情页 / 仓库文件浏览：四页签（概览 / **存储** / 文件列表 / 配置；存储页的口径与来源见 §3.2）、下钻与路径防护、单文件下载、只读取舍、「配置」页的默认表属性（`table-default.*`）编辑与并发冲突处理；建表表单里的默认参数预填（§3.5）与为什么不给 Lance 表建表入口（§3.6）；**「协议与能力」卡片**（§3.1.1：客户端基址、端点清单、不声明支持）以及 Iceberg catalog 下只剩「概览」与「文件列表」两页可用（§9） |
 | `console-auth.md` | 配控制台登录：三种登录方式、两个开关的边界、令牌链、安全考量 |
 | `polaris-capabilities-and-design.md` | 对比 Polaris、看整体设计与已知缺口 |

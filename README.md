@@ -149,7 +149,7 @@ k8s 资源名的 `paimon-` 前缀**故意不改**：它不是产品名，是历�
 （StatefulSet 与 PVC 引用）。见
 [`maven-module-design.md`](docs/maven-module-design.md) §8.6。
 
-`docs/` 里二十三份文档的分工：
+`docs/` 里二十四份文档的分工：
 
 | 文档 | 读它的时机 |
 | --- | --- |
@@ -176,6 +176,7 @@ k8s 资源名的 `paimon-` 前缀**故意不改**：它不是产品名，是历�
 | [`table-optimization.md`](docs/table-optimization.md) | 要改表存储优化或排查优化任务——三个动作的语义、批次与并发两道闸门、k8s 提交与状态跟踪、控制台两处页面 |
 | [`lineage-design.md`](docs/lineage-design.md) | 要做 Spark SQL 血缘（表级 / 列级）或评审方案——**三层都已实现**（服务端：三张表 + 5 个端点；控制台：表详情页「血缘」页签；引擎侧：Spark 3.5/4.1 抽取器与上报器；端到端 `scripts/e2e-lineage.sh` 只在 3.5 上能跑，4.1 受 Paimon bundle 限制）：为什么必须在引擎侧抽而不是服务端重解析（五个错法）、为什么是 `analyzed` 而不是 `optimized`、参考实现 `kyuubi-spark-lineage` 的机制拆解（属性集下推、16 行节点规则、`__count__` 等三个占位、表名归一化）与「抄了什么 / 改了 10 处」、归一化模型（`~` 保留前缀、五种列的 `kind`）、上报契约与异步丢弃、run（事件）与边（状态）两张语义不同的表、图查询口径与环、控制台展现（跳数即层号的分层布局、单张 Canvas + 三档 LOD、折叠与按需展开、列级聚合与虚拟列表、性能预算）、前端落地视角（§9.11–9.14：组件清单与 0 新增依赖、表详情页「血缘」页签集成、数据流；效果图 `docs/lineage-mockup.html`）、配置与验收；**只做 Spark，Flink 留位** |
 | [`table-data-preview-design.md`](docs/table-data-preview-design.md) | 要在表详情页加「数据预览」或评审该方案——**两种格式都已实现**（里程碑 M1 / M2 done；M3 / M4 待做）：为什么不能靠外部引擎、四种读法选型（格式自带 reader / `parquet-avro` 直读 / 嵌入式 DuckDB / 复用优化任务执行器——前三者各有「主键表读出幽灵行」之类的否决理由）、`POST /api/console/v1/tables/{tableId}/preview` 契约、三段式过滤（分区 → 裁文件 → 筛行）、**分区默认锁最新**（有序性判定 / 按文件数预算的级联收敛 / 哈希分区不编「最新」/ 空分区回退 / `partition` 与 `filters` 双通道）、无状态游标、采样与限额的口径、TABLE 级 `SELECT` 判权与 `table.previewed` 审计；配套效果图 [`table-data-preview-mockup.html`](docs/table-data-preview-mockup.html)（右上角可切换四种演示状态） |
+| [`row-filter-column-mask-design.md`](docs/row-filter-column-mask-design.md) | 要做**行过滤 / 列脱敏**（类似 Databricks Unity Catalog 的 row filter 与 column mask）或评审该方案——**设计稿，未实现**：Spark 3.5 / 4.1 / 4.2 均无原生 API（三个版本的 `spark-catalyst` 实测 + SPARK-59726 指向 5.0）；为什么裸投影不安全、必须自定义逻辑节点；表达式白名单与 `$principal` 占位符；fail-closed 与 60 秒缓存；服务端预览 / 文件下载 / 列统计三条绕过面；「凭据下发后直读文件无法拦截」这条硬边界，三家生产实现的横向对照（Databricks / Kyuubi+Ranger / EMR+Lake Formation）与**强制等级 L0–L3**——结论是升级路径不是等 Spark 5.0，而是加网关或收掉凭据来源；**Spark SQL 管理语句的语法设计**（§13：`SET ROW FILTER` / `SET MASK` / `SHOW POLICY` 等 7 条，表达式走 `parseExpression` 按白名单转 AST，`DROP POLICY` 要会话级确认） |
 
 ---
 
