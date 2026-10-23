@@ -14,7 +14,7 @@
 REST Management API**（RBAC 管理面）与一个 **Vue 3 管理控制台**；另有 Spark SQL 语法扩展，
 用 SQL 管理主体、角色与授权。
 
-三个对外面 + 一个界面（记牢这四个基址，改动都要落在对应面上）：
+三个对外面 + 一个界面 + 一份接口文档（记牢这几个基址，改动都要落在对应面上）：
 
 | 面 | 基址 | 规格来源 | 鉴权 |
 | --- | --- | --- | --- |
@@ -22,6 +22,7 @@ REST Management API**（RBAC 管理面）与一个 **Vue 3 管理控制台**；�
 | Management API | `/api/management/v1/...` | Paimon REST Management API：`spec/rest-management-open-api.yaml`（官方只覆盖 `permissions` 3 个；扩展端点的形状源自已移除的 Polaris 规格） | 同上 |
 | Console API + OAuth | `/api/console/v1/...`、`/api/catalog/v1/oauth/tokens` | 自有（`docs/console-auth.md`） | 同上（登录端点豁免） |
 | 控制台界面 | `/console/`（SPA 深链回退 `index.html`） | — | 开关 `lakehouse.rest.auth.console.required` |
+| 接口文档 | `/doc.html`（阅览页）、`/v3/api-docs/**`（原文） | knife4j-next 5.7.9 扫控制器生成 | **不鉴权**——阅览页公开，端点仍各自判定（`ApiDocEndpointTests` 钉住） |
 
 ---
 
@@ -129,6 +130,7 @@ docker build -t lakehouse-rest-server:0.0.1 .                   # 当前架构
 java -jar lakehouse-rest-spring-parent/lakehouse-rest-server/target/lakehouse-rest-server-0.0.1-SNAPSHOT.jar \
   --spring.profiles.active=h2 --server.port=8080
 open http://127.0.0.1:8080/console/        # 默认账号密码 admin/admin
+open http://127.0.0.1:8080/doc.html        # 接口文档，阅览页不需要登录
 
 # ---- 端到端验收（都要先有一个运行中的实例）----
 BASE=http://127.0.0.1:8080 ./scripts/api-sweep.sh            # Catalog API 全部 60 个 operation
@@ -197,7 +199,7 @@ lakehouse-rest-spring-parent/   服务端世界的父 POM（继承 Boot 4.1.1）
     paimon/support/       Codecs、SchemaSupport、TableDefaults、TableKinds
     ↑ 唯一一个包名比 core / storage / server 多一层 `.paimon` 的模块，理由见第 7 节
 
-  lakehouse-rest-server/   可执行服务端（39 个类；测试也在这一模块：29 个测试类 + `TestClock` 支撑类）
+  lakehouse-rest-server/   可执行服务端（39 个类；测试也在这一模块：43 个测试类 + `TestClock` 支撑类）
     PaimonRestServerApplication.java   启动类（组件扫描按**包**不按 jar，见第 7 节）
     web/                  Management API 4 个（Principal / PrincipalRole / CatalogRole /
                         ManagementCatalog）+ PermissionController；控制台 4 个（ConsoleAuth /

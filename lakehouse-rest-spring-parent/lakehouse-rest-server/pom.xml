@@ -118,6 +118,22 @@
 			<scope>runtime</scope>
 		</dependency>
 
+		<!--
+			接口文档：knife4j-next 的 Boot4 starter（自带 springdoc 3.x）。
+
+			加在 server 而不是 core：文档要扫的是**控制器**，而控制器分散在
+			web / paimon.web / iceberg.web 三个包里、最终都汇到这个可执行模块；
+			core 里一个端点都没有，加在那里只会让每个模块都背上一套 springdoc。
+
+			阅览页（/doc.html）**不需要登录**，理由与做法写在 WebConfig 的
+			豁免说明里；端点自身的鉴权一条都不变——这个页面只是把已有端点
+			列出来，不能发请求绕过门禁（「调试」发出去的请求照样要过鉴权）。
+		-->
+		<dependency>
+			<groupId>com.baizhukui</groupId>
+			<artifactId>knife4j-openapi3-boot4-spring-boot-starter</artifactId>
+		</dependency>
+
 		<!-- 元数据存储：默认 H2 内存库，可用 profile 切换到 MySQL / PostgreSQL -->
 		<dependency>
 			<groupId>com.h2database</groupId>

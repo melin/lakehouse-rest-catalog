@@ -123,6 +123,16 @@
 			也是 Spark 3.5 / Flink 1.18 实际带的版本。
 		-->
 		<hadoop.version>3.3.4</hadoop.version>
+		<!--
+			接口文档 UI：knife4j-next（`com.baizhukui`，与上游 `com.github.xiaoymin`
+			是两个坐标）。Boot 4 线必须用 `-boot4-` 那个 starter——它把 springdoc
+			换成 3.x；Jakarta 那个是 Boot 3.4/3.5 用的，混进来会同时命中两套
+			springdoc（症状是 `/doc.html` 打开是空白页或原生 Swagger UI）。
+
+			只是文档，不参与任何运行时判定：阅览页不进鉴权（见 WebConfig），
+			端点自己的门禁一条不少。
+		-->
+		<knife4j.version>5.7.9</knife4j.version>
 		<!-- 依赖边界守卫，见各模块 POM 里的 bannedDependencies -->
 		<enforcer.version>3.1.0</enforcer.version>
 	</properties>
@@ -246,6 +256,17 @@
 				<groupId>org.apache.paimon</groupId>
 				<artifactId>paimon-s3</artifactId>
 				<version>${paimon.version}</version>
+			</dependency>
+
+			<!--
+				接口文档 UI（knife4j-next）。只声明在 lakehouse-rest-server：
+				它和 springdoc 都只服务「可执行产物里有一个能读接口的页面」这一件事，
+				别的模块既不该看见它们，也不该被它们拉高 springdoc 的版本。
+			-->
+			<dependency>
+				<groupId>com.baizhukui</groupId>
+				<artifactId>knife4j-openapi3-boot4-spring-boot-starter</artifactId>
+				<version>${knife4j.version}</version>
 			</dependency>
 		</dependencies>
 	</dependencyManagement>

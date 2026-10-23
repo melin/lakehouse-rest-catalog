@@ -33,6 +33,14 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
  * Cookie 会话，而引入 Cookie 会把 CSRF 一并引入，对一组不含任何数据的
  * JS 与 CSS 来说不值得。页面里的数据请求仍然逐个走鉴权。
  *
+ * <p><b>接口文档页（{@code /doc.html}、{@code /v3/api-docs/**}、{@code /swagger-ui/**}、
+ * {@code /webjars/**}）同样不需要登录。</b>它们压根不在上面那四个受管前缀里，
+ * 因此拦截器不会被调用；下面的 {@code excludePathPatterns} 里仍把这几条写出来，
+ * 是为了**万一将来把受管前缀放宽**（例如改成 {@code /**}）时，文档页不会顺手变成
+ * 「要先登录才能看接口清单」——那种改动看起来只是一行通配符，影响却是所有人
+ * 打不开文档。文档页公开与端点公开是两件事：它只把已有端点列出来，
+ * 「调试」发出去的请求照样要过 Bearer 鉴权与表级授权，见 {@code ApiDocEndpointTests}。
+ *
  * <p><b>三条豁免路径的使用范围由 {@link BearerAuthInterceptor} 决定</b>：
  * 它在「整体鉴权开着」或「控制台要求登录」时都要求令牌，
  * 后者只作用于 {@code /api/console/v1/**}——理由写在那个类上。
@@ -61,7 +69,16 @@ public class WebConfig implements WebMvcConfigurer {
                         "/api/console/v1/auth",
                         "/api/console/v1/login",
                         "/api/catalog/v1/oauth/tokens",
-                        "/v1/oauth/tokens");
+                        "/v1/oauth/tokens",
+                        // 接口文档（knife4j-next / springdoc）。今天它们不在受管前缀里，
+                        // 这几行是给「以后把 addPathPatterns 放宽」那一天的保险——
+                        // 阅览页面不需要登录是明确要求，不该被一次通配符改动带走。
+                        "/doc.html",
+                        "/v3/api-docs/**",
+                        "/swagger-ui/**",
+                        "/swagger-ui.html",
+                        "/webjars/**",
+                        "/knife4j/**");
         registry.addInterceptor(authorizationInterceptor)
                 .addPathPatterns("/v1/**");
     }

@@ -551,7 +551,7 @@ enforcer 会拦下来，但更好的做法是别让这种事有机会发生。
 | # | 事项 | 说明 |
 | --- | --- | --- |
 | 1 | Paimon 升到 2.1.0 | 需要先迁移 `SchemaManager` 的用法；两处 `paimon.version` 一起改 |
-| 2 | 测试分区 | 29 个测试类全留在 `server`：它们是 Spring 集成测试，需要完整应用上下文，而 server 依赖其余三个模块、测试类路径天然能看到所有类。真正划算的分区是把 `JwtTests` / `CredentialCipherTests` / `StorageConfigDtosTests` 这类**纯单元测试**随被测类下移——但那要在三个模块各配一份 surefire，收益不大 |
+| 2 | 测试分区 | 43 个测试类全留在 `server`：它们是 Spring 集成测试，需要完整应用上下文，而 server 依赖其余三个模块、测试类路径天然能看到所有类。真正划算的分区是把 `JwtTests` / `CredentialCipherTests` / `StorageConfigDtosTests` 这类**纯单元测试**随被测类下移——但那要在三个模块各配一份 surefire，收益不大 |
 | 3 | ~~`TableKinds` 与其「表种类」词表~~ | 当初的理由是「Iceberg 面落地时它也**要产出**这个值（控制台页签靠它伸缩），届时需要把**枚举值**提到 core」。**阶段 5 落地后结论变了**：Iceberg catalog 里的表没有 Paimon 那套「表种类」，`protocol-iceberg` 一处都不引用 `TableKinds`，因此这条不必做。控制台改为先按 catalog 格式分流、再读表级 `options.type`（`docs/console.md` §10） |
 | 4 | 表前缀 `paimon_` | **已执行**（§4.3(4)）：统一成 `lakehouse_`，库名 `lakehouse_catalog`，脚本在 `sql/migrate-table-prefix.sql` |
 | 5 | 类名与包名里的 `Paimon` | `PaimonPermissionModel`、`PaimonRestServerApplication`、`io.github.melin.lakehouse.rest` 全部保留 |

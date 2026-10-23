@@ -211,7 +211,7 @@ JAVA_HOME=/path/to/jdk-21 mvn -o -DskipTests install
 # 只要服务端可执行 jar：-am 会一并构建它依赖的 core / storage / 两个协议面
 JAVA_HOME=/path/to/jdk-21 mvn -o -DskipTests -pl :lakehouse-rest-server -am clean package
 
-# 运行全部测试（服务端 346 + Spark 107，共 453 个用例；Spark 侧有 1 个示例用例
+# 运行全部测试（服务端 432 + Spark 107，共 539 个用例；Spark 侧有 1 个示例用例
 # 在本地缺 spark.sql.extensions 时会失败，见第 7 节）。Flink 侧另有 12 个端到端用例，
 # 没给 e2e 地址时整体跳过，用 scripts/e2e-flink-sql.sh 跑真实服务端
 JAVA_HOME=/path/to/jdk-21 mvn test
@@ -293,6 +293,25 @@ Management API（catalog、主体、角色、catalog 角色与 grants）两个 A
 > **这层门禁只挡住界面。** 默认 `lakehouse.rest.auth.enabled=false`，
 > 因此 `curl /v1/config` 与管理 API 仍然匿名可调。要保护数据必须把 `auth.enabled`
 > 设为 `true`；服务端在「门禁开着而鉴权关着」时会在启动日志里告警。
+
+接口清单还有一个页面，**不需要登录**：
+
+```bash
+open http://localhost:8080/doc.html
+```
+
+它由 knife4j-next 渲染（OpenAPI 3，界面是新的 React 版），按
+「Paimon REST Catalog / Iceberg REST Catalog / 公共·管理与控制台」三组列出全部端点；
+`/v3/api-docs` 是 OpenAPI 原文（分组版 `/v3/api-docs/{group}`），
+`/swagger-ui.html` 保留原生 UI——knife4j 的页面出问题时可用来分辨问题在 UI 还是文档本身。
+
+组名拼错（例如 `/v3/api-docs/paimonn`）回 **404** 并在 `message` 里带上写错的组名，
+不会变成 `500 Internal Server Error`——那是调用方的拼写错误，不是服务端故障。
+
+> **文档公开不等于端点公开。** 页面只是把已有端点列出来；「调试」发出去的请求照样要过
+> Bearer 鉴权与表级授权（在接口的「认证」里填令牌）。这一点由
+> `ApiDocEndpointTests` 在 `auth.enabled=true` 下钉住：`/doc.html` 与 `/v3/api-docs`
+> 匿名 200，而 `/api/management/v1/**`、`/v1/**` 仍然 401。
 
 ### 2.3 数据源 profile
 
@@ -804,7 +823,7 @@ Azure 只下发定位元数据是个明确的缺口：Polaris 的 `polaris.stora
 
 ## 7. 测试
 
-### 单元与集成测试（453 个用例）
+### 单元与集成测试（539 个用例）
 
 ```bash
 JAVA_HOME=/path/to/jdk-21 mvn test
@@ -813,7 +832,7 @@ JAVA_HOME=/path/to/jdk-21 mvn test
 测试连的是内存 H2（`test` profile，见 `src/test/resources/application-test.yml`），
 **不依赖本机是否有 MySQL**。
 
-服务端（344 个）：
+服务端（432 个）：
 
 | 测试类 | 覆盖 |
 | --- | --- |
@@ -849,6 +868,8 @@ JAVA_HOME=/path/to/jdk-21 mvn test
 | `AuditPrincipalEndpointTests` | 审计主体名走完整 HTTP 链路（拦截器 → 主体名 → 实体 → JDBC）：门禁模式下 272 字符的未知令牌**不再把建表打成 500** 而是记摘要、`Bearer alice` 仍以 `alice` 入库（本地调试约定不退）、服务端自己签发的令牌解析出真实主体名、匿名记 `anonymous` |
 | `MysqlDdlGeneratorTests` | 由实体元数据生成 MySQL DDL，并断言方言被钉在 MySQL 8.0（见「代码生成」） |
 | `PaimonRestServerApplicationTests` | 上下文加载 |
+| `ApiDocEndpointTests` | 接口文档页在**真容器**里（`RANDOM_PORT`，不是 MockMvc——`/doc.html` 是 UI jar 里 `META-INF/resources` 的静态文件，MockMvc 走不到那条链路，测了也是假绿）：`auth.enabled=true` 时 `/doc.html` 与 `/v3/api-docs` 匿名 200、三组（paimon / iceberg / management）各自取得到且非空、而 `/api/management/v1/**` 与 `/v1/**` 仍然 401——**文档公开不等于端点公开**；组名写错（`/v3/api-docs/no-such-group`）回 **404** 而不是 500 |
+| `AuditColumnGuardTests` | 审计列不被超长主体名撑破的两条写入路径：实体 `save` 经 `@PrePersist` / `@PreUpdate` 归一化（连绕过 `touch` 直接 `setUpdatedBy` 的调用点也拦）、批量更新只能由调用方传 `RequestContext.auditPrincipal()`（JPQL 不触发实体回调——Iceberg 每次 commit 都曾以 `Data too long for column 'updated_by'` 失败）；`null` 保持 `null`，不填 `anonymous` |
 
 Spark 子模块（107 个，其中 6 个类共 35 个用例需要显式指向服务端）：
 

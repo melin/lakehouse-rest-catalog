@@ -364,3 +364,43 @@ lakehouse:
       # 注意：这个键在 LineageRetentionJob 的 @Scheduled 占位符里还出现一次，
       # 改默认值时两处要同步（占位符在 bean 绑定前解析，注入不了本对象）。
       cleanup-cron: "0 30 3 * * *"
+
+# ===========================================================================
+# 接口文档（knife4j-next，Boot 4 线：springdoc 3.x）
+#
+#   /doc.html      阅览页面（React 版 UI，中文界面）
+#   /v3/api-docs   OpenAPI 3 原文；分组版在 /v3/api-docs/{group}
+#
+# **阅览页面不需要登录。** 它不在 WebConfig 注册的三个受管前缀
+# （/v1/**、/api/catalog/v1/**、/api/management/v1/**、/api/console/v1/**）
+# 里，浏览器直接打就能看；`/api/console/v1/auth` 那几条豁免与它无关。
+# 端点自身的鉴权一条都没变——页面上的「调试」发出去的请求照样要过 Bearer
+# 鉴权与表级授权（在那条接口的「认证」里填令牌即可）。这一点是刻意的：
+# 文档只负责「把端点说清楚」，不负责「让端点变宽松」。
+#
+# 分组按控制器所在包划分，三组覆盖全部控制器（漏一个包的表现是那一组接口
+# 消失，而不是报错）。协议面按格式分开：`/v1/{prefix}` 归属哪个协议要看
+# catalog 的 catalogFormat，混在一张表里读不出这条边界。
+# ===========================================================================
+knife4j:
+  enable: true
+  setting:
+    language: zh_cn
+
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  # 原生 Swagger UI 一起留着：knife4j 的页面出问题（版本不匹配、静态资源 404）
+  # 时，至少还有一个能确认「问题在 UI 还是在 OpenAPI 文档本身」的地方
+  swagger-ui:
+    path: /swagger-ui.html
+  group-configs:
+    - group: paimon
+      display-name: Paimon REST Catalog
+      packages-to-scan: io.github.melin.lakehouse.rest.paimon.web
+    - group: iceberg
+      display-name: Iceberg REST Catalog
+      packages-to-scan: io.github.melin.lakehouse.rest.iceberg.web
+    - group: management
+      display-name: 公共 / 管理与控制台
+      packages-to-scan: io.github.melin.lakehouse.rest.web
