@@ -241,7 +241,7 @@ spec/                   三份 OpenAPI 规格的仓库副本（不随服务端�
                         rest-management-open-api.yaml（Paimon 官方 REST Management API）
 sql/                    MySQL 建表语句（生成物）
 scripts/                验收 / 生成 / 校验 / 镜像构建脚本
-docs/                   24 份设计文档（另有三份配套效果图 HTML）
+docs/                   25 份设计文档（另有四份配套效果图 HTML）
 ```
 
 服务端四模块的**类数**：core 117 · storage 9 · protocol-paimon 38 · server 46（共 210）。
@@ -284,6 +284,7 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
 | `row-filter-column-mask-design.md` | 做行过滤 / 列脱敏（行级安全、列脱敏）或评审该方案——**设计稿，未实现**：Spark 3.5.9 / 4.1.2 / 4.2.0 的 `spark-catalyst` 里都没有 `RowFilter` / `ColumnMask` / `SupportsAccessControl`（jar 实测），官方 SPIP SPARK-59726 才指向 5.0.0 → 只能靠 `SparkSessionExtensions` 注入；为什么必须用**自定义逻辑节点**而不是裸 `Project`（优化器会把 mask 吃掉或把谓词挪到 mask 下面）；AST 表达式白名单 + `$principal` 占位符（不注册 UDF，两版共用一份源码）；策略下发 TTL 60s 与 **fail-closed**；服务端三条读路径（预览 / 文件下载 / 列统计）各自怎么堵；**能力边界**：凭据一旦下发到客户端，`spark.read.parquet(...)` 直读就是明文，本层拦不住（§7.1）；三家生产实现（Databricks / Kyuubi+Ranger / EMR+Lake Formation）横向对照与**强制等级 L0–L3**（§2.2、§2.3）、Kyuubi #3186 的 DSv2 静默放行教训（§3.4）、**Spark SQL 管理语句的语法设计**（§13：7 条语句进 `ManagementSql.g4`、表达式片段走 `parseExpression` 再按白名单转 AST、`current_user()` 折成 `$principal`、`DROP POLICY` 的会话级防呆）、与 SPIP 的逐条差距清单（附录 A） |
 | `console-catalog-detail.md` | 改 Catalog 详情页 / 仓库文件浏览：四页签（概览 / **存储** / 文件列表 / 配置；存储页的口径与来源见 §3.2）、下钻与路径防护、单文件下载、只读取舍、「配置」页的默认表属性（`table-default.*`）编辑与并发冲突处理；建表表单里的默认参数预填（§3.5）与为什么不给 Lance 表建表入口（§3.6）；**「协议与能力」卡片**（§3.1.1：客户端基址、端点清单、不声明支持）以及 Iceberg catalog 下只剩「概览」与「文件列表」两页可用（§9） |
 | `console-auth.md` | 配控制台登录：三种登录方式、两个开关的边界、令牌链、安全考量 |
+| `semantic-layer-design.md` | 做语义层 / 语义模型 / 给 agent 供语义上下文，或评审该方案——**设计稿，未实现**：参照 Polaris 1.7.0 的 Ossie（OSI）语义模型与它的三条社区批评（drift / 复用 / 只存不消费）——格式跟随 Ossie 不发明、模型挂 catalog 不挂 namespace、**引用校验**（source 必须解析到真实表，字段对 schema，建时 fail-closed 读时标 stale）、描述分层（表/列注释是权威源，模型只存增量）；八类使用场景与 text-to-SQL 的四类错误对照（§3）；**agent 上下文包端点 + 只读 MCP + OpenAPI 三通道**（§6）、ai_context 是数据不是指令的注入对策、语义层 fail-open 与策略层 fail-closed 的方向对比（§5.4）、13 条验收断言；配套原型 `semantic-layer-mockup.html`（六画面：列表 / 详情 / 编辑·校验 / 上下文包 / Agent 接入 / 表详情联动） |
 | `polaris-capabilities-and-design.md` | 对比 Polaris、看整体设计与已知缺口 |
 | `iceberg-rest-catalog-design.md` | 让同一基址、同一份元数据同时服务原生 Iceberg REST 客户端：双协议方案、两套面的差异与代价、catalog 建时区分格式；**已落地的实测记录与与方案不一致的十六处**（§11） |
 

@@ -427,6 +427,20 @@ Polaris 有三件我们没做的事，各自对应一个具体故障：
 客户端会调，服务端只需按同一套判权再签一次短 TTL 凭据。STS 与作用域收窄要云侧信任关系，
 属于外部集成，排在它后面。
 
+
+#### ④ 语义模型：格式跟随 Ossie，把「发现 + 消费」补全 —— P0（**已有独立设计稿**）
+
+Polaris 1.7.0 把语义模型（Ossie/OSI 格式）做成一等实体：`SEMANTIC_MODEL` + CRUD 五端点 +
+entity-version 乐观锁 + Ossie schema 校验，默认关闭、标记 beta。但它被社区批评为
+「低级文档注册表」——没有按表发现、没有消费路径，BI 与 agent 框架无法开箱集成；
+dataset 描述与表注释重复还会造成 semantic drift。
+
+我们做同样的事有三个额外杠杆：双格式 `dataset.source`（Polaris 只有 Iceberg）、
+现成的血缘（指标 freshness）与管理面权限（「见指标不见明细」）。差异化的核心是
+**agent 上下文包端点**（表 schema + 语义 + join 关系 + 血缘 + 保护标记一次拉全，
+逐表判权）与只读 MCP 通道。场景清单、数据模型、agent 接入与验收见
+[`semantic-layer-design.md`](semantic-layer-design.md)（设计稿，未实现）。
+
 ### 9.3 有条件采纳
 
 | 能力 | 采纳条件 | 解决的问题 |

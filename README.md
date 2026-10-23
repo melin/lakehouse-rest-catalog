@@ -149,7 +149,7 @@ k8s 资源名的 `paimon-` 前缀**故意不改**：它不是产品名，是历�
 （StatefulSet 与 PVC 引用）。见
 [`maven-module-design.md`](docs/maven-module-design.md) §8.6。
 
-`docs/` 里二十四份文档的分工：
+`docs/` 里二十五份文档的分工：
 
 | 文档 | 读它的时机 |
 | --- | --- |
@@ -167,6 +167,7 @@ k8s 资源名的 `paimon-` 前缀**故意不改**：它不是产品名，是历�
 | [`console-table-detail.md`](docs/console-table-detail.md) | 要改表详情页——页签随表格式（Paimon / Format / Object / Lance）伸缩的数据来源、为什么授权不在这页、破坏性操作与边界 |
 | [`console-catalog-detail.md`](docs/console-catalog-detail.md) | 要改 Catalog 详情页或仓库文件浏览——四个页签（概览 / 存储 / 文件列表 / 配置）、下钻与路径防护、只读的取舍、「配置」页的默认表属性（`table-default.*`）编辑与并发冲突处理；建表表单里的默认参数预填与为什么不给 Lance 表建表入口 |
 | [`console-auth.md`](docs/console-auth.md) | 要给浏览器访问控制台配登录——三种登录方式、两个开关的边界、令牌与认证链、安全考量 |
+| [`semantic-layer-design.md`](docs/semantic-layer-design.md) | 要做语义层（语义模型 / 指标口径 / 给 AI agent 供上下文）或评审该方案——**设计稿，未实现**：参照 Polaris 1.7.0 的 Ossie 语义模型并把社区批评的三件事补上（引用校验、描述复用、发现与消费）；八类使用场景、text-to-SQL 四类错误的语义对策、agent 三条接入通道（上下文包 / 只读 MCP / OpenAPI）、ai_context 提示注入对策、「语义 fail-open、策略 fail-closed」的方向对比；配套原型 [`semantic-layer-mockup.html`](docs/semantic-layer-mockup.html)（六画面，含上下文包逐表判权与 Agent 工作流的交互演示） |
 | [`polaris-capabilities-and-design.md`](docs/polaris-capabilities-and-design.md) | 要对比 Polaris 或看整体设计——核心能力提取、映射关系、已知缺口 |
 | [`event-framework.md`](docs/event-framework.md) | 要加一种事件、接一个 listener 或理解事件流的边界——9 类 33 个领域事件与触发点、与 Polaris 事件枚举的逐类映射、audit_event 表、发布监听链路、按监听器的类别/类型订阅（`lakehouse.rest.event-listener.*`）、增量拉取契约（`?since=` 游标 + `?category=`）与不发清单 |
 | [`iceberg-rest-catalog-design.md`](docs/iceberg-rest-catalog-design.md) | 要看「同一份元数据同时服务 Paimon 与 Iceberg」怎么做的——双协议方案：创建时区分格式、22 张表复用只加 9 列、路径冲突与错误模型、能力边界与效果图（`outputs/iceberg-rest-catalog/mockup.html`），以及**已落地的实测记录与与方案不一致的几处**（§11） |

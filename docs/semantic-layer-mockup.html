@@ -1,0 +1,1499 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>语义层（语义模型 / Agent 上下文包） · 产品原型（lakehouse-rest 控制台）</title>
+<style>
+  :root {
+    --sidebar-w: 252px;
+    --sidebar-bg: #0e1626;
+    --sidebar-fg: #c7d2e3;
+    --sidebar-dim: #7b8aa3;
+    --sidebar-active: rgba(59, 130, 246, 0.18);
+    --page-bg: #f3f5f9;
+    --surface: #ffffff;
+    --surface-2: #f7f9fc;
+    --border: #e2e7f0;
+    --text: #1f2937;
+    --dim: #6b7280;
+    --accent: #1d4ed8;
+    --radius: 2px;
+    --warn: #d97706;
+    --danger: #dc2626;
+    --ok: #047857;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; }
+  body {
+    font: 13.5px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", sans-serif;
+    color: var(--text);
+    background: var(--page-bg);
+  }
+  .app { display: flex; min-height: 100vh; transition: padding-right .18s; }
+
+  /* ---------------- 侧边栏 ---------------- */
+  .sidebar {
+    width: var(--sidebar-w); flex: 0 0 var(--sidebar-w);
+    background: var(--sidebar-bg); color: var(--sidebar-fg);
+    padding: 14px 0 20px; position: sticky; top: 0; height: 100vh; overflow: auto;
+  }
+  .brand { display: flex; align-items: center; gap: 10px; padding: 6px 18px 18px; }
+  .brand-mark {
+    width: 30px; height: 30px; border-radius: 3px; background: #1e40af;
+    display: grid; place-items: center; color: #fff; font-weight: 700; font-size: 13px;
+  }
+  .brand-text strong { display: block; color: #eaf1ff; font-size: 14.5px; }
+  .brand-text span { font-size: 11.5px; color: var(--sidebar-dim); }
+  .nav-group { padding: 12px 18px 4px; font-size: 11px; letter-spacing: .08em; color: #5f6f88; }
+  .nav-item {
+    display: flex; align-items: center; gap: 9px; padding: 8px 18px;
+    font-size: 13px; color: var(--sidebar-fg); cursor: pointer; border-left: 2px solid transparent;
+  }
+  .nav-item:hover { color: #e6efff; }
+  .nav-item.on { background: var(--sidebar-active); color: #dce9ff; border-left-color: #3b82f6; padding-left: 16px; }
+  .nav-item .ico { width: 15px; text-align: center; opacity: .85; font-size: 12px; }
+  .nav-item .new {
+    margin-left: auto; font-size: 10px; padding: 0 4px; height: 15px; line-height: 15px;
+    background: #1e3a8a; color: #bfdbfe; border-radius: 2px; letter-spacing: .04em;
+  }
+
+  /* ---------------- 主区 ---------------- */
+  .main { flex: 1; min-width: 0; padding: 16px 24px 44px; }
+  .topbar { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--dim); margin-bottom: 12px; }
+  .topbar .sep { color: #cbd5e1; }
+  .topbar .current { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+  .topbar select {
+    font: inherit; padding: 4px 10px; border: 1px solid var(--border); border-radius: var(--radius);
+    background: #fff; color: var(--text);
+  }
+
+  .page-head { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 14px; }
+  .page-head h1 { font-size: 20px; margin: 0 0 4px; font-weight: 650; letter-spacing: -.01em; }
+  .page-head .sub { font-size: 12.5px; color: var(--dim); }
+  .page-head .actions { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
+
+  .btn {
+    display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px;
+    border: 1px solid var(--border); background: #fff; color: var(--text);
+    border-radius: var(--radius); font: inherit; font-size: 13px; cursor: pointer;
+  }
+  .btn:hover { border-color: #c7d2e3; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn.primary:hover { background: #1a45c0; }
+  .btn.ghost { background: var(--surface-2); }
+  .btn.danger { color: var(--danger); border-color: #f3c7c7; background: #fff; }
+  .btn.sm { height: 26px; padding: 0 9px; font-size: 12.5px; }
+  .btn.link { border-color: transparent; background: none; color: var(--accent); padding: 0 4px; height: auto; }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+
+  .card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+    box-shadow: 0 1px 2px rgba(16,24,40,.05), 0 1px 3px rgba(16,24,40,.05);
+  }
+  .tabs { display: flex; gap: 2px; padding: 0 14px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+  .tab {
+    padding: 11px 12px 9px; font-size: 13.5px; color: var(--dim); cursor: pointer;
+    border-bottom: 2px solid transparent; margin-bottom: -1px; white-space: nowrap;
+  }
+  .tab.on { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+  .tab-body { padding: 14px 16px 16px; }
+
+  .tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+  .field { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--dim); }
+  .control {
+    display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px;
+    border: 1px solid var(--border); border-radius: var(--radius); background: #fff;
+    font-size: 13px; color: var(--text); min-width: 110px;
+  }
+  .control .caret { margin-left: auto; color: #9aa5b6; font-size: 10px; }
+  .control.mono { font-family: var(--mono); font-size: 12.5px; }
+  .spacer { flex: 1; }
+
+  /* ---------------- KPI ---------------- */
+  .kpis { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; }
+  .kpi { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px 9px; }
+  .kpi .l { font-size: 11.5px; color: var(--dim); letter-spacing: .02em; }
+  .kpi .v { font-size: 21px; font-weight: 650; letter-spacing: -.02em; margin-top: 2px; font-variant-numeric: tabular-nums; }
+  .kpi .v small { font-size: 12px; font-weight: 500; color: var(--dim); margin-left: 3px; }
+  .kpi .d { font-size: 11.5px; color: var(--dim); margin-top: 1px; }
+  .kpi.alert { border-color: #f6c9c9; background: #fff7f7; }
+  .kpi.alert .v { color: var(--danger); }
+
+  /* ---------------- 徽标 ---------------- */
+  .badge {
+    display: inline-flex; align-items: center; gap: 4px; height: 19px; padding: 0 6px;
+    border-radius: 2px; font-size: 11.5px; white-space: nowrap; border: 1px solid transparent;
+  }
+  .badge.ok { background: #ecfdf5; color: #047857; border-color: #bbf7d0; }
+  .badge.warn { background: #fffbeb; color: #b45309; border-color: #fde68a; }
+  .badge.danger { background: #fef2f2; color: #b91c1c; border-color: #fecaca; }
+  .badge.mute { background: #f1f5f9; color: #64748b; border-color: #e2e8f0; }
+  .badge.info { background: #eff6ff; color: #1e40af; border-color: #dbeafe; }
+  .badge.purple { background: #f7f3ff; color: #5b21b6; border-color: #e3d5fb; }
+  .dia {
+    display: inline-flex; align-items: center; gap: 4px; font-family: var(--mono);
+    font-size: 11px; color: #5b21b6; background: #f7f3ff; border: 1px solid #e3d5fb;
+    border-radius: 2px; padding: 0 5px; height: 18px; white-space: nowrap;
+  }
+  .fmt { font-family: var(--mono); font-size: 11px; color: #64748b; background: #eef2f7; padding: 0 4px; border-radius: 2px; }
+
+  /* ---------------- 提示条 ---------------- */
+  .banner {
+    display: flex; align-items: flex-start; gap: 8px; padding: 8px 12px; margin-bottom: 12px;
+    border-left: 3px solid var(--warn); background: #fffbeb; color: #7c4a03;
+    font-size: 12.5px; border-radius: var(--radius);
+  }
+  .banner .tag { font-weight: 600; white-space: nowrap; }
+  .banner.info { border-left-color: var(--accent); background: #eff6ff; color: #1e3a8a; }
+  .banner.danger { border-left-color: var(--danger); background: #fef2f2; color: #991b1b; }
+  .banner.ok { border-left-color: var(--ok); background: #f0fdf4; color: #065f46; }
+  .banner a { color: inherit; }
+
+  /* ---------------- 数据表 ---------------- */
+  .tablewrap { border: 1px solid var(--border); border-radius: var(--radius); overflow: auto; }
+  table.dtable { width: 100%; border-collapse: collapse; font-size: 12.8px; }
+  table.dtable thead th {
+    position: sticky; top: 0; z-index: 1; background: var(--surface-2);
+    text-align: left; font-weight: 600; color: #475569; padding: 8px 12px;
+    border-bottom: 1px solid var(--border); white-space: nowrap;
+  }
+  table.dtable tbody td {
+    padding: 8px 12px; border-bottom: 1px solid #f0f3f8; vertical-align: middle;
+    font-variant-numeric: tabular-nums;
+  }
+  table.dtable tbody tr:hover td { background: #f8fbff; }
+  table.dtable tbody tr:last-child td { border-bottom: none; }
+  table.dtable tr.row-alert td { background: #fffafa; }
+  table.dtable tr.row-alert:hover td { background: #fff5f5; }
+  .tname { font-family: var(--mono); font-size: 12.5px; color: #111827; }
+  .tname .db { color: #94a3b8; }
+  .num { font-family: var(--mono); font-size: 12.5px; }
+  .dim2 { color: var(--dim); font-size: 12px; }
+  .nowrap { white-space: nowrap; }
+
+  /* chips */
+  .chips { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 4px; height: 21px; padding: 0 6px;
+    border: 1px solid #cfd9ea; background: #f4f8ff; color: #1e3a8a;
+    border-radius: 2px; font-size: 12px; font-family: var(--mono); white-space: nowrap;
+  }
+  .chip.syn { border-color: #d8c9f3; background: #f7f3ff; color: #5b21b6; font-family: -apple-system, sans-serif; }
+  .chip.key { border-color: #bbf7d0; background: #ecfdf5; color: #047857; }
+  .chip.plain { border-color: #e2e8f0; background: #f8fafc; color: #64748b; }
+  .chip .x { color: #94a3b8; cursor: pointer; font-family: sans-serif; }
+  .chip .x:hover { color: var(--danger); }
+  .op { font-family: var(--mono); font-size: 12px; color: #334155; }
+
+  /* ---------------- 两栏 / 右栏 ---------------- */
+  .split { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(300px, .95fr); gap: 12px; align-items: start; }
+  .split.even { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .split.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .rail { position: sticky; top: 12px; }
+  .card-h { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--border); }
+  .card-h h3 { margin: 0; font-size: 13.5px; font-weight: 650; }
+  .card-h .hint { font-size: 11.5px; color: var(--dim); margin-left: auto; }
+  .card-b { padding: 12px 14px 14px; }
+  .kv { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 6px 10px; font-size: 12.8px; }
+  .kv dt { color: var(--dim); font-size: 12.3px; }
+  .kv dd { margin: 0; }
+
+  /* ---------------- 表达式 / 代码 ---------------- */
+  pre.code {
+    margin: 0; padding: 10px 12px; background: #0f172a; color: #dbe4f3; border-radius: var(--radius);
+    font-family: var(--mono); font-size: 12px; line-height: 1.65; overflow: auto;
+  }
+  pre.code .k { color: #93c5fd; }
+  pre.code .s { color: #86efac; }
+  pre.code .n { color: #fbbf24; }
+  pre.code .c { color: #7b8aa3; }
+  pre.code .hl { background: rgba(239,68,68,.28); border-radius: 2px; padding: 0 3px; }
+  pre.code .ln { color: #475569; user-select: none; margin-right: 10px; }
+  .sql {
+    font-family: var(--mono); font-size: 12.5px; background: var(--surface-2);
+    border: 1px dashed #cfd9ea; border-radius: var(--radius); padding: 9px 11px; color: #1e293b;
+    white-space: pre-wrap; word-break: break-word;
+  }
+  .sql .kw { color: #1d4ed8; }
+  .sql .st { color: #b45309; }
+  .reqline {
+    font-family: var(--mono); font-size: 12.5px; background: #0f172a; color: #dbe4f3;
+    border-radius: var(--radius); padding: 9px 12px; overflow: auto;
+  }
+  .reqline .m { color: #86efac; font-weight: 600; }
+  .reqline .p { color: #93c5fd; }
+  .reqline .q { color: #fbbf24; }
+
+  /* ---------------- 校验清单 ---------------- */
+  .checks { display: grid; gap: 7px; }
+  .check { display: flex; align-items: flex-start; gap: 8px; font-size: 12.8px; }
+  .check .ic { width: 16px; flex: 0 0 16px; text-align: center; font-size: 12px; }
+  .check.ok .ic { color: var(--ok); }
+  .check.warn .ic { color: var(--warn); }
+  .check.err .ic { color: var(--danger); }
+  .check .t { color: #334155; }
+  .check .h { color: var(--dim); font-size: 11.8px; }
+  .jpath { font-family: var(--mono); font-size: 11.5px; background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca; padding: 0 5px; border-radius: 2px; }
+  .jpath.w { background: #fffbeb; color: #b45309; border-color: #fde68a; }
+
+  /* 描述来源标注（注释 ∪ 模型增量） */
+  .src {
+    display: inline-flex; align-items: center; gap: 3px; height: 16px; padding: 0 5px;
+    font-size: 10.5px; border-radius: 2px; vertical-align: 1px; white-space: nowrap;
+  }
+  .src.comment { background: #f1f5f9; color: #64748b; border: 1px solid #e2e8f0; }
+  .src.model { background: #eff6ff; color: #1e40af; border: 1px solid #dbeafe; }
+
+  /* ---------------- 上下文包五节 ---------------- */
+  .cpsec { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); margin-bottom: 10px; }
+  .cpsec .cp-h { display: flex; align-items: center; gap: 9px; padding: 9px 14px; border-bottom: 1px solid var(--border); }
+  .cpsec .cp-h .idx {
+    width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center;
+    background: #eef4ff; color: #1e40af; font-family: var(--mono); font-size: 11px; font-weight: 700;
+    border: 1px solid #cfdff9;
+  }
+  .cpsec .cp-h h3 { margin: 0; font-size: 13px; font-weight: 650; }
+  .cpsec .cp-h .hint { font-size: 11.5px; color: var(--dim); margin-left: auto; }
+  .cpsec .cp-b { padding: 10px 14px 12px; }
+
+  /* 大小预算条 */
+  .budget { flex: 1; height: 8px; min-width: 120px; background: #eef2f7; border-radius: 4px; overflow: hidden; }
+  .budget > i { display: block; height: 100%; background: var(--accent); border-radius: 4px; }
+  .budget.warn > i { background: var(--warn); }
+
+  /* ---------------- Agent 工作流 ---------------- */
+  .wflow { display: grid; }
+  .ws { display: flex; gap: 11px; position: relative; padding-bottom: 13px; }
+  .ws:last-child { padding-bottom: 2px; }
+  .ws .dot {
+    flex: 0 0 22px; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center;
+    background: #eef4ff; color: #1e40af; font-family: var(--mono); font-size: 11px; font-weight: 700;
+    border: 1px solid #cfdff9; z-index: 1; margin-top: 1px;
+  }
+  .ws::before {
+    content: ""; position: absolute; left: 10.5px; top: 24px; bottom: -1px;
+    width: 1px; background: #dbe4f3;
+  }
+  .ws:last-child::before { display: none; }
+  .ws .wt { min-width: 0; }
+  .ws .wt .t { font-size: 13px; font-weight: 600; color: #1f2937; }
+  .ws .wt .d { font-size: 12.2px; color: var(--dim); margin-top: 1px; line-height: 1.55; }
+  .ws .wt .d b { color: #334155; }
+  .ws.gate .dot { background: #ecfdf5; color: #047857; border-color: #bbf7d0; }
+
+  /* ---------------- 通道卡 ---------------- */
+  .chan { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+  .chan .ch-h { display: flex; align-items: center; gap: 8px; padding: 10px 13px 8px; }
+  .chan .ch-h .abc {
+    width: 22px; height: 22px; border-radius: 3px; display: grid; place-items: center;
+    background: #1e40af; color: #fff; font-weight: 700; font-size: 12px;
+  }
+  .chan .ch-h h3 { margin: 0; font-size: 13.5px; }
+  .chan .ch-h .hint { margin-left: auto; }
+  .chan .ch-b { padding: 2px 13px 12px; font-size: 12.6px; color: #334155; }
+  .chan .ch-b ul { margin: 6px 0 0; padding-left: 17px; }
+  .chan .ch-b li { margin-bottom: 3px; }
+  .chan .ch-f { padding: 7px 13px 10px; border-top: 1px dashed #eef2f7; font-size: 11.8px; color: var(--dim); }
+
+  /* ---------------- 表单 ---------------- */
+  .frow { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 0; padding: 12px 0; border-bottom: 1px solid #f0f3f8; }
+  .frow:last-child { border-bottom: none; }
+  .frow > label { flex: 0 0 104px; font-size: 12.8px; color: #334155; padding-top: 6px; }
+  .frow .body { flex: 1; min-width: 0; }
+  .frow .note { font-size: 11.8px; color: var(--dim); margin-top: 5px; line-height: 1.55; }
+  .input, .select, .textarea {
+    height: 32px; padding: 0 9px; border: 1px solid var(--border); border-radius: var(--radius);
+    font: inherit; font-size: 13px; color: var(--text); background: #fff; min-width: 120px;
+  }
+  .textarea { height: auto; padding: 7px 9px; line-height: 1.6; }
+  .input:focus, .select:focus, .textarea:focus { outline: 2px solid rgba(29,78,216,.14); border-color: var(--accent); }
+  .input.mono { font-family: var(--mono); font-size: 12.5px; }
+  .inline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+  /* 字数计数 */
+  .counter { font-family: var(--mono); font-size: 11.5px; color: #64748b; }
+  .counter.hot { color: #b45309; }
+
+  /* ---------------- 标注 ---------------- */
+  .pin {
+    display: inline-grid; place-items: center; width: 15px; height: 15px; border-radius: 50%;
+    background: #f59e0b; color: #fff; font-size: 10px; font-family: -apple-system, sans-serif;
+    font-weight: 700; vertical-align: 2px; margin-left: 4px; cursor: help;
+  }
+  .notes {
+    display: none; position: fixed; right: 0; top: 0; bottom: 0; width: 320px; z-index: 40;
+    background: #0f172a; color: #d7e1f2; padding: 16px 16px 40px; overflow: auto;
+    font-size: 12.3px; line-height: 1.62; box-shadow: -8px 0 24px rgba(15,23,42,.18);
+  }
+  body.notes-on .notes { display: block; }
+  body.notes-on .app { padding-right: 320px; }
+  .notes h4 { margin: 0 0 4px; font-size: 12.5px; color: #fff; letter-spacing: .02em; }
+  .notes .lead { color: #8ea0bd; font-size: 11.5px; margin-bottom: 12px; }
+  .notes .n { display: flex; gap: 8px; margin-bottom: 11px; }
+  .notes .n b {
+    flex: 0 0 16px; height: 16px; border-radius: 50%; background: #f59e0b; color: #1f2937;
+    font-size: 10px; display: grid; place-items: center; margin-top: 2px;
+  }
+  .notes .n span { color: #c7d3e6; }
+  .notes .n code { font-family: var(--mono); font-size: 11px; color: #93c5fd; }
+
+  /* ---------------- 演示控制条 ---------------- */
+  .demo {
+    position: fixed; right: 18px; bottom: 18px; z-index: 50;
+    display: flex; align-items: center; gap: 6px; padding: 8px 10px; flex-wrap: wrap; max-width: calc(100vw - 36px);
+    background: #111827; color: #e5e7eb; border-radius: 3px; font-size: 12px;
+    box-shadow: 0 8px 24px rgba(0,0,0,.18);
+  }
+  .demo span { color: #9ca3af; margin-right: 2px; }
+  .demo button {
+    font: inherit; padding: 4px 9px; border-radius: 2px; border: 1px solid transparent;
+    background: rgba(255,255,255,.08); color: #e5e7eb; cursor: pointer;
+  }
+  .demo button.on { background: #1d4ed8; border-color: #3b82f6; color: #fff; }
+  .demo .sep { width: 1px; height: 16px; background: #374151; margin: 0 4px; }
+
+  /* ---------------- 画面切换 ---------------- */
+  .screen { display: none; }
+  .screen.on { display: block; }
+  .crumb-link { color: var(--accent); cursor: pointer; }
+
+  .statebox { padding: 40px 20px; text-align: center; color: var(--dim); }
+  .statebox .ico { font-size: 24px; margin-bottom: 8px; opacity: .7; }
+  .statebox strong { display: block; color: var(--text); font-size: 14px; margin-bottom: 4px; }
+  .statebox p { margin: 0 auto 12px; font-size: 12.5px; max-width: 460px; }
+
+  .footerbar {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding-top: 10px; margin-top: 12px; border-top: 1px solid var(--border);
+    font-size: 12.3px; color: var(--dim);
+  }
+  .footerbar b { color: var(--text); font-weight: 600; }
+  .footerbar .grow { flex: 1; }
+
+  @media (max-width: 1280px) {
+    .kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .split, .split.even, .split.three { grid-template-columns: minmax(0, 1fr); }
+    .rail { position: static; }
+  }
+  @media (max-width: 1024px) {
+    .sidebar { display: none; }
+    .main { padding: 14px; }
+    .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
+</style>
+</head>
+<body>
+
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">LH</div>
+      <div class="brand-text"><strong>LakeHouse Catalog</strong><span>管理控制台</span></div>
+    </div>
+    <div class="nav-group">概览</div>
+    <div class="nav-item"><span class="ico">▦</span>控制台概览</div>
+    <div class="nav-group">目录（CATALOG API）</div>
+    <div class="nav-item"><span class="ico">▤</span>目录浏览</div>
+    <div class="nav-group">治理（MANAGEMENT API）</div>
+    <div class="nav-item"><span class="ico">▥</span>Catalogs</div>
+    <div class="nav-item"><span class="ico">◔</span>主体</div>
+    <div class="nav-item"><span class="ico">◑</span>角色</div>
+    <div class="nav-item"><span class="ico">◈</span>权限管理</div>
+    <div class="nav-item"><span class="ico">⛨</span>数据保护</div>
+    <div class="nav-item on" data-go="list"><span class="ico">◇</span>语义模型<span class="new">新</span></div>
+    <div class="nav-item"><span class="ico">▧</span>优化任务</div>
+    <div class="nav-group">审计</div>
+    <div class="nav-item"><span class="ico">◎</span>事件</div>
+    <div class="nav-group">系统</div>
+    <div class="nav-item"><span class="ico">⚙</span>连接设置</div>
+  </aside>
+
+  <main class="main">
+    <div class="topbar">
+      <span>治理</span><span class="sep">/</span><span id="crumb">语义模型</span>
+      <span class="current">
+        <span>当前目录</span>
+        <select><option>lakehouse</option><option>iceberg_prod</option></select>
+        <span class="badge mute">只读身份 · 可编辑模型</span>
+      </span>
+    </div>
+
+    <!-- ============================================================ 画面 1：模型列表 -->
+    <section class="screen on" id="s-list">
+      <div class="page-head">
+        <div>
+          <h1>语义模型<span class="pin">1</span></h1>
+          <div class="sub">Ossie 格式的口径说明书：指标定义、join 关系、列角色与 agent 语境，一处维护、处处一致。不执行查询、不判权、不改写 SQL。</div>
+        </div>
+        <div class="actions">
+          <button class="btn ghost" data-go="context">预览上下文包</button>
+          <button class="btn primary" data-go="edit">新建语义模型</button>
+        </div>
+      </div>
+
+      <div class="banner info">
+        <span class="tag">开关状态</span>
+        <div>
+          <span class="num">lakehouse.rest.semantic.enabled=false</span>（默认）：<b>写入口关闭、读照常</b>。
+          「功能没开」与「没建模型」必须可区分——读侧关闭会让上下文包的 404 和空结果混成一件事（对照血缘开关的教训）。
+        </div>
+      </div>
+
+      <div class="kpis">
+        <div class="kpi">
+          <div class="l">语义模型</div>
+          <div class="v">8</div>
+          <div class="d">2 个 catalog · Ossie 0.1.1</div>
+        </div>
+        <div class="kpi">
+          <div class="l">覆盖表</div>
+          <div class="v">14<small>/ 34</small></div>
+          <div class="d">引用校验全部通过（fail-closed）</div>
+        </div>
+        <div class="kpi">
+          <div class="l">指标 / 关系</div>
+          <div class="v">23<small>+ 6</small></div>
+          <div class="d">全部带 ANSI_SQL 方言<span class="pin">2</span></div>
+        </div>
+        <div class="kpi alert">
+          <div class="l">stale 模型</div>
+          <div class="v">1</div>
+          <div class="d">字段悬空 · 读照常、可修复</div>
+        </div>
+        <div class="kpi">
+          <div class="l">近 7 天上下文包</div>
+          <div class="v">1,842</div>
+          <div class="d">REST 1,203 · MCP 639 次</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="tab-body" style="padding-bottom:10px">
+          <div class="tools">
+            <div class="control" style="min-width:220px"><span style="color:#9aa5b6">⌕</span><span class="mono" style="color:#9aa5b6">模型名 / 同义词（P2 搜索）</span></div>
+            <div class="control">全部 Catalog<span class="caret">▾</span></div>
+            <div class="control">全部状态<span class="caret">▾</span></div>
+            <div class="control mono">refTable: —<span class="caret">▾</span></div>
+            <div class="spacer"></div>
+            <span class="dim2">共 8 条 · 每页 20</span>
+          </div>
+
+          <div class="tablewrap">
+            <table class="dtable">
+              <thead>
+                <tr>
+                  <th style="width:22%">模型</th>
+                  <th style="width:20%">覆盖表（dataset.source）</th>
+                  <th style="width:7%">指标</th>
+                  <th style="width:7%">关系</th>
+                  <th style="width:9%">格式版本</th>
+                  <th style="width:9%">状态</th>
+                  <th style="width:12%">最后修改</th>
+                  <th style="width:7%">版本</th>
+                  <th style="width:7%">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>
+                    <div class="tname">sales_orders</div>
+                    <div class="dim2">订单域核心模型 · 营收与退货口径</div>
+                  </td>
+                  <td>
+                    <div class="chips">
+                      <span class="chip">sales.orders</span>
+                      <span class="chip">sales.customers</span>
+                    </div>
+                  </td>
+                  <td class="num">5</td>
+                  <td class="num">1</td>
+                  <td><span class="fmt">0.1.1</span></td>
+                  <td><span class="badge ok">正常</span></td>
+                  <td class="dim2 nowrap">10-23 14:12 · 张伟</td>
+                  <td class="num">v6</td>
+                  <td><button class="btn sm" data-go="detail">详情</button></td>
+                </tr>
+                <tr class="row-alert">
+                  <td>
+                    <div class="tname">sales_orders_v1</div>
+                    <div class="dim2">旧订单模型 · 待迁移</div>
+                  </td>
+                  <td>
+                    <div class="chips">
+                      <span class="chip" style="border-color:#fecaca;background:#fef2f2;color:#b91c1c">sales.orders_v1</span>
+                    </div>
+                    <div class="dim2" style="color:#b91c1c;margin-top:3px">字段 <span class="num">amt_net</span> 已被 DROP，schema 对照 12/13<span class="pin">3</span></div>
+                  </td>
+                  <td class="num">3</td>
+                  <td class="num">0</td>
+                  <td><span class="fmt">0.1.0</span></td>
+                  <td><span class="badge danger">stale</span></td>
+                  <td class="dim2 nowrap">10-19 09:31 · 李娜</td>
+                  <td class="num">v2</td>
+                  <td><button class="btn sm">修复</button></td>
+                </tr>
+                <tr>
+                  <td>
+                    <div class="tname">customers_core</div>
+                    <div class="dim2">客户主数据 · 画像口径</div>
+                  </td>
+                  <td><div class="chips"><span class="chip">sales.customers</span></div></td>
+                  <td class="num">3</td>
+                  <td class="num">0</td>
+                  <td><span class="fmt">0.1.1</span></td>
+                  <td><span class="badge ok">正常</span></td>
+                  <td class="dim2 nowrap">10-22 16:40 · 王强</td>
+                  <td class="num">v4</td>
+                  <td><button class="btn sm" data-go="detail">详情</button></td>
+                </tr>
+                <tr>
+                  <td>
+                    <div class="tname">finance_revenue</div>
+                    <div class="dim2">财务域 · 复用财务组 Snowflake 定义</div>
+                  </td>
+                  <td><div class="chips"><span class="chip">finance.payroll</span><span class="chip">finance.revenue</span></div></td>
+                  <td class="num">4</td>
+                  <td class="num">1</td>
+                  <td><span class="fmt">0.1.1</span></td>
+                  <td><span class="badge warn">无 ANSI 方言</span><span class="pin">4</span></td>
+                  <td class="dim2 nowrap">10-21 11:02 · 李娜</td>
+                  <td class="num">v3</td>
+                  <td><button class="btn sm" data-go="edit">编辑</button></td>
+                </tr>
+                <tr>
+                  <td>
+                    <div class="tname">web_funnel</div>
+                    <div class="dim2">增长域 · 漏斗转化指标</div>
+                  </td>
+                  <td><div class="chips"><span class="chip">web.events_raw</span><span class="chip">web.sessions</span></div></td>
+                  <td class="num">8</td>
+                  <td class="num">2</td>
+                  <td><span class="fmt">0.1.1</span></td>
+                  <td><span class="badge ok">正常</span></td>
+                  <td class="dim2 nowrap">10-23 08:15 · 赵敏</td>
+                  <td class="num">v9</td>
+                  <td><button class="btn sm" data-go="detail">详情</button></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="footerbar">
+            <span>共 <b>8</b> 个模型</span>
+            <span class="sep">·</span>
+            <span class="dim2">按表反查：<span class="num">GET .../semantic-models?refTable=sales.orders</span>（发现端点的列表形态）</span>
+            <span class="grow"></span>
+            <button class="btn sm ghost">上一页</button>
+            <span class="num">1 / 1</span>
+            <button class="btn sm ghost">下一页</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="banner" style="margin-top:12px">
+        <span class="tag">描述权威源</span>
+        <div>
+          <b>表 / 列注释是唯一权威源，语义模型只存增量</b>（指标、关系、角色、ai_context）。
+          两个模型引用同一张表时基础描述天然一致——这是防 Semantic Drift 的结构，不是靠人小心。
+        </div>
+      </div>
+
+      <aside class="notes">
+        <h4>模型列表 · 设计要点</h4>
+        <div class="lead">与「数据保护」同层放治理分组：语义管「怎么理解」，权限管「谁能读」，互不替代。</div>
+        <div class="n"><b>1</b><span>挂 <b>catalog 级</b>而不是 namespace 级（与 Polaris 的刻意分歧）：join 关系天然跨库，挂 namespace 要么放不进跨库模型、要么逼人造「语义专用 namespace」。</span></div>
+        <div class="n"><b>2</b><span>每个 expression 必须带至少一个 <code>ANSI_SQL</code> 方言，否则「跨工具一致」退化成「对某方言一致」。控制台默认 strict=true；REST 可宽松存但列表要亮徽标。</span></div>
+        <div class="n"><b>3</b><span>stale 只标不拦：建时 fail-closed 挡新垃圾，读时 fail-open 让旧垃圾可见可修——与血缘 stale 同一哲学。断言：读 stale 模型必须 200，不是 4xx/5xx。</span></div>
+        <div class="n"><b>4</b><span>「无 ANSI 方言」是警告不是错误：Ossie 明确不解释表达式，宽松存是尊重规范；但消费端拿不到可移植表达式，徽标要显式。</span></div>
+        <div class="n"><b>5</b><span>「修复」只对 stale 出现：用当前 schema 重新对照，改完 stale 消失。悬空不产生任何阻断行为。</span></div>
+      </aside>
+    </section>
+
+    <!-- ============================================================ 画面 2：模型详情 -->
+    <section class="screen" id="s-detail">
+      <div class="page-head">
+        <div>
+          <div class="dim2" style="margin-bottom:2px">
+            <span class="crumb-link" data-go="list">语义模型</span> <span style="color:#cbd5e1">/</span> sales_orders
+          </div>
+          <h1>sales_orders <span class="fmt" style="font-size:11px;vertical-align:4px">Ossie 0.1.1</span></h1>
+          <div class="sub">订单域核心模型 · 覆盖 2 张表 · 5 个指标 · 1 条 join 关系 · entityVersion v6</div>
+        </div>
+        <div class="actions">
+          <button class="btn ghost" data-go="context">看上下文包</button>
+          <button class="btn ghost">导出 JSON</button>
+          <button class="btn danger">删除</button>
+          <button class="btn primary" data-go="edit">编辑</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="tabs">
+          <div class="tab on" data-dtab="struct">结构化视图</div>
+          <div class="tab" data-dtab="refs">引用状态</div>
+          <div class="tab" data-dtab="audit">版本与审计</div>
+        </div>
+
+        <!-- ① 结构化视图 -->
+        <div class="tab-body" data-dbody="struct">
+          <div class="split">
+            <div>
+              <!-- datasets -->
+              <div class="card" style="box-shadow:none;margin-bottom:12px">
+                <div class="card-h">
+                  <h3>datasets · 逻辑表</h3>
+                  <span class="hint">source 是语义层与物理 catalog 的接缝</span>
+                </div>
+                <div class="card-b" style="padding-top:8px">
+                  <div class="impact" style="display:grid;gap:0">
+                    <div class="item" style="display:flex;gap:9px;padding:7px 0;border-bottom:1px dashed #eef2f7;font-size:12.6px">
+                      <span style="flex:0 0 74px;color:var(--dim)">orders</span>
+                      <span style="flex:1">
+                        <span class="tname">lakehouse.sales.orders</span>
+                        <span class="fmt">PAIMON</span>
+                        <span class="dim2">主键 <span class="num">order_id</span> · 13 字段（维度 8 · 输入 3 · 时间 2）</span>
+                      </span>
+                    </div>
+                    <div class="item" style="display:flex;gap:9px;padding:7px 0;border-bottom:1px dashed #eef2f7;font-size:12.6px">
+                      <span style="flex:0 0 74px;color:var(--dim)">customers</span>
+                      <span style="flex:1">
+                        <span class="tname">lakehouse.sales.customers</span>
+                        <span class="fmt">PAIMON</span>
+                        <span class="dim2">主键 <span class="num">customer_id</span> · 9 字段</span>
+                      </span>
+                    </div>
+                  </div>
+                  <div style="margin-top:10px">
+                    <div class="dim2" style="margin-bottom:5px">合成描述（= 列注释 ∪ 模型增量，冲突时模型赢、输出标注来源）：</div>
+                    <table class="dtable" style="font-size:12.3px">
+                      <thead><tr><th style="width:20%">字段</th><th style="width:14%">角色</th><th>描述</th><th style="width:11%">来源</th></tr></thead>
+                      <tbody>
+                        <tr><td><span class="tname">amt_net</span></td><td><span class="badge mute">输入</span></td><td>扣除退货与内部转账后的净金额，单位分</td><td><span class="src model">模型增量</span></td></tr>
+                        <tr><td><span class="tname">region</span></td><td><span class="badge info">可过滤</span></td><td>大区编码，取值 CN / US / EU</td><td><span class="src comment">列注释</span></td></tr>
+                        <tr><td><span class="tname">order_date</span></td><td><span class="badge mute">is_time</span></td><td>下单日期（分区键）</td><td><span class="src comment">列注释</span></td></tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+
+              <!-- metrics -->
+              <div class="card" style="box-shadow:none;margin-bottom:12px">
+                <div class="card-h">
+                  <h3>metrics · 指标</h3>
+                  <span class="hint">表达式原文照抄，不做语义查询</span>
+                </div>
+                <div class="card-b" style="padding-top:8px">
+                  <div style="margin-bottom:10px">
+                    <div class="inline" style="margin-bottom:5px">
+                      <span class="tname">total_revenue</span>
+                      <span class="dia">ANSI_SQL</span>
+                      <span class="dim2">净收入 · synonym: 销售额 / GMV / sales</span>
+                    </div>
+                    <div class="sql"><span class="kw">SUM</span>(<span class="kw">CASE WHEN</span> status = <span class="st">'completed'</span> <span class="kw">THEN</span> amt_net <span class="kw">ELSE</span> 0 <span class="kw">END</span>)</div>
+                  </div>
+                  <div style="margin-bottom:10px">
+                    <div class="inline" style="margin-bottom:5px">
+                      <span class="tname">refund_rate</span>
+                      <span class="dia">ANSI_SQL</span>
+                      <span class="dim2">退货率</span>
+                    </div>
+                    <div class="sql"><span class="kw">SUM</span>(<span class="kw">CASE WHEN</span> status = <span class="st">'refunded'</span> <span class="kw">THEN</span> 1 <span class="kw">ELSE</span> 0 <span class="kw">END</span>) / <span class="kw">COUNT</span>(*)</div>
+                  </div>
+                  <div>
+                    <div class="inline" style="margin-bottom:5px">
+                      <span class="tname">order_cnt</span>
+                      <span class="dia">ANSI_SQL</span>
+                      <span class="dim2">订单数</span>
+                    </div>
+                    <div class="sql"><span class="kw">COUNT</span>(<span class="kw">DISTINCT</span> order_id)</div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- relationships -->
+              <div class="card" style="box-shadow:none">
+                <div class="card-h">
+                  <h3>relationships · join 关系</h3>
+                  <span class="hint">对 agent 价值最大的构件：join 不再靠猜</span>
+                </div>
+                <div class="card-b">
+                  <div class="inline">
+                    <span class="chip">orders.cust_id</span><span class="op">+</span>
+                    <span class="chip">orders.country_code</span>
+                    <span class="op">=</span>
+                    <span class="chip key">customers.customer_id</span><span class="op">+</span>
+                    <span class="chip key">customers.country_code</span>
+                  </div>
+                  <div class="note" style="font-size:11.8px;color:var(--dim);margin-top:7px">
+                    复合外键（跨库声明，这也是挂 catalog 级的原因）。展开为上下文包的 <span class="num">joins</span> 节，agent 照抄声明而不是从列名推导。
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="rail">
+              <!-- ai_context -->
+              <div class="card" style="box-shadow:none;margin-bottom:12px">
+                <div class="card-h">
+                  <h3>ai_context · agent 语境</h3>
+                  <span class="badge warn">数据 · 不是指令</span>
+                </div>
+                <div class="card-b" style="padding-top:8px">
+                  <div class="dim2" style="margin-bottom:4px">synonyms（3）</div>
+                  <div class="chips" style="margin-bottom:10px">
+                    <span class="chip syn">销售额 → total_revenue</span>
+                    <span class="chip syn">GMV → total_revenue</span>
+                    <span class="chip syn">sales → total_revenue</span>
+                  </div>
+                  <div class="dim2" style="margin-bottom:4px">examples（2 条示例问题）</div>
+                  <div class="sql" style="margin-bottom:10px">「上季度华东区的净收入是多少？」
+「各退货率 Top5 的大区」</div>
+                  <div class="dim2" style="margin-bottom:4px">instructions
+                    <span class="counter" style="margin-left:6px">218 / 4096 B</span>
+                  </div>
+                  <div class="sql" style="font-size:12px">回答营收问题时必须使用 total_revenue
+的定义，不得用 SUM(amount) 替代；金额
+单位是分，展示时除以 100。</div>
+                  <div class="note" style="font-size:11.8px;color:var(--dim);margin-top:7px">
+                    这段话会被塞进 agent 的 prompt——所以它<b>只能经管理面写入、逐条 ≤ 4 KB、修改记审计</b>。
+                    接入方渲染时按「数据描述」包裹，MCP 输出带 <span class="num">_meta.untrusted</span> 标注。
+                  </div>
+                </div>
+              </div>
+
+              <!-- 信任补位 -->
+              <div class="card" style="box-shadow:none">
+                <div class="card-h"><h3>Ossie 没有的信任字段 · 用现成的补</h3></div>
+                <div class="card-b">
+                  <dl class="kv">
+                    <dt>freshness</dt><dd>血缘 run <span class="num">lastSeen</span>：2 小时前<span class="pin">5</span></dd>
+                    <dt style="margin-top:6px">ownership</dt><dd>审计列 <span class="num">created_by</span> 张伟 + catalog role</dd>
+                    <dt style="margin-top:6px">certification</dt><dd><span class="badge mute">P1 · custom_extensions 布尔位</span> 不抢跑一等字段</dd>
+                  </dl>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ② 引用状态 -->
+        <div class="tab-body" data-dbody="refs" style="display:none">
+          <div class="checks" style="margin-bottom:14px">
+            <div class="check ok"><span class="ic">✓</span><div><div class="t">引用校验：建时 fail-closed，读时 fail-open（stale 可见可修，不阻断消费）</div></div></div>
+          </div>
+          <div class="tablewrap">
+            <table class="dtable">
+              <thead>
+                <tr>
+                  <th style="width:26%">dataset.source</th>
+                  <th style="width:12%">解析结果</th>
+                  <th style="width:18%">schema 对照</th>
+                  <th style="width:20%">stale 原因</th>
+                  <th style="width:14%">血缘 lastSeen</th>
+                  <th style="width:10%">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><span class="tname">lakehouse.sales.orders</span></td>
+                  <td><span class="badge ok">PAIMON 表存在</span></td>
+                  <td class="num">13 / 13 字段匹配</td>
+                  <td><span class="dim2">—</span></td>
+                  <td class="dim2">2 小时前（run #4,182）</td>
+                  <td><button class="btn sm">血缘</button></td>
+                </tr>
+                <tr>
+                  <td><span class="tname">lakehouse.sales.customers</span></td>
+                  <td><span class="badge ok">PAIMON 表存在</span></td>
+                  <td class="num">9 / 9 字段匹配</td>
+                  <td><span class="dim2">—</span></td>
+                  <td class="dim2">2 小时前（run #4,180）</td>
+                  <td><button class="btn sm">血缘</button></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="banner ok" style="margin-top:12px;margin-bottom:0">
+            <span class="tag">对照示例</span>
+            <div>
+              旧模型 <span class="num">sales_orders_v1</span> 引用的 <span class="num">sales.orders_v1.amt_net</span> 被 DDL 删除后，
+              详情页会显示「schema 对照 12/13 + 悬空字段」并在列表亮 <b>stale</b>——但模型本身照常可读、
+              上下文包照常出（缺该字段的增量描述），<b>不会</b>像行过滤悬空那样把整张表读死：语义层不是安全机制。
+            </div>
+          </div>
+        </div>
+
+        <!-- ③ 版本与审计 -->
+        <div class="tab-body" data-dbody="audit" style="display:none">
+          <div class="split">
+            <div class="card" style="box-shadow:none">
+              <div class="card-h"><h3>版本</h3></div>
+              <div class="card-b">
+                <dl class="kv">
+                  <dt>entityVersion</dt><dd><span class="num">v6</span> · 乐观锁，update 必须带 base version，后提交者 409</dd>
+                  <dt style="margin-top:6px">document_version</dt><dd><span class="num">0.1.1</span> · Ossie 格式版本，只决定用哪个校验器，与并发无关</dd>
+                  <dt style="margin-top:6px">存储</dt><dd>JSON 原文独立列（MEDIUMTEXT），不做结构化拆表、不走字符串信封</dd>
+                  <dt style="margin-top:6px">回滚</dt><dd>用历史版本文档重新 PUT，不做存储内快照</dd>
+                </dl>
+              </div>
+            </div>
+            <div class="card" style="box-shadow:none">
+              <div class="card-h"><h3>审计事件</h3><span class="hint">事件框架复用</span></div>
+              <div class="card-b">
+                <div class="wflow">
+                  <div class="ws"><span class="dot">6</span><div class="wt"><div class="t">10-23 14:12 · 张伟</div><div class="d">修改 ai_context.instructions（instructions 是注入面，修改必记审计）</div></div></div>
+                  <div class="ws"><span class="dot">5</span><div class="wt"><div class="t">10-22 17:03 · 李娜</div><div class="d">更新 metrics.refund_rate 表达式，重过引用校验</div></div></div>
+                  <div class="ws"><span class="dot">1</span><div class="wt"><div class="t">10-18 10:26 · 王强</div><div class="d">创建模型，source 解析通过后入库</div></div></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <aside class="notes">
+        <h4>模型详情 · 设计要点</h4>
+        <div class="lead">三个块对应验收断言：结构化视图（可读）、引用状态（stale 可见）、版本审计（谁改的）。</div>
+        <div class="n"><b>1</b><span>metrics 必须显示<b>表达式原文 + 方言徽标</b>：语义层的产物是「口径说明书」，原文就是产品本体，任何「美化翻译」都会引入第二个真相源。</span></div>
+        <div class="n"><b>2</b><span>合成描述逐条标注来源（注释 / 模型增量）：drift 的发生面被缩到显式增量，且增量有处可查。</span></div>
+        <div class="n"><b>3</b><span>ai_context 卡片常驻徽标「数据 · 不是指令」：这是提示注入面的 UI 表达，写文案时不能出现「请遵循以下指令」。</span></div>
+        <div class="n"><b>4</b><span>删除要二次确认并记审计；但删除<b>不影响</b>任何查询——语义层 fail-open，表和 SQL 都不依赖它存在。</span></div>
+        <div class="n"><b>5</b><span>freshness 直接用血缘 lastSeen，不新建字段：血缘已实现，这是「比 Polaris 多出的四个杠杆」之一。</span></div>
+      </aside>
+    </section>
+
+    <!-- ============================================================ 画面 3：编辑与校验 -->
+    <section class="screen" id="s-edit">
+      <div class="page-head">
+        <div>
+          <div class="dim2" style="margin-bottom:2px">
+            <span class="crumb-link" data-go="list">语义模型</span> <span style="color:#cbd5e1">/</span> 新建（或编辑 sales_orders）
+          </div>
+          <h1>编辑语义模型</h1>
+          <div class="sub">JSON 编辑器 + 服务端校验回显（错误定位到 Ossie 文档的 JSON path）· base entityVersion v6 → 发布 v7</div>
+        </div>
+        <div class="actions">
+          <button class="btn ghost" data-go="detail">取消</button>
+          <button class="btn primary" id="btn-publish">校验并发布 v7</button>
+        </div>
+      </div>
+
+      <div class="banner info">
+        <span class="tag">控制台默认 strict</span>
+        <div>
+          控制台路径按 <span class="num">strict=true</span> 提交：缺 <span class="dia">ANSI_SQL</span> 方言的模型会被拒绝。
+          REST 允许宽松存（Ossie 不解释表达式，我们也不替规范做翻译），但响应会带 <span class="num">warnings</span> 字段。
+        </div>
+      </div>
+
+      <div class="split">
+        <div>
+          <div class="card" style="margin-bottom:12px">
+            <div class="card-h">
+              <h3>Ossie 文档（JSON 原文）</h3>
+              <span class="hint">直接存 JSON，不走 Polaris 的字符串信封</span>
+            </div>
+            <div class="card-b">
+<pre class="code">{
+  <span class="k">"version"</span>: <span class="s">"0.1.1"</span>,
+  <span class="k">"semantic_model"</span>: [{
+    <span class="k">"name"</span>: <span class="s">"sales_orders"</span>,
+    <span class="k">"datasets"</span>: [{
+      <span class="k">"name"</span>: <span class="s">"orders"</span>,
+      <span class="k">"source"</span>: <span class="s">"lakehouse.sales.orders"</span>,
+      <span class="k">"primary_key"</span>: [<span class="s">"order_id"</span>],
+      <span class="k">"fields"</span>: [
+        { <span class="k">"name"</span>: <span class="s">"amt_net"</span>, <span class="k">"datatype"</span>: <span class="s">"Decimal"</span>,
+          <span class="k">"description"</span>: <span class="s">"扣除退货与内部转账后的净金额，单位分"</span> },
+        { <span class="k">"name"</span>: <span class="s">"region"</span>, <span class="k">"datatype"</span>: <span class="s">"String"</span>,
+          <span class="k">"dimension"</span>: { <span class="k">"filterable"</span>: <span class="n">true</span> } }
+        <span class="c">// ... 共 13 个字段</span>
+      ]
+    }],
+    <span class="k">"metrics"</span>: [{
+      <span class="k">"name"</span>: <span class="s">"total_revenue"</span>,
+      <span class="k">"expression"</span>: { <span class="k">"dialect"</span>: <span class="s">"ANSI_SQL"</span>,
+        <span class="k">"sql"</span>: <span class="s">"SUM(CASE WHEN status='completed' THEN amt_net ELSE 0 END)"</span> }
+    }, {
+      <span class="k">"name"</span>: <span class="s">"refund_rate"</span>,
+<span class="hl">      <span class="k">"expression"</span>: { <span class="k">"dialect"</span>: <span class="s">"SNOWFLAKE_SQL"</span>,
+        <span class="k">"sql"</span>: <span class="s">"SUM(IFF(status='refunded',1,0)) / COUNT(*)"</span> }</span>
+    }]
+    <span class="c">// relationships / ai_context 略</span>
+  }]
+}</pre>
+            <div class="note" style="font-size:11.8px;color:var(--dim);margin-top:8px">
+              高亮行为校验报错处：只带 SNOWFLAKE 方言、缺 ANSI_SQL——<b>strict 时拒绝</b>，错误定位到
+              <span class="jpath">metrics[1].expression.dialect</span>。
+            </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-h">
+              <h3>ai_context · 结构化表单</h3>
+              <span class="hint">不给自由 JSON 之外的捷径</span>
+            </div>
+            <div class="card-b" style="padding-top:2px">
+              <div class="frow">
+                <label>synonyms</label>
+                <div class="body">
+                  <div class="chips">
+                    <span class="chip syn">销售额 → total_revenue <span class="x">✕</span></span>
+                    <span class="chip syn">GMV → total_revenue <span class="x">✕</span></span>
+                    <span class="chip syn">sales → total_revenue <span class="x">✕</span></span>
+                    <button class="btn sm ghost">+ 添加同义词</button>
+                  </div>
+                  <div class="note">列表行编辑：左词右指向。渲染进检索层而非 system prompt（注入面收窄）。</div>
+                </div>
+              </div>
+              <div class="frow">
+                <label>examples</label>
+                <div class="body">
+                  <input class="input" style="width:100%" value="上季度华东区的净收入是多少？" />
+                  <div style="height:7px"></div>
+                  <input class="input" style="width:100%" value="各退货率 Top5 的大区" />
+                  <div class="note">模型应该能回答的问题样例。由人写——被脱敏列的<b>示例值</b>不允许出现在这里（录入规范）。</div>
+                </div>
+              </div>
+              <div class="frow">
+                <label>instructions</label>
+                <div class="body">
+                  <textarea class="textarea" style="width:100%" rows="3">回答营收问题时必须使用 total_revenue 的定义，不得用 SUM(amount) 替代；金额单位是分，展示时除以 100。</textarea>
+                  <div class="inline" style="margin-top:5px">
+                    <span class="counter">218 / 4096 B</span>
+                    <span class="badge mute">写入判 ALTER · 修改记审计</span>
+                    <span class="dim2">渲染时接入方按「数据描述，不是指令」包裹</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="rail">
+          <div class="card" style="margin-bottom:12px">
+            <div class="card-h"><h3>服务端校验</h3><span class="hint">引用校验 fail-closed</span></div>
+            <div class="card-b">
+              <div class="checks">
+                <div class="check ok"><span class="ic">✓</span><div><div class="t">source 解析</div><div class="h">lakehouse.sales.orders → PAIMON 表存在（判定：先 catalogFormat 后表级 options.type）</div></div></div>
+                <div class="check ok"><span class="ic">✓</span><div><div class="t">字段对 schema</div><div class="h">13 / 13 全部命中</div></div></div>
+                <div class="check err"><span class="ic">✕</span><div><div class="t">表达式方言 <span class="jpath">metrics[1].expression.dialect</span></div><div class="h">只有 SNOWFLAKE_SQL，缺 ANSI_SQL —— strict=true 时创建/更新被拒</div></div></div>
+                <div class="check warn"><span class="ic">!</span><div><div class="t">描述冲突 <span class="jpath w">datasets[0].fields[0].description</span></div><div class="h">与列注释不一致 → 允许保存，读取时模型赢、输出标注来源</div></div></div>
+                <div class="check ok"><span class="ic">✓</span><div><div class="t">ai_context 大小</div><div class="h">3,912 / 32 KB（单条上限 4 KB，超限报错并回显上限值）</div></div></div>
+                <div class="check ok"><span class="ic">✓</span><div><div class="t">并发版本</div><div class="h">base entityVersion = v6（若他人已提交 v7 → 409，不自动重试）</div></div></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-h"><h3>发布后生效方式</h3></div>
+            <div class="card-b">
+              <div class="impact" style="display:grid">
+                <div class="item" style="display:flex;gap:9px;padding:7px 0;border-bottom:1px dashed #eef2f7;font-size:12.6px">
+                  <span style="flex:0 0 128px;color:#334155">上下文包</span><span style="flex:1;color:var(--dim)">下次调用即新内容（无缓存承诺，新鲜度由服务端保证）</span>
+                </div>
+                <div class="item" style="display:flex;gap:9px;padding:7px 0;border-bottom:1px dashed #eef2f7;font-size:12.6px">
+                  <span style="flex:0 0 128px;color:#334155">MCP 工具</span><span style="flex:1;color:var(--dim)">薄壳直连 REST，无本地状态，天然读到 v7</span>
+                </div>
+                <div class="item" style="display:flex;gap:9px;padding:7px 0;border-bottom:1px dashed #eef2f7;font-size:12.6px">
+                  <span style="flex:0 0 128px;color:#334155">BI 转换器</span><span style="flex:1;color:var(--dim)">P2 提供 dbt / Snowflake 双向导出，从注释生成字段描述</span>
+                </div>
+                <div class="item" style="display:flex;gap:9px;padding:7px 0;font-size:12.6px">
+                  <span style="flex:0 0 128px;color:#334155">查询引擎</span><span style="flex:1;color:var(--dim)"><b>无影响</b>——语义层不在查询路径上</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <aside class="notes">
+        <h4>编辑与校验 · 设计要点</h4>
+        <div class="lead">校验的价值是把「存了垃圾」变成「存不进去」；这是 Polaris 没做的第一件事。</div>
+        <div class="n"><b>1</b><span>错误定位到 <code>JSON path</code>：Ossie 文档是嵌套 JSON，整段红字「校验失败」等于没说。四类校验（source / fields / 方言 / 大小）逐条出。</span></div>
+        <div class="n"><b>2</b><span>strict 是<b>请求参数</b>不是全局开关：REST 宽松存保住与规范的边界（不解释表达式），控制台默认 strict 保住人类消费者的可移植性。</span></div>
+        <div class="n"><b>3</b><span>ai_context 用结构化表单：synonyms / examples 是行编辑、instructions 是独立文本域——天然挡住「把指令藏在 examples 里」这类写法的一半。</span></div>
+        <div class="n"><b>4</b><span>409 不自动重试：语义模型是治理对象，两个治理员改同一份口径必须人来裁决，这与 Iceberg 提交并发的取舍不同。</span></div>
+        <div class="n"><b>5</b><span>发布对查询引擎<b>零影响</b>：这条要显式写出来，防止用户以为改口径会动线上数据。</span></div>
+      </aside>
+    </section>
+
+    <!-- ============================================================ 画面 4：上下文包 -->
+    <section class="screen" id="s-context">
+      <div class="page-head">
+        <div>
+          <div class="dim2" style="margin-bottom:2px">
+            <span class="crumb-link" data-go="list">语义模型</span> <span style="color:#cbd5e1">/</span> 上下文包预览
+          </div>
+          <h1>Agent 上下文包<span class="pin">1</span></h1>
+          <div class="sub">一次 GET 返回 agent 写 SQL 所需的全部静态语境。本页预览的就是通道 A 的响应体，按节组织、每节可独立缺失。</div>
+        </div>
+        <div class="actions">
+          <div class="inline">
+            <span class="dim2">以主体视角预览</span>
+            <select class="select" id="cp-subject" style="height:30px">
+              <option value="bi" selected>user:bi_analyst（可读 sales.*，finance 不可读）</option>
+              <option value="de">user:data_engineer（全部可读）</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div class="reqline" style="margin-bottom:12px"><span class="m">GET</span> <span class="p">/api/management/v1/catalogs/lakehouse/semantic-context</span><span class="q">?tables=sales.orders,sales.customers,finance.payroll&depth=1</span></div>
+
+      <div class="banner" id="cp-banner">
+        <span class="tag">逐表判权</span>
+        <div id="cp-banner-text">
+          可见性先行、语义随后：先按主体过滤表（复用授权判定的「先过滤再切页」），再组装语义。<b>finance.payroll 不可读——它的 schema、模型一个字都不出现，<span class="num">total</span> 也不含它。</b>
+        </div>
+      </div>
+
+      <!-- bi_analyst 视角 -->
+      <div id="cp-bi">
+        <div class="cpsec">
+          <div class="cp-h"><span class="idx">1</span><h3>tables · 表清单与 schema 摘要</h3>
+            <span class="hint">合成描述 · 该主体可见性</span></div>
+          <div class="cp-b">
+            <table class="dtable" style="font-size:12.4px">
+              <thead><tr><th style="width:22%">表</th><th style="width:10%">可见性</th><th style="width:9%">列数</th><th>合成描述摘要</th><th style="width:14%">protection 标记</th></tr></thead>
+              <tbody>
+                <tr><td><span class="tname">sales.orders</span></td><td><span class="badge ok">可读</span></td><td class="num">13</td><td class="dim2">订单事实表 · amt_net=净金额（分） · region 大区</td><td><span class="badge warn">行过滤 · 列脱敏(2)</span><span class="pin">2</span></td></tr>
+                <tr><td><span class="tname">sales.customers</span></td><td><span class="badge ok">可读</span></td><td class="num">9</td><td class="dim2">客户主数据 · 画像口径</td><td><span class="badge mute">—</span></td></tr>
+                <tr class="row-alert"><td><span class="tname">finance.payroll</span></td><td><span class="badge danger">不可读</span></td><td colspan="3" class="dim2" style="color:#b91c1c">只有一行标记：<b>无 schema、无模型、不进 total</b></td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="cpsec">
+          <div class="cp-h"><span class="idx">2</span><h3>semantics · 命中的语义模型</h3><span class="hint">sales_orders v6 · 表达式原文 + 方言</span></div>
+          <div class="cp-b">
+<pre class="code" style="font-size:11.5px">"semantics": [{
+  "name": "sales_orders",
+  "metrics": [{ "name": "total_revenue",
+    "expression": { "dialect": "ANSI_SQL",
+      "sql": "SUM(CASE WHEN status='completed' THEN amt_net ELSE 0 END)" } }],
+  "relationships": [{ "from": "orders", "to": "customers",
+    "from_columns": ["cust_id", "country_code"],
+    "to_columns": ["customer_id", "country_code"] }],
+  "ai_context": { "synonyms": ["销售额", "GMV", "sales"],
+    "instructions": "…218 B，渲染时按数据描述包裹…" }
+}]</pre>
+          </div>
+        </div>
+
+        <div class="split">
+          <div class="cpsec" style="margin-bottom:0">
+            <div class="cp-h"><span class="idx">3</span><h3>joins · 可 join 对</h3><span class="hint">从 relationships 展开，含复合键</span></div>
+            <div class="cp-b">
+              <div class="inline">
+                <span class="chip">sales.orders</span><span class="op">⇄</span>
+                <span class="chip">sales.customers</span>
+                <span class="op">ON (cust_id, country_code) = (customer_id, country_code)</span>
+              </div>
+              <div class="note" style="font-size:11.8px;color:var(--dim);margin-top:7px">join 重新推导是 text-to-SQL 最常出错的地方——这里照抄声明即可。</div>
+            </div>
+          </div>
+          <div class="cpsec" style="margin-bottom:0">
+            <div class="cp-h"><span class="idx">4</span><h3>lineage · 血缘邻居</h3><span class="hint">depth=1 · 紧凑 n/e 形状</span></div>
+            <div class="cp-b">
+              <div class="chips">
+                <span class="chip plain">ods_order_info</span><span class="op">→</span>
+                <span class="chip">sales.orders</span><span class="op">→</span>
+                <span class="chip plain">dm_order_daily</span>
+              </div>
+              <div class="note" style="font-size:11.8px;color:var(--dim);margin-top:7px">上游 run <span class="num">lastSeen 2h</span> 前——「这数据多久没更新了」的现成答案。</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- data_engineer 视角 -->
+      <div id="cp-de" style="display:none">
+        <div class="cpsec">
+          <div class="cp-h"><span class="idx">1</span><h3>tables · 表清单与 schema 摘要</h3><span class="hint">data_engineer · 全部可读</span></div>
+          <div class="cp-b">
+            <table class="dtable" style="font-size:12.4px">
+              <thead><tr><th style="width:22%">表</th><th style="width:10%">可见性</th><th style="width:9%">列数</th><th>合成描述摘要</th><th style="width:14%">protection 标记</th></tr></thead>
+              <tbody>
+                <tr><td><span class="tname">sales.orders</span></td><td><span class="badge ok">可读</span></td><td class="num">13</td><td class="dim2">订单事实表 · amt_net=净金额（分） · region 大区</td><td><span class="badge warn">行过滤 · 列脱敏(2)</span></td></tr>
+                <tr><td><span class="tname">sales.customers</span></td><td><span class="badge ok">可读</span></td><td class="num">9</td><td class="dim2">客户主数据 · 画像口径</td><td><span class="badge mute">—</span></td></tr>
+                <tr><td><span class="tname">finance.payroll</span></td><td><span class="badge ok">可读</span></td><td class="num">11</td><td class="dim2">薪资表 · 覆盖模型 finance_revenue（4 指标）</td><td><span class="badge warn">行过滤 · 列脱敏(2)</span></td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div class="banner ok" style="margin-top:0">
+          <span class="tag">对照</span>
+          <div>同一请求、不同主体：表清单变长、<span class="num">total</span> 从 2 变 3、semantics 多出 finance_revenue 模型——上下文包是<b>每个主体各有一份</b>的，不存在共享缓存的全量包。</div>
+        </div>
+      </div>
+
+      <div class="cpsec" style="margin-top:10px">
+        <div class="cp-h"><span class="idx">5</span><h3>protection · 节流阀</h3>
+          <span class="hint">只发标记，不发策略内容<span class="pin">3</span></span></div>
+        <div class="cp-b">
+          <div class="inline">
+            <span class="chip plain">sales.orders</span>
+            <span class="badge warn">row_filter = true</span>
+            <span class="badge warn">column_mask = true（2 列）</span>
+          </div>
+          <div class="note" style="font-size:11.8px;color:var(--dim);margin-top:7px">
+            行过滤谓词与 mask 表达式<b>不进上下文</b>：它们对生成 SQL 无增量价值（注入层会强制执行），
+            发出去只增加泄露面（谓词文本可能含黑名单成员、租户名）。让 agent 主动避免「请给我原始手机号」这类注定失败的查询——这是<b>体验优化，不是安全控制</b>。
+          </div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:12px">
+        <div class="card-b">
+          <div class="inline">
+            <span class="dim2">响应大小预算</span>
+            <div class="budget"><i style="width:34%"></i></div>
+            <span class="num">87.3 KB / 256 KB</span>
+            <span class="badge ok">未截断</span>
+          </div>
+          <div class="note" style="font-size:11.8px;color:var(--dim);margin-top:7px">
+            超限时按「血缘 → 邻居扩展 → 字段描述」的顺序裁剪并附 <span class="num">truncated</span> 标记（与血缘图查询同一口径）。
+            agent 的 prompt 不是仓库——ai_context 单条 4 KB、整包 256 KB，上限同时是成本闸门和注入面闸门。
+          </div>
+        </div>
+      </div>
+
+      <aside class="notes">
+        <h4>上下文包 · 设计要点</h4>
+        <div class="lead">本设计的差异化核心：Polaris 被批评「连哪个模型覆盖哪张表都回答不了」，这是回答。</div>
+        <div class="n"><b>1</b><span>五节组织、每节可独立缺失：模型没建、血缘没采集、策略没配，都只是缺一节——<b>不是报错</b>。这是 fail-open 的形状（§5.4）。</span></div>
+        <div class="n"><b>2</b><span>protection 节有标记也不发脱敏列的示例值 / min-max 统计 / 策略原文——把行过滤设计里点名的三个泄露口子全部关掉。</span></div>
+        <div class="n"><b>3</b><span>不可见表的处理是<b>结构性删除</b>而不是打码：schema 没有就是没有，模型没有就是没有，total 不含它——断言 7 直接测这个。</span></div>
+        <div class="n"><b>4</b><span>不让 agent 直连 Ossie 文件（对象存储 / git）：绕过服务端 = 绕过判权和引用校验，还多一个要同步的副本。文件直读只作 P2 离线导出。</span></div>
+        <div class="n"><b>5</b><span>depth 参数控制血缘邻居深度：默认 1，给 agent 的上下文要克制，塞全库语义既贵又稀释重点。</span></div>
+      </aside>
+    </section>
+
+    <!-- ============================================================ 画面 5：Agent 接入 -->
+    <section class="screen" id="s-agent">
+      <div class="page-head">
+        <div>
+          <div class="dim2" style="margin-bottom:2px">
+            <span class="crumb-link" data-go="list">语义模型</span> <span style="color:#cbd5e1">/</span> Agent 接入
+          </div>
+          <h1>怎么提供给 agent</h1>
+          <div class="sub">三条通道 + 一条端到端链路。语义层的职责止于「生成 SQL 之前」——不执行、不判权、不特权。</div>
+        </div>
+        <div class="actions">
+          <button class="btn ghost" data-go="context">上下文包详情</button>
+        </div>
+      </div>
+
+      <div class="split three" style="margin-bottom:12px">
+        <div class="chan">
+          <div class="ch-h"><span class="abc">A</span><h3>REST 上下文包</h3><span class="hint"><span class="badge info">权威通道</span></span></div>
+          <div class="ch-b">
+            <div class="num" style="font-size:12px">GET .../semantic-context?tables=…&depth=1</div>
+            <ul>
+              <li>自研 agent / LangChain / Dify 等编排框架</li>
+              <li>一次调用拿全五节，鉴权用既有 Bearer 令牌</li>
+            </ul>
+          </div>
+          <div class="ch-f">B / C 都是它的皮。</div>
+        </div>
+        <div class="chan">
+          <div class="ch-h"><span class="abc">B</span><h3>只读 MCP server</h3><span class="hint"><span class="badge mute">4 个工具</span></span></div>
+          <div class="ch-b">
+            <ul>
+              <li><span class="num" style="font-size:11.5px">list_semantic_models</span></li>
+              <li><span class="num" style="font-size:11.5px">get_semantic_model</span></li>
+              <li><span class="num" style="font-size:11.5px">find_models_for_table</span></li>
+              <li><span class="num" style="font-size:11.5px">get_semantic_context</span></li>
+            </ul>
+          </div>
+          <div class="ch-f">薄壳直连 REST：<b>无缓存、无本地状态</b>，只读——写动作在 server 端无对应实现（静态断言进 verify 脚本）。</div>
+        </div>
+        <div class="chan">
+          <div class="ch-h"><span class="abc">C</span><h3>OpenAPI 自描述</h3><span class="hint"><span class="badge mute">knife4j 已上线</span></span></div>
+          <div class="ch-b">
+            <ul>
+              <li><span class="num" style="font-size:11.5px">/doc.html + /v3/api-docs/management</span></li>
+              <li>能自己读接口文档的 agent 自助接入</li>
+            </ul>
+          </div>
+          <div class="ch-f">文档公开 ≠ 端点公开：读得到 schema 不代表调得动端点，鉴权照旧。</div>
+        </div>
+      </div>
+
+      <div class="split">
+        <div class="card">
+          <div class="card-h"><h3>端到端工作流</h3><span class="hint">一条真实链路 · 每步失败可定位</span></div>
+          <div class="card-b">
+            <div class="wflow">
+              <div class="ws"><span class="dot">1</span><div class="wt"><div class="t">用户：「上季度华东区的净收入是多少？」</div><div class="d">agent 解析问句，命中同义词（净收入 → <span class="num">total_revenue</span>；华东 → <span class="num">region='CN-East'</span>）——<b>同义词错这一类错误在这里被救</b></div></div></div>
+              <div class="ws"><span class="dot">2</span><div class="wt"><div class="t">get_semantic_context(tables=sales.orders)</div><div class="d">通道 A / B，返回五节上下文包</div></div></div>
+              <div class="ws"><span class="dot">3</span><div class="wt"><div class="t">包内容进 prompt</div><div class="d">metrics 表达式原文（<b>救口径错</b>）· relationships 复合外键（<b>救 join 错</b>）· region 标记为可过滤维度（<b>救角色错</b>）· 血缘 lastSeen 2h 前</div></div></div>
+              <div class="ws"><span class="dot">4</span><div class="wt"><div class="t">agent 生成 SQL</div><div class="d">口径照抄表达式原文，join 照抄关系声明——行为从「自由发挥」变成「在声明的语义内作答」。<b>语义层的职责到此为止</b></div></div></div>
+              <div class="ws gate"><span class="dot">5</span><div class="wt"><div class="t">SQL 经正常通道提交执行<span class="pin">1</span></div><div class="d">授权判定：SELECT 权限（与人相同）· 行过滤 / 列脱敏注入（与人相同，未来）——<b>无 agent 特权通道</b></div></div></div>
+              <div class="ws"><span class="dot">6</span><div class="wt"><div class="t">返回结果，回答引用定义原文</div><div class="d">「净收入 = SUM(CASE WHEN status='completed' …)」——答案可溯源到口径</div></div></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="rail">
+          <div class="card" style="margin-bottom:12px">
+            <div class="card-h"><h3>MCP 输出标注</h3><span class="hint">ai_context 是数据不是指令</span></div>
+            <div class="card-b">
+<pre class="code" style="font-size:11.5px"><span class="c">// 工具返回体的 _meta</span>
+{
+  <span class="k">"content"</span>: [ …语义内容… ],
+  <span class="k">"_meta"</span>: {
+    <span class="k">"source"</span>: <span class="s">"semantic-model"</span>,
+    <span class="k">"untrusted"</span>: <span class="s">"ai_context"</span>
+  }
+}</pre>
+              <div class="note" style="font-size:11.8px;color:var(--dim);margin-top:7px">
+                让宿主按字段决定信任级别——MCP 的既有机制，不发明新协议。
+                提示注入的对策：写入面收窄 + 审计、4 KB 上限、结构化优先、_meta 标注（四条里两条在服务端 P0）。
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-h"><h3>三不边界</h3></div>
+            <div class="card-b">
+              <div class="checks">
+                <div class="check err"><span class="ic">✕</span><div><div class="t">不执行</div><div class="h">不跑任何查询（Ossie / Polaris 同一边界）</div></div></div>
+                <div class="check err"><span class="ic">✕</span><div><div class="t">不判权</div><div class="h">agent 权限 = 服务账号权限；包里的可见性只是提示，门禁在执行路径</div></div></div>
+                <div class="check err"><span class="ic">✕</span><div><div class="t">不特权</div><div class="h">不存在 agent 通道；也不往上下文塞 storage-credential / 预览数据</div></div></div>
+                <div class="check ok"><span class="ic">✓</span><div><div class="t">fail-open</div><div class="h">语义服务不可达 → 链路第 5 步照常执行（断言 8）</div></div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <aside class="notes">
+        <h4>Agent 接入 · 设计要点</h4>
+        <div class="lead">语义层的全部价值来自把口径说明书放在 agent 必经的路上，而不是替 agent 走路。</div>
+        <div class="n"><b>1</b><span>第 5 步是铁律：agent 生成的 SQL 与人写的<b>完全同路</b>（授权 → 策略注入）。任何「为好用」开的小灶（凭据、预览、跳过判权）都是把安全面递给自动化。</span></div>
+        <div class="n"><b>2</b><span>MCP server 无缓存无状态：客户端缓存语义会制造第三种失败模式（数据新、语义旧），新鲜度由服务端保证就够了。</span></div>
+        <div class="n"><b>3</b><span>四类 agent 错误 × 四个 Ossie 构件一一对应（口径→metrics / join→relationships / 同义词→synonyms / 角色→dimension）——这不是巧合，ai_context 就是为这个场景设计的。</span></div>
+        <div class="n"><b>4</b><span>失败可定位：第 1 步失败是语义建设问题、第 2 步 403 是权限问题、第 5 步被拦是安全在工作。三方职责在链路上天然分段。</span></div>
+      </aside>
+    </section>
+
+    <!-- ============================================================ 画面 6：表详情联动 -->
+    <section class="screen" id="s-tabletab">
+      <div class="page-head">
+        <div>
+          <div class="dim2" style="margin-bottom:2px">
+            <span class="crumb-link" data-go="list">目录浏览</span> <span style="color:#cbd5e1">/</span>
+            lakehouse <span style="color:#cbd5e1">/</span> sales <span style="color:#cbd5e1">/</span> orders
+          </div>
+          <h1>sales.orders <span class="fmt" style="font-size:11px;vertical-align:4px">PAIMON</span></h1>
+          <div class="sub">34 列 · 8,932 行 · 分区 dt · 最后写入 12 分钟前</div>
+        </div>
+        <div class="actions">
+          <button class="btn ghost" data-go="list">语义模型总览</button>
+          <button class="btn primary">查询数据</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="tabs">
+          <div class="tab">详细信息</div>
+          <div class="tab">血缘</div>
+          <div class="tab">数据预览</div>
+          <div class="tab">快照</div>
+          <div class="tab">标签</div>
+          <div class="tab">文件列表</div>
+          <div class="tab">数据访问</div>
+          <div class="tab on">语义</div>
+          <div class="tab">数据保护</div>
+          <div class="tab">存储优化</div>
+        </div>
+        <div class="tab-body">
+          <div class="split">
+            <div class="card" style="box-shadow:none">
+              <div class="card-h">
+                <h3>引用该表的语义模型</h3>
+                <span class="badge info">1 个模型 · 5 个指标</span>
+              </div>
+              <div class="card-b">
+                <div class="impact" style="display:grid">
+                  <div class="item" style="display:flex;gap:9px;padding:8px 0;border-bottom:1px dashed #eef2f7;font-size:12.6px">
+                    <span style="flex:0 0 120px"><span class="tname">sales_orders</span></span>
+                    <span style="flex:1;color:var(--dim)">
+                      订单域核心模型 · v6 · <span class="num">total_revenue</span> / <span class="num">refund_rate</span> / <span class="num">order_cnt</span> +2
+                    </span>
+                    <button class="btn sm" data-go="detail">查看模型</button>
+                  </div>
+                  <div class="item" style="display:flex;gap:9px;padding:8px 0;font-size:12.6px">
+                    <span style="flex:0 0 120px;color:#334155">列描述来源</span>
+                    <span style="flex:1;color:var(--dim)">
+                      11 列来自<b>表 / 列注释</b>（权威源） · 2 列有<b>模型增量</b>（amt_net / refund_flag）——在字段列表就地标注
+                    </span>
+                  </div>
+                </div>
+                <div class="inline" style="margin-top:10px">
+                  <button class="btn sm" data-go="context">预览上下文包</button>
+                  <button class="btn sm ghost" data-go="edit">编辑模型</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="rail">
+              <div class="banner info" style="margin-bottom:10px">
+                <span class="tag">轻量区块</span>
+                <div>
+                  这是表详情里的<b>轻量区块（不是完整页签）</b>：引用模型清单 + 指标数就够——
+                  跨表对比与治理去总览页，避免维护两套 UI。
+                </div>
+              </div>
+              <div class="card" style="box-shadow:none">
+                <div class="card-h"><h3>谁在消费这张表的语义</h3></div>
+                <div class="card-b">
+                  <div class="impact" style="display:grid">
+                    <div class="item" style="display:flex;gap:9px;padding:7px 0;border-bottom:1px dashed #eef2f7;font-size:12.6px">
+                      <span style="flex:0 0 128px;color:#334155">上下文包调用</span><span style="flex:1;color:var(--dim)">近 7 天 486 次 · 3 个服务账号</span>
+                    </div>
+                    <div class="item" style="display:flex;gap:9px;padding:7px 0;border-bottom:1px dashed #eef2f7;font-size:12.6px">
+                      <span style="flex:0 0 128px;color:#334155">MCP 工具</span><span style="flex:1;color:var(--dim)">2 个宿主（IDE 插件 / ChatBI）</span>
+                    </div>
+                    <div class="item" style="display:flex;gap:9px;padding:7px 0;font-size:12.6px">
+                      <span style="flex:0 0 128px;color:#334155">血缘 lastSeen</span><span style="flex:1;color:var(--dim)">2 小时前（freshness 出处）</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:12px">
+        <div class="tab-body">
+          <div class="statebox" style="padding:24px 16px">
+            <div class="ico">◇</div>
+            <strong>没有模型时，只显示一张空态卡</strong>
+            <p>「该表还没有语义模型：BI 与 agent 只能靠列名猜口径。」给「新建语义模型」入口，与数据保护页签的空态约定一致（ResourceState 外置动作条）。</p>
+            <button class="btn sm primary" data-go="edit">为这张表建模</button>
+          </div>
+        </div>
+      </div>
+
+      <aside class="notes">
+        <h4>表详情联动 · 设计要点</h4>
+        <div class="lead">场景 3（人类消费）的落点：新入职者不用翻 wiki，表页直接看到口径。</div>
+        <div class="n"><b>1</b><span>页签位置在「数据访问」之后、「数据保护」之前：先看怎么连，再看怎么理解，最后看读到什么受限。</span></div>
+        <div class="n"><b>2</b><span>列描述来源就地标注（注释 / 模型增量）：描述分层复用的 UI 表达，drift 可视。</span></div>
+        <div class="n"><b>3</b><span>「谁在消费语义」是删模型前的评估依据——语义层被依赖的程度要可见，否则没人知道删了会砸到谁（虽然 fail-open 砸不坏查询）。</span></div>
+        <div class="n"><b>4</b><span>预览辅助（场景 5）顺手做：预览端点返回列清单时带上语义描述，有则附、无则缺省，一条 JOIN 的事；不做列值脱敏联动。</span></div>
+      </aside>
+    </section>
+
+  </main>
+</div>
+
+<div class="demo">
+  <span>画面</span>
+  <button data-go="list" class="on">模型列表</button>
+  <button data-go="detail">模型详情</button>
+  <button data-go="edit">编辑·校验</button>
+  <button data-go="context">上下文包</button>
+  <button data-go="agent">Agent 接入</button>
+  <button data-go="tabletab">表详情联动</button>
+  <span class="sep"></span>
+  <button id="toggle-notes">设计标注</button>
+</div>
+
+<script>
+(function () {
+  var crumb = {
+    list: '语义模型',
+    detail: '语义模型 / sales_orders',
+    edit: '语义模型 / 编辑',
+    context: '语义模型 / 上下文包预览',
+    agent: '语义模型 / Agent 接入',
+    tabletab: '目录浏览 / lakehouse.sales.orders'
+  };
+  var screens = document.querySelectorAll('.screen');
+  var navItems = document.querySelectorAll('.nav-item');
+  var demoBtns = document.querySelectorAll('.demo button[data-go]');
+
+  function show(id) {
+    screens.forEach(function (s) { s.classList.toggle('on', s.id === 's-' + id); });
+    demoBtns.forEach(function (b) { b.classList.toggle('on', b.getAttribute('data-go') === id); });
+    document.getElementById('crumb').textContent = crumb[id] || '语义模型';
+    navItems.forEach(function (n) {
+      if (n.getAttribute('data-go')) { n.classList.toggle('on', id !== 'tabletab'); }
+    });
+    if (history.replaceState) { history.replaceState(null, '', '#' + id); }
+    window.scrollTo(0, 0);
+  }
+
+  // 支持用 hash 直接打开某个画面（评审时可直接发链接）
+  var initial = (location.hash || '').replace('#', '');
+  if (initial && document.getElementById('s-' + initial)) { show(initial); }
+
+  document.addEventListener('click', function (e) {
+    var el = e.target.closest('[data-go]');
+    if (el) { show(el.getAttribute('data-go')); }
+  });
+
+  // 详情页内部页签
+  document.querySelectorAll('[data-dtab]').forEach(function (t) {
+    t.addEventListener('click', function () {
+      var key = t.getAttribute('data-dtab');
+      document.querySelectorAll('[data-dtab]').forEach(function (x) { x.classList.toggle('on', x === t); });
+      document.querySelectorAll('[data-dbody]').forEach(function (b) {
+        b.style.display = b.getAttribute('data-dbody') === key ? 'block' : 'none';
+      });
+    });
+  });
+
+  // 上下文包：主体视角切换（可见性先行）
+  var sel = document.getElementById('cp-subject');
+  var bi = document.getElementById('cp-bi');
+  var de = document.getElementById('cp-de');
+  var banner = document.getElementById('cp-banner');
+  var bannerText = document.getElementById('cp-banner-text');
+  sel.addEventListener('change', function () {
+    var isBi = sel.value === 'bi';
+    bi.style.display = isBi ? 'block' : 'none';
+    de.style.display = isBi ? 'none' : 'block';
+    banner.className = isBi ? 'banner' : 'banner ok';
+    banner.querySelector('.tag').textContent = isBi ? '逐表判权' : '对照视角';
+    bannerText.innerHTML = isBi
+      ? '可见性先行、语义随后：先按主体过滤表（复用授权判定的「先过滤再切页」），再组装语义。<b>finance.payroll 不可读——它的 schema、模型一个字都不出现，<span class="num">total</span> 也不含它。</b>'
+      : '<b>user:data_engineer</b> 对三张表都有 SELECT：finance.payroll 的 schema 与 finance_revenue 模型完整出现——上下文包按主体各有一份，权限变大包就变长，反之亦然。真正的门禁在执行路径上，包里的可见性只是提示。';
+  });
+
+  document.getElementById('toggle-notes').addEventListener('click', function () {
+    document.body.classList.toggle('notes-on');
+    this.classList.toggle('on');
+  });
+
+  // 发布按钮：回到详情并轻提示
+  document.getElementById('btn-publish').addEventListener('click', function () {
+    show('detail');
+    setTimeout(function () {
+      var b = document.createElement('div');
+      b.className = 'banner ok';
+      b.style.position = 'fixed';
+      b.style.right = '20px';
+      b.style.bottom = '70px';
+      b.style.zIndex = 60;
+      b.style.margin = '0';
+      b.style.boxShadow = '0 8px 24px rgba(0,0,0,.12)';
+      b.innerHTML = '<span class="tag">已发布 v7</span><div>entityVersion 递增；上下文包与 MCP 下次调用即读到新内容。若期间他人提交过 → 409，需基于新版本重做。</div>';
+      document.body.appendChild(b);
+      setTimeout(function () { b.remove(); }, 4200);
+    }, 120);
+  });
+})();
+</script>
+</body>
+</html>
