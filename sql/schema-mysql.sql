@@ -113,6 +113,7 @@ USE `lakehouse_catalog`;
         owner varchar(255) comment '记录归属主体（展示与过滤用，不参与授权判定）',
         updated_by varchar(255) comment '最后更新者主体名（写入前已按列宽归一化）',
         exempt_json text comment '豁免主体名单（JSON 字符串数组；名单内的人不走策略）',
+        hidden_json text comment '整列不可见清单（JSON 字符串数组；空 = 全部列可见；P3）',
         row_filter_json text comment '行过滤表达式（白名单 AST 的 JSON；空 = 不过滤行）',
         subjects_json text comment '主体白名单（JSON 字符串数组；空 = 全部主体生效；SQL 的 FOR 子句写入）',
         primary key (id)

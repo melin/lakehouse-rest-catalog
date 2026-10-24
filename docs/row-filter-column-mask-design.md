@@ -12,7 +12,15 @@
 > `ROW` / `FILTER` / `MASK` / `POLICY`，`spark-sql-reference.md` §11 与 `verify-spark-sql-doc.py` 同步）。
 > `$principal_roles` 占位符已实现（§5.3.4.1：行过滤按调用者的 principal role 过滤，
 > 服务端 `DataPolicyApiTests` + 引擎 `PolicySparkTests` 双侧覆盖）。
-> **未实现**：控制台页面（§7）——本文相应小节仍是它的实现依据。
+> 控制台「数据策略」页签已实现（§8.3：表详情新页签 + 结构化编辑器 `TablePolicyPanel`，
+> 保存即整份替换、409 不自动重试；三条端点登记 `verify-console.py` 扩展白名单，131 项全绿）。
+> 控制台三屏已实现（§8.3）：数据保护总览页（`/policies`，全量拉取 + 本地切页）、
+> 新建策略向导（`/policies/new`，与页签共用 AST 编辑器 `src/utils/policyAst.js`）、
+> 主体视角试算（dry-run 端点 + 四态横幅；`DataPolicyApiTests` 覆盖折叠与四态）。
+> P3 两项已实现（§5.8 / §7.6 更新块）：整列不可见 `hiddenColumns`（引擎侧
+> `PolicyHiddenColumnsRule` + 服务端 `hidden_json` 与预览收口）、`EXPLAIN` 打码
+> `PolicyOpaque`；P2 的 `SupportsAccessControl` / Trino 两项外部阻塞、ABAC 出设计
+> 草案（§14，未实现）。
 > 本文先回答「能不能做、做到什么程度、代价在哪」，实现取舍与设计稿的差异以代码为准。
 >
 > 关联文档：[`authorization.md`](authorization.md)（12 项 access 与判权链）、  
@@ -26,6 +34,8 @@
 >
 > 配套产品原型：[`row-filter-column-mask-mockup.html`](row-filter-column-mask-mockup.html)——五个画面
 > （策略总览 / 新建向导 / 策略详情 / 主体试算 / 表详情页签），带可开关的设计标注，标注编号对应上文的取舍。
+> 其中**画面 1（总览）、画面 2（向导）、画面 4（主体试算）、画面 5（表详情页签）已实现为控制台真实页面**
+> （§8.3 与 [console.md](console.md) §4）；画面 3（策略详情）由表详情的「数据策略」页签承担，不再单独立页。
 
 ---
 
@@ -538,6 +548,34 @@ Project( mask_1(a1) AS a1, mask_2(a2, ref=b) AS a2, ... )   ← 单层；所有�
 一半（脱敏 ≠ 不可见）。所以要说清：**启用本方案不等于把列级权限落实了**。列级不可见列为 P3，
 做完之后 `authorization.md` §11 那条要改。
 
+> **2026-10-24 更新：P3 已实现（`hiddenColumns`），但走的是独立能力，没有把
+> `COLUMN:SELECT` 赋权接进来。** 实现要点与当年 §5.8 的判断的出入：
+>
+> - **注入点不变，仍是 `PostHocResolution`。** `*` 展开完的形态下，星号与
+>   「显式全宽普通列表」（逐位等价 `relation.output`、全裸属性、无别名）无法区分——
+>   这是选了 A 路也不可避免的。实现为两遍扫描（`PolicyHiddenColumnsRule`，注册在
+>   `PolicyInjectionRule` 之后）：① `trimStars` 把全宽普通投影裁到可读列，其余显式
+>   引用（投影/聚合/过滤/子查询）`PolicyEnforcementException` 指名列与表；② `curtail`
+>   给带 hidden 的 `PolicyRelation` 自动包 `Project(readable)`，兜住
+>   `spark.table()` 无投影读法与 join 侧的悬空引用（由 `CheckAnalysis` 抛
+>   `AnalysisException`）。
+> - **歧义取舍**：显式全宽列表按星号处理（被裁）。被裁不泄露；比 fail-closed
+>   误伤每一条普通 `SELECT` 小得多。写进了规则类注释与本节。
+> - **写路径跳过**（4.1 实测形状）：INSERT 顶层是 `AppendData`、UPDATE/DELETE
+>   分析期重写为 `ReplaceData`，V1 还有命令形态。判据 =「`Command` 基类
+>   （`ExplainCommand` 显式排除——EXPLAIN 的 child 要照常处理）+ V2 写节点全集」。
+>   CTAS 因此与 `INSERT INTO t2 SELECT *` 同口径（写路径跳过、全列进新表，
+>   需要 CREATE 特权）。
+> - **与 mask 同列互斥**（服务端建策略时 400 指名拒绝）；行过滤**允许**引用
+>   hidden 列（治理员按密级列过滤是标准用法）。
+> - **SQL 管理语句（§13）不覆盖 hiddenColumns**，但 §13.6 的 GET→PUT 整份替换
+>   必须原样带回（`PolicySqlCommands.hidden(detail)`），否则
+>   `SET ROW FILTER` 等五条语句会静默清空 hidden 清单。
+> - 服务端：`hidden_json` 列 + 四个 DTO 全链贯通 + 预览裁剪/拒绝语义
+>   （`TablePreviewService.visibleOutput`：默认展开裁 hidden、显式勾选 400、
+>   过滤条件引用 400）；引擎/服务端两侧行为由 `PolicySparkTests`、
+>   `PolicyPreviewTests`、`DataPolicyApiTests` 锁住。
+
 ---
 
 ## 6. 服务端自己的读路径
@@ -655,6 +693,16 @@ Flink（本仓 `lakehouse-rest-flink` 两个模块）、Trino、自研程序都�
 **先按 b 交付，把这条写进边界说明；P1 做 a。** 不要假装看不见——用户第一次 `EXPLAIN` 就会问，
 而「为什么我的脱敏规则能被同事看见」不是一个能靠文档含糊过去的问题。
 
+> **2026-10-24 更新：方案 a 已实现（P3）。** `PolicyOpaque(child)`（shared 引擎侧，
+> `UnaryExpression`）：`eval` / `doGenCode` 恒等委托 child（doGenCode 经公开的
+> `child.genCode(ctx)` 委托——直接调 `child.doGenCode` 是 protected 跨包不可达；
+> codegen 不退化），`dataType` 显式声明（4.x 的 `UnaryExpression` 不再提供默认），
+> `toString` / `sql` 输出 `policy_expr(N literals masked)`（N = 内层 Literal 节点数，
+> 打印时才算）。物理展开处 `Filter` 条件与每个 mask 的 `Alias` child 都包它；
+> 逻辑侧 `PolicyRelation` 单行打印本就遮住（§7.6 表第 1 行）。测试：
+> `PolicySparkTests.explainPhysicalPlanMasksPolicyLiterals`——`EXPLAIN EXTENDED`
+> 文本含 `policy_expr`、不含策略字面量与 mask 函数名，且执行结果不受影响。
+
 ---
 
 ## 8. 权限、审计与控制台
@@ -692,6 +740,9 @@ CREATEFUNCTION / CREATEVIEW / LIST / SELECT / UPDATE / GRANT`），**不能自�
 | 表详情 • 新页签「数据策略」 | 行过滤表达式（结构化编辑器，不是自由 SQL 框）、列脱敏列表、豁免名单、版本与最近变更 |
 | 表详情 • 现有各页签     | 带策略的表：预览页签置灰并给出原因；文件下载按钮置灰；统计里的被脱敏列显示「已脱敏」   |
 | 权限页             | 复用 `TABLE:ALTER` 的既有展示，不新增列                  |
+| 总览页 `/policies` | 四张 KPI 卡（受保护表 / 带行过滤 / 脱敏列 / 豁免主体）+ 策略列表（行过滤 SQL 展示、脱敏列 tags、状态、版本、操作者）；一次全量拉取 + 本地切页（策略量级「几十」，KPI 要跨页口径）；悬空策略一眼可见（chip 平铺 `rowFilterSql` + `maskColumns`，`PolicySummary` 为此扩了两个字段，判权不变） |
+| 新建向导 `/policies/new` | 目标表三段级联 → 主体范围与豁免 → 行过滤 / 列脱敏编辑器（**与表详情页签共用 `src/utils/policyAst.js`**，两处建出的 AST 形状一致）→ 发布（PUT 整份替换）；已绑定策略的表不给新建（整份替换会静默顶掉现有策略），引导去表详情 |
+| 主体试算 `/policies/:c/:d/:t/dryrun` | 按**被模拟主体**跑 `POST .../dry-run`，四态横幅（FOUND / EXEMPT / DISABLED / NONE——NONE 是红色「按默认放行，全部为明文」）；结果表按列渲染，脱敏列单元格带角标；被模拟主体不需要存在（`$principal` 折字面量、角色查不到折 false） |
 
 **不做**自由 SQL 输入框——理由与 `table-data-preview-design.md` §1 的非目标一致：一个 SQL 框  
 等于在控制台里开一个求值口子，算子、函数、注入面全要重守。结构化编辑器 + 白名单算子已经够用。
@@ -755,10 +806,10 @@ CREATEFUNCTION / CREATEVIEW / LIST / SELECT / UPDATE / GRANT`），**不能自�
 
 | 期      | 内容                                                                        | 不做什么                      |
 | ------ | ------------------------------------------------------------------------- | ------------------------- |
-| **P0** | 策略模型 + 端点 + 控制台；Spark 侧行过滤 + 列脱敏（`PolicyRelation`）；服务端三条读路径**全部拒绝**带策略的表  | 不做服务端求值器；不做 Flink / Trino |
+| **P0** | 策略模型 + 端点 + 控制台（页签与总览 / 向导 / 试算三屏均已落地，见 §8.3 与状态行）；Spark 侧行过滤 + 列脱敏（`PolicyRelation`）；服务端三条读路径**全部拒绝**带策略的表  | 不做服务端求值器；不做 Flink / Trino |
 | **P1** | 服务端 AST 求值器（预览可用）+ 双端用例表对齐；元数据打码；策略管理语句（§13，7 条，含保留字同步）；`$principal_roles`——**全部已实现** | 不做存储层收口；SQL 不做试算（§13.9） |
-| **P2** | `SupportsAccessControl` 落地后切到官方 API；Trino `AccessControl`；ABAC（标签驱动的策略分发） | —                         |
-| **P3** | 整列不可见（`readableColumns`）+ 让 `COLUMN:SELECT` 真正有执行点；`EXPLAIN` 表达式打码（§7.6 方案 a） | 需要动分析入口或协议 schema（§5.8），单独排期 |
+| **P2** | `SupportsAccessControl` 与 Trino `AccessControl` **外部阻塞**（前者需 Spark 5.0 的公开 API，工程无 Trino 模块），升级路径见 §14.6；ABAC 出设计草案（§14，未实现） | 不在阻塞解除前排期 |
+| **P3** | 整列不可见（`hiddenColumns`，§5.8 更新块——**已实现**，v1 的两条路都不是必经，靠形状判据 + 兜底裁剪在 `PostHocResolution` 完成）；`EXPLAIN` 表达式打码（§7.6 方案 a，**已实现**）。注意：`hiddenColumns` 是独立能力，`COLUMN:SELECT` 赋权仍未接入执行 | 不与列级赋权模型合并 |
 
 ### 10.2 验收清单（每条都要有对应测试）
 
@@ -781,6 +832,9 @@ CREATEFUNCTION / CREATEVIEW / LIST / SELECT / UPDATE / GRANT`），**不能自�
 | 15 | `SELECT ssn`（mask 引用 `region`）结果正确，不因列裁剪缺列   | 端到端（§5.3.3 的「按 child 全量 output 展开」）                 |
 | 16 | DROP → 策略级联删；RENAME → 策略跟随；同名重建 → **不继承**  | 三条 DDL 各一条（§5.2 取舍 4）                                |
 | 17 | 一份内存 V2 测试表把 1–16 全跑一遍（不依赖 Paimon / Iceberg） | 对应 SPIP Q8 的 reference integration；单测秒级，e2e 只做冒烟 |
+| 18 | `EXPLAIN EXTENDED` 不泄露策略字面量与 mask 函数名，且执行结果不受影响 | `PolicySparkTests.explainPhysicalPlanMasksPolicyLiterals`（§7.6 方案 a） |
+| 19 | `hiddenColumns`：星号只返回可读列、显式引用指名失败、DML 不受阻、豁免主体全列可见 | `PolicySparkTests` 四用例（§5.8 更新块）；两版本跑同一份 |
+| 20 | hidden 的 SQL 兼容：`SET ROW FILTER` 等五条语句执行后 hidden 清单原样保留 | `PolicySqlTests`（GET→PUT 透传，§13.9） |
 
 > 第 12 条是这套东西能不能长期维护的分水岭：两版一旦漂移，症状是「同一个策略在两个集群上  
 > 给出不同的结果」，而这种差异不会报错，只会有人某天发现数对不上。
@@ -1025,6 +1079,96 @@ Error: DROP POLICY 需要会话开启 lakehouse.rest.sql.confirm-destructive=tru
 - **不做「试算」语句**（`DRY RUN SELECT ...` 之类）：试算走控制台与 REST
   （§6），它需要服务端求值器与一致性用例表兜底，SQL 里再开一个口子只会多一处
   「看起来像预览、实际绕过了校验」的面。
+- **`hiddenColumns` 不进 SQL 语句面**（P3）：§13.2 的语句清单不为它加语法，但
+  GET→PUT 整份替换（§13.6）必须原样带回——`PolicySqlCommands.hidden(detail)` 在
+  五个会改策略的 Command 里透传，漏一处就是「跑一条
+  `SET ROW FILTER` 把整列不可见清单清空」的静默破坏。SQL 里也写不出 hidden 语义
+  （它不是表达式，是列名清单），硬加语法只会得到一个半吊子形状。
+
+---
+
+## 14. ABAC：标签驱动的策略分发（设计草案，未实现）
+
+> **状态**：本节是 P2 的设计草案，**没有任何一行实现**。先写下来的理由与 §5.8 当年
+> 一样——这个方向的第一个实现者最容易犯的错是可以预见的（见 14.4），趁热记下来。
+> P2 的另外两项（`SupportsAccessControl`、Trino `AccessControl`）是外部硬依赖，见 14.6。
+
+### 14.1 动机：per-table 整份替换的运维半径
+
+本方案的策略模型是「策略直接绑表、PUT 整份替换」（§5.2 取舍 4、§13.6）。表少时这是优点：
+一个端点看全策略、没有命名实体、没有引用计数。表一多就是灾难——设想「所有
+`tier=pii` 的表都要挂同一条 `region = current_user_region()` 行过滤 + 三个标准 mask」，
+300 张表就是 300 份 JSON 的复制粘贴，改一处要批量 PUT 300 次，漏一张就是策略空洞。
+
+ABAC（Attribute-Based Access Control）要解决的只有一件事：**把「策略内容」与「挂载范围」
+解耦**。管理员写一次策略模板，用表的标签声明哪些表适用，挂载/摘除随标签自动发生。
+
+### 14.2 数据模型（三个新对象，全部是特权对象）
+
+| 对象 | 内容 | 谁能写 |
+| --- | --- | --- |
+| 表标签 | `<key, value>` 对，来源只有表 properties（`tier=pii`、`domain=orders`）——不建独立的标签表，properties 已经有事件联动（RENAME 跟随、DROP 级联） | 现有 ALTER TABLE 特权 |
+| 策略模板 | 与 `PolicyUpsertRequest` 同形的 JSON（行过滤 + masks + hiddenColumns），但不绑表，绑模板 ID | 新特权 `POLICY_TEMPLATE:WRITE`，与 §8.1 的策略写特权分开 |
+| 绑定规则 | 「标签表达式 → 模板 ID」的有序列表；标签表达式只做 `<key> = <value>` 与 `<key> IN (...)` 的合取，不做任意谓词（见 14.4 第 2 条） | 同上 |
+
+绑定规则**不复制**策略内容，resolve 时合成。这保证「改一处模板 → 全部命中表生效」，
+代价是 resolve 路径多一跳（见 14.5）。
+
+### 14.3 resolve 顺序：显式策略永远优先
+
+```
+resolve(table, principal):
+  explicit = per-table 策略（现有路径）
+  if explicit 存在            -> 用 explicit，模板不参与（哪怕标签也命中）
+  else:
+    matched = 绑定规则按序匹配表标签
+    if matched 非空           -> 合成：模板 JSON + 表 schema 校验（缺列 fail-closed，同 §5.3.3）
+    else                     -> NONE（现语义不变）
+```
+
+这条顺序是刻意的：**显式策略是「例外」的逃生口**。某张 `tier=pii` 的表需要不一样的
+规则时，管理员写一份 per-table 策略，不用动模板。反过来的优先级（模板覆盖显式）会让
+「修一张表的策略」变成「先摘标签」，操作面反而更大。
+
+合成结果对调用方**完全透明**：`ResolvedPolicy` 不区分来源，引擎侧零改动。
+审计事件的 attributes 里加 `policySource: explicit | template(<id>)`。
+
+### 14.4 四条可预见的错误做法（实现者必读）
+
+1. **模板支持任意表达式引用标签**（如 `tier + '_' + env`）。标签表达式的求值发生在
+   resolve 的热路径上，任意表达式等于把 §5.4 的缓存键打穿——缓存键必须能从
+   (table, principal) 直接算出，所以标签匹配只能是等值/IN 的合取。
+2. **允许模板内容含 `$table` / `$schema` 之类的表级占位符**。看起来很灵活，实际是
+   把「策略内容」重新耦合回「具体表」，§14.1 解耦的目的作废；而且占位符展开发生在
+   服务端，§13.4 的「表达式 → AST 白名单」要为每个占位符开洞。v1 不做，真有这种
+   需求就写 per-table 策略。
+3. **用模板合成结果反写 per-table 策略（物化）**。物化省掉 resolve 的模板跳，但
+   「改模板不再生效」——必须同时给全部物化表发失效，等于把 14.1 的批量 PUT 换成
+   批量失效，没有变简单，还多了一种状态（物化后模板改了、还没失效）。resolve 期合成，
+   永远现算。
+4. **模板不命中 = 报错**。不命中就是 NONE（该表没有策略），这是正常业务状态；
+   要 fail-closed 的是「绑定规则命中的模板引用了表里不存在的列」（同 §5.3.3 的
+   stale 判据：建时 fail-closed、读时标 stale 并拒绝）。
+
+### 14.5 与现有机制的对账
+
+| 现有机制 | ABAC 下的影响 |
+| --- | --- |
+| PUT 整份替换 + baseVersion 乐观锁（§13.6） | 只作用于显式策略；**SET POLICY 系列语句对模板合成结果必须报错**（"policy is managed by template T-7; alter the template"），否则一次 SQL PUT 就把模板挂载悄悄物化掉（14.4 第 3 条的运行时变体） |
+| `PolicyCache` + TTL / `POLICY_CHANGED` 失效（§5.4） | 缓存键追加绑定规则版本号；改模板 / 改绑定规则 / 改表 properties 都走 `PolicyCache.invalidateAllLive()`（表 properties 变更事件已有监听路径可挂） |
+| 表生命周期（DROP 级联删 / RENAME 跟随，§5.2 取舍 4） | 标签在 properties 里，天然跟随；DROP 后无表无策略，无需动作。模板与绑定规则不随任何表走 |
+| SQL 管理语句（§13） | 不加模板语句（v1 模板只走 REST + 控制台）；`SHOW POLICY` 的响应加 `policySource` 一行，让用户知道眼前的策略是哪来的 |
+| 控制台（§8.3） | 「数据策略」页签加只读的「来源」标记；模板管理是独立页面，不在表详情里改 |
+| 行过滤允许引用 hidden 列 / hidden 与 mask 互斥（§5.8） | 校验发生在模板保存时（对**什么表都可能挂**的模板，只能校验「列名是合法标识符」级别），表级校验推迟到 resolve 合成期——缺列 fail-closed。这是模板与 per-table 策略在语义上唯一真正的差异 |
+
+### 14.6 P2 的另外两项：外部依赖与升级路径
+
+| 项 | 阻塞 | 升级路径 |
+| --- | --- | --- |
+| `SupportsAccessControl` | Spark 3.5/4.1/4.2 均无此公开 API（§1.2、jar 实测）；SPARK-59726 指 5.0，且其检查点在 catalog 层，信任边界与本方案的引擎侧注入不同（附录 A 第 4 条） | Spark 5.0 出来后做适配层：`PolicyRelation` 注入逻辑不动，把 catalog 回调转发到同一份 resolve。届时 §3.4 的四条教训全部仍然适用 |
+| Trino `AccessControl` | 工程无 Trino 模块；引入一个完整引擎适配是独立项目级工作量 | 沿用本设计的协议面：Trino 的 `SystemAccessControl` + `ColumnMask` SPI 与本方案的 `ResolvedPolicy` JSON 一一对应，求值语义用 §6 的同一份用例表对齐（与 Spark/服务端求值器三方一致） |
+
+---
 
 ## 附录 A. 与 SPIP（SPARK-59726）的差距清单
 

@@ -80,7 +80,8 @@ class PolicyPreviewTests {
                         "when", op("eq", col("region"), lit("US")),
                         "then", col("name"))),
                 "else", lit("HIDDEN"))));
-        return new DataPolicyService.PreviewPolicy("hash", 1, rowFilter, Map.copyOf(masks));
+        return new DataPolicyService.PreviewPolicy("hash", 1, rowFilter, Map.copyOf(masks),
+                List.of());
     }
 
     // ------------------------------------------------------------------ 集成：真实读路径
@@ -160,13 +161,52 @@ class PolicyPreviewTests {
     }
 
     @Test
+    void hiddenColumnsAreCroppedAndRefused(@TempDir Path dir) throws Exception {
+        prepare(dir);
+        TablePreviewService service = service(dir);
+        DataPolicyService.PreviewPolicy hidden = new DataPolicyService.PreviewPolicy(
+                "hash", 1, coalesceFalse(op("eq", col("region"), lit("CN"))),
+                Map.of(), List.of("phone"));
+
+        // 默认投影：phone 从输出里消失，行过滤照常生效，行宽 = 可读列数
+        PreviewDtos.PreviewResponse response = service.preview(target(dir),
+                new PreviewDtos.PreviewRequest(null, null, null, 100, null, null), hidden);
+        assertEquals(List.of("id", "name", "region", "day"),
+                response.columns().stream().map(c -> c.name()).toList(),
+                "默认输出不应含整列不可见列（§5.8）");
+        assertEquals(2, response.rows().size(), "行过滤不受 hidden 裁剪影响");
+        for (List<Object> row : response.rows()) {
+            assertEquals(4, row.size(), "返回行只含可读列：" + row);
+        }
+        assertTrue(response.warnings().stream().anyMatch(w -> w.contains("整列不可见")),
+                "warnings 应说明 hidden 裁剪：" + response.warnings());
+
+        // 显式勾选不可见列 → 指名拒绝（与引擎的「显式引用直接失败」同语义）
+        ApiException explicit = assertThrows(ApiException.class, () -> service.preview(target(dir),
+                new PreviewDtos.PreviewRequest(null, null, List.of("id", "phone"), 100, null, null),
+                hidden));
+        assertTrue(explicit.getMessage().contains("phone"),
+                "显式勾选 hidden 列要指名拒绝：" + explicit.getMessage());
+
+        // 过滤条件引用不可见列 → 指名拒绝（行数分布也是泄露面）
+        PreviewDtos.PreviewRequest filterRequest = new PreviewDtos.PreviewRequest(
+                List.of(new io.github.melin.lakehouse.rest.preview.ColumnFilter(
+                        "phone", "eq", "13800000001")),
+                null, null, 100, null, null);
+        ApiException filtered = assertThrows(ApiException.class,
+                () -> service.preview(target(dir), filterRequest, hidden));
+        assertTrue(filtered.getMessage().contains("hidden column 'phone'"),
+                "条件引用 hidden 列要指名拒绝：" + filtered.getMessage());
+    }
+
+    @Test
     void policiesReferencingMissingColumnsFailClosed(@TempDir Path dir) throws Exception {
         prepare(dir);
         TablePreviewService service = service(dir);
         Map<String, Object> rowFilter = coalesceFalse(
                 op("eq", col("ghost"), lit("CN")));
         DataPolicyService.PreviewPolicy stale = new DataPolicyService.PreviewPolicy(
-                "hash", 1, rowFilter, Map.of());
+                "hash", 1, rowFilter, Map.of(), List.of());
         ApiException exception = assertThrows(ApiException.class,
                 () -> service.preview(target(dir),
                         new PreviewDtos.PreviewRequest(null, null, null, 100, null, null), stale));
@@ -184,7 +224,7 @@ class PolicyPreviewTests {
         DataPolicyService.PreviewPolicy regionMasked = new DataPolicyService.PreviewPolicy(
                 "hash", 1,
                 coalesceFalse(op("eq", col("region"), lit("CN"))),
-                Map.of("region", Map.of("fn", "mask_alphanum")));
+                Map.of("region", Map.of("fn", "mask_alphanum")), List.of());
         PreviewDtos.PreviewRequest request = new PreviewDtos.PreviewRequest(null,
                 new PreviewDtos.PartitionSelectionRequest("explicit",
                         List.of(new PreviewDtos.PartitionValue("region", "identity", "CN")), null),
@@ -215,7 +255,7 @@ class PolicyPreviewTests {
         DataPolicyService.PreviewPolicy phoneMasked = new DataPolicyService.PreviewPolicy(
                 "hash", 1,
                 coalesceFalse(op("eq", col("region"), lit("CN"))),
-                Map.of("phone", Map.of("fn", "mask_alphanum")));
+                Map.of("phone", Map.of("fn", "mask_alphanum")), List.of());
         PreviewDtos.PreviewRequest request = new PreviewDtos.PreviewRequest(null,
                 new PreviewDtos.PartitionSelectionRequest("explicit",
                         List.of(new PreviewDtos.PartitionValue("region", "identity", "CN")), null),

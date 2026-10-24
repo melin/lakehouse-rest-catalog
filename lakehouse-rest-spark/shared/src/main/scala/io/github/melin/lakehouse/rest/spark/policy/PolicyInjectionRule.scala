@@ -142,9 +142,10 @@ private[spark] class PolicyInjectionRule(session: SparkSession) extends Rule[Log
       case Some(info) =>
         val masks = info.masks.asScala.map(m => PolicyMask(m.column, m.mask)).toSeq
         val rowFilter = Option(info.rowFilter).map(_.asInstanceOf[util.Map[String, Any]])
+        val hidden = info.hiddenColumns.asScala.toSeq
         // 第二个 rel 是 fullRelation（wrap 时的原始 relation，物理展开的表达式锚点）；
         // anchors 把全量输出声明为 expressions，防止裁剪钻进本节点之下（见类注释）
-        PolicyRelation(rel, rel, ref, info.version, rowFilter, masks, rel.output)
+        PolicyRelation(rel, rel, ref, info.version, rowFilter, masks, hidden, rel.output)
       case None =>
         rel
     }

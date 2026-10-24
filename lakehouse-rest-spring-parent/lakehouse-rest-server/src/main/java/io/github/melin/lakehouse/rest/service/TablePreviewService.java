@@ -219,15 +219,35 @@ public class TablePreviewService {
         // 补读列」是同一个机制，只是补读的原因从"用户要筛"换成"策略要判"。
         List<String> readNames = new ArrayList<>(projection.readNames());
         int[] readIndices = projection.indices();
+        // 策略生效时输出列与读取列分开：hidden 列从输出裁掉（§5.8），但行过滤 /
+        // mask 参数仍可能要读它们的原值——读取列宽于输出列，返回前按 outputCount 切
+        List<PreviewColumn> outputColumns = projection.output();
         int outputCount = projection.output().size();
+        // reader 层的截断宽度：非策略路径 = outputCount（补读列读完即切）；策略路径
+        // 必须全宽读——行过滤与 mask 参数要用补读列乃至 hidden 列的原值（§5.3.3/§5.8），
+        // 切到 outputCount 只能发生在下面求值之后，否则行过滤永远拿到 null
+        int readerOutputCount = outputCount;
         if (policy != null) {
-            rejectFiltersOnMaskedColumns(req.filters(), policy.masks());
-            readNames = extendForPolicy(policy, readNames, projection.output(), all);
+            rejectFiltersOnProtectedColumns(req.filters(), policy.masks().keySet(),
+                    policy.hiddenColumns());
+            outputColumns = visibleOutput(policy, projection, req.columns());
+            readNames = new ArrayList<>();
+            for (PreviewColumn column : outputColumns) {
+                readNames.add(column.name());
+            }
+            // 用户过滤条件补读的列保留（判过滤要用原值，但不回显）
+            for (String name : projection.readNames()) {
+                if (!readNames.contains(name)) {
+                    readNames.add(name);
+                }
+            }
+            readNames = extendForPolicy(policy, readNames, outputColumns, all);
             readIndices = new int[readNames.size()];
             for (int index = 0; index < readNames.size(); index++) {
                 readIndices[index] = indexOf(all, readNames.get(index));
             }
-            outputCount = readNames.size();
+            outputCount = outputColumns.size();
+            readerOutputCount = readNames.size();
         }
 
         List<String> fields = table.partitionFields();
@@ -256,7 +276,7 @@ public class TablePreviewService {
         long startedAt = System.nanoTime();
         PreviewChunk chunk = table.read(new PreviewTable.ReadSpec(
                 readIndices,
-                outputCount,
+                readerOutputCount,
                 compiled,
                 decision.selection(),
                 splitOffset,
@@ -306,7 +326,7 @@ public class TablePreviewService {
                     policyDropped++;
                     continue;
                 }
-                List<Object> outputRow = new ArrayList<>(row.subList(0, projection.output().size()));
+                List<Object> outputRow = new ArrayList<>(row.subList(0, outputCount));
                 for (int index = 0; index < outputRow.size(); index++) {
                     Map<String, Object> mask = policy.masks().get(readNames.get(index));
                     if (mask != null) {
@@ -325,12 +345,16 @@ public class TablePreviewService {
                     + resultRows.size() + " 行（行过滤挡下 " + policyDropped
                     + " 行，敏感列已脱敏；设计 §6）");
         }
+        if (policy != null && !policy.hiddenColumns().isEmpty()) {
+            warnings.add("整列不可见列 " + String.join(", ", policy.hiddenColumns())
+                    + " 已从预览输出中移除，引用它们的条件被拒绝（设计 §5.8）");
+        }
         if (!maskedPartitionFields.isEmpty()) {
             warnings.add("分区字段 " + String.join(", ", maskedPartitionFields)
                     + " 是脱敏目标，分区回显的值已打码（设计 §7.3）");
         }
         if (projection.defaulted()) {
-            warnings.add("默认只返回前 " + projection.output().size() + " 列（共 " + all.size()
+            warnings.add("默认只返回前 " + outputColumns.size() + " 列（共 " + all.size()
                     + " 列），可在列投影里勾更多");
         }
         if (sampled) {
@@ -357,7 +381,7 @@ public class TablePreviewService {
                         maskLabel(decision.label(), decision.resolved(), maskedPartitionFields),
                         decision.auto(), decision.depth(), decision.fallback(),
                         decision.partitionsTotal(), decision.partitionsMatched()),
-                projection.output(),
+                outputColumns,
                 resultRows,
                 next,
                 hasMore,
@@ -519,20 +543,64 @@ public class TablePreviewService {
      * 两条语义放一起，同一个条件在控制台与 Spark 会给出不同的行数——与其制造这种
      * 静默分歧，不如指名拒绝：换一列过滤，或用受控引擎会话。
      */
-    private static void rejectFiltersOnMaskedColumns(List<ColumnFilter> filters,
-                                                     Map<String, Map<String, Object>> masks) {
+    private static void rejectFiltersOnProtectedColumns(List<ColumnFilter> filters,
+                                                        Set<String> maskTargets,
+                                                        List<String> hiddenColumns) {
         if (filters == null) {
             return;
         }
         for (ColumnFilter filter : filters) {
-            if (filter != null && filter.column() != null && masks.containsKey(filter.column())) {
+            if (filter == null || filter.column() == null) {
+                continue;
+            }
+            if (maskTargets.contains(filter.column())) {
                 throw ApiException.badRequest("preview filters cannot reference the masked"
                         + " column '" + filter.column() + "': the engine compares such"
                         + " predicates against masked values (design §5.7), and this console"
                         + " cannot reproduce that on original rows; filter on another column"
                         + " or use a controlled engine session");
             }
+            if (hiddenColumns.contains(filter.column())) {
+                throw ApiException.badRequest("preview filters cannot reference the hidden"
+                        + " column '" + filter.column() + "': it is not readable for you"
+                        + " (design §5.8); filter on a readable column or use a controlled"
+                        + " engine session");
+            }
         }
+    }
+
+    /**
+     * 预览输出里可见的列（§5.8）：显式勾选了不可见列 → 指名拒绝（与引擎的
+     * 「显式引用直接失败」同语义）；默认列裁剪时直接把不可见列从输出里去掉。
+     */
+    private static List<PreviewColumn> visibleOutput(DataPolicyService.PreviewPolicy policy,
+                                                     Projection projection,
+                                                     List<String> requested) {
+        List<String> hidden = policy.hiddenColumns();
+        if (hidden.isEmpty()) {
+            return projection.output();
+        }
+        // 不能用 projection.defaulted() 判断：它只表示"被 maxColumns 截断"，
+        // 5 列表的默认展开 defaulted 也是 false——判定依据只能是用户有没有勾选列
+        boolean explicit = requested != null && !requested.isEmpty();
+        if (explicit) {
+            for (PreviewColumn column : projection.output()) {
+                if (hidden.contains(column.name())) {
+                    throw ApiException.badRequest("column '" + column.name() + "' is hidden by"
+                            + " the table's data policy and cannot be previewed; select readable"
+                            + " columns explicitly (design §5.8)");
+                }
+            }
+            return projection.output();
+        }
+        // 默认展开 = 引擎侧"星号"的同语义：只返回可读列（§5.8），不报错
+        List<PreviewColumn> visible = new ArrayList<>(projection.output().size());
+        for (PreviewColumn column : projection.output()) {
+            if (!hidden.contains(column.name())) {
+                visible.add(column);
+            }
+        }
+        return List.copyOf(visible);
     }
 
     /**

@@ -2,6 +2,7 @@ package io.github.melin.lakehouse.rest;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
@@ -147,7 +148,13 @@ class DataPolicyApiTests {
         assertTrue(detail.get("exemptPrincipals").isEmpty(), "上一轮的空名单覆盖了旧名单");
         JsonNode list = json(200, "GET", M + "?catalog=" + PREFIX + "&refTable=" + TABLE, null);
         assertEquals(1, list.get("items").size(), "refTable 反查只回这一张表");
-        assertTrue(list.get("items").get(0).get("hasRowFilter").asBoolean());
+        JsonNode summary = list.get("items").get(0);
+        assertTrue(summary.get("hasRowFilter").asBoolean());
+        // 总览行带条件文本与脱敏列名（mockup 画面 1）：治理员不点进每一张表也能排查
+        assertTrue(summary.get("rowFilterSql").asString().toUpperCase().contains("IS NULL"),
+                () -> "总览行要带行过滤 SQL 文本: " + summary);
+        assertEquals(1, summary.get("maskColumns").size());
+        assertEquals("name", summary.get("maskColumns").get(0).asString());
 
         // 审计事件：策略变化单独一个类型（与优化策略分开，§8.2）
         assertTrue(eventRepository.findAll().stream()
@@ -388,6 +395,134 @@ class DataPolicyApiTests {
             json(204, "DELETE", mgmt + "/principal-roles/" + role, null);
             json(204, "DELETE", mgmt + "/principals/" + principal, null);
         }
+    }
+
+    /**
+     * 主体试算（mockup 画面 4）：按<b>指定</b>主体判定四态并折叠 {@code $principal}，
+     * 判定链与 previewPolicyOf / resolve 逐条一致。控制器在服务层结果上再走一遍
+     * 预览读路径——测试表没有真实仓库，请求会走到「打开表」才失败（400），
+     * 关键是**不是** 403/404 主体问题（真实读路径由 PolicyPreviewTests 看住）。
+     */
+    @Test
+    @Order(43)
+    void principalDryRunFoldsAndReportsStates() throws Exception {
+        createPaimonTable(DB, TABLE);
+        createPaimonTable(DB, TABLE2);
+        mockMvc.perform(delete(policyPath(DB, TABLE2)));
+
+        json(200, "PUT", policyPath(DB, TABLE2), """
+                {
+                  "rowFilter": {"op": "eq", "left": {"col": "dt"}, "right": {"principal": true}},
+                  "masks": [{"column": "name", "mask": {"fn": "show_first_n", "args": [3]}}]
+                }
+                """);
+
+        // FOUND：$principal 折成被模拟主体的名字字面量（不是当前调用者）
+        var found = policyService.policyForPrincipal(PREFIX, DB, TABLE2, "user:zhang");
+        assertEquals("FOUND", found.status());
+        assertEquals(1, found.version());
+        assertNotNull(found.rowFilterSql());
+        // upsert 时外层包了 coalesce（NULL 兜底），eq 在 args[0] 的 right 位
+        @SuppressWarnings("unchecked")
+        Map<String, Object> eq = (Map<String, Object>)
+                ((List<?>) found.policy().rowFilter().get("args")).get(0);
+        assertEquals("user:zhang",
+                ((Map<?, ?>) eq.get("right")).get("lit"),
+                "试算要把 $principal 折成被模拟的主体名");
+
+        // EXEMPT：豁免名单按被模拟主体判定，拿到空策略（预览按原样放行）
+        json(200, "PUT", policyPath(DB, TABLE2),
+                "{\"baseVersion\": 1, \"exemptPrincipals\": [\"user:zhang\"]}");
+        var exempt = policyService.policyForPrincipal(PREFIX, DB, TABLE2, "user:zhang");
+        assertEquals("EXEMPT", exempt.status());
+        assertNull(exempt.policy());
+
+        // 白名单外 → NONE（对该主体不生效 ≈ 没策略）；名单内仍是 FOUND
+        json(200, "PUT", policyPath(DB, TABLE2),
+                "{\"baseVersion\": 2, \"subjects\": [\"role_member\"]}");
+        assertEquals("NONE", policyService
+                .policyForPrincipal(PREFIX, DB, TABLE2, "user:zhang").status());
+        var member = policyService.policyForPrincipal(PREFIX, DB, TABLE2, "role_member");
+        assertEquals("FOUND", member.status());
+
+        // DISABLED：四态与 resolve 同语义
+        json(200, "PUT", policyPath(DB, TABLE2), "{\"baseVersion\": 3, \"enabled\": false}");
+        assertEquals("DISABLED",
+                policyService.policyForPrincipal(PREFIX, DB, TABLE2, "role_member").status());
+
+        // 端点形状：principal 缺失 400；表不存在 404（requireTableExists 在策略判定前）
+        json(400, "POST", policyPath(DB, TABLE2) + "/dry-run", "{}");
+        json(404, "POST", M + "/tables/" + PREFIX + "/" + DB + "/ghost/dry-run",
+                "{\"principal\": \"user:zhang\"}");
+
+        // 端点接线：t1 没有策略 → NONE，预览读到「打开表」那一步才失败（无真实仓库）
+        mockMvc.perform(post(policyPath(DB, TABLE) + "/dry-run")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"principal\": \"user:nobody\"}")).andExpect(result -> {
+            int status = result.getResponse().getStatus();
+            // getContentAsString 是受检异常，要在能抛的 lambda 里取（ResultMatcher 允许）
+            String body = result.getResponse().getContentAsString();
+            assertTrue(status != 403, () -> "试算端点不应被策略收口拒绝: " + body);
+        });
+        // 清场：删掉试算留下的策略（后续用例不依赖 TABLE2 的策略，但容错总没错）
+        mockMvc.perform(delete(policyPath(DB, TABLE2)));
+    }
+
+    /**
+     * 整列不可见（P3，设计 §5.8）：服务端校验 fail-closed（不存在的列 / 嵌套写法 /
+     * 与 mask 同列互斥），落库后 resolve（FOUND 带清单）与总览摘要、试算链路一致；
+     * 真实预览的裁剪由 PolicyPreviewTests 的本地 parquet 读路径看住。
+     */
+    @Test
+    @Order(44)
+    void hiddenColumnsValidateResolveAndFlowThrough() throws Exception {
+        createPaimonTable(DB, TABLE2);
+        mockMvc.perform(delete(policyPath(DB, TABLE2)));
+
+        // 校验 fail-closed：不存在的列 / 嵌套写法 / 空串 / 与 mask 同列互斥
+        String path = policyPath(DB, TABLE2);
+        json(400, "PUT", path, "{\"hiddenColumns\": [\"ghost\"]}");
+        json(400, "PUT", path, "{\"hiddenColumns\": [\"dt.year\"]}");
+        json(400, "PUT", path, "{\"hiddenColumns\": [\"\"]}");
+        json(400, "PUT", path,
+                "{\"hiddenColumns\": [\"name\"],"
+                        + " \"masks\": [{\"column\": \"name\", \"mask\": {\"fn\": \"mask_alphanum\"}}]}");
+        json(204, "GET", path, null);
+
+        // 落库：详情与乐观锁语义不变
+        JsonNode created = json(200, "PUT", path,
+                "{\"rowFilter\": {\"op\": \"is_null\", \"operand\": {\"col\": \"dt\"}},"
+                        + " \"hiddenColumns\": [\"name\"]}");
+        assertEquals(1, created.get("version").asInt());
+        assertEquals("name", created.get("hiddenColumns").get(0).asString());
+        JsonNode detail = json(200, "GET", path, null);
+        assertEquals(1, detail.get("hiddenColumns").size());
+
+        // 总览摘要带清单（chip 平铺，与 maskColumns 同一取舍）
+        JsonNode summary = json(200, "GET", M + "?catalog=" + PREFIX + "&refTable=" + TABLE2, null)
+                .get("items").get(0);
+        assertEquals("name", summary.get("hiddenColumns").get(0).asString());
+
+        // 下发：FOUND 带清单
+        JsonNode found = byTable(json(200, "GET", M + "/resolve?catalog=" + PREFIX
+                + "&tables=" + DB + "." + TABLE2, null).get("policies"), DB + "." + TABLE2);
+        assertEquals("FOUND", found.get("status").asString());
+        assertEquals("name", found.get("hiddenColumns").get(0).asString());
+
+        // 试算链路同源（policyForPrincipal → PreviewPolicy.hiddenColumns）
+        var dryRun = policyService.policyForPrincipal(PREFIX, DB, TABLE2, "user:zhang");
+        assertEquals("FOUND", dryRun.status());
+        assertEquals(List.of("name"), dryRun.policy().hiddenColumns(),
+                "预览策略要携带整列不可见清单");
+
+        // 整份替换：这次少提交的 hidden 就是被删掉的（与 mask 同一 PUT 语义）
+        JsonNode cleared = json(200, "PUT", path,
+                "{\"baseVersion\": 1, \"rowFilter\": {\"op\": \"is_null\", \"operand\": {\"col\": \"dt\"}},"
+                        + " \"hiddenColumns\": []}");
+        assertTrue(cleared.get("hiddenColumns").isEmpty(), "空清单覆盖旧清单");
+
+        // 清场
+        mockMvc.perform(delete(path));
     }
 
     // ------------------------------------------------------------------ 4. 读路径收口（§6 / §7.2）

@@ -78,6 +78,9 @@
           <el-tab-pane v-if="isPaimonTable" label="分支" name="branches" />
           <el-tab-pane label="文件列表" name="files" />
           <el-tab-pane v-if="isPaimonTable" label="数据访问" name="access" />
+          <!-- 数据策略（行过滤 / 列脱敏）不按表格式伸缩：策略按三段名挂在任何表上，
+               Format / Object 表同样可能被引擎读到、同样值得保护（与「文件列表」同一条规则） -->
+          <el-tab-pane label="数据策略" name="policy" />
           <!-- 存储优化同样按表格式伸缩：本页只展示 Paimon 表（Iceberg 表走 IcebergTableView，
                那边挂的是同一个组件、传 format="ICEBERG"）。
                外部 Paimon 表仍会出现这个页签——它由服务端回答「不支持」并说明原因，
@@ -547,6 +550,19 @@
             <TablePreviewPanel :table-id="table0.id" :columns="previewColumns" />
           </template>
 
+          <!------------------------------- 数据策略 -------------------------------->
+          <!-- 与存储优化同构：内容在独立组件里（可写表单，约 500 行），父组件只给 ref
+               与一声「该加载了」。列选项复用 previewColumns 的来源（全量 schema） -->
+          <template v-else-if="tab === 'policy'">
+            <TablePolicyPanel
+              ref="policyPanel"
+              :catalog="prefix"
+              :database="database"
+              :table-name="table"
+              :columns="policyColumns"
+            />
+          </template>
+
           <!------------------------------- 数据访问 -------------------------------->
           <template v-else>
             <div class="pc-access">
@@ -646,6 +662,7 @@ import PageHeader from '@/components/PageHeader.vue'
 import PanelCard from '@/components/PanelCard.vue'
 import ResourceState from '@/components/ResourceState.vue'
 import TableOptimizationPanel from '@/components/TableOptimizationPanel.vue'
+import TablePolicyPanel from '@/components/TablePolicyPanel.vue'
 import TablePreviewPanel from '@/components/TablePreviewPanel.vue'
 import TablePager from '@/components/TablePager.vue'
 import TimeText from '@/components/TimeText.vue'
@@ -811,6 +828,11 @@ const previewColumns = computed(() =>
 )
 const isObjectTable = computed(() => tableKind.value === 'object-table')
 
+/** 数据策略编辑器的列选项来源：与预览同一份全量 schema（列名 + 类型）。 */
+const policyColumns = computed(() =>
+  (table0.value?.schema?.fields || []).map((field) => ({ name: field.name, type: field.type })),
+)
+
 /** 少了几个页签的原因写在页面上，免得看起来像加载失败。 */
 const kindNote = computed(() => (isPaimonTable.value
   ? ''
@@ -942,6 +964,25 @@ const optimizationPanel = ref(null)
  */
 const optimizationPending = ref(false)
 
+/** 同一套机制服务「数据策略」页签：面板还没挂载时先把请求攒着，挂载后立刻发。 */
+const policyPending = ref(false)
+const policyPanel = ref(null)
+
+watch(policyPanel, (panel) => {
+  if (panel && policyPending.value) {
+    policyPending.value = false
+    panel.load()
+  }
+})
+
+function loadPolicy() {
+  if (policyPanel.value) {
+    policyPanel.value.load()
+  } else {
+    policyPending.value = true
+  }
+}
+
 /** 面板挂载后立刻把攒下的请求发出去；已挂载时（切换回来、换表）直接调。 */
 watch(optimizationPanel, (panel) => {
   if (panel && optimizationPending.value) {
@@ -1059,6 +1100,8 @@ function onTabChange(name) {
   // 存储优化：策略与历史都不在概览里，切过来才拉；组件内部按 catalog/database/table
   // 自己拼请求，父组件只发一声「该加载了」（这一声可能得等组件挂载，见 loadOptimization）
   if (name === 'optimization') loadOptimization()
+  // 数据策略：同一个「面板挂载前先攒请求」的机制，见 loadOptimization 的注释
+  if (name === 'policy') loadPolicy()
   // 文件列表要等概览回来才有 tableId：概览没到时先不请求（加载器会返回 null），
   // 等下次切到这个页签、或概览加载完成后的 reloadAll 再拉
   if (name === 'files' && table0.value && !tableFilesLoaded.value && !tableFilesLoading.value) {
@@ -1091,6 +1134,13 @@ watch([prefix, database, table], () => {
   partitionPattern.value = ''
   partitionsLoaded.value = false
   detailsSection.value = 'fields'
+  // 深链接：`?tab=<name>` 直达某个页签（数据保护总览的「详情」用 ?tab=policy 跳进来）。
+  // 只认真实存在的页签名，不认识的参数静默忽略——它是便利入口，不是协议
+  const requested = String(route.query.tab || '')
+  if (['details', 'lineage', 'preview', 'snapshots', 'tags', 'branches', 'files',
+    'access', 'policy', 'optimization'].includes(requested)) {
+    tab.value = requested
+  }
   overview.load()
   if (!SELF_CONTAINED_TABS.has(tab.value)) {
     loadedTabs.add(tab.value)

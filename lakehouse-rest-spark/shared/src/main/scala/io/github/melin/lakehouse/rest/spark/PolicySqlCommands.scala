@@ -59,6 +59,10 @@ private[spark] object PolicySqlCommands {
   private[spark] def exempt(detail: ManagementApiClient.PolicyDetailInfo): JavaList[String] =
     if (detail == null) new ArrayList[String]() else detail.exemptPrincipals()
 
+  /** 整列不可见清单（P3）：GET→PUT 是整份替换，语句不碰它就必须原样带回，否则被清空。 */
+  private[spark] def hidden(detail: ManagementApiClient.PolicyDetailInfo): JavaList[String] =
+    if (detail == null) new ArrayList[String]() else detail.hiddenColumns()
+
   private[spark] def subjects(detail: ManagementApiClient.PolicyDetailInfo): JavaList[String] =
     if (detail == null) new ArrayList[String]() else detail.subjects()
 
@@ -80,7 +84,7 @@ private[spark] case class SetRowFilterCommand(
     val detail = client.getPolicy(catalog, database, table)
     client.putPolicy(catalog, database, table, PolicySqlCommands.baseVersion(detail),
       PolicySqlCommands.enabled(detail), rowFilter, PolicySqlCommands.maskUpserts(detail),
-      PolicySqlCommands.exempt(detail), subjects)
+      PolicySqlCommands.hidden(detail), PolicySqlCommands.exempt(detail), subjects)
     Seq.empty
   }
 }
@@ -98,7 +102,8 @@ private[spark] case class DropRowFilterCommand(
       client.getPolicy(catalog, database, table), catalog, database, table, "DROP ROW FILTER")
     client.putPolicy(catalog, database, table, PolicySqlCommands.baseVersion(detail),
       PolicySqlCommands.enabled(detail), null, PolicySqlCommands.maskUpserts(detail),
-      PolicySqlCommands.exempt(detail), PolicySqlCommands.subjects(detail))
+      PolicySqlCommands.hidden(detail), PolicySqlCommands.exempt(detail),
+      PolicySqlCommands.subjects(detail))
     Seq.empty
   }
 }
@@ -123,7 +128,7 @@ private[spark] case class SetColumnMaskCommand(
     masks.add(new ManagementApiClient.MaskUpsertInfo(column, mask, allowNullOnRequired))
     client.putPolicy(catalog, database, table, PolicySqlCommands.baseVersion(detail),
       PolicySqlCommands.enabled(detail), if (detail == null) null else detail.rowFilter(),
-      masks, PolicySqlCommands.exempt(detail), subjects)
+      masks, PolicySqlCommands.hidden(detail), PolicySqlCommands.exempt(detail), subjects)
     Seq.empty
   }
 }
@@ -149,7 +154,8 @@ private[spark] case class DropColumnMaskCommand(
     }
     client.putPolicy(catalog, database, table, PolicySqlCommands.baseVersion(detail),
       PolicySqlCommands.enabled(detail), detail.rowFilter(), masks,
-      PolicySqlCommands.exempt(detail), PolicySqlCommands.subjects(detail))
+      PolicySqlCommands.hidden(detail), PolicySqlCommands.exempt(detail),
+      PolicySqlCommands.subjects(detail))
     Seq.empty
   }
 }
@@ -169,7 +175,7 @@ private[spark] case class SetPolicySubjectsCommand(
       client.getPolicy(catalog, database, table), catalog, database, table, "SET POLICY FOR")
     client.putPolicy(catalog, database, table, PolicySqlCommands.baseVersion(detail),
       PolicySqlCommands.enabled(detail), detail.rowFilter(), PolicySqlCommands.maskUpserts(detail),
-      PolicySqlCommands.exempt(detail), subjects)
+      PolicySqlCommands.hidden(detail), PolicySqlCommands.exempt(detail), subjects)
     Seq.empty
   }
 }

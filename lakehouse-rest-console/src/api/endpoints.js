@@ -240,6 +240,24 @@ export const ENDPOINTS = {
   lineageTables: { method: 'GET', path: '/api/management/v1/lineage/tables' },
   lineageColumns: { method: 'GET', path: '/api/management/v1/lineage/columns' },
   lineageColumnEdges: { method: 'GET', path: '/api/management/v1/lineage/column-edges' },
+
+  // ------------------------------------------------------------------ 管理 API：数据策略（行过滤 / 列脱敏）
+  // 本工程自己的资源（`DataPolicyController`）：一张表最多一条策略，按三段名寻址。
+  // 引擎侧的 Spark 扩展与 SQL 语句（§13）读写的是同一个对象，这里只是第三个入口。
+  //
+  // **PUT 是整份替换**：行过滤、mask 列表、豁免名单、主体白名单以提交为准——
+  // 「这次少了一列 mask」= 删掉那条 mask，不是「不动它」。新建（表上还没有策略）时
+  // 不能带 baseVersion；更新必须带当前版本，不匹配回 409（乐观并发，不自动重试）。
+  getTablePolicy: { method: 'GET', path: '/api/management/v1/policies/tables/{catalogName}/{databaseName}/{tableName}' },
+  updateTablePolicy: { method: 'PUT', path: '/api/management/v1/policies/tables/{catalogName}/{databaseName}/{tableName}' },
+  deleteTablePolicy: { method: 'DELETE', path: '/api/management/v1/policies/tables/{catalogName}/{databaseName}/{tableName}' },
+  // 策略总览（mockup 画面 1）：跨表列表。判权在控制器——带 catalog 过滤要 CATALOG:DESCRIBE，
+  // 全 catalog 总览要服务管理员；`query` 里走 `catalog` / `refTable` / 分页。
+  listPolicies: { method: 'GET', path: '/api/management/v1/policies' },
+  // 主体视角试算（mockup 画面 4）：按请求体里的 principal（不是当前调用者）判定
+  // 策略四态并用预览求值链读一页数据。判权 TABLE:ALTER——试算结果本身就是策略内容。
+  // 只读、不落库：唯一副作用是预览自身的 TABLE_PREVIEWED 审计（操作者本人）。
+  dryRunTablePolicy: { method: 'POST', path: '/api/management/v1/policies/tables/{catalogName}/{databaseName}/{tableName}/dry-run' },
 }
 
 /** 端点名 → `METHOD path`，供校验脚本与调试输出复用。 */

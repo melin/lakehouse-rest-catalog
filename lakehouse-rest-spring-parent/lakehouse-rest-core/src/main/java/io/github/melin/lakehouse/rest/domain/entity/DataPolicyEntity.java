@@ -116,6 +116,24 @@ public class DataPolicyEntity extends AuditedEntity {
     private String subjectsJson;
 
     /**
+     * 整列不可见清单（P3，设计 §5.8）：清单内的列对非豁免主体<b>整个不可见</b>——
+     * {@code SELECT *} 只返回可读列，显式引用直接失败（引擎侧
+     * {@code PolicyHiddenColumnsRule} 强制；预览路径裁掉输出并拒绝引用它的条件）。
+     *
+     * <p>与 mask 的分工：mask 改列值（列还在），hidden 连列都不给——脱敏 ≠ 不可见，
+     * 这条清单补上的正是 §5.8 说的「COLUMN:SELECT 只存不判」欠的那一半执行点。
+     * SQL 管理语句（§13）不覆盖它：GET→PUT 往返会把读到的清单原样带回
+     * （客户端协议层负责），只有 REST / 控制台能改。
+     *
+     * <p>可空 / 空 = 全部列可见。行过滤<b>允许</b>引用清单内的列（治理员按密级列
+     * 过滤、用户看不到该列，是这套能力的标准用法）；mask 与 hidden 同列互斥
+     * （都改同一列的可见性，语义上说不清谁生效，建策略时拒绝）。
+     */
+    @Column(name = "hidden_json", length = 65535,
+            comment = "整列不可见清单（JSON 字符串数组；空 = 全部列可见；P3）")
+    private String hiddenJson;
+
+    /**
      * 策略开关：{@code false} = 这套策略暂停执行，但定义保留。
      *
      * <p>「停用」只在控制台提供，SQL 侧没有对应语句（§13.2 的清单只有物理删除）——

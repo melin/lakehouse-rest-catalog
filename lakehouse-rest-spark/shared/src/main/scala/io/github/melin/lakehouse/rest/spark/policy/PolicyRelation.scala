@@ -48,6 +48,10 @@ import org.apache.spark.sql.catalyst.plans.logical.{LogicalPlan, UnaryNode}
  * @param policyVersion 策略版本（下发的 etag），日志与排障用
  * @param rowFilter     行过滤 AST；没配行过滤时为 None
  * @param masks         列脱敏绑定：列名 → mask 节点（{@code {"fn":...}} 或 {@code {"expr":...}}）
+ * @param hiddenColumns 整列不可见清单（P3，§5.8）：列名列表；空 = 无整列不可见。
+ *                      强制由 [[PolicyHiddenColumnsRule]] 完成（星号裁剪 + 显式引用失败 +
+ *                      兜底裁剪），本节点只携带数据——列名在这里、exprId 要到 child.output
+ *                      上找，规则做的事
  * @param anchors       全量输出属性，声明为本节点的 expressions——优化器引用统计的锚点，
  *                      防止裁剪钻进本节点之下（见类注释）；不参与任何执行语义
  */
@@ -58,6 +62,7 @@ case class PolicyRelation(
     policyVersion: Long,
     rowFilter: Option[JMap[String, _]],
     masks: Seq[PolicyMask],
+    hiddenColumns: Seq[String],
     anchors: Seq[Expression]
 ) extends UnaryNode {
 

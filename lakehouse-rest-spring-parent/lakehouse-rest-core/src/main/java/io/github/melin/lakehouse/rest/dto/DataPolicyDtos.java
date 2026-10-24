@@ -35,7 +35,8 @@ public final class DataPolicyDtos {
      * 没带 {@code FOR} 子句的语句必须把上一次读到的名单原样带回——PUT 是整份替换。
      */
     public record PolicyUpsertRequest(Integer baseVersion, Boolean enabled, Object rowFilter,
-                                      List<MaskUpsert> masks, List<String> exemptPrincipals,
+                                      List<MaskUpsert> masks, List<String> hiddenColumns,
+                                      List<String> exemptPrincipals,
                                       List<String> subjects, String enforcedScope) {
     }
 
@@ -49,13 +50,22 @@ public final class DataPolicyDtos {
     /** 一张表的策略详情。没配过策略时端点回 200 + {@code null} 语义见控制器。 */
     public record PolicyDetail(String table, boolean enabled, Map<String, Object> rowFilter,
                                String rowFilterSql, List<MaskEntry> masks,
+                               List<String> hiddenColumns,
                                List<String> exemptPrincipals, List<String> subjects,
                                String enforcedScope, int version,
                                String createdBy, Long createdAt, String updatedBy, Long updatedAt) {
     }
 
-    /** 总览页的一行摘要（不含表达式内容——列表页不需要，也不该把字面量平铺一屏）。 */
+    /**
+     * 总览页的一行摘要。列表页带条件文本（{@code rowFilterSql}）与脱敏列名
+     * （{@code maskColumns}）：总览的判权与详情一致（{@code TABLE:ALTER} /
+     * 全 catalog 要服务管理员），能看到列表的人本来就能看详情，
+     * 把「条件是什么」平铺成 chip 才能让治理员不点进每一张表排查——
+     * 悬空策略（引用列已删）尤其要一眼可见。
+     */
     public record PolicySummary(String table, boolean enabled, boolean hasRowFilter,
+                                String rowFilterSql, List<String> maskColumns,
+                                List<String> hiddenColumns,
                                 int maskedColumns, int exemptCount, int version,
                                 String updatedBy, Long updatedAt) {
     }
@@ -80,10 +90,33 @@ public final class DataPolicyDtos {
      */
     public record ResolvedPolicy(String table, String status, Integer version,
                                  Map<String, Object> rowFilter, String rowFilterSql,
-                                 List<MaskBinding> masks, boolean exempted, String enforcedScope) {
+                                 List<MaskBinding> masks, List<String> hiddenColumns,
+                                 boolean exempted, String enforcedScope) {
     }
 
     /** 批量解析的响应。{@code principal} 回显的是服务端认定的主体名（排障用）。 */
     public record ResolveResult(String principal, List<ResolvedPolicy> policies) {
+    }
+
+    // ------------------------------------------------------------------ 主体试算（dry-run）
+
+    /**
+     * 主体试算的请求体（控制台「试算」页，设计 mockup 画面 4）：{@code principal}
+     * 是<b>被模拟</b>的主体名（{@code user:}/{@code group:}/{@code role:} 前缀），
+     * 策略按它折叠 {@code $principal}、判定豁免与白名单；{@code preview} 是普通
+     * 预览请求（列选择、过滤、游标），为空走全默认。
+     */
+    public record DryRunRequest(String principal, PreviewDtos.PreviewRequest preview) {
+    }
+
+    /**
+     * 主体试算的响应。{@code status} 语义与 {@link ResolvedPolicy} 一致（四态：
+     * NONE / DISABLED / EXEMPT / FOUND），命中时 {@code preview} 已按该主体的
+     * 策略求值——行被过滤、敏感列被 mask。试算只读、不落库，除预览自身的
+     * {@code TABLE_PREVIEWED} 审计外不产生别的写路径。
+     */
+    public record DryRunResult(String table, String status, Integer version,
+                               String rowFilterSql, String principal,
+                               PreviewDtos.PreviewResponse preview) {
     }
 }

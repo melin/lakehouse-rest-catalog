@@ -606,6 +606,7 @@ public final class ManagementApiClient {
             }
             result.add(new ResolvedPolicyInfo(text(node, "table"), text(node, "status"),
                     node.path("version").asLong(), asMap(rowFilter), masks,
+                    strings(node.path("hiddenColumns")),
                     node.path("exempted").asBoolean(false), text(node, "enforcedScope")));
         }
         return result;
@@ -658,6 +659,7 @@ public final class ManagementApiClient {
                                       Integer baseVersion, Boolean enabled,
                                       Map<String, Object> rowFilter,
                                       List<MaskUpsertInfo> masks,
+                                      List<String> hiddenColumns,
                                       List<String> exemptPrincipals, List<String> subjects) {
         String path = policyPath(catalog, database, table);
         ObjectNode body = mapper.createObjectNode();
@@ -676,6 +678,9 @@ public final class ManagementApiClient {
             if (mask.allowNullOnRequired() != null) {
                 node.put("allowNullOnRequired", mask.allowNullOnRequired());
             }
+        }
+        if (hiddenColumns != null) {
+            body.putArray("hiddenColumns").addAll((ArrayNode) mapper.valueToTree(hiddenColumns));
         }
         if (exemptPrincipals != null) {
             body.putArray("exemptPrincipals").addAll((ArrayNode) mapper.valueToTree(exemptPrincipals));
@@ -702,6 +707,7 @@ public final class ManagementApiClient {
             }
             return new PolicyDetailInfo(text(node, "table"), node.path("enabled").asBoolean(true),
                     asMap(node.get("rowFilter")), text(node, "rowFilterSql"), masks,
+                    strings(node.path("hiddenColumns")),
                     strings(node.path("exemptPrincipals")), strings(node.path("subjects")),
                     text(node, "enforcedScope"), node.path("version").asInt(),
                     text(node, "createdBy"), node.path("createdAt").asLong(),
@@ -1320,17 +1326,20 @@ public final class ManagementApiClient {
         /** 行过滤 AST；NONE / EXEMPT 或没配行过滤时为 {@code null}。 */
         private final Map<String, Object> rowFilter;
         private final List<MaskBindingInfo> masks;
+        /** 整列不可见清单（P3）：FOUND 时非空；NONE / EXEMPT 恒为空。 */
+        private final List<String> hiddenColumns;
         private final boolean exempted;
         private final String enforcedScope;
 
         public ResolvedPolicyInfo(String table, String status, long version,
                                   Map<String, Object> rowFilter, List<MaskBindingInfo> masks,
-                                  boolean exempted, String enforcedScope) {
+                                  List<String> hiddenColumns, boolean exempted, String enforcedScope) {
             this.table = table;
             this.status = status;
             this.version = version;
             this.rowFilter = rowFilter;
             this.masks = masks == null ? List.of() : List.copyOf(masks);
+            this.hiddenColumns = hiddenColumns == null ? List.of() : List.copyOf(hiddenColumns);
             this.exempted = exempted;
             this.enforcedScope = enforcedScope;
         }
@@ -1355,6 +1364,10 @@ public final class ManagementApiClient {
             return masks;
         }
 
+        public List<String> hiddenColumns() {
+            return hiddenColumns;
+        }
+
         public boolean exempted() {
             return exempted;
         }
@@ -1371,13 +1384,15 @@ public final class ManagementApiClient {
                     && version == other.version
                     && Objects.equals(rowFilter, other.rowFilter)
                     && Objects.equals(masks, other.masks)
+                    && Objects.equals(hiddenColumns, other.hiddenColumns)
                     && exempted == other.exempted
                     && Objects.equals(enforcedScope, other.enforcedScope);
         }
 
         @Override
         public int hashCode() {
-            return Objects.hash(table, status, version, rowFilter, masks, exempted, enforcedScope);
+            return Objects.hash(table, status, version, rowFilter, masks, hiddenColumns,
+                exempted, enforcedScope);
         }
 
         @Override
@@ -1463,6 +1478,8 @@ public final class ManagementApiClient {
         private final Map<String, Object> rowFilter;
         private final String rowFilterSql;
         private final List<MaskEntryInfo> masks;
+        /** 整列不可见清单（P3）；PUT 整份替换语义，GET→PUT 往返必须原样带回。 */
+        private final List<String> hiddenColumns;
         private final List<String> exemptPrincipals;
         private final List<String> subjects;
         private final String enforcedScope;
@@ -1474,14 +1491,15 @@ public final class ManagementApiClient {
 
         public PolicyDetailInfo(String table, boolean enabled, Map<String, Object> rowFilter,
                                 String rowFilterSql, List<MaskEntryInfo> masks,
-                                List<String> exemptPrincipals, List<String> subjects,
-                                String enforcedScope, int version, String createdBy,
-                                long createdAt, String updatedBy, long updatedAt) {
+                                List<String> hiddenColumns, List<String> exemptPrincipals,
+                                List<String> subjects, String enforcedScope, int version,
+                                String createdBy, long createdAt, String updatedBy, long updatedAt) {
             this.table = table;
             this.enabled = enabled;
             this.rowFilter = rowFilter;
             this.rowFilterSql = rowFilterSql;
             this.masks = masks;
+            this.hiddenColumns = hiddenColumns == null ? List.of() : List.copyOf(hiddenColumns);
             this.exemptPrincipals = exemptPrincipals;
             this.subjects = subjects;
             this.enforcedScope = enforcedScope;
@@ -1490,6 +1508,10 @@ public final class ManagementApiClient {
             this.createdAt = createdAt;
             this.updatedBy = updatedBy;
             this.updatedAt = updatedAt;
+        }
+
+        public List<String> hiddenColumns() {
+            return hiddenColumns;
         }
 
         public String table() {

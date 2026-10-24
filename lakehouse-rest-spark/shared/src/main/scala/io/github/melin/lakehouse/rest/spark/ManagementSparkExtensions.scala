@@ -1,7 +1,7 @@
 package io.github.melin.lakehouse.rest.spark
 
 import io.github.melin.lakehouse.rest.spark.client.ManagementApiClient
-import io.github.melin.lakehouse.rest.spark.policy.{PolicyEnforcementStrategy, PolicyInjectionRule}
+import io.github.melin.lakehouse.rest.spark.policy.{PolicyEnforcementStrategy, PolicyHiddenColumnsRule, PolicyInjectionRule}
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.SparkSessionExtensions
 
@@ -44,7 +44,10 @@ class ManagementSparkExtensions extends (SparkSessionExtensions => Unit) {
     // 两条规则的分工：注入规则把带策略的表包进 PolicyRelation（不透明的逻辑节点，
     // 优化器不认识它 → 不会把 mask 吃掉）；planner strategy 在物理规划期才把它
     // 展开成 Filter + Project，展开形状由我们完全控制。
+    // 第三条（P3 §5.8）跑在注入之后：整列不可见的星号裁剪与兜底裁剪，需要先有
+    // PolicyRelation 才有得裁
     extensions.injectPostHocResolutionRule { session => new PolicyInjectionRule(session) }
+    extensions.injectPostHocResolutionRule { session => new PolicyHiddenColumnsRule(session) }
     extensions.injectPlannerStrategy { session => new PolicyEnforcementStrategy }
   }
 }
@@ -93,7 +96,9 @@ object PaimonRestManagement {
   private def installAll(extensions: SparkSessionExtensions): Unit = {
     extensions.injectParser { (session, parser) => new LakehouseRestSqlParser(parser, session) }
     // 行过滤 / 列脱敏（§5.4）：默认关闭，规则在 enforced=false 时是纯 no-op，见 apply
+    // 第三条（P3 §5.8）：整列不可见，跑在注入之后（注册顺序即执行顺序）
     extensions.injectPostHocResolutionRule { session => new PolicyInjectionRule(session) }
+    extensions.injectPostHocResolutionRule { session => new PolicyHiddenColumnsRule(session) }
     extensions.injectPlannerStrategy { _ => new PolicyEnforcementStrategy }
   }
 

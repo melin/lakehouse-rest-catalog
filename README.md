@@ -177,7 +177,7 @@ k8s 资源名的 `paimon-` 前缀**故意不改**：它不是产品名，是历�
 | [`table-optimization.md`](docs/table-optimization.md) | 要改表存储优化或排查优化任务——三个动作的语义、批次与并发两道闸门、k8s 提交与状态跟踪、控制台两处页面 |
 | [`lineage-design.md`](docs/lineage-design.md) | 要做 Spark SQL 血缘（表级 / 列级）或评审方案——**三层都已实现**（服务端：三张表 + 5 个端点；控制台：表详情页「血缘」页签；引擎侧：Spark 3.5/4.1 抽取器与上报器；端到端 `scripts/e2e-lineage.sh` 只在 3.5 上能跑，4.1 受 Paimon bundle 限制）：为什么必须在引擎侧抽而不是服务端重解析（五个错法）、为什么是 `analyzed` 而不是 `optimized`、参考实现 `kyuubi-spark-lineage` 的机制拆解（属性集下推、16 行节点规则、`__count__` 等三个占位、表名归一化）与「抄了什么 / 改了 10 处」、归一化模型（`~` 保留前缀、五种列的 `kind`）、上报契约与异步丢弃、run（事件）与边（状态）两张语义不同的表、图查询口径与环、控制台展现（跳数即层号的分层布局、单张 Canvas + 三档 LOD、折叠与按需展开、列级聚合与虚拟列表、性能预算）、前端落地视角（§9.11–9.14：组件清单与 0 新增依赖、表详情页「血缘」页签集成、数据流；效果图 `docs/lineage-mockup.html`）、配置与验收；**只做 Spark，Flink 留位** |
 | [`table-data-preview-design.md`](docs/table-data-preview-design.md) | 要在表详情页加「数据预览」或评审该方案——**两种格式都已实现**（里程碑 M1 / M2 done；M3 / M4 待做）：为什么不能靠外部引擎、四种读法选型（格式自带 reader / `parquet-avro` 直读 / 嵌入式 DuckDB / 复用优化任务执行器——前三者各有「主键表读出幽灵行」之类的否决理由）、`POST /api/console/v1/tables/{tableId}/preview` 契约、三段式过滤（分区 → 裁文件 → 筛行）、**分区默认锁最新**（有序性判定 / 按文件数预算的级联收敛 / 哈希分区不编「最新」/ 空分区回退 / `partition` 与 `filters` 双通道）、无状态游标、采样与限额的口径、TABLE 级 `SELECT` 判权与 `table.previewed` 审计；配套效果图 [`table-data-preview-mockup.html`](docs/table-data-preview-mockup.html)（右上角可切换四种演示状态） |
-| [`row-filter-column-mask-design.md`](docs/row-filter-column-mask-design.md) | 要做**行过滤 / 列脱敏**（类似 Databricks Unity Catalog 的 row filter 与 column mask）或评审该方案——**服务端 P0、Spark 引擎侧与 AST 求值器均已实现**（`DataPolicyApiTests` / `DataPolicyDisabledTests` / `PolicySparkTests`（3.5.9 与 4.1.2 双版本全绿，版本差异的三个实测结论见设计稿 §9.1.1）/ `PolicyExpressionEvaluatorTests` / `PolicyPreviewTests`）；**元数据打码已实现**（§7.3：带 mask 时快照 `statistics` 置空、预览分区回显对被脱敏分区列打码、catalog 级文件下载补上收口）；**§13 的七条 SQL 管理语句已实现**（`PolicySqlTests`，3.5 / 4.1 同一份用例；保留字加了 `ROW` / `FILTER` / `MASK` / `POLICY`，参考文档与 `verify-spark-sql-doc.py` 同步）；**`$principal_roles` 已实现**（行过滤按调用者的 principal role 过滤，服务端折叠成字面量列表、引擎零改动）；**未实现**：控制台页面。设计内容：Spark 3.5 / 4.1 / 4.2 均无原生 API（三个版本的 `spark-catalyst` 实测 + SPARK-59726 指向 5.0）；为什么裸投影不安全、必须自定义逻辑节点；表达式白名单与 `$principal` 占位符；fail-closed 与 60 秒缓存；**预览按策略逐行求值**（行过滤读原值、同层 mask 不链式，用户条件落到被脱敏列指名拒绝）与文件下载 / 分区列举两条维持 403 的口子；「凭据下发后直读文件无法拦截」这条硬边界，三家生产实现的横向对照（Databricks / Kyuubi+Ranger / EMR+Lake Formation）与**强制等级 L0–L3**——结论是升级路径不是等 Spark 5.0，而是加网关或收掉凭据来源；**Spark SQL 管理语句的语法设计**（§13：`SET ROW FILTER` / `SET MASK` / `SHOW POLICY` 等 7 条，表达式走 `parseExpression` 按白名单转 AST，`DROP POLICY` 要会话级确认） |
+| [`row-filter-column-mask-design.md`](docs/row-filter-column-mask-design.md) | 要做**行过滤 / 列脱敏**（类似 Databricks Unity Catalog 的 row filter 与 column mask）或评审该方案——**服务端 P0、Spark 引擎侧与 AST 求值器均已实现**（`DataPolicyApiTests` / `DataPolicyDisabledTests` / `PolicySparkTests`（3.5.9 与 4.1.2 双版本全绿，版本差异的三个实测结论见设计稿 §9.1.1）/ `PolicyExpressionEvaluatorTests` / `PolicyPreviewTests`）；**元数据打码已实现**（§7.3：带 mask 时快照 `statistics` 置空、预览分区回显对被脱敏分区列打码、catalog 级文件下载补上收口）；**§13 的七条 SQL 管理语句已实现**（`PolicySqlTests`，3.5 / 4.1 同一份用例；保留字加了 `ROW` / `FILTER` / `MASK` / `POLICY`，参考文档与 `verify-spark-sql-doc.py` 同步）；**`$principal_roles` 已实现**（行过滤按调用者的 principal role 过滤，服务端折叠成字面量列表、引擎零改动）；**控制台「数据策略」页签已实现**（表详情新页签 + 结构化编辑器 `TablePolicyPanel`，保存即整份替换、409 不自动重试；verify-console 白名单同步）；**控制台三屏已实现**（数据保护总览页 `/policies`、新建策略向导 `/policies/new`——与页签共用 AST 编辑器 `src/utils/policyAst.js`、主体视角试算 `/policies/:c/:d/:t/dryrun`——dry-run 端点按被模拟主体判四态）。至此本设计无未实现项（P2 / P3 另行排期）。设计内容：Spark 3.5 / 4.1 / 4.2 均无原生 API（三个版本的 `spark-catalyst` 实测 + SPARK-59726 指向 5.0）；为什么裸投影不安全、必须自定义逻辑节点；表达式白名单与 `$principal` 占位符；fail-closed 与 60 秒缓存；**预览按策略逐行求值**（行过滤读原值、同层 mask 不链式，用户条件落到被脱敏列指名拒绝）与文件下载 / 分区列举两条维持 403 的口子；「凭据下发后直读文件无法拦截」这条硬边界，三家生产实现的横向对照（Databricks / Kyuubi+Ranger / EMR+Lake Formation）与**强制等级 L0–L3**——结论是升级路径不是等 Spark 5.0，而是加网关或收掉凭据来源；**Spark SQL 管理语句的语法设计**（§13：`SET ROW FILTER` / `SET MASK` / `SHOW POLICY` 等 7 条，表达式走 `parseExpression` 按白名单转 AST，`DROP POLICY` 要会话级确认） |
 
 ---
 
@@ -213,7 +213,7 @@ JAVA_HOME=/path/to/jdk-21 mvn -o -DskipTests install
 # 只要服务端可执行 jar：-am 会一并构建它依赖的 core / storage / 两个协议面
 JAVA_HOME=/path/to/jdk-21 mvn -o -DskipTests -pl :lakehouse-rest-server -am clean package
 
-# 运行全部测试（服务端 470 + Spark 171，共 641 个用例；Spark 侧有 1 个示例用例
+# 运行全部测试（服务端 473 + Spark 175，共 648 个用例；Spark 侧有 1 个示例用例
 # 在本地缺 spark.sql.extensions 时会失败，见第 7 节）。Flink 侧另有 12 个端到端用例，
 # 没给 e2e 地址时整体跳过，用 scripts/e2e-flink-sql.sh 跑真实服务端
 JAVA_HOME=/path/to/jdk-21 mvn test
@@ -836,7 +836,7 @@ JAVA_HOME=/path/to/jdk-21 mvn test
 测试连的是内存 H2（`test` profile，见 `src/test/resources/application-test.yml`），
 **不依赖本机是否有 MySQL**。
 
-服务端（468 个）：
+服务端（473 个）：
 
 | 测试类 | 覆盖 |
 | --- | --- |
@@ -874,17 +874,17 @@ JAVA_HOME=/path/to/jdk-21 mvn test
 | `PaimonRestServerApplicationTests` | 上下文加载 |
 | `ApiDocEndpointTests` | 接口文档页在**真容器**里（`RANDOM_PORT`，不是 MockMvc——`/doc.html` 是 UI jar 里 `META-INF/resources` 的静态文件，MockMvc 走不到那条链路，测了也是假绿）：`auth.enabled=true` 时 `/doc.html` 与 `/v3/api-docs` 匿名 200、三组（paimon / iceberg / management）各自取得到且非空、而 `/api/management/v1/**` 与 `/v1/**` 仍然 401——**文档公开不等于端点公开**；组名写错（`/v3/api-docs/no-such-group`）回 **404** 而不是 500 |
 | `AuditColumnGuardTests` | 审计列不被超长主体名撑破的两条写入路径：实体 `save` 经 `@PrePersist` / `@PreUpdate` 归一化（连绕过 `touch` 直接 `setUpdatedBy` 的调用点也拦）、批量更新只能由调用方传 `RequestContext.auditPrincipal()`（JPQL 不触发实体回调——Iceberg 每次 commit 都曾以 `Data too long for column 'updated_by'` 失败）；`null` 保持 `null`，不填 `anonymous` |
-| `DataPolicyApiTests` | 行过滤 / 列脱敏策略（`/api/management/v1/policies`，见 `docs/row-filter-column-mask-design.md`）：PUT 整份替换与乐观锁（首建 version 1、缺 `baseVersion` / 陈旧 409、整份替换语义——这次少提交的 mask 就是被删掉的）、表达式 fail-closed 的 HTTP 面（白名单外函数 / 非布尔行过滤 / 未知列 / 嵌套字段 / LIKE 模式非字面量 / mask 类型不匹配 / 标准集外 mask / 字符串 mask 落数值列 / hash 算法不在白名单 / 非空列置空未确认——每条都 400 且指认形状，校验失败**什么都不落**）、批量下发个性化（`$principal` 折叠、豁免 EXEMPT、NONE / DISABLED 与 FOUND 如实分开、version 即 etag）、读路径收口（受保护表分区 403 且说明原因、文件下载 403——表级与 catalog 级两扇门都锁、带 mask 时快照 `statistics` 置空而行数聚合照常、删策略后同步放开；预览自 P1 起改为按策略求值，断言改为「不再被策略整体拒绝」）、表生命周期联动（走协议面真改名 / 真删表：策略跟随并递增版本、删表级联删策略）、`policy.changed` 审计事件落库 |
+| `DataPolicyApiTests` | 行过滤 / 列脱敏策略（`/api/management/v1/policies`，见 `docs/row-filter-column-mask-design.md`）：PUT 整份替换与乐观锁（首建 version 1、缺 `baseVersion` / 陈旧 409、整份替换语义——这次少提交的 mask 就是被删掉的）、表达式 fail-closed 的 HTTP 面（白名单外函数 / 非布尔行过滤 / 未知列 / 嵌套字段 / LIKE 模式非字面量 / mask 类型不匹配 / 标准集外 mask / 字符串 mask 落数值列 / hash 算法不在白名单 / 非空列置空未确认——每条都 400 且指认形状，校验失败**什么都不落**）、批量下发个性化（`$principal` 折叠、豁免 EXEMPT、NONE / DISABLED 与 FOUND 如实分开、version 即 etag）、读路径收口（受保护表分区 403 且说明原因、文件下载 403——表级与 catalog 级两扇门都锁、带 mask 时快照 `statistics` 置空而行数聚合照常、删策略后同步放开；预览自 P1 起改为按策略求值，断言改为「不再被策略整体拒绝」）、表生命周期联动（走协议面真改名 / 真删表：策略跟随并递增版本、删表级联删策略）、主体视角试算（按被模拟主体判 FOUND 折叠 / EXEMPT / NONE / DISABLED 四态与端点 400 / 404）、`policy.changed` 审计事件落库）、`hiddenColumns`（P3，设计 §5.8）：校验四连拒（不存在列 / 嵌套写法 / 空 / 与 mask 同列互斥）+ 建策略后详情 / 总览 / resolve / 试算四路透传 + 空清单整份替换清空 |
 | `DataPolicyDisabledTests` | 数据策略默认关闭（`lakehouse.rest.policy.enabled` 缺省 false）时**只锁写入口、读照常**：PUT / DELETE 403 且报错写明配置项，详情与 resolve 照常可达（没策略 NONE）——「功能没开」与「没建策略」保持可区分（§5.4 的失败模型） |
 | `PolicyExpressionEvaluatorTests` | 服务端 AST 求值器的单元行为（设计 §6 P1，与 Spark 侧 `PolicyExpressionBuilder` 的语义对齐锚，每条期望值都按 Catalyst 语义写）：数值跨类型比较升位（INT/LONG/DOUBLE/DECIMAL）、日期列对字符串字面量按列类型解释、SQL 三值逻辑（NULL 是未知：`x = 1` 与 `x <> 1` 都未知、AND/OR/NOT 三值表、顶层 `coalesce(expr, false)` 把未知折成不可见）、LIKE 的 `%`/`_` 与反斜杠转义、IN 的 NULL 语义、`substr` 的 Spark 边角（0 起点、负起点从串尾数、越过串头、非正长度）、concat 的 NULL 传播与 castToString、`regexp_replace` 全量替换、`date_trunc` 按输入类型返回同类结果（DATE 进 DATE 出、week 截周一、quarter 对齐）、`to_date` 解析失败返回 NULL 不抛错、`md5`/`sha2` 小写十六进制、`case_when` 无 else 全不命中得 NULL、cast 放宽、八个标准 mask 逐条（`mask_alphanum` 逐字符映射且 Unicode 原样保留、`show_first_n`/`show_last_n` 的 len&lt;n 边角、`truncate_to_year`/`month` 保持 DATE/TIMESTAMP 类型、hash 与引擎同值）、逃生口表达式（mask 参数引用其它列读原值）、未折叠的 `$principal` fail-closed、列收集遍历整棵树 |
-| `PolicyPreviewTests` | 预览 × 数据策略的**真实读路径**（§6 P1：本地 parquet 表真写真读，不弹桩）：行过滤先裁行（`region='CN'` 两行可见、US 行挡下）且**读原值**；三个 mask 同层生效（phone 全数字逐字符替换成 `n`、DATE 列 `truncate_to_year` 保持 LocalDate 类型、name 的 mask 引用 region 走 else 分支——单元格级语义）；列形状不变（名字/顺序/个数）；warnings 说明「读出 3 行、返回 2 行」；对照组 policy=null（没策略或豁免）读到原值——两条「放行」在执行上没有区别；策略引用的列不在请求投影里时**补读但裁掉**（只请求 id+phone，region 读出来判完不返回）；用户过滤条件落到被脱敏列指名拒绝 400（§5.7 的语义对不上那半）；策略引用已不存在的列 fail-closed 而不是静默跳过；**分区回显打码**（§7.3：region 既是分区列又是脱敏目标时，分区 `resolved`/`label` 的值打码为占位符、warnings 说明，分区裁剪照常；对照组——分区列不在脱敏目标里时回显保持原值） |
+| `PolicyPreviewTests` | 预览 × 数据策略的**真实读路径**（§6 P1：本地 parquet 表真写真读，不弹桩）：行过滤先裁行（`region='CN'` 两行可见、US 行挡下）且**读原值**；三个 mask 同层生效（phone 全数字逐字符替换成 `n`、DATE 列 `truncate_to_year` 保持 LocalDate 类型、name 的 mask 引用 region 走 else 分支——单元格级语义）；列形状不变（名字/顺序/个数）；warnings 说明「读出 3 行、返回 2 行」；对照组 policy=null（没策略或豁免）读到原值——两条「放行」在执行上没有区别；策略引用的列不在请求投影里时**补读但裁掉**（只请求 id+phone，region 读出来判完不返回）；用户过滤条件落到被脱敏列指名拒绝 400（§5.7 的语义对不上那半）；策略引用已不存在的列 fail-closed 而不是静默跳过；**分区回显打码**（§7.3：region 既是分区列又是脱敏目标时，分区 `resolved`/`label` 的值打码为占位符、warnings 说明，分区裁剪照常；对照组——分区列不在脱敏目标里时回显保持原值）；**整列不可见**（P3 §5.8：默认投影裁掉 hidden 列且 warnings 说明、显式勾选 400、过滤条件引用 400） |
 
-Spark 子模块（171 个，其中 6 个类共 38 个用例需要显式指向服务端）：
+Spark 子模块（175 个，其中 6 个类共 38 个用例需要显式指向服务端）：
 
 > `example/` 下的 `PaimonS3Test` **当前跑不过**，与 S3 环境无关：它在加载 Spark
 > catalog 时被 Paimon 的 `requiredSparkConfsCheck` 挡下（会话里没有
 > `spark.sql.extensions`），报错发生在任何 REST 调用之前。因此 `mvn test` 会停在
-> Spark 模块的 BUILD FAILURE，而服务端模块（468 个）是绿的。
+> Spark 模块的 BUILD FAILURE，而服务端模块（473 个）是绿的。
 
 | 测试类 | 覆盖 |
 | --- | --- |
@@ -901,7 +901,7 @@ Spark 子模块（171 个，其中 6 个类共 38 个用例需要显式指向服
 | `PaimonRestCatalogTest` | 对象存储仓库的凭据链路：建表后服务端返回的 `path` 由 warehouse 模板展开、`INSERT` 写入分区主键表并逐列读回（默认跳过，见下）。它同时压住「类路径缺 `s3://` FileIO 实现」与「凭据没按引擎认的键名下发」这两种失败 |
 | `PaimonRestManagementTests` | 配置解析的容错 |
 | `PaimonS3Test` | `example` 包里的示例链路。**当前失败**，失败点在 Spark 会话的配置检查（缺 `spark.sql.extensions`），不在它要验的逻辑上 |
-| `PolicySparkTests` | 数据策略的引擎侧注入（3.5 / 4.1 跑同一份用例，独立桩服务端 + Iceberg hadoop catalog 真表，见 `docs/row-filter-column-mask-design.md` §10.2）：`SELECT *` 被行过滤且列脱敏后 **schema 透明**（列名 / 类型 / 顺序不变）；行过滤读**原值**、用户谓词比较的是脱敏后的值（§5.7 语义表）；策略穿过子查询 / CTE / 视图 / 自连接；**优化器既不能移除也不能绕过**（列裁剪被 `anchors` 挡住、谓词推不进 mask 之下）；DML 目标豁免——UPDATE / DELETE / MERGE 的目标读取不套策略且**脱敏值绝不被写回表**（Spark 4.0 起 UPDATE 在分析期已是 `RowLevelWrite` 节点，测试里有数据完整性断言）；服务端不可达时 fail-closed（可配开关改 fail-open）；豁免主体（EXEMPT）读原值、无策略的表不做任何包裹、`lakehouse.rest.policy.enforced` 缺省 false（默认关闭） |
+| `PolicySparkTests` | 数据策略的引擎侧注入（3.5 / 4.1 跑同一份用例，独立桩服务端 + Iceberg hadoop catalog 真表，见 `docs/row-filter-column-mask-design.md` §10.2）：`SELECT *` 被行过滤且列脱敏后 **schema 透明**（列名 / 类型 / 顺序不变）；行过滤读**原值**、用户谓词比较的是脱敏后的值（§5.7 语义表）；策略穿过子查询 / CTE / 视图 / 自连接；**优化器既不能移除也不能绕过**（列裁剪被 `anchors` 挡住、谓词推不进 mask 之下）；DML 目标豁免——UPDATE / DELETE / MERGE 的目标读取不套策略且**脱敏值绝不被写回表**（Spark 4.0 起 UPDATE 在分析期已是 `RowLevelWrite` 节点，测试里有数据完整性断言）；服务端不可达时 fail-closed（可配开关改 fail-open）；豁免主体（EXEMPT）读原值、无策略的表不做任何包裹、`lakehouse.rest.policy.enforced` 缺省 false（默认关闭）；P3 两项——`EXPLAIN EXTENDED` 物理计划的策略字面量被 `PolicyOpaque` 打码（含 `policy_expr`、不含字面量与 mask 函数名，执行结果不变）与 `hiddenColumns`（星号只返回可读列、显式引用指名失败、DML 不受阻、EXEMPT 主体全列可见） |
 
 ### 端到端验收脚本
 

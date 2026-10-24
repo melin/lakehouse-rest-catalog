@@ -100,6 +100,34 @@ const routes = [
     meta: { title: '权限管理', icon: 'Lock', group: '治理（Management API）', nav: true },
   },
   {
+    // 数据保护总览（mockup 画面 1）：跨表的行过滤 / 列脱敏策略列表。
+    // 与「权限管理」并列在治理分组：权限管「谁能读」，数据保护管「读到什么」——
+    // 两者是同一层治理决策，不该藏进表详情（表详情的「数据策略」页签管单表编辑）。
+    path: '/policies',
+    name: 'policies',
+    component: () => import('@/views/PoliciesView.vue'),
+    meta: { title: '数据保护', icon: 'Key', group: '治理（Management API）', nav: true },
+  },
+  {
+    // 新建策略向导（mockup 画面 2）：跨表入口——目标表三段选择 + 与表详情页签
+    // 同一份结构化编辑器（逻辑共用 utils/policyAst.js）。表上已有策略时不给建
+    // （一张表一条，整份替换会顶掉现有策略），引导去表详情编辑。
+    // 列表的下钻目标不进侧边菜单，与 /catalogs/:catalogName 同一取舍。
+    path: '/policies/new',
+    name: 'policyWizard',
+    component: () => import('@/views/PolicyWizardView.vue'),
+    meta: { title: '新建数据策略', group: '治理（Management API）', parent: 'policies' },
+  },
+  {
+    // 主体视角试算（mockup 画面 4）：以指定主体（不是当前登录者）判定策略四态
+    // 并用预览求值链读一页数据。挂在策略上下文（三段名在路径里），
+    // 从总览页的「试算」或表详情页签跳进来；同样是下钻目标，不进菜单。
+    path: '/policies/:catalog/:database/:table/dryrun',
+    name: 'policyDryRun',
+    component: () => import('@/views/PolicyDryRunView.vue'),
+    meta: { title: '主体试算', group: '治理（Management API）', parent: 'policies' },
+  },
+  {
     // 优化批次是跨表跨库的运维入口：策略配在表上（表详情的「存储优化」页签），
     // 而「哪些批次在跑、跑成什么样、失败的表怎么重试」只有一个地方看——这里。
     //

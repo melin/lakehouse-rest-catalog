@@ -59,7 +59,7 @@ private[spark] class PolicyFetcher(session: SparkSession) {
    * 在本类内部区分开，不必给缓存层加 Optional。
    */
   private val NoPolicy = new ResolvedPolicyInfo("", "NONE", 0L, null,
-    java.util.List.of(), false, null)
+    java.util.List.of(), java.util.List.of(), false, null)
 
   /**
    * 解析一批表的策略。

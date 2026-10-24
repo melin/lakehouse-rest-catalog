@@ -253,6 +253,22 @@ EXTENSION_ENDPOINTS = {
     ("GET", "/api/management/v1/lineage/tables"): "表详情页血缘图（表级上下游，一次一跳，只读）",
     ("GET", "/api/management/v1/lineage/columns"): "表详情页血缘图的列映射视图（按目标列分组，只读）",
     ("GET", "/api/management/v1/lineage/column-edges"): "血缘图列级开关的批量列边（节点集合由调用方给，只读）",
+    # 数据策略（本工程扩展，挂管理 API 基址）：行过滤 / 列脱敏 / 豁免名单 / 主体白名单，
+    # 一张表最多一条。服务端实现见 DataPolicyController；设计见
+    # docs/row-filter-column-mask-design.md §8.3。引擎侧（Spark 扩展与 §13 的 SQL 语句）
+    # 读写的是同一个对象，这里只是控制台这一个入口。GET 在表上没有策略时回 204。
+    # PUT 是整份替换并带 baseVersion 乐观锁（409 不自动重试）；DELETE 物理删除——
+    # SQL 侧 DROP POLICY 的 confirm-destructive 开关只约束 SQL 通道，REST 的确认由控制台自己做。
+    ("GET", "/api/management/v1/policies/tables/{catalogName}/{databaseName}/{tableName}"): "表详情页数据策略（读一条策略，无策略 204）",
+    ("PUT", "/api/management/v1/policies/tables/{catalogName}/{databaseName}/{tableName}"): "表详情页数据策略（整份替换，baseVersion 乐观锁）",
+    ("DELETE", "/api/management/v1/policies/tables/{catalogName}/{databaseName}/{tableName}"): "表详情页数据策略（删除整条策略，控制台二次确认）",
+    # 策略总览页（mockup 画面 1）：跨表列表，带 catalog 过滤 / refTable 反查 / 分页。
+    # 判权在控制器：带 catalog 过滤要 CATALOG:DESCRIBE，全 catalog 要服务管理员。
+    ("GET", "/api/management/v1/policies"): "数据保护总览页（跨表策略列表，条件平铺成 chip）",
+    # 主体视角试算页（mockup 画面 4）：按请求体 principal（非当前调用者）判定策略
+    # 四态并用预览求值链读一页数据。判权 TABLE:ALTER（试算结果本身就是策略内容）；
+    # 只读、不落库，唯一副作用是预览自身的 TABLE_PREVIEWED 审计（操作者本人）。
+    ("POST", "/api/management/v1/policies/tables/{catalogName}/{databaseName}/{tableName}/dry-run"): "主体视角试算页（以指定主体求值一页预览，四态回显）",
 }
 
 problems = []

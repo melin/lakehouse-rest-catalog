@@ -61,8 +61,10 @@ private[spark] class PolicyEnforcementStrategy extends SparkStrategy {
       maskByColumn.get(attr.name) match {
         case Some(maskAst) =>
           val maskExpr = PolicyExpressionBuilder.mask(maskAst, attr, attrs)
-          // 沿用原列的 name / exprId / qualifier：对上层完全透明
-          Alias(maskExpr, attr.name)(exprId = attr.exprId, qualifier = attr.qualifier)
+          // 沿用原列的 name / exprId / qualifier：对上层完全透明。
+          // mask 表达式包一层 PolicyOpaque：EXPLAIN EXTENDED 的物理计划只打印
+          // policy_expr(N literals masked)，字面量不外泄（§7.6 方案 a）
+          Alias(PolicyOpaque(maskExpr), attr.name)(exprId = attr.exprId, qualifier = attr.qualifier)
         case None =>
           attr
       }
@@ -73,7 +75,9 @@ private[spark] class PolicyEnforcementStrategy extends SparkStrategy {
     // V2ScanRelationPushDown 保证 scan 转换先行），绝不能直接 planLater 它
     val scan = planLater(policy.child)
     val filtered = filterExpr match {
-      case Some(expr) => org.apache.spark.sql.execution.FilterExec(expr, scan)
+      // 条件包 PolicyOpaque：行过滤的字面量（黑名单成员、别人的租户名……）不出现在
+      // EXPLAIN 的物理计划里（§7.6 方案 a；逻辑侧由 PolicyRelation 的单行打印保证）
+      case Some(expr) => org.apache.spark.sql.execution.FilterExec(PolicyOpaque(expr), scan)
       case None => scan
     }
     // 必须用 PolicyProjectExec 而不是 ProjectExec：后者会被 RemoveRedundantProjects

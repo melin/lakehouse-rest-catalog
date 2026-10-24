@@ -119,9 +119,17 @@ public class DataPolicyService {
             if (refTable != null && !refTable.isBlank() && !matchesRefTable(policy, refTable)) {
                 continue;
             }
+            // 条件文本与脱敏列名一起取：总览页要把「条件是什么、哪些列被改了」
+            // 平铺成 chip（判权在控制器已收到 TABLE:ALTER / 服务管理员）
+            List<ColumnMaskEntity> masks = maskRepository.findByPolicyId(policy.getId());
+            List<String> maskColumns = new ArrayList<>(masks.size());
+            for (ColumnMaskEntity mask : masks) {
+                maskColumns.add(mask.getColumnName());
+            }
             items.add(new PolicySummary(fullName(policy), policy.isEnabled(),
                     policy.getRowFilterJson() != null,
-                    maskRepository.findByPolicyId(policy.getId()).size(),
+                    policy.getRowFilterSql(), maskColumns, hiddenOf(policy),
+                    masks.size(),
                     exemptOf(policy).size(), policy.getEntityVersion(),
                     policy.getUpdatedBy(), policy.getUpdatedAt()));
         }
@@ -164,6 +172,7 @@ public class DataPolicyService {
         PolicyExpressions.ValidatedRowFilter rowFilter = request.rowFilter() == null
                 ? null : PolicyExpressions.parseRowFilter(request.rowFilter(), schema);
         List<ParsedMask> masks = parseMasks(request, schema);
+        List<String> hidden = hiddenOf(request, schema, masks);
         List<String> exempt = exemptOf(request);
         List<String> subjects = subjectsOf(request);
         String scope = SCOPE_ENGINE;
@@ -196,6 +205,7 @@ public class DataPolicyService {
         }
         policy.setRowFilterJson(rowFilter == null ? null : Json.write(rowFilter.ast()));
         policy.setRowFilterSql(rowFilter == null ? null : rowFilter.sql());
+        policy.setHiddenJson(hidden.isEmpty() ? null : Json.write(hidden));
         policy.setExemptJson(exempt.isEmpty() ? null : Json.write(exempt));
         policy.setSubjectsJson(subjects.isEmpty() ? null : Json.write(subjects));
         policy.setEntityVersion(policy.getEntityVersion() + 1);
@@ -221,6 +231,7 @@ public class DataPolicyService {
                         "version", policy.getEntityVersion(),
                         "rowFilter", rowFilter != null,
                         "maskedColumns", masks.size(),
+                        "hiddenColumns", hidden.size(),
                         "exemptCount", exempt.size(),
                         "enabled", policy.isEnabled()));
         return toDetail(policy);
@@ -294,13 +305,13 @@ public class DataPolicyService {
                 // 「没策略」与「已停用」对引擎等价：都放行，但状态如实分开回，排障能看出来
                 resolved.add(new ResolvedPolicy(name,
                         policy == null ? "NONE" : "DISABLED", null, null, null,
-                        List.of(), false, null));
+                        List.of(), List.of(), false, null));
                 continue;
             }
             requireTableSelect(catalogName, name);
             if (exemptOf(policy).contains(principal)) {
                 resolved.add(new ResolvedPolicy(name, "EXEMPT", policy.getEntityVersion(),
-                        null, null, List.of(), true, policy.getEnforcedScope()));
+                        null, null, List.of(), List.of(), true, policy.getEnforcedScope()));
                 continue;
             }
             // 主体白名单（§13.2 的 FOR 子句）：名单非空且调用者不在名单里 → 按没策略放行。
@@ -308,7 +319,7 @@ public class DataPolicyService {
             // 名单内但又在豁免名单里的（上面的分支）仍走 EXEMPT——豁免优先级更高
             if (!subjectsOf(policy).isEmpty() && !subjectsOf(policy).contains(principal)) {
                 resolved.add(new ResolvedPolicy(name, "NONE", null, null, null,
-                        List.of(), false, null));
+                        List.of(), List.of(), false, null));
                 continue;
             }
             Map<String, Object> folded = policy.getRowFilterJson() == null ? null
@@ -320,13 +331,23 @@ public class DataPolicyService {
                         Json.read(mask.getMaskJson(), Map.class), mask.isAllowNullOnRequired()));
             }
             resolved.add(new ResolvedPolicy(name, "FOUND", policy.getEntityVersion(),
-                    folded, policy.getRowFilterSql(), bindings, false, policy.getEnforcedScope()));
+                    folded, policy.getRowFilterSql(), bindings, hiddenOf(policy),
+                    false, policy.getEnforcedScope()));
         }
         return new ResolveResult(principal, resolved);
     }
 
     // ------------------------------------------------------------------ 读路径收口
 
+    /**
+     * 预览路径的策略解析（设计 §6 P1）。返回 {@code null} 表示「按原样预览」——
+     * 没策略、已停用、或调用者在豁免名单里；否则携带折叠好 {@code $principal} 的
+     * 行过滤 AST 与 mask 集，由预览服务逐行求值。
+     *
+     * <p>与引擎的 {@link #resolve} 共用同一份判定链（启用 / 豁免 / 折叠），双端语义
+     * 天然一致；差别只在执行点：引擎把表达式编译进 Catalyst，预览逐行解释
+     * （{@code PolicyExpressionEvaluator}）。
+     */
     /**
      * 预览路径的策略解析（设计 §6 P1）。返回 {@code null} 表示「按原样预览」——
      * 没策略、已停用、或调用者在豁免名单里；否则携带折叠好 {@code $principal} 的
@@ -343,7 +364,50 @@ public class DataPolicyService {
         if (policy == null || !policy.isEnabled()) {
             return null;
         }
-        String principal = RequestContext.auditPrincipal();
+        return previewPolicyOfEntity(policy, RequestContext.auditPrincipal());
+    }
+
+    /**
+     * 主体试算（控制台 mockup 画面 4）：按<b>指定的</b>主体（不是当前调用者）判定策略
+     * 命中状态并折叠 {@code $principal}。判定链与 {@link #previewPolicyOf} 逐条一致，
+     * 只是主体来自请求——这是「用他的眼睛看一次」的治理工具，调用者必须是能看到
+     * 策略内容的人（判权在控制器，{@code TABLE:ALTER}）。
+     *
+     * <p>{@code status} 四态与 {@link ResolvedPolicy} 同语义：NONE（没策略或白名单外）、
+     * DISABLED、EXEMPT、FOUND。
+     */
+    @Transactional(readOnly = true)
+    public PrincipalPolicy policyForPrincipal(String catalogName, String databaseName,
+                                              String tableName, String principal) {
+        requireTableExists(catalogName, databaseName, tableName);
+        DataPolicyEntity policy = findPolicy(catalogName, databaseName, tableName).orElse(null);
+        if (policy == null) {
+            return new PrincipalPolicy("NONE", null, null, null);
+        }
+        if (!policy.isEnabled()) {
+            return new PrincipalPolicy("DISABLED", policy.getEntityVersion(),
+                    policy.getRowFilterSql(), null);
+        }
+        if (exemptOf(policy).contains(principal)) {
+            return new PrincipalPolicy("EXEMPT", policy.getEntityVersion(),
+                    policy.getRowFilterSql(), null);
+        }
+        List<String> subjects = subjectsOf(policy);
+        if (!subjects.isEmpty() && !subjects.contains(principal)) {
+            // 白名单外：策略对该主体不生效，语义与「没策略」相同（§13.2 FOR 子句）
+            return new PrincipalPolicy("NONE", null, null, null);
+        }
+        return new PrincipalPolicy("FOUND", policy.getEntityVersion(), policy.getRowFilterSql(),
+                previewPolicyOfEntity(policy, principal));
+    }
+
+    /** 主体试算的结果：命中状态 + 命中时按主体折叠好的预览策略（{@code policy} 可为 {@code null}）。 */
+    public record PrincipalPolicy(String status, Integer version, String rowFilterSql,
+                                  PreviewPolicy policy) {
+    }
+
+    /** 判定链的公共实现：豁免 / 白名单判定后折叠 {@code $principal} 与 {@code $principal_roles}。 */
+    private PreviewPolicy previewPolicyOfEntity(DataPolicyEntity policy, String principal) {
         if (exemptOf(policy).contains(principal)) {
             return null;
         }
@@ -362,7 +426,7 @@ public class DataPolicyService {
                     Json.read(mask.getMaskJson(), Map.class));
         }
         return new PreviewPolicy(policy.getFullNameHash(), policy.getEntityVersion(),
-                rowFilter, Map.copyOf(masks));
+                rowFilter, Map.copyOf(masks), hiddenOf(policy));
     }
 
     /**
@@ -371,7 +435,8 @@ public class DataPolicyService {
      */
     public record PreviewPolicy(String fullNameHash, int version,
                                 Map<String, Object> rowFilter,
-                                Map<String, Map<String, Object>> masks) {
+                                Map<String, Map<String, Object>> masks,
+                                List<String> hiddenColumns) {
     }
 
     /** 这张表有没有启用中的策略（分区端点与文件下载的 403 判据；§6、§7.2）。 */
@@ -533,6 +598,59 @@ public class DataPolicyService {
         return "replace_with_null".equals(ast.get("fn"));
     }
 
+    /**
+     * 整列不可见清单的解析校验（P3，设计 §5.8）。列必须真实存在（嵌套字段写法
+     * 自然不在顶层列清单里，同样拒绝——与 mask / 行过滤的嵌套口径一致）；与 mask
+     * 同列互斥（两条可见性规则叠加在同一列上说不清谁生效，建策略时拒绝而不是
+     * 执行时猜）。行过滤**允许**引用清单内的列——治理员按密级列过滤、用户看不到
+     * 该列，是这套能力的标准用法（引擎侧行过滤读的是 scan 原值，不经过可见性裁剪）。
+     */
+    private List<String> hiddenOf(PolicyUpsertRequest request, PolicyExpressions.SchemaView schema,
+                                  List<ParsedMask> masks) {
+        if (request.hiddenColumns() == null) {
+            return List.of();
+        }
+        Set<String> maskTargets = new LinkedHashSet<>();
+        for (ParsedMask mask : masks) {
+            maskTargets.add(mask.column());
+        }
+        Set<String> distinct = new LinkedHashSet<>();
+        for (String column : request.hiddenColumns()) {
+            if (column == null || column.isBlank()) {
+                throw ApiException.badRequest("hidden columns must not be empty");
+            }
+            String name = column.trim();
+            if (!distinct.add(name)) {
+                throw ApiException.badRequest("duplicate hidden column " + name);
+            }
+            if (!schema.columns().contains(name)) {
+                throw ApiException.badRequest("hidden column '" + name + "' does not exist in the"
+                        + " table schema (nested fields are not supported); the policy is"
+                        + " rejected as a whole — nothing was saved");
+            }
+            if (maskTargets.contains(name)) {
+                throw ApiException.badRequest("column " + name + " cannot be both hidden and"
+                        + " masked: a hidden column is never returned, so a mask on it has no"
+                        + " observable effect — choose one of the two");
+            }
+        }
+        return new ArrayList<>(distinct);
+    }
+
+    private static List<String> hiddenOf(DataPolicyEntity policy) {
+        if (policy.getHiddenJson() == null || policy.getHiddenJson().isBlank()) {
+            return List.of();
+        }
+        List<?> raw = Json.read(policy.getHiddenJson(), List.class);
+        List<String> names = new ArrayList<>();
+        for (Object value : raw) {
+            if (value != null) {
+                names.add(String.valueOf(value));
+            }
+        }
+        return names;
+    }
+
     private void requireTableSelect(String catalogName, String tableRef) {
         int lastDot = tableRef.lastIndexOf('.');
         if (lastDot <= 0 || lastDot == tableRef.length() - 1) {
@@ -665,7 +783,8 @@ public class DataPolicyService {
         return new PolicyDetail(fullName(policy), policy.isEnabled(),
                 policy.getRowFilterJson() == null
                         ? null : Json.read(policy.getRowFilterJson(), LinkedHashMap.class),
-                policy.getRowFilterSql(), masks, exemptOf(policy), subjectsOf(policy),
+                policy.getRowFilterSql(), masks, hiddenOf(policy),
+                exemptOf(policy), subjectsOf(policy),
                 policy.getEnforcedScope(),
                 policy.getEntityVersion(), policy.getCreatedBy(), policy.getCreatedAt(),
                 policy.getUpdatedBy(), policy.getUpdatedAt());

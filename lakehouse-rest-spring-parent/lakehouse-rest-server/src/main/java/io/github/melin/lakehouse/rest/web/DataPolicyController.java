@@ -1,14 +1,19 @@
 package io.github.melin.lakehouse.rest.web;
 
 import io.github.melin.lakehouse.rest.config.RequestContext;
+import io.github.melin.lakehouse.rest.dto.DataPolicyDtos;
 import io.github.melin.lakehouse.rest.dto.DataPolicyDtos.PolicyDetail;
 import io.github.melin.lakehouse.rest.dto.DataPolicyDtos.PolicyList;
 import io.github.melin.lakehouse.rest.dto.DataPolicyDtos.PolicyUpsertRequest;
 import io.github.melin.lakehouse.rest.dto.DataPolicyDtos.ResolveResult;
 import io.github.melin.lakehouse.rest.dto.PermissionDtos.Access;
 import io.github.melin.lakehouse.rest.dto.PermissionDtos.ResourceType;
+import io.github.melin.lakehouse.rest.dto.PreviewDtos;
+import io.github.melin.lakehouse.rest.preview.PreviewTarget;
 import io.github.melin.lakehouse.rest.service.AuthorizationService;
 import io.github.melin.lakehouse.rest.service.DataPolicyService;
+import io.github.melin.lakehouse.rest.service.TablePreviewService;
+import io.github.melin.lakehouse.rest.support.ApiException;
 import java.util.Arrays;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
@@ -16,6 +21,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -47,6 +53,7 @@ public class DataPolicyController {
 
     private final DataPolicyService policyService;
     private final AuthorizationService authorizationService;
+    private final TablePreviewService previewService;
 
     /** {@code GET /policies}：总览列表（{@code catalog} 过滤 + {@code refTable} 反查 + 分页）。 */
     @GetMapping
@@ -106,6 +113,40 @@ public class DataPolicyController {
                        @PathVariable String tableName) {
         requireTableAccess(catalogName, databaseName, tableName, Access.ALTER, "drop the data policy");
         policyService.delete(catalogName, databaseName, tableName, RequestContext.principal());
+    }
+
+    /**
+     * {@code POST /policies/tables/{catalog}/{database}/{table}/dry-run}：主体视角试算
+     * （控制台 mockup 画面 4）。按请求体里的 {@code principal}（不是当前调用者）判定
+     * 策略命中状态，命中时用同一套预览求值链读一页数据返回——行被过滤、敏感列被 mask。
+     *
+     * <p><b>判权是 {@code TABLE:ALTER} 而不是 SELECT</b>：试算回答的是「策略对他生效成
+     * 什么样」，这本身就是策略内容（谓词、列清单、豁免效果），与 GET 详情同一敏感级；
+     * 放宽到 SELECT 等于任何能读表的人都能看策略文本。被模拟的主体**不需要存在**——
+     * {@code $principal} 折的是名字字面量，角色名单查不到就折成空（行过滤 fail-closed），
+     * 这正是「新建主体还没挂角色」场景要试算的原因。
+     *
+     * <p>只读、不落库：唯一副作用是预览自身的 {@code TABLE_PREVIEWED} 审计（调用者是
+     * 操作者本人，不是被模拟的主体）。
+     */
+    @PostMapping("/tables/{catalogName}/{databaseName}/{tableName}/dry-run")
+    public DataPolicyDtos.DryRunResult dryRun(@PathVariable String catalogName,
+                                              @PathVariable String databaseName,
+                                              @PathVariable String tableName,
+                                              @RequestBody DataPolicyDtos.DryRunRequest request) {
+        requireTableAccess(catalogName, databaseName, tableName, Access.ALTER,
+                "dry-run the data policy as another principal");
+        String principal = request.principal() == null ? null : request.principal().trim();
+        if (principal == null || principal.isBlank()) {
+            throw ApiException.badRequest("principal must not be empty");
+        }
+        DataPolicyService.PrincipalPolicy policy =
+                policyService.policyForPrincipal(catalogName, databaseName, tableName, principal);
+        PreviewTarget target = previewService.resolve(catalogName, databaseName, tableName);
+        PreviewDtos.PreviewResponse preview =
+                previewService.preview(target, request.preview(), policy.policy());
+        return new DataPolicyDtos.DryRunResult(tableName, policy.status(), policy.version(),
+                policy.rowFilterSql(), principal, preview);
     }
 
     private void requireTableAccess(String catalogName, String databaseName, String tableName,

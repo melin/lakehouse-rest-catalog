@@ -333,6 +333,117 @@ class PolicySparkTests {
       plain.sql(s"SELECT id FROM $icebergTable").collect().map(_.getLong(0)).toSeq.sorted)
   }
 
+  // ------------------------------------------------------------------ P3：EXPLAIN 打码与整列不可见
+
+  /**
+   * §7.6 方案 a：EXPLAIN EXTENDED 的物理计划只见 `policy_expr(N literals masked)`，
+   * 行过滤与 mask 的字面量（黑名单成员、别人的租户名）不外泄。
+   * 逻辑侧的「只露一行 PolicyRelation」由既有用例覆盖。
+   */
+  @Test
+  def explainPhysicalPlanMasksPolicyLiterals(): Unit = {
+    ensureTables()
+    usePolicy(Map(icebergRef ->
+      policy(rowFilterRegionCN,
+        Seq("phone" -> MaskPhoneFirst4, "salary" -> MaskSalaryNull), exempted = false)))
+    val explain = query(s"EXPLAIN EXTENDED SELECT * FROM $icebergTable").head().getString(0)
+    assertTrue(explain.contains("policy_expr"),
+      "物理计划应出现 policy_expr 占位（§7.6 方案 a）: " + explain)
+    assertFalse(explain.contains("'CN'"),
+      "行过滤的字面量不能出现在 EXPLAIN 里: " + explain)
+    assertFalse(explain.contains("show_first_n") && explain.contains("replace_with_null"),
+      "mask 的函数形状不能出现在 EXPLAIN 里: " + explain)
+    // 执行结果不受打印遮蔽影响
+    assertEquals(Seq(1L, 3L, 4L), idsOf(query(s"SELECT id FROM $icebergTable")))
+  }
+
+  /**
+   * §5.8 / §10.1 P3 第 1 项：整列不可见。`SELECT *` 只返回可读列；显式引用
+   * （投影、聚合、过滤）分析期失败；不带投影的 DataFrame 读法由兜底裁剪接住。
+   */
+  @Test
+  def hiddenColumnsAreTrimmedFromStarAndRefusedExplicitly(): Unit = {
+    ensureTables()
+    usePolicy(Map(icebergRef ->
+      policy(rowFilterRegionCN, Seq("phone" -> MaskPhoneFirst4),
+        exempted = false, hidden = Seq("salary"))))
+
+    // SELECT *：可读列子集，顺序保持；行过滤照常生效
+    val df = query(s"SELECT * FROM $icebergTable ORDER BY id")
+    assertEquals(Seq("id", "name", "phone", "region"), df.schema.fields.map(_.name).toSeq,
+      "SELECT * 应只返回可读列（§5.8 规范语义第一半）")
+    assertEquals(Seq(1L, 3L, 4L), idsOf(df))
+    assertEquals("1380nnnnnnn", df.collect()(0).getString(2), "mask 与整列不可见互不干扰")
+
+    // 显式引用不可见列 → 分析期失败（悬空属性，CheckAnalysis 指名列）
+    assertThrows(classOf[Exception],
+      () => query(s"SELECT salary FROM $icebergTable").collect())
+    // 聚合 / 过滤引用 → 同样失败（行数也是泄露面）
+    assertThrows(classOf[Exception],
+      () => query(s"SELECT max(salary) FROM $icebergTable").collect())
+    assertThrows(classOf[Exception],
+      () => query(s"SELECT id FROM $icebergTable WHERE salary > 100").collect())
+
+    // 不带投影的 DataFrame 读法（无 Project 节点）→ 兜底裁剪接住
+    assertEquals(Seq("id", "name", "phone", "region"),
+      session.table(icebergTable).schema.fieldNames.toSeq,
+      "DataFrame 全表读也应只见可读列")
+
+    // 子查询里显式引用 → 失败
+    assertThrows(classOf[Exception],
+      () => query(s"SELECT id FROM $icebergTable WHERE id IN (SELECT id FROM $icebergTable WHERE salary = 300)").collect())
+  }
+
+  /** §5.7 + P3：整列不可见是读路径能力，写命令目标与 INSERT source 不受影响。 */
+  @Test
+  def hiddenColumnsDoNotBlockDml(): Unit = {
+    ensureTables()
+    usePolicy(Map(icebergRef ->
+      policy(null, Seq.empty, exempted = false, hidden = Seq("salary"))))
+
+    // DELETE / UPDATE 的目标不套策略（本用例改数据，结尾恢复）
+    query(s"DELETE FROM $icebergTable WHERE id = 4")
+    query(s"UPDATE $icebergTable SET salary = 999 WHERE id = 1")
+    query(s"UPDATE $icebergTable SET salary = 100 WHERE id = 1")
+    query(s"INSERT INTO $icebergTable VALUES (4, 'dave', '13600000004', 'CN', 50)")
+    assertEquals(Seq(1L, 2L, 3L, 4L),
+      plainSession.sql(s"SELECT id FROM $icebergTable").collect().map(_.getLong(0)).toSeq.sorted,
+      "写命令应不受整列不可见影响（数据已恢复）")
+
+    // INSERT INTO t2 SELECT * FROM t：写路径跳过 → 全列写入成功（无策略的目标不缺列）。
+    // 目标用自己的表：用例执行顺序不是字母序，共用 pt2 会把前面的行带进断言
+    query(s"CREATE TABLE $parquetTable3 (id BIGINT, name STRING, phone STRING," +
+      " region STRING, salary BIGINT) USING parquet")
+    query(s"INSERT INTO $parquetTable3 SELECT * FROM $icebergTable")
+    val in2 = query(s"SELECT id, salary FROM $parquetTable3 ORDER BY id").collect()
+    assertEquals(Seq(1L, 2L, 3L, 4L), in2.map(_.getLong(0)).toSeq, "source 未被裁剪")
+    assertEquals(100L, in2(0).getLong(1))
+
+    // CTAS：与 INSERT 同语义（写路径跳过）→ 新表含全部列；
+    // 需要 CREATE 特权、值来自表自身，与 INSERT INTO t2 SELECT * 的口径一致
+    val ctasTable = s"pct$runId"
+    query(s"CREATE TABLE $ctasTable USING parquet AS SELECT * FROM $icebergTable")
+    try {
+      assertEquals(Seq("id", "name", "phone", "region", "salary"),
+        session.table(ctasTable).schema.fieldNames.toSeq,
+        "CTAS 是写路径，不应被整列不可见裁剪")
+    } finally {
+      query(s"DROP TABLE IF EXISTS $ctasTable")
+    }
+  }
+
+  /** 豁免主体不在强制面内：全列可见（hiddenColumns 只对 FOUND 的主体生效）。 */
+  @Test
+  def hiddenColumnsVanishForExemptPrincipal: Unit = {
+    ensureTables()
+    usePolicy(Map(icebergRef ->
+      policy(rowFilterRegionCN, Seq("phone" -> MaskPhoneFirst4),
+        exempted = true, status = "EXEMPT", hidden = Seq("salary"))))
+    val df = exemptSession.sql(s"SELECT * FROM $icebergTable ORDER BY id")
+    assertEquals(Seq("id", "name", "phone", "region", "salary"),
+      df.schema.fields.map(_.name).toSeq, "豁免主体不受整列不可见约束")
+  }
+
   // ------------------------------------------------------------------ 断言辅助
 
   private def query(sql: String): DataFrame = session.sql(sql)
@@ -363,6 +474,7 @@ object PolicySparkTests {
   private val runId = System.nanoTime().toString.takeRight(8)
 
   private val parquetTable2 = s"pt2$runId"  // 仅作 INSERT 的写入目标（spark_catalog 的 parquet 表是 V1，不在注入面）
+  private val parquetTable3 = s"pt3$runId"  // hiddenColumns 的 DML 用例专用目标——JUnit 默认顺序不保证字母序，共用 pt2 会互相污染
   private val parquetView = s"pv$runId"
   private val cacheTable = s"pc$runId"
 
@@ -417,17 +529,20 @@ object PolicySparkTests {
 
   /** 下发协议里一条策略的 JSON（{@code ResolvedPolicy} 的形状）。 */
   private def policy(rowFilter: String, masks: Seq[(String, String)],
-                     exempted: Boolean, status: String = "FOUND"): String = {
+                     exempted: Boolean, status: String = "FOUND",
+                     hidden: Seq[String] = Seq.empty): String = {
     val masksJson = masks.map { case (column, mask) =>
       s"""{"column":"$column","mask":$mask,"allowNullOnRequired":false}"""
     }.mkString(",")
+    val hiddenJson = hidden.map(c => s""""$c"""").mkString(",")
     s"""{"status":"$status","version":7,""" +
       s""""rowFilter":${if (rowFilter == null) "null" else rowFilter},""" +
-      s""""masks":[$masksJson],"exempted":$exempted,"enforcedScope":"engine"}"""
+      s""""masks":[$masksJson],"hiddenColumns":[$hiddenJson],""" +
+      s""""exempted":$exempted,"enforcedScope":"engine"}"""
   }
 
   private val noneJson =
-    """{"status":"NONE","version":0,"rowFilter":null,"masks":[],"exempted":false,"enforcedScope":"engine"}"""
+    """{"status":"NONE","version":0,"rowFilter":null,"masks":[],"hiddenColumns":[],"exempted":false,"enforcedScope":"engine"}"""
 
   // ------------------------------------------------------------------ 环境
 
