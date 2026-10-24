@@ -80,6 +80,9 @@ public final class ManagementApiClient {
     /** 血缘上报端点（挂在管理 API 下：它是跨 catalog 的元数据，不是 catalog 上的操作，§6.1）。 */
     private static final String LINEAGE_RUNS = "/lineage/runs";
 
+    /** 引擎的策略解析通道（{@code docs/row-filter-column-mask-design.md} §5.4）。 */
+    private static final String POLICIES_RESOLVE = "/policies/resolve";
+
     /** 管理 API 基址的后缀，用来反推 catalog API 基址（见 {@link #deriveCatalogBase}）。 */
     private static final String MANAGEMENT_SUFFIX = "/api/management/v1";
 
@@ -569,6 +572,52 @@ public final class ManagementApiClient {
             result.add(element.asText());
         }
         return result;
+    }
+
+    // ------------------------------------------------------------------ data policy
+
+    /**
+     * {@code GET /policies/resolve?catalog=&tables=db.t1,db.t2}：引擎的策略解析通道（§5.4）。
+     *
+     * <p>响应按调用者个性化：{@code $principal} 已被服务端折成字面量、豁免已判定，
+     * 引擎拿到什么就执行什么，没有第二层解释。{@code status} 三值：
+     * {@code NONE}（没策略或已停用）、{@code FOUND}（命中）、{@code EXEMPT}（豁免）。
+     * 服务端错误（拉不到）不在返回值里——那是 5xx，由调用方按 fail-closed 处理。
+     *
+     * <p>一次请求问一批表：一条 SQL 常常扫好几张表，逐表请求会在分析路径上放大延迟。
+     *
+     * @param catalog catalog 名（与服务端 prefix 同名）
+     * @param tables  {@code db.table} 两段名的清单；空清单返回空列表（不发请求）
+     */
+    public List<ResolvedPolicyInfo> resolvePolicies(String catalog, List<String> tables) {
+        if (tables == null || tables.isEmpty()) {
+            return List.of();
+        }
+        String path = POLICIES_RESOLVE + "?catalog=" + encode(catalog)
+                + "&tables=" + encode(String.join(",", tables));
+        JsonNode root = get(path);
+        List<ResolvedPolicyInfo> result = new ArrayList<>();
+        for (JsonNode node : root.path("policies")) {
+            JsonNode rowFilter = node.get("rowFilter");
+            List<MaskBindingInfo> masks = new ArrayList<>();
+            for (JsonNode mask : node.path("masks")) {
+                masks.add(new MaskBindingInfo(text(mask, "column"), asMap(mask.get("mask")),
+                        mask.path("allowNullOnRequired").asBoolean(false)));
+            }
+            result.add(new ResolvedPolicyInfo(text(node, "table"), text(node, "status"),
+                    node.path("version").asLong(), asMap(rowFilter), masks,
+                    node.path("exempted").asBoolean(false), text(node, "enforcedScope")));
+        }
+        return result;
+    }
+
+    /** 一个 JSON 节点转 {@code Map<String,Object>}；null / 缺失时返回 {@code null}。 */
+    private Map<String, Object> asMap(JsonNode node) {
+        if (node == null || node.isNull() || node.isMissingNode()) {
+            return null;
+        }
+        return mapper.convertValue(node,
+                mapper.getTypeFactory().constructMapType(LinkedHashMap.class, String.class, Object.class));
     }
 
     // ------------------------------------------------------------------ 内部：HTTP
@@ -1138,6 +1187,139 @@ public final class ManagementApiClient {
         public String toString() {
             return "PermissionEntry[resource=" + resource + ", access=" + access
                     + ", principal=" + principal + ", expireTime=" + expireTime + "]";
+        }
+    }
+
+    /**
+     * 一张表的策略解析结果（{@code /policies/resolve} 的单行，§5.4）。
+     *
+     * <p>写成普通静态嵌套类而不是 {@code record}，理由见类注释顶部（Scala 2.12 的
+     * Java 源码解析器不认识 {@code record}，而本类型会被 Scala 侧引用）。
+     *
+     * <p>{@code rowFilter} 与每个 {@code mask} 是<b>裸 AST Map</b>（服务端校验并折叠
+     * {@code $principal} 之后的原样 JSON）：表达式语义由 {@code PolicyExpressionBuilder}
+     * 在引擎侧解释，本类不做任何形状假设——把白名单复制到类型里，两份迟早漂移。
+     */
+    public static final class ResolvedPolicyInfo {
+
+        /** {@code db.table} 两段名，与服务端回显一致。 */
+        private final String table;
+        /** {@code NONE} / {@code FOUND} / {@code EXEMPT}，见 DTO 的 {@code ResolvedPolicy}。 */
+        private final String status;
+        private final long version;
+        /** 行过滤 AST；NONE / EXEMPT 或没配行过滤时为 {@code null}。 */
+        private final Map<String, Object> rowFilter;
+        private final List<MaskBindingInfo> masks;
+        private final boolean exempted;
+        private final String enforcedScope;
+
+        public ResolvedPolicyInfo(String table, String status, long version,
+                                  Map<String, Object> rowFilter, List<MaskBindingInfo> masks,
+                                  boolean exempted, String enforcedScope) {
+            this.table = table;
+            this.status = status;
+            this.version = version;
+            this.rowFilter = rowFilter;
+            this.masks = masks == null ? List.of() : List.copyOf(masks);
+            this.exempted = exempted;
+            this.enforcedScope = enforcedScope;
+        }
+
+        public String table() {
+            return table;
+        }
+
+        public String status() {
+            return status;
+        }
+
+        public long version() {
+            return version;
+        }
+
+        public Map<String, Object> rowFilter() {
+            return rowFilter;
+        }
+
+        public List<MaskBindingInfo> masks() {
+            return masks;
+        }
+
+        public boolean exempted() {
+            return exempted;
+        }
+
+        public String enforcedScope() {
+            return enforcedScope;
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            return o instanceof ResolvedPolicyInfo other
+                    && Objects.equals(table, other.table)
+                    && Objects.equals(status, other.status)
+                    && version == other.version
+                    && Objects.equals(rowFilter, other.rowFilter)
+                    && Objects.equals(masks, other.masks)
+                    && exempted == other.exempted
+                    && Objects.equals(enforcedScope, other.enforcedScope);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(table, status, version, rowFilter, masks, exempted, enforcedScope);
+        }
+
+        @Override
+        public String toString() {
+            // 不打印 rowFilter / masks：表达式里的字面量可能就是明文（§8.2 的口径）
+            return "ResolvedPolicyInfo[table=" + table + ", status=" + status
+                    + ", version=" + version + ", masks=" + masks.size()
+                    + ", exempted=" + exempted + "]";
+        }
+    }
+
+    /** 一列的 mask 绑定（{@code /policies/resolve} 的子项）。 */
+    public static final class MaskBindingInfo {
+
+        private final String column;
+        private final Map<String, Object> mask;
+        private final boolean allowNullOnRequired;
+
+        public MaskBindingInfo(String column, Map<String, Object> mask, boolean allowNullOnRequired) {
+            this.column = column;
+            this.mask = mask;
+            this.allowNullOnRequired = allowNullOnRequired;
+        }
+
+        public String column() {
+            return column;
+        }
+
+        public Map<String, Object> mask() {
+            return mask;
+        }
+
+        public boolean allowNullOnRequired() {
+            return allowNullOnRequired;
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            return o instanceof MaskBindingInfo other
+                    && Objects.equals(column, other.column)
+                    && Objects.equals(mask, other.mask)
+                    && allowNullOnRequired == other.allowNullOnRequired;
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(column, mask, allowNullOnRequired);
+        }
+
+        @Override
+        public String toString() {
+            return "MaskBindingInfo[column=" + column + "]";
         }
     }
 

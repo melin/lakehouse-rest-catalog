@@ -1,6 +1,7 @@
 package io.github.melin.lakehouse.rest.spark
 
 import io.github.melin.lakehouse.rest.spark.client.ManagementApiClient
+import io.github.melin.lakehouse.rest.spark.policy.{PolicyEnforcementStrategy, PolicyInjectionRule}
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.SparkSessionExtensions
 
@@ -38,6 +39,13 @@ class ManagementSparkExtensions extends (SparkSessionExtensions => Unit) {
     // `sessionState`——在这里注册会重入构建流程并栈溢出。改由解析器在第一次 `parsePlan`
     // 时挂载（见 `AbstractLakehouseRestSqlParser#armListener`，§13.7 第 6 条）。
     extensions.injectParser { (session, parser) => new LakehouseRestSqlParser(parser, session) }
+    // 行过滤 / 列脱敏（§5.4）：默认关闭（spark.lakehouse.rest.policy.enforced），
+    // 关闭时两条规则都是纯 no-op——装这个扩展做管理语句解析的会话不会被波及。
+    // 两条规则的分工：注入规则把带策略的表包进 PolicyRelation（不透明的逻辑节点，
+    // 优化器不认识它 → 不会把 mask 吃掉）；planner strategy 在物理规划期才把它
+    // 展开成 Filter + Project，展开形状由我们完全控制。
+    extensions.injectPostHocResolutionRule { session => new PolicyInjectionRule(session) }
+    extensions.injectPlannerStrategy { session => new PolicyEnforcementStrategy }
   }
 }
 
@@ -67,9 +75,11 @@ object PaimonRestManagement {
   /** 扩展类名，供 {@code spark.sql.extensions} 使用。 */
   val EXTENSION_CLASS = classOf[ManagementSparkExtensions].getName
 
-  private val DEFAULT_URL = "http://127.0.0.1:8080/api/management/v1"
+  private[spark] val DEFAULT_URL = "http://127.0.0.1:8080/api/management/v1"
   private val DEFAULT_CATALOG_URL = ""
-  private val DEFAULT_TIMEOUT_SECONDS = 30
+
+  /** 默认超时秒数；策略获取与解析器共用，包内可见。 */
+  private[spark] val DEFAULT_TIMEOUT_SECONDS = 30
 
   /**
    * 编程式安装扩展。
@@ -77,9 +87,15 @@ object PaimonRestManagement {
    * <p>{@code withExtensions} 必须在 {@code getOrCreate()} 之前调用。
    */
   def install(builder: SparkSession.Builder): SparkSession.Builder =
-    builder.withExtensions { extensions =>
-      extensions.injectParser { (session, parser) => new LakehouseRestSqlParser(parser, session) }
-    }
+    builder.withExtensions { extensions => installAll(extensions) }
+
+  /** 解析器与策略规则一起装；配置驱动的入口与编程式入口必须给出同一套扩展。 */
+  private def installAll(extensions: SparkSessionExtensions): Unit = {
+    extensions.injectParser { (session, parser) => new LakehouseRestSqlParser(parser, session) }
+    // 行过滤 / 列脱敏（§5.4）：默认关闭，规则在 enforced=false 时是纯 no-op，见 apply
+    extensions.injectPostHocResolutionRule { session => new PolicyInjectionRule(session) }
+    extensions.injectPlannerStrategy { _ => new PolicyEnforcementStrategy }
+  }
 
   /**
    * 按当前会话配置构造 REST 客户端。

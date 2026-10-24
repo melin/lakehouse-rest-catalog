@@ -1,5 +1,6 @@
 package io.github.melin.lakehouse.rest.spark.lineage
 
+import io.github.melin.lakehouse.rest.spark.policy.PolicyRelation
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.catalog.{CatalogTable, HiveTableRelation}
 import org.apache.spark.sql.catalyst.expressions.Attribute
@@ -76,6 +77,9 @@ private[lineage] object LineageNames {
    */
   def refOfRelation(plan: LogicalPlan, defaultCatalog: String, currentDatabase: String): Option[String] =
     plan match {
+      // 策略包装节点先剥掉：行过滤 / 列脱敏注入（§5.5）会把源表 relation 包进
+      // PolicyRelation，不剥的话 INSERT ... SELECT 这类语句的源表边就断了
+      case pr: PolicyRelation => refOfRelation(pr.relation, defaultCatalog, currentDatabase)
       case r: DataSourceV2Relation =>
         r.identifier match {
           case Some(id) => Some(refOf(id, r.catalog.map(_.name()).getOrElse(defaultCatalog)))

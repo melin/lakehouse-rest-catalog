@@ -1,8 +1,11 @@
 # 行过滤与列脱敏（Row Filter / Column Mask）技术方案
 
-> 状态：**服务端 P0 已实现**（两张策略表 + 表达式 AST 校验 + 管理与下发端点 + 预览 / 文件下载收口 +
-> 表生命周期联动，测试见 README 第 7 节的 `DataPolicyApiTests` / `DataPolicyDisabledTests`）。
-> **未实现**：Spark 引擎侧扩展（PolicyRelation，§4）、服务端 AST 求值器（预览仍拒绝，§6）、
+> 状态：**服务端 P0 与 Spark 引擎侧均已实现**。
+> 服务端：两张策略表 + 表达式 AST 校验 + 管理与下发端点 + 预览 / 文件下载收口 +
+> 表生命周期联动（`DataPolicyApiTests` / `DataPolicyDisabledTests`）。
+> 引擎侧：`PolicyRelation` 逻辑节点 + PostHocResolution 注入 + `PolicyEnforcementStrategy` 物理展开 +
+> `PolicyProjectExec`，3.5.9 / 4.1.2 双版本测试全绿（`PolicySparkTests`，见 §9.1 实测差异）。
+> **未实现**：服务端 AST 求值器（预览仍拒绝，§6）、
 > 控制台页面（§7）与 §13 的 SQL 语句——本文相应小节仍是它们的实现依据。
 > 本文先回答「能不能做、做到什么程度、代价在哪」，实现取舍与设计稿的差异以代码为准。
 >
@@ -655,7 +658,7 @@ CREATEFUNCTION / CREATEVIEW / LIST / SELECT / UPDATE / GRANT`），**不能自�
 | ----------------------------- | -------------------------------------- | -------------------------------- | --------------------------------------------------------------------------- |
 | 行过滤 / 列脱敏原生 API               | 无                                      | 无                                | 两版都要自研扩展                                                                    |
 | `injectPostHocResolutionRule` | 有                                      | 有                                | 主注入点一致                                                                      |
-| `injectPlannerStrategy`       | 有                                      | 有                                | 自定义节点落地一致                                                                   |
+| `injectPlannerStrategy`       | 有                                      | 有                                | 自定义节点落地一致；但 4.0 起 `org.apache.spark.sql.Strategy` 被移除，**必须** `extends org.apache.spark.sql.execution.SparkStrategy`（该类两版本都在，3.5 上写 `Strategy` 恰好解析到它所以不报错，4.1 编译失败） |
 | `TreeNodeTag`                 | 有                                      | 有                                | 幂等标记写法一致                                                                    |
 | `injectFunction` 参数类型         | `Seq`                                  | `immutable.Seq`                  | 只有注册自定义函数时才有差异；本方案用占位符替身 → **不撞**                                           |
 | `injectHintResolutionRule`    | 无                                      | 有                                | 不用                                                                          |
@@ -665,6 +668,23 @@ CREATEFUNCTION / CREATEVIEW / LIST / SELECT / UPDATE / GRANT`），**不能自�
 
 **结论：一份共享源码 + 两个版本模块各自编译**，与现有 `lakehouse-rest-spark` 的形态完全一致  
 （`shared/` 一份，3.5 用 2.12、4.1 用 2.13 各编一遍）。这也是血缘抽取器已经在用的模式，不需要新的工程结构。
+
+### 9.1.1 实现期的三个实测结论（计划级证据，写进了代码注释）
+
+1. **`org.apache.spark.sql.Strategy` 在 4.0 被移除**。`injectPlannerStrategy` 现在要求
+   `org.apache.spark.sql.execution.SparkStrategy`；该类两版本都存在（`planLater` 是它的具体方法），
+   统一 `extends SparkStrategy` 即可双版本兼容。
+2. **Spark 4.0 起 UPDATE / DELETE 在分析期就被改写为 `RowLevelWrite` 节点**（3.5 仍是 `UpdateTable`，
+   优化器才改写）。注入规则必须对 `RowLevelWrite` 的 `table`（exprId 等值判断）豁免目标读取，
+   只递归处理其 query/subquery；否则 UPDATE 的目标表读取被套策略，**脱敏值会被写回表**造成永久数据污染。
+3. **ColumnPruning 会穿透不透明的 UnaryNode**：在 PolicyRelation 下插裁剪 Project，随后
+   RemoveNoopOperators 删外层投影、V2ScanRelationPushDown 推进 scan，最终 mask 表达式因
+   「列不在 schema 中」而崩。修法是 PolicyRelation 增加 `anchors: Seq[Expression] = fullRelation.output`
+   字段——case class 字段自动进入 `expressions`/`references`，优化器认为每列都被本节点引用，裁剪停止。
+   用 DummyA/DummyB 双变体探针测试实证：带 anchors 的变体完全阻止裁剪，且两变体叶子都能被
+   pushdown 成可规划的 `DataSourceV2ScanRelation`。
+   另注意：物理展开处的投影列表必须保留 mask 的 `Alias` 本体，**不能** `.map(_.toAttribute)`——
+   那会把 mask 表达式抹回普通属性引用，投影退化成纯透传、脱敏静默失效。
 
 ### 9.2 粗估工作量
 
