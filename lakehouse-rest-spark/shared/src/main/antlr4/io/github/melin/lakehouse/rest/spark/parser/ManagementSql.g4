@@ -40,6 +40,13 @@ statement
     | showPrincipalRoles
     | showPermissions
     | showCatalogs
+    | setRowFilter
+    | dropRowFilter
+    | setColumnMask
+    | dropColumnMask
+    | setPolicySubjects
+    | dropPolicy
+    | showPolicy
     ;
 
 // ---------------------------------------------------------------------- DDL：主体
@@ -219,6 +226,80 @@ showCatalogs
     : SHOW CATALOGS
     ;
 
+// ---------------------------------------------------------------------- 数据策略（§13）
+/*
+ * 行过滤 / 列脱敏的管理语句（`docs/row-filter-column-mask-design.md` §13）。
+ *
+ * 关键字向 Databricks 对齐（SET ROW FILTER / SET MASK / DROP MASK），形状向「值」对齐：
+ * UC 绑定命名函数，这里绑定 AST——表达式片段**不进语法**，`exprSource` 只负责把
+ * 自由文本整体捕获出来，内容交给 `ParserInterface#parseExpression` 解析后按白名单
+ * 转换（§13.4）。自己写表达式文法等于把 Catalyst 的优先级复制两遍（3.5 / 4.1）。
+ *
+ * `IN CATALOG` 是刻意的：让策略语句与原生 ALTER TABLE（SET TBLPROPERTIES / SET SERDE）
+ * 在形状上互斥，「先试自己、失败即交回」的拦截策略不会把普通 DDL 拦下来。
+ */
+setRowFilter
+    : ALTER TABLE policyTable SET ROW FILTER rowFilter=exprSource (FOR subjectList)?
+    ;
+
+dropRowFilter
+    : ALTER TABLE policyTable DROP ROW FILTER
+    ;
+
+setColumnMask
+    : ALTER TABLE policyTable ALTER COLUMN column=identifier SET MASK mask=exprSource (FOR subjectList)?
+    ;
+
+dropColumnMask
+    : ALTER TABLE policyTable ALTER COLUMN column=identifier DROP MASK
+    ;
+
+setPolicySubjects
+    : ALTER TABLE policyTable SET POLICY FOR subjectList
+    ;
+
+dropPolicy
+    : ALTER TABLE policyTable DROP POLICY
+    ;
+
+showPolicy
+    : SHOW POLICY ON TABLE policyTable
+    ;
+
+/** 策略语句的目标表：库名.表名 IN CATALOG catalog 名。 */
+policyTable
+    : objectName=multipartIdentifier IN CATALOG catalog=identifier
+    ;
+
+/**
+ * 主体清单（FOR 子句）。形状复用授权语句的 grantee；USER 形状折成主体名落库，
+ * ROLE / GROUP 在访问器里显式报错——v1 的判定链按主体名匹配，成员解析不做（§13.2）。
+ */
+subjectList
+    : subject (COMMA subject)*
+    ;
+
+subject
+    : USER name=identifier
+    | ROLE name=identifier
+    | GROUP name=identifier
+    ;
+
+/**
+ * 表达式的原文捕获：除 FOR 与分号外的任意记号序列（至少一个）。
+ *
+ * FOR 被排除在外，让 `(FOR subjectList)?` 的边界成为确定的选择而不是歧义；
+ * 分号被排除，让 trailing `;` 留给 `singleStatement`。表达式里因此不能出现
+ * 这两个词——白名单里没有任何写法需要它们（`for` 作标识符要写成 `` `for` ``）。
+ */
+exprSource
+    : exprToken+
+    ;
+
+exprToken
+    : ~(FOR | SEMICOLON)
+    ;
+
 // ---------------------------------------------------------------------- 公共片段
 propertyList
     : PROPERTIES LPAREN property (COMMA property)* RPAREN
@@ -280,6 +361,7 @@ DATABASE_ALL: D A T A B A S E UNDERSCORE A L L ;
 DROP        : D R O P ;
 EXCEPT      : E X C E P T ;
 EXISTS      : E X I S T S ;
+FILTER      : F I L T E R ;
 FOR         : F O R ;
 FROM        : F R O M ;
 FUNCTION    : F U N C T I O N ;
@@ -287,9 +369,11 @@ GRANT       : G R A N T ;
 GROUP       : G R O U P ;
 IF          : I F ;
 IN          : I N ;
+MASK        : M A S K ;
 NOT         : N O T ;
 ON          : O N ;
 PERMISSIONS : P E R M I S S I O N S ;
+POLICY      : P O L I C Y ;
 PRINCIPAL   : P R I N C I P A L ;
 PRINCIPALS  : P R I N C I P A L S ;
 PROPERTIES  : P R O P E R T I E S ;
@@ -298,6 +382,7 @@ REVOKE      : R E V O K E ;
 ROLE        : R O L E ;
 ROLES       : R O L E S ;
 ROTATE      : R O T A T E ;
+ROW         : R O W ;
 SET         : S E T ;
 SHOW        : S H O W ;
 TABLE       : T A B L E ;

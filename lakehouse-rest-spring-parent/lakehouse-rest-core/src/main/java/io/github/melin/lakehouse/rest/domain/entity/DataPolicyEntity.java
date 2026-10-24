@@ -101,6 +101,21 @@ public class DataPolicyEntity extends AuditedEntity {
     private String exemptJson;
 
     /**
+     * 主体白名单：非空时策略<b>只对名单内的主体生效</b>，名单外的人按「没策略」放行
+     * （{@code resolve} / 预览的判定链里实现，与豁免同一个入口、方向相反）。
+     *
+     * <p>名单存主体名（与豁免名单同形，不带 {@code user:} 前缀）。SQL 的
+     * {@code SET ... FOR USER a, ROLE r}（§13.2）只把 USER 形状折成名字落进来——
+     * ROLE / GROUP 语义需要成员解析，v1 的判定链里没有这一层，SQL 侧对这两种形状
+     * 显式报错而不是静默忽略。
+     *
+     * <p>可空 / 空 = 全部主体生效（控制台不建白名单时的默认语义，§5.2 取舍 1）。
+     */
+    @Column(name = "subjects_json", length = 65535,
+            comment = "主体白名单（JSON 字符串数组；空 = 全部主体生效；SQL 的 FOR 子句写入）")
+    private String subjectsJson;
+
+    /**
      * 策略开关：{@code false} = 这套策略暂停执行，但定义保留。
      *
      * <p>「停用」只在控制台提供，SQL 侧没有对应语句（§13.2 的清单只有物理删除）——

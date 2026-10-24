@@ -52,6 +52,7 @@ val spark = PaimonRestManagement.install(SparkSession.builder())
 | `spark.lakehouse.rest.catalog.url` | 空（从管理 API 基址推导） | catalog API 基址，资源授权语句（第 7 节）用它。空值时按「去掉 `/api/management/v1`」推导；推导不出来（基址不以该前缀结尾）会报错并点名这个键 |
 | `spark.lakehouse.rest.token` | 空 | 作为 `Authorization: Bearer <token>` 发出；为空时**不发送**该请求头 |
 | `spark.lakehouse.rest.management.timeoutSeconds` | `30` | 单次请求超时秒数；非数字或非正数时退化为默认值，不会让会话启动失败 |
+| `spark.lakehouse.rest.sql.confirm-destructive` | 未设置 | 数据策略语句的确认开关：`DROP POLICY` 必须把它设为 `true` 才会执行，否则报错并点名这个键（第 11.3 节）。它在语句运行时读取，随时可改 |
 
 配置读取顺序是「会话 SQL 配置 → `SparkConf` → 默认值」，因此 `spark.conf.set(...)`、
 `.config(...)` 与命令行 `--conf` 三种写法都有效。
@@ -67,7 +68,8 @@ val spark = PaimonRestManagement.install(SparkSession.builder())
 
 ## 2. 语句总览
 
-共 16 条语句（第 15 行是 3 种 `SHOW` 形态的合并写法）。`[]` 表示可选，`|` 表示二选一。
+共 23 条语句（第 15 行是 3 种 `SHOW` 形态的合并写法；第 17–22 行是六条数据策略语句，
+第 23 行是策略查询，详见第 11 节）。`[]` 表示可选，`|` 表示二选一。
 **每条语句对应一次或多次 REST 调用**，下表列出全部映射。
 
 | # | 语句 | REST 调用 |
@@ -88,6 +90,13 @@ val spark = PaimonRestManagement.install(SparkSession.builder())
 | 14 | `REVOKE <access>[,...] ON <资源> FROM <授权对象>` | `POST /v1/{prefix}/permissions/revoke`，每项 access 一次 |
 | 15 | `SHOW ...`（`CATALOGS` / `PRINCIPALS` / `PRINCIPAL ROLES`，3 种形态） | 见第 8 节 |
 | 16 | `SHOW PERMISSIONS IN CATALOG c [FOR <授权对象>]` | `GET /v1/{prefix}/permissions`，带 `FOR` 时加 `?principal=` |
+| 17 | `ALTER TABLE t IN CATALOG c SET ROW FILTER <过滤表达式> [FOR <主体>]` | `GET` + `PUT /api/management/v1/policies/tables/{catalog}/{database}/{table}` |
+| 18 | `ALTER TABLE t IN CATALOG c DROP ROW FILTER` | 同上 |
+| 19 | `ALTER TABLE t IN CATALOG c ALTER COLUMN col SET MASK <脱敏表达式> [ALLOW NULL ON REQUIRED] [FOR <主体>]` | 同上 |
+| 20 | `ALTER TABLE t IN CATALOG c ALTER COLUMN col DROP MASK` | 同上 |
+| 21 | `ALTER TABLE t IN CATALOG c SET POLICY FOR <主体清单>` | 同上 |
+| 22 | `ALTER TABLE t IN CATALOG c DROP POLICY` | `GET` + `DELETE /api/management/v1/policies/tables/{catalog}/{database}/{table}` |
+| 23 | `SHOW POLICY ON TABLE t IN CATALOG c` | `GET /api/management/v1/policies/tables/{catalog}/{database}/{table}` |
 
 两点容易看错的地方：
 
@@ -98,6 +107,11 @@ val spark = PaimonRestManagement.install(SparkSession.builder())
   推不出来（基址不以 `/api/management/v1` 结尾）会在发出请求前报错并点名这个配置项。
 - **`ALTER` 是两次调用。** 规格的 `PUT` 整体替换 `properties`，而 SQL 的 `ALTER` 是增量语义，
   客户端先 `GET` 当前值与 `entityVersion`、合并后再 `PUT` 回写。
+- **数据策略是「GET → 修改 → PUT 整份替换」。** 第 17–22 行都作用在每张表一份的策略对象上：
+  客户端先 `GET` 当前策略，本地改一个字段后带 `baseVersion` 整份 `PUT` 回写。并发修改时
+  冲突方收到 `409`，客户端**不会自动重试**——按设计，后写的人应先看最新版本再决定怎么改。
+  `FOR` 子句只认 `USER`（`ROLE` / `GROUP` 在解析期报错）；`DROP POLICY` 还需要确认开关，
+  见第 1.3 节的 `spark.lakehouse.rest.sql.confirm-destructive`。
 
 ### 结果集形态
 
@@ -134,11 +148,11 @@ CREATE PRINCIPAL `a``b`;           -- 名称是 a`b：反引号写成两个反�
 ### 3.3 关键字是保留字
 
 管理关键字不能作为裸标识符使用。`ALTER`、`CATALOG`、`CATALOG_ALL`、`CATALOGS`、`COLUMN`、
-`CREATE`、`DATABASE`、`DATABASE_ALL`、`DROP`、`EXCEPT`、`EXISTS`、`FOR`、`FROM`、`FUNCTION`、
-`GRANT`、`GROUP`、`IF`、`IN`、`NOT`、`ON`、`PERMISSIONS`、`PRINCIPAL`、`PRINCIPALS`、
-`PROPERTIES`、`RESET`、`REVOKE`、`ROLE`、`ROLES`、`ROTATE`、`SET`、`SHOW`、`TABLE`、`TO`、
-`UNSET`、`UNTIL`、`USER`、`VIEW`
-这 37 个词出现在名称位置时必须加反引号：
+`CREATE`、`DATABASE`、`DATABASE_ALL`、`DROP`、`EXCEPT`、`EXISTS`、`FILTER`、`FOR`、`FROM`、
+`FUNCTION`、`GRANT`、`GROUP`、`IF`、`IN`、`MASK`、`NOT`、`ON`、`PERMISSIONS`、`POLICY`、
+`PRINCIPAL`、`PRINCIPALS`、`PROPERTIES`、`RESET`、`REVOKE`、`ROLE`、`ROLES`、`ROTATE`、`ROW`、
+`SET`、`SHOW`、`TABLE`、`TO`、`UNSET`、`UNTIL`、`USER`、`VIEW`
+这 41 个词出现在名称位置时必须加反引号：
 
 ```sql
 CREATE PRINCIPAL `table`;                                       -- 裸写 TABLE 会解析失败
@@ -150,8 +164,9 @@ GRANT SELECT ON TABLE `default`.`user` IN CATALOG paimon TO ROLE reader;
 `GRANT`、`ALTER`、`DROP` 三项例外——它们既是 access 取值也是本语法的关键字，
 `GRANT ALTER ON DATABASE ...` 能解析，但 `CREATE PRINCIPAL alter` 不行。
 
-`NAMESPACE`、`POLICY`、`SEMANTIC`、`MODEL` 曾经是保留字，随着资源授权改用官方
-八种资源定位器（第 7.3 节）已经不再保留，现在可以当作普通名称使用。
+`NAMESPACE`、`SEMANTIC`、`MODEL` 曾经是保留字，随着资源授权改用官方
+八种资源定位器（第 7.3 节）已经不再保留，现在可以当作普通名称使用。`POLICY` 同期放开过，
+但随第 11 节数据策略语句的引入重新成为保留字。
 
 ### 3.4 字面量与注释
 
@@ -568,7 +583,27 @@ SHOW PERMISSIONS IN CATALOG <catalog> FOR <授权对象>
   `nextPageToken` 直到取完；若服务端始终返回新 token（异常行为），在第 100 页抛异常，
   而不是死循环。
 
+### 8.5 `SHOW POLICY`
+
+```sql
+SHOW POLICY ON TABLE <库>.<表> IN CATALOG <catalog>
+```
+
+读一张表的完整策略（行过滤 + 列脱敏 + 主体白名单），一行汇总。表上没有策略时返回 0 行，不报错。
+
+| 列 | 类型 | 说明 |
+| --- | --- | --- |
+| `version` | string | 策略版本（`entityVersion`），回写 `baseVersion` 用 |
+| `subjects` | string | 主体白名单，逗号分隔；空串 = 全部主体 |
+| `row_filter` | string | 行过滤表达式原文；没设为空串 |
+| `masked_columns` | string | 脱敏列名，逗号分隔；没设为空串 |
+| `allow_null_confirmed` | string | `true` / `false`：任一脱敏列带 `ALLOW NULL ON REQUIRED` 确认 |
+| `updated_by` | string | 最后修改人 |
+| `updated_at` | string | ISO-8601 时间戳 |
+
 ---
+
+## 9.
 
 ## 9. 错误处理
 
@@ -619,7 +654,7 @@ spark.sql("CREATE PRINCIPAL IF NOT EXISTS svc_etl").collect()
 
 ## 10. 完整示例
 
-下面这段按顺序执行即可跑通全部 16 条语句，可直接粘贴进 `spark-sql`。
+下面这段按顺序执行即可跑通全部 23 条语句，可直接粘贴进 `spark-sql`。
 前置：catalog `paimon` 存在（服务端默认配置会预置）。
 
 <!-- doc-example:begin -->
@@ -663,6 +698,17 @@ REVOKE PRINCIPAL ROLE doc_demo_engineer FROM PRINCIPAL doc_demo_etl;
 DROP PRINCIPAL ROLE doc_demo_engineer;
 DROP PRINCIPAL doc_demo_etl;
 SHOW CATALOGS;
+
+-- ⑥ 数据策略：行过滤、列脱敏、主体白名单、查询、清理
+SET spark.lakehouse.rest.sql.confirm-destructive = true;
+ALTER TABLE default.orders IN CATALOG paimon SET ROW FILTER amount > 100;
+ALTER TABLE default.orders IN CATALOG paimon ALTER COLUMN phone SET MASK show_last_n(4);
+ALTER TABLE default.orders IN CATALOG paimon SET POLICY FOR USER doc_demo_etl;
+SHOW POLICY ON TABLE default.orders IN CATALOG paimon;
+ALTER TABLE default.orders IN CATALOG paimon ALTER COLUMN phone DROP MASK;
+ALTER TABLE default.orders IN CATALOG paimon DROP ROW FILTER;
+ALTER TABLE default.orders IN CATALOG paimon DROP POLICY;
+UNSET spark.lakehouse.rest.sql.confirm-destructive;
 ```
 <!-- doc-example:end -->
 
@@ -694,7 +740,57 @@ spark.sql("SHOW PERMISSIONS IN CATALOG paimon FOR USER svc_analyst").show(trunca
 
 ---
 
-## 11. 已知边界
+## 11. 数据策略语句
+
+第 17–23 行的语句管理**每张表一份**的数据策略对象（行过滤 + 列脱敏 + 主体白名单），
+与 REST 的策略端点一一对应（设计稿 [`row-filter-column-mask-design.md`](row-filter-column-mask-design.md) §13）：
+SQL 是 REST 的另一只手，不改语义、只改入口。
+
+### 11.1 语法与 REST 的对应
+
+```sql
+ALTER TABLE <库>.<表> IN CATALOG <catalog> SET ROW FILTER <过滤表达式> [FOR <主体清单>]
+ALTER TABLE <库>.<表> IN CATALOG <catalog> DROP ROW FILTER
+ALTER TABLE <库>.<表> IN CATALOG <catalog> ALTER COLUMN <列> SET MASK <脱敏表达式>
+    [ALLOW NULL ON REQUIRED] [FOR <主体清单>]
+ALTER TABLE <库>.<表> IN CATALOG <catalog> ALTER COLUMN <列> DROP MASK
+ALTER TABLE <库>.<表> IN CATALOG <catalog> SET POLICY FOR <主体清单>
+ALTER TABLE <库>.<表> IN CATALOG <catalog> DROP POLICY
+```
+
+七条语句共享同一组端点 `/api/management/v1/policies/tables/{catalog}/{database}/{table}`：
+客户端先 `GET` 当前策略，改完一个字段后带 `baseVersion` 整份 `PUT` 回写（`DROP POLICY` 是 `DELETE`）。
+省略 `FOR` 的 `SET` 等价于「全部主体」；`FOR` 只认 `USER`，写 `ROLE` / `GROUP` 在解析期报错
+（成员关系 v1 不解析）。`DROP` 家族**报错而不是静默成功**：没有策略却 `DROP ROW FILTER`、
+列上没有 mask 却 `DROP MASK`、没有策略却 `DROP POLICY`，都是错误。
+
+### 11.2 表达式
+
+表达式不进语法：语法里它是一段自由文本，客户端交给 Spark 的 `parseExpression` 解析后
+按白名单转成 AST 再发给服务端——服务端拿到的是结构化表达式，不是 SQL 字符串。
+
+- 过滤表达式：比较与布尔运算、`IN`、`IS [NOT] NULL`、`CASE WHEN`、`CAST`，以及白名单标量函数
+  （`current_user`、`substr`、`concat`、`upper`、`lower`、`trim`、`md5`、`sha2`、`year`、`month`、
+  `regexp_replace`、`date_trunc`、`to_date`、`date_format`、`coalesce`）。`rand()` 等非确定性
+  函数在解析期被**指名拒绝**——行过滤表达式按主体缓存，非确定性会让同一行在不同会话里时隐时现。
+- 脱敏表达式：除上述白名单外还接受**标准脱敏集**（按文本形状识别，不要求是 Spark 内置函数）：
+  `mask_alphanum`、`show_first_n`、`show_last_n`、`replace_with_null`、`mask_to_fixed_value`、
+  `truncate_to_year`、`truncate_to_month`、`hash`。写在表达式尾部的 `ALLOW NULL ON REQUIRED`
+  会被剥出为独立开关，不进表达式本身。
+- `spark.sql.ansi.enabled` 开或关不影响转换——同一份文本在两种模式下产出同一份 AST。
+- 策略表达式还支持一个 SQL 侧**写不出**的占位符：`$principal_roles`（行过滤按调用者
+  持有的 principal role 名单过滤）——`$` 不是 Spark SQL 标识符的合法字符，表达式通道
+  进不来，只能从 REST API 写入。`$principal`（`current_user()` 折叠）没有这个限制。
+
+### 11.3 `DROP POLICY` 需要确认
+
+删除整份策略必须先把 `spark.lakehouse.rest.sql.confirm-destructive` 设为 `true`，
+否则报错并点名这个配置键（第 1.3 节）。只删行过滤、只删某一列的 mask、只改主体清单都不需要
+确认——它们是可逆的字段修改；`DROP POLICY` 一次性撤掉整张表的保护，不是。
+
+---
+
+## 12. 已知边界
 
 1. **管理关键字在名称位置必须加反引号。** 见第 3.3 节的完整保留字清单。
    这与 Spark 原生 SQL 的保留字行为一致，但需要在使用时留意。

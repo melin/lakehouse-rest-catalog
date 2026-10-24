@@ -309,6 +309,19 @@ public class CatalogFileService {
             throw ApiException.badRequest("download needs a file path, but got the warehouse root,"
                     + " which is a directory; pick a file from the listing instead");
         }
+        // 带策略表的收口在 catalog 级下载同样要过（§7.2）：表级端点挡住了
+        // "从表详情页下载"，但如果仓库根这条路不设防，路径拼上
+        // <db>.db/<表>/data-0.parquet 就把同一个 parquet 原样搬走了——两扇门只锁一扇
+        // 等于没锁。判据与表级同一份（启用中的策略；路径前缀见 protectedTablePaths）
+        String target = trimTrailingSlash(warehouse) + SEPARATOR + relative;
+        for (String protectedPath : dataPolicyService.protectedTablePaths(catalogName)) {
+            String root = trimTrailingSlash(protectedPath);
+            if (target.equals(root) || target.startsWith(root + SEPARATOR)) {
+                throw ApiException.forbidden("file download is not available at this location:"
+                        + " a row filter / column mask policy is active on a table under it"
+                        + " (design §7.2)");
+            }
+        }
         return openForDownload(catalog, new Path(trimTrailingSlash(warehouse)), relative,
                 "the warehouse " + warehouse);
     }

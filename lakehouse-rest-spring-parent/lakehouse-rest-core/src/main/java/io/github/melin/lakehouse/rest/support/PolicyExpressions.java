@@ -189,6 +189,11 @@ public final class PolicyExpressions {
      *                    脱敏是「这列看起来像什么」，与「谁在读」无关，语义上不该出现主体）
      */
     private static Object validate(Object node, SchemaView schema, int depth, boolean inRowFilter) {
+        return validate(node, schema, depth, inRowFilter, false);
+    }
+
+    private static Object validate(Object node, SchemaView schema, int depth, boolean inRowFilter,
+                                   boolean allowPrincipalRoles) {
         if (depth > MAX_DEPTH) {
             throw ApiException.badRequest("expression is nested deeper than " + MAX_DEPTH + " levels");
         }
@@ -239,6 +244,25 @@ public final class PolicyExpressions {
             // 下发前会被服务端折成字面量（§5.3.4）；AST 里只存占位符，不存任何人的名字
             return Map.of("principal", true);
         }
+        if (map.containsKey("principal_roles")) {
+            if (!inRowFilter) {
+                throw ApiException.badRequest(
+                        "$principal_roles is only allowed in row filters, not in masks");
+            }
+            if (!allowPrincipalRoles) {
+                // 只认 in 的 values 位：别的位置（eq 右侧、mask 参数……）语义要么含糊
+                // 要么永远不成立，与其靠 fold 期硬失败，不如在校验期就指名拒绝
+                throw ApiException.badRequest(
+                        "$principal_roles is only allowed as the values of an in operator");
+            }
+            if (!Boolean.TRUE.equals(map.get("principal_roles"))) {
+                throw ApiException.badRequest(
+                        "$principal_roles must be written as {\"principal_roles\": true}");
+            }
+            // 下发前会被服务端折成调用者持有的 principal role 名单（§5.3.4.1）；
+            // AST 里只存占位符，不存任何角色名
+            return Map.of("principal_roles", true);
+        }
         if (map.containsKey("op")) {
             return validateOp(map, schema, depth, inRowFilter);
         }
@@ -273,18 +297,25 @@ public final class PolicyExpressions {
             case "in" -> {
                 requireKeys(map, List.of("operand", "values"), "op in");
                 out.put("operand", validate(map.get("operand"), schema, depth + 1, inRowFilter));
-                if (!(map.get("values") instanceof Collection<?> values) || values.isEmpty()) {
-                    throw ApiException.badRequest("in requires a non-empty literal list");
-                }
-                List<Object> literals = new ArrayList<>();
-                for (Object value : values) {
-                    Object normalized = validate(value, schema, depth + 1, inRowFilter);
-                    if (!(asMap(normalized).containsKey("lit"))) {
-                        throw ApiException.badRequest("in list must contain literals only");
+                if (map.get("values") instanceof Map<?, ?> rolesMap
+                        && rolesMap.containsKey("principal_roles")) {
+                    // $principal_roles 作为 in 的取值集合（§5.3.4.1）：下发时折成
+                    // 调用者的角色名列表；名单为空时整条 in 折成 false（见 fold）
+                    out.put("values", validate(rolesMap, schema, depth + 1, inRowFilter, true));
+                } else if (!(map.get("values") instanceof Collection<?> values) || values.isEmpty()) {
+                    throw ApiException.badRequest(
+                            "in requires a non-empty literal list or $principal_roles");
+                } else {
+                    List<Object> literals = new ArrayList<>();
+                    for (Object value : values) {
+                        Object normalized = validate(value, schema, depth + 1, inRowFilter);
+                        if (!(asMap(normalized).containsKey("lit"))) {
+                            throw ApiException.badRequest("in list must contain literals only");
+                        }
+                        literals.add(normalized);
                     }
-                    literals.add(normalized);
+                    out.put("values", literals);
                 }
-                out.put("values", literals);
             }
             default -> throw ApiException.badRequest("unsupported op: " + op
                     + " — allowed: " + String.join(", ", BINARY_OPS.stream().sorted().toList())
@@ -568,26 +599,50 @@ public final class PolicyExpressions {
      * 在下发（resolve）时执行：客户端拿到的是字面量，改不了「我是谁」；
      * 服务端预览用同一份规则，双端语义天然一致。
      */
-    public static Map<String, Object> foldPrincipal(Map<String, Object> ast, String principal) {
+    public static Map<String, Object> foldPrincipal(Map<String, Object> ast, String principal,
+                                                    List<String> roles) {
         if (ast == null) {
             return null;
         }
-        return fold(ast, principal);
+        return fold(ast, principal, roles == null ? List.of() : roles);
     }
 
-    private static Map<String, Object> fold(Map<String, Object> node, String principal) {
+    private static Map<String, Object> fold(Map<String, Object> node, String principal,
+                                            List<String> roles) {
+        // $principal_roles 只允许出现在 in 的 values 位（parse 已保证）。角色名单为空
+        // 折成 lit false——「不属于任何角色 → 一行都看不到」，fail-closed 的方向不会错
+        if ("in".equals(node.get("op"))
+                && node.get("values") instanceof Map<?, ?> values
+                && values.containsKey("principal_roles")) {
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("op", "in");
+            out.put("operand", fold(asMap(node.get("operand")), principal, roles));
+            if (roles.isEmpty()) {
+                return Map.of("lit", Boolean.FALSE);
+            }
+            List<Object> folded = new ArrayList<>();
+            for (String role : roles) {
+                folded.add(Map.of("lit", role));
+            }
+            out.put("values", folded);
+            return out;
+        }
         Map<String, Object> out = new LinkedHashMap<>();
         for (Map.Entry<String, Object> entry : node.entrySet()) {
             String key = entry.getKey();
             Object value = entry.getValue();
             if ("principal".equals(key)) {
                 out.put("lit", principal == null ? "anonymous" : principal);
+            } else if ("principal_roles".equals(key)) {
+                throw new IllegalStateException("$principal_roles may only appear as the values"
+                        + " of an in operator (design §5.3.4.1)");
             } else if (value instanceof Map<?, ?> child) {
-                out.put(key, fold(asMap(child), principal));
+                out.put(key, fold(asMap(child), principal, roles));
             } else if (value instanceof Collection<?> children) {
                 List<Object> folded = new ArrayList<>();
                 for (Object child : children) {
-                    folded.add(child instanceof Map<?, ?> map ? fold(asMap(map), principal) : child);
+                    folded.add(child instanceof Map<?, ?> map
+                            ? fold(asMap(map), principal, roles) : child);
                 }
                 out.put(key, folded);
             } else {
@@ -623,6 +678,9 @@ public final class PolicyExpressions {
         if (map.containsKey("principal")) {
             return "current_user()";
         }
+        if (map.containsKey("principal_roles")) {
+            return "$principal_roles";
+        }
         if (map.containsKey("op")) {
             String op = String.valueOf(map.get("op"));
             return switch (op) {
@@ -638,7 +696,14 @@ public final class PolicyExpressions {
                 case "not" -> "NOT " + paren(toSql(map.get("operand")));
                 case "is_null" -> toSql(map.get("operand")) + " IS NULL";
                 case "is_not_null" -> toSql(map.get("operand")) + " IS NOT NULL";
-                case "in" -> toSql(map.get("operand")) + " IN (" + renderList((Collection<?>) map.get("values")) + ")";
+                case "in" -> {
+                    Object inValues = map.get("values");
+                    String rendered = inValues instanceof Map<?, ?> roles
+                            && roles.containsKey("principal_roles")
+                            ? "$principal_roles"
+                            : renderList((Collection<?>) inValues);
+                    yield toSql(map.get("operand")) + " IN (" + rendered + ")";
+                }
                 default -> op + "(?)";
             };
         }

@@ -2,6 +2,7 @@ package io.github.melin.lakehouse.rest;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -46,7 +47,7 @@ import tools.jackson.databind.node.JsonNodeFactory;
 
 /**
  * 行过滤 / 列脱敏策略的集成测试：CRUD 与乐观锁、表达式 fail-closed、批量下发个性化、
- * 读路径收口（预览 / 文件下载 403）与表生命周期联动。
+ * 读路径收口（分区 / 文件下载 403；预览 P1 起按策略求值，见 PolicyPreviewTests）与表生命周期联动。
  *
  * <p>表达式校验的失败分支在这里用 HTTP 层逐条打（400 + 指认形状的报错）：这批断言
  * 是 §5.3.3「建时 fail-closed」的落地——半个策略比没有策略更危险，校验失败的请求
@@ -288,6 +289,107 @@ class DataPolicyApiTests {
                 + "&tables=" + ("db.t0,".repeat(DataPolicyService.MAX_RESOLVE_TABLES + 1)), null);
     }
 
+    /**
+     * 主体白名单（§13.2 的 {@code FOR} 子句落库侧）：非空名单 = 只对名单内主体生效，
+     * 名单外的调用者按「没策略」放行（NONE），与豁免（EXEMPT）、停用（DISABLED）三态分开。
+     */
+    @Test
+    @Order(41)
+    void subjectWhitelistGatesResolve() throws Exception {
+        String principal = json(200, "GET", M + "/resolve?catalog=" + PREFIX
+                + "&tables=" + DB + "." + TABLE2, null).get("principal").asString();
+
+        // 白名单包含当前主体 → FOUND；名单随 PUT 整份替换
+        JsonNode scoped = json(200, "PUT", policyPath(DB, TABLE2),
+                "{\"baseVersion\": 3, \"subjects\": [\"" + principal + "\", \"role_member\"]}");
+        assertEquals(2, scoped.get("subjects").size());
+        assertEquals("FOUND",
+                byTable(json(200, "GET", M + "/resolve?catalog=" + PREFIX
+                                + "&tables=" + DB + "." + TABLE2, null).get("policies"),
+                        DB + "." + TABLE2).get("status").asString());
+
+        // 名单不含当前主体 → NONE（对我不生效 ≈ 表没策略，引擎放行）
+        json(200, "PUT", policyPath(DB, TABLE2),
+                "{\"baseVersion\": 4, \"subjects\": [\"someone_else\"]}");
+        assertEquals("NONE",
+                byTable(json(200, "GET", M + "/resolve?catalog=" + PREFIX
+                                + "&tables=" + DB + "." + TABLE2, null).get("policies"),
+                        DB + "." + TABLE2).get("status").asString());
+
+        // 空名单 = 全部主体，恢复默认语义
+        json(200, "PUT", policyPath(DB, TABLE2), "{\"baseVersion\": 5, \"subjects\": []}");
+        JsonNode detail = json(200, "GET", policyPath(DB, TABLE2), null);
+        assertEquals(0, detail.get("subjects").size());
+        assertEquals("FOUND",
+                byTable(json(200, "GET", M + "/resolve?catalog=" + PREFIX
+                                + "&tables=" + DB + "." + TABLE2, null).get("policies"),
+                        DB + "." + TABLE2).get("status").asString());
+    }
+
+    /**
+     * §5.3.4.1：{@code $principal_roles} 在下发时折成调用者持有的 principal role 名单
+     * （裸名、去重排序），只允许作为 {@code in} 的取值集合出现。名单为空时整条
+     * {@code in} 折成 {@code false}——不属于任何角色就一行都看不到，方向不会错。
+     * mask 里 / 普通操作数位置出现占位符都在校验期指名拒绝。
+     */
+    @Test
+    @Order(42)
+    void principalRolesFoldIntoInValues() throws Exception {
+        String principal = json(200, "GET", M + "/resolve?catalog=" + PREFIX
+                + "&tables=" + DB + "." + TABLE2, null).get("principal").asString();
+        String role = "policy_role_reader";
+        // M 以 /policies 结尾；主体与角色的端点挂在管理根上
+        String mgmt = M.replaceAll("/policies$", "");
+
+        // 测试调用者是「匿名令牌」（未登记主体）：先建出同名 principal 才能挂角色
+        json(201, "POST", mgmt + "/principals", "{\"principal\":{\"name\":\"" + principal + "\"}}");
+        json(201, "POST", mgmt + "/principal-roles", "{\"principalRole\":{\"name\":\"" + role + "\"}}");
+        json(201, "PUT", mgmt + "/principals/" + principal + "/principal-roles",
+                "{\"principalRole\":{\"name\":\"" + role + "\"}}");
+        try {
+            // 有角色：in 的 values 折成角色名列表
+            json(200, "PUT", policyPath(DB, TABLE2),
+                    "{\"baseVersion\": 6, \"rowFilter\": {\"op\": \"in\", \"operand\": {\"col\": \"dt\"},"
+                            + " \"values\": {\"principal_roles\": true}}}");
+            JsonNode folded = byTable(json(200, "GET", M + "/resolve?catalog=" + PREFIX
+                            + "&tables=" + DB + "." + TABLE2, null).get("policies"),
+                    DB + "." + TABLE2).get("rowFilter");
+            // upsert 时外层包了 coalesce（非 NULL 兜底），in 在 args[0]
+            assertEquals("coalesce", folded.get("fn").asString());
+            JsonNode inNode = folded.get("args").get(0);
+            assertEquals("in", inNode.get("op").asString());
+            assertEquals(1, inNode.get("values").size());
+            assertEquals(role, inNode.get("values").get(0).get("lit").asString(),
+                    "$principal_roles 应折成调用者持有的角色名（裸名，不带 role: 前缀）");
+
+            // 占位符只能出现在 in 的 values 位：普通操作数位置校验期指名拒绝
+            json(400, "PUT", policyPath(DB, TABLE2),
+                    "{\"baseVersion\": 7, \"rowFilter\": {\"op\": \"eq\", \"left\": {\"col\": \"dt\"},"
+                            + " \"right\": {\"principal_roles\": true}}}");
+            // mask 里出现占位符 → 400（行过滤专属）
+            json(400, "PUT", policyPath(DB, TABLE2),
+                    "{\"baseVersion\": 7, \"rowFilter\": {\"op\": \"eq\", \"left\": {\"col\": \"dt\"},"
+                            + " \"right\": {\"lit\": \"x\"}}, \"masks\": [{\"column\": \"name\","
+                            + " \"mask\": {\"principal_roles\": true}}]}");
+            // 字面量列表里夹带占位符 → 400
+            json(400, "PUT", policyPath(DB, TABLE2),
+                    "{\"baseVersion\": 7, \"rowFilter\": {\"op\": \"in\", \"operand\": {\"col\": \"dt\"},"
+                            + " \"values\": [{\"lit\": \"a\"}, {\"principal_roles\": true}]}}");
+
+            // 撤掉装配后：名单为空，整条 in 折成 false（fail-closed，不是报错也不是放行）
+            json(204, "DELETE", mgmt + "/principals/" + principal + "/principal-roles/" + role, null);
+            JsonNode empty = byTable(json(200, "GET", M + "/resolve?catalog=" + PREFIX
+                            + "&tables=" + DB + "." + TABLE2, null).get("policies"),
+                    DB + "." + TABLE2).get("rowFilter");
+            JsonNode emptyIn = empty.get("args").get(0);
+            assertFalse(emptyIn.has("op"), "角色名单为空时不应保留 in 节点");
+            assertFalse(emptyIn.get("lit").asBoolean(), "名单为空应折成字面量 false");
+        } finally {
+            json(204, "DELETE", mgmt + "/principal-roles/" + role, null);
+            json(204, "DELETE", mgmt + "/principals/" + principal, null);
+        }
+    }
+
     // ------------------------------------------------------------------ 4. 读路径收口（§6 / §7.2）
 
     @Test
@@ -295,17 +397,21 @@ class DataPolicyApiTests {
     void previewAndDownloadAreBlockedForProtectedTable() throws Exception {
         TableEntity protectedTable = table(DB, TABLE);
 
-        // 预览：403 且说明原因——「悄悄返回明文」等于把控制台变成策略的后门
+        // P1 起预览不再被策略整体拒绝（设计 §6）：控制器按调用者解析策略后交给
+        // 预览服务逐行求值。这张测试表没有真实仓库，请求会走到"打开表"那一步才
+        // 失败（400）——关键是**不是** 403 策略收口：门开了，语义由
+        // PolicyPreviewTests 的真实读路径（行过滤 + 逐列 mask）看住
         MvcResult preview = mockMvc.perform(
                 post("/api/console/v1/tables/" + protectedTable.getId() + "/preview")
                         .header("Authorization", BEARER)
                         .contentType(MediaType.APPLICATION_JSON).content("{}")).andReturn();
         String body = preview.getResponse().getContentAsString();
-        assertEquals(403, preview.getResponse().getStatus(), () -> "受保护表预览必须 403: " + body);
-        assertTrue(body.contains("row filter / column mask"),
-                () -> "403 要说明是策略收口而不是权限问题: " + body);
+        assertTrue(preview.getResponse().getStatus() != 403,
+                () -> "受保护表的预览不再被策略整体拒绝: " + body);
+        assertTrue(!body.contains("row filter / column mask policy is active"),
+                () -> "拒绝原因不应再是策略收口: " + body);
 
-        // 分区与预览同一道门（分区值是数据分布信息）
+        // 分区列举维持拒绝（分区值是 transform 后的值，mask 语义套不上去，§6）
         MvcResult partitions = mockMvc.perform(
                 get("/api/console/v1/tables/" + protectedTable.getId() + "/partitions")
                         .header("Authorization", BEARER)).andReturn();
@@ -315,6 +421,26 @@ class DataPolicyApiTests {
         ApiException download = org.junit.jupiter.api.Assertions.assertThrows(ApiException.class,
                 () -> fileService.openTableFile(protectedTable.getId(), "data.parquet"));
         assertEquals(403, download.getStatus());
+
+        // catalog 级下载同一道门：仓库根路径拼上表目录就能绕开表级端点——
+        // 两扇门只锁一扇等于没锁（§7.2；判据同一份「启用中的策略」，路径前缀比对）
+        ApiException catalogDownload = org.junit.jupiter.api.Assertions.assertThrows(ApiException.class,
+                () -> fileService.openFile(PREFIX, DB + ".db/" + TABLE + "/data-0.parquet"));
+        assertEquals(403, catalogDownload.getStatus());
+
+        // 快照统计打码（§7.3）：statistics 是服务端唯一可能携带列级 min/max/nullCount
+        // 的载体（Paimon 优化器统计的序列化串）。有 mask 的策略在 → 置空下发，
+        // 行数等聚合值不受影响；没策略 → 原样回
+        TableDtos.Snapshot snapshot = new TableDtos.Snapshot(1, "uuid-stats", 901L, null,
+                "base.manifest", "delta.manifest", null, "index.manifest",
+                "tester", "901", "APPEND", System.currentTimeMillis(),
+                Map.of(), 7L, 7L, 0L, 0L, "col-stats-blob");
+        assertTrue(tableService.commit(PREFIX, DB, TABLE,
+                new TableDtos.CommitTableRequest(protectedTable.getId(), null, snapshot, null)).success());
+        TableDtos.TableSnapshot masked = tableService.getTableSnapshot(PREFIX, DB, TABLE).snapshot();
+        assertEquals(7L, masked.recordCount(), "行数聚合不在打码范围——只藏列级统计");
+        assertNull(masked.snapshot().statistics(),
+                "带 mask 的策略表：快照统计必须置空，不能下发列级 min/max 的序列化串（§7.3）");
 
         // 删掉策略后三处口子同步放开（403 判据是「启用中的策略」，不是表的属性）
         json(200, "DELETE", policyPath(DB, TABLE), null);
@@ -327,6 +453,18 @@ class DataPolicyApiTests {
         }
         assertTrue(downloadStatus != 403,
                 "删除策略后下载不再被策略收口拒绝（404 是文件不存在，另一回事）");
+        int catalogDownloadStatus;
+        try {
+            fileService.openFile(PREFIX, DB + ".db/" + TABLE + "/data-0.parquet");
+            catalogDownloadStatus = 200;
+        } catch (ApiException error) {
+            catalogDownloadStatus = error.getStatus();
+        }
+        assertTrue(catalogDownloadStatus != 403,
+                "删除策略后 catalog 级下载同样放开（404 是文件不存在，另一回事）");
+        TableDtos.TableSnapshot released = tableService.getTableSnapshot(PREFIX, DB, TABLE).snapshot();
+        assertEquals("col-stats-blob", released.snapshot().statistics(),
+                "删除策略后快照统计原样下发：打码跟策略走，不是表的属性");
         MvcResult previewAfter = mockMvc.perform(
                 post("/api/console/v1/tables/" + protectedTable.getId() + "/preview")
                         .contentType(MediaType.APPLICATION_JSON).content("{}")).andReturn();

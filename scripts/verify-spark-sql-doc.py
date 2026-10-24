@@ -36,6 +36,9 @@ GRAMMAR = os.path.join(SPARK, "shared/src/main/antlr4/io/github/melin/lakehouse/
 COMMANDS = os.path.join(SPARK, "shared/src/main/scala/io/github/melin/lakehouse/rest/spark/ManagementCommands.scala")
 EXTENSIONS = os.path.join(SPARK, "shared/src/main/scala/io/github/melin/lakehouse/rest/spark/ManagementSparkExtensions.scala")
 CLIENT = os.path.join(SPARK, "lakehouse-rest-spark-common/src/main/java/io/github/melin/lakehouse/rest/spark/client/ManagementApiClient.java")
+# 数据策略的七条命令在独立文件里（output 列与 SQL 侧配置键都出自这里）
+POLICY_COMMANDS = os.path.join(
+    SPARK, "shared/src/main/scala/io/github/melin/lakehouse/rest/spark/PolicySqlCommands.scala")
 # 参考文档里的资源定位器与 access 词表来自服务端的官方权限模型，实现就是这份 DTO
 # 拆模块后 PermissionDtos 落在 core（它与格式无关，两套协议面都要用权限词表）。
 PERMISSIONS = os.path.join(
@@ -101,6 +104,15 @@ SIGNATURES = [
     ("showPrincipalRoles",   r"SHOW\s+PRINCIPAL\s+ROLES\b"),
     ("showPermissions",      r"SHOW\s+PERMISSIONS\b"),
     ("showCatalogs",         r"SHOW\s+CATALOGS\b"),
+    # 数据策略（设计稿 §13）：六条修改语句都是 ALTER TABLE 形状，靠
+    # ROW FILTER / MASK / POLICY 关键字链与原生 ALTER TABLE 区分
+    ("setRowFilter",         r"SET\s+ROW\s+FILTER\b"),
+    ("dropRowFilter",        r"DROP\s+ROW\s+FILTER\b"),
+    ("setColumnMask",        r"SET\s+MASK\b"),
+    ("dropColumnMask",       r"DROP\s+MASK\b"),
+    ("setPolicySubjects",    r"SET\s+POLICY\b"),
+    ("dropPolicy",           r"DROP\s+POLICY\b"),
+    ("showPolicy",           r"SHOW\s+POLICY\b"),
 ]
 check("语句标识表覆盖全部语法备选",
       sorted(b for b, _ in SIGNATURES) == sorted(branches),
@@ -130,7 +142,7 @@ else:
     example_body = example.group(1)
 missing = [name for name, pattern in SIGNATURES
            if not re.search(pattern, example_body, re.I)]
-check("示例块覆盖全部 16 条语句", not missing,
+check(f"示例块覆盖全部 {len(SIGNATURES)} 条语句", not missing,
       "示例中缺少：" + ", ".join(missing))
 
 # ------------------------------------------------------------------ 3. access 词表
@@ -216,8 +228,11 @@ check("第 7.3 节列出了八种资源写法",
 
 # ------------------------------------------------------------------ 5. 结果列
 
-commands = read(COMMANDS)
-impl_columns = sorted(set(re.findall(r'attr\("([a-z_]+)"', commands)))
+commands = read(COMMANDS) + read(POLICY_COMMANDS)
+# 列名有两种写法：直呼 attr("name" ...)（ManagementCommands）与
+# ("name", nullable) 元组循环建列（ShowPolicyCommand）
+impl_columns = sorted(set(re.findall(r'attr\("([a-z_]+)"', commands))
+                      | set(re.findall(r'\("([a-z_]+)", (?:true|false)\)', commands)))
 unused = [name for name in impl_columns if f"`{name}`" not in doc]
 check(f"实现声明的全部列名都在文档中出现（{len(impl_columns)} 个）",
       not unused,
@@ -229,6 +244,8 @@ SHOW_COLUMNS = {
     "SHOW PRINCIPAL ROLES": ["name", "federated"],
     "SHOW PERMISSIONS": ["catalog", "principal", "type", "resource", "database",
                          "object_name", "columns", "access", "expire_time"],
+    "SHOW POLICY": ["version", "subjects", "row_filter", "masked_columns",
+                    "allow_null_confirmed", "updated_by", "updated_at"],
 }
 section_show = re.search(r"## 8\. SHOW(.*?)\n## 9\.", doc, re.S).group(1)
 for label, columns in SHOW_COLUMNS.items():
@@ -240,7 +257,7 @@ for label, columns in SHOW_COLUMNS.items():
 
 # ------------------------------------------------------------------ 6. 配置项
 
-extensions = read(EXTENSIONS)
+extensions = read(EXTENSIONS) + read(POLICY_COMMANDS)
 config_keys = sorted(set(re.findall(r'val\s+[A-Z_]+\s*=\s*"(spark\.[a-zA-Z.]+)"', extensions)))
 docs_keys = set(re.findall(r"`(spark\.lakehouse\.rest\.[a-zA-Z.]+)`", doc))
 missing_keys = [key for key in config_keys if key not in docs_keys]

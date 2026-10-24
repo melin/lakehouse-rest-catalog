@@ -1,12 +1,18 @@
 # 行过滤与列脱敏（Row Filter / Column Mask）技术方案
 
-> 状态：**服务端 P0 与 Spark 引擎侧均已实现**。
-> 服务端：两张策略表 + 表达式 AST 校验 + 管理与下发端点 + 预览 / 文件下载收口 +
+> 状态：**服务端 P0、Spark 引擎侧与服务端 AST 求值器均已实现**。
+> 服务端：两张策略表 + 表达式 AST 校验 + 管理与下发端点 + 文件下载收口 +
 > 表生命周期联动（`DataPolicyApiTests` / `DataPolicyDisabledTests`）。
 > 引擎侧：`PolicyRelation` 逻辑节点 + PostHocResolution 注入 + `PolicyEnforcementStrategy` 物理展开 +
 > `PolicyProjectExec`，3.5.9 / 4.1.2 双版本测试全绿（`PolicySparkTests`，见 §9.1 实测差异）。
-> **未实现**：服务端 AST 求值器（预览仍拒绝，§6）、
-> 控制台页面（§7）与 §13 的 SQL 语句——本文相应小节仍是它们的实现依据。
+> 求值器：预览按策略逐行求值（`PolicyExpressionEvaluator` + `PolicyPreviewTests`，§6 P1）。
+> 元数据打码（§7.3）：带 mask 时快照 `statistics` 置空、预览分区回显对被脱敏分区列打码、
+> catalog 级文件下载补上收口（`DataPolicyApiTests`）。
+> §13 的七条 SQL 管理语句已实现（`PolicySqlTests`，3.5.9 / 4.1.2 双版本全绿；保留字加了
+> `ROW` / `FILTER` / `MASK` / `POLICY`，`spark-sql-reference.md` §11 与 `verify-spark-sql-doc.py` 同步）。
+> `$principal_roles` 占位符已实现（§5.3.4.1：行过滤按调用者的 principal role 过滤，
+> 服务端 `DataPolicyApiTests` + 引擎 `PolicySparkTests` 双侧覆盖）。
+> **未实现**：控制台页面（§7）——本文相应小节仍是它的实现依据。
 > 本文先回答「能不能做、做到什么程度、代价在哪」，实现取舍与设计稿的差异以代码为准。
 >
 > 关联文档：[`authorization.md`](authorization.md)（12 项 access 与判权链）、  
@@ -372,6 +378,36 @@ row_filter: {"op": "eq", "left": {"col": "owner"}, "right": {"principal": true}}
 
 代价：策略缓存必须**按主体分片**（不同人拿到的表达式不同）。这本来就是必需的——豁免名单也是按人算的。
 
+#### 5.3.4.1 `$principal_roles`：把「组」折成角色名列表
+
+`$principal` 解决「看自己的行」，但 Databricks 的 RLS 还有一半长这样：
+`is_account_group_member('cn_reader')`——按**组**放行。我们没有可下发的组判断函数，
+用第二个占位符补上：
+
+```json
+{"op": "in", "operand": {"col": "dt"}, "values": {"principal_roles": true}}
+```
+
+语义：**`$principal_roles` 在下发时折成调用者持有的 principal role 名单**（裸名、去重、
+按字典序排），即 `{region} IN ['cn_reader', 'vip']`。三条钉死的规则：
+
+1. **位置只有一处：`in` 的 `values`。** 它是字符串列表，出现在任何别的位置（比较的一侧、
+   mask 参数、`CASE WHEN` 分支）语义要么含糊要么永远不成立——校验期就指名拒绝，不留给
+   折叠期硬失败。因此它和 `$principal` 一样只允许出现在行过滤里（mask 读的是明文原值，
+   按调用者变 mask 等于脱敏结果随人漂移）。
+2. **名单为空折成字面量 `false`，整条 `in` 消失。** 「不属于任何角色」的正确方向是
+   一行都看不到，不是报错也不是放行——fail-closed 的方向不会错。名单在
+   `AuthorizationService.principalRoleNames(principal)` 算出来（裸名，区别于判权用的
+   `role:` 前缀候选串）。
+3. **引擎与求值器零改动。** 折叠发生在服务端（resolve / 预览共用 `foldPrincipal`），引擎
+   收到的已经是 `in + 字面量列表`；两侧各留一条「占位符原样到达 → 指名拒绝」的防御分支。
+   策略缓存本来就按 `(catalog, database, table, principal)` 分片，角色名单跟着主体走，
+   缓存键不用动。
+
+与 `$principal` 的一个差别：**SQL 侧写不出这个占位符**——`$` 不是 Spark SQL 标识符的
+合法字符，§13 的表达式通道进不来；它只能从 REST API（最终是控制台）写入。这不是缺陷：
+按主体装配角色本就是治理面的操作，把入口收在治理面是刻意的。
+
 #### 5.3.5 求值顺序：单层投影，所有 mask 读原值
 
 ```
@@ -510,9 +546,9 @@ Project( mask_1(a1) AS a1, mask_2(a2, ref=b) AS a2, ... )   ← 单层；所有�
 
 | 路径                                                          | 现状                                | 本方案处理                                                                                           |
 | ----------------------------------------------------------- | --------------------------------- | ----------------------------------------------------------------------------------------------- |
-| 表数据预览（`/api/console/v1/...preview`）                         | 直接用 Paimon / Iceberg Java API 读文件 | **P0：带策略的表直接拒绝预览**（403 + 说明）。P1：实现一个 AST 求值器（白名单函数子集），逐行过滤 + 列变换后再返回。**不做「悄悄返回明文」**——那等于控制台成了后门 |
+| 表数据预览（`/api/console/v1/...preview`）                         | 直接用 Paimon / Iceberg Java API 读文件 | **P0：带策略的表直接拒绝预览**（403 + 说明）。**P1（已实现）**：AST 求值器（`PolicyExpressionEvaluator`，白名单函数子集）逐行过滤 + 列变换后再返回；求值顺序按 §5.3.5（先裁行、后同层 mask、参数读原值）；用户条件落到被脱敏列时**指名拒绝**（400）——引擎对这类谓词比较的是脱敏值（§5.7），预览在 reader 里按原值判，两条语义放一起就是静默分歧。**不做「悄悄返回明文」**——那等于控制台成了后门 |
 | 文件列表下载（catalog 详情页可下载 parquet）                              | 可下载物理文件                           | **带策略的表禁止下载**（403）。这一条优先级最高：一个 parquet 原文件就是全表明文                                                |
-| 表统计 / 元数据（nullCount、min/max、record_count、lower/upper bound） | 元数据端点会返回列级统计                      | 对**被脱敏列**不下发 `min`/`max`/`nullCount`（这些能反推原值范围）。行过滤不改变统计口径，但会让「总行数」与「可见行数」不一致，页面上要标注            |
+| 表统计 / 元数据（nullCount、min/max、record_count、lower/upper bound） | 列级统计的唯一载体是快照 `statistics` 字段（优化器统计的序列化串） | **P1（已实现）**：策略带 mask 时快照响应的 `statistics` 整体置空（`DataPolicyService.hasActiveMask`，§7.3）；行数 / 文件数 / 字节数聚合值照常。行过滤不改变统计口径，但会让「总行数」与「可见行数」不一致，预览 warnings 里已标注 |
 
 > P1 的求值器（Java 侧，遍历同一棵 AST）是这套设计里**唯一一处双实现**：Spark 侧用 Catalyst，  
 > 服务端用自研求值器。风险是两边语义漂移（时区、NULL 排序、字符串截断、`regexp_replace` 的  
@@ -568,8 +604,20 @@ catalog 详情页的下载功能会给出原始 parquet。带策略的表必须�
 ### 7.3 元数据泄露（中，可修）
 
 - 列级 `min`/`max`、`nullCount`：能反推被脱敏列的原值范围 → 对被脱敏列不下发（§6）。
+  **实现落点（P1 已做）**：本仓的快照统计走 `TableSnapshotEntity.statistics`（Paimon
+  优化器统计的序列化串）——它是唯一可能携带列级统计的载体，且是不透明串、没法按列
+  挑着下发，所以「启用中策略带 mask」时**整体置空**（判据与理由见
+  `DataPolicyService.hasActiveMask`）；纯行过滤策略不改列值，统计照常下发。行数 /
+  文件数 / 字节数等聚合值不反推任何列的原值，不在打码范围。
 - 分区值：如果分区列就是被脱敏列（少见但存在），分区列表本身就是明文 → 分区值对带策略表打码。
+  **实现落点（P1 已做）**：分区列举端点维持 403（§6）；P1 起预览放开后，预览响应的
+  分区回显（`resolved` / `label`）对「分区列 ∈ 脱敏目标」的表打码为占位符——只打回显
+  这一份，游标与 fingerprint 用原值（不透明签名令牌 + 服务端一致性判据），分区裁剪照常。
 - 文件名 / 路径：一般不含数据，但 Hive 风格的分区目录名含分区值 → 同上。
+  **实现落点（P1 已做 / 记录残留）**：文件**下载**带策略表一律 403（§7.2，表级与
+  catalog 级两扇门都锁）；文件**列举**保持开放——它是运维者视角的仓库浏览器（可整体
+  关闭），目录名里的分区值只对「分区列恰是被脱敏列」的表泄露，为此打码目录条目会
+  破坏导航（服务端无法把打码后的名字还原成请求路径），故**记录为已知残留**而非打码。
 
 ### 7.4 换引擎（中，本方案不覆盖）
 
@@ -708,7 +756,7 @@ CREATEFUNCTION / CREATEVIEW / LIST / SELECT / UPDATE / GRANT`），**不能自�
 | 期      | 内容                                                                        | 不做什么                      |
 | ------ | ------------------------------------------------------------------------- | ------------------------- |
 | **P0** | 策略模型 + 端点 + 控制台；Spark 侧行过滤 + 列脱敏（`PolicyRelation`）；服务端三条读路径**全部拒绝**带策略的表  | 不做服务端求值器；不做 Flink / Trino |
-| **P1** | 服务端 AST 求值器（预览可用）+ 双端用例表对齐；元数据打码；`$principal_roles`；策略管理语句（§13，7 条，含保留字同步） | 不做存储层收口；SQL 不做试算（§13.9） |
+| **P1** | 服务端 AST 求值器（预览可用）+ 双端用例表对齐；元数据打码；策略管理语句（§13，7 条，含保留字同步）；`$principal_roles`——**全部已实现** | 不做存储层收口；SQL 不做试算（§13.9） |
 | **P2** | `SupportsAccessControl` 落地后切到官方 API；Trino `AccessControl`；ABAC（标签驱动的策略分发） | —                         |
 | **P3** | 整列不可见（`readableColumns`）+ 让 `COLUMN:SELECT` 真正有执行点；`EXPLAIN` 表达式打码（§7.6 方案 a） | 需要动分析入口或协议 schema（§5.8），单独排期 |
 
@@ -725,7 +773,7 @@ CREATEFUNCTION / CREATEVIEW / LIST / SELECT / UPDATE / GRANT`），**不能自�
 | 7  | `INSERT` / `UPDATE` / `DELETE` 看不到策略影响        | 三条 DML                                             |
 | 8  | 策略服务不可达 → 读**失败**（fail-closed），不是返回明文         | 关掉端点后查询                                            |
 | 9  | 改策略后 TTL 内旧值、TTL 后新值                          | 用 `TTL=0` 与 `TTL=60` 各测一次                          |
-| 10 | 带策略的表：预览 403、文件下载 403、被脱敏列的 `min/max` 不下发     | 三个端点各一条                                            |
+| 10 | 带策略的表：文件下载 403（表级 + catalog 级）、分区列举 403、带 mask 时快照 `statistics` 置空、预览分区回显对被脱敏分区列打码 | 各端点一条（预览自 P1 起按策略求值：行过滤 + mask，见 §6 与 `PolicyPreviewTests`）                                            |
 | 11 | 豁免主体读到明文                                      | 两个主体对比                                             |
 | 12 | 3.5 与 4.1 的用例表结果**逐行一致**                      | 同一份用例表跑两遍                                          |
 | 13 | 有策略的表查了，计划里**必须**有 `PolicyRelation`；没有就是 bug | `EXPLAIN EXTENDED` 文本断言（§3.4 第 2 条）。这是防 Kyuubi #3186 那种「静默放行」的唯一判据 |

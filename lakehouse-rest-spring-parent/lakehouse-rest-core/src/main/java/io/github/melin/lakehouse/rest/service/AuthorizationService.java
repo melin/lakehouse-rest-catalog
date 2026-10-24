@@ -4,6 +4,7 @@ import io.github.melin.lakehouse.rest.config.RequestContext;
 import io.github.melin.lakehouse.rest.config.RestServerProperties;
 import io.github.melin.lakehouse.rest.domain.entity.PermissionAssignmentEntity;
 import io.github.melin.lakehouse.rest.domain.entity.PrincipalRoleAssignmentEntity;
+import io.github.melin.lakehouse.rest.domain.entity.PrincipalRoleEntity;
 import io.github.melin.lakehouse.rest.domain.repo.CatalogRepository;
 import io.github.melin.lakehouse.rest.domain.repo.PermissionAssignmentRepository;
 import io.github.melin.lakehouse.rest.domain.repo.PrincipalRepository;
@@ -266,6 +267,31 @@ public class AuthorizationService {
             }
         });
         return List.copyOf(candidates);
+    }
+
+    /**
+     * 主体持有的全部 principal role 名（裸名、去重排序）。
+     *
+     * <p>给数据策略的 {@code $principal_roles} 占位符用（§5.3.4.1）：行过滤表达式
+     * {@code dt IN $principal_roles} 在下发时折成这份名单。与
+     * {@link #principalCandidates} 的区别：那边拼 {@code role:} 前缀给判权比对用，
+     * 这边是裸名——策略作者拿它跟业务列的值做匹配，前缀只会碍事。
+     */
+    @Transactional(readOnly = true)
+    public List<String> principalRoleNames(String principalName) {
+        if (principalName == null || principalName.isBlank()) {
+            return List.of();
+        }
+        return principalRepository.findByName(principalName)
+                .map(principal -> principalRoleAssignmentRepository
+                        .findByPrincipalId(principal.getId()).stream()
+                        .map(assignment -> principalRoleRepository.findById(assignment.getPrincipalRoleId()))
+                        .flatMap(Optional::stream)
+                        .map(PrincipalRoleEntity::getName)
+                        .distinct()
+                        .sorted()
+                        .toList())
+                .orElse(List.of());
     }
 
     /**

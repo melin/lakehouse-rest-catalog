@@ -23,15 +23,20 @@ public final class DataPolicyDtos {
     }
 
     /**
-     * 整份策略的 PUT 请求体：提交的是<b>完整策略</b>（行过滤 + 全部 mask + 豁免名单），
-     * 不是增量——逐列打补丁会让「删一条 mask」需要第四种动作，PUT 的幂等性也保不住。
+     * 整份策略的 PUT 请求体：提交的是<b>完整策略</b>（行过滤 + 全部 mask + 豁免名单 +
+     * 主体白名单），不是增量——逐列打补丁会让「删一条 mask」需要第四种动作，PUT 的幂等性
+     * 也保不住。
      *
      * <p>{@code baseVersion}：首次创建传 {@code null}（或省略）；更新必须带上次读到的
      * {@code version}，不符回 409（与 catalog 实体同一机制）。
+     *
+     * <p>{@code subjects}：主体白名单（§13.2 SQL 的 {@code FOR} 子句写入）。空 / null =
+     * 全部主体生效；非空 = 只对名单内主体生效。SQL 命令经 GET → 修改 → PUT 全量回写时，
+     * 没带 {@code FOR} 子句的语句必须把上一次读到的名单原样带回——PUT 是整份替换。
      */
     public record PolicyUpsertRequest(Integer baseVersion, Boolean enabled, Object rowFilter,
                                       List<MaskUpsert> masks, List<String> exemptPrincipals,
-                                      String enforcedScope) {
+                                      List<String> subjects, String enforcedScope) {
     }
 
     // ------------------------------------------------------------------ 读取
@@ -44,7 +49,8 @@ public final class DataPolicyDtos {
     /** 一张表的策略详情。没配过策略时端点回 200 + {@code null} 语义见控制器。 */
     public record PolicyDetail(String table, boolean enabled, Map<String, Object> rowFilter,
                                String rowFilterSql, List<MaskEntry> masks,
-                               List<String> exemptPrincipals, String enforcedScope, int version,
+                               List<String> exemptPrincipals, List<String> subjects,
+                               String enforcedScope, int version,
                                String createdBy, Long createdAt, String updatedBy, Long updatedAt) {
     }
 

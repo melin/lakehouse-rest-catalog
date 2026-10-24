@@ -114,6 +114,7 @@ USE `lakehouse_catalog`;
         updated_by varchar(255) comment '最后更新者主体名（写入前已按列宽归一化）',
         exempt_json text comment '豁免主体名单（JSON 字符串数组；名单内的人不走策略）',
         row_filter_json text comment '行过滤表达式（白名单 AST 的 JSON；空 = 不过滤行）',
+        subjects_json text comment '主体白名单（JSON 字符串数组；空 = 全部主体生效；SQL 的 FOR 子句写入）',
         primary key (id)
     ) comment='行过滤/列脱敏的表级策略（一表一行，行过滤 + 豁免名单 + 版本）' engine=InnoDB;
 

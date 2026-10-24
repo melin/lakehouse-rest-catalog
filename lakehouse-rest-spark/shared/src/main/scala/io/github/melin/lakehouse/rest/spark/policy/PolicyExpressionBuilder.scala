@@ -190,6 +190,10 @@ private[spark] object PolicyExpressionBuilder {
       throw new PolicyEnforcementException(
         "the $principal placeholder reached the engine without being folded into a literal;"
           + " the policy service must substitute it before delivery (design §5.3.4)")
+    } else if (map.containsKey("principal_roles")) {
+      throw new PolicyEnforcementException(
+        "the $principal_roles placeholder reached the engine without being folded into a role"
+          + " list; the policy service must substitute it before delivery (design §5.3.4.1)")
     } else if (map.containsKey("op")) {
       buildOp(map, attrs, inRowFilter)
     } else if (map.containsKey("fn")) {

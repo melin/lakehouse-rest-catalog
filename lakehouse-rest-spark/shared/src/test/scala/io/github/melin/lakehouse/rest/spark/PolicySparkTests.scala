@@ -95,6 +95,32 @@ class PolicySparkTests {
    * 第 6 条：子查询 / CTE / 视图 / 自连接各自生效——注入点在分析之后，
    * 这些形态全部已内联成 DataSourceV2Relation。
    */
+  /**
+   * §5.3.4.1 的引擎半边：服务端把 {@code $principal_roles} 折成字面量列表后，
+   * {@code in} 按普通行过滤执行——引擎对占位符本身零感知。
+   */
+  @Test
+  def foldedInValuesRowFilterIsEnforced(): Unit = {
+    ensureTables()
+    usePolicy(Map(icebergRef ->
+      policy(rowFilterInFoldedRoles, Seq("phone" -> MaskPhoneFirst4), exempted = false)))
+    assertEquals(Seq(1L, 3L, 4L),
+      idsOf(query(s"SELECT id FROM $icebergTable ORDER BY id")),
+      "折叠后的 in + 字面量列表应等价于普通行过滤")
+  }
+
+  /** fail-closed：折叠被绕过（占位符原样到达引擎）时读失败，并指名占位符。 */
+  @Test
+  def unfoldedPrincipalRolesPlaceholderFailsClosed(): Unit = {
+    ensureTables()
+    usePolicy(Map(icebergRef ->
+      policy("""{"principal_roles": true}""", Seq.empty, exempted = false)))
+    val e = assertThrows(classOf[PolicyEnforcementException],
+      () => query(s"SELECT id FROM $icebergTable").collect())
+    assertTrue(e.getMessage.contains("principal_roles"),
+      "报错应指名 $principal_roles 占位符: " + e.getMessage)
+  }
+
   @Test
   def policySurvivesSubqueryCteViewAndSelfJoin(): Unit = {
     ensureTables()
@@ -371,6 +397,10 @@ object PolicySparkTests {
   /** 行过滤：salary > 100（引用被脱敏列，验证「行过滤看原值」，§10.2 第 3 条）。 */
   private def rowFilterSalaryGt100: String =
     """{"fn":"coalesce","args":[{"op":"gt","left":{"col":"salary"},"right":{"lit":100}},{"lit":false}]}"""
+
+  /** 行过滤：region IN (角色名列表)——$principal_roles 折叠后到达引擎的形状（§5.3.4.1）。 */
+  private def rowFilterInFoldedRoles: String =
+    """{"fn":"coalesce","args":[{"op":"in","operand":{"col":"region"},"values":[{"lit":"CN"}]},{"lit":false}]}"""
 
   /** mask：手机号保留前 4 位，其余按 alphanum 替换。 */
   private val MaskPhoneFirst4 = """{"fn":"show_first_n","args":[4]}"""

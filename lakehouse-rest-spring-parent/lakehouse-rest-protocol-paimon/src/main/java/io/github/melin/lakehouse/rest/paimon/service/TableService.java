@@ -27,6 +27,7 @@ import io.github.melin.lakehouse.rest.event.CatalogEvent;
 import io.github.melin.lakehouse.rest.event.CatalogEventPublisher;
 import io.github.melin.lakehouse.rest.event.CatalogEventType;
 import io.github.melin.lakehouse.rest.service.CatalogService;
+import io.github.melin.lakehouse.rest.service.DataPolicyService;
 import io.github.melin.lakehouse.rest.support.ApiException;
 import io.github.melin.lakehouse.rest.support.CatalogFormat;
 import io.github.melin.lakehouse.rest.support.Json;
@@ -91,6 +92,7 @@ public class TableService {
     private final RestServerProperties properties;
     private final TableMetadataService tableMetadataService;
     private final CatalogEventPublisher events;
+    private final DataPolicyService dataPolicyService;
 
     // ------------------------------------------------------------------ 列举
 
@@ -577,16 +579,17 @@ public class TableService {
     @Transactional(readOnly = true)
     public TableDtos.GetTableSnapshotResponse getTableSnapshot(String prefix, String databaseName, String tableName) {
         TableEntity table = tableLookup.requireTable(prefix, databaseName, tableName);
+        boolean maskStatistics = dataPolicyService.hasActiveMask(table);
         TableSnapshotEntity entity = snapshotRepository.findFirstByTableIdOrderBySnapshotIdDesc(table.getId())
                 .orElseThrow(() -> ApiException.snapshotNotExist(0));
         if (entity.getFileCount() == null && entity.getFileSizeInBytes() == null
                 && entity.getLastFileCreationTime() == null) {
             PartitionDtos.PartitionStatistics totals = partitionService.totals(table.getId());
             return new TableDtos.GetTableSnapshotResponse(new TableDtos.TableSnapshot(
-                    toSnapshot(entity), entity.getRecordCount(),
+                    toSnapshot(entity, maskStatistics), entity.getRecordCount(),
                     totals.fileSizeInBytes(), totals.fileCount(), totals.lastFileCreationTime()));
         }
-        return new TableDtos.GetTableSnapshotResponse(toTableSnapshot(entity));
+        return new TableDtos.GetTableSnapshotResponse(toTableSnapshot(entity, maskStatistics));
     }
 
     /**
@@ -632,7 +635,8 @@ public class TableService {
             entity = snapshotRepository.findByTableIdAndSnapshotId(table.getId(), tag.getSnapshotId())
                     .orElseThrow(() -> ApiException.snapshotNotExist(tag.getSnapshotId()));
         }
-        return new TableDtos.GetVersionSnapshotResponse(toSnapshot(entity));
+        return new TableDtos.GetVersionSnapshotResponse(
+                toSnapshot(entity, dataPolicyService.hasActiveMask(table)));
     }
 
     @Transactional(readOnly = true)
@@ -640,9 +644,11 @@ public class TableService {
                                                          Integer maxResults, String pageToken,
                                                          Integer page, Integer pageSize) {
         TableEntity table = tableLookup.requireTable(prefix, databaseName, tableName);
+        // 一次判定整批复用：逐行去问策略服务会把 N 个快照变成 N 次三段名反查
+        boolean maskStatistics = dataPolicyService.hasActiveMask(table);
         List<TableDtos.Snapshot> snapshots = new ArrayList<>();
         for (TableSnapshotEntity entity : snapshotRepository.findAllByTableIdOrderBySnapshotIdDesc(table.getId())) {
-            snapshots.add(toSnapshot(entity));
+            snapshots.add(toSnapshot(entity, maskStatistics));
         }
         Paging.Paged<TableDtos.Snapshot> paged = Paging.paged(snapshots, page, pageSize);
         if (paged != null) {
@@ -757,7 +763,13 @@ public class TableService {
                 table.getUpdatedBy());
     }
 
-    private TableDtos.Snapshot toSnapshot(TableSnapshotEntity entity) {
+    /**
+     * 组装快照 DTO。{@code maskStatistics} 是快照统计打码开关（§7.3）：表的启用中策略
+     * 带列脱敏时，{@code statistics} 原样置空——那是服务端唯一可能携带列级
+     * min/max/nullCount 的载体（Paimon 优化器统计的序列化串，不透明、没法按列挑），
+     * 判据与理由见 {@link DataPolicyService#hasActiveMask}。
+     */
+    private TableDtos.Snapshot toSnapshot(TableSnapshotEntity entity, boolean maskStatistics) {
         return new TableDtos.Snapshot(
                 entity.getVersion(),
                 entity.getUuid(),
@@ -776,20 +788,24 @@ public class TableService {
                 entity.getDeltaRecordCount(),
                 entity.getChangelogRecordCount(),
                 entity.getWatermark(),
-                entity.getStatistics());
+                maskStatistics ? null : entity.getStatistics());
     }
 
     /** 取指定快照的 DTO，不存在时抛出 404 SNAPSHOT。 */
     @Transactional(readOnly = true)
     public TableDtos.Snapshot snapshot(String tableId, long snapshotId) {
+        // 表已不存在（策略随 DROP 级联删）时照常回快照：没有 mask 就没有打码的理由
+        boolean maskStatistics = tableRepository.findById(tableId)
+                .map(dataPolicyService::hasActiveMask)
+                .orElse(false);
         return snapshotRepository.findByTableIdAndSnapshotId(tableId, snapshotId)
-                .map(this::toSnapshot)
+                .map(entity -> toSnapshot(entity, maskStatistics))
                 .orElseThrow(() -> ApiException.snapshotNotExist(snapshotId));
     }
 
-    private TableDtos.TableSnapshot toTableSnapshot(TableSnapshotEntity entity) {
+    private TableDtos.TableSnapshot toTableSnapshot(TableSnapshotEntity entity, boolean maskStatistics) {
         return new TableDtos.TableSnapshot(
-                toSnapshot(entity),
+                toSnapshot(entity, maskStatistics),
                 entity.getRecordCount(),
                 entity.getFileSizeInBytes(),
                 entity.getFileCount(),

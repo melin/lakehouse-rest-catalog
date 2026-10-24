@@ -620,6 +620,116 @@ public final class ManagementApiClient {
                 mapper.getTypeFactory().constructMapType(LinkedHashMap.class, String.class, Object.class));
     }
 
+    // ------------------------------------------------------------------ data policy（管理语句 §13.2）
+
+    private static String policyPath(String catalog, String database, String table) {
+        // /policies/tables/... —— 不是 /policies/resolve/tables/...，resolve 是引擎下发通道
+        return POLICIES_RESOLVE.replaceAll("/resolve$", "") + "/tables/" + encode(catalog)
+                + "/" + encode(database) + "/" + encode(table);
+    }
+
+    /**
+     * {@code GET /policies/tables/{catalog}/{database}/{table}}：一张表的策略详情。
+     *
+     * @return 表上没配过策略时为 {@code null}（端点回 204，与「没权限」区分开）
+     */
+    public PolicyDetailInfo getPolicy(String catalog, String database, String table) {
+        String path = policyPath(catalog, database, table);
+        HttpRequest.Builder builder = HttpRequest.newBuilder(uri(path)).GET();
+        HttpResponse<String> response = sendAllowNoContent(builder, path);
+        if (response.statusCode() == 204) {
+            return null;
+        }
+        return parsePolicyDetail(response.body());
+    }
+
+    /**
+     * {@code PUT /policies/tables/{catalog}/{database}/{table}}：创建或整份更新（§13.2 的
+     * 「GET → 修改 → PUT」）。{@code baseVersion} 首次创建传 {@code null}，更新必须带上次
+     * 读到的版本——两个会话同时改，后提交者 409，SQL 侧不自动重试（§13.6）。
+     *
+     * @param enabled        {@code null} = 服务端默认（首次创建启用）；更新时必须带上一次读到的值
+     * @param rowFilter      行过滤 AST；{@code null} = 不过滤行
+     * @param masks          列 mask 清单（<b>整份替换</b>：清单里没有的列会被删掉）
+     * @param exemptPrincipals 豁免名单（整份替换）
+     * @param subjects       主体白名单（{@code FOR} 子句；空 = 全部主体）
+     */
+    public PolicyDetailInfo putPolicy(String catalog, String database, String table,
+                                      Integer baseVersion, Boolean enabled,
+                                      Map<String, Object> rowFilter,
+                                      List<MaskUpsertInfo> masks,
+                                      List<String> exemptPrincipals, List<String> subjects) {
+        String path = policyPath(catalog, database, table);
+        ObjectNode body = mapper.createObjectNode();
+        if (baseVersion != null) {
+            body.put("baseVersion", baseVersion);
+        }
+        if (enabled != null) {
+            body.put("enabled", enabled);
+        }
+        body.set("rowFilter", rowFilter == null ? null : mapper.valueToTree(rowFilter));
+        ArrayNode maskArray = body.putArray("masks");
+        for (MaskUpsertInfo mask : masks) {
+            ObjectNode node = maskArray.addObject();
+            node.put("column", mask.column());
+            node.set("mask", mapper.valueToTree(mask.mask()));
+            if (mask.allowNullOnRequired() != null) {
+                node.put("allowNullOnRequired", mask.allowNullOnRequired());
+            }
+        }
+        if (exemptPrincipals != null) {
+            body.putArray("exemptPrincipals").addAll((ArrayNode) mapper.valueToTree(exemptPrincipals));
+        }
+        if (subjects != null) {
+            body.putArray("subjects").addAll((ArrayNode) mapper.valueToTree(subjects));
+        }
+        JsonNode root = put(path, body);
+        return parsePolicyDetail(root.toString());
+    }
+
+    /** {@code DELETE /policies/tables/{catalog}/{database}/{table}}：物理删除整条策略（§13.3）。 */
+    public void deletePolicy(String catalog, String database, String table) {
+        delete(policyPath(catalog, database, table));
+    }
+
+    private PolicyDetailInfo parsePolicyDetail(String body) {
+        try {
+            JsonNode node = mapper.readTree(body);
+            List<MaskEntryInfo> masks = new ArrayList<>();
+            for (JsonNode mask : node.path("masks")) {
+                masks.add(new MaskEntryInfo(text(mask, "column"), asMap(mask.get("mask")),
+                        text(mask, "sql"), mask.path("allowNullOnRequired").asBoolean(false)));
+            }
+            return new PolicyDetailInfo(text(node, "table"), node.path("enabled").asBoolean(true),
+                    asMap(node.get("rowFilter")), text(node, "rowFilterSql"), masks,
+                    strings(node.path("exemptPrincipals")), strings(node.path("subjects")),
+                    text(node, "enforcedScope"), node.path("version").asInt(),
+                    text(node, "createdBy"), node.path("createdAt").asLong(),
+                    text(node, "updatedBy"), node.path("updatedAt").asLong());
+        } catch (IOException e) {
+            throw new ManagementApiException(200, "GET", "/policies",
+                    "policy detail is not valid JSON: " + e.getMessage(), null, null);
+        }
+    }
+
+    /** 与 {@link #get} 相同，只是 204（无内容）不按错误处理——「没策略」是正常响应。 */
+    private HttpResponse<String> sendAllowNoContent(HttpRequest.Builder builder, String path) {
+        builder.timeout(timeout).header("Accept", "application/json");
+        if (token != null) {
+            builder.header("Authorization", "Bearer " + token);
+        }
+        try {
+            return http.send(builder.build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+        } catch (IOException e) {
+            throw new ManagementApiException(0, "GET", path,
+                    "cannot reach the management API at " + baseUrl + ": " + e.getMessage(), null, null);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ManagementApiException(0, "GET", path,
+                    "interrupted while calling the management API", null, null);
+        }
+    }
+
     // ------------------------------------------------------------------ 内部：HTTP
 
     private JsonNode get(String path) {
@@ -1343,6 +1453,163 @@ public final class ManagementApiClient {
             }
         }
         return new GrantInfo(type, namespace, objectName, text(node, "privilege"));
+    }
+
+    /** 一张表的策略详情（管理面视图，{@code /policies/tables/...}，管理语句用）。 */
+    public static final class PolicyDetailInfo {
+
+        private final String table;
+        private final boolean enabled;
+        private final Map<String, Object> rowFilter;
+        private final String rowFilterSql;
+        private final List<MaskEntryInfo> masks;
+        private final List<String> exemptPrincipals;
+        private final List<String> subjects;
+        private final String enforcedScope;
+        private final int version;
+        private final String createdBy;
+        private final long createdAt;
+        private final String updatedBy;
+        private final long updatedAt;
+
+        public PolicyDetailInfo(String table, boolean enabled, Map<String, Object> rowFilter,
+                                String rowFilterSql, List<MaskEntryInfo> masks,
+                                List<String> exemptPrincipals, List<String> subjects,
+                                String enforcedScope, int version, String createdBy,
+                                long createdAt, String updatedBy, long updatedAt) {
+            this.table = table;
+            this.enabled = enabled;
+            this.rowFilter = rowFilter;
+            this.rowFilterSql = rowFilterSql;
+            this.masks = masks;
+            this.exemptPrincipals = exemptPrincipals;
+            this.subjects = subjects;
+            this.enforcedScope = enforcedScope;
+            this.version = version;
+            this.createdBy = createdBy;
+            this.createdAt = createdAt;
+            this.updatedBy = updatedBy;
+            this.updatedAt = updatedAt;
+        }
+
+        public String table() {
+            return table;
+        }
+
+        public boolean enabled() {
+            return enabled;
+        }
+
+        public Map<String, Object> rowFilter() {
+            return rowFilter;
+        }
+
+        public String rowFilterSql() {
+            return rowFilterSql;
+        }
+
+        public List<MaskEntryInfo> masks() {
+            return masks;
+        }
+
+        public List<String> exemptPrincipals() {
+            return exemptPrincipals;
+        }
+
+        public List<String> subjects() {
+            return subjects;
+        }
+
+        public String enforcedScope() {
+            return enforcedScope;
+        }
+
+        public int version() {
+            return version;
+        }
+
+        public String createdBy() {
+            return createdBy;
+        }
+
+        public long createdAt() {
+            return createdAt;
+        }
+
+        public String updatedBy() {
+            return updatedBy;
+        }
+
+        public long updatedAt() {
+            return updatedAt;
+        }
+
+        @Override
+        public String toString() {
+            // rowFilter 不进 toString：字面量可能就是明文（与 ResolvedPolicyInfo 同一口径）
+            return "PolicyDetailInfo[table=" + table + ", enabled=" + enabled
+                    + ", version=" + version + ", masks=" + masks.size()
+                    + ", exempt=" + exemptPrincipals.size() + ", subjects=" + subjects.size() + "]";
+        }
+    }
+
+    /** 详情里的一列 mask（{@code sql} 是服务端渲染的展示文本）。 */
+    public static final class MaskEntryInfo {
+
+        private final String column;
+        private final Map<String, Object> mask;
+        private final String sql;
+        private final boolean allowNullOnRequired;
+
+        public MaskEntryInfo(String column, Map<String, Object> mask, String sql,
+                             boolean allowNullOnRequired) {
+            this.column = column;
+            this.mask = mask;
+            this.sql = sql;
+            this.allowNullOnRequired = allowNullOnRequired;
+        }
+
+        public String column() {
+            return column;
+        }
+
+        public Map<String, Object> mask() {
+            return mask;
+        }
+
+        public String sql() {
+            return sql;
+        }
+
+        public boolean allowNullOnRequired() {
+            return allowNullOnRequired;
+        }
+    }
+
+    /** PUT 请求体里的一列 mask 提交项（管理语句的整份回写用）。 */
+    public static final class MaskUpsertInfo {
+
+        private final String column;
+        private final Map<String, Object> mask;
+        private final Boolean allowNullOnRequired;
+
+        public MaskUpsertInfo(String column, Map<String, Object> mask, Boolean allowNullOnRequired) {
+            this.column = column;
+            this.mask = mask;
+            this.allowNullOnRequired = allowNullOnRequired;
+        }
+
+        public String column() {
+            return column;
+        }
+
+        public Map<String, Object> mask() {
+            return mask;
+        }
+
+        public Boolean allowNullOnRequired() {
+            return allowNullOnRequired;
+        }
     }
 
     private PrincipalInfo principalInfo(JsonNode node) {

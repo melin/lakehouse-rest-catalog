@@ -3,9 +3,12 @@ package io.github.melin.lakehouse.rest.spark
 import io.github.melin.lakehouse.rest.spark.client.ManagementApiClient
 import io.github.melin.lakehouse.rest.spark.parser.ManagementSqlBaseVisitor
 import io.github.melin.lakehouse.rest.spark.parser.ManagementSqlParser._
+import io.github.melin.lakehouse.rest.spark.policy.PolicyAstConverter
 import org.antlr.v4.runtime.tree.ParseTree
+import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.execution.command.RunnableCommand
 
+import java.util.{ArrayList, List => JavaList}
 import java.util.Locale
 import scala.collection.JavaConverters._
 
@@ -23,8 +26,14 @@ import scala.collection.JavaConverters._
  * <p><b>访问器的两种形态。</b>ANTLR 对带标签的元素（`name=identifier`）生成公共**字段**，
  * 对未加标签的元素生成**方法**。因此 `ctx.name` 不带括号，而 `ctx.propertyList()` 带括号——
  * 写反了会被 Scala 报成「该类型不接受参数」。
+ *
+ * <p><b>策略语句的表达式不在这里解析成 Catalyst</b>——构造器注入
+ * {@code parseExpression}（由包装的原生解析器提供，§13.4），转换逻辑在
+ * {@link PolicyAstConverter}，本类只负责把 {@code exprSource} 的原文与主体清单
+ * 交给它。
  */
-private[spark] class ManagementAstBuilder(client: ManagementApiClient)
+private[spark] class ManagementAstBuilder(client: ManagementApiClient,
+                                          parseExpression: String => Expression)
   extends ManagementSqlBaseVisitor[AnyRef] {
 
   override def visitSingleStatement(ctx: SingleStatementContext): AnyRef =
@@ -226,6 +235,89 @@ private[spark] class ManagementAstBuilder(client: ManagementApiClient)
 
   override def visitShowPermissions(ctx: ShowPermissionsContext): AnyRef =
     ShowPermissionsCommand(identifier(ctx.catalog), Option(ctx.grantee()).map(granteeText), client)
+
+  // ------------------------------------------------------------------ 数据策略（§13）
+
+  override def visitSetRowFilter(ctx: SetRowFilterContext): AnyRef = {
+    val (catalog, database, table) = policyTarget(ctx.policyTable())
+    SetRowFilterCommand(catalog, database, table,
+      PolicyAstConverter.convertRowFilter(rawText(ctx.rowFilter), parseExpression),
+      subjectNames(ctx.subjectList()), client)
+  }
+
+  override def visitDropRowFilter(ctx: DropRowFilterContext): AnyRef = {
+    val (catalog, database, table) = policyTarget(ctx.policyTable())
+    DropRowFilterCommand(catalog, database, table, client)
+  }
+
+  override def visitSetColumnMask(ctx: SetColumnMaskContext): AnyRef = {
+    val (catalog, database, table) = policyTarget(ctx.policyTable())
+    // ALLOW NULL ON REQUIRED（§13.5）：确认写在语法末尾，而表达式是自由文本捕获，
+    // 语义上只能在这里剥。正则锚定整个后缀——mask 表达式不可能以这四个词收尾
+    // （合法表达式只能以字面量、列引用或右括号结束），误伤不存在
+    val allowPattern = "(?is)\\s+ALLOW\\s+NULL\\s+ON\\s+REQUIRED\\s*$".r
+    val raw = rawText(ctx.mask)
+    val allowNullOnRequired: java.lang.Boolean = allowPattern.findFirstIn(raw)
+      .map(_ => java.lang.Boolean.TRUE).orNull
+    val expression = allowPattern.replaceFirstIn(raw, "")
+    SetColumnMaskCommand(catalog, database, table, identifier(ctx.column),
+      PolicyAstConverter.convertMask(expression, parseExpression), allowNullOnRequired,
+      subjectNames(ctx.subjectList()), client)
+  }
+
+  override def visitDropColumnMask(ctx: DropColumnMaskContext): AnyRef = {
+    val (catalog, database, table) = policyTarget(ctx.policyTable())
+    DropColumnMaskCommand(catalog, database, table, identifier(ctx.column), client)
+  }
+
+  override def visitSetPolicySubjects(ctx: SetPolicySubjectsContext): AnyRef = {
+    val (catalog, database, table) = policyTarget(ctx.policyTable())
+    SetPolicySubjectsCommand(catalog, database, table, subjectNames(ctx.subjectList()), client)
+  }
+
+  override def visitDropPolicy(ctx: DropPolicyContext): AnyRef = {
+    val (catalog, database, table) = policyTarget(ctx.policyTable())
+    DropPolicyCommand(catalog, database, table, client)
+  }
+
+  override def visitShowPolicy(ctx: ShowPolicyContext): AnyRef = {
+    val (catalog, database, table) = policyTarget(ctx.policyTable())
+    ShowPolicyCommand(catalog, database, table, client)
+  }
+
+  /** 策略目标：`库名.表名 IN CATALOG catalog` → 三段名。 */
+  private def policyTarget(ctx: PolicyTableContext): (String, String, String) = {
+    val names = parts(ctx.objectName)
+    requireQualified(names, "policy target")
+    (identifier(ctx.catalog), names.dropRight(1).mkString("."), names.last)
+  }
+
+  /**
+   * FOR 子句的主体清单。省略子句 = 全部主体（§13.2），返回空列表——PUT 的整份替换
+   * 语义下「省略 = 重置为全部」与设计一致，刻意不做「继承上一次的 FOR」。
+   */
+  private def subjectNames(ctx: SubjectListContext): JavaList[String] = {
+    val out = new ArrayList[String]()
+    if (ctx != null) {
+      ctx.subject().asScala.foreach { subject =>
+        if (subject.ROLE() != null || subject.GROUP() != null) {
+          throw new ManagementSqlException(
+            "FOR clauses accept USER subjects only in v1 — ROLE / GROUP need membership" +
+              " resolution that the judgment chain does not have yet (design §13.2);" +
+              " the console's exempt list carries the reverse (allow-all-except) semantics")
+        }
+        out.add(identifier(subject.name))
+      }
+    }
+    out
+  }
+
+  /** 自由文本表达式的原文：AST 起止记号的源码区间原样取出。 */
+  private def rawText(ctx: ExprSourceContext): String = {
+    val input = ctx.getStart.getInputStream
+    input.getText(new org.antlr.v4.runtime.misc.Interval(
+      ctx.getStart.getStartIndex, ctx.getStop.getStopIndex))
+  }
 
   // ------------------------------------------------------------------ 公共工具
 

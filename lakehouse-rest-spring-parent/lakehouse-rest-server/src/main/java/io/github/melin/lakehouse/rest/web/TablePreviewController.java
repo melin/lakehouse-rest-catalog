@@ -56,12 +56,14 @@ public class TablePreviewController {
                                                    @RequestBody(required = false) PreviewRequest request) {
         PreviewTarget target = previewService.resolve(tableId);
         requireSelect(target, "preview table data");
-        // 带行过滤 / 列脱敏策略的表：预览直接拒绝（设计 §6）。P0 没有「按策略渲染」的
-        // 求值器，而「悄悄返回明文」等于把控制台变成策略的后门——403 并说明原因
-        requireNotProtected(target);
+        // 带行过滤 / 列脱敏策略的表：预览按策略逐行求值（设计 §6 P1）——行过滤读原值、
+        // 敏感列同层 mask，绝不做「悄悄返回明文」。豁免主体（或没策略）拿到 null，
+        // 与普通预览同一条路。分区列举与文件下载维持拒绝（见 requireNotProtected）
+        DataPolicyService.PreviewPolicy policy = dataPolicyService.previewPolicyOf(
+                target.catalog().getPrefix(), target.database(), target.table().getName());
         return ResponseEntity.ok()
                 .cacheControl(CacheControl.noStore())
-                .body(previewService.preview(target, request));
+                .body(previewService.preview(target, request, policy));
     }
 
     /**
@@ -82,7 +84,9 @@ public class TablePreviewController {
             @RequestParam(name = "pageSize", required = false) Integer pageSize) {
         PreviewTarget target = previewService.resolve(tableId);
         requireSelect(target, "list the partitions of a table");
-        // 与预览同一道门：分区值本身就是数据分布信息，策略的读路径在 P0 一律收口（§6）
+        // 与文件下载同一道门（维持 P0 口径，§6/§7.2）：分区值是 transform 后的值
+        // （day(ts)），与 mask 的「同类型结果」规则对不上，逐行求值套不上去；
+        // 数据分布信息照旧只给「能开受控会话的人」
         requireNotProtected(target);
         return ResponseEntity.ok()
                 .cacheControl(CacheControl.noStore())
@@ -123,7 +127,7 @@ public class TablePreviewController {
                 List.of(target.database()), target.table().getName(), Access.SELECT, action);
     }
 
-    /** 表挂了启用中的行过滤 / 列脱敏策略时拒绝数据面请求（预览与分区共用，§6）。 */
+    /** 表挂了启用中的策略时拒绝分区列举（预览已改为按策略求值，不再走这里；§6）。 */
     private void requireNotProtected(PreviewTarget target) {
         dataPolicyService.requirePreviewAllowed(target.catalog().getPrefix(),
                 target.database(), target.table().getName());

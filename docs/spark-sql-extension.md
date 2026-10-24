@@ -72,7 +72,7 @@ val spark = PaimonRestManagement.install(SparkSession.builder())
 
 ## 2. 语句清单
 
-共 16 条语句，分四类。`[]` 表示可选，`|` 表示二选一。
+共 23 条语句，分五类。`[]` 表示可选，`|` 表示二选一。
 
 本节只做索引；每条语句的完整语法、参数、结果列、错误与注意事项见
 [`spark-sql-reference.md`](spark-sql-reference.md)。
@@ -154,6 +154,23 @@ COLUMN default.orders (id, amount) IN CATALOG paimon
 | catalog 级 | `CATALOG` / `CATALOG_ALL` | `paimon` | `null` | `null` |
 | 库级 | `DATABASE` / `DATABASE_ALL` | `default` | `default` | `null` |
 | 对象级 | `TABLE` / `VIEW` / `FUNCTION` / `COLUMN` | `default.orders` | `default` | `orders` |
+
+### 数据策略
+
+| 语句 | 说明 |
+| --- | --- |
+| `ALTER TABLE <t> IN CATALOG <c> SET ROW FILTER <表达式> [FOR <主体>]` | 行过滤；整份替换策略对象 |
+| `ALTER TABLE <t> IN CATALOG <c> DROP ROW FILTER` | |
+| `ALTER TABLE <t> IN CATALOG <c> ALTER COLUMN <列> SET MASK <表达式> [ALLOW NULL ON REQUIRED] [FOR <主体>]` | 列脱敏 |
+| `ALTER TABLE <t> IN CATALOG <c> ALTER COLUMN <列> DROP MASK` | |
+| `ALTER TABLE <t> IN CATALOG <c> SET POLICY FOR <主体清单>` | 主体白名单 |
+| `ALTER TABLE <t> IN CATALOG <c> DROP POLICY` | 需 `spark.lakehouse.rest.sql.confirm-destructive=true` |
+| `SHOW POLICY ON TABLE <t> IN CATALOG <c>` | 一行汇总：`version`、`subjects`、`row_filter`、`masked_columns`、`allow_null_confirmed`、`updated_by`、`updated_at` |
+
+七条语句共享同一组策略端点，客户端按「GET → 修改 → PUT 整份替换」执行，带 `baseVersion`
+乐观锁；并发修改的冲突方收到 `409`，不自动重试。表达式按白名单转成 AST 后下发，
+`FOR` 只认 `USER`；`DROP` 家族在对象不存在时报错而不是 no-op。
+细节见参考文档第 11 节。
 
 ### 写入语句不返回结果行
 
@@ -275,7 +292,8 @@ Spark 3.5.9 的 `spark-sql-api` 依赖 `antlr4-runtime` **4.9.3**，其自带的
 1. **管理关键字是保留字。** `CATALOG`、`TABLE`、`VIEW`、`COLUMN`、`DATABASE`、`FUNCTION`、`ROLE`、
    `SHOW`、`SET`、`ON`、`IN`、`FOR`、`TO`、`IF`、`NOT`、`EXISTS`、`ALTER`、`CREATE`、`DROP`、
    `RESET`、`ROTATE`、`GRANT`、`REVOKE`、`PROPERTIES`、`UNSET`、`FROM`、`USER`、`GROUP`、
-   `UNTIL`、`EXCEPT`、`PERMISSIONS` 等词在名称位置必须加反引号，例如 ``ON TABLE `catalog`.orders``。
+   `UNTIL`、`EXCEPT`、`PERMISSIONS`、`ROW`、`FILTER`、`MASK`、`POLICY` 等词在名称位置必须加反引号，
+   例如 ``ON TABLE `catalog`.orders``。
    access 取值（`SELECT`、`LIST`、`DESCRIBE` 等）不是保留字，只有 `GRANT` / `ALTER` / `DROP`
    三项既是取值也是关键字。这与 Spark 原生 SQL 的保留字行为一致，但需要在使用时留意。
 2. **多 access 授权不是原子的。** 每条 access 是一个独立请求。
@@ -295,8 +313,7 @@ Spark 3.5.9 的 `spark-sql-api` 依赖 `antlr4-runtime` **4.9.3**，其自带的
    拒掉，后者在语法阶段就失败。挂在那条链上的存量授权仍然生效，只是再没有界面能清点它。
 7. **令牌映射是服务端的静态配置。** 用 SQL 新建的主体不能立即取到可用的调用令牌，
    详见 `docs/authorization.md` 的「已知边界」。
-8. **数据保护（行过滤 / 列脱敏）的策略语句不在本文档范围内。** 目前只有设计稿：
-   [`row-filter-column-mask-design.md`](row-filter-column-mask-design.md) §13 规划了
-   `SET ROW FILTER` / `SET MASK` / `SHOW POLICY` 等 7 条语句，将来会进同一份
-   `ManagementSql.g4`（保留字要加 `ROW / FILTER / MASK / POLICY`，届时同步 §3.3 的
-   保留字计数）。本文档的语句清单、示例与端点校验不包含它们。
+8. **数据策略语句的语义在服务端，SQL 只是入口。** 七条策略语句（第 2 节的「数据策略」）已进
+   `ManagementSql.g4`，保留字相应加了 `ROW`、`FILTER`、`MASK`、`POLICY`。表达式按白名单转成
+   AST 后下发，设计细节见设计稿
+   [`row-filter-column-mask-design.md`](row-filter-column-mask-design.md) §13。

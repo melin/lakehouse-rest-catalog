@@ -20,9 +20,11 @@ import io.github.melin.lakehouse.rest.preview.PreviewLimits;
 import io.github.melin.lakehouse.rest.preview.PreviewTable;
 import io.github.melin.lakehouse.rest.preview.PreviewTableFactory;
 import io.github.melin.lakehouse.rest.preview.PreviewTarget;
+import io.github.melin.lakehouse.rest.preview.PreviewValues;
 import io.github.melin.lakehouse.rest.support.ApiException;
 import io.github.melin.lakehouse.rest.support.CatalogFormat;
 import io.github.melin.lakehouse.rest.support.Paging;
+import io.github.melin.lakehouse.rest.support.PolicyExpressionEvaluator;
 import io.github.melin.lakehouse.rest.support.ResourceType;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -32,6 +34,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -160,6 +163,18 @@ public class TablePreviewService {
      * @param request 请求；{@code null} 等同于"全默认"（最新快照、自动分区、前 N 列、100 行）
      */
     public PreviewDtos.PreviewResponse preview(PreviewTarget target, PreviewDtos.PreviewRequest request) {
+        return preview(target, request, null);
+    }
+
+    /**
+     * 带策略的读一页（设计 §6 P1）：{@code policy} 非空时，读出的行先过行过滤
+     * （读原值）、敏感列再做同层 mask（参数读原值、不链式），然后才返回。
+     *
+     * <p>调用方（控制器）已经做过豁免判定：豁免主体拿到的 {@code policy} 是
+     * {@code null}，与本表没策略走同一条路——两条「放行」在执行上没有区别。
+     */
+    public PreviewDtos.PreviewResponse preview(PreviewTarget target, PreviewDtos.PreviewRequest request,
+                                               DataPolicyService.PreviewPolicy policy) {
         PreviewDtos.PreviewRequest req = request == null
                 ? new PreviewDtos.PreviewRequest(null, null, null, null, null, null)
                 : request;
@@ -170,7 +185,7 @@ public class TablePreviewService {
 
         String key = requireSlot();
         try (PreviewTable table = open(target, snapshotId)) {
-            return readSlice(target, table, req, cursor);
+            return readSlice(target, table, req, cursor, policy);
         } finally {
             releaseSlot(key);
         }
@@ -178,7 +193,8 @@ public class TablePreviewService {
 
     private PreviewDtos.PreviewResponse readSlice(PreviewTarget target, PreviewTable table,
                                                   PreviewDtos.PreviewRequest req,
-                                                  PreviewCursorCodec.Cursor cursor) {
+                                                  PreviewCursorCodec.Cursor cursor,
+                                                  DataPolicyService.PreviewPolicy policy) {
         // 期间表又提交过：游标里的行号对应的清单已经不是最新的那份。
         // 用户显式指定了快照（时间旅行）时不算漂移——那本来就是"看历史"
         if (cursor != null && req.snapshotId() == null
@@ -198,10 +214,32 @@ public class TablePreviewService {
         List<PreviewFilters.Compiled> compiled =
                 PreviewFilters.compile(req.filters(), projection.readNames(), byName, limits.maxFilters());
 
+        // ---- 策略预处理（§6 P1 / §5.3.3）：先挡住语义对不上的请求，再补读策略引用的列。
+        // 读宽 = readNames（含补读列），返回前再按 projection.output() 切——与「为过滤
+        // 补读列」是同一个机制，只是补读的原因从"用户要筛"换成"策略要判"。
+        List<String> readNames = new ArrayList<>(projection.readNames());
+        int[] readIndices = projection.indices();
+        int outputCount = projection.output().size();
+        if (policy != null) {
+            rejectFiltersOnMaskedColumns(req.filters(), policy.masks());
+            readNames = extendForPolicy(policy, readNames, projection.output(), all);
+            readIndices = new int[readNames.size()];
+            for (int index = 0; index < readNames.size(); index++) {
+                readIndices[index] = indexOf(all, readNames.get(index));
+            }
+            outputCount = readNames.size();
+        }
+
         List<String> fields = table.partitionFields();
         List<PartitionSlice> slices = fields.isEmpty() ? List.of() : table.partitions();
         PartitionPlanner.Decision decision =
                 partition(target, table, fields, slices, all, req, cursor);
+
+        // ---- 分区回显打码（§7.3）：分区列本身就是被脱敏列时，分区回显里的值就是明文。
+        // 只打码「回显」这一份——游标与 fingerprint 用原值（不透明签名令牌 + 服务端一致性
+        // 判据），分区裁剪照常工作；泄漏面只在响应体里
+        Set<String> maskedPartitionFields = policy == null ? Set.of()
+                : maskedPartitionFields(policy.masks().keySet(), fields);
 
         String fingerprint =
                 PreviewCursorCodec.fingerprint(req.filters(), projection.readNames(), decision.resolved());
@@ -217,8 +255,8 @@ public class TablePreviewService {
         long skipRows = cursor == null ? 0 : cursor.splitRows();
         long startedAt = System.nanoTime();
         PreviewChunk chunk = table.read(new PreviewTable.ReadSpec(
-                projection.indices(),
-                projection.output().size(),
+                readIndices,
+                outputCount,
                 compiled,
                 decision.selection(),
                 splitOffset,
@@ -250,7 +288,47 @@ public class TablePreviewService {
                         decision.label()))
                 : null;
 
+        // ---- 策略求值（§6 P1）：先裁行（读原值）、后 mask（同层、参数读原值、不链式）。
+        // 顺序是语义（§5.3.5）：行过滤若读脱敏值，「被过滤」就会随 mask 的形状漂移；
+        // mask 参数若读脱敏值，结果就依赖列的处理顺序——同一个策略重建两次给出不同结果。
+        List<List<Object>> resultRows = chunk.rows();
+        long policyDropped = -1;
+        if (policy != null) {
+            policyDropped = 0;
+            List<List<Object>> processed = new ArrayList<>(chunk.rows().size());
+            for (List<Object> row : chunk.rows()) {
+                Map<String, Object> original = new LinkedHashMap<>(readNames.size() * 2);
+                for (int index = 0; index < readNames.size(); index++) {
+                    original.put(readNames.get(index), index < row.size() ? row.get(index) : null);
+                }
+                if (policy.rowFilter() != null
+                        && !PolicyExpressionEvaluator.evalRowFilter(policy.rowFilter(), original)) {
+                    policyDropped++;
+                    continue;
+                }
+                List<Object> outputRow = new ArrayList<>(row.subList(0, projection.output().size()));
+                for (int index = 0; index < outputRow.size(); index++) {
+                    Map<String, Object> mask = policy.masks().get(readNames.get(index));
+                    if (mask != null) {
+                        outputRow.set(index, PolicyExpressionEvaluator.evalMask(mask,
+                                readNames.get(index), original));
+                    }
+                }
+                processed.add(PreviewValues.truncate(outputRow));
+            }
+            resultRows = processed;
+        }
+
         List<String> warnings = new ArrayList<>(decision.warnings());
+        if (policy != null) {
+            warnings.add("已按行过滤/列脱敏策略处理：读出 " + chunk.rows().size() + " 行、返回 "
+                    + resultRows.size() + " 行（行过滤挡下 " + policyDropped
+                    + " 行，敏感列已脱敏；设计 §6）");
+        }
+        if (!maskedPartitionFields.isEmpty()) {
+            warnings.add("分区字段 " + String.join(", ", maskedPartitionFields)
+                    + " 是脱敏目标，分区回显的值已打码（设计 §7.3）");
+        }
         if (projection.defaulted()) {
             warnings.add("默认只返回前 " + projection.output().size() + " 列（共 " + all.size()
                     + " 列），可在列投影里勾更多");
@@ -269,22 +347,68 @@ public class TablePreviewService {
         // 条件只记列名与算子，值不落库——值可能就是手机号（设计文档 §10）
         if (cursor == null) {
             publish(target, table, decision, projection, chunk, req.filters(), filesInScope,
-                    filesInTable, elapsedMs, sampled);
+                    filesInTable, elapsedMs, sampled, policy != null);
         }
 
         return new PreviewDtos.PreviewResponse(
                 table.snapshotId(),
-                new PreviewDtos.PartitionSelection(decision.mode(), decision.resolved(),
-                        decision.label(), decision.auto(), decision.depth(), decision.fallback(),
+                new PreviewDtos.PartitionSelection(decision.mode(),
+                        maskEcho(decision.resolved(), maskedPartitionFields),
+                        maskLabel(decision.label(), decision.resolved(), maskedPartitionFields),
+                        decision.auto(), decision.depth(), decision.fallback(),
                         decision.partitionsTotal(), decision.partitionsMatched()),
                 projection.output(),
-                chunk.rows(),
+                resultRows,
                 next,
                 hasMore,
                 new PreviewDtos.Scanned(chunk.filesRead(), filesInScope, filesInTable,
                         chunk.bytesRead(), chunk.rowsRead(), elapsedMs),
                 sampled,
                 List.copyOf(warnings));
+    }
+
+    /** 分区回显的占位值：不还原、不保序信息，一眼能看出"这里被打过码"。 */
+    private static final String MASKED_PARTITION_VALUE = "▮▮▮▮";
+
+    /** 打码分区回显的值：命中的字段换成占位符，其余原样。 */
+    private static List<PreviewDtos.PartitionValue> maskEcho(List<PreviewDtos.PartitionValue> resolved,
+                                                             Set<String> masked) {
+        if (masked.isEmpty() || resolved.isEmpty()) {
+            return resolved;
+        }
+        List<PreviewDtos.PartitionValue> out = new ArrayList<>(resolved.size());
+        for (PreviewDtos.PartitionValue value : resolved) {
+            out.add(masked.contains(value.field())
+                    ? new PreviewDtos.PartitionValue(value.field(), value.transform(), MASKED_PARTITION_VALUE)
+                    : value);
+        }
+        return List.copyOf(out);
+    }
+
+    /**
+     * 分区标签里同步打码：label 是按原值拼的人话（{@code region = CN（最新分区）}），
+     * 值换成占位符而标签原样，占位符就成了掩耳盗铃。按原值做整串替换——
+     * 只处理回显这份字符串，不碰分区规划本身。
+     */
+    private static String maskLabel(String label, List<PreviewDtos.PartitionValue> resolved,
+                                    Set<String> masked) {
+        if (label == null || masked.isEmpty()) {
+            return label;
+        }
+        String out = label;
+        for (PreviewDtos.PartitionValue value : resolved) {
+            if (masked.contains(value.field()) && value.value() != null) {
+                out = out.replace(value.value(), MASKED_PARTITION_VALUE);
+            }
+        }
+        return out;
+    }
+
+    /** 脱敏目标 ∩ 分区字段：分区列被 mask 的表才需要打码回显（§7.3，"少见但存在"）。 */
+    private static Set<String> maskedPartitionFields(Set<String> maskTargets, List<String> partitionFields) {
+        Set<String> hit = new LinkedHashSet<>(maskTargets);
+        hit.retainAll(partitionFields);
+        return hit;
     }
 
     /**
@@ -383,6 +507,68 @@ public class TablePreviewService {
             }
         }
         return false;
+    }
+
+    // ------------------------------------------------------------------ 策略求值（§6 P1）
+
+    /**
+     * 用户过滤条件落到被脱敏列上时拒绝（400）。
+     *
+     * <p>引擎侧的语义是「比较发生在脱敏后的值上」（§5.7：{@code WHERE ssn='真实值'}
+     * 应当查不到）；而预览的用户条件在格式 reader 里按原值判（那里不可能先做 mask）。
+     * 两条语义放一起，同一个条件在控制台与 Spark 会给出不同的行数——与其制造这种
+     * 静默分歧，不如指名拒绝：换一列过滤，或用受控引擎会话。
+     */
+    private static void rejectFiltersOnMaskedColumns(List<ColumnFilter> filters,
+                                                     Map<String, Map<String, Object>> masks) {
+        if (filters == null) {
+            return;
+        }
+        for (ColumnFilter filter : filters) {
+            if (filter != null && filter.column() != null && masks.containsKey(filter.column())) {
+                throw ApiException.badRequest("preview filters cannot reference the masked"
+                        + " column '" + filter.column() + "': the engine compares such"
+                        + " predicates against masked values (design §5.7), and this console"
+                        + " cannot reproduce that on original rows; filter on another column"
+                        + " or use a controlled engine session");
+            }
+        }
+    }
+
+    /**
+     * 把策略表达式引用的列补进读取投影（§5.3.3：mask 参数引用其它列 → 一律按
+     * 全量 output 展开，缺列就是「执行了一半的策略」）。引用不存在的列说明策略
+     * 写下之后表又变了——fail-closed 报错，不跳过。
+     */
+    private static List<String> extendForPolicy(DataPolicyService.PreviewPolicy policy,
+                                                List<String> readNames,
+                                                List<PreviewColumn> output,
+                                                List<PreviewColumn> all) {
+        Set<String> required = new LinkedHashSet<>();
+        if (policy.rowFilter() != null) {
+            required.addAll(PolicyExpressionEvaluator.collectColumns(policy.rowFilter()));
+        }
+        // 只有会出现在结果里的 mask 需要求值；目标列不在投影里就整条跳过
+        for (PreviewColumn column : output) {
+            Map<String, Object> mask = policy.masks().get(column.name());
+            if (mask != null) {
+                required.addAll(PolicyExpressionEvaluator.collectColumns(mask));
+            }
+        }
+        List<String> extended = new ArrayList<>(readNames);
+        for (String name : required) {
+            if (extended.contains(name)) {
+                continue;
+            }
+            if (!all.stream().anyMatch(column -> column.name().equals(name))) {
+                throw ApiException.badRequest("the data policy references column '" + name
+                        + "', which does not exist in the table schema any more; the policy was"
+                        + " written against a different schema — fix or drop the policy before"
+                        + " previewing this table");
+            }
+            extended.add(name);
+        }
+        return List.copyOf(extended);
     }
 
     // ------------------------------------------------------------------ 打开表
@@ -512,7 +698,8 @@ public class TablePreviewService {
 
     private void publish(PreviewTarget target, PreviewTable table, PartitionPlanner.Decision decision,
                          Projection projection, PreviewChunk chunk, List<ColumnFilter> filters,
-                         int filesInScope, int filesInTable, long elapsedMs, boolean sampled) {
+                         int filesInScope, int filesInTable, long elapsedMs, boolean sampled,
+                         boolean policyApplied) {
         Map<String, Object> attributes = new LinkedHashMap<>();
         attributes.put("database", target.database());
         attributes.put("table", target.table().getName());
@@ -528,6 +715,7 @@ public class TablePreviewService {
         attributes.put("filesInTable", filesInTable);
         attributes.put("elapsedMs", elapsedMs);
         attributes.put("sampled", sampled);
+        attributes.put("policyApplied", policyApplied);
         attributes.put("partitionMode", decision.mode());
         // 只记字段名与命中数，**不记取值**：分区值可能是 region、也可能按手机号前缀分区
         attributes.put("partitionFields", decision.resolved().stream()

@@ -1,6 +1,7 @@
 package io.github.melin.lakehouse.rest.spark
 
 import io.github.melin.lakehouse.rest.spark.client.ManagementApiClient
+import io.github.melin.lakehouse.rest.spark.client.PolicyCache
 import io.github.melin.lakehouse.rest.spark.lineage.SqlTextRegistry
 import io.github.melin.lakehouse.rest.spark.parser.ManagementSqlLexer
 import io.github.melin.lakehouse.rest.spark.parser.ManagementSqlParser
@@ -59,8 +60,22 @@ abstract class AbstractLakehouseRestSqlParser(
   override def parsePlan(sqlText: String): LogicalPlan = {
     // 第一次解析时挂血缘监听器。为什么拖到这里：见 onFirstParse 的说明
     armListener()
-    val plan = parseManagementStatement(sqlText).getOrElse(delegate.parsePlan(sqlText))
+    val plan = parseManagementStatement(sqlText).getOrElse(parseWithDelegate(sqlText))
     SqlTextRegistry.record(sqlText, plan)
+    plan
+  }
+
+  /**
+   * 交回原生解析器，顺手挂策略缓存的失效钩子（§13.6）：{@code REFRESH TABLE} 本来就
+   * 表示「这张表的缓存都别用了」，在这里认出它并整体失效本 JVM 的策略缓存——
+   * 改完策略不用等 60 秒 TTL。按类名的简单前缀识别而不是编译期依赖：两版的
+   * {@code RefreshTable} 节点包不同，而它也不可能是一个值得编进白名单的形状。
+   */
+  private def parseWithDelegate(sqlText: String): LogicalPlan = {
+    val plan = delegate.parsePlan(sqlText)
+    if (plan.getClass.getSimpleName.startsWith("Refresh")) {
+      PolicyCache.invalidateAllLive()
+    }
     plan
   }
 
@@ -129,7 +144,8 @@ abstract class AbstractLakehouseRestSqlParser(
     parser.setErrorHandler(new BailErrorStrategy())
     try {
       val tree = parser.singleStatement()
-      val plan = new ManagementAstBuilder(client).visit(tree)
+      val plan = new ManagementAstBuilder(client,
+        (text: String) => delegate.parseExpression(text)).visit(tree)
       Option(plan).map(_.asInstanceOf[LogicalPlan])
     } catch {
       case _: ParseCancellationException =>

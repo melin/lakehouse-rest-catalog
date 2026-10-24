@@ -27,6 +27,14 @@ public final class PolicyCache {
     /** 条目上限。超过按「全部失效」处理，见类注释——宁可多几次 HTTP，不可错留旧策略。 */
     private static final int MAX_ENTRIES = 10_000;
 
+    /**
+     * 活跃缓存登记表：{@code REFRESH TABLE} 的失效钩子（§13.6）从这里找到本 JVM 里
+     * 所有会话的缓存并整体清空。按会话精准失效需要把「会话 → 缓存」的映射维护起来，
+     * 而缓存实例已经挂在各自的 {@code PolicyFetcher} 上——多一次映射只省几次 HTTP，
+     * 不改正确性；全局失效的代价（多一轮拉取）与 {@link #MAX_ENTRIES} 的取舍同一取向。
+     */
+    private static final java.util.Set<PolicyCache> LIVE = ConcurrentHashMap.newKeySet();
+
     private final long ttlMillis;
     private final ConcurrentHashMap<String, Entry> entries = new ConcurrentHashMap<>();
 
@@ -45,6 +53,7 @@ public final class PolicyCache {
      */
     public PolicyCache(long ttlMillis) {
         this.ttlMillis = ttlMillis;
+        LIVE.add(this);
     }
 
     /** 命中且未过期返回缓存值，否则 {@code null}。过期条目顺手移除（惰性清理）。 */
@@ -82,6 +91,19 @@ public final class PolicyCache {
     /** 全部失效（{@code REFRESH TABLE} 类语义预留；当前没有挂接点，先给入口）。 */
     public void invalidateAll() {
         entries.clear();
+    }
+
+    /**
+     * 本 JVM 里所有会话的缓存全部失效——{@code REFRESH TABLE} 的挂接点（§13.6）。
+     *
+     * <p>解析器在交回的计划里认出 {@code RefreshTable} 就调这里：它本来就表示
+     * 「这张表的缓存都别用了」，改完策略不用等 TTL。跨会话整体失效是有意的：
+     * 多几次 HTTP 是可接受的代价，错留旧策略不可接受。
+     */
+    public static void invalidateAllLive() {
+        for (PolicyCache cache : LIVE) {
+            cache.invalidateAll();
+        }
     }
 
     /** 缓存是否关闭，供测试断言。 */
