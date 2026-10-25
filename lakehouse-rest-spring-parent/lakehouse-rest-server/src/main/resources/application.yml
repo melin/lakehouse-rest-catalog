@@ -365,6 +365,28 @@ lakehouse:
       # 改默认值时两处要同步（占位符在 bean 绑定前解析，注入不了本对象）。
       cleanup-cron: "0 30 3 * * *"
 
+    # -----------------------------------------------------------------------
+    # 行过滤 / 列脱敏（docs/row-filter-column-mask-design.md）。
+    #
+    # 策略模型：一张表最多一条策略（行过滤 + 列脱敏 + 整列不可见），管理端点在
+    # /api/management/v1/policies，控制台「数据策略」页签与总览 / 向导 / 试算三屏
+    # 共用同一套 API。这里只有服务端这一个开关——引擎侧不读服务端 yml，Spark / Flink
+    # 会话要配的是（见 docs/spark-sql-extension.md）：
+    #   spark.lakehouse.rest.policy.enforced=true   （默认 false，缺省不注入）
+    # 并把 ManagementSparkExtensions 装进 spark.sql.extensions。
+    #
+    # enabled 只锁写入口（PUT / DELETE 回 403 且报错写明本配置项），读照常：
+    # 策略详情 / resolve / 列表在关闭时仍然可达——「功能没开」与「本来就没策略」
+    # 必须分得开，否则引擎侧的 fail-closed 无法区分故障与空态。
+    #
+    # 这里写 false（与代码默认一致）：yml 里写非默认值会盖掉「缺省关闭」的语义，
+    # DataPolicyDisabledTests 按默认关来验（血缘的 LineageDisabledTests 就是这么红的）。
+    # 要开的部署用启动参数显式打开：--lakehouse.rest.policy.enabled=true
+    # -----------------------------------------------------------------------
+    policy:
+      # 是否允许创建 / 修改 / 删除策略（PUT / DELETE）。默认 false。
+      enabled: true
+
 # ===========================================================================
 # 接口文档（knife4j-next，Boot 4 线：springdoc 3.x）
 #
