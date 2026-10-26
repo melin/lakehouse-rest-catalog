@@ -1,4 +1,4 @@
-FROM eclipse-temurin:17-jre-noble
+FROM docker.1ms.run/eclipse-temurin:17-jdk
 
 # 构建方式（两个都写在这里，不只写在 README 里）：
 #
