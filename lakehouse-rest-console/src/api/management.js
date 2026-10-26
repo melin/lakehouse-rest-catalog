@@ -71,11 +71,6 @@ export const managementApi = {
   probeExecutionCluster: (catalogName, full = true) => post('probeExecutionCluster', {
     params: { catalogName, query: { full } },
   }),
-  /** 从另一个 catalog 复制连接与认证。`callbackBaseUrl` 必须由调用方给（它不复制）。 */
-  copyExecutionCluster: (catalogName, sourceCatalog, callbackBaseUrl) => post('copyExecutionCluster', {
-    params: { catalogName },
-    body: { sourceCatalog, callbackBaseUrl },
-  }),
 
   // ------------------------------------------------------------------ principal
   /** 主体列表。`query` 给 `page` / `pageSize`。 */

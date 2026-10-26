@@ -292,7 +292,6 @@ Iceberg 的 `rewrite_data_files` 只有 `strategy => 'binpack' | 'sort'`，Z-Ord
 | `GET / PUT / DELETE /catalogs/{catalog}/execution-cluster` | 执行集群配置读写与删除（优化任务的落点；完整契约见 [`catalog-execution-cluster-design.md`](catalog-execution-cluster-design.md) §8） |
 | `POST /catalogs/{catalog}/execution-cluster/kubeconfig/parse` | 解析 kubeconfig，逐 context 给 `OK / WARN / UNSUPPORTED / UNAVAILABLE` 结论（**不落库**，纯预检） |
 | `POST /catalogs/{catalog}/execution-cluster/probe?full=` | 现场探活五步（`full=false` 只跑前 3 步） |
-| `POST /catalogs/{catalog}/execution-cluster/copy-from` | 从另一个 catalog 复制连接 + 认证 + 运行位置（**不复制** `callbackBaseUrl` 与批次策略，探活结论清空） |
 
 几点约定：
 

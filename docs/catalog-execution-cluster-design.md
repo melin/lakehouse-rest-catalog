@@ -6,7 +6,7 @@
 >
 > 配套效果图：[`catalog-execution-cluster-mockup.html`](catalog-execution-cluster-mockup.html)（六个画面，
 > 可直接在浏览器里点）。**M1–M3 已落地**（表与端点、fabric8 提交器与按 catalog 调度、列表列与抽屉），
-> 落地过程中与原稿不一致的六处见文末 §15；分期见 §13。
+> 落地过程中与原稿不一致的五处见文末 §15；分期见 §13。
 
 ---
 
@@ -42,9 +42,10 @@
 一张空表）、孤儿配置（先建集群再建 catalog，或反过来）、以及「到底以哪边为准」的双写。放在
 catalog 上，这三件事都不存在。
 
-代价是「我有 10 个 catalog 都跑在同一个集群，要填 10 次」。这个代价用**复制**消掉，不用菜单消掉：
-抽屉里有「复用其他 catalog 的连接」——只带连接与认证（`apiServer` / CA / kubeconfig / 令牌 /
-namespace），不带批次策略与回调地址（那两项本来就该逐 catalog 不同）。见 §4.4。
+代价是「我有 10 个 catalog 都跑在同一个集群，要填 10 次」。这个代价被**刻意保留**，不做
+「从别的 catalog 复制一份」：执行集群配置里装的是凭据，复制能力等于把「改这个 catalog 的权限」
+变成「借出另一个 catalog 的执行身份」，那是一条不该存在的越权路径。要复用同一台集群，
+粘同一段 kubeconfig 即可——那是一次粘贴，不是一次授权。
 
 ### 1.2 配置的宿主是 catalog，1:1，单独一张表
 
@@ -119,7 +120,7 @@ java -jar lakehouse-rest-server.jar --lakehouse.rest.optimization.dispatch-inter
 
 **留空 = 保持原样**（不传该字段就是不改），要清空得显式传开关——**但只有 `catalogToken` 有这个开关**：
 其余四个秘密（kubeconfig / AK-SK / AKS 密钥）是建客户端的必需材料，清掉之后连探活都跑不了，
-「清空」等于删掉整份配置（那是 `DELETE`），因此不提供 `clearCredentials`（见 §15 第 2 条）；
+「清空」等于删掉整份配置（那是 `DELETE`），因此不提供 `clearCredentials`（见 §15 第 1 条）；
 否则「打开抽屉什么都不改就保存」会把凭据清成空串，这类事故在静态凭据那块已经踩过一次。
 
 ---
@@ -245,7 +246,7 @@ AWS CLI」。所以它必须是硬拒，而且拒绝文案要给出替代路径�
 
 ## 4. 抽屉的表单结构
 
-宽度 720px，右侧滑出，五段（效果图画面 2）：
+宽度 760px，右侧滑出，四段（效果图画面 2）：
 
 ```
 ┌ 执行集群配置 — paimon                                     [未配置] ✕ ┐
@@ -263,7 +264,7 @@ AWS CLI」。所以它必须是硬拒，而且拒绝文案要给出替代路径�
 │               catalogToken（可选，留空表示沿用）                     │
 │                                                                     │
 ├─────────────────────────────────────────────────────────────────────┤
-│ [停用]  [复用其他 catalog 的连接]        [验证连接]  [保存]          │
+│ [停用]                                           [验证连接]  [保存]  │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -309,19 +310,7 @@ AWS CLI」。所以它必须是硬拒，而且拒绝文案要给出替代路径�
 
 表单里给一句「填 Pod 里的 `curl` 能通的地址」，并在探活第 5 步明确说清它只验了一个方向（§5）。
 
-### 4.3 复制配置：`[复用其他 catalog 的连接]`
-
-下拉列出「已配置执行集群的 catalog」，选中后**服务端复制**（`POST .../copy-from`），不是客户端把
-另一份凭据读出来再写回去——客户端手里不该出现任何密文对应的明文。复制范围写死：
-
-- 复制：`clusterType` 与整段认证、`apiServer`、`caCertPem`、`namespace`、`image`、`imagePullPolicy`、
-  `serviceAccount`、`catalogToken`
-- 不复制：`callbackBaseUrl`（同集群时通常一样，但它是**方向性**的，抄错最难查）、批次策略、`contextName`
-    之外的探活结果
-
-复制完状态是**待验证**，不是「正常」——复制来的是别人的连接事实，不是你这份配置的验证结论。
-
-### 4.4 停用而不是删除
+### 4.3 停用而不是删除
 
 `enabled=false` 的语义是「这个 catalog 不跑优化」，配置留着。它和「删除」的区别在恢复成本：
 停用后重新启用只要一次点击，删除后要把凭据全填一遍。列表列上两者都显示为灰，但文案不同
@@ -448,7 +437,6 @@ tooltip。
 | `DELETE` | `/api/management/v1/catalogs/{catalog}/execution-cluster` | 删除（要 `confirm-destructive`，与既有约定一致） |
 | `POST` | `/api/management/v1/catalogs/{catalog}/execution-cluster/kubeconfig/parse` | 解析 kubeconfig，**不落库**，供表单即时反馈 |
 | `POST` | `/api/management/v1/catalogs/{catalog}/execution-cluster/probe` | 五问探活；`?full=false` 只做 1–3 |
-| `POST` | `/api/management/v1/catalogs/{catalog}/execution-cluster/copy-from` | 从另一个 catalog 复制连接与认证 |
 
 ### 8.1 列表摘要不额外发请求
 
@@ -753,7 +741,7 @@ kubeconfig 与 AKS 的 client secret 都是「服务端持有的一份长期凭�
 
 | 期 | 内容 | 说明 | 状态 |
 | --- | --- | --- | --- |
-| M1 | 服务端：表 + 实体 + 5 个端点 + `CredentialCipher` 接入 + 列表摘要 | 不含真实提交，探活第 1 步用假实现也可 | ✅ 实际交付 6 个端点（多一个 `copy-from`） |
+| M1 | 服务端：表 + 实体 + 5 个端点 + `CredentialCipher` 接入 + 列表摘要 | 不含真实提交，探活第 1 步用假实现也可 | ✅ |
 | M2 | `ExecutionClientFactory` + fabric8 提交器 + 两个 TokenProvider + 调度接线 | 删 `KubernetesJobSubmitter` / `LoggingJobSubmitter` | ✅ |
 | M3 | 前端：列表列 + 抽屉 + 三种类型表单 + 探活结果面板 + 横幅 | 按效果图六画面 | ✅ |
 | M4 | 文档回填（`table-optimization.md` §9.2 / `console.md` / `README` / 计数）与 `verify-console` 新守卫 | 见 §14 | ✅（23 组 150 项） |
@@ -792,40 +780,35 @@ kubeconfig 与 AKS 的 client secret 都是「服务端持有的一份长期凭�
 - [ ] `application.yml` 的 `optimization` 段整段消失，`verify-console` 加一条「无残留键」守卫
 - [ ] `docs/table-optimization.md` §9.2 的提交参数一节改写为「见执行集群」
 - [ ] `docs/data-model.md` 23 → **26** 张表（含补齐漏记的 2 张策略表）；`README.md` / `AGENTS.md` 的文档计数 +1
-- [ ] `verify-console.py` 新守卫：`/execution-cluster` 端点 ×6、`clusterType` 三值、无 `optimization.namespace`
+- [ ] `verify-console.py` 新守卫：`/execution-cluster` 端点 ×5、`clusterType` 三值、无 `optimization.namespace`
 
 ---
 
-## 15. 落地记录：与原稿不一致的六处
+## 15. 落地记录：与原稿不一致的五处
 
-M1–M3 按本稿实现，下列六处**刻意偏离**，原因都写在这里，免得后来者以为是漏做：
+M1–M3 按本稿实现，下列五处**刻意偏离**，原因都写在这里，免得后来者以为是漏做：
 
-1. **端点是 6 个，不是 5 个。** 多出的一个是 `POST .../execution-cluster/copy-from`（§4.3 的
-   「复用其他 catalog 的连接」）。没有把它做成 `PUT` 里带 `sourceCatalog` 的开关：`PUT` 是
-   「整份替换」，而复制是「从别处取值再替换」，两种语义挤进一个幂等动词后，前端就无法表达
-   「我只想复制、别动我已有的批次策略」。做成独立端点后，请求体只有 `sourceCatalog` +
-   必填的 `callbackBaseUrl`，一目了然。
-2. **`clearCredentials` 被删除，只保留 `clearCatalogToken`。** 原稿 §1.5 设想「四个秘密都配清空开关」，
+1. **`clearCredentials` 被删除，只保留 `clearCatalogToken`。** 原稿 §1.5 设想「四个秘密都配清空开关」，
    落地时发现那是个**永远失败的按钮**：kubeconfig / AK-SK / AKS 密钥是构造 `KubernetesClient`
    的必需材料，服务层在所有类型下都要求它们存在，传 `clearX=true` 只会得到 400。
    「清空必需凭据」的真实语义等于**删掉整份配置**（`DELETE`），所以不提供这个开关。
    只有 `catalogToken`（可选项）保留清空——「有这个令牌」与「没有这个令牌」都是合法状态。
-3. **`caCertPem` 的留空语义反过来了。** 原稿照抄执行目标设计里 `caPem` 的「留空 = 保持原样」，
+2. **`caCertPem` 的留空语义反过来了。** 原稿照抄执行目标设计里 `caPem` 的「留空 = 保持原样」，
    落地改成 **不传 = 保持原样、传空串 = 清空**。理由是它是**非敏感文本**，而「用 JVM 信任库」
    是一个合法、且用户必须能表达的状态；沿用「留空 = 保持」的话，一旦填过 CA 就再也退不回默认信任库。
-   这与第 2 条并不矛盾：**敏感字段没有「空」状态，非敏感字段的空是有意义的**。
-4. **catalog 列表操作列宽 232 → 240。** 五格按钮（编辑 / 执行集群 / 浏览 / 权限 / 删除）在 1280 宽下
+   这与第 1 条并不矛盾：**敏感字段没有「空」状态，非敏感字段的空是有意义的**。
+3. **catalog 列表操作列宽 232 → 240。** 五格按钮（编辑 / 执行集群 / 浏览 / 权限 / 删除）在 1280 宽下
    232 会折行，第 5 格被挤到第二行。
-5. **`docs/data-model.md` 是 23 → 26 张表，不是 24。** 本稿按「当时 23 张 + 1」预估，
+4. **`docs/data-model.md` 是 23 → 26 张表，不是 24。** 本稿按「当时 23 张 + 1」预估，
    实际基线漏记了行过滤 / 列脱敏那 2 张（`lakehouse_data_policy` / `lakehouse_column_mask`），
    落地时一并补上；`README` / `AGENTS` / `maven-module-design` / `lineage-design` 里的表数、
    唯一约束数与索引数也一起对齐到 26 / 24 / 31。
-6. **`verify-console` 落到 23 组 150 项**（原稿只说「加几条守卫」）。第 22 组 19 项里有三条值得留着：
+5. **`verify-console` 落到 23 组 150 项**（原稿只说「加几条守卫」）。第 22 组 19 项里有三条值得留着：
    「前端代码里不出现 `configHash` / `probeConfigHash`」（状态只在服务端判定，前端只翻译）、
    「旧的两种提交器已删除」（防有人把 `KubernetesJobSubmitter` 捡回来）、
    「yml 的 `optimization` 段没有残留键」（上一版的 12 个提交参数不许写回来）。
 
-**测试落点**：`ExecutionClusterApiTests`（11 例，含「凭据只进不出」「留空不改且密文不变」
+**测试落点**：`ExecutionClusterApiTests`（10 例，含「凭据只进不出」「留空不改且密文不变」
 「409 版本冲突」「kubeconfig 解析不落库」「`exec:` 硬拒」）与 `KubeconfigParserTests`（12 例，纯单元）；
 `OptimizationApiTests` 9 例改为按 catalog 配一份可派发的执行集群后再跑（`probeConfigHash = null`
 即「待验证」，可直接派发）。全量 496 例中 4 例既有红与本改动无关

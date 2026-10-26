@@ -25,8 +25,9 @@ public final class ExecutionClusterDtos {
     /**
      * {@code GET .../execution-cluster}。
      *
-     * <p>{@code configured=false} 时除 {@code catalog} 与 {@code status} 之外的字段都无意义
-     * （服务端此时回的是 404，这个形状只用于 {@code copy-from} 之类的内部复用）。
+     * <p>只在配置存在时返回本形状（没配回 404，由控制台归一化成「未配置」），
+     * 所以 {@code configured} 恒为 {@code true}——留着它是为了让读模型自己说清楚
+     * 「这是一份已存在的配置」，而不是靠调用方记住 404 的含义。
      */
     public record ExecutionCluster(String catalog,
                                    boolean configured,
@@ -153,20 +154,6 @@ public final class ExecutionClusterDtos {
     public record KubeconfigParseResult(List<Context> contexts,
                                         String currentContext,
                                         List<String> warnings) {
-    }
-
-    /**
-     * {@code POST .../copy-from}：从另一个 catalog 复制连接与认证。
-     *
-     * <p><b>为什么单独要 {@code callbackBaseUrl}。</b>它是唯一一项**不能复制**的连接参数：
-     * 它描述的是「任务所在的 Pod 能访问到哪个服务端地址」，方向与其余字段相反——
-     * 抄一份别人的地址，症状是 Job 起来了、优化进程跑完了、结果一条都没回来，
-     * 而探活第 5 步（只验服务端 → 地址那个方向）照样通过。因此它必须由调用方给。
-     *
-     * <p>不给就 400，而不是留空落库：留空的后果是这行配置「已存在但不可用」，
-     * 而状态机只看 {@code enabled} 与探活结论，会把它算进「待验证」并允许派发。
-     */
-    public record CopyFromRequest(String sourceCatalog, String callbackBaseUrl) {
     }
 
     // ------------------------------------------------------------------ 探活

@@ -198,9 +198,6 @@ export const ENDPOINTS = {
   // 五问探活。`query.full=false` 只做第 1–3 步（凭据、身份、权限），
   // 不 dry-run 建 Job——调度扫描走的就是这一档。
   probeExecutionCluster: { method: 'POST', path: '/api/management/v1/catalogs/{catalogName}/execution-cluster/probe' },
-  // 从另一个 catalog 复制连接与认证。复制在**服务端**做：客户端手里不该出现
-  // 任何密文对应的明文。回调地址不复制（见 `CopyFromRequest`）。
-  copyExecutionCluster: { method: 'POST', path: '/api/management/v1/catalogs/{catalogName}/execution-cluster/copy-from' },
 
   // ------------------------------------------------------------------ 管理 API：principal
   listPrincipals: { method: 'GET', path: '/api/management/v1/principals' },

@@ -8,7 +8,6 @@ import io.github.melin.lakehouse.rest.domain.repo.CatalogRepository;
 import io.github.melin.lakehouse.rest.dto.ExecutionClusterDtos;
 import io.github.melin.lakehouse.rest.dto.ExecutionClusterDtos.AksAuth;
 import io.github.melin.lakehouse.rest.dto.ExecutionClusterDtos.Context;
-import io.github.melin.lakehouse.rest.dto.ExecutionClusterDtos.CopyFromRequest;
 import io.github.melin.lakehouse.rest.dto.ExecutionClusterDtos.EksAuth;
 import io.github.melin.lakehouse.rest.dto.ExecutionClusterDtos.ExecutionCluster;
 import io.github.melin.lakehouse.rest.dto.ExecutionClusterDtos.Kubeconfig;
@@ -292,85 +291,6 @@ public class ExecutionClusterService {
         repository.delete(entity);
         clientFactory.invalidate(catalog.getId());
         log.info("catalog {} execution cluster deleted", catalogName);
-    }
-
-    /**
-     * {@code POST .../copy-from}：从另一个 catalog 复制**连接与认证**。
-     *
-     * <p>复制在服务端做（不是客户端把另一份凭据读出来再写回去）：客户端手里不该出现
-     * 任何密文对应的明文。复制范围与设计稿 §4.3 一致——集群类型与整段认证、{@code apiServer}、
-     * {@code caCertPem}、运行位置（namespace / image / pullPolicy / pullSecrets / serviceAccount）、
-     * {@code catalogToken}。
-     *
-     * <p><b>不复制三样，每样各有理由：</b>
-     * <ul>
-     *   <li>{@code callbackBaseUrl}——方向性字段，由请求显式提供（见 {@link CopyFromRequest}）；</li>
-     *   <li>批次策略（表数上限 / 并发数 / 超时）——它跟着**目标集群的算力**走，
-     *       同一台集群给两个 catalog 分配不同份额是正常用法；</li>
-     *   <li>探活结论——它验的是源那份配置的通道，复制来的是别人的验证结果。</li>
-     * </ul>
-     *
-     * <p>复制完状态是「待验证」而不是「正常」：{@code configHash} 重算了（{@code callbackBaseUrl}
-     * 本来就不同），而 {@code probeConfigHash} 被清空。
-     */
-    @Transactional
-    public ExecutionCluster copyFrom(String catalogName, CopyFromRequest request, String principal) {
-        if (request == null || request.sourceCatalog() == null || request.sourceCatalog().isBlank()) {
-            throw ApiException.badRequest("sourceCatalog is required");
-        }
-        if (request.sourceCatalog().trim().equals(catalogName)) {
-            throw ApiException.badRequest("cannot copy the execution cluster from the catalog itself");
-        }
-        // 先校验这一项：它是唯一不从源带过来的连接参数，缺了就不该写任何东西
-        String callbackBaseUrl = requireCallback(request.callbackBaseUrl());
-        CatalogEntity target = requireCatalog(catalogName);
-        CatalogEntity source = requireCatalog(request.sourceCatalog().trim());
-        CatalogExecutionClusterEntity sourceEntity = repository.findByCatalogId(source.getId())
-                .orElseThrow(() -> ApiException.badRequest("catalog " + request.sourceCatalog()
-                        + " 还没有配置执行集群，没有可复制的内容"));
-        if (!cipher.available()) {
-            throw ApiException.badRequest("this deployment cannot store execution cluster credentials:"
-                    + " lakehouse.rest.storage.credential-secret-key is not configured");
-        }
-
-        CatalogExecutionClusterEntity entity = repository.findByCatalogId(target.getId()).orElse(null);
-        boolean create = entity == null;
-        if (create) {
-            entity = new CatalogExecutionClusterEntity();
-            entity.setId(Paging.newId());
-            entity.setCatalogId(target.getId());
-            entity.markCreated(principal, clock.millis());
-            entity.setEntityVersion(0);
-            // 新建一份配置＝要用它，因此默认启用；已存在的配置保持它自己的开关状态
-            entity.setEnabled(true);
-        }
-        entity.setClusterType(sourceEntity.getClusterType());
-        entity.setContextName(sourceEntity.getContextName());
-        entity.setApiServer(sourceEntity.getApiServer());
-        entity.setCaCertPem(sourceEntity.getCaCertPem());
-        entity.setKubeconfigSealed(sourceEntity.getKubeconfigSealed());
-        entity.setAuthConfigSealed(sourceEntity.getAuthConfigSealed());
-        entity.setCatalogTokenSealed(sourceEntity.getCatalogTokenSealed());
-        entity.setNamespace(sourceEntity.getNamespace());
-        entity.setImage(sourceEntity.getImage());
-        entity.setImagePullPolicy(sourceEntity.getImagePullPolicy());
-        entity.setImagePullSecrets(sourceEntity.getImagePullSecrets());
-        entity.setServiceAccount(sourceEntity.getServiceAccount());
-        entity.setCallbackBaseUrl(callbackBaseUrl);
-        // 探活结论不复制：它验的是源 catalog 那条通道
-        entity.setProbeStatus(null);
-        entity.setProbeReason(null);
-        entity.setProbeMessage(null);
-        entity.setProbeConfigHash(null);
-        entity.setProbedAt(null);
-        entity.setConfigHash(configHash(entity));
-        entity.touch(principal, clock.millis());
-        entity.setEntityVersion(entity.getEntityVersion() + 1);
-        CatalogExecutionClusterEntity saved = repository.save(entity);
-        clientFactory.invalidate(target.getId());
-        log.info("catalog {} execution cluster copied from {} (status becomes UNVERIFIED)",
-                catalogName, request.sourceCatalog());
-        return toDto(catalogName, saved);
     }
 
     /**

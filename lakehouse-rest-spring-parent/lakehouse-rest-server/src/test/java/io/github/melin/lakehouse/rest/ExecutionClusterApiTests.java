@@ -408,31 +408,7 @@ class ExecutionClusterApiTests {
         assertEquals("NOT_CONFIGURED", notConfigured.get("status").asString());
     }
 
-    // ------------------------------------------------------------------ 复制与删除
-
-    @Test
-    void copyFromTakesTheConnectionButNotTheCallbackUrl() throws Exception {
-        createCatalog(OTHER);
-        created.add(OTHER);
-        json(200, "PUT", M + "/catalogs/" + OTHER + "/execution-cluster", selfHostedBody("paimon-opt"));
-        createCatalog(CATALOG);
-
-        // 不给回调地址 → 400（它是唯一不能抄的连接参数：方向相反）
-        JsonNode missing = json(400, "POST", path() + "/copy-from",
-                "{\"sourceCatalog\":\"" + OTHER + "\"}");
-        assertTrue(missing.get("message").asString().contains("callbackBaseUrl"), "" + missing);
-
-        JsonNode copied = json(200, "POST", path() + "/copy-from", """
-                {"sourceCatalog":"%s","callbackBaseUrl":"http://other-rest.paimon.svc:8080"}
-                """.formatted(OTHER));
-        assertEquals("SELF_HOSTED", copied.get("clusterType").asString());
-        assertEquals("http://other-rest.paimon.svc:8080", copied.get("callbackBaseUrl").asString());
-        assertEquals("CONFIGURED", copied.get("kubeconfig").get("state").asString());
-        // 复制来的是别人的连接事实，不是你这份配置的验证结论
-        assertEquals("UNVERIFIED", copied.get("status").asString());
-        // 批次策略不复制：跟着目标集群的算力走
-        assertEquals(2, copied.get("maxConcurrentJobs").asInt());
-    }
+    // ------------------------------------------------------------------ 删除
 
     @Test
     void deleteRemovesTheWholeConfiguration() throws Exception {

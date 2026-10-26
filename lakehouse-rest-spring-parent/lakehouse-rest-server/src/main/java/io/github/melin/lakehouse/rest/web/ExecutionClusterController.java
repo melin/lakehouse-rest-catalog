@@ -1,7 +1,6 @@
 package io.github.melin.lakehouse.rest.web;
 
 import io.github.melin.lakehouse.rest.config.RequestContext;
-import io.github.melin.lakehouse.rest.dto.ExecutionClusterDtos.CopyFromRequest;
 import io.github.melin.lakehouse.rest.dto.ExecutionClusterDtos.ExecutionCluster;
 import io.github.melin.lakehouse.rest.dto.ExecutionClusterDtos.KubeconfigParseResult;
 import io.github.melin.lakehouse.rest.dto.ExecutionClusterDtos.ParseKubeconfigRequest;
@@ -120,26 +119,5 @@ public class ExecutionClusterController {
                              @RequestParam(name = "full", defaultValue = "true") boolean full) {
         authorizationService.requireCatalog(catalogName, Access.ALTER, "probe the execution cluster");
         return probeService.probe(catalogName, full);
-    }
-
-    /**
-     * {@code POST .../copy-from}：从另一个 catalog 复制连接与认证。
-     *
-     * <p>除了对**目标** catalog 的 {@code ALTER}，还要求对**源** catalog 的
-     * {@code DESCRIBE}。理由不是洁癖：复制会把源的整段认证（含 kubeconfig / AK·SK /
-     * client secret）搬进一份自己能改的配置里，而这份配置的回调地址由自己填。
-     * 没有对源的读权限也能复制，就等于「凭 ALTER 一个 catalog 的权限，把另一个
-     * catalog 的执行身份借过来用」——那是一条不该存在的越权路径。
-     */
-    @PostMapping("/copy-from")
-    public ExecutionCluster copyFrom(@PathVariable String catalogName,
-                                     @RequestBody CopyFromRequest request) {
-        authorizationService.requireCatalog(catalogName, Access.ALTER, "copy an execution cluster");
-        if (request != null && request.sourceCatalog() != null && !request.sourceCatalog().isBlank()
-                && !request.sourceCatalog().trim().equals(catalogName)) {
-            authorizationService.require(request.sourceCatalog().trim(), ResourceType.CATALOG_ALL,
-                    List.of(), null, Access.DESCRIBE, "copy its execution cluster");
-        }
-        return clusterService.copyFrom(catalogName, request, RequestContext.principal());
     }
 }

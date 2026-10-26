@@ -278,7 +278,7 @@ EXTENSION_ENDPOINTS = {
     # 不引入一级资源：一个 catalog 最多一份配置，既没有「列出全部执行集群」的需求
     # （catalog 列表每行已带摘要），也不存在「不属于任何 catalog 的执行集群」。
     # 服务端实现见 ExecutionClusterController。为什么算扩展端点而不进规格：
-    # Polaris 的规格里没有这个概念（它不做优化任务），而这六个端点服务的是
+    # Polaris 的规格里没有这个概念（它不做优化任务），而这五个端点服务的是
     # 本工程自己的调度链路，写进规格只会让「实现 Polaris」的边界变模糊。
     # 判权：读 CATALOG_ALL:DESCRIBE、改与探活 CATALOG:ALTER、删 CATALOG:DROP——
     # 探活也判 ALTER，因为它会触发真实的 STS 调用与 dry-run 建 Job（审计日志可见）。
@@ -287,7 +287,6 @@ EXTENSION_ENDPOINTS = {
     ("DELETE", "/api/management/v1/catalogs/{catalogName}/execution-cluster"): "执行集群配置（删除整份，含凭据，控制台二次确认）",
     ("POST", "/api/management/v1/catalogs/{catalogName}/execution-cluster/kubeconfig/parse"): "kubeconfig 只解析不落库（逐 context 给 OK/WARN/不支持/不可用）",
     ("POST", "/api/management/v1/catalogs/{catalogName}/execution-cluster/probe"): "五问探活（凭据/身份/权限/准入/回调；?full=false 只跑前三步）",
-    ("POST", "/api/management/v1/catalogs/{catalogName}/execution-cluster/copy-from"): "从另一个 catalog 复制连接与认证（服务端复制，要求对源有读权限）",
 }
 
 problems = []
@@ -1963,13 +1962,13 @@ print("22. 执行集群（catalog 级；没配 / 停用 / 验证失败时整条�
 # 缺了 fail-closed → 策略能保存、任务永远不跑，没人会发现。
 EXEC_CLUSTER_PREFIX = "/api/management/v1/catalogs/{catalogName}/execution-cluster"
 EXEC_ENDPOINT_NAMES = ("getExecutionCluster", "updateExecutionCluster", "deleteExecutionCluster",
-                       "parseExecutionClusterKubeconfig", "probeExecutionCluster", "copyExecutionCluster")
+                       "parseExecutionClusterKubeconfig", "probeExecutionCluster")
 
-# --- 22.1 六个端点都挂在 catalog 下，没有一级资源 ---------------------------
+# --- 22.1 五个端点都挂在 catalog 下，没有一级资源 ---------------------------
 exec_routes = {name: endpoints.get(name) for name in EXEC_ENDPOINT_NAMES}
 wrong_scope = [f"{name}: {route}" for name, route in exec_routes.items()
                if route is None or not route[1].startswith(EXEC_CLUSTER_PREFIX)]
-check("执行集群的六个端点都存在，且路径都以 catalog 为父路径（不引入一级资源）",
+check("执行集群的五个端点都存在，且路径都以 catalog 为父路径（不引入一级资源）",
       not wrong_scope, "\n".join(wrong_scope) or "缺端点")
 
 # --- 22.2 服务端控制器的路由前缀与动词映射 ----------------------------------
@@ -1981,9 +1980,8 @@ check("控制器类级路由与端点前缀一致",
 missing_verbs = [verb for verb, marker in (
     ("GET", "@GetMapping\n"), ("PUT", "@PutMapping\n"), ("DELETE", "@DeleteMapping\n"),
     ('POST "/kubeconfig/parse"', '@PostMapping("/kubeconfig/parse")'),
-    ('POST "/probe"', '@PostMapping("/probe")'),
-    ('POST "/copy-from"', '@PostMapping("/copy-from")')) if marker not in exec_controller]
-check("控制器的六个动词映射齐全（GET/PUT/DELETE + parse/probe/copy-from）",
+    ('POST "/probe"', '@PostMapping("/probe")')) if marker not in exec_controller]
+check("控制器的五个动词映射齐全（GET/PUT/DELETE + parse/probe）",
       not missing_verbs, "缺：" + "、".join(missing_verbs))
 
 # --- 22.3 三种集群类型：服务端枚举与前端词表各只有一份 ----------------------

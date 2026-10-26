@@ -33,7 +33,6 @@ import TimeText from '@/components/TimeText.vue'
 import { describeError } from '@/api/client.js'
 import { executionClusterOf, managementApi } from '@/api/management.js'
 import { confirmDanger, notifyError, notifySuccess } from '@/composables/index.js'
-import { session } from '@/store/session.js'
 import {
   CLUSTER_TYPES,
   clusterStatusInfo,
@@ -109,11 +108,6 @@ const state = reactive({
   parsing: false,
   parseResult: null,
   parseError: '',
-  /** 「复用其他 catalog 的连接」那一小块（内联展开，不叠一层弹窗）。 */
-  copyOpen: false,
-  copySource: '',
-  copyCallback: '',
-  copying: false,
   /**
    * 「清除已保存的数据面令牌」。
    *
@@ -141,11 +135,6 @@ const typeOption = computed(() => CLUSTER_TYPES.find((item) => item.value === st
 /** 已保存的 kubeconfig 的 context 列表（服务端解密后重新解析得到，不含密钥材料）。 */
 const storedContexts = computed(() => state.entity?.kubeconfig?.contexts || [])
 const storedKubeconfigState = computed(() => state.entity?.kubeconfig?.state || 'NONE')
-
-/** 可选的源 catalog（复制连接用）：除自己以外，全是候选。 */
-const copyCandidates = computed(() => (session.state.catalogs || [])
-  .map((catalog) => catalog.name)
-  .filter((name) => name !== props.catalogName))
 
 /** 底部那句「保存后会怎样」——把状态机的结论提前说出来，免得保存完才发现变成了「待验证」。 */
 const footerHint = computed(() => {
@@ -179,9 +168,6 @@ async function load() {
   state.probe = null
   state.parseResult = null
   state.parseError = ''
-  state.copyOpen = false
-  state.copySource = ''
-  state.copyCallback = ''
   state.clearCatalogToken = false
   try {
     const dto = await executionClusterOf(props.catalogName)
@@ -426,32 +412,6 @@ async function verify() {
     state.view = 'form'
   } finally {
     state.probing = false
-  }
-}
-
-/** 复制另一个 catalog 的连接与认证（服务端做，客户端看不到那份凭据）。 */
-async function copyFrom() {
-  if (!state.copySource) {
-    notifyError(new Error('先选一个源 catalog'))
-    return
-  }
-  if (!state.copyCallback.trim()) {
-    notifyError(new Error('回调地址必须自己填：它描述的是「任务所在的 Pod 能访问到哪个服务端」，不能抄'))
-    return
-  }
-  state.copying = true
-  try {
-    const saved = await managementApi.copyExecutionCluster(props.catalogName, state.copySource, state.copyCallback.trim())
-    state.entity = saved
-    state.form = formOf(saved)
-    state.snapshot = JSON.stringify(state.form)
-    state.copyOpen = false
-    notifySuccess(`已从 ${state.copySource} 复制连接与认证，状态为「${statusOfLabel(saved)}」，请验证一次`)
-    emit('saved', saved)
-  } catch (error) {
-    notifyError(error)
-  } finally {
-    state.copying = false
   }
 }
 
@@ -1058,44 +1018,6 @@ const probeConsequence = computed(() => {
           </el-form-item>
         </el-form>
 
-        <!-- 复用其他 catalog 的连接 -->
-        <div class="exec-copy">
-          <el-button size="small" text type="primary" @click="state.copyOpen = !state.copyOpen">
-            {{ state.copyOpen ? '收起' : '复用其他 catalog 的连接' }}
-          </el-button>
-          <span class="pc-dim">10 个 catalog 都跑在同一个集群？不用填 10 次。</span>
-        </div>
-        <div v-if="state.copyOpen" class="exec-copy-panel">
-          <el-form label-position="top" size="small" class="pc-form exec-grid2">
-            <el-form-item>
-              <template #label>
-                <FieldLabel label="源 catalog" tip="只复制连接与认证（集群类型、apiServer、kubeconfig / 密钥、运行位置、数据面令牌）。" />
-              </template>
-              <el-select v-model="state.copySource" class="pc-full" placeholder="选一个已配好执行集群的 catalog">
-                <el-option v-for="name in copyCandidates" :key="name" :label="name" :value="name" />
-              </el-select>
-            </el-form-item>
-            <el-form-item>
-              <template #label>
-                <FieldLabel
-                  label="回调地址（必须自己填）"
-                  tip="它描述方向：Pod → 服务端。抄别人的地址，症状是 Job 起来了结果回不来，而探活第 5 步照样通过。"
-                />
-              </template>
-              <el-input v-model="state.copyCallback" placeholder="http://paimon-rest.<你的命名空间>.svc:8080" />
-            </el-form-item>
-          </el-form>
-          <div class="pc-field-note">
-            批次策略（单批表数 / 并发数 / 超时）与回调地址不复制；复制完状态是「待验证」——
-            复制来的是别人的连接事实，不是你这份配置的验证结论。
-          </div>
-          <div class="exec-copy-actions">
-            <el-button size="small" :loading="state.copying" type="primary" @click="copyFrom">
-              复制连接
-            </el-button>
-            <el-button size="small" @click="state.copyOpen = false">取消</el-button>
-          </div>
-        </div>
       </div>
     </template>
 
@@ -1274,29 +1196,6 @@ const probeConsequence = computed(() => {
   font-size: 12px;
   line-height: 1.7;
   color: var(--pc-text-dim);
-}
-
-/* 复用连接那一块 */
-.exec-copy {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-top: 6px;
-  font-size: 12.5px;
-  flex-wrap: wrap;
-}
-
-.exec-copy-panel {
-  margin-top: 10px;
-  padding: 12px 14px 6px;
-  border: 1px dashed var(--pc-border);
-  border-radius: var(--pc-radius);
-}
-
-.exec-copy-actions {
-  display: flex;
-  gap: 10px;
-  padding-bottom: 8px;
 }
 
 /* 探活结果：每一步一行，序号在左，结论与处置在右 */

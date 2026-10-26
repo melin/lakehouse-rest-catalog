@@ -133,7 +133,7 @@ public class CatalogExecutionClusterEntity extends AuditedEntity {
      *
      * <p>逐 catalog 配置而不是全局：同一个服务端在不同集群里的可达地址不同
      * （集群内 Service 名 / 内网 LB / 对外域名）。它是**反向可达**的地址，
-     * 填错最难查，因此保存时不抄别人的（{@code copy-from} 不复制这一项）。
+     * 填错最难查，因此**没有默认值**：每份配置都必须由配置它的人自己填。
      */
     @Column(name = "callback_base_url", length = 255, nullable = false,
             comment = "任务回调服务端的基址（集群里的 Pod 能访问到的地址）")
