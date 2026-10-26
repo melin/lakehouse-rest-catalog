@@ -164,7 +164,7 @@ public class CatalogFileService {
         }
         CatalogEntity catalog = catalogRepository.findById(table.getCatalogId())
                 .orElseThrow(() -> ApiException.managementNotExist(ResourceType.CATALOG, table.getCatalogId()));
-        // 库名只为让响应自描述（界面上「paimon_catalog / demo / orders 的文件」）；
+        // 库名只为让响应自描述（界面上「lakehouse_catalog / demo / orders 的文件」）；
         // 元数据里挂着的 id 找不到实体说明数据不一致，如实回传 id 比编一个名字诚实
         String databaseName = databaseRepository.findById(table.getDatabaseId())
                 .map(DatabaseEntity::getName)

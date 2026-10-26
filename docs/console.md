@@ -646,11 +646,9 @@ BASE=http://127.0.0.1:8080 CLIENT_ID=<clientId> CLIENT_SECRET=<secret> \
 | `lakehouse.console.catalog` | 当前选中的 catalog prefix |
 | `lakehouse.console.theme` | `light` / `dark` |
 
-键前缀随服务端 `paimon.rest.*` → `lakehouse.rest.*` 一并从 `paimon.console.*`
-改成 `lakehouse.console.*`（源码里已无旧前缀）。**不做旧键兼容读取**——静默搬家会把
-两套前缀长期留在代码里。升级后的可见影响：登录态失效（读到空令牌就跳登录页，不会
-「已登录却处处 401」）；上次选中的 catalog 与主题回到默认；覆盖过 `baseUrl` 的跨域
-部署要重填一次。
+键前缀与服务端配置前缀同一个词根（`lakehouse.console.*`）。**不做旧键兼容读取**——
+静默兼容会把两套前缀长期留在代码里；旧键一律视为不存在（读到空令牌就跳登录页，
+不会「已登录却处处 401」）。
 
 OIDC 登录期间还会在 `sessionStorage` 里放三个短命键
 （`lakehouse.console.oidc.verifier` / `.state` / `.returnTo`），它们是 PKCE 的中间状态，

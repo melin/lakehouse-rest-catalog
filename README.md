@@ -117,9 +117,8 @@ Maven 坐标与包名：`groupId` 为 `io.github.melin`，十五个 artifact 是
 一个是给 Spark 4.1 的，装哪个由集群版本决定（见第 5 节）。Flink 两个版本模块只带
 「catalog 选项 + 端到端用例」，数据面由 Paimon / Iceberg 自己的连接器负责
 （见 [`flink-rest-catalog.md`](docs/flink-rest-catalog.md)）。
-包前缀为 `io.github.melin.lakehouse.rest`（三轮改定：`io.github.melin.paimonrest` →
-`io.github.melin.lakehouse.rest` → 本名 → 各协议面再加一层格式子包，主前缀与 artifactId 的
-`lakehouse` 对齐），Spark 模块在其下再用 `.spark` 子包（如
+包前缀为 `io.github.melin.lakehouse.rest`（与 artifactId 的 `lakehouse` 对齐），
+各协议面再独占一层格式子包；Spark 模块在其下再用 `.spark` 子包（如
 `io.github.melin.lakehouse.rest.spark.ManagementSparkExtensions`）。
 服务端的 core / storage / server 共用一个包树
 （`io.github.melin.lakehouse.rest.{web,service,domain,dto,support,config}`），
@@ -132,22 +131,13 @@ Maven 坐标与包名：`groupId` 为 `io.github.melin`，十五个 artifact 是
 （`POST /v1/{prefix}/tables/rename`、`…/views/rename`）上移到 core 的
 `CatalogRenameController`，否则 Spring 会以 `Ambiguous mapping` 拒绝启动。
 
-**这一处改名会打到用户，因此留了兼容壳。** `spark.sql.extensions` 填的是全限定类名，
-包名一改，既有部署的 Spark 会话会在初始化时报 `ClassNotFoundException`——错误离「升级了
-服务端依赖」很远，不容易查。于是 Spark 模块里曾保留**最初**包名下的同名空壳（只继承新实现、不覆盖任何方法）。
-该空壳已按当初的约定删除——它只是过渡，确认没有部署再用旧名字之后就不再保留；
-**新部署请写新包名** `io.github.melin.lakehouse.rest.spark.ManagementSparkExtensions`。
-中间那个 `io.github.melin.lakehouse.rest` 从未提交、也就从未发布，所以没有为它另留一个壳——
-壳的数量等于「历史的对外名字数」，不是「改过几次」。
-其余位置都不涉及外部契约：配置前缀已从 `paimon.rest.*` 直接改到 `lakehouse.rest.*`（尚无部署
-写过旧键，属于一次性对齐而不是迁移，见
-[`maven-module-design.md`](docs/maven-module-design.md) §4.3(1)）；k8s 资源名
-没跟着改，理由见下一段；数据库表名已从 `paimon_` 改成 `lakehouse_`（见
-[`data-model.md`](docs/data-model.md) §6）。
-
-k8s 资源名的 `paimon-` 前缀**故意不改**：它不是产品名，是历史标识，改了要动存量部署
-（StatefulSet 与 PVC 引用）。见
-[`maven-module-design.md`](docs/maven-module-design.md) §8.6。
+`spark.sql.extensions` 填的是**全限定类名**，所以包名是对外契约——
+**请写** `io.github.melin.lakehouse.rest.spark.ManagementSparkExtensions`。
+其余位置都不是自由名字，判定与现状见
+[`maven-module-design.md`](docs/maven-module-design.md) §4 / §10：配置前缀 `lakehouse.rest.*`；
+k8s 资源名的 `paimon-` 前缀**故意不改**（它不是产品名，是历史标识，改了要动存量部署——
+StatefulSet 与 PVC 引用）；元数据库 `lakehouse_catalog`、表前缀 `lakehouse_`
+（表划分见 [`data-model.md`](docs/data-model.md)）。
 
 `docs/` 里二十六份文档的分工：
 
@@ -156,7 +146,7 @@ k8s 资源名的 `paimon-` 前缀**故意不改**：它不是产品名，是历�
 | [`catalog-api-endpoints.md`](docs/catalog-api-endpoints.md) | 要查 Catalog API 有哪些端点——Paimon 的 60 个与 Iceberg 的 26 个按资源分组，含基址、前缀与授权映射说明 |
 | [`management-api-overview.md`](docs/management-api-overview.md) | 要读 Management API——Paimon 官方权限端点与服务端扩展端点各落在哪几个控制器上、几处容易读错的语义 |
 | [`management-api-contract.md`](docs/management-api-contract.md) | **存档**：由已移除的 Polaris 管理规格生成的字段与权限枚举（catalog role、64 项 privilege 已不存在）；当前契约看上一行与 [`authorization.md`](docs/authorization.md) |
-| [`data-model.md`](docs/data-model.md) | 要改实体或看表结构——26 张表的划分、摘要列与审计列的设计理由、实体与仓储分在哪两个模块、`lakehouse_` 前缀（原 `paimon_`）的来历与 §6 的迁移方案（原子 rename、回滚、验收） |
+| [`data-model.md`](docs/data-model.md) | 要改实体或看表结构——26 张表的划分、摘要列与审计列的设计理由、实体与仓储分在哪两个模块 |
 | [`spark-sql-reference.md`](docs/spark-sql-reference.md) | 要用 SQL 管理主体与授权——语句级参考，含完整示例 |
 | [`spark-sql-extension.md`](docs/spark-sql-extension.md) | 要改这个 Spark 扩展——语法扩展的做法、两个必须知道的约束、测试分层 |
 | [`spark-paimon-rest-e2e.md`](docs/spark-paimon-rest-e2e.md) | 要让 Spark 通过本服务端建 Paimon 表——连接配置、可执行的 SQL、报错对照表 |
@@ -173,7 +163,7 @@ k8s 资源名的 `paimon-` 前缀**故意不改**：它不是产品名，是历�
 | [`iceberg-rest-catalog-design.md`](docs/iceberg-rest-catalog-design.md) | 要看「同一份元数据同时服务 Paimon 与 Iceberg」怎么做的——双协议方案：创建时区分格式、22 张表复用只加 9 列、路径冲突与错误模型、能力边界与效果图（`outputs/iceberg-rest-catalog/mockup.html`），以及**已落地的实测记录与与方案不一致的几处**（§11） |
 | [`generic-table-design.md`](docs/generic-table-design.md) | 要把 parquet / orc / lance / vortex 目录也纳入目录服务，或评审「通用表」方案——**设计稿，未实现**：Polaris Generic Table 的事实基线、四种格式的能力矩阵、复用 `lakehouse_table` 加 `table_kind` 的三方案对比、4 个端点与权限映射、凭据下发为什么是唯一的数据面控制点、Spark 侧按格式分派（`FileTable` 子类 / `ServiceLoader<TableProvider>`）、影响面与风险 |
 | [`metrics-design.md`](docs/metrics-design.md) | 要加指标、接 Prometheus 或判断「这个指标该不该打标签」——**设计稿，未实现**：Polaris telemetry 的事实基线（HTTP / API / 持久化 / 缓存四类来源，`realm_id` 基数闸门与「超限即停记」、SLO 显式桶、Iceberg 客户端用量报告与运维指标的区别）、`lakehouse.*` 指标目录与 <1500 的基数预算、标签黑名单与 catalog 折叠成 `__other__`、切面替代逐端点 `@Timed`、管理端口 8081 + ServiceMonitor、告警与看板、`verify-metrics-doc.py` 一致性校验 |
-| [`maven-module-design.md`](docs/maven-module-design.md) | 要改模块布局或 artifact 名——`lakehouse-rest-*` 命名定案、两个父 POM / 两个依赖世界、三条用 enforcer 守住的依赖不变量、改名清单与「哪四处故意不改」（§8.6），以及**已落地**的实测记录（§8，含与设计不一致的六处及原因） |
+| [`maven-module-design.md`](docs/maven-module-design.md) | 要改模块布局、加协议面或动对外名字——`lakehouse-rest-*` 命名定案、两个父 POM / 两个依赖世界、三条用 enforcer 守住的依赖不变量、对外名字的持有者清单与改名判据（§4 / §10）、类的实际落点与依赖分工（§8） |
 | [`table-optimization.md`](docs/table-optimization.md) | 要改表存储优化或排查优化任务——三个动作的语义、批次与并发两道闸门、k8s 提交与状态跟踪、控制台两处页面 |
 | [`catalog-execution-cluster-design.md`](docs/catalog-execution-cluster-design.md) | 要给 catalog 配「优化任务跑在哪个 k8s 集群」或评审该方案——**已实现**（M1–M3 全部落地；M4 文档回填随本次提交完成）：配置从 `application.yml` 下移到 catalog（1:1）、三种集群类型的认证（kubeconfig / EKS 令牌 / AKS 令牌）、kubeconfig 逐 context 解析（`exec:` 是硬拒，不是没支持）、探活五问与状态机、fabric8 落地要点（防回落、客户端缓存、AKS scope 修正）；配套效果图 [`catalog-execution-cluster-mockup.html`](docs/catalog-execution-cluster-mockup.html) |
 | [`lineage-design.md`](docs/lineage-design.md) | 要做 Spark SQL 血缘（表级 / 列级）或评审方案——**三层都已实现**（服务端：三张表 + 5 个端点；控制台：表详情页「血缘」页签；引擎侧：Spark 3.5/4.1 抽取器与上报器；端到端 `scripts/e2e-lineage.sh` 只在 3.5 上能跑，4.1 受 Paimon bundle 限制）：为什么必须在引擎侧抽而不是服务端重解析（五个错法）、为什么是 `analyzed` 而不是 `optimized`、参考实现 `kyuubi-spark-lineage` 的机制拆解（属性集下推、16 行节点规则、`__count__` 等三个占位、表名归一化）与「抄了什么 / 改了 10 处」、归一化模型（`~` 保留前缀、五种列的 `kind`）、上报契约与异步丢弃、run（事件）与边（状态）两张语义不同的表、图查询口径与环、控制台展现（跳数即层号的分层布局、单张 Canvas + 三档 LOD、折叠与按需展开、列级聚合与虚拟列表、性能预算）、前端落地视角（§9.11–9.14：组件清单与 0 新增依赖、表详情页「血缘」页签集成、数据流；效果图 `docs/lineage-mockup.html`）、配置与验收；**只做 Spark，Flink 留位** |

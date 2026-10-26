@@ -46,13 +46,10 @@ val spark = PaimonRestManagement.install(SparkSession.builder())
   .getOrCreate()
 ```
 
-> **旧包名仍然可用。** 包名已从 `io.github.melin.paimonrest` 改到 `io.github.melin.lakehouse.rest`
-> （中间经过一次 `io.github.melin.lakehouse.rest`，那版未发布），
-> 但模块里保留了一个旧包名下的空壳，所以既有配置写的
-> `io.github.melin.paimonrest.spark.ManagementSparkExtensions` **不用改也能启动**。
-> 新部署请写上面那个新包名——空壳只是过渡，确认没有部署再用旧名字之后就会删掉。
-> 这条兼容是必须的：`spark.sql.extensions` 的值是**启动那一刻**就要解析的全限定类名，
-> 写错了整个会话都建不起来，而报错信息离「升级了服务端依赖」很远。
+> **`spark.sql.extensions` 的值是启动那一刻就要解析的全限定类名**，写错了整个会话都建
+> 不起来，而报错信息离「升级了服务端依赖」很远——所以请写当前名
+> `io.github.melin.lakehouse.rest.spark.ManagementSparkExtensions`。名字能不能动、按什么判据动，
+> 见 [`maven-module-design.md`](maven-module-design.md) §4 / §10。
 
 | 配置 | 默认值 | 说明 |
 | --- | --- | --- |
