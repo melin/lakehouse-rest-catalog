@@ -12,6 +12,10 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import io.github.melin.lakehouse.rest.domain.entity.OptimizationJobEntity;
 import io.github.melin.lakehouse.rest.domain.entity.TableEntity;
 import io.github.melin.lakehouse.rest.domain.entity.TableOptimizationEntity;
+import io.github.melin.lakehouse.rest.domain.entity.CatalogEntity;
+import io.github.melin.lakehouse.rest.domain.entity.CatalogExecutionClusterEntity;
+import io.github.melin.lakehouse.rest.domain.repo.CatalogExecutionClusterRepository;
+import io.github.melin.lakehouse.rest.domain.repo.CatalogRepository;
 import io.github.melin.lakehouse.rest.domain.repo.OptimizationJobItemRepository;
 import io.github.melin.lakehouse.rest.domain.repo.OptimizationJobRepository;
 import io.github.melin.lakehouse.rest.domain.repo.TableOptimizationRepository;
@@ -30,11 +34,14 @@ import io.github.melin.lakehouse.rest.service.submit.OptimizationJobSubmitter.Jo
 import io.github.melin.lakehouse.rest.service.submit.OptimizationJobSubmitter.SubmissionRequest;
 import io.github.melin.lakehouse.rest.service.submit.OptimizationJobSubmitter.Submitted;
 import io.github.melin.lakehouse.rest.support.OptimizationStatus.Job;
+import io.github.melin.lakehouse.rest.support.Paging;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.MethodOrderer;
 import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
@@ -69,17 +76,20 @@ import tools.jackson.databind.node.JsonNodeFactory;
  * 这些状态机分支就只能靠起一个 k8s 才能覆盖，而状态机恰恰是最容易写错、
  * 又最不容易在真机上复现的部分。
  *
- * <p>批次数上限与并发上限在 {@code @TestPropertySource} 里调小（每批 2 张表、并发 2 批），
- * 这样用 4~5 张表就能覆盖「合并执行」「批满顺延」「拿不到配额不动游标」三种行为，
- * 不必真的建几十张表。
+ * <p>批次数上限与并发上限**不再来自 yml**：它们是每个 catalog 执行集群配置的一部分
+ * （逐集群的配额），因此由 {@link #ensureExecutionCluster()} 在每个测试前写一行
+ * 「每批 2 张表、并发 2 批」的配置。这样用 4~5 张表就能覆盖「合并执行」「批满顺延」
+ * 「拿不到配额不动游标」三种行为，不必真的建几十张表。
+ *
+ * <p>那一行同时是**可派发的**（{@code probeConfigHash} 为空 → {@code UNVERIFIED}）：
+ * 没有它，策略保存会被 fail-closed 挡成 400、出批会被跳过——这正是新规则要的效果，
+ * 但会让这一整套用例测不到它们本来要测的东西。
  */
 @SpringBootTest
 @ActiveProfiles("test")
 @AutoConfigureMockMvc
 @TestPropertySource(properties = {
-        "lakehouse.rest.optimization.scheduler-enabled=false",
-        "lakehouse.rest.optimization.max-tables-per-job=2",
-        "lakehouse.rest.optimization.max-concurrent-jobs=2"
+        "lakehouse.rest.optimization.scheduler-enabled=false"
 })
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 class OptimizationApiTests {
@@ -111,8 +121,74 @@ class OptimizationApiTests {
     private OptimizationBatchService batchService;
     @Autowired
     private OptimizationDispatcher dispatcher;
+    @Autowired
+    private CatalogRepository catalogRepository;
+    @Autowired
+    private CatalogExecutionClusterRepository clusterRepository;
 
     private final JsonMapper mapper = JsonMapper.builder().build();
+
+    // ------------------------------------------------------------------ 执行集群夹具
+
+    /**
+     * 每个测试前确保 catalog {@code paimon} 有一份**可派发**的执行集群配置。
+     *
+     * <p>两个数（每批 2 张表、并发 2 批）在这里给，是因为它们已经从 yml 搬到
+     * 「每个 catalog 的执行集群」——这正是本次改造的语义变化，测试也必须跟着改，
+     * 否则它测的就是一个已经不存在的配置来源。
+     *
+     * <p>不调探活：{@code probeConfigHash} 留空即 {@code UNVERIFIED}，而 {@code UNVERIFIED}
+     * 是可派发的（「刚配好、还没验」是正常中间状态）。探活要真连集群，测试里没有。
+     *
+     * <p>**收尾在 {@code @AfterAll}**：H2 内存库在同一 JVM 的测试类之间共享，
+     * 留着这一行会让「paimon 没有执行集群」的用例（404 那几条）在别处失败。
+     */
+    @BeforeEach
+    void ensureExecutionCluster() {
+        CatalogEntity catalog = catalogRepository.findByPrefix(PREFIX).orElseThrow();
+        CatalogExecutionClusterEntity entity = clusterRepository.findByCatalogId(catalog.getId()).orElse(null);
+        if (entity == null) {
+            entity = new CatalogExecutionClusterEntity();
+            entity.setId(Paging.newId());
+            entity.setCatalogId(catalog.getId());
+            entity.markCreated("optimization-tests", 1L);
+        }
+        entity.setEnabled(true);
+        entity.setClusterType("SELF_HOSTED");
+        entity.setContextName("test");
+        entity.setApiServer("https://k8s.optimization-tests.invalid");
+        entity.setNamespace("optimizer");
+        entity.setImage("registry.invalid/lakehouse-rest-optimizer:test");
+        entity.setImagePullPolicy("IfNotPresent");
+        entity.setCallbackBaseUrl("http://paimon-rest.optimizer-tests.svc:8080");
+        entity.setMaxTablesPerJob(2);
+        entity.setMaxConcurrentJobs(2);
+        entity.setJobTimeoutSeconds(7200);
+        entity.setProbeStatus(null);
+        entity.setProbeReason(null);
+        entity.setProbeMessage(null);
+        entity.setProbeConfigHash(null);
+        entity.setProbedAt(null);
+        // 只用于满足非空约束与「配置变了要重建客户端」的比较；UNVERIFIED 由
+        // probeConfigHash 为空决定，与这个值无关
+        entity.setConfigHash("optimization-tests-" + catalog.getId());
+        entity.touch("optimization-tests", 1L);
+        entity.setEntityVersion(entity.getEntityVersion() + 1);
+        clusterRepository.save(entity);
+    }
+
+    /**
+     * 每个测试后把夹具删掉。
+     *
+     * <p>用 {@code @AfterEach} 而不是 {@code @AfterAll}：H2 内存库在同一 JVM 的测试类之间
+     * 共享，而 {@code @AfterAll} 的静态方法注入不了仓储（Spring 只对 PER_CLASS 生命周期
+     * 的实例方法做参数注入）。逐测试删建也顺带保证了「上一个测试改坏了这一行」不会外溢。
+     */
+    @AfterEach
+    void removeExecutionCluster() {
+        catalogRepository.findByPrefix(PREFIX).ifPresent(catalog -> clusterRepository
+                .findByCatalogId(catalog.getId()).ifPresent(clusterRepository::delete));
+    }
 
     // ------------------------------------------------------------------ 桩提交器
 
@@ -148,12 +224,12 @@ class OptimizationApiTests {
         }
 
         @Override
-        public JobState state(String namespace, String resource) {
+        public JobState state(String catalogId, String namespace, String resource) {
             return states.getOrDefault(resource, JobState.UNKNOWN);
         }
 
         @Override
-        public void cancel(String namespace, String resource) {
+        public void cancel(String catalogId, String namespace, String resource) {
             cancelled.add(resource);
         }
 

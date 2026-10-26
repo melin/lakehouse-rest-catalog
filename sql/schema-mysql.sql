@@ -73,6 +73,41 @@ USE `lakehouse_catalog`;
         primary key (id)
     ) comment='catalog 实例，REST 路径中的 {prefix} 即其对外标识' engine=InnoDB;
 
+    create table lakehouse_catalog_execution_cluster (
+        enabled bit not null comment '是否启用；停用即该 catalog 不跑优化，配置保留',
+        entity_version integer not null comment '乐观并发版本号，对应管理 API 的 entityVersion',
+        job_timeout_seconds integer not null comment '批次超时秒数',
+        max_concurrent_jobs integer not null comment '该 catalog 同时运行几个批次',
+        max_tables_per_job integer not null comment '单批最多几张表',
+        created_at bigint comment '创建时刻（epoch 毫秒）',
+        probe_status varchar(8) comment '最近一次探活 PASS / FAIL；空 = 从未探过',
+        probed_at bigint comment '最近一次探活时刻（epoch 毫秒）',
+        updated_at bigint comment '最后更新时刻（epoch 毫秒）',
+        cluster_type varchar(16) not null comment '集群类型 SELF_HOSTED / EKS / AKS，决定用哪种认证',
+        image_pull_policy varchar(16) not null comment '镜像拉取策略 IfNotPresent / Always / Never',
+        probe_reason varchar(32) comment '探活失败的短因码',
+        namespace varchar(63) not null comment '提交 Job 的命名空间',
+        service_account varchar(63) comment 'Pod 的 serviceAccountName；空 = 命名空间默认',
+        catalog_id varchar(64) not null comment '所属 catalog 的内部 id，一行一 catalog（唯一约束）',
+        config_hash varchar(64) not null comment '连接与运行字段的 SHA-256，用于判定「改完没验证」',
+        id varchar(64) not null comment '主键',
+        probe_config_hash varchar(64) comment '探活时的 configHash',
+        context_name varchar(128) comment 'kubeconfig 里选中的 context（仅 SELF_HOSTED）',
+        probe_message varchar(512) comment '探活结论（一句话，不含原始响应体）',
+        api_server varchar(255) not null comment 'apiserver 地址（SELF_HOSTED 时是 kubeconfig 的投影）',
+        auth_config_sealed text comment 'EKS / AKS 认证配置的 JSON（CredentialCipher 密封）',
+        ca_cert_pem text comment '集群 CA 的 PEM 文本；空 = 用 JVM 信任库',
+        callback_base_url varchar(255) not null comment '任务回调服务端的基址（集群里的 Pod 能访问到的地址）',
+        catalog_token_sealed text comment '下发给任务的 catalog 数据面令牌（CredentialCipher 密封）',
+        created_by varchar(255) comment '创建者主体名（写入前已按列宽归一化）',
+        image varchar(255) not null comment '优化任务镜像（含 Spark 运行时）',
+        image_pull_secrets varchar(255) comment 'imagePullSecrets，逗号分隔的 Secret 名',
+        kubeconfig_sealed text comment 'kubeconfig 原文（CredentialCipher 密封），仅 SELF_HOSTED',
+        owner varchar(255) comment '记录归属主体（展示与过滤用，不参与授权判定）',
+        updated_by varchar(255) comment '最后更新者主体名（写入前已按列宽归一化）',
+        primary key (id)
+    ) comment='catalog 的执行集群配置（优化任务提交到哪里、用什么身份），一行一 catalog' engine=InnoDB;
+
     create table lakehouse_column_mask (
         allow_null_on_required bit not null comment '置空 mask 落在非空列时的显式确认（默认 false = 拒绝）',
         created_at bigint comment '创建时刻（epoch 毫秒）',
@@ -477,6 +512,9 @@ USE `lakehouse_catalog`;
 
     alter table lakehouse_catalog 
        add constraint uk_catalog_prefix unique (prefix_value);
+
+    alter table lakehouse_catalog_execution_cluster 
+       add constraint uk_exec_cluster_catalog unique (catalog_id);
 
     alter table lakehouse_column_mask 
        add constraint uk_column_mask_column unique (policy_id, column_name);

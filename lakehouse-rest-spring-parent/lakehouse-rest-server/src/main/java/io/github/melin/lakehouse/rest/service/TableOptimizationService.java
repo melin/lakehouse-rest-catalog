@@ -19,6 +19,7 @@ import io.github.melin.lakehouse.rest.event.CatalogEvent;
 import io.github.melin.lakehouse.rest.event.CatalogEventPublisher;
 import io.github.melin.lakehouse.rest.event.CatalogEventType;
 import io.github.melin.lakehouse.rest.service.OptimizationJobService.BatchTable;
+import io.github.melin.lakehouse.rest.service.exec.ExecutionClusterService;
 import io.github.melin.lakehouse.rest.support.ApiException;
 import io.github.melin.lakehouse.rest.support.CatalogFormat;
 import io.github.melin.lakehouse.rest.support.OptimizationOptions;
@@ -65,6 +66,7 @@ public class TableOptimizationService {
     private final ManagementCatalogService catalogService;
     private final OptimizationConfigResolver configResolver;
     private final OptimizationJobService jobService;
+    private final ExecutionClusterService clusters;
     private final CatalogEventPublisher events;
     private final Clock clock;
 
@@ -137,6 +139,12 @@ public class TableOptimizationService {
                     }
                 }
             }
+        }
+        // fail-closed：给一个没有可派发执行集群的 catalog 保存「启用」的策略 → 400。
+        // 允许保存等于允许「配了但永远不会跑」，而这类静默失效最难发现。
+        // 例外是 enabled=false：那是刻意的关闭，不是遗漏——清理也必须能保存。
+        if (policy.isEnabled()) {
+            clusters.assertDispatchable(prefix);
         }
         policy.touch(principal, now);
         policyRepository.save(policy);
@@ -247,6 +255,9 @@ public class TableOptimizationService {
         if (actions.isEmpty()) {
             throw ApiException.badRequest("this table has no enabled optimization action");
         }
+        // 立即执行同样 fail-closed：它直接建批次，不经过出批那条路，
+        // 因此这里不拦的话，「没有执行集群」的时候点一下按钮就会造出一个永远 PENDING 的批次
+        clusters.assertDispatchable(prefix);
         String fullName = prefix + "." + ref.database().getName() + "." + table.getName();
         return jobService.detail(jobService.createJob(table.getCatalogId(),
                 OptimizationJobService.TRIGGER_MANUAL,

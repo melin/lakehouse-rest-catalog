@@ -1,18 +1,20 @@
 # 数据模型
 
-服务端把 catalog 元数据与授权关系全部放进关系库，共 **23 张表、23 个 JPA 仓储接口**。
+服务端把 catalog 元数据与授权关系全部放进关系库，共 **26 张表、26 个 JPA 仓储接口**。
 本文件说明表的划分，以及三个容易看错或踩坑的设计点：摘要列、审计列、JSON 文档列。
 
 - 实体与仓储按模块分两处（模块划分见 [`maven-module-design.md`](maven-module-design.md) §8，
   目录层级见其 §9.1；下面两个路径里的 `lakehouse-rest-spring-parent/` 就是那层嵌套）：
-  - `lakehouse-rest-spring-parent/lakehouse-rest-core/.../domain/entity/` —— **20 个实体**
-    （catalog 侧 12 + 管理侧 4 + 事件审计 1 + 血缘 3），
-    另含 `AuditedEntity` 基类与 `JsonConverters`；同级 `domain/repo/` 有 **20 个仓储接口**
-  - `lakehouse-rest-spring-parent/lakehouse-rest-server/.../domain/entity/` —— **3 个表存储优化实体**
-    （`TableOptimization` / `OptimizationJob` / `OptimizationJobItem`）；同级 `domain/repo/` 有 3 个仓储接口
-  - 合计 23 个实体 + 23 个仓储接口。分家的依据是**谁读它**而不是谁写它：
-    优化三表只有 server 侧的调度与控制器会读，留在 server；其余实体被协议层（`protocol-paimon`）
-    的面复用，所以下沉到 core，否则协议层要反向依赖 server。血缘三表虽然只由 core 的
+  - `lakehouse-rest-spring-parent/lakehouse-rest-core/.../domain/entity/` —— **22 个实体**
+    （catalog 侧 12 + 管理侧 4 + 事件审计 1 + 血缘 3 + 行过滤/列脱敏 2），
+    另含 `AuditedEntity` 基类与 `JsonConverters`；同级 `domain/repo/` 有 **22 个仓储接口**
+  - `lakehouse-rest-spring-parent/lakehouse-rest-server/.../domain/entity/` —— **4 个实体**
+    （表存储优化 3：`TableOptimization` / `OptimizationJob` / `OptimizationJobItem`；
+    加 catalog 执行集群 1：`CatalogExecutionCluster`）；同级 `domain/repo/` 有 4 个仓储接口
+  - 合计 26 个实体 + 26 个仓储接口。分家的依据是**谁读它**而不是谁写它：
+    优化三表只有 server 侧的调度与控制器会读，留在 server；执行集群表只被提交与探活链路读，
+    同样留在 server；其余实体被协议层（`protocol-paimon`）的面复用，所以下沉到 core，
+    否则协议层要反向依赖 server。血缘三表虽然只由 core 的
     `LineageService` 读，但**删表要顺手清边**——那件事挂在 core 的
     `LineageEdgeCleanupListener`（订阅目录事件）上，跟着事件框架留在 core 才不用把关系反过来
 - **表名统一用 `lakehouse_` 前缀**（2026-10 由 `paimon_` 迁来，见 **§6**）。服务端早期只服务
@@ -111,7 +113,7 @@
 
 | 表 | 对应资源 | 说明 |
 | --- | --- | --- |
-| `audit_event` | 目录领域事件 | 10 类 38 个领域事件（catalog / 库 / 表 / 视图 / 授权 / 主体与角色 / 优化）的 append-only 事实记录；自增 `id` 兼作增量拉取的游标，`(catalog, id)` 与 `(category, id)` 两条联合索引分别支撑按目录、按类别增量拉 |
+| `lakehouse_audit_event` | 目录领域事件 | 10 类 38 个领域事件（catalog / 库 / 表 / 视图 / 授权 / 主体与角色 / 优化）的 append-only 事实记录；自增 `id` 兼作增量拉取的游标，`(catalog, id)` 与 `(category, id)` 两条联合索引分别支撑按目录、按类别增量拉 |
 
 两种表格式的事件在**同一张表、同一个流**里（`catalog` 只是查询参数）；`attributes_json`
 用 JSON 单列承载开放属性，`category` 是 `type` 的冗余列（存下来让「只看权限变更」
@@ -157,6 +159,52 @@
   由删表事件级联清——因此**清完 run 图还在**，这正是两张表分开的意义。
 - **`engine` 进唯一键。** 本期恒为 `SPARK`，但同一对表将来可能被不同引擎写过，
   那是两条边（「哪个引擎在写」是有效信息）。唯一键里少一列，将来加引擎就是一次数据迁移。
+
+## 2.4 行过滤 / 列脱敏（2 张）
+
+两张表都是**策略定义**，不是 Paimon / Iceberg 元数据的一部分；控制台与管理 API 走
+`/api/management/v1/policies/tables/{catalog}/{db}/{table}`（`GET` / `PUT` / `DELETE`，
+另有 `/resolve` 给引擎读、`/dry-run` 做预览），引擎侧再由 `PolicyRelation` 逻辑节点
+在查询计划里执行（算子语义与注入点见
+[`row-filter-column-mask-design.md`](row-filter-column-mask-design.md) §5，权限映射见其 §8.1）。
+
+| 表 | 对应资源 | 说明 |
+| --- | --- | --- |
+| `lakehouse_data_policy` | 表级策略（一表一行） | `catalog_name` / `database_name` / `table_name` 三段真名 + `full_name_hash`（三段名的 SHA-256）做唯一键——索引长度与值长度解耦，表名再长也不会撞 `ERROR 1071`；`row_filter_json` 存白名单 AST（语义以它为准，`row_filter_sql` 只是展示渲染）、`subjects_json` 是主体白名单（SQL 的 `FOR` 子句）、`exempt_json` 是豁免名单、`hidden_json` 是整列不可见清单；`entity_version` 既是乐观锁又是下发给引擎的 etag |
+| `lakehouse_column_mask` | 列脱敏定义（一列一行） | 挂在表级策略下（`policy_id` + `column_name` 唯一）：`mask_json` 是标准集 `fn/args` 或白名单表达式 `expr`；`allow_null_on_required` 是「置空 mask 落在非空列」时的显式确认，默认 `false` 即拒绝 |
+
+两条值得单独记：
+
+- **为什么用 hash 而不是三段名联合唯一键。** `varchar(1024)` 在 utf8mb4 下按 4 字节/字符算，
+  单列索引就超过 InnoDB 的 3072 字节上限（与 §3 里 `lakehouse_lineage_table_edge` 同一个坑）；
+  hash 列只有 64 字符，真名照旧成列供等值查询与人读。
+- **策略层 fail-closed、语义层 fail-open 是刻意的。** 这里两张表读不到就让查询失败，
+  而语义层（`lakehouse_semantic_view`）读不到只标记 stale 不拦查询——理由见
+  [`semantic-layer-design.md`](semantic-layer-design.md) §3。
+
+## 2.5 执行集群（1 张）
+
+`lakehouse_catalog_execution_cluster` 是**本服务端自己的运维配置**：一个 catalog 的优化任务
+提交到哪个 k8s 集群、用什么身份（类型即认证：`SELF_HOSTED`→kubeconfig、`EKS`→SigV4 预签名
+STS 令牌、`AKS`→AAD 客户端凭据）。一行一 catalog（`catalog_id` 唯一 + 级联删除），
+设计见 [`catalog-execution-cluster-design.md`](catalog-execution-cluster-design.md)。
+
+| 列组 | 列 | 说明 |
+| --- | --- | --- |
+| 连接 | `cluster_type` / `api_server` / `context_name` / `namespace` / `ca_cert_pem` | `ca_cert_pem` 空 = 用 JVM 信任库；`context_name` 仅 `SELF_HOSTED` |
+| 凭据（**只进不出**） | `kubeconfig_sealed` / `auth_config_sealed` | `CredentialCipher` 密封后的整份明文，读模型只回 `has*` 与可公开标识（AccessKeyId / tenantId / clientId），**永不回明文** |
+| 运行位置 | `image` / `image_pull_policy` / `image_pull_secrets` / `service_account` / `callback_base_url` | 上一版散在 `lakehouse.rest.optimization` 里的提交参数，现在唯一来源就是这张表 |
+| 批次策略 | `max_tables_per_job` / `max_concurrent_jobs` / `job_timeout_seconds` | 并发闸门与超时按 catalog 各自算，不再全局一套 |
+| 可选数据面令牌 | `catalog_token_sealed` | 下发给任务的 `/v1/{prefix}` 凭据；只有它允许「清空」（其余凭据缺失等于配置不可用，只能删整份） |
+| 探活 | `config_hash` / `probe_status` / `probe_reason` / `probe_message` / `probe_config_hash` / `probed_at` | 五态（未配置 / 停用 / 待验证 / 可用 / 不可用）由这两组列**派生**，不另存状态列：`config_hash` 与 `probe_config_hash` 不等即「改完没验证」 |
+
+两个实现细节决定了这两组 hash 的用法：
+
+- **`config_hash` 用密文算，不是明文。** 写入时明文没变就沿用旧密文（否则每次保存都换 IV，
+  hash 必然变，配置会无故掉回「待验证」）。算法是 SHA-256 拼 13 段、以 `0x1f` 分隔。
+- **「留空 = 保持原样」只对密文成立。** `caCertPem` 的空串是明确的「清空」语义，
+  两者不能混用一套判空逻辑。
+
 ---
 
 ## 3. 为什么有两个摘要列
@@ -375,7 +423,7 @@ k8s 部署单独提一句：`deploy/kubernetes/mysql.yaml` 的 `seed-initdb` 只
 
 若停 1 分钟都不可接受，可以用视图别名过渡，代价是短期存在两套名字：
 
-1. 先建 `lakehouse_catalog`，把 23 张表 rename 过去；
+1. 先建 `lakehouse_catalog`，把 26 张表 rename 过去（写这份 runbook 时是 23 张，按现库实际表数执行）：
 2. 在 `paimon_catalog` 里建 23 个**单表可更新视图**：
    `create view paimon_table as select * from lakehouse_catalog.lakehouse_table;`
    —— 旧实例的读写继续走视图（MySQL 的单表视图可 INSERT/UPDATE/DELETE，自增由基表给）；

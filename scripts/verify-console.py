@@ -56,7 +56,11 @@ spec/rest-catalog-open-api-iceberg.yaml）。路径写错时前端只表现为�
                   绘制层不依赖 UI 库、格式色只读 CSS 变量、布局是纯函数、
                   LOD 阈值只有一处（带滞回）。这些错法都不报错——图会画歪、
                   颜色会与图例不一致、刷新一次位置全变
- 22. 文档计数     文档里写的「N 组 M 项」与脚本实际一致——加校验组的人要顺手改文档，
+ 22. 执行集群     catalog 级执行集群（优化任务提交到哪个 k8s）：六个端点都挂在 catalog 下、
+                  三类型/五状态在前端与 enum 各只有一份、凭据只进不出、yml 里不再有提交参数、
+                  fail-closed 的两个落点都在。这些错法全都不报错——任务静默地不跑，
+                  或者跑到了服务端自己所在的集群
+ 23. 文档计数     文档里写的「N 组 M 项」与脚本实际一致——加校验组的人要顺手改文档，
                   而这条约定此前没人执行（真漂过一次：docs/console.md 37、实际 38）
 
 用法：
@@ -269,6 +273,21 @@ EXTENSION_ENDPOINTS = {
     # 四态并用预览求值链读一页数据。判权 TABLE:ALTER（试算结果本身就是策略内容）；
     # 只读、不落库，唯一副作用是预览自身的 TABLE_PREVIEWED 审计（操作者本人）。
     ("POST", "/api/management/v1/policies/tables/{catalogName}/{databaseName}/{tableName}/dry-run"): "主体视角试算页（以指定主体求值一页预览，四态回显）",
+    # ------------------------------------------------------------------ 执行集群
+    # catalog 级执行集群（优化任务提交到哪个 k8s、用什么身份）。**六个端点全挂在 catalog 下**，
+    # 不引入一级资源：一个 catalog 最多一份配置，既没有「列出全部执行集群」的需求
+    # （catalog 列表每行已带摘要），也不存在「不属于任何 catalog 的执行集群」。
+    # 服务端实现见 ExecutionClusterController。为什么算扩展端点而不进规格：
+    # Polaris 的规格里没有这个概念（它不做优化任务），而这六个端点服务的是
+    # 本工程自己的调度链路，写进规格只会让「实现 Polaris」的边界变模糊。
+    # 判权：读 CATALOG_ALL:DESCRIBE、改与探活 CATALOG:ALTER、删 CATALOG:DROP——
+    # 探活也判 ALTER，因为它会触发真实的 STS 调用与 dry-run 建 Job（审计日志可见）。
+    ("GET", "/api/management/v1/catalogs/{catalogName}/execution-cluster"): "执行集群配置（读；没配时 404，凭据只回摘要不回明文）",
+    ("PUT", "/api/management/v1/catalogs/{catalogName}/execution-cluster"): "执行集群配置（整份替换，entityVersion 乐观锁，密文留空=不改）",
+    ("DELETE", "/api/management/v1/catalogs/{catalogName}/execution-cluster"): "执行集群配置（删除整份，含凭据，控制台二次确认）",
+    ("POST", "/api/management/v1/catalogs/{catalogName}/execution-cluster/kubeconfig/parse"): "kubeconfig 只解析不落库（逐 context 给 OK/WARN/不支持/不可用）",
+    ("POST", "/api/management/v1/catalogs/{catalogName}/execution-cluster/probe"): "五问探活（凭据/身份/权限/准入/回调；?full=false 只跑前三步）",
+    ("POST", "/api/management/v1/catalogs/{catalogName}/execution-cluster/copy-from"): "从另一个 catalog 复制连接与认证（服务端复制，要求对源有读权限）",
 }
 
 problems = []
@@ -1931,10 +1950,164 @@ check("表被删除时级联清理边表",
       and "dropEdges" in lineage_listener,
       "留下的是查不到、点不开、也不会自己消失的节点")
 
-# ------------------------------------------------------------------ 22. 文档计数
+# ------------------------------------------------------------------ 22. 执行集群
 
 print()
-print("22. 文档计数（文档写的「N 组 M 项」必须与脚本实际一致）")
+print("22. 执行集群（catalog 级；没配 / 停用 / 验证失败时整条链路 fail-closed）")
+
+# 这一组钉的是「多集群」这件事的**形状**，因为它的错法全都不报错：
+# 端点挂错层级 → 控制台多出一个不属于任何 catalog 的资源；
+# 状态多算一份 → 列表说正常、点进去说待验证；
+# 凭据从读接口漏出去 → 页面照常工作，只是明文进了浏览器；
+# yml 里留着提交参数 → 与执行集群里的配置两份并存，谁生效说不清（而且写的那份不生效）；
+# 缺了 fail-closed → 策略能保存、任务永远不跑，没人会发现。
+EXEC_CLUSTER_PREFIX = "/api/management/v1/catalogs/{catalogName}/execution-cluster"
+EXEC_ENDPOINT_NAMES = ("getExecutionCluster", "updateExecutionCluster", "deleteExecutionCluster",
+                       "parseExecutionClusterKubeconfig", "probeExecutionCluster", "copyExecutionCluster")
+
+# --- 22.1 六个端点都挂在 catalog 下，没有一级资源 ---------------------------
+exec_routes = {name: endpoints.get(name) for name in EXEC_ENDPOINT_NAMES}
+wrong_scope = [f"{name}: {route}" for name, route in exec_routes.items()
+               if route is None or not route[1].startswith(EXEC_CLUSTER_PREFIX)]
+check("执行集群的六个端点都存在，且路径都以 catalog 为父路径（不引入一级资源）",
+      not wrong_scope, "\n".join(wrong_scope) or "缺端点")
+
+# --- 22.2 服务端控制器的路由前缀与动词映射 ----------------------------------
+EXEC_CONTROLLER = os.path.join(SERVER_JAVA, "web/ExecutionClusterController.java")
+exec_controller = read(EXEC_CONTROLLER)
+check("控制器类级路由与端点前缀一致",
+      f'@RequestMapping("{EXEC_CLUSTER_PREFIX}")' in exec_controller,
+      "类级 @RequestMapping 与 endpoints.js 的路径前缀不一致")
+missing_verbs = [verb for verb, marker in (
+    ("GET", "@GetMapping\n"), ("PUT", "@PutMapping\n"), ("DELETE", "@DeleteMapping\n"),
+    ('POST "/kubeconfig/parse"', '@PostMapping("/kubeconfig/parse")'),
+    ('POST "/probe"', '@PostMapping("/probe")'),
+    ('POST "/copy-from"', '@PostMapping("/copy-from")')) if marker not in exec_controller]
+check("控制器的六个动词映射齐全（GET/PUT/DELETE + parse/probe/copy-from）",
+      not missing_verbs, "缺：" + "、".join(missing_verbs))
+
+# --- 22.3 三种集群类型：服务端枚举与前端词表各只有一份 ----------------------
+CLUSTER_TYPE_ENUM = os.path.join(SERVER_JAVA, "support/ClusterType.java")
+EXEC_CLUSTER_UTIL = os.path.join(CONSOLE_DIR, "src/utils/executionCluster.js")
+server_types = set(re.findall(r"^\s{4}([A-Z_]+)\(", read(CLUSTER_TYPE_ENUM), re.M))
+front_types = set(re.findall(r"value: '([A-Z_]+)'", read(EXEC_CLUSTER_UTIL)))
+check(f"集群类型两处一致（服务端 {len(server_types)} 种，前端 {len(front_types)} 种）",
+      server_types == front_types and len(server_types) == 3,
+      f"服务端 {sorted(server_types)} / 前端 {sorted(front_types)}")
+
+# --- 22.4 五种状态：前端只翻译，不重算 --------------------------------------
+STATUS_ENUM = os.path.join(SERVER_JAVA, "support/ExecutionClusterStatus.java")
+server_statuses = set(re.findall(r"^\s{4}([A-Z_]+)[,(]", read(STATUS_ENUM), re.M))
+status_util = read(EXEC_CLUSTER_UTIL)
+# 只取 CLUSTER_STATUSES 这一个对象字面量里的键：同一个文件里还有 CONTEXT_VERDICTS
+# （OK / WARN / UNSUPPORTED / UNAVAILABLE），一并抓进来会让这条断言永远失败
+statuses_block = status_util.split("export const CLUSTER_STATUSES = {")[1].split("\n}\n")[0]
+front_statuses = set(re.findall(r"^  ([A-Z_]+): \{", statuses_block, re.M))
+check(f"执行集群状态两处一致（{len(server_statuses)} 种）",
+      server_statuses == front_statuses and len(server_statuses) == 5,
+      f"服务端 {sorted(server_statuses)} / 前端 {sorted(front_statuses)}")
+# 前端一旦自己比较两个 hash，就会出现「列表说正常、点进去说待验证」——这条断言挡的就是它。
+# 判据必须在注释之外找：这个文件的头注释**正在**解释「为什么前端不比较它们」，
+# 不先去掉注释就等于把说明当成违规。
+def strip_js_comments(source):
+    """去掉 // 与 /* */ 注释（保留字符串里的内容与行数）。"""
+    without_block = re.sub(r"/\*.*?\*/", "", source, flags=re.S)
+    return re.sub(r"(?m)^\s*//.*$", "", without_block)
+
+
+status_code = strip_js_comments(status_util)
+check("前端不重算状态（代码里不出现 configHash / probeConfigHash，判定只在服务端）",
+      "probeConfigHash" not in status_code and "configHash" not in status_code,
+      "utils/executionCluster.js 的代码里出现了 hash 比较：状态判定必须只在服务端")
+
+# --- 22.5 列表摘要：DTO 带字段，且一次取一页（不是 N+1） --------------------
+MANAGEMENT_DTOS = os.path.join(SERVER_JAVA, "dto/ManagementDtos.java")
+catalog_dto = read(MANAGEMENT_DTOS)
+check("Catalog DTO 带执行集群摘要",
+      re.search(r"record Catalog\([^)]*ExecutionClusterDtos\.Summary executionCluster", catalog_dto, re.S) is not None,
+      "ManagementDtos.Catalog 没有 executionCluster 组件")
+catalog_service = read(MANAGEMENT_CATALOG_SERVICE)
+check("catalog 列表一次批量取摘要（一条 IN 查询，不逐行查）",
+      "executionClusters.summaries(" in catalog_service
+      and "executionClusters.summaryOf(" not in catalog_service.split("public Catalogs list()")[1].split("public ")[0],
+      "list() 里用的是逐行的 summaryOf(...)，会退化成 N+1")
+
+# --- 22.6 列表那一列与按钮 ------------------------------------------------
+catalogs_view = read(CATALOGS_VIEW)
+check("catalog 列表有「执行集群」列，且用 clusterCell 翻译状态",
+      'label="执行集群"' in catalogs_view and "clusterCell(" in catalogs_view,
+      "列表缺列或没走 utils/executionCluster.js")
+check("未配置的行在操作列上是主色按钮（它是待办，不是可选动作）",
+      "execCell(row).configured ? '' : 'primary'" in catalogs_view,
+      "执行集群按钮没有按「是否已配置」区分样式")
+
+# --- 22.7 凭据只进不出 ----------------------------------------------------
+EXEC_DTOS = os.path.join(SERVER_JAVA, "dto/ExecutionClusterDtos.java")
+exec_dtos = read(EXEC_DTOS)
+read_model = exec_dtos.split("public record ExecutionCluster(")[1].split(") {")[0]
+leaked = [field for field in ("String secretAccessKey", "String clientSecret",
+                              "String catalogToken", "String kubeconfigSealed")
+          if field in read_model]
+check("读模型不含任何凭据明文（kubeconfig 只回摘要，秘密只回 has*）",
+      not leaked, "读模型里出现了：" + "、".join(leaked))
+# 「留空＝保持原样」对四个秘密成立，但**它们没有「清空」这个合法状态**：kubeconfig /
+# EKS 凭据 / AKS 凭据是建客户端的必需材料，清掉之后配置连探活都跑不了（服务端 400），
+# 语义等于删掉整份配置（那是 DELETE）。所以这里断言两件事：可选的 catalogToken 有
+# clearCatalogToken，必需凭据**没有** clearX——后者出现就说明有人加回了一个永远 400 的按钮。
+check("可选的 data 面令牌有显式清空开关，必需凭据没有（清掉它等于删配置）",
+      "Boolean clearCatalogToken" in exec_dtos and "Boolean clearCredentials" not in exec_dtos,
+      "UpdateExecutionClusterRequest 的清空开关与「凭据必需」这条前提不一致")
+
+# --- 22.8 yml 与服务端配置类都只剩节拍 ------------------------------------
+APP_YML = os.path.join(
+    ROOT, "lakehouse-rest-spring-parent/lakehouse-rest-server/src/main/resources/application.yml")
+yml_text = read(APP_YML)
+optimization_block = re.search(r"^    optimization:\n(.*?)(?=^ {4}\w)", yml_text, re.S | re.M)
+optimization_block = optimization_block.group(1) if optimization_block else ""
+removed_keys = [key for key in ("namespace:", "image:", "image-pull-policy:", "api-server:",
+                                "service-account:", "token-file:", "ca-file:", "management-url:",
+                                "catalog-token:", "max-tables-per-job:", "max-concurrent-jobs:",
+                                "job-timeout:", "submitter:") if key in optimization_block]
+check("application.yml 的 optimization 段不再有提交参数（只剩三个节拍键）",
+      not removed_keys, "仍存在：" + "、".join(removed_keys))
+
+REST_PROPERTIES = os.path.join(CORE_JAVA, "config/RestServerProperties.java")
+optimization_class = read(REST_PROPERTIES).split("class Optimization {")[1].split("\n    }")[0]
+fields = re.findall(r"private \w+(?:<[^>]+>)? (\w+) =", optimization_class)
+check("RestServerProperties.Optimization 与 yml 对齐（只有三个节拍字段）",
+      sorted(fields) == ["dispatchInterval", "scanInterval", "schedulerEnabled"],
+      f"实际字段：{sorted(fields)}")
+
+# --- 22.9 fail-closed 的落点 ---------------------------------------------
+TABLE_OPTIMIZATION_SERVICE = os.path.join(SERVER_JAVA, "service/TableOptimizationService.java")
+gate_count = read(TABLE_OPTIMIZATION_SERVICE).count("clusters.assertDispatchable(")
+check("保存策略与「立即优化」两处都 fail-closed（各一次 assertDispatchable）",
+      gate_count == 2, f"实际出现 {gate_count} 次")
+check("出批侧在造批次之前判「可派发」（不可派发就整组跳过、不动游标）",
+      "clusters.dispatchable(" in read(os.path.join(SERVER_JAVA, "service/OptimizationBatchService.java")),
+      "OptimizationBatchService 没有判断可派发")
+
+# --- 22.10 提交器只剩 fabric8 一种 ---------------------------------------
+SUBMIT_DIR = os.path.join(SERVER_JAVA, "service/submit")
+legacy = [name for name in ("KubernetesJobSubmitter.java", "LoggingJobSubmitter.java")
+          if os.path.exists(os.path.join(SUBMIT_DIR, name))]
+check("旧的两种提交器已删除（提交方式只剩 fabric8）",
+      not legacy, "仍存在：" + "、".join(legacy))
+check("fabric8 提交器禁用 autoConfigure 回落，并断言 master URL",
+      "withAutoConfigure(false)" in read(os.path.join(SERVER_JAVA, "service/exec/ExecutionClientFactory.java"))
+      and "verifyMasterUrl" in read(os.path.join(SERVER_JAVA, "service/exec/ExecutionClientFactory.java")),
+      "ExecutionClientFactory 缺少「不回落」或「master URL 断言」")
+
+# --- 22.11 建表语句里有这张表 ------------------------------------------
+SCHEMA_SQL = os.path.join(ROOT, "sql/schema-mysql.sql")
+check("sql/schema-mysql.sql 里有 lakehouse_catalog_execution_cluster",
+      "create table lakehouse_catalog_execution_cluster" in read(SCHEMA_SQL).lower(),
+      "实体加了但没重新执行 scripts/gen-mysql-ddl.sh")
+
+# ------------------------------------------------------------------ 23. 文档计数
+
+print()
+print("23. 文档计数（文档写的「N 组 M 项」必须与脚本实际一致）")
 
 # 这一组是**元校验**，起因是一次真实的漂移：docs/console.md 写「12 组 37 项」、
 # README 写「12 组 38 项」，而脚本实际是 38——两个数字都没人核对，因为脚本此前

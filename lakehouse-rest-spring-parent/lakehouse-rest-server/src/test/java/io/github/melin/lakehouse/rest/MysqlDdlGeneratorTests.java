@@ -116,9 +116,12 @@ class MysqlDdlGeneratorTests {
      * （{@code lakehouse_catalog_role} / {@code lakehouse_catalog_role_grant} /
      * {@code lakehouse_resource_grant} 三张表随之移除，授权只剩
      * {@code lakehouse_permission_assignment} 一张）；行过滤 / 列脱敏两张表
-     * （{@code lakehouse_data_policy} / {@code lakehouse_column_mask}）到 25。
+     * （{@code lakehouse_data_policy} / {@code lakehouse_column_mask}）到 25；
+     * catalog 级执行集群（{@code lakehouse_catalog_execution_cluster}）到 26。
+     * 最后那张是**一个 catalog 最多一行**（{@code catalog_id} 唯一 + 级联删除），
+     * 不是「一张表多个执行集群」——因为优化任务在这个 catalog 范围内只能落在一个集群上。
      */
-    private static final int EXPECTED_TABLES = 25;
+    private static final int EXPECTED_TABLES = 26;
 
     /** MySQL 一张表一行的最大字节数（存储层上限，与列长度上限是两件事）。 */
     private static final long MYSQL_ROW_SIZE_LIMIT = 65535L;

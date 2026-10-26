@@ -52,6 +52,12 @@ public final class ManagementDtos {
      * 都不同，改一个字段等于让所有已建对象的语义整体漂移。
      * 因此 {@code PUT} 只在取值与库中相同时接受它（见
      * {@code ManagementCatalogService#update}）。
+     *
+     * <p>{@code executionCluster} 是**列表每行直接带的执行集群摘要**（一次 join，不是
+     * 每行再发一个请求）：控制台要在 catalog 列表上显示「优化会不会跑」，
+     * 而这件事取决于这个 catalog 有没有配执行集群、是否停用、最近一次验证的结论。
+     * 三个判据的先后顺序有语义（停用优先于「待验证」），因此状态由服务端算、
+     * 前端只显示——两边各算一份迟早会漂，漂的表现是「列表说正常、点进去说待验证」。
      */
     public record Catalog(String type,
                           String catalogFormat,
@@ -60,7 +66,8 @@ public final class ManagementDtos {
                           Long createTimestamp,
                           Long lastUpdateTimestamp,
                           Integer entityVersion,
-                          StorageConfigInfo storageConfigInfo) {
+                          StorageConfigInfo storageConfigInfo,
+                          ExecutionClusterDtos.Summary executionCluster) {
     }
 
     /** {@code CreateCatalogRequest}。 */

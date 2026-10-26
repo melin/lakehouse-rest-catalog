@@ -169,7 +169,7 @@ Jackson 2.15.2 抬到 Boot 的版本）。拆成 5 个服务端模块后，这�
 
 | 模块 | 装什么 | 凭什么值得一个模块 |
 | --- | --- | --- |
-| `-core` | 23 张表的实体与仓库、共享服务（catalog/database/table/快照、授权、凭据接口）、共享 DTO、共享 Web 组件（`/v1/config`、错误模型基类、两个认证拦截器、`CatalogAccessRules`、`RestServerProperties`）、协议面 SPI | 两个协议面都要用它，而它自己**一行格式代码都不该有**——这条约束只有在它是个模块时才守得住 |
+| `-core` | 22 个实体的仓储（26 张表里 core 占 22 张，执行集群等 4 张在 server）、共享服务（catalog/database/table/快照、授权、凭据接口）、共享 DTO、共享 Web 组件（`/v1/config`、错误模型基类、两个认证拦截器、`CatalogAccessRules`、`RestServerProperties`）、协议面 SPI | 两个协议面都要用它，而它自己**一行格式代码都不该有**——这条约束只有在它是个模块时才守得住 |
 | `-storage` | `StorageFileIoFactory`、`CatalogFileService`、`Paths`、`StorageConfigs`、`FileIoType`、凭据管理器的实现与缓存 | 它是唯一需要「往仓库写文件」的模块（Paimon 的 `FileIO` 在这里承担的是**通用文件系统客户端**：s3 插件加载、凭据刷新、路径模板）。若 Iceberg 面另引一套 hadoop-aws 做同样的事，就会有两套 s3 凭据解析逻辑——设计文档 §5.5 要的「凭据统一」当场破功 |
 | `-protocol-paimon` | `paimon/web/` 下 9 个控制器、`paimon/dto/` 的 Paimon 契约、`TableMetadataService`（schema/snapshot 物化）、`TableKinds`、`SchemaChangeService`、`CredentialService` | 唯一允许 `import org.apache.paimon` 的服务端模块（`storage` 除外，且只用于 FileIO）；包名独占 `rest.paimon.*`（§11） |
 | `-protocol-iceberg` | 35 个端点、Iceberg DTO、元数据代数（update 应用 / requirements 校验 / CAS）、投影派生（`schemas[]`/`snapshots[]`/`refs` → 行）、Iceberg 错误模型、`iceberg/preview/`（数据预览的读取器与只读 `FileIO`） | 唯一允许 `import org.apache.iceberg` 的模块；`iceberg-core` / `iceberg-data` / `iceberg-parquet` 带来的 avro、parquet 等依赖被关在这里 |

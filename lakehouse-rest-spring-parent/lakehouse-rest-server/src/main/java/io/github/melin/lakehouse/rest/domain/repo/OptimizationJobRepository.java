@@ -27,6 +27,14 @@ public interface OptimizationJobRepository extends JpaRepository<OptimizationJob
     long countByStatusIn(Collection<String> statuses);
 
     /**
+     * 某个 catalog 里处于这些状态的批次数。
+     *
+     * <p>派发的并发闸门按 **catalog** 数，不再按全局数：每个 catalog 有自己的执行集群
+     * 与 {@code maxConcurrentJobs}，全局计数会让「A 跑满」把 B 也堵住。
+     */
+    long countByCatalogIdAndStatusIn(String catalogId, Collection<String> statuses);
+
+    /**
      * 状态推进的条件更新：只有当前状态与读取时一致才改。
      *
      * <p>用于把「取一批 PENDING」与「我这一拍只提交其中一部分」之间的竞争

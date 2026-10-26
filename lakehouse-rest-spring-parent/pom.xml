@@ -133,6 +133,26 @@
 			端点自己的门禁一条不少。
 		-->
 		<knife4j.version>5.7.9</knife4j.version>
+		<!--
+			kubernetes 客户端（提交优化任务到各 catalog 自己的集群）。
+
+			**锁一个具体 minor，不要改成区间**：fabric8 的 Version / Serialization
+			在小版本之间发生过行为变化，而本工程的 enforcer 会拦依赖收敛问题——
+			升级请当成一次独立改动，跑完全套测试再改这一个数字。
+
+			7.8.0 对应 k8s 1.33 的 API 面；本仓只用到 batch/v1 Job、
+			authorization.k8s.io/v1 的两个 review、以及 core/v1 的 Pod 与
+			ServiceAccount，都是 1.20 起就稳定的资源，因此不需要跟着集群版本升。
+		-->
+		<fabric8.version>7.8.0</fabric8.version>
+		<!--
+			AWS SDK v2（只有 EKS 的令牌签名会用到 auth 这一个构件）。
+
+			2.46.6 是 2.x 线的近期版本。**它不带 Jackson 2**：从 2.21 起
+			sdk-core 改用自带的 json-utils，因此与本工程 Boot 4 的 Jackson 3
+			不会出现「同一个类两条序列化栈」的经典冲突。
+		-->
+		<awssdk.version>2.46.6</awssdk.version>
 		<!-- 依赖边界守卫，见各模块 POM 里的 bannedDependencies -->
 		<enforcer.version>3.1.0</enforcer.version>
 	</properties>
@@ -267,6 +287,47 @@
 				<groupId>com.baizhukui</groupId>
 				<artifactId>knife4j-openapi3-boot4-spring-boot-starter</artifactId>
 				<version>${knife4j.version}</version>
+			</dependency>
+
+			<!--
+				kubernetes 客户端。只声明在 lakehouse-rest-server：**只有那个模块
+				service/exec 与 service/submit 里才会出现 io.fabric8.* 的 import**。
+				core / storage / protocol-* 是「元数据与格式」的世界，不该知道
+				任务被提交到哪里——这是本仓「执行与格式分离」的那条线的物理形态。
+
+				用 kubernetes-client（而不是 api + httpclient-okhttp 两个坐标）：
+				前者把默认的 OkHttp 实现一起带进来，且不含任何自动装配
+				（fabric8 的 spring-boot-starter 才是那个会去读 ~/.kube/config 的东西，
+				**绝不能引它**——那正是「静默把任务提交到服务端自己所在集群」的来源，
+				见 docs/catalog-execution-cluster-design.md §8.3）。
+			-->
+			<dependency>
+				<groupId>io.fabric8</groupId>
+				<artifactId>kubernetes-client</artifactId>
+				<version>${fabric8.version}</version>
+			</dependency>
+			<!--
+				AWS SDK v2 的 auth 构件：EKS 令牌要用 Aws4Signer 预签名一个 STS URL
+				（见 AwsEksTokenProvider）。
+
+				**只给 server**：AK/SK 是「怎么连某个集群」的知识，属于执行层；
+				格式面（core / storage / protocol-*）与它无关。
+
+				排除 apache-client：那是 SDK 自己的 HTTP 客户端实现，我们从不构造
+				任何 AWS 客户端（只有签名器、凭据与 Region），令牌换身份那一步走的是
+				JDK 自带的 java.net.http.HttpClient。留着它等于往 fat jar 里塞一份
+				没人实例化的 Apache HttpClient 5。
+			-->
+			<dependency>
+				<groupId>software.amazon.awssdk</groupId>
+				<artifactId>auth</artifactId>
+				<version>${awssdk.version}</version>
+				<exclusions>
+					<exclusion>
+						<groupId>software.amazon.awssdk</groupId>
+						<artifactId>apache-client</artifactId>
+					</exclusion>
+				</exclusions>
 			</dependency>
 		</dependencies>
 	</dependencyManagement>

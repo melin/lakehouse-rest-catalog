@@ -178,6 +178,29 @@ export const ENDPOINTS = {
   // 逐表明细远程分页（分页/过滤/排序下推 SQL），替代逐表的 snapshot / loadTable。
   catalogTableStats: { method: 'GET', path: '/api/management/v1/catalogs/{catalogName}/table-stats' },
   catalogTableRows: { method: 'GET', path: '/api/management/v1/catalogs/{catalogName}/table-stats/tables' },
+  // ------------------------------------------------------------------ 执行集群（优化任务提交到哪里）
+  // 六个端点都挂在 catalog 下，**没有独立的一级资源**：「这个 catalog 的执行集群」
+  // 是 catalog 的一个属性（一行一 catalog），既不需要「列出全部执行集群」，
+  // 也不存在「不属于任何 catalog 的执行集群」。因此控制台不多一个菜单项。
+  //
+  // 读接口**永远不回凭据明文**（kubeconfig / secretAccessKey / clientSecret /
+  // catalogToken 都只回 `has*` 布尔与可公开标识）；写接口里这些字段「留空 = 保持不变」，
+  // 要清空只有 catalogToken 需要开关（`clearCatalogToken`）：它是可选的；
+  // 另外四个秘密是建客户端的必需材料，清空等于删掉整份配置。
+  // 设计见 docs/catalog-execution-cluster-design.md §8。
+  getExecutionCluster: { method: 'GET', path: '/api/management/v1/catalogs/{catalogName}/execution-cluster' },
+  updateExecutionCluster: { method: 'PUT', path: '/api/management/v1/catalogs/{catalogName}/execution-cluster' },
+  deleteExecutionCluster: { method: 'DELETE', path: '/api/management/v1/catalogs/{catalogName}/execution-cluster' },
+  // 只解析、不落库：表单里粘完 kubeconfig 立刻能看到「每个 context 能不能用」，
+  // 不必先保存失败一次才知道。exec: / auth-provider: 两种认证会被硬拒（服务端执行
+  // 本地命令 = RCE 边界），因此这两个结论必须在这一步就出现。
+  parseExecutionClusterKubeconfig: { method: 'POST', path: '/api/management/v1/catalogs/{catalogName}/execution-cluster/kubeconfig/parse' },
+  // 五问探活。`query.full=false` 只做第 1–3 步（凭据、身份、权限），
+  // 不 dry-run 建 Job——调度扫描走的就是这一档。
+  probeExecutionCluster: { method: 'POST', path: '/api/management/v1/catalogs/{catalogName}/execution-cluster/probe' },
+  // 从另一个 catalog 复制连接与认证。复制在**服务端**做：客户端手里不该出现
+  // 任何密文对应的明文。回调地址不复制（见 `CopyFromRequest`）。
+  copyExecutionCluster: { method: 'POST', path: '/api/management/v1/catalogs/{catalogName}/execution-cluster/copy-from' },
 
   // ------------------------------------------------------------------ 管理 API：principal
   listPrincipals: { method: 'GET', path: '/api/management/v1/principals' },

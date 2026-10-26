@@ -1974,7 +1974,7 @@ constructor` → `Error while instantiating 'SessionStateBuilder'`），一条�
 | 机械一致性（`scripts/verify-console.py` 第 21 组，17 条） | 异步组件、页签名与正文条件一致、不 import element-plus、格式色只读 CSS 变量、布局纯函数、LOD 只有一处实现、`Path2D` 批量描边、只经 `lineageApi` 读、不声明写入口、列映射按需加载、500 阈值、画布让位、五个端点、`If-None-Match`/304 | 这些错法都不会报错 |
 
 `MysqlDdlGeneratorTests` 的表数从 20 改为 23，`sql/schema-mysql.sql` 重新生成
-（23 张表 / 21 条唯一约束 / 30 条索引）。
+（26 张表 / 24 条唯一约束 / 31 条索引）。
 
 ### 13.4 默认配置
 

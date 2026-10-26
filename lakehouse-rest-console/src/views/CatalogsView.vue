@@ -72,6 +72,26 @@
             </template>
           </el-table-column>
           <el-table-column prop="type" label="类型" width="100" />
+          <!--
+            执行集群。两行表达两件事：能不能跑（状态 chip）＋跑在哪（类型 · namespace）。
+            未配置的行副行写「优化不会运行」——这一列存在的全部意义就是这件事：
+            在此之前，一个 catalog 的优化会不会跑，只能靠「点进去看看」才知道。
+          -->
+          <el-table-column label="执行集群" width="196">
+            <template #default="{ row }">
+              <div class="exec-cell">
+                <el-tooltip :content="execCell(row).hint" placement="top" :show-after="300">
+                  <el-tag size="small" effect="plain" :type="execCell(row).tag">
+                    {{ execCell(row).label }}
+                  </el-tag>
+                </el-tooltip>
+                <span
+                  class="exec-meta"
+                  :class="{ 'is-missing': !execCell(row).configured }"
+                >{{ execCell(row).detail }}</span>
+              </div>
+            </template>
+          </el-table-column>
           <el-table-column label="存储类型" width="104">
             <template #default="{ row }">
               <el-tag size="small" effect="plain">
@@ -89,9 +109,19 @@
               <TimeText :millis="row.lastUpdateTimestamp" mode="relative" />
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="200" fixed="right">
+          <el-table-column label="操作" width="240" fixed="right">
             <template #default="{ row }">
               <IconAction icon="Edit" label="编辑" type="primary" @click="openEdit(row)" />
+              <!--
+                未配置时用主色描边：那一刻它是**待办**，不是可选动作。
+                配好之后退回默认样式，因为此后的常用动作是「验证」而不是「再配一遍」。
+              -->
+              <IconAction
+                icon="Platform"
+                label="执行集群配置"
+                :type="execCell(row).configured ? '' : 'primary'"
+                @click="openExecutionCluster(row)"
+              />
               <IconAction
                 icon="Files"
                 label="浏览库与对象"
@@ -115,6 +145,13 @@
         />
       </ResourceState>
     </PanelCard>
+
+    <!-- 执行集群配置（优化任务提交到哪个 k8s） -->
+    <ExecutionClusterDrawer
+      v-model="execDrawer.open"
+      :catalog-name="execDrawer.catalog"
+      @saved="onExecutionClusterSaved"
+    />
 
     <!-- 新建 / 编辑 -->
     <el-dialog
@@ -268,6 +305,7 @@ import { RouterLink, useRouter } from 'vue-router'
 
 import FieldLabel from '@/components/FieldLabel.vue'
 import SectionTitle from '@/components/SectionTitle.vue'
+import ExecutionClusterDrawer from '@/components/ExecutionClusterDrawer.vue'
 import IconAction from '@/components/IconAction.vue'
 import PageHeader from '@/components/PageHeader.vue'
 import PanelCard from '@/components/PanelCard.vue'
@@ -290,6 +328,7 @@ import {
   isIcebergCatalog,
   PAIMON,
 } from '@/utils/catalogFormat.js'
+import { clusterCell } from '@/utils/executionCluster.js'
 
 /**
  * catalog 表走远程分页。格式筛选**下推服务端**（`?format=`）：
@@ -423,6 +462,41 @@ function warehouseOf(row) {
   return row.storageConfigInfo?.allowedLocations?.[0] || row.properties?.warehouse || '—'
 }
 
+/**
+ * 执行集群那一格的内容。
+ *
+ * <p>抽成函数而不是在模板里内联三次：同一行里 chip、副行、tooltip 与按钮样式都要用
+ * 同一份判断，各算一次迟早出现「chip 说未配置、按钮不是主色」这种前后不一致。
+ * 判定本身仍在服务端（见 `utils/executionCluster.js` 的说明）。
+ */
+function execCell(row) {
+  return clusterCell(row.executionCluster)
+}
+
+/**
+ * 执行集群抽屉的状态。
+ *
+ * <p>记 catalog 名而不是整行对象：抽屉打开期间列表可能被刷新（定时刷新、别处改了配置），
+ * 持有旧行对象会让抽屉里的 `entityVersion` 变成陈旧的，保存时得到一个莫名其妙的 409。
+ */
+const execDrawer = reactive({ open: false, catalog: '' })
+
+function openExecutionCluster(row) {
+  execDrawer.catalog = row.name
+  execDrawer.open = true
+}
+
+/**
+ * 抽屉保存/探活之后刷新列表。
+ *
+ * <p>刷新是为了让那一列的 chip 跟上（保存会让状态回到「待验证」，探活会把它变成
+ * 「正常」或「异常」）。这里只重取当前页：`reload()` 保留分页与筛选，
+ * 换成 `load()` 会把用户翻到第 3 页的位置丢掉。
+ */
+function onExecutionClusterSaved() {
+  reload()
+}
+
 function openCreate() {
   dialog.mode = 'create'
   dialog.name = ''
@@ -552,3 +626,26 @@ async function confirmDelete(row) {
 
 onConsoleRefresh(() => reload())
 </script>
+
+<style scoped>
+/* 执行集群那一格：chip 在上、位置在下。
+ * 用两行而不是一行「正常 · EKS · paimon-opt」是刻意的：这一列回答的是两个不同的问题——
+ * 「会不会跑」与「跑在哪」，前者要能一眼扫过去（对齐的 chip），后者是次要信息。 */
+.exec-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  align-items: flex-start;
+}
+
+.exec-meta {
+  font-size: 12px;
+  color: var(--pc-text-dim);
+  overflow-wrap: anywhere;
+}
+
+/* 未配置时的副行用主色而不是灰：这一行的优化永远不会跑，是待办而不是「没有信息」 */
+.exec-meta.is-missing {
+  color: var(--el-color-primary);
+}
+</style>

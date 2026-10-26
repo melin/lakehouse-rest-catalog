@@ -5,7 +5,7 @@
 > （见 `docs/authorization.md` §7）。落地过程中与原方案的偏差都写在对应小节里，
 > 并注明了改动的理由——本文同时是「当时为什么这么设计」的记录。
 >
-> 各节的实现状态：§2 动作映射 ✅（含 §2.5 Iceberg） · §3 执行架构 ✅ · §4 数据模型 ✅（`sql/schema-mysql.sql` 已是 22 张表，**Iceberg 未新增表**）·
+> 各节的实现状态：§2 动作映射 ✅（含 §2.5 Iceberg） · §3 执行架构 ✅ · §4 数据模型 ✅（`sql/schema-mysql.sql` 当时是 22 张表，**Iceberg 未新增表**；现为 26 张，后来加了行过滤/列脱敏 2 张与执行集群 1 张）·
 > §5 API ✅ · §6 优化任务模块 ✅（`lakehouse-rest-optimizer`）· §7 控制台 ✅（Paimon 与 Iceberg 表详情页共用同一面板）· §8 分期见文末。
 >
 > 对标对象：阿里云 DLF 的表存储优化（Compaction / Snapshot Expire / Orphan File Remove 三个子页签）与 AWS Lake Formation 的 Enable optimization（三项勾选 + 默认/自定义配置 + 三块历史）。**产品分层以 AWS 为基准**（总开关 → 三项独立启用 → 默认/自定义 → 历史三块），DLF 的快照详情卡、「立即清理」按钮与中文文案吸收进来。执行链路是本方案的自有部分：DLF 由服务端托管调度，AWS 由托管 optimizer（按 DPU 计费），我们用**先落库、再异步提交 k8s 运行 Spark 任务、多表合并执行**的方式实现。
@@ -166,8 +166,13 @@ Iceberg 的 `rewrite_data_files` 只有 `strategy => 'binpack' | 'sort'`，Z-Ord
 ### 3.3 组批（合并执行的规则，本方案的核心取舍）
 
 1. **入批资格**：调度扫描发现策略到期后逐项判定——compaction 要查当前小文件数是否 ≥ `min-input-files`（不满足不入批；如果三项都不满足，只推进 `next_run_at` 不产生 job）；expire / orphan 按「距上次执行 ≥ 各自间隔」判定。
-2. **分组**：同一批只放**同一个 catalog** 的表——它们共享 warehouse 与存储凭据、共享一份 k8s 提交配置，优化任务用同一 catalog 配置建一次 REST catalog 即可处理全部表。
-3. **上限**：每批最多 `max-tables-per-job`（默认 20）张表，超出拆成下一批；全局并发批次 `max-concurrent-jobs`（默认 2），超出留 `PENDING` 排队。并发是**两道闸门**，数的口径不同：出批侧数「已承诺的批次」（含排队中的 `PENDING`），决定**还该不该造新批次**；提交侧数「已放出去的」（`SUBMITTING`/`RUNNING`），决定**造好的批次放不放行**。两道都要有：手动「立即优化」与重试都是直接建批次，不经过出批那条路，少了提交侧这道就能绕过上限——而这条上限本来就是给集群留余量用的（每个批次一个 Spark 驱动）。放不出去的批次留在 `PENDING` 队列里按创建时间先后等下一拍，不是被丢掉。
+2. **分组**：同一批只放**同一个 catalog** 的表——它们共享 warehouse 与存储凭据，也共享该 catalog 的
+   **执行集群**（提交到哪个 k8s、用什么身份、镜像与运行位置），优化任务用同一 catalog 配置建一次 REST catalog 即可处理全部表。
+   这也是执行集群为什么按 catalog 配而不是按批次配：批次的边界本来就是 catalog。
+3. **上限**：每批最多 `maxTablesPerJob` 张表、每个 catalog 最多 `maxConcurrentJobs` 个批次、单批 `jobTimeoutSeconds` 超时——
+   **这三个值取自该 catalog 的执行集群配置，不再有全局版本**（不同集群的余量不一样，一套全局数字只能按最小的那台配）。
+   超出上限拆成下一批；拿不到并发额度的批次留 `PENDING` 排队。并发是**两道闸门**，数的口径不同：出批侧数「已承诺的批次」（含排队中的 `PENDING`），决定**还该不该造新批次**；提交侧数「已放出去的」（`SUBMITTING`/`RUNNING`），决定**造好的批次放不放行**。两道都要有：手动「立即优化」与重试都是直接建批次，不经过出批那条路，少了提交侧这道就能绕过上限——而这条上限本来就是给集群留余量用的（每个批次一个 Spark 驱动）。放不出去的批次留在 `PENDING` 队列里按创建时间先后等下一拍，不是被丢掉。
+   **两个上限都按 catalog 各自算**：A 集群满了不妨碍 B 集群出批。
 4. **单表立即执行复用同一条路**：控制台「立即优化」= 产生一个单 item 的批次，走完全相同的提交与跟踪链路，不另写一条执行路径。
 5. **防重复**：同一张表存在未终态 item 时不再入批；手动触发与调度触发撞车时以先落库者为准，后来者对同表报「已有进行中的优化任务」。
 
@@ -175,25 +180,45 @@ Iceberg 的 `rewrite_data_files` 只有 `strategy => 'binpack' | 'sort'`，Z-Ord
 
 ### 3.4 k8s 提交与跟踪
 
+提交侧只认**该 catalog 的执行集群配置**（§4 的 `lakehouse_catalog_execution_cluster`，
+完整设计见 [`catalog-execution-cluster-design.md`](catalog-execution-cluster-design.md)）：
+一个 catalog 对应一台 k8s 集群，认证也在 catalog 级配（自建集群给 kubeconfig，EKS / AKS 给令牌）。
+服务端自己不再持有任何集群级提交参数——`lakehouse.rest.optimization` 下那 13 个键已整体删除。
+
 | 项 | 设计 |
 | --- | --- |
-| 提交方式 | 优先 **Spark Operator 的 `SparkApplication` CRD**（声明式、自带重试与 TTL，状态好读）；集群没装 operator 时回落 **k8s Job 包 spark-submit 镜像**。两种都实现成同一个 `OptimizationJobSubmitter` 接口的两个实现，按 catalog 配置选择 |
-| 镜像 | 优化 jar（新模块，见 §6）+ paimon-spark 运行时打成一个镜像；服务端**只传** `--job-id`、`--management-url`、短期 token 三个参数 |
+| 提交方式 | **fabric8 `KubernetesClient` 直接建 `batch/v1 Job`**（`Fabric8JobSubmitter`）。上一版用 Spring `RestClient` 手拼 HTTP，等于自己维护一份 k8s 客户端；换成 fabric8 后序列化、`deletionPropagation`、状态机读取都由库负责。**不引入 Spark Operator**：它的自动重试与「compaction 重跑非幂等」直接冲突，cron 触发又与 `next_run_at` 抢占重叠，而我们要的只是一个 Job → 收益不抵复杂度 |
+| 客户端构造 | `Config.fromKubeconfig(contextName, text, null)` 或 `fromToken`；**必须 `withAutoConfigure(false)`**，否则 fabric8 会悄悄读 `~/.kube/config` 或集群内 SA——那意味着「配的是 A 集群，实际打到 B 集群」。构造后再断言 `masterUrl` 与配置里的 `apiServer` 一致。超时统一 10 s（调度线程是单线程，不能被一个不可达的 apiserver 拖住） |
+| 客户端缓存 | key = `catalogId`，value = `(client, configHash)`；LRU 上限 32。配置变更、删除配置、`@PreDestroy` 三处都要 `client.close()`，否则连接池与 watch 线程泄漏 |
+| 镜像与运行位置 | 镜像、`imagePullPolicy`、`imagePullSecrets`、`serviceAccountName`、`namespace`、`callbackBaseUrl` 全在执行集群里；服务端**只传** `--job-id`、`--management-url`、`--token`（+ 可选 `--catalog-token`） |
 | 明细获取 | 优化任务启动后**回调管理 API 拉取本批次的表清单与每表配置**，不走命令行参数——避免表多了参数超长，也保证「库里是什么就执行什么」 |
-| 状态跟踪 | 服务端定时轮询（默认 30 s）CRD/pod 状态推进 job 状态；**表级结果由优化任务逐表回调上报**（每完成一张表 POST 一次 item 结果：成功/失败 + 前后指标），比解析日志可靠 |
+| 状态跟踪 | 服务端定时轮询（默认 30 s）Job 状态推进批次状态（先看 conditions 再看 `succeeded`/`failed` 计数）；**表级结果由优化任务逐表回调上报**（每完成一张表 POST 一次 item 结果：成功/失败 + 前后指标），比解析日志可靠 |
 | 终态判定 | k8s 侧到达终态 **且** 全部 item 到达终态，两者对上才收尾；只有 k8s 终态而 item 仍非终态（如任务没逐表回调就崩了）→ 整批置 FAILED，错误信息取 pod 退出码与日志尾部 |
-| 超时 | 每批 deadline（默认 2 h），超时置 FAILED 并清理 k8s 资源 |
-| 重试 | job 级「重试」= 只把 `FAILED` 的 item 组成新批次重跑，成功的不动 |
+| 超时 | 每批 deadline 取执行集群的 `jobTimeoutSeconds`（默认 7200 s），超时置 FAILED 并清理 k8s 资源（Job 自带 `ttlSecondsAfterFinished`，不需要额外清扫） |
+| 重试 | job 级「重试」= 只把 `FAILED` 的 item 组成新批次重跑，成功的不动。**k8s 侧 `backoffLimit=0`**，不让 apiserver 替我们重跑一个非幂等的 compaction |
+| 探测 | `POST .../execution-cluster/probe` 五步现场问答：`credential`（真调一次 STS / 真取一次 AAD 令牌）→ `identity`（`/version` + `SelfSubjectReview`）→ `rbac`（三个 `SelfSubjectAccessReview`）→ `admission`（`dryRun=All` 建 Job + 查 SA）→ `callback`（服务端 GET，且文案明说「只验证了一个方向」）。轻探活只跑前 3 步，全探活跑 5 步 |
+
+**fail-closed 的两处入口**（配置不可派发 ≠ 配置能提交，两者都要拦）：
+
+- 写策略（`enabled=true`）与「立即优化」→ **400**，文案指名是未配置 / 停用 / 改完没验证 / 验证失败中的哪一种。
+- 调度出批 → 整组跳过且**游标不推进**（推进了就等于「假装跑过」，下一拍这张表还在，但这一轮机会被吃掉）。
+  已入队但提交阶段失败的批次按终态 FAILED 收尾并指名原因，不回退到「没配」。
 
 ### 3.5 安全
 
 - 优化任务使用专用主体 `optimizer`（管理 API 建），权限收敛为：本批次表的 `TABLE_READ_META` + `TABLE_WRITE_DATA`（compact/expire 需要写提交）+ `TABLE_DROP_DATA`（orphan 清理需要）——按 AWS 那张「Grant required permissions」提示卡的思路，权限在启用优化时由服务端自动装配，并在 UI 上显式告知。
 - 下发给任务的 token 是**短期 token**（有效期 ≥ 批次 deadline 即可），不复用控制台登录态。
 - 回调端点要求 job 专属 token；审计列记录触发者（`SCHEDULED` / 手动触发时的主体名）。
+- **集群凭据只进不出**：kubeconfig / EKS / AKS 三份认证材料落库前由 `CredentialCipher` 密封，
+  任何读接口只回 `has*` 与可公开标识（AccessKeyId / tenantId / clientId）。
+  这与「客户端凭据」同一个原则：能写、能验证、不能读回来。
+- **kubeconfig 里的 `exec:` 与 `auth-provider:` 一律拒收**：那等于让服务端替用户在本机执行命令，
+  是 RCE 边界不是功能缺失。错误文案要给替代路径（换成静态证书 / 令牌，或用 EKS / AKS 类型），
+  否则用户只会看到「不支持」而不知道该怎么办。
 
 ---
 
-## 4. 数据模型（新增 3 张表）
+## 4. 数据模型（新增 4 张表）
 
 沿用既有约定：实体继承 `AuditedEntity`（审计列），复杂结构 `@Convert` + `JsonConverters`，乐观并发 `entityVersion`；改实体后重跑 `scripts/gen-mysql-ddl.sh` 并同步 `docs/data-model.md`。
 
@@ -232,6 +257,21 @@ Iceberg 的 `rewrite_data_files` 只有 `strategy => 'binpack' | 'sort'`，Z-Ord
 | `metrics_json` | 前后指标（合并前/后文件数与大小、删除快照数、删除孤儿文件数、释放空间） |
 | `error_message` / `reported_at` | 单表失败原因 / 回调时间 |
 
+**`lakehouse_catalog_execution_cluster`（执行集群，与 catalog 1:1）**
+
+| 列组 | 说明 |
+| --- | --- |
+| `catalog_id` | 唯一约束 + 级联删除：一个 catalog 最多一行，删 catalog 时配置跟着走（不留孤儿目标） |
+| 连接 | `cluster_type`（`SELF_HOSTED` / `EKS` / `AKS`，类型即认证）、`api_server`、`context_name`、`namespace`、`ca_cert_pem` |
+| 凭据 | `kubeconfig_sealed`、`auth_config_sealed`、`catalog_token_sealed`——`CredentialCipher` 密封后的整份明文；读模型只回 `has*` |
+| 运行位置 | `image`、`image_pull_policy`、`image_pull_secrets`、`service_account`、`callback_base_url`（上一版散在 yml 里的提交参数） |
+| 批次策略 | `max_tables_per_job`、`max_concurrent_jobs`、`job_timeout_seconds` |
+| 探活 | `config_hash` / `probe_status` / `probe_reason` / `probe_message` / `probe_config_hash` / `probed_at`——五态由它们派生，不另存状态列 |
+
+字段语义、五态状态机与「`configHash` 用密文算」这类坑见
+[`catalog-execution-cluster-design.md`](catalog-execution-cluster-design.md) §6 / §9；
+表在库里的样子见 [`data-model.md`](data-model.md) §2.5。
+
 ---
 
 ## 5. API 设计
@@ -249,6 +289,10 @@ Iceberg 的 `rewrite_data_files` 只有 `strategy => 'binpack' | 'sort'`，Z-Ord
 | `POST /optimization/jobs/{jobId}/retry` / `POST .../cancel` | 重试（只重跑 FAILED item）/ 取消 |
 | `GET /optimization/jobs/{jobId}/submission` | **回调端点**（optimizer 专用 token）：任务启动时拉执行清单 |
 | `POST /optimization/jobs/{jobId}/items/{itemId}` | **回调端点**（同一 token）：运行中逐表上报结果 |
+| `GET / PUT / DELETE /catalogs/{catalog}/execution-cluster` | 执行集群配置读写与删除（优化任务的落点；完整契约见 [`catalog-execution-cluster-design.md`](catalog-execution-cluster-design.md) §8） |
+| `POST /catalogs/{catalog}/execution-cluster/kubeconfig/parse` | 解析 kubeconfig，逐 context 给 `OK / WARN / UNSUPPORTED / UNAVAILABLE` 结论（**不落库**，纯预检） |
+| `POST /catalogs/{catalog}/execution-cluster/probe?full=` | 现场探活五步（`full=false` 只跑前 3 步） |
+| `POST /catalogs/{catalog}/execution-cluster/copy-from` | 从另一个 catalog 复制连接 + 认证 + 运行位置（**不复制** `callbackBaseUrl` 与批次策略，探活结论清空） |
 
 几点约定：
 
@@ -280,8 +324,9 @@ Iceberg 的 `rewrite_data_files` 只有 `strategy => 'binpack' | 'sort'`，Z-Ord
 **执行骨架**：拉清单 → 建一次 Spark 会话 → 逐表按 compact → expire → orphan 顺序执行 →
 每表回调上报结果 → 全部结束退出（全部成功/跳过 exit 0，有失败 exit 1）。
 
-- **表清单与配置都从回调端点拉，不走命令行**：一批最多 20 张表、每张三项配置，
-  序列化进参数会让命令行失控，而且会让「集群里跑的那份参数」成为策略的第二个版本。
+- **表清单与配置都从回调端点拉，不走命令行**：一批最多 `maxTablesPerJob` 张表（默认 20，
+  取自该 catalog 的执行集群）、每张三项配置，序列化进参数会让命令行失控，
+  而且会让「集群里跑的那份参数」成为策略的第二个版本。
 - **每张表独立 try/catch**：一张表失败不拖死同批其它表（这正是 `PARTIAL_SUCCESS` 存在的意义）。
 - **已经上报过结果的表会被跳过**（清单里带 `status`）：pod 被驱逐后重排时，compaction 重跑
   不是「无副作用的重试」，它会重写文件。
@@ -355,7 +400,7 @@ Iceberg 的 `rewrite_data_files` 只有 `strategy => 'binpack' | 'sort'`，Z-Ord
 | --- | --- | --- | --- |
 | P1 | 三张表 + 策略 API + 手动「立即优化」（单表/多选）+ 优化任务模块（只做 k8s Job 提交）+ 状态跟踪 + 表页签展示 | 手动触发一批多表 compaction，批次/明细状态与指标完整落库 | ✅ |
 | P2 | 调度器 + 自动组批 + catalog 级默认设置 + 重试/取消 | 开启策略后无人值守按周期出批，重试只重跑失败表 | ✅ |
-| P3 | Spark Operator CRD 接入、orphan 干跑确认流、快照现状卡、过期分区清理（DLF 提到但本方案暂缓）；优化任务的端到端用例 | 按 catalog 配置选择提交方式 | 未做 |
+| P3 | ~~Spark Operator CRD 接入~~（评审后不做，见 §9.2）、orphan 干跑确认流、快照现状卡、过期分区清理（DLF 提到但本方案暂缓）；优化任务的端到端用例 | ~~按 catalog 配置选择提交方式~~ → 改为「按 catalog 选**执行集群**」（§3.4 已落地） | 部分（其余未做） |
 
 P1/P2 的服务端部分由 `OptimizationApiTests`（9 个用例）覆盖：策略默认值与校验、三层配置合并、
 组批（合并执行 / 批满顺延 / **拿不到并发配额时不推进游标**）、提交与跟踪、回调（含鉴权与幂等）、
@@ -375,14 +420,23 @@ P1/P2 的服务端部分由 `OptimizationApiTests`（9 个用例）覆盖：策�
    上的条件更新（`UPDATE ... WHERE id = ? AND next_run_at = ?`）即分布式抢占，不引入额外锁或选举组件。
    配套的一条规则是判断并发配额**先于**抢占——拿不到执行配额就不动游标，否则这一轮的调度机会
    会被白白吃掉（下一拍这张表还在，但已经「假装跑过」了）。`OptimizationApiTests` 里有对应断言。
-2. **目标集群是否已部署 Spark Operator** → 目前只实现了 k8s Job 通道；CRD 接入留给 P3，
-   `OptimizationJobSubmitter` 接口已经为它留好位置（换实现不动调用方）。
+2. **目标集群是否已部署 Spark Operator** → **结论：不引入**。曾计划做成「有 operator 就用
+   `SparkApplication` CRD、没有就回落 k8s Job」，评审后否决：① operator 的 `restartPolicy` /
+   `backoffLimit` 自动重试与「compaction 重跑非幂等」直接冲突；② 它的 cron 触发与
+   `next_run_at` 条件更新抢占重叠，两套调度器互相打架；③ CRD 仍是 beta 版本面，而我们要的
+   只是一个跑完就退出的 Job。现在只有一条通道：`Fabric8JobSubmitter` 建 `batch/v1 Job`
+   （`OptimizationJobSubmitter` 接口保留，但没有第二个实现，也不打算加）。
+   **提交到哪里**改由 catalog 级执行集群决定（§3.4）。
 3. **优化镜像的基线** → 与 `lakehouse-rest-spark` 的 Spark 版本对齐（不引入第二套 Spark），
    Paimon 运行时由镜像提供。
 4. **外置表与三类非 Paimon 表明确不支持** → 已实现：非 Paimon 表与外部表在策略读写与「立即优化」
    上一律 400，策略响应里用 `supported` / `unsupportedReason` 表达原因而不只是拒绝，
    控制台因此能在同一个面板上说清「不支持，原因是 X」与「支持但你还没开」（见 §5）。
-5. **短期令牌尚未落地**：`--catalog-token` 目前是一份配置里的静态令牌，与回调令牌一样写在
-   容器参数里——命名空间里能读 pod 定义的人就能读到。收掉这个暴露面需要服务端为每批签一个
-   短期令牌（`AccessTokenService` 已具备签发能力，有效期覆盖批次 deadline 即可），
+5. **短期令牌尚未落地**：`--catalog-token` 目前是该 catalog 执行集群里的一份密封静态令牌，
+   与回调令牌一样写在容器参数里——命名空间里能读 pod 定义的人就能读到。收掉这个暴露面需要
+   服务端为每批签一个短期令牌（`AccessTokenService` 已具备签发能力，有效期覆盖批次 deadline 即可），
    属于后续优化项。
+6. **执行集群的两个未决项**（详见 [`catalog-execution-cluster-design.md`](catalog-execution-cluster-design.md) §12.2 / §13）：
+   EKS 的长期 AK/SK 是这份设计的弱点（预签名 URL 只是把「长期密钥」换成「长期密钥签出的短期 URL」，
+   刷新器才是正解，但它需要额外部署一个组件，本轮不做）；轻探活的 `probe-interval`（默认 30 分钟）
+   暂时写死在代码里，不做成服务级键——它只影响 apiserver 请求量，不影响正确性。

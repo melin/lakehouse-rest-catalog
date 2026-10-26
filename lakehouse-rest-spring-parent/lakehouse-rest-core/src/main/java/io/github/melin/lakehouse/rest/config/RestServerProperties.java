@@ -834,16 +834,39 @@ public class RestServerProperties {
     }
 
     /**
-     * {@code lakehouse.rest.optimization.*}：表存储优化。
+     * {@code lakehouse.rest.optimization.*}：优化调度器的**节拍**。
      *
-     * <p>这一组配置决定「优化任务在哪里跑、跑多久算超时、一批塞几张表」，
-     * 都属于部署形态而非业务参数——表级参数在策略里，catalog 级默认值在 catalog 属性里
-     * （{@code optimization.*}，见 {@code OptimizationOptions}）。
+     * <p><b>这里只剩三个键，其余全部搬到了「每个 catalog 的执行集群」里。</b>
+     * 上一版有十六个键：命名空间、镜像、拉取策略、apiserver、service account、
+     * 令牌文件、CA 文件、回调地址、catalog 令牌、单批表数、并发数、超时、提交方式……
+     * 它们共同的假设是「整个服务端只有一个执行集群、而且那个集群就是服务端自己所在的集群」。
+     * 一旦不同 catalog 要提交到不同集群，这些键**没有一个是全局的**：
+     * 镜像跟着集群与表格式走，回调地址在集群内与集群外不同，配额是给某台集群留的余量。
+     * 把它们留在 yml 里只会得到一个「配置写着 A、实际跑在 B」的分裂状态。
+     *
+     * <p>搬走的是：
+     * <ul>
+     *   <li>{@code namespace} / {@code image} / {@code image-pull-policy} /
+     *       {@code service-account} / {@code api-server} → 执行集群的「运行位置」与「连接」；</li>
+     *   <li>{@code token-file} / {@code ca-file} → 整个概念消失：自建集群用 kubeconfig
+     *       （CA 是内容而不是路径），EKS / AKS 用令牌，需要的是 AK·SK 或 client secret，
+     *       都不是「服务端本机上的某个文件」；</li>
+     *   <li>{@code management-url} → 执行集群的 {@code callbackBaseUrl}（反向可达的地址，
+     *       逐集群不同）；</li>
+     *   <li>{@code catalog-token} → 执行集群的 {@code catalogToken}（同样逐集群，
+     *       跨云时它必须有值）；</li>
+     *   <li>{@code max-tables-per-job} / {@code max-concurrent-jobs} / {@code job-timeout}
+     *       → 执行集群的批次策略（配额是给某台集群留的）；</li>
+     *   <li>{@code submitter} → 提交方式只剩一种（fabric8 打到目标集群），
+     *       {@code log} 那种「静默吞掉所有批次」的实现已删除。</li>
+     * </ul>
+     * 留下来的三个键是**纯节拍**，与部署形态无关：它们描述的是「调度器多久看一次世界」，
+     * 而不是「任务跑到哪里」。
      *
      * <p><b>调度节拍的两个键由 {@code @Scheduled} 直接读</b>（{@code scan-interval}、
      * {@code dispatch-interval}）：注解的占位符在 bean 绑定之前解析，注入不了这个对象，
      * 因此这两个键在注解表达式与这里各出现一次，改的时候两处都要动（都写了同样的默认值，
-     * 漂移表现为「配置写了但节拍没变」）。其余键只在运行时通过本对象读取。
+     * 漂移表现为「配置写了但节拍没变」）。
      */
     @Getter
     @Setter
@@ -856,11 +879,6 @@ public class RestServerProperties {
          * 触发出批」的部署，以及需要确定性行为的测试。
          */
         private boolean schedulerEnabled = true;
-
-        /**
-         * 提交方式：{@code k8s}（默认，创建 k8s Job）或 {@code log}（只记日志，本地调试）。
-         */
-        private String submitter = "k8s";
 
         /**
          * 扫描节拍：多久检查一次「有策略到期了、有批次等着提交/跟踪」。
@@ -879,63 +897,6 @@ public class RestServerProperties {
          */
         @NotNull
         private Duration dispatchInterval = Duration.ofSeconds(10);
-
-        /** 单批最多几张表。超过则拆到下一批，避免一个批次跑太久、重试代价过大。 */
-        @Min(1)
-        private int maxTablesPerJob = 20;
-
-        /** 同时允许几个批次在跑。超出的批次留在 PENDING 排队。 */
-        @Min(1)
-        private int maxConcurrentJobs = 2;
-
-        /** 批次超时。超过它仍未终结的批次判失败并清理执行侧资源。 */
-        @NotNull
-        private Duration jobTimeout = Duration.ofHours(2);
-
-        /** 提交到 k8s 的命名空间。 */
-        private String namespace = "default";
-
-        /** 优化任务镜像（含优化任务与 Paimon Spark 运行时）。{@code k8s} 提交器必填。 */
-        private String image;
-
-        private String imagePullPolicy = "IfNotPresent";
-
-        /** k8s API 地址。集群内默认走 service 域名。 */
-        private String apiServer = "https://kubernetes.default.svc";
-
-        /** 运行优化任务的 service account 名；留空则用命名空间的默认账号。 */
-        private String serviceAccount = "";
-
-        /** service account 令牌文件（集群内由 kubelet 挂载并轮转）。 */
-        private String tokenFile = "/var/run/secrets/kubernetes.io/serviceaccount/token";
-
-        /** 集群 CA 证书文件。读不到时退回 JVM 默认信任库并打 WARN。 */
-        private String caFile = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt";
-
-        /**
-         * 下发给优化任务的服务端地址，任务用它回调拉明细、上报结果。
-         *
-         * <p>默认值只对「任务与实例同机」的调试场景成立；容器里必须配成服务端在本集群内的
-         * 可解析地址（Service 名，不是 pod 名——驱动可能在别的节点上起）。
-         */
-        private String managementUrl = "http://127.0.0.1:8080";
-
-        /**
-         * 下发给优化任务的 catalog 数据面令牌。
-         *
-         * <p>批次回调令牌只对优化回调端点有效，不能当 catalog 凭据——任务要访问
-         * {@code /v1/{prefix}} 才能拿到 Paimon 表对象，那一步走的是
-         * {@code lakehouse.rest.auth.*} 这套认证。两者作用域不同，因此是两个令牌。
-         *
-         * <p>留空表示目标部署没开认证（本地与测试形态），任务会不带头去连；
-         * 开了认证的部署必须配一个属于优化任务专用主体（{@code optimizer}）的令牌，
-         * 该主体的权限只需覆盖本批次的表（见 {@code docs/table-optimization.md} §3.5）。
-         *
-         * <p>与回调令牌一样，它写在容器参数里，能做同样的事：命名空间里能读 pod 定义
-         * 的人可以读到它。要收掉这个暴露面需要服务端为每批签一个短期令牌
-         * （{@code AccessTokenService} 已具备签发能力），属于后续优化项。
-         */
-        private String catalogToken = "";
     }
 
     /**

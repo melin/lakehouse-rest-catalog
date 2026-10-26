@@ -1,0 +1,1191 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>Catalog 级执行集群配置 · 效果图（lakehouse-rest 控制台）</title>
+<style>
+  :root {
+    --sidebar-w: 252px;
+    --sidebar-bg: #0e1626;
+    --sidebar-fg: #c7d2e3;
+    --sidebar-dim: #7b8aa3;
+    --sidebar-active: rgba(59, 130, 246, 0.18);
+    --page-bg: #f3f5f9;
+    --surface: #ffffff;
+    --surface-2: #f7f9fc;
+    --border: #e2e7f0;
+    --text: #1f2937;
+    --dim: #6b7280;
+    --accent: #1d4ed8;
+    --radius: 2px;
+    --ok: #15803d;
+    --warn: #b45309;
+    --danger: #dc2626;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    font: 13.5px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", sans-serif;
+    color: var(--text);
+    background: var(--page-bg);
+  }
+  .app { display: flex; min-height: 100vh; }
+
+  /* ---------------- 侧边栏 ---------------- */
+  .sidebar {
+    width: var(--sidebar-w); flex: 0 0 var(--sidebar-w);
+    background: var(--sidebar-bg); color: var(--sidebar-fg);
+    padding: 14px 0 20px; position: sticky; top: 0; height: 100vh;
+  }
+  .brand { display: flex; align-items: center; gap: 10px; padding: 6px 18px 18px; }
+  .brand-mark {
+    width: 30px; height: 30px; border-radius: 3px; background: #1e40af;
+    display: grid; place-items: center; color: #fff; font-weight: 700; font-size: 15px;
+  }
+  .brand-text strong { display: block; color: #eaf1ff; font-size: 14.5px; }
+  .brand-text span { font-size: 11.5px; color: var(--sidebar-dim); }
+  .nav-group { padding: 10px 18px 4px; font-size: 11px; letter-spacing: .08em; color: #5f6f88; }
+  .nav-item {
+    display: flex; align-items: center; gap: 9px; padding: 8px 18px;
+    font-size: 13px; color: var(--sidebar-fg); cursor: default;
+  }
+  .nav-item.on { background: var(--sidebar-active); color: #dce9ff; border-left: 2px solid #3b82f6; padding-left: 16px; }
+  .nav-item .ico { width: 15px; text-align: center; opacity: .85; font-size: 12px; }
+  .nav-tip { margin: 14px 16px 0; padding: 8px 10px; border: 1px dashed #2b3b56; border-radius: 3px;
+             font-size: 11.5px; color: #7b8aa3; line-height: 1.55; }
+
+  /* ---------------- 主区 ---------------- */
+  .main { flex: 1; min-width: 0; padding: 16px 24px 44px; }
+  .topbar { display: flex; align-items: center; gap: 10px; font-size: 12.5px; color: var(--dim); margin-bottom: 12px; }
+  .topbar .sep { color: #cbd5e1; }
+  .topbar .current { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+  .topbar select {
+    font: inherit; padding: 4px 10px; border: 1px solid var(--border); border-radius: var(--radius);
+    background: #fff; color: var(--text);
+  }
+
+  .page-head { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 14px; }
+  .page-head h1 { font-size: 20px; margin: 0 0 4px; font-weight: 650; }
+  .page-head .sub { font-size: 12.5px; color: var(--dim); max-width: 900px; }
+  .page-head .actions { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
+
+  .btn {
+    display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px;
+    border: 1px solid var(--border); background: #fff; color: var(--text);
+    border-radius: var(--radius); font: inherit; font-size: 13px; cursor: pointer; white-space: nowrap;
+  }
+  .btn:hover { border-color: #c7d2e3; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn.primary:hover { background: #1a45c0; }
+  .btn.ghost { background: var(--surface-2); }
+  .btn.danger { color: var(--danger); border-color: #f3c7c7; background: #fff; }
+  .btn.sm { height: 26px; padding: 0 9px; font-size: 12.5px; }
+  .btn.todo { color: #1e3a8a; border-color: #b9cdf3; background: #eff5ff; }
+  .btn.todo:hover { border-color: #8fb0ec; background: #e6efff; }
+
+  /* ---------------- 画面说明条（效果图专用） ---------------- */
+  .cap {
+    display: flex; align-items: flex-start; gap: 8px; padding: 9px 12px; margin-bottom: 12px;
+    background: #eef4ff; border-left: 3px solid var(--accent); border-radius: var(--radius);
+    font-size: 12.5px; color: #1e3a8a;
+  }
+  .cap b { font-weight: 650; }
+  .cap code { font-family: var(--mono); font-size: 12px; background: #fff; padding: 1px 5px;
+              border: 1px solid #cfdcf7; border-radius: 2px; }
+
+  /* ---------------- 卡片 ---------------- */
+  .card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+    box-shadow: 0 1px 2px rgba(16,24,40,.05), 0 1px 3px rgba(16,24,40,.05);
+  }
+  .list-head { display: flex; align-items: center; gap: 10px; padding: 11px 14px; border-bottom: 1px solid var(--border); }
+  .list-title { font-size: 13px; font-weight: 600; }
+  .list-title em { font-style: normal; color: var(--dim); font-weight: 400; }
+  .list-tools { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+  .mini-select {
+    display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 9px;
+    border: 1px solid var(--border); border-radius: var(--radius); background: #fff; font-size: 12.5px;
+  }
+  .list-tools .mono-dim { font-family: var(--mono); font-size: 11.5px; color: #94a3b8; }
+
+  /* ---------------- 表格 ---------------- */
+  .tablewrap { overflow-x: auto; }
+  table.gtable { width: 100%; border-collapse: collapse; font-size: 12.8px; min-width: 1180px; }
+  table.gtable thead th {
+    background: var(--surface-2); text-align: left; font-weight: 600; color: #475569;
+    padding: 8px 12px; border-bottom: 1px solid var(--border); white-space: nowrap; font-size: 12.5px;
+  }
+  table.gtable tbody td { padding: 9px 12px; border-bottom: 1px solid #f0f3f8; vertical-align: middle; }
+  table.gtable tbody tr:hover td { background: #f8fbff; }
+  table.gtable tbody tr:last-child td { border-bottom: none; }
+  .c-name { font-family: var(--mono); font-size: 12.8px; color: var(--accent); cursor: pointer; }
+  .c-name:hover { text-decoration: underline; }
+  .mono { font-family: var(--mono); font-size: 12.3px; }
+  .dim { color: var(--dim); }
+  .clip { display: inline-block; max-width: 220px; overflow: hidden; text-overflow: ellipsis;
+          white-space: nowrap; vertical-align: bottom; }
+
+  .tag {
+    display: inline-block; padding: 0 6px; height: 19px; line-height: 18px; font-size: 11.5px;
+    border: 1px solid var(--border); border-radius: 2px; background: var(--surface-2); color: #475569;
+  }
+  .tag.paimon { border-color: #cfdcf7; background: #eef4ff; color: #1e3a8a; }
+  .tag.iceberg { border-color: #cfe9e5; background: #eefaf7; color: #0f766e; }
+
+  /* 状态 chip：一行 chip + 一行「类型 · namespace」 */
+  .exec-cell { display: flex; flex-direction: column; gap: 2px; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 7px 0 6px;
+    border-radius: 2px; font-size: 11.5px; border: 1px solid; width: fit-content; font-weight: 550;
+  }
+  .chip .d { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+  .chip.ok { color: var(--ok); border-color: #bfe0c9; background: #f0faf3; }
+  .chip.warn { color: var(--warn); border-color: #f0d3a8; background: #fffaf0; }
+  .chip.bad { color: var(--danger); border-color: #f3c7c7; background: #fef4f4; }
+  .chip.none { color: #6b7280; border-color: #dde3ec; background: #f6f8fb; }
+  .chip.off { color: #8a94a6; border-color: #e2e7f0; background: #f8fafc; }
+  .exec-meta { font-size: 11.5px; color: var(--dim); font-family: var(--mono); }
+  .exec-meta.todo { color: #b45309; font-family: inherit; }
+
+  .rowacts { display: flex; align-items: center; gap: 2px; }
+  .icode {
+    width: 26px; height: 26px; display: inline-grid; place-items: center; border-radius: 2px;
+    border: 1px solid transparent; color: #64748b; cursor: pointer; font-size: 13px;
+  }
+  .icode:hover { background: #eff5ff; border-color: #cfdcf7; color: var(--accent); }
+  .icode.todo { color: #1e3a8a; background: #eff5ff; border-color: #cfdcf7; }
+  .icode.danger:hover { color: var(--danger); background: #fef4f4; border-color: #f3c7c7; }
+
+  .pager { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-top: 1px solid var(--border);
+           font-size: 12.3px; color: var(--dim); }
+  .pager .grow { flex: 1; }
+
+  /* ---------------- 横幅 ---------------- */
+  .banner {
+    display: flex; align-items: flex-start; gap: 9px; padding: 10px 12px; margin-bottom: 12px;
+    border-left: 3px solid var(--warn); background: #fffbeb; color: #7c4a03;
+    font-size: 12.5px; border-radius: var(--radius);
+  }
+  .banner.bad { border-left-color: var(--danger); background: #fef4f4; color: #7f1d1d; }
+  .banner b { font-weight: 650; }
+  .banner .mono { font-size: 12px; }
+  .banner a { color: inherit; text-decoration: underline; cursor: pointer; }
+
+  /* ---------------- 抽屉 ---------------- */
+  .scrim {
+    position: fixed; inset: 0; background: rgba(15, 23, 42, .34); opacity: 0; pointer-events: none;
+    transition: opacity .16s ease; z-index: 30;
+  }
+  .drawer {
+    position: fixed; top: 0; right: 0; bottom: 0; width: 728px; max-width: 94vw; z-index: 31;
+    background: #fff; border-left: 1px solid var(--border); display: flex; flex-direction: column;
+    transform: translateX(102%); transition: transform .18s ease;
+    box-shadow: -12px 0 32px rgba(16,24,40,.12);
+  }
+  body[data-screen="2"] .scrim, body[data-screen="3"] .scrim,
+  body[data-screen="4"] .scrim, body[data-screen="5"] .scrim { opacity: 1; pointer-events: auto; }
+  body[data-screen="2"] .drawer, body[data-screen="3"] .drawer,
+  body[data-screen="4"] .drawer, body[data-screen="5"] .drawer { transform: translateX(0); }
+
+  .dw-head { padding: 14px 18px 12px; border-bottom: 1px solid var(--border); }
+  .dw-title { display: flex; align-items: center; gap: 9px; }
+  .dw-title h2 { font-size: 15.5px; margin: 0; font-weight: 650; }
+  .dw-title .x { margin-left: auto; color: #94a3b8; cursor: pointer; font-size: 16px; }
+  .dw-sub { font-size: 12.3px; color: var(--dim); margin-top: 3px; }
+  .dw-sub .mono { color: #475569; }
+  .dw-body { flex: 1; overflow: auto; padding: 14px 18px 8px; }
+  .dw-foot {
+    display: flex; align-items: center; gap: 8px; padding: 10px 18px; border-top: 1px solid var(--border);
+    background: var(--surface-2);
+  }
+  .dw-foot .grow { flex: 1; }
+
+  /* 集群类型选择 */
+  .ctype-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 4px; }
+  .ctype {
+    border: 1px solid var(--border); border-radius: 3px; padding: 9px 10px; background: #fff; cursor: pointer;
+  }
+  .ctype .n { display: flex; align-items: center; gap: 6px; font-size: 12.8px; font-weight: 600; }
+  .ctype .n .dot { width: 6px; height: 6px; border-radius: 50%; border: 1px solid #c7d2e3; }
+  .ctype .d { font-size: 11.5px; color: var(--dim); margin-top: 2px; line-height: 1.5; }
+  .ctype.on { border-color: var(--accent); background: #f5f9ff; box-shadow: inset 0 0 0 1px rgba(29,78,216,.14); }
+  .ctype.on .n .dot { background: var(--accent); border-color: var(--accent); }
+
+  /* 分区标题 */
+  .sec { margin: 16px 0 8px; display: flex; align-items: center; gap: 8px; }
+  .sec .idx {
+    width: 18px; height: 18px; border-radius: 50%; background: #eef2f7; color: #475569;
+    display: grid; place-items: center; font-size: 11px; font-weight: 600;
+  }
+  .sec h3 { font-size: 12.8px; margin: 0; font-weight: 650; letter-spacing: .01em; }
+  .sec .hint { font-size: 11.5px; color: var(--dim); margin-left: auto; }
+
+  /* 表单 */
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; }
+  .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px 14px; }
+  .fld { display: flex; flex-direction: column; gap: 4px; }
+  .fld > label { font-size: 12px; color: #475569; display: flex; align-items: center; gap: 5px; }
+  .fld > label .req { color: var(--danger); }
+  .fld > label .q {
+    width: 13px; height: 13px; border-radius: 50%; border: 1px solid #c7d2e3; color: #94a3b8;
+    font-size: 9.5px; display: grid; place-items: center; cursor: help;
+  }
+  .fld input[type="text"], .fld input[type="password"], .fld select, .fld textarea {
+    font: inherit; font-size: 12.8px; padding: 6px 9px; border: 1px solid var(--border);
+    border-radius: var(--radius); background: #fff; color: var(--text); width: 100%;
+  }
+  .fld input:focus, .fld select:focus, .fld textarea:focus {
+    outline: 2px solid rgba(29,78,216,.14); border-color: var(--accent);
+  }
+  .fld textarea { font-family: var(--mono); font-size: 11.8px; line-height: 1.55; resize: vertical; }
+  .fld .note { font-size: 11.5px; color: var(--dim); line-height: 1.5; }
+  .fld .note.warn { color: var(--warn); }
+  .fld .note.ok { color: var(--ok); }
+  .span2 { grid-column: span 2; }
+  .span3 { grid-column: span 3; }
+
+  .inline-row { display: flex; align-items: center; gap: 8px; }
+  .readonly {
+    font-family: var(--mono); font-size: 12.3px; padding: 6px 9px; border: 1px dashed var(--border);
+    border-radius: var(--radius); background: var(--surface-2); color: #334155;
+  }
+
+  /* context 结论表 */
+  .ctx-list { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+  .ctx {
+    display: grid; grid-template-columns: 132px 1fr 116px 78px; gap: 10px; align-items: center;
+    padding: 8px 10px; border-bottom: 1px solid #f0f3f8; font-size: 12.3px;
+  }
+  .ctx:last-child { border-bottom: none; }
+  .ctx.on { background: #f5f9ff; }
+  .ctx.off { opacity: .62; }
+  .ctx .nm { font-family: var(--mono); font-size: 12.2px; color: #1f2937; display: flex; align-items: center; gap: 6px; }
+  .ctx .srv { font-family: var(--mono); font-size: 11.6px; color: var(--dim); overflow: hidden;
+              text-overflow: ellipsis; white-space: nowrap; }
+  .ctx .auth { font-family: var(--mono); font-size: 11.6px; color: #475569; }
+  .ctx-note { padding: 0 10px 8px 152px; font-size: 11.5px; color: var(--warn); margin-top: -4px; }
+  .ctx.off + .ctx-note { padding-bottom: 9px; }
+  .v { font-size: 11px; padding: 0 6px; height: 18px; line-height: 17px; border-radius: 2px; border: 1px solid; }
+  .v.ok { color: var(--ok); border-color: #bfe0c9; background: #f0faf3; }
+  .v.no { color: var(--danger); border-color: #f3c7c7; background: #fef4f4; }
+  .v.wa { color: var(--warn); border-color: #f0d3a8; background: #fffaf0; }
+
+  /* 代码块 */
+  pre.code {
+    margin: 0; padding: 9px 11px; background: #0f172a; color: #d7e2f1; border-radius: 3px;
+    font-family: var(--mono); font-size: 11.6px; line-height: 1.62; overflow: auto; max-height: 210px;
+  }
+  pre.code .k { color: #93c5fd; }
+  pre.code .s { color: #86efac; }
+  details.more { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-2); }
+  details.more > summary {
+    cursor: pointer; padding: 7px 10px; font-size: 12.3px; color: #334155; list-style: none;
+  }
+  details.more > summary::before { content: "▸ "; color: #94a3b8; }
+  details.more[open] > summary::before { content: "▾ "; }
+  details.more > div { padding: 0 10px 10px; }
+
+  /* 探活结果 */
+  .probe-sum {
+    display: flex; align-items: center; gap: 10px; padding: 11px 12px; border-radius: 3px;
+    background: #fef4f4; border: 1px solid #f3c7c7; margin-bottom: 12px;
+  }
+  .probe-sum .big { font-size: 13px; font-weight: 650; color: #7f1d1d; }
+  .probe-sum .t { font-size: 12.3px; color: #7f1d1d; }
+  .probe-sum .t .n { font-family: var(--mono); }
+  .probe-sum .grow { flex: 1; }
+
+  .step { display: grid; grid-template-columns: 22px 1fr; gap: 10px; padding: 10px 0; border-bottom: 1px dashed #eef2f7; }
+  .step:last-child { border-bottom: none; }
+  .step .no {
+    width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center;
+    font-size: 11px; font-weight: 650; border: 1px solid;
+  }
+  .step.pass .no { color: var(--ok); border-color: #bfe0c9; background: #f0faf3; }
+  .step.warn .no { color: var(--warn); border-color: #f0d3a8; background: #fffaf0; }
+  .step.fail .no { color: var(--danger); border-color: #f3c7c7; background: #fef4f4; }
+  .step .h { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .step .h .ttl { font-size: 12.9px; font-weight: 600; }
+  .step .h .res { font-size: 11px; padding: 0 6px; height: 18px; line-height: 17px; border-radius: 2px; border: 1px solid; }
+  .step.pass .h .res { color: var(--ok); border-color: #bfe0c9; background: #f0faf3; }
+  .step.warn .h .res { color: var(--warn); border-color: #f0d3a8; background: #fffaf0; }
+  .step.fail .h .res { color: var(--danger); border-color: #f3c7c7; background: #fef4f4; }
+  .step .b { font-size: 12.3px; color: #334155; margin-top: 3px; }
+  .step .fix { font-size: 12.1px; margin-top: 5px; padding: 6px 9px; border-left: 2px solid #cfdcf7;
+               background: #f7faff; color: #1e3a8a; border-radius: 0 2px 2px 0; }
+  .step .fix b { font-weight: 650; }
+  .step .fix.fail { border-left-color: #f3c7c7; background: #fef7f7; color: #7f1d1d; }
+  .step .raw { margin-top: 6px; }
+  .step .raw summary { font-size: 11.6px; color: var(--dim); cursor: pointer; }
+
+  /* 画面 6 的表格 */
+  .stat-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 12px; }
+  .stat { border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; background: #fff; }
+  .stat .l { font-size: 11.8px; color: var(--dim); }
+  .stat .v { font-size: 19px; font-weight: 650; font-family: var(--mono); margin-top: 2px; }
+  .stat .v small { font-size: 11.5px; font-weight: 400; color: var(--dim); font-family: inherit; margin-left: 4px; }
+  .st { font-size: 11.5px; padding: 0 7px; height: 19px; line-height: 18px; border-radius: 2px; border: 1px solid; display: inline-block; }
+  .st.ok { color: var(--ok); border-color: #bfe0c9; background: #f0faf3; }
+  .st.run { color: #1e3a8a; border-color: #cfdcf7; background: #eef4ff; }
+  .st.bad { color: var(--danger); border-color: #f3c7c7; background: #fef4f4; }
+  .st.skip { color: #8a94a6; border-color: #e2e7f0; background: #f8fafc; }
+
+  /* 演示切换 */
+  .demo {
+    position: fixed; left: 18px; bottom: 18px; z-index: 40;
+    display: flex; align-items: center; gap: 5px; padding: 8px 10px; flex-wrap: wrap; max-width: 620px;
+    background: #111827; color: #e5e7eb; border-radius: 3px; font-size: 12px;
+    box-shadow: 0 8px 24px rgba(0,0,0,.2);
+  }
+  .demo span { color: #9ca3af; margin-right: 2px; }
+  .demo button {
+    font: inherit; padding: 4px 9px; border-radius: 2px; border: 1px solid transparent;
+    background: rgba(255,255,255,.08); color: #e5e7eb; cursor: pointer;
+  }
+  .demo button.on { background: #1d4ed8; border-color: #3b82f6; color: #fff; }
+
+  /* 画面显隐 */
+  .page { display: none; }
+  body[data-screen="1"] #page-list, body[data-screen="2"] #page-list,
+  body[data-screen="3"] #page-list, body[data-screen="4"] #page-list,
+  body[data-screen="5"] #page-list { display: block; }
+  body[data-screen="6"] #page-jobs { display: block; }
+
+  /* 抽屉里的连接段与探活视图 */
+  .conn { display: none; }
+  body[data-kind="SELF"] .conn-self,
+  body[data-kind="EKS"] .conn-eks,
+  body[data-kind="AKS"] .conn-aks { display: block; }
+  .probe-view { display: none; }
+  body[data-screen="5"] .probe-view { display: block; }
+  body[data-screen="5"] .form-view { display: none; }
+
+  @media (max-width: 1180px) {
+    .sidebar { display: none; }
+    .main { padding: 14px; }
+    .drawer { width: 100%; }
+  }
+</style>
+</head>
+<body data-screen="1" data-kind="SELF">
+
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">P</div>
+      <div class="brand-text"><strong>LakeHouse Catalog</strong><span>管理控制台</span></div>
+    </div>
+    <div class="nav-group">概览</div>
+    <div class="nav-item"><span class="ico">▦</span> 控制台概览</div>
+    <div class="nav-group">目录（CATALOG API）</div>
+    <div class="nav-item"><span class="ico">▤</span> 目录浏览</div>
+    <div class="nav-group">治理（MANAGEMENT API）</div>
+    <div class="nav-item on"><span class="ico">▥</span> Catalogs</div>
+    <div class="nav-item"><span class="ico">◔</span> 主体</div>
+    <div class="nav-item"><span class="ico">◑</span> 角色</div>
+    <div class="nav-item"><span class="ico">◈</span> 权限管理</div>
+    <div class="nav-item"><span class="ico">◇</span> 数据保护</div>
+    <div class="nav-item"><span class="ico">▧</span> 优化任务</div>
+    <div class="nav-group">审计</div>
+    <div class="nav-item"><span class="ico">◎</span> 事件</div>
+    <div class="nav-group">系统</div>
+    <div class="nav-item"><span class="ico">⚙</span> 连接设置</div>
+
+    <div class="nav-tip">
+      菜单没变：执行集群不是一级资源，它挂在 catalog 上。<br>
+      入口只有两处——列表的一列、行内一格按钮。
+    </div>
+  </aside>
+
+  <main class="main">
+    <div class="topbar">
+      <span>控制台</span><span class="sep">/</span><span>治理（Management API）</span>
+      <span class="sep">/</span><span id="crumb">Catalogs</span>
+      <span class="current">
+        当前 Catalog
+        <select><option>paimon</option><option>lakehouse_dev</option><option>finance_prod</option></select>
+      </span>
+    </div>
+
+    <!-- ================= 画面 1 / 2 / 3 / 4 / 5：catalog 列表 ================= -->
+    <section class="page" id="page-list">
+      <div class="cap" id="cap-1">
+        <span>画面 1</span>
+        <div>
+          <b>列表加一列、操作加一格。</b>「执行集群」这一列用两行表达两件事：能不能跑（chip）＋跑在哪（类型 · namespace）。
+          未配置的行副行写「优化不会运行」，按钮用主色描边——它此刻是待办，不是可选动作。
+        </div>
+      </div>
+
+      <div class="page-head">
+        <div>
+          <h1>Catalogs</h1>
+          <div class="sub">
+            catalog 是元数据与数据的命名空间，每个 catalog 指向一处存储位置。名称同时是客户端连接时用的 prefix，创建后不能改名。
+            <b>执行集群决定这个 catalog 的表存储优化跑在哪个 k8s 集群、用什么身份跑</b>；没配的 catalog 优化调度会被跳过（游标不推进）。
+          </div>
+        </div>
+        <div class="actions">
+          <button class="btn sm">↻ 刷新</button>
+          <button class="btn sm primary">+ 新建 Catalog</button>
+        </div>
+      </div>
+
+      <div class="card">
+          <div class="list-head">
+            <span class="list-title">已登记的 catalog <em>（5）</em></span>
+            <span class="list-tools">
+              <span class="mini-select">执行集群：全部 ▾</span>
+              <span class="mini-select">全部格式 ▾</span>
+              <span class="mono-dim">管理 API /catalogs</span>
+            </span>
+          </div>
+
+          <div class="tablewrap">
+            <table class="gtable">
+              <thead>
+                <tr>
+                  <th style="width:150px">名称</th>
+                  <th style="width:104px">表格式</th>
+                  <th style="width:92px">类型</th>
+                  <th style="width:186px">执行集群</th>
+                  <th style="width:100px">存储类型</th>
+                  <th>仓库位置</th>
+                  <th style="width:118px">更新时间</th>
+                  <th style="width:232px">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><span class="c-name">paimon</span></td>
+                  <td><span class="tag paimon">Paimon</span></td>
+                  <td>INTERNAL</td>
+                  <td>
+                    <div class="exec-cell">
+                      <span class="chip ok" title="apiServer https://ABC123.gr7.ap-northeast-1.eks.amazonaws.com · 最近验证 12 分钟前"><i class="d"></i>正常</span>
+                      <span class="exec-meta">EKS · paimon-opt</span>
+                    </div>
+                  </td>
+                  <td><span class="tag">S3</span></td>
+                  <td><span class="mono clip">s3://lakehouse-prod/warehouse</span></td>
+                  <td class="dim">12 分钟前</td>
+                  <td>
+                    <div class="rowacts">
+                      <span class="icode" title="编辑">✎</span>
+                      <span class="icode" title="执行集群配置" onclick="openDrawer(3)">⇄</span>
+                      <span class="icode" title="浏览库与对象">▤</span>
+                      <span class="icode" title="权限管理">🔒</span>
+                      <span class="icode danger" title="删除">🗑</span>
+                    </div>
+                  </td>
+                </tr>
+
+                <tr>
+                  <td><span class="c-name">finance_prod</span></td>
+                  <td><span class="tag paimon">Paimon</span></td>
+                  <td>EXTERNAL</td>
+                  <td>
+                    <div class="exec-cell">
+                      <span class="chip bad" title="sts:GetCallerIdentity 返回 InvalidClientTokenId —— 密钥可能已停用"><i class="d"></i>异常 · 凭据失效</span>
+                      <span class="exec-meta">EKS · fin-opt</span>
+                    </div>
+                  </td>
+                  <td><span class="tag">OSS</span></td>
+                  <td><span class="mono clip">oss://fin-prod/warehouse</span></td>
+                  <td class="dim">1 小时前</td>
+                  <td>
+                    <div class="rowacts">
+                      <span class="icode" title="编辑">✎</span>
+                      <span class="icode" title="执行集群配置" onclick="openDrawer(3)">⇄</span>
+                      <span class="icode" title="浏览库与对象">▤</span>
+                      <span class="icode" title="权限管理">🔒</span>
+                      <span class="icode danger" title="删除">🗑</span>
+                    </div>
+                  </td>
+                </tr>
+
+                <tr>
+                  <td><span class="c-name">lakehouse_dev</span></td>
+                  <td><span class="tag paimon">Paimon</span></td>
+                  <td>INTERNAL</td>
+                  <td>
+                    <div class="exec-cell">
+                      <span class="chip warn" title="配置已改，最近一次验证是 2 天前——那次验的是旧配置"><i class="d"></i>待验证</span>
+                      <span class="exec-meta">自建 · paimon-dev</span>
+                    </div>
+                  </td>
+                  <td><span class="tag">FILE</span></td>
+                  <td><span class="mono clip">file:/data/warehouse-dev</span></td>
+                  <td class="dim">2 天前</td>
+                  <td>
+                    <div class="rowacts">
+                      <span class="icode" title="编辑">✎</span>
+                      <span class="icode" title="执行集群配置" onclick="openDrawer(2)">⇄</span>
+                      <span class="icode" title="浏览库与对象">▤</span>
+                      <span class="icode" title="权限管理">🔒</span>
+                      <span class="icode danger" title="删除">🗑</span>
+                    </div>
+                  </td>
+                </tr>
+
+                <tr>
+                  <td><span class="c-name">sales_iceberg</span></td>
+                  <td><span class="tag iceberg">Iceberg</span></td>
+                  <td>INTERNAL</td>
+                  <td>
+                    <div class="exec-cell">
+                      <span class="chip none"><i class="d"></i>未配置</span>
+                      <span class="exec-meta todo">优化不会运行</span>
+                    </div>
+                  </td>
+                  <td><span class="tag">S3</span></td>
+                  <td><span class="mono clip">s3://sales-lake/warehouse</span></td>
+                  <td class="dim">3 天前</td>
+                  <td>
+                    <div class="rowacts">
+                      <span class="icode" title="编辑">✎</span>
+                      <span class="icode todo" title="执行集群配置（待办）" onclick="openDrawer(2)">⇄</span>
+                      <span class="icode" title="浏览库与对象">▤</span>
+                      <span class="icode" title="权限管理">🔒</span>
+                      <span class="icode danger" title="删除">🗑</span>
+                    </div>
+                  </td>
+                </tr>
+
+                <tr>
+                  <td><span class="c-name">archive</span></td>
+                  <td><span class="tag paimon">Paimon</span></td>
+                  <td>INTERNAL</td>
+                  <td>
+                    <div class="exec-cell">
+                      <span class="chip off"><i class="d"></i>已停用</span>
+                      <span class="exec-meta">自建 · archive-opt</span>
+                    </div>
+                  </td>
+                  <td><span class="tag">S3</span></td>
+                  <td><span class="mono clip">s3://archive/warehouse</span></td>
+                  <td class="dim">9 天前</td>
+                  <td>
+                    <div class="rowacts">
+                      <span class="icode" title="编辑">✎</span>
+                      <span class="icode" title="执行集群配置" onclick="openDrawer(2)">⇄</span>
+                      <span class="icode" title="浏览库与对象">▤</span>
+                      <span class="icode" title="权限管理">🔒</span>
+                      <span class="icode danger" title="删除">🗑</span>
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="pager">
+            <span>共 5 条</span>
+            <span class="grow"></span>
+            <span class="mini-select">20 条/页 ▾</span>
+            <span class="mini-select">1 / 1 ▾</span>
+          </div>
+        </div>
+    </section>
+
+    <!-- ================= 画面 6：优化任务页的连锁反应 ================= -->
+    <section class="page" id="page-jobs">
+      <div class="cap">
+        <span>画面 6</span>
+        <div>
+          <b>没配执行集群时，界面上要有三处一致的说法。</b>优化页顶部横幅说清楚「跳过、不补跑、不删策略」；
+          批次的提交列写「未提交 · 未配置执行集群」而不是「失败」；给这种 catalog 保存策略时直接 400。
+        </div>
+      </div>
+
+      <div class="page-head">
+        <div>
+          <h1>优化任务</h1>
+          <div class="sub">批次是提交到 k8s 的最小单位，一个批次里可能有多张表。批次的「提交」列说明它是被谁提交到哪个集群的。</div>
+        </div>
+        <div class="actions"><button class="btn sm">↻ 刷新</button></div>
+      </div>
+
+      <div class="banner">
+        <span>⚠</span>
+        <div>
+          <b>2 个 catalog 的执行集群未配置，调度已跳过。</b>
+          <span class="mono">sales_iceberg</span>、<span class="mono">lakehouse_dev</span>（已停用）——
+          它们的优化策略与调度游标都保留，<b>修好后从原位置继续：不会补跑，也不会删策略</b>。
+          已排队但未提交的批次留在 PENDING，不判失败。<a onclick="openDrawer(2)">去配置</a>
+        </div>
+      </div>
+
+      <div class="stat-row">
+        <div class="stat"><div class="l">运行中</div><div class="v">1</div></div>
+        <div class="stat"><div class="l">排队（PENDING）</div><div class="v">2 <small>其中 2 个等执行集群</small></div></div>
+        <div class="stat"><div class="l">近 24 小时失败</div><div class="v" style="color:var(--danger)">1</div></div>
+        <div class="stat"><div class="l">下一次派发</div><div class="v" style="font-size:14px">7s 后</div></div>
+      </div>
+
+      <div class="card">
+        <div class="tablewrap">
+          <table class="gtable">
+            <thead>
+              <tr>
+                <th style="width:210px">批次</th>
+                <th style="width:132px">catalog</th>
+                <th style="width:64px">表数</th>
+                <th style="width:96px">状态</th>
+                <th style="width:230px">提交</th>
+                <th style="width:118px">创建时间</th>
+                <th>说明</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><span class="mono">b-9f2c…41ad</span></td>
+                <td><span class="mono">paimon</span></td>
+                <td>6</td>
+                <td><span class="st run">运行中</span></td>
+                <td><span class="mono">k8s · EKS/paimon-opt · paimon-optimize-9f2c…</span></td>
+                <td class="dim">4 分钟前</td>
+                <td class="dim">compaction 进行中</td>
+              </tr>
+              <tr>
+                <td><span class="mono">b-7d10…88be</span></td>
+                <td><span class="mono">finance_prod</span></td>
+                <td>3</td>
+                <td><span class="st bad">失败</span></td>
+                <td><span class="mono">k8s · EKS/fin-opt</span></td>
+                <td class="dim">22 分钟前</td>
+                <td style="color:#7f1d1d">提交被拒：sts:GetCallerIdentity → InvalidClientTokenId（执行集群凭据失效）</td>
+              </tr>
+              <tr>
+                <td><span class="mono">b-3ab8…c012</span></td>
+                <td><span class="mono">sales_iceberg</span></td>
+                <td>2</td>
+                <td><span class="st skip">PENDING</span></td>
+                <td><span class="mono" style="color:#8a94a6">未提交 · 未配置执行集群</span></td>
+                <td class="dim">35 分钟前</td>
+                <td class="dim">游标停在 09:12，不会跳过这段时间</td>
+              </tr>
+              <tr>
+                <td><span class="mono">b-51c9…7f3a</span></td>
+                <td><span class="mono">lakehouse_dev</span></td>
+                <td>4</td>
+                <td><span class="st skip">PENDING</span></td>
+                <td><span class="mono" style="color:#8a94a6">未提交 · 执行集群已停用</span></td>
+                <td class="dim">51 分钟前</td>
+                <td class="dim">停用是刻意的关闭，不是失败</td>
+              </tr>
+              <tr>
+                <td><span class="mono">b-18ef…2d90</span></td>
+                <td><span class="mono">paimon</span></td>
+                <td>8</td>
+                <td><span class="st ok">成功</span></td>
+                <td><span class="mono">k8s · EKS/paimon-opt</span></td>
+                <td class="dim">1 小时前</td>
+                <td class="dim">删除孤儿文件 1.2 GB</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:12px;padding:12px 14px">
+        <div style="font-size:12.8px;font-weight:650;margin-bottom:6px">保存优化策略时的拒绝（POST /…/tables/sales_iceberg/db/t/optimization）</div>
+        <pre class="code"><span class="k">HTTP/1.1</span> 400 Bad Request
+{
+  <span class="s">"type"</span>: <span class="s">"about:blank"</span>,
+  <span class="s">"title"</span>: <span class="s">"execution cluster missing"</span>,
+  <span class="s">"detail"</span>: <span class="s">"catalog sales_iceberg 未配置执行集群，优化任务不会提交；请先在 catalog 列表点「执行集群」"</span>,
+  <span class="s">"instance"</span>: <span class="s">"/api/management/v1/catalogs/sales_iceberg/databases/db/tables/t/optimization"</span>
+}</pre>
+        <div class="dim" style="font-size:11.8px;margin-top:6px">
+          允许保存等于允许「配了但永远不会跑」——这类静默失效最难发现，所以这里是 fail-closed。停用（enabled=false）是例外。
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<!-- ================= 抽屉：执行集群配置 ================= -->
+<div class="scrim" onclick="openDrawer(0)"></div>
+
+<aside class="drawer">
+  <div class="dw-head">
+    <div class="dw-title">
+      <h2>执行集群配置</h2>
+      <span class="chip warn" style="height:19px"><i class="d"></i><span id="dw-state">待验证</span></span>
+      <span class="x" onclick="openDrawer(0)">✕</span>
+    </div>
+    <div class="dw-sub">
+      catalog <span class="mono" id="dw-catalog">lakehouse_dev</span> ·
+      优化任务将提交到下面这个集群。<b>保存后点「验证连接」才会变成「正常」</b>——只保存不验证等于没验过。
+    </div>
+  </div>
+
+  <div class="dw-body">
+    <!-- ---------- 表单视图 ---------- -->
+    <div class="form-view">
+      <div class="sec">
+        <span class="idx">1</span><h3>集群类型</h3>
+        <span class="hint">选完这一行，下面第二段整段替换——不存在「EKS + kubeconfig」这种组合</span>
+      </div>
+      <div class="ctype-grid">
+        <div class="ctype on" data-ctype="SELF" onclick="setKind('SELF')">
+          <div class="n"><i class="dot"></i>自建 / 托管 · kubeconfig</div>
+          <div class="d">手里有一份 kubeconfig。粘贴 → 选 context → 保存。</div>
+        </div>
+        <div class="ctype" data-ctype="EKS" onclick="setKind('EKS')">
+          <div class="n"><i class="dot"></i>AWS EKS · 令牌</div>
+          <div class="d">STS 预签名令牌（15 分钟），不需要在服务端装 aws cli。</div>
+        </div>
+        <div class="ctype" data-ctype="AKS" onclick="setKind('AKS')">
+          <div class="n"><i class="dot"></i>Azure AKS · 令牌</div>
+          <div class="d">AAD 客户端凭据换令牌，scope 是 AKS 自己的 audience。</div>
+        </div>
+      </div>
+
+      <!-- ---------- 自建：kubeconfig ---------- -->
+      <div class="conn conn-self">
+        <div class="sec">
+          <span class="idx">2</span><h3>连接</h3>
+          <span class="hint">粘贴后先解析，解析不落库</span>
+        </div>
+        <div class="fld">
+          <label>kubeconfig <span class="req">*</span><span class="q" title="≤ 64 KiB。保存后只保留摘要，读接口不回原文。">?</span></label>
+          <textarea rows="7">apiVersion: v1
+kind: Config
+current-context: paimon-dev
+clusters:
+- name: dev
+  cluster:
+    server: https://10.20.30.41:6443
+    certificate-authority-data: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0t...
+users:
+- name: dev-admin
+  user:
+    client-certificate-data: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0t...
+    client-key-data: LS0tLS1CRUdJTiBSU0EgUFJJVkFURSBLRVktLS0tLQ==...
+- name: prod-eks
+  user:
+    exec:
+      apiVersion: client.authentication.k8s.io/v1beta1
+      command: aws
+      args: ["eks", "get-token", "--cluster-name", "prod"]</textarea>
+          <div class="inline-row">
+            <button class="btn sm">解析</button>
+            <span class="note ok">已解析：3 个 context，其中 1 个可用</span>
+          </div>
+        </div>
+
+        <div class="sec" style="margin-top:12px">
+          <span class="idx">3</span><h3>选择 context</h3>
+          <span class="hint">不可用的行禁用但不隐藏——「我的 context 去哪了」比红叉更让人困惑</span>
+        </div>
+        <div class="fld">
+          <div class="ctx-list">
+            <div class="ctx on">
+              <div class="nm">● paimon-dev</div>
+              <div class="srv">https://10.20.30.41:6443</div>
+              <div class="auth">客户端证书</div>
+              <div><span class="v ok">可用</span></div>
+            </div>
+            <div class="ctx off">
+              <div class="nm">eks-prod</div>
+              <div class="srv">https://ABC123.gr7.ap-northeast-1.eks.amazonaws.com</div>
+              <div class="auth">exec: aws</div>
+              <div><span class="v no">不支持</span></div>
+            </div>
+            <div class="ctx-note">服务端不能替你执行 <span class="mono">aws eks get-token</span>（那等于让它执行任意命令）。EKS 请把上面的类型切成「AWS EKS · 令牌」。</div>
+            <div class="ctx off">
+              <div class="nm">aks-china</div>
+              <div class="srv">https://aks-cn-xxx.hcp.chinacloudapi.cn:443</div>
+              <div class="auth">auth-provider: azure</div>
+              <div><span class="v no">不支持</span></div>
+            </div>
+            <div class="ctx-note">旧式 <span class="mono">auth-provider</span> 依赖交互式刷新，1.26 前后已陆续移除。AKS 请用「Azure AKS · 令牌」。</div>
+          </div>
+          <div class="note">
+            连接摘要：server <span class="mono">https://10.20.30.41:6443</span> · CA 来自 kubeconfig · 身份
+            <span class="mono">dev-admin</span>（客户端证书）。想换 context 不用重新粘贴——保存后这里会变成下拉。
+          </div>
+        </div>
+      </div>
+
+      <!-- ---------- EKS ---------- -->
+      <div class="conn conn-eks">
+        <div class="banner" style="margin-top:14px">
+          <span>ⓘ</span>
+          <div>
+            EKS 的 apiserver 认的不是 AK/SK，而是 <span class="mono">aws eks get-token</span> 产出的串——
+            本质是<b>用 SigV4 预签名的 STS GetCallerIdentity URL</b>，15 分钟内有效。服务端每次请求现签一个，
+            不必装 aws cli。
+          </div>
+        </div>
+        <div class="sec">
+          <span class="idx">2</span><h3>集群与凭据</h3>
+          <span class="hint">集群名大小写敏感——它被塞进 x-k8s-aws-id 头</span>
+        </div>
+        <div class="grid2">
+          <div class="fld">
+            <label>区域（region）<span class="req">*</span></label>
+            <select><option>ap-northeast-1</option><option>cn-north-1</option><option>us-east-1</option></select>
+            <div class="note">中国区 STS 域名是 <span class="mono">sts.cn-north-1.amazonaws.com.cn</span></div>
+          </div>
+          <div class="fld">
+            <label>集群名（clusterName）<span class="req">*</span></label>
+            <input type="text" value="prod" />
+            <div class="note">必须与 EKS 控制台里逐字一致；写错的表现是 401，不是「找不到集群」。</div>
+          </div>
+          <div class="fld">
+            <label>API Server<span class="req">*</span></label>
+            <input type="text" value="https://ABC123.gr7.ap-northeast-1.eks.amazonaws.com" />
+          </div>
+          <div class="fld">
+            <label>集群 CA（caCertPem）</label>
+            <input type="text" value="已配置（base64 → PEM 已转换）" />
+            <div class="note">取自 <span class="mono">aws eks describe-cluster --query cluster.certificateAuthority.data</span></div>
+          </div>
+          <div class="fld">
+            <label>访问密钥 ID<span class="req">*</span></label>
+            <input type="text" value="AKIA****7Q2M" />
+            <div class="note">不是秘密，读接口会回显它，用来认「配的是哪把钥匙」。</div>
+          </div>
+          <div class="fld">
+            <label>秘密访问密钥<span class="req">*</span></label>
+            <input type="password" value="............" />
+            <div class="note">留空 = 保持原样；要清空得显式勾「清除」。</div>
+          </div>
+          <div class="fld span2">
+            <label>会话令牌（sessionToken，可选）</label>
+            <input type="text" placeholder="STS 临时凭据才需要；长期 AK/SK 留空" />
+            <div class="note warn">
+              长期 AK/SK 是这份设计的弱点：建议每个环境一把专用密钥、只授下面那两条权限、90 天轮转。
+            </div>
+          </div>
+        </div>
+
+        <details class="more" style="margin-top:10px">
+          <summary>复制 IAM 最小权限策略（只需两条）</summary>
+          <div>
+            <pre class="code">{
+  "Version": "2012-10-17",
+  "Statement": [
+    { "Effect": "Allow", "Action": "sts:GetCallerIdentity", "Resource": "*" },
+    { "Effect": "Allow", "Action": "eks:DescribeCluster",
+      "Resource": "arn:aws:eks:ap-northeast-1:123456789012:cluster/prod" }
+  ]
+}</pre>
+            <div class="dim" style="font-size:11.7px;margin-top:6px">
+              真正的权限由集群里的 Role / Access Entry 决定；把 IAM 策略放成 AdministratorAccess 不会有任何帮助，只会扩大泄漏面。
+            </div>
+          </div>
+        </details>
+      </div>
+
+      <!-- ---------- AKS ---------- -->
+      <div class="conn conn-aks">
+        <div class="banner" style="margin-top:14px">
+          <span>ⓘ</span>
+          <div>
+            AKS 用 AAD 客户端凭据换令牌。<b>scope 必须是 AKS 自己的 audience</b>
+            （<span class="mono">6dae42f8-4368-4678-94ff-3960e28e3630</span>），
+            不是 <span class="mono">management.core.windows.net</span>——用管理面 scope 会得到
+            <span class="mono">401 Invalid audience</span>，看起来像「SP 没授权」。
+          </div>
+        </div>
+        <div class="sec">
+          <span class="idx">2</span><h3>云环境与客户端凭据</h3>
+          <span class="hint">不设 subscriptionId：它不参与取令牌</span>
+        </div>
+        <div class="grid2">
+          <div class="fld">
+            <label>云环境<span class="req">*</span></label>
+            <select><option>公共云（login.microsoftonline.com）</option><option>中国云（login.chinacloudapi.cn）</option></select>
+          </div>
+          <div class="fld">
+            <label>API Server<span class="req">*</span></label>
+            <input type="text" value="https://aks-cn-xxxx.hcp.chinacloudapi.cn:443" />
+          </div>
+          <div class="fld">
+            <label>租户 ID（tenantId）<span class="req">*</span></label>
+            <input type="text" placeholder="00000000-0000-0000-0000-000000000000" />
+          </div>
+          <div class="fld">
+            <label>客户端 ID（clientId）<span class="req">*</span></label>
+            <input type="text" placeholder="AAD 应用的 applicationId" />
+          </div>
+          <div class="fld">
+            <label>客户端密钥（clientSecret）<span class="req">*</span></label>
+            <input type="password" value="............" />
+            <div class="note">留空 = 保持原样。轮转时先保存新密钥，再观察一次轻探活。</div>
+          </div>
+          <div class="fld">
+            <label>scope</label>
+            <input type="text" value="6dae42f8-4368-4678-94ff-3960e28e3630/.default" />
+            <div class="note">留空用默认值。必须以 <span class="mono">/.default</span> 结尾。</div>
+          </div>
+          <div class="fld span2">
+            <label>集群 CA（caCertPem，可选）</label>
+            <input type="text" placeholder="留空 = 用 JVM 信任库" />
+            <div class="note">AKS 的 apiserver 证书多半由公共 CA 签发，通常可以留空。</div>
+          </div>
+        </div>
+        <div class="banner" style="border-left-color:var(--accent);background:#eef4ff;color:#1e3a8a;margin-top:10px">
+          <span>ⓘ</span>
+          <div>
+            这个 AAD 应用需要在集群上有 <span class="mono">Azure Kubernetes Service Cluster User Role</span>
+            （或对应的 AAD 组），并且只授 Job 的增删查——它不需要订阅层面的任何权限。
+          </div>
+        </div>
+      </div>
+
+      <!-- ---------- 运行位置（三种类型共用） ---------- -->
+      <div class="sec">
+        <span class="idx">4</span><h3>运行位置</h3>
+        <span class="hint">这里的每一项都是「提交参数的唯一来源」——application.yml 里已经没有它们了</span>
+      </div>
+      <div class="grid2">
+        <div class="fld">
+          <label>命名空间（namespace）<span class="req">*</span></label>
+          <input type="text" value="paimon-opt" />
+        </div>
+        <div class="fld">
+          <label>Service Account</label>
+          <input type="text" placeholder="留空 = 命名空间默认账号" />
+          <div class="note">IRSA / Workload Identity 都挂在这个 SA 上。</div>
+        </div>
+        <div class="fld span2">
+          <label>镜像（image）<span class="req">*</span></label>
+          <input type="text" value="registry.cn-hangzhou.aliyuncs.com/melin1204/lakehouse-rest-optimizer:1.0.0" />
+          <div class="note">不含 <span class="mono">:</span> 或 <span class="mono">@</span> 会被拒；只有 <span class="mono">:latest</span> 时给警告。</div>
+        </div>
+        <div class="fld">
+          <label>拉取策略</label>
+          <select><option>IfNotPresent</option><option>Always</option><option>Never</option></select>
+        </div>
+        <div class="fld">
+          <label>imagePullSecrets</label>
+          <input type="text" placeholder="逗号分隔的 Secret 名；私有仓库才需要" />
+          <div class="note">dry-run 建 Job 通过不代表拉得下来——这一项漏了的表现是 ErrImagePull。</div>
+        </div>
+        <div class="fld span2">
+          <label>回调地址（callbackBaseUrl）<span class="req">*</span></label>
+          <input type="text" value="http://paimon-rest.paimon.svc.cluster.local:8080" />
+          <div class="note warn">
+            要填<b>集群里的 Pod 能 curl 通</b>的地址。同一服务端在不同集群里这一项不同：
+            同集群用 Service 名（不是 pod 名，driver 可能起在别的节点），跨集群用内网 LB 或对外域名。
+          </div>
+        </div>
+      </div>
+
+      <div class="sec">
+        <span class="idx">5</span><h3>批次策略</h3>
+        <span class="hint">跟着集群算力走，所以放在这里而不是服务端</span>
+      </div>
+      <div class="grid3">
+        <div class="fld">
+          <label>单批最多几张表</label>
+          <input type="text" value="20" />
+        </div>
+        <div class="fld">
+          <label>同时几个批次</label>
+          <input type="text" value="2" />
+          <div class="note">超出的留在 PENDING。</div>
+        </div>
+        <div class="fld">
+          <label>批次超时</label>
+          <input type="text" value="2h" />
+        </div>
+        <div class="fld span3">
+          <label>catalog 数据面令牌（catalogToken，可选）</label>
+          <input type="password" value="............" />
+          <div class="note">下发给任务用于访问 <span class="mono">/v1/{prefix}</span>。它会以命令行参数出现在 Pod spec 里——
+            同一命名空间能读 pod 定义的人就能读到它；作用域限于数据面读取。</div>
+        </div>
+      </div>
+
+      <div class="banner" style="border-left-color:var(--accent);background:#eef4ff;color:#1e3a8a;margin-top:14px">
+        <span>ⓘ</span>
+        <div>
+          <b>10 个 catalog 都跑在同一个集群？</b>不用填 10 次——左下的「复用其他 catalog 的连接」会把连接与认证整段复制过来
+          （不带回调地址与批次策略），复制完状态是「待验证」。
+        </div>
+      </div>
+    </div>
+
+    <!-- ---------- 探活结果视图（画面 5） ---------- -->
+    <div class="probe-view">
+      <div class="probe-sum">
+        <span style="font-size:15px">⚠</span>
+        <div>
+          <div class="big">验证完成：3 项通过 · 1 项警告 · 1 项失败</div>
+          <div class="t">保存后状态是<b>「异常」</b>，该 catalog 的批次派发会被暂停，直到下一次轻探活通过（PENDING 批次不判失败，游标不推进）。</div>
+        </div>
+        <span class="grow"></span>
+        <span class="mono" style="font-size:11.5px;color:#7f1d1d">耗时 2.4s</span>
+      </div>
+
+      <div class="step pass">
+        <div class="no">1</div>
+        <div>
+          <div class="h"><span class="ttl">凭据可用</span><span class="res">通过</span>
+            <span class="dim" style="font-size:11.5px">sts:GetCallerIdentity</span></div>
+          <div class="b">
+            返回 <span class="mono">arn:aws:iam::123456789012:user/paimon-optimizer</span>。
+            令牌 15 分钟内有效，每次请求现签。
+          </div>
+        </div>
+      </div>
+
+      <div class="step pass">
+        <div class="no">2</div>
+        <div>
+          <div class="h"><span class="ttl">TLS 与身份</span><span class="res">通过</span>
+            <span class="dim" style="font-size:11.5px">GET /version · SelfSubjectReview</span></div>
+          <div class="b">
+            集群版本 <span class="mono">v1.30.4-eks-…</span>；身份
+            <span class="mono">paimon-optimizer</span>（组 <span class="mono">system:authenticated</span>）。
+          </div>
+        </div>
+      </div>
+
+      <div class="step pass">
+        <div class="no">3</div>
+        <div>
+          <div class="h"><span class="ttl">权限</span><span class="res">通过</span>
+            <span class="dim" style="font-size:11.5px">SelfSubjectAccessReview × 3，ns paimon-opt</span></div>
+          <div class="b">
+            <span class="mono">create jobs</span> ✓ ·
+            <span class="mono">delete jobs</span> ✓ ·
+            <span class="mono">get pods</span> + <span class="mono">pods/log</span> ✓
+            <span class="dim">（后者是排障读日志要用的，没有它也能跑，但失败时只能看到「Job 失败」）</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="step warn">
+        <div class="no">4</div>
+        <div>
+          <div class="h"><span class="ttl">准入预演</span><span class="res">警告</span>
+            <span class="dim" style="font-size:11.5px">dry-run 建 Job（fieldValidation=Strict）</span></div>
+          <div class="b">
+            准入链路通过，配额与 PodSecurity 都没问题。<b>但镜像是私有仓库的，且没填 imagePullSecrets。</b>
+          </div>
+          <div class="fix">
+            <b>处置：</b>补上 <span class="mono">imagePullSecrets</span> 的名字（或确认该命名空间已有默认拉取凭据）。
+            dry-run 不会真的拉镜像，这一项它看不出来——漏了的表现是 Pod 起来后 <span class="mono">ErrImagePull</span>。
+          </div>
+        </div>
+      </div>
+
+      <div class="step fail">
+        <div class="no">5</div>
+        <div>
+          <div class="h"><span class="ttl">回调地址</span><span class="res">失败</span>
+            <span class="dim" style="font-size:11.5px">GET https://lakehouse.internal:8443（5s 超时）</span></div>
+          <div class="b">
+            从服务端连不上：<span class="mono">connect timed out</span>。
+          </div>
+          <div class="fix fail">
+            <b>注意这一步只说了一个方向。</b>回调是 <b>Pod → 服务端</b>，这里测的是 <b>服务端 → 地址</b>，
+            两个方向可以完全相反（服务端在集群外能访问公网域名，而集群里的 Pod 出不去）。
+            真正的验证在集群里跑一次：
+            <pre class="code" style="margin-top:6px">kubectl -n paimon-opt run cb-probe --rm -it --restart=Never \
+  --image=curlimages/curl -- \
+  curl -sS -m 5 -o /dev/null -w '%{http_code}\n' \
+  https://lakehouse.internal:8443/api/management/v1/ping</pre>
+          </div>
+          <details class="raw">
+            <summary>原始响应</summary>
+            <pre class="code" style="margin-top:5px">java.net.http.HttpConnectTimeoutException: HTTP connect timed out
+  at java.net.http/jdk.internal.net.http.PlainHttpConnection.connectAsync(PlainHttpConnection.java:198)
+  ...
+  target: https://lakehouse.internal:8443 (resolved 10.8.0.53, 5s)</pre>
+          </details>
+        </div>
+      </div>
+
+      <div class="dim" style="font-size:11.8px;margin:10px 0 4px">
+        轻探活（每 30 分钟，由调度扫描触发）只跑第 1–3 步：dry-run 虽然不落库，但它逐条走准入链路，
+        在大集群的审计日志里是可见的动作，不该每半小时来一次。
+      </div>
+    </div>
+  </div>
+
+  <div class="dw-foot">
+    <button class="btn sm danger" style="border-color:var(--border);color:var(--dim)">停用</button>
+    <button class="btn sm ghost">复用其他 catalog 的连接</button>
+    <span class="grow"></span>
+    <span class="dim" style="font-size:11.8px" id="foot-hint">保存后状态为「待验证」</span>
+    <button class="btn sm" onclick="openDrawer(5)">验证连接</button>
+    <button class="btn sm primary">保存</button>
+  </div>
+</aside>
+
+<!-- ================= 演示切换 ================= -->
+<div class="demo">
+  <span>画面</span>
+  <button class="on" data-s="1" onclick="openDrawer(1)">1 列表</button>
+  <button data-s="2" onclick="openDrawer(2)">2 自建 kubeconfig</button>
+  <button data-s="3" onclick="openDrawer(3)">3 EKS 令牌</button>
+  <button data-s="4" onclick="openDrawer(4)">4 AKS 令牌</button>
+  <button data-s="5" onclick="openDrawer(5)">5 探活结果</button>
+  <button data-s="6" onclick="openDrawer(6)">6 没配时的连锁反应</button>
+</div>
+
+<script>
+  const capByScreen = {
+    1: ['画面 1', '列表加一列、操作加一格。', '「执行集群」这一列用两行表达两件事：能不能跑（chip）＋跑在哪（类型 · namespace）。未配置的行副行写「优化不会运行」，按钮用主色描边——它此刻是待办，不是可选动作。'],
+    2: ['画面 2', '自建集群：kubeconfig 粘贴 → 逐 context 给结论。', '不可用的 context（exec: aws、auth-provider: azure）禁用但不隐藏，并写出替代路径。选中的 context 决定 apiServer、CA 与身份。'],
+    3: ['画面 3', 'EKS：STS 预签名令牌。', '不用 AK/SK 直接打 apiserver，而是每次请求现签一个 15 分钟的 GetCallerIdentity URL。集群名大小写敏感；IAM 只要两条权限。'],
+    4: ['画面 4', 'AKS：AAD 客户端凭据 + 正确的 audience。', 'scope 默认是 AKS 自己的 app id，不是 management.azure.com（后者会 401 Invalid audience）。不设 subscriptionId——它不参与取令牌。'],
+    5: ['画面 5', '探活五问：3 通过 / 1 警告 / 1 失败。', '第 4 步 dry-run 拦准入层的问题但拦不住镜像拉取；第 5 步必须自己声明「只说了一个方向」，并给出在集群里验证的命令。'],
+    6: ['画面 6', '没配执行集群时的连锁反应。', '横幅说清「跳过、不补跑、不删策略」，批次提交列写「未提交」而不是「失败」，给这种 catalog 保存策略直接 400。']
+  };
+
+  const kindOf = { 2: 'SELF', 3: 'EKS', 4: 'AKS', 5: 'EKS' };
+  const stateOf = {
+    2: ['待验证', 'warn'],
+    3: ['异常 · 凭据失效', 'bad'],
+    4: ['未配置', 'none'],
+    5: ['异常 · 回调不可达', 'bad']
+  };
+  const catalogOf = { 2: 'lakehouse_dev', 3: 'paimon', 4: 'sales_iceberg', 5: 'paimon' };
+
+  function openDrawer(n) {
+    document.body.dataset.screen = String(n);
+    document.querySelectorAll('.demo button').forEach((b) => {
+      b.classList.toggle('on', b.dataset.s === String(n));
+    });
+    const cap = document.getElementById('cap-1');
+    if (cap) {
+      const [tag, lead, rest] = capByScreen[1];
+      cap.style.display = n === 1 ? 'flex' : 'none';
+    }
+    if (kindOf[n]) setKind(kindOf[n]);
+    if (stateOf[n]) {
+      const el = document.getElementById('dw-state');
+      el.textContent = stateOf[n][0];
+      el.parentElement.className = 'chip ' + stateOf[n][1];
+    }
+    document.getElementById('dw-catalog').textContent = catalogOf[n] || 'lakehouse_dev';
+    document.getElementById('crumb').textContent = n === 6 ? '优化任务' : 'Catalogs';
+    document.getElementById('foot-hint').textContent =
+      n === 5 ? '保存后状态为「异常」，派发暂停' : '保存后状态为「待验证」';
+    // 切画面时把抽屉滚回顶部，画面 5 展示整份探活结果
+    document.querySelector('.dw-body').scrollTop = 0;
+  }
+
+  function setKind(kind) {
+    document.body.dataset.kind = kind;
+    document.querySelectorAll('.ctype').forEach((el) => {
+      el.classList.toggle('on', el.dataset.ctype === kind);
+    });
+  }
+
+  // 初始画面由 body[data-screen] 决定（静态打开是画面 1，抽屉收起）；
+  // 这里按初始画面把抽屉的标题 / 状态 / 类型补齐，直接点按钮也走同一个函数
+  openDrawer(parseInt(document.body.dataset.screen, 10) || 1);
+</script>
+</body>
+</html>

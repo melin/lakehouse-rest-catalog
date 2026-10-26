@@ -17,6 +17,7 @@ import io.github.melin.lakehouse.rest.dto.ManagementDtos.TableStat;
 import io.github.melin.lakehouse.rest.dto.ManagementDtos.TableStats;
 import io.github.melin.lakehouse.rest.dto.ManagementDtos.TableStatsSummary;
 import io.github.melin.lakehouse.rest.dto.ManagementDtos.Totals;
+import io.github.melin.lakehouse.rest.dto.ExecutionClusterDtos.Summary;
 import io.github.melin.lakehouse.rest.dto.ManagementDtos.UpdateCatalogRequest;
 import io.github.melin.lakehouse.rest.dto.ManagementEnums.CatalogType;
 import io.github.melin.lakehouse.rest.dto.ManagementEnums.StorageType;
@@ -25,6 +26,7 @@ import io.github.melin.lakehouse.rest.event.CatalogEvent;
 import io.github.melin.lakehouse.rest.event.CatalogEventPublisher;
 import io.github.melin.lakehouse.rest.event.CatalogEventType;
 import io.github.melin.lakehouse.rest.paimon.service.DatabaseService;
+import io.github.melin.lakehouse.rest.service.exec.ExecutionClusterService;
 import io.github.melin.lakehouse.rest.support.ApiException;
 import io.github.melin.lakehouse.rest.support.CatalogFormat;
 import io.github.melin.lakehouse.rest.support.CredentialCipher;
@@ -80,6 +82,7 @@ public class ManagementCatalogService {
     private final StorageRuntimePolicy storagePolicy;
     private final CredentialCipher cipher;
     private final CatalogEventPublisher events;
+    private final ExecutionClusterService executionClusters;
 
     /**
      * {@code GET /catalogs}：全量、按 catalog 名升序。
@@ -93,9 +96,14 @@ public class ManagementCatalogService {
      */
     @Transactional(readOnly = true)
     public Catalogs list() {
+        List<CatalogEntity> entities = catalogRepository.findAll(Sort.by(Sort.Direction.ASC, "prefix"));
+        // 一次取一页的执行集群摘要（一条 IN 查询），不是每行一个查询：
+        // 列表是控制台打开得最频繁的页面，N+1 在这里等于「catalog 越多越慢」
+        Map<String, Summary> clusters = executionClusters.summaries(
+                entities.stream().map(CatalogEntity::getId).toList());
         List<Catalog> result = new ArrayList<>();
-        for (CatalogEntity entity : catalogRepository.findAll(Sort.by(Sort.Direction.ASC, "prefix"))) {
-            result.add(toDto(entity));
+        for (CatalogEntity entity : entities) {
+            result.add(toDto(entity, clusters.getOrDefault(entity.getId(), Summary.NOT_CONFIGURED)));
         }
         return new Catalogs(result, null);
     }
@@ -384,8 +392,13 @@ public class ManagementCatalogService {
                 .orElseThrow(() -> ApiException.managementNotExist(ResourceType.CATALOG, name));
     }
 
-    /** 实体 → 管理规格的 {@code Catalog}。 */
+    /** 实体 → 管理规格的 {@code Catalog}（顺带查一次执行集群摘要，单条路径用）。 */
     public Catalog toDto(CatalogEntity entity) {
+        return toDto(entity, executionClusters.summaryOf(entity.getId()));
+    }
+
+    /** 实体 → 管理规格的 {@code Catalog}，摘要由调用方给（列表批量取好的那一份）。 */
+    private Catalog toDto(CatalogEntity entity, Summary executionCluster) {
         return new Catalog(
                 entity.getCatalogType(),
                 // 用 of() 而不是直接回列值：认不出来的取值（手工改库、旧数据）在
@@ -397,7 +410,8 @@ public class ManagementCatalogService {
                 entity.getCreatedAt(),
                 entity.getUpdatedAt(),
                 entity.getEntityVersion(),
-                StorageConfigs.withoutSecrets(StorageConfigs.of(entity)));
+                StorageConfigs.withoutSecrets(StorageConfigs.of(entity)),
+                executionCluster);
     }
 
     /**

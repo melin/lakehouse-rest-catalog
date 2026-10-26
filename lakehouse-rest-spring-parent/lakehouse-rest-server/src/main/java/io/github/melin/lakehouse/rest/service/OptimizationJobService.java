@@ -17,6 +17,7 @@ import io.github.melin.lakehouse.rest.dto.OptimizationDtos.ItemReportRequest;
 import io.github.melin.lakehouse.rest.dto.OptimizationDtos.JobItem;
 import io.github.melin.lakehouse.rest.dto.OptimizationDtos.Submission;
 import io.github.melin.lakehouse.rest.dto.OptimizationDtos.SubmissionTable;
+import io.github.melin.lakehouse.rest.service.exec.ExecutionClusterService;
 import io.github.melin.lakehouse.rest.service.submit.OptimizationJobSubmitter;
 import io.github.melin.lakehouse.rest.service.submit.OptimizationJobSubmitter.JobState;
 import io.github.melin.lakehouse.rest.service.submit.OptimizationJobSubmitter.Submitted;
@@ -76,6 +77,7 @@ public class OptimizationJobService {
     private final CatalogRepository catalogRepository;
     private final OptimizationConfigResolver configResolver;
     private final OptimizationJobSubmitter submitter;
+    private final ExecutionClusterService clusters;
     private final RestServerProperties properties;
     private final CatalogEventPublisher events;
     private final Clock clock;
@@ -157,7 +159,9 @@ public class OptimizationJobService {
         job.setStatus(Job.RUNNING.name());
         job.setSubmittedAt(now);
         job.setStartedAt(now);
-        job.setDeadlineAt(now + properties.getOptimization().getJobTimeout().toMillis());
+        // 超时按 catalog 算：同一台集群上的不同 catalog 可以有不同份额，
+        // 而「一批最多跑多久」跟着集群与表规模走
+        job.setDeadlineAt(now + clusters.jobTimeoutSeconds(job.getCatalogId()) * 1000L);
         job.setUpdatedAt(now);
         jobRepository.save(job);
     }
@@ -217,8 +221,8 @@ public class OptimizationJobService {
         OptimizationJobEntity job = require(jobId);
         Job status = statusFromItems(jobId);
         job.setStatus(status == Job.SUCCESS ? Job.PARTIAL_SUCCESS.name() : status.name());
-        job.setErrorMessage(truncate("批次超过 " + properties.getOptimization().getJobTimeout()
-                + " 仍未结束，已按超时处理", ERROR_LIMIT));
+        job.setErrorMessage(truncate("批次超过 " + clusters.jobTimeoutSeconds(job.getCatalogId())
+                + " 秒仍未结束，已按超时处理", ERROR_LIMIT));
         job.setFinishedAt(now);
         job.setUpdatedAt(now);
         jobRepository.save(job);
@@ -311,7 +315,7 @@ public class OptimizationJobService {
         String error = null;
         if (job.getResource() != null) {
             try {
-                submitter.cancel(job.getNamespace(), job.getResource());
+                submitter.cancel(job.getCatalogId(), job.getNamespace(), job.getResource());
             } catch (RuntimeException exception) {
                 // 取消失败不改状态：批次确实不该继续跑了，但资源可能还在。
                 // 把原因记在批次上，运维照着资源名手工清理即可。

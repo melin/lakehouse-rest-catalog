@@ -12,6 +12,33 @@
       </template>
     </PageHeader>
 
+    <!--
+      画面 6：没配执行集群时这一屏要能自己解释「为什么一条批次都没有」。
+      数据来自 session 里那份 catalog 列表（每行都带 executionCluster 摘要），
+      不额外发请求：这是横幅，不是判据——真正的拦截在服务端（策略保存 400、
+      出批跳过），这里只是提前把原因说出来。
+    -->
+    <el-alert
+      v-if="blockedCatalogs.length"
+      type="warning"
+      :closable="false"
+      show-icon
+      class="pc-opt-banner"
+      :title="`${blockedCatalogs.length} 个 catalog 没有可用的执行集群`"
+    >
+      <template #default>
+        <div>
+          <span class="pc-mono">{{ blockedCatalogs.join('、') }}</span>
+          的优化任务不会提交：出批时整组跳过，<b>游标不推进</b>——配好执行集群之后的下一拍就会
+          立刻把该跑的表跑掉（错过的调度不补）。已保存的策略不会被删除，但给这些 catalog
+          保存「启用」的策略现在会被拒绝（400）。
+        </div>
+        <el-button size="small" text type="primary" class="pc-opt-banner-action" @click="gotoCatalogs">
+          去 Catalogs 配置
+        </el-button>
+      </template>
+    </el-alert>
+
     <div class="pc-stats">
       <div v-for="item in stats" :key="item.label" class="pc-stat">
         <div class="pc-stat-label">{{ item.label }}</div>
@@ -288,7 +315,7 @@
 
 <script setup>
 import { computed, reactive, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 
 import { optimizationApi } from '@/api/optimization.js'
 import CopyText from '@/components/CopyText.vue'
@@ -337,9 +364,32 @@ import {
  * 展开某一行、或从表详情页跳过来时才拉那一个批次的详情。
  */
 const route = useRoute()
+const router = useRouter()
 
 /** 一次拉多少个批次。服务端上限 200，这里取同一个值以免「以为要了更多」。 */
 const LIMIT = 200
+
+/**
+ * 当前「有策略却不会跑」的 catalog：没有可派发的执行集群。
+ *
+ * <p>判据就是服务端在 catalog 列表里给的那一列（`executionCluster.status`），
+ * 只取 `NOT_CONFIGURED` / `DISABLED` / `FAILING` 三态——`UNVERIFIED` 是可派发的
+ * （「刚配好还没验」是正常中间状态），把它算进来会让横幅在每次保存后误报。
+ *
+ * <p>数据来自 `session` 里那份 catalog 列表，因此**这一屏打开之前它就被加载过**
+ * （`session.bootstrap()`），不额外发请求。代价是列表可能略旧；横幅本来就只是提示，
+ * 真正的拦截在服务端。
+ */
+const blockedCatalogs = computed(() => (session.state.catalogs || [])
+  .filter((catalog) => {
+    const status = catalog.executionCluster?.status
+    return status === 'NOT_CONFIGURED' || status === 'DISABLED' || status === 'FAILING'
+  })
+  .map((catalog) => catalog.name))
+
+function gotoCatalogs() {
+  router.push({ name: 'catalogs' })
+}
 
 /** 过滤器的候选状态。服务端新增状态时这里是空档——但表格仍会如实显示那个状态。 */
 const STATUS_OPTIONS = ['PENDING', 'SUBMITTING', 'RUNNING', 'SUCCESS', 'PARTIAL_SUCCESS', 'FAILED', 'CANCELED']
@@ -547,6 +597,16 @@ if (!session.state.catalogsLoaded && !session.state.loadingCatalogs) {
 </script>
 
 <style scoped>
+/* 没配执行集群的横幅：它常在列表为空时出现，与下面的空态一起读，
+   因此下边距压得比默认的 el-alert 小一些 */
+.pc-opt-banner {
+  margin-bottom: 12px;
+}
+
+.pc-opt-banner-action {
+  margin-top: 4px;
+}
+
 /* 过滤器的宽度：四个下拉并排，每个放得下最长的那项（PARTIAL_SUCCESS 的显示名是「部分成功」） */
 .pc-opt-filter {
   width: 140px;

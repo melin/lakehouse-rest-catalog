@@ -1,6 +1,5 @@
 package io.github.melin.lakehouse.rest.service;
 
-import io.github.melin.lakehouse.rest.config.RestServerProperties;
 import io.github.melin.lakehouse.rest.domain.entity.CatalogEntity;
 import io.github.melin.lakehouse.rest.domain.entity.DatabaseEntity;
 import io.github.melin.lakehouse.rest.domain.entity.OptimizationJobEntity;
@@ -14,6 +13,7 @@ import io.github.melin.lakehouse.rest.domain.repo.OptimizationJobRepository;
 import io.github.melin.lakehouse.rest.domain.repo.TableOptimizationRepository;
 import io.github.melin.lakehouse.rest.domain.repo.TableRepository;
 import io.github.melin.lakehouse.rest.service.OptimizationJobService.BatchTable;
+import io.github.melin.lakehouse.rest.service.exec.ExecutionClusterService;
 import io.github.melin.lakehouse.rest.support.CatalogFormat;
 import io.github.melin.lakehouse.rest.support.OptimizationOptions;
 import io.github.melin.lakehouse.rest.support.OptimizationOptions.Action;
@@ -76,7 +76,7 @@ public class OptimizationBatchService {
     private final CatalogRepository catalogRepository;
     private final OptimizationConfigResolver configResolver;
     private final OptimizationJobService jobService;
-    private final RestServerProperties properties;
+    private final ExecutionClusterService clusters;
     private final Clock clock;
 
     /**
@@ -100,13 +100,23 @@ public class OptimizationBatchService {
         }
         int created = 0;
         for (Map.Entry<String, List<TableOptimizationEntity>> group : groups.entrySet()) {
-            long active = jobRepository.countByStatusIn(Job.activeNames());
-            if (active >= properties.getOptimization().getMaxConcurrentJobs()) {
-                log.debug("optimization concurrency limit reached ({}), defer {} catalog group(s)",
-                        active, groups.size() - created);
-                break;
+            String catalogId = group.getKey();
+            // 不可派发的 catalog **整组跳过，并且不动游标**：它们的策略保持「已到期」，
+            // 于是配好执行集群之后的下一拍就会立刻把该跑的表跑掉。若这里消耗掉游标，
+            // 「补完配置还要再多等一个调度周期」这件事没人能提前知道。
+            if (!clusters.dispatchable(catalogId)) {
+                log.debug("catalog {} has no dispatchable execution cluster, defer its {} due table(s)",
+                        catalogId, group.getValue().size());
+                continue;
             }
-            if (createBatch(group.getKey(), group.getValue(), now)) {
+            // 配额也按 catalog 数：一个 catalog 跑满不该把别的 catalog 的批次也堵住
+            long active = jobRepository.countByCatalogIdAndStatusIn(catalogId, Job.activeNames());
+            if (active >= clusters.maxConcurrentJobs(catalogId)) {
+                log.debug("optimization concurrency limit ({}) of catalog {} reached, defer its {} due table(s)",
+                        active, catalogId, group.getValue().size());
+                continue;
+            }
+            if (createBatch(catalogId, group.getValue(), now)) {
                 created++;
             }
         }
@@ -200,7 +210,7 @@ public class OptimizationBatchService {
                 policyRepository.claim(policy.getId(), policy.getNextRunAt(), next);
                 continue;
             }
-            if (batch.size() >= properties.getOptimization().getMaxTablesPerJob()) {
+            if (batch.size() >= clusters.maxTablesPerJob(catalogId)) {
                 log.debug("optimization batch for catalog {} is full ({}), defer the rest to the next tick",
                         catalogId, batch.size());
                 break;

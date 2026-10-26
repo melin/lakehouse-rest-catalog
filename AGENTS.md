@@ -241,7 +241,7 @@ spec/                   三份 OpenAPI 规格的仓库副本（不随服务端�
                         rest-management-open-api.yaml（Paimon 官方 REST Management API）
 sql/                    MySQL 建表语句（生成物）
 scripts/                验收 / 生成 / 校验 / 镜像构建脚本
-docs/                   25 份设计文档（另有四份配套效果图 HTML）
+docs/                   26 份设计文档（另有五份配套效果图 HTML）
 ```
 
 服务端四模块的**类数**：core 117 · storage 9 · protocol-paimon 38 · server 46（共 210）。
@@ -265,8 +265,9 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
 | `catalog-api-endpoints.md` | Catalog API 的端点、基址、前缀、授权映射；**两个协议面各一章**——Paimon 的 60 个与 Iceberg 的 30 个（含 5 个不声明的、各端点的成功码、错误模型） |
 | `management-api-overview.md` | Paimon 官方权限端点与服务端扩展端点落在哪几个控制器、易读错的语义 |
 | `management-api-contract.md` | **存档**（勿手改）：由已移除的 Polaris 管理规格生成的字段与权限枚举；catalog role 与 64 项 privilege 已不存在 |
-| `data-model.md` | 改实体 / 看 23 张表划分、摘要列与审计列的理由、实体与仓储分在哪两个模块、Iceberg 协议面新增的 9 个列（§1.1）、血缘三表（§2.3） |
+| `data-model.md` | 改实体 / 看 26 张表划分、摘要列与审计列的理由、实体与仓储分在哪两个模块、Iceberg 协议面新增的 9 个列（§1.1）、血缘三表（§2.3） |
 | `table-optimization.md` | 改表存储优化：三层配置合并、批次与调度游标、组批与提交、前后指标；**两种表格式共用一套策略表与批次表**，参数键按格式分派（§2.5 是 Iceberg 的对应物，§6.5 是执行侧差异） |
+| `catalog-execution-cluster-design.md` | 给 catalog 配执行集群 / 评审该方案（**已实现**，偏差见其 §15）：配置从 `optimization.*` 下移到 catalog、kubeconfig 逐 context 解析（`exec:` 硬拒）、探活五问与状态机、fabric8 要点（禁 autoConfigure 回落、client 缓存必关、AKS scope 用 AKS 的 audience 而不是管理面） |
 | `event-framework.md` | 加事件 / 接 listener：9 类 33 个领域事件与触发点、与 Polaris 枚举的映射、`audit_event` 表、发布监听链路、按监听器的类别/类型订阅、增量拉取契约（`?since=` / `?category=`）与不发清单 |
 | `generic-table-design.md` | parquet / orc / lance / vortex 纳入目录（**设计稿，未实现**）：格式能力矩阵、`table_kind` 方案取舍、端点与权限、Spark 接入、影响面与风险 |
 | `metrics-design.md` | 加指标 / 接 Prometheus / 排查「指标太贵」：**设计稿，未实现**——Polaris telemetry 的事实基线（四类来源、realm 基数闸门、SLO 桶、Iceberg 用量报告与运维指标的区别）、`lakehouse.*` 指标目录与基数预算（<1500）、标签黑名单与 catalog 折叠规则、切面替代逐端点 `@Timed`、管理端口暴露与 ServiceMonitor、告警/看板示例、`verify-metrics-doc.py` 一致性校验 |

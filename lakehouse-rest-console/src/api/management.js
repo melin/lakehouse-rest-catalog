@@ -42,6 +42,41 @@ export const managementApi = {
     params: { catalogName, query },
   }),
 
+  // ------------------------------------------------------------------ 执行集群
+  /**
+   * 读这个 catalog 的执行集群配置。**没配时是 404**，不是「200 + configured=false」。
+   *
+   * <p>调用方要按「404 就是还没配」处理（用下面的 {@link executionClusterOf}）：
+   * 把它当错误弹提示是错的，那是一个正常的中间状态——catalog 刚建好、还没配执行集群。
+   * 此时优化不会运行，而这正是列表上那一列要说明的事。
+   */
+  getExecutionCluster: (catalogName) => get('getExecutionCluster', { params: { catalogName } }),
+  /**
+   * 整份替换（含 `enabled`）。
+   *
+   * <p>两个必须记住的约定：
+   * 1. 密文字段（kubeconfig / secretAccessKey / clientSecret / catalogToken）**留空 = 保持不变**，
+   *    要清空只有 catalogToken 有开关（`clearCatalogToken`）。否则「打开抽屉什么都不改
+   *    直接保存」会把凭据清成空串。
+   * 2. 更新必须带 `entityVersion`（不匹配服务端回 409，带上当前值）。
+   */
+  updateExecutionCluster: (catalogName, body) => put('updateExecutionCluster', { params: { catalogName }, body }),
+  deleteExecutionCluster: (catalogName) => del('deleteExecutionCluster', { params: { catalogName } }),
+  /** 只解析 kubeconfig、不落库：返回每个 context 的结论（OK / WARN / UNSUPPORTED / UNAVAILABLE）。 */
+  parseExecutionClusterKubeconfig: (catalogName, kubeconfig) => post('parseExecutionClusterKubeconfig', {
+    params: { catalogName },
+    body: { kubeconfig },
+  }),
+  /** 五问探活。`full=true` 跑 1–5 步（含 dry-run 建 Job），`false` 只跑 1–3 步。 */
+  probeExecutionCluster: (catalogName, full = true) => post('probeExecutionCluster', {
+    params: { catalogName, query: { full } },
+  }),
+  /** 从另一个 catalog 复制连接与认证。`callbackBaseUrl` 必须由调用方给（它不复制）。 */
+  copyExecutionCluster: (catalogName, sourceCatalog, callbackBaseUrl) => post('copyExecutionCluster', {
+    params: { catalogName },
+    body: { sourceCatalog, callbackBaseUrl },
+  }),
+
   // ------------------------------------------------------------------ principal
   /** 主体列表。`query` 给 `page` / `pageSize`。 */
   listPrincipals: (query = {}) => get('listPrincipals', { params: { query } }),
@@ -77,6 +112,26 @@ export const managementApi = {
   listPrincipalsOfPrincipalRole: (principalRoleName, query = {}) => get('listPrincipalsOfPrincipalRole', {
     params: { principalRoleName, query },
   }),
+}
+
+/**
+ * 读执行集群配置，把 **404 归一化成 `null`**。
+ *
+ * <p>不这么包一层的话，每个调用点都要写一次 `catch (e) { if (e.status !== 404) throw e }`，
+ * 而漏写那次的表现是「新建的 catalog 一打开抽屉就弹红条」——把正常状态报成错误。
+ * 其它失败（403 / 网络）照旧抛：那些确实要让人看见。
+ *
+ * @returns {Promise<object|null>} 配置；没配时为 `null`
+ */
+export async function executionClusterOf(catalogName) {
+  try {
+    return await managementApi.getExecutionCluster(catalogName)
+  } catch (error) {
+    if (error?.status === 404) {
+      return null
+    }
+    throw error
+  }
 }
 
 /** 控制台元数据端点。非 Polaris 规格，见服务端 `ConsoleMetaController`。 */

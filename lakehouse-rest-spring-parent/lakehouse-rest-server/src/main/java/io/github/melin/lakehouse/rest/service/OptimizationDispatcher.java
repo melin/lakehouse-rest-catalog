@@ -3,12 +3,15 @@ package io.github.melin.lakehouse.rest.service;
 import io.github.melin.lakehouse.rest.config.RestServerProperties;
 import io.github.melin.lakehouse.rest.domain.entity.OptimizationJobEntity;
 import io.github.melin.lakehouse.rest.domain.repo.OptimizationJobRepository;
+import io.github.melin.lakehouse.rest.service.exec.ExecutionClusterService;
 import io.github.melin.lakehouse.rest.service.submit.OptimizationJobSubmitter;
 import io.github.melin.lakehouse.rest.service.submit.OptimizationJobSubmitter.JobState;
 import io.github.melin.lakehouse.rest.service.submit.OptimizationJobSubmitter.SubmissionRequest;
 import io.github.melin.lakehouse.rest.service.submit.OptimizationJobSubmitter.Submitted;
 import io.github.melin.lakehouse.rest.support.OptimizationStatus.Job;
 import java.time.Clock;
+import java.util.HashMap;
+import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -33,6 +36,17 @@ import org.springframework.stereotype.Component;
  * 循环里每个批次各自 try/catch，失败写进批次自己的 {@code error_message}。
  * 反过来（整节拍失败退出）会让「有一个坏批次」变成「所有批次都停摆」。
  *
+ * <p><b>并发上限是 per-catalog 的。</b>上一版只有一个全局数字，那是「全局只有一个
+ * 执行集群」的遗留：现在每个 catalog 有自己的集群与算力，一个 catalog 的上限
+ * 不该占用另一个的额度。数的是「这个 catalog 已经放出去的批次数」，
+ * 上限取它自己那份执行集群配置里的 {@code maxConcurrentJobs}。
+ *
+ * <p><b>不可派发的 catalog 只跳过、不判失败。</b>没配置执行集群、被停用、
+ * 密文解不开——这些时候 {@code PENDING} 的批次留在队列里（下一拍再看），
+ * 而不是被置成 {@code FAILED}。判失败会让「填完配置」这个动作之后还得手工重试一遍，
+ * 而用户的预期显然是「配好就自动开始」。{@link #submitPending} 与
+ * {@link OptimizationBatchService#scanAndCreateBatches()} 两处都按这条走。
+ *
  * <p>两个 {@code @Scheduled} 方法默认跑在同一个单线程调度器上，因此互相串行。
  * 这是有意的：扫描本身可能出好几个批次，与提交并发执行没有收益，而串行让
  * 「批次按创建顺序提交」成为默认行为，排查时看到的顺序与落库顺序一致。
@@ -47,6 +61,7 @@ public class OptimizationDispatcher {
     private final OptimizationJobService jobService;
     private final OptimizationBatchService batchService;
     private final OptimizationJobSubmitter submitter;
+    private final ExecutionClusterService clusters;
     private final RestServerProperties properties;
     private final Clock clock;
 
@@ -75,11 +90,28 @@ public class OptimizationDispatcher {
         pollRunning();
     }
 
-    /** 把 PENDING 批次发到执行环境。 */
+    /** 把 PENDING 批次发到各自 catalog 的执行集群。 */
     public void submitPending() {
-        int limit = properties.getOptimization().getMaxConcurrentJobs();
+        // 本拍内每个 catalog 的「已经放出去几个」与「上限」。库里数一次之后就地累加，
+        // 避免每提交一个批次就再查两次库；上限为 -1 表示这个 catalog 不可派发。
+        Map<String, Long> dispatched = new HashMap<>();
+        Map<String, Long> limits = new HashMap<>();
         for (OptimizationJobEntity job : jobRepository.findTop50ByStatusOrderByCreatedAtAsc(Job.PENDING.name())) {
-            // 执行侧闸门：同时在跑的批次不超过上限，放不出去的 PENDING 留在队列里等下一拍。
+            String catalogId = job.getCatalogId();
+            long limit = limits.computeIfAbsent(catalogId, key -> {
+                // 不可派发（未配置 / 停用 / 验证失败）：**只跳过，不判失败**。
+                // 判失败会让「填完配置」之后还得手工重试一遍，而用户的预期是配好就自动开始。
+                if (!clusters.dispatchable(key)) {
+                    log.debug("catalog {} has no dispatchable execution cluster, its pending batches stay queued", key);
+                    return -1L;
+                }
+                return (long) clusters.maxConcurrentJobs(key);
+            });
+            if (limit < 0) {
+                continue;
+            }
+            // 执行侧闸门：这个 catalog 同时在跑的批次不超过它自己的上限，
+            // 放不出去的 PENDING 留在队列里等下一拍。
             //
             // 与出批侧那道检查（{@code OptimizationBatchService}）数的是不同的口径，两道都要有：
             // 出批侧数「已承诺的批次」（含排队中的），决定**还该不该造新批次**；这里数
@@ -89,17 +121,21 @@ public class OptimizationDispatcher {
             //
             // 提交顺序按创建时间，先到先跑：手动批次会排在已有队列后面，
             // 但不会插队——插队意味着调度批次可能永远等不到执行窗口。
-            if (jobRepository.countByStatusIn(Job.dispatchedNames()) >= limit) {
-                log.debug("optimization concurrency limit ({}) reached, pending batch(es) stay queued", limit);
-                break;
+            long already = dispatched.computeIfAbsent(catalogId,
+                    key -> jobRepository.countByCatalogIdAndStatusIn(key, Job.dispatchedNames()));
+            if (already >= limit) {
+                log.debug("optimization concurrency limit ({}) of catalog {} reached, its pending batches stay queued",
+                        limit, catalogId);
+                continue;
             }
             if (!jobService.claimForSubmission(job.getId())) {
                 continue;
             }
             try {
                 Submitted submitted = submitter.submit(
-                        new SubmissionRequest(job.getId(), job.getCatalogId(), job.getCallbackToken()));
+                        new SubmissionRequest(job.getId(), catalogId, job.getCallbackToken()));
                 jobService.markSubmitted(job.getId(), submitted);
+                dispatched.merge(catalogId, 1L, Long::sum);
                 log.info("optimization batch {} submitted to {} as {}/{}",
                         job.getId(), submitter.name(), submitted.namespace(), submitted.resource());
             } catch (RuntimeException exception) {
@@ -118,9 +154,11 @@ public class OptimizationDispatcher {
             long now = clock.millis();
             JobState state;
             try {
-                state = submitter.state(job.getNamespace(), job.getResource());
+                state = submitter.state(job.getCatalogId(), job.getNamespace(), job.getResource());
             } catch (RuntimeException exception) {
                 // 查询失败不回写状态：一次 API 抖动不该把一个正在跑的批次判成失败。
+                // 集群不可达、凭据过期、执行集群被删都属于这一类——它们的正确处置是
+                // 「等它好起来」或「由 deadline 收尾」，不是把批次判死。
                 log.warn("cannot query state of optimization batch {} ({}/{}): {}",
                         job.getId(), job.getNamespace(), job.getResource(), exception.getMessage());
                 state = JobState.UNKNOWN;
@@ -134,8 +172,7 @@ public class OptimizationDispatcher {
             if (job.getDeadlineAt() != null && now > job.getDeadlineAt()) {
                 cancelQuietly(job);
                 jobService.markTimedOut(job.getId());
-                log.warn("optimization batch {} timed out after {}", job.getId(),
-                        properties.getOptimization().getJobTimeout());
+                log.warn("optimization batch {} timed out (deadline {})", job.getId(), job.getDeadlineAt());
             }
         }
     }
@@ -145,7 +182,7 @@ public class OptimizationDispatcher {
             return;
         }
         try {
-            submitter.cancel(job.getNamespace(), job.getResource());
+            submitter.cancel(job.getCatalogId(), job.getNamespace(), job.getResource());
         } catch (RuntimeException exception) {
             log.warn("cannot cancel timed out optimization batch {} ({}/{}): {}", job.getId(),
                     job.getNamespace(), job.getResource(), exception.getMessage());
