@@ -28,7 +28,7 @@
 
 	<groupId>io.github.melin</groupId>
 	<artifactId>lakehouse-rest-spring-parent</artifactId>
-	<version>0.0.1-SNAPSHOT</version>
+	<version>1.0.0</version>
 	<packaging>pom</packaging>
 	<name>lakehouse-rest-spring-parent</name>
 	<description>服务端世界的父 POM：钉住 Spring Boot 世界的共用版本、依赖与插件</description>

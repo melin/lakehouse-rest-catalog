@@ -26,7 +26,7 @@ set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 PORT=${PORT:-18080}
 BASE=http://127.0.0.1:$PORT
-JAR=$ROOT/lakehouse-rest-spring-parent/lakehouse-rest-server/target/lakehouse-rest-server-0.0.1-SNAPSHOT.jar
+JAR=$ROOT/lakehouse-rest-spring-parent/lakehouse-rest-server/target/lakehouse-rest-server-1.0.0.jar
 LOG=$(mktemp -t paimon-rest-e2e.XXXXXX.log)
 export JAVA_HOME=${JAVA_HOME:-/Library/Java/JavaVirtualMachines/jdk-21.jdk/Contents/Home}
 # 本仓库没有 Maven Wrapper（见 AGENTS.md §1），一律用系统 mvn（3.9+）

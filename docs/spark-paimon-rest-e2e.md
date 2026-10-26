@@ -492,7 +492,7 @@ options.put(PATH.key(), response.getPath());   // put，不是 putIfAbsent
 
 ```bash
 # 先起一个服务端
-java -jar lakehouse-rest-spring-parent/lakehouse-rest-server/target/lakehouse-rest-server-0.0.1-SNAPSHOT.jar \
+java -jar lakehouse-rest-spring-parent/lakehouse-rest-server/target/lakehouse-rest-server-1.0.0.jar \
   --spring.profiles.active=h2 --server.port=18080 \
   --lakehouse.rest.auth.enabled=true --lakehouse.rest.auth.tokens[0]=root \
   --lakehouse.rest.authorization.enabled=true \
@@ -525,7 +525,7 @@ Iceberg 侧有一条只从它那一侧才看得出来的差异——写数据要
 因此服务端要多配两个令牌，并把它们映射到两个主体（`token-principals`）：
 
 ```bash
-java -jar lakehouse-rest-spring-parent/lakehouse-rest-server/target/lakehouse-rest-server-0.0.1-SNAPSHOT.jar \
+java -jar lakehouse-rest-spring-parent/lakehouse-rest-server/target/lakehouse-rest-server-1.0.0.jar \
   --spring.profiles.active=h2 --server.port=18080 \
   --lakehouse.rest.auto-create-catalog=true \
   --lakehouse.rest.auth.enabled=true \

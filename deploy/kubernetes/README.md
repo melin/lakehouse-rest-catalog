@@ -47,29 +47,31 @@ kubectl -n paimon-rest create secret generic paimon-rest-credentials \
 # 先产出 jar —— 镜像里没有 JDK 与 Maven，构建镜像不编译
 mvn -o -pl :lakehouse-rest-server -am clean package -DskipTests
 
-docker build -t lakehouse-rest-server:0.0.1 .
+docker build -t registry.cn-hangzhou.aliyuncs.com/melin1204/lakehouse-rest-catalog:1.0.0 .
 ```
 
-`deployment.yaml` 与 `mysql.yaml` 都引用了这个镜像，`imagePullPolicy` 是 `IfNotPresent`。
-单节点集群（kind / minikube / Docker Desktop）还需要把镜像送进节点：
+`deployment.yaml` 与 `mysql.yaml` 引用的都是这个镜像（阿里云 ACR 的完整引用），
+`imagePullPolicy` 是 `IfNotPresent`——tag 固定为发布版本号，IfNotPresent 即可；
+发布新版本时同步更新三处 tag（`Dockerfile` 构建命令、两份清单）。
 
 **关于名字：清单里的 Deployment / Service / 标签 / namespace 是 `paimon-rest`，
-而镜像是 `lakehouse-rest-server`，这不是笔误。** Maven 坐标改名（`paimon-rest-*` →
-`lakehouse-rest-*`）只动了构建产物；k8s 资源名绑的是集群里**已经存在**的对象——
-label selector、NetworkPolicy、ServiceMonitor 的抓取配置、`kubectl get -l` 脚本、
-Service DNS（`paimon-rest-server.paimon-rest.svc`）。改它们是一次带下线的迁移，
-收益只有一致性，所以刻意保持不动，只让镜像名跟随坐标。取舍详见
+而镜像是 `lakehouse-rest-catalog`，这不是笔误。** k8s 资源名绑的是集群里**已经存在**
+的对象——label selector、NetworkPolicy、ServiceMonitor 的抓取配置、`kubectl get -l`
+脚本、Service DNS（`paimon-rest-server.paimon-rest.svc`）。改它们是一次带下线的
+迁移，收益只有一致性，所以部署资源名保持不动，镜像名跟随发布口径。取舍详见
 [`docs/maven-module-design.md`](../../docs/maven-module-design.md) §4.3。
 
 ```bash
+# 单节点集群（kind / minikube）也可以把镜像直接送进节点，跳过 registry：
 # kind
-kind load docker-image lakehouse-rest-server:0.0.1
+kind load docker-image registry.cn-hangzhou.aliyuncs.com/melin1204/lakehouse-rest-catalog:1.0.0
 
 # minikube
-minikube image load lakehouse-rest-server:0.0.1
+minikube image load registry.cn-hangzhou.aliyuncs.com/melin1204/lakehouse-rest-catalog:1.0.0
 ```
 
-多节点集群请推到镜像仓库，并把清单里的 `image` 改成带仓库地址的完整引用。
+多节点集群走 registry：`docker push`（或 `scripts/build-image.sh` 带 `PUSH=1`）
+把镜像推上去，节点按各自架构拉取。
 
 **节点架构不一致时要用多架构镜像。** 上面 `docker build` 产出的是**构建机自己**的
 架构（Apple Silicon 上是 arm64）。集群里若既有 x86 又有 ARM 节点，各节点会按自己的
@@ -77,13 +79,13 @@ minikube image load lakehouse-rest-server:0.0.1
 
 ```bash
 PLATFORMS=linux/amd64,linux/arm64 \
-PUSH=1 IMAGE=registry.example.com/lakehouse-rest/lakehouse-rest-server:0.0.1 \
+PUSH=1 IMAGE=registry.cn-hangzhou.aliyuncs.com/melin1204/lakehouse-rest-catalog:1.0.0 \
   ../../scripts/build-image.sh
 ```
 
 多架构镜像**不能**走 `kind load` / `minikube image load`——那两条是把本机镜像塞进单
-节点，本来就与多架构无关。异构集群一定有 registry，清单里的 `image` 也要同步改成带
-仓库地址的完整引用。踩坑与验证细节见仓库根 README 第 8.1 节「多架构镜像」。
+节点，本来就与多架构无关。异构集群只能推 registry（清单里已经是完整引用，无需再改）。
+踩坑与验证细节见仓库根 README 第 8.1 节「多架构镜像」。
 
 ### 2.3 应用
 

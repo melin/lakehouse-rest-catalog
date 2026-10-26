@@ -368,6 +368,10 @@ WARN 并被自动重定向，这是 Maven 为这种情况准备的原生机制�
 版本号本身不需要因为改名而变：可以继续 `0.0.1-SNAPSHOT`；若要把「改名 + 双协议」作为
 一次发布，建议一起发 `0.1.0`（README、AGENTS.md、脚本里的版本串要同步）。
 
+> **2026-10-26 注记**：实际发布版本为 **`1.0.0`**（15 个 POM 的坐标版本、
+> jar 名、镜像 tag 一并同步），镜像为阿里云 ACR 的
+> `registry.cn-hangzhou.aliyuncs.com/melin1204/lakehouse-rest-catalog:1.0.0`。
+
 ---
 
 ## 5. 分期实施路径

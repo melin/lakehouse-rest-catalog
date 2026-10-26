@@ -6,7 +6,7 @@
 	<parent>
 		<groupId>io.github.melin</groupId>
 		<artifactId>lakehouse-rest-spring-parent</artifactId>
-		<version>0.0.1-SNAPSHOT</version>
+		<version>1.0.0</version>
 		<!--
 			不用写 <relativePath>：本模块嵌在父 POM 目录之下，默认的 `../pom.xml`
 			就是父 POM。平级布局下才必须显式指路（默认值会落到仓库根的聚合 POM 上）。

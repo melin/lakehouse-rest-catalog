@@ -24,7 +24,7 @@
 ./mvnw -o package -DskipTests
 
 # 2) 启动（h2 profile 用于本地试跑）
-java -jar lakehouse-rest-spring-parent/lakehouse-rest-server/target/lakehouse-rest-server-0.0.1-SNAPSHOT.jar \
+java -jar lakehouse-rest-spring-parent/lakehouse-rest-server/target/lakehouse-rest-server-1.0.0.jar \
   --spring.profiles.active=h2 --server.port=8080
 
 # 3) 打开

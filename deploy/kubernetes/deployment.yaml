@@ -2,17 +2,17 @@
 #
 # 镜像来自仓库根目录的 Dockerfile（单阶段：JRE 17 + 一个预构建的 jar）：
 #   mvn -o -pl :lakehouse-rest-server -am clean package -DskipTests
-#   docker build -t lakehouse-rest-server:0.0.1 .
+#   docker build -t registry.cn-hangzhou.aliyuncs.com/melin1204/lakehouse-rest-catalog:1.0.0 .
 #
 # 注意下面 metadata.name / selector / 标签用的是 paimon-rest-server，而镜像是
-# lakehouse-rest-server：**资源名不是产品名，是历史标识**。它们绑的是集群里已经存在的
+# lakehouse-rest-catalog：**资源名不是产品名，是历史标识**。它们绑的是集群里已经存在的
 # 对象（label selector、NetworkPolicy、ServiceMonitor 的抓取配置、`kubectl get -l`），
-# 改名是一次带下线的迁移，收益只有一致性——所以部署资源名保持不动，只有镜像跟随 Maven
-# 坐标。详见仓库 docs/maven-module-design.md §4.3。
+# 改名是一次带下线的迁移，收益只有一致性——所以部署资源名保持不动，只有镜像跟随发布
+# 口径。详见仓库 docs/maven-module-design.md §4.3。
 #
-# imagePullPolicy 用 IfNotPresent 而不是 Always：本地构建出来的镜像没有仓库地址，
-# Always 会让 kubelet 每次都去远端拉这个不存在的 tag，结果是 ImagePullBackOff。
-# 推到镜像仓库后可以改回 Always，或直接换成带 digest 的引用。
+# image 是阿里云 ACR 的完整引用（1.0.0 起随版本发布推送）。imagePullPolicy 保持
+# IfNotPresent 而不是 Always：tag 固定为发布版本号，IfNotPresent 即可；滚动更新时
+# 换新 tag 触发拉取。固定版本想钉死可以换成带 digest 的引用。
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -100,7 +100,7 @@ spec:
                 - ALL
       containers:
         - name: paimon-rest-server
-          image: lakehouse-rest-server:0.0.1
+          image: registry.cn-hangzhou.aliyuncs.com/melin1204/lakehouse-rest-catalog:1.0.0
           imagePullPolicy: IfNotPresent
           ports:
             - name: http

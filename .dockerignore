@@ -2,7 +2,7 @@
 # 也没有 `COPY . .`，它只从上下文里取两个文件。
 #
 # 必须留在上下文里的两样东西：
-#   - lakehouse-rest-spring-parent/lakehouse-rest-server/target/lakehouse-rest-server-0.0.1-SNAPSHOT.jar
+#   - lakehouse-rest-spring-parent/lakehouse-rest-server/target/lakehouse-rest-server-1.0.0.jar
 #     （镜像的主体，由使用者在宿主机上先构建出来）
 #   - sql/schema-mysql.sql
 #     （K8s 的 initContainer 用它初始化空库）

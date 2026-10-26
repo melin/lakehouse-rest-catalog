@@ -5,7 +5,7 @@
 
 	<groupId>io.github.melin</groupId>
 	<artifactId>lakehouse-rest-parent</artifactId>
-	<version>0.0.1-SNAPSHOT</version>
+	<version>1.0.0</version>
 	<packaging>pom</packaging>
 	<name>lakehouse-rest-parent</name>
 	<description>湖仓 REST Catalog 服务端、Spark SQL 扩展与表优化任务</description>

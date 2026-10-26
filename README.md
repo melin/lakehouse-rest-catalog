@@ -223,7 +223,7 @@ JAVA_HOME=/path/to/jdk-21 mvn test
 JAVA_HOME=/path/to/jdk-17 mvn -pl :lakehouse-rest-server spring-boot:run
 
 # 打包后直接运行（同样用 17 起的 JDK）
-java -jar lakehouse-rest-spring-parent/lakehouse-rest-server/target/lakehouse-rest-server-0.0.1-SNAPSHOT.jar
+java -jar lakehouse-rest-spring-parent/lakehouse-rest-server/target/lakehouse-rest-server-1.0.0.jar
 ```
 
 `clean` 不能省：控制台产物按内容哈希命名，`maven-resources-plugin` 只覆写不删除，
@@ -236,7 +236,7 @@ java -jar lakehouse-rest-spring-parent/lakehouse-rest-server/target/lakehouse-re
 只需一个即用即丢、不依赖 MySQL 的实例时，用内存 H2：
 
 ```bash
-java -jar lakehouse-rest-spring-parent/lakehouse-rest-server/target/lakehouse-rest-server-0.0.1-SNAPSHOT.jar --spring.profiles.active=h2
+java -jar lakehouse-rest-spring-parent/lakehouse-rest-server/target/lakehouse-rest-server-1.0.0.jar --spring.profiles.active=h2
 ```
 
 冒烟验证：
@@ -908,7 +908,7 @@ Spark 子模块（175 个，其中 6 个类共 38 个用例需要显式指向服
 ```bash
 # 需先有一个服务端实例；不指定 profile 时连 MySQL
 # （想用内存库就在启动命令上加 --spring.profiles.active=h2）
-java -jar lakehouse-rest-spring-parent/lakehouse-rest-server/target/lakehouse-rest-server-0.0.1-SNAPSHOT.jar &
+java -jar lakehouse-rest-spring-parent/lakehouse-rest-server/target/lakehouse-rest-server-1.0.0.jar &
 
 # Catalog API：覆盖规格中全部 60 个 operation
 # 脚本会创建并清理 database sales，因此要求目标实例为初始状态
@@ -1043,7 +1043,7 @@ Iceberg 协议面落地的 9 个新列也由它产出（`catalog_format` 是
 mvn -o -pl :lakehouse-rest-server -am clean package -DskipTests
 
 # 2. 再打镜像
-docker build -t lakehouse-rest-server:0.0.1 .
+docker build -t registry.cn-hangzhou.aliyuncs.com/melin1204/lakehouse-rest-catalog:1.0.0 .
 ```
 
 单阶段：基础镜像是 `eclipse-temurin:17-jre-noble`，`Dockerfile` 只做三件事——
@@ -1088,7 +1088,7 @@ jar**（同一份字节），而不是镜像内按同一份源码又编一遍的
 OCI=/tmp/lakehouse-rest-server-multiarch.tar ./scripts/build-image.sh   # 导出 OCI 归档
 PLATFORMS=linux/amd64 ./scripts/build-image.sh              # 退回单平台
 # 要有别的机器能用，只能推仓库（IMAGE 需带仓库地址）
-PUSH=1 IMAGE=registry.example.com/paimon-rest/lakehouse-rest-server:0.0.1 ./scripts/build-image.sh
+PUSH=1 IMAGE=registry.cn-hangzhou.aliyuncs.com/melin1204/lakehouse-rest-catalog:1.0.0 ./scripts/build-image.sh
 ```
 
 脚本只是把几条容易记错的约束固定下来，参数都是环境变量（`IMAGE` / `PLATFORMS` /

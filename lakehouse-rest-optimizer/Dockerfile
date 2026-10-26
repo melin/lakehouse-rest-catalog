@@ -13,8 +13,8 @@
 # 用法（先在宿主机上打好包；镜像里不装 Maven，与根 Dockerfile 的理由相同）：
 #
 #   JAVA_HOME=/path/to/jdk-17 mvn -o -DskipTests -pl :lakehouse-rest-optimizer package
-#   docker build -f lakehouse-rest-optimizer/Dockerfile -t lakehouse-rest-optimizer:0.0.1 .
-#   docker push <registry>/lakehouse-rest-optimizer:0.0.1
+#   docker build -f lakehouse-rest-optimizer/Dockerfile -t lakehouse-rest-optimizer:1.0.0 .
+#   docker push <registry>/lakehouse-rest-optimizer:1.0.0
 #   # 再把 lakehouse.rest.optimization.image 指向推上去的地址
 #
 # 多架构（Apple Silicon 上开发、x86 节点上跑）与根 Dockerfile 同一套做法，
@@ -33,7 +33,7 @@ WORKDIR /opt/optimizer
 
 # 本模块的产物。它是普通 jar（不是 uber jar）：Spark / Jackson 依赖都是 provided，
 # 由发行版提供。
-COPY lakehouse-rest-optimizer/target/lakehouse-rest-optimizer-0.0.1-SNAPSHOT.jar /opt/optimizer/optimizer.jar
+COPY lakehouse-rest-optimizer/target/lakehouse-rest-optimizer-1.0.0.jar /opt/optimizer/optimizer.jar
 
 # Paimon 的 Spark bundle 与 S3 FileIO 插件。它们由本模块 POM 的
 # maven-dependency-plugin 拷到 target/jars（Docker 的 COPY 不能取构建上下文之外的文件，

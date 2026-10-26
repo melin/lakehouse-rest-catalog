@@ -86,7 +86,7 @@ spec:
         # 只更新清单不会生效。这一点写进了 README 的部署流程。
         - name: seed-initdb
           # 用服务端镜像，因为只有它带着 /app/sql/schema-mysql.sql。
-          image: lakehouse-rest-server:0.0.1
+          image: registry.cn-hangzhou.aliyuncs.com/melin1204/lakehouse-rest-catalog:1.0.0
           imagePullPolicy: IfNotPresent
           command:
             - /bin/sh

@@ -3,7 +3,7 @@ FROM docker.1ms.run/eclipse-temurin:17-jdk
 # 构建方式（两个都写在这里，不只写在 README 里）：
 #
 #   mvn -o -pl :lakehouse-rest-server -am clean package -DskipTests
-#   docker build -t lakehouse-rest-server:0.0.1 .
+#   docker build -t registry.cn-hangzhou.aliyuncs.com/melin1204/lakehouse-rest-catalog:1.0.0 .
 #
 # 第二条是脚本 verify-k8s-manifests.py §9 的输入：它从本文件抓「构建镜像的那条命令」
 # 里的镜像名，再核对 deploy/kubernetes 下的清单有没有引用同一个镜像。所以改镜像名时
@@ -27,7 +27,7 @@ WORKDIR /app
 # `.dockerignore` 那条放行规则写的是通配符，不需要动。
 #
 # 落位时改名 app.jar：ENTRYPOINT 里的路径就不会随版本号漂移。
-COPY --chown=app:app lakehouse-rest-spring-parent/lakehouse-rest-server/target/lakehouse-rest-server-0.0.1-SNAPSHOT.jar /app/app.jar
+COPY --chown=app:app lakehouse-rest-spring-parent/lakehouse-rest-server/target/lakehouse-rest-server-1.0.0.jar /app/app.jar
 
 # 建表语句一并放进镜像：部署时 initContainer 要拿它初始化空库，
 # 直接从镜像里取可以避免「镜像里的代码」与「集群里的 DDL」版本不一致。

@@ -37,12 +37,12 @@
 #
 # 用法（环境变量，都可用在命令前）：
 #   scripts/build-image.sh                                  # 双平台，装进本机镜像存储
-#   PUSH=1 IMAGE=<仓库>/lakehouse-rest-server:0.0.1 scripts/build-image.sh   # 推仓库
+#   PUSH=1 IMAGE=registry.cn-hangzhou.aliyuncs.com/melin1204/lakehouse-rest-catalog:1.0.0 scripts/build-image.sh   # 推仓库
 #   OCI=/tmp/lakehouse-rest-server.tar scripts/build-image.sh  # 导出 OCI tar
 #   PLATFORMS=linux/amd64 scripts/build-image.sh            # 退回单平台
 #   BUILDER=mirrorb scripts/build-image.sh                  # 指定 buildx builder
 #
-#   IMAGE       镜像名（含 tag）。默认 lakehouse-rest-server:0.0.1
+#   IMAGE       镜像名（含 tag）。默认 registry.cn-hangzhou.aliyuncs.com/melin1204/lakehouse-rest-catalog:1.0.0
 #   PLATFORMS   逗号分隔的平台列表。默认 linux/amd64,linux/arm64
 #   PUSH        置 1 则推送到 IMAGE 指明的仓库（与 OCI 互斥）
 #   OCI         输出 OCI 归档的路径（与 PUSH 互斥）
@@ -59,7 +59,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-IMAGE="${IMAGE:-lakehouse-rest-server:0.0.1}"
+IMAGE="${IMAGE:-registry.cn-hangzhou.aliyuncs.com/melin1204/lakehouse-rest-catalog:1.0.0}"
 PLATFORMS="${PLATFORMS:-linux/amd64,linux/arm64}"
 PUSH="${PUSH:-}"
 OCI="${OCI:-}"
@@ -68,7 +68,7 @@ ATTEST="${ATTEST:-}"
 EXTRA="${EXTRA:-}"
 
 # jar 的路径是 POM 的约定产物名；改版本号时这里与 Dockerfile 的 COPY 都要跟着改。
-JAR="lakehouse-rest-spring-parent/lakehouse-rest-server/target/lakehouse-rest-server-0.0.1-SNAPSHOT.jar"
+JAR="lakehouse-rest-spring-parent/lakehouse-rest-server/target/lakehouse-rest-server-1.0.0.jar"
 
 die() { echo "错误：$*" >&2; exit 1; }
 
@@ -91,7 +91,7 @@ if [ -n "$PUSH" ]; then
   case "$IMAGE" in
     */*) ;;
     *) die "PUSH=1 时 IMAGE 要写成带仓库地址的完整引用，当前是 '$IMAGE'。
-    例如 IMAGE=registry.example.com/lakehouse-rest/lakehouse-rest-server:0.0.1" ;;
+    例如 IMAGE=registry.cn-hangzhou.aliyuncs.com/melin1204/lakehouse-rest-catalog:1.0.0" ;;
   esac
 fi
 

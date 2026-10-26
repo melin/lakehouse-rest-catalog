@@ -123,11 +123,11 @@ JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn -o -DskipTests -pl :lakehouse-rest
 JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn -o test        # 全量测试
 
 # ---- 容器镜像（Dockerfile 只装 jar、不编译，见第 8 节）----
-docker build -t lakehouse-rest-server:0.0.1 .                   # 当前架构
+docker build -t registry.cn-hangzhou.aliyuncs.com/melin1204/lakehouse-rest-catalog:1.0.0 .                   # 当前架构
 ./scripts/build-image.sh                                     # amd64 + arm64（多架构）
 
 # ---- 本地起服务（h2 profile 免 MySQL）----
-java -jar lakehouse-rest-spring-parent/lakehouse-rest-server/target/lakehouse-rest-server-0.0.1-SNAPSHOT.jar \
+java -jar lakehouse-rest-spring-parent/lakehouse-rest-server/target/lakehouse-rest-server-1.0.0.jar \
   --spring.profiles.active=h2 --server.port=8080
 open http://127.0.0.1:8080/console/        # 默认账号密码 admin/admin
 open http://127.0.0.1:8080/doc.html        # 接口文档，阅览页不需要登录
