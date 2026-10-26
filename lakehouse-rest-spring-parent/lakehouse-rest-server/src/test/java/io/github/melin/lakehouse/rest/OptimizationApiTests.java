@@ -160,7 +160,7 @@ class OptimizationApiTests {
         entity.setNamespace("optimizer");
         entity.setImage("registry.invalid/lakehouse-rest-optimizer:test");
         entity.setImagePullPolicy("IfNotPresent");
-        entity.setCallbackBaseUrl("http://paimon-rest.optimizer-tests.svc:8080");
+        entity.setCallbackBaseUrl("http://lakehouse-rest-server.optimizer-tests.svc:8080");
         entity.setMaxTablesPerJob(2);
         entity.setMaxConcurrentJobs(2);
         entity.setJobTimeoutSeconds(7200);

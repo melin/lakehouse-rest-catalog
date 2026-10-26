@@ -169,7 +169,7 @@ class ExecutionClusterApiTests {
                  "namespace":"paimon-opt",
                  "image":"registry.example.com/lakehouse-rest-optimizer:1.0.0",
                  "imagePullPolicy":"IfNotPresent",
-                 "callbackBaseUrl":"http://paimon-rest.paimon.svc.cluster.local:8080/",
+                 "callbackBaseUrl":"http://lakehouse-rest-server.lakehouse-rest.svc.cluster.local:8080/",
                  "maxTablesPerJob":20,
                  "maxConcurrentJobs":2,
                  "jobTimeoutSeconds":7200}
@@ -180,7 +180,7 @@ class ExecutionClusterApiTests {
         assertEquals("dev", created.get("contextName").asString());
         assertEquals("https://10.20.30.41:6443", created.get("apiServer").asString());
         // 末尾斜杠被吞掉，否则会拼出 //api/...
-        assertEquals("http://paimon-rest.paimon.svc.cluster.local:8080", created.get("callbackBaseUrl").asString());
+        assertEquals("http://lakehouse-rest-server.lakehouse-rest.svc.cluster.local:8080", created.get("callbackBaseUrl").asString());
 
         // 2) kubeconfig 只回摘要：两个 context，其中 dev 可用、eks-prod 因为指向不存在的 user 不可用
         JsonNode kubeconfig = created.get("kubeconfig");
@@ -220,7 +220,7 @@ class ExecutionClusterApiTests {
                  "contextName":"dev",
                  "namespace":"paimon-opt-2",
                  "image":"registry.example.com/lakehouse-rest-optimizer:1.0.1",
-                 "callbackBaseUrl":"http://paimon-rest.paimon.svc.cluster.local:8080"}
+                 "callbackBaseUrl":"http://lakehouse-rest-server.lakehouse-rest.svc.cluster.local:8080"}
                 """.formatted(version));
 
         assertEquals("paimon-opt-2", updated.get("namespace").asString());
@@ -257,7 +257,7 @@ class ExecutionClusterApiTests {
                 {"clusterType":"SELF_HOSTED","entityVersion":%d,"enabled":false,
                  "contextName":"dev","namespace":"paimon-opt",
                  "image":"registry.example.com/lakehouse-rest-optimizer:1.0.0",
-                 "callbackBaseUrl":"http://paimon-rest.paimon.svc.cluster.local:8080"}
+                 "callbackBaseUrl":"http://lakehouse-rest-server.lakehouse-rest.svc.cluster.local:8080"}
                 """.formatted(version));
         assertFalse(disabled.get("enabled").asBoolean());
         assertEquals("DISABLED", disabled.get("status").asString(), "停用优先于「待验证」");
@@ -269,7 +269,7 @@ class ExecutionClusterApiTests {
                 {"clusterType":"SELF_HOSTED","entityVersion":%d,"contextName":"dev",
                  "namespace":"paimon-opt",
                  "image":"registry.example.com/lakehouse-rest-optimizer:1.0.1",
-                 "callbackBaseUrl":"http://paimon-rest.paimon.svc.cluster.local:8080"}
+                 "callbackBaseUrl":"http://lakehouse-rest-server.lakehouse-rest.svc.cluster.local:8080"}
                 """.formatted(disabled.get("entityVersion").asInt()));
         assertFalse(again.get("enabled").asBoolean(), "没传 enabled 就该保持停用");
     }
@@ -434,7 +434,7 @@ class ExecutionClusterApiTests {
                  "namespace":"%s",
                  "image":"registry.example.com/lakehouse-rest-optimizer:1.0.0",
                  "imagePullPolicy":"IfNotPresent",
-                 "callbackBaseUrl":"http://paimon-rest.paimon.svc.cluster.local:8080",
+                 "callbackBaseUrl":"http://lakehouse-rest-server.lakehouse-rest.svc.cluster.local:8080",
                  "maxTablesPerJob":20,"maxConcurrentJobs":2,"jobTimeoutSeconds":7200}
                 """.formatted(quote(KUBECONFIG), namespace);
     }

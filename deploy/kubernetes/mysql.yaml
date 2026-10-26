@@ -124,12 +124,12 @@ spec:
             - --collation-server=utf8mb4_unicode_ci
           env:
             # 官方镜像的 entrypoint 用这个变量作为 root 口令。
-            # 与 paimon-rest-server 用的是同一个值——两处都指向同一个 Secret，
+            # 与 lakehouse-rest-server 用的是同一个值——两处都指向同一个 Secret，
             # 改口令时只需要动一处。
             - name: MYSQL_ROOT_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: paimon-rest-credentials
+                  name: lakehouse-rest-credentials
                   key: DB_PASSWORD
             - name: TZ
               value: Asia/Shanghai

@@ -21,13 +21,13 @@
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
-  name: paimon-rest-server
+  name: lakehouse-rest-server
   labels:
-    app.kubernetes.io/name: paimon-rest-server
+    app.kubernetes.io/name: lakehouse-rest-server
     app.kubernetes.io/component: server
 spec:
   maxUnavailable: 1
   selector:
     matchLabels:
-      app.kubernetes.io/name: paimon-rest-server
+      app.kubernetes.io/name: lakehouse-rest-server
       app.kubernetes.io/component: server

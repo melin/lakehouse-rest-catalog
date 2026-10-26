@@ -4,11 +4,11 @@
 #   mvn -o -pl :lakehouse-rest-server -am clean package -DskipTests
 #   docker build -t registry.cn-hangzhou.aliyuncs.com/melin1204/lakehouse-rest-catalog:1.0.0 .
 #
-# 注意下面 metadata.name / selector / 标签用的是 paimon-rest-server，而镜像是
-# lakehouse-rest-catalog：**资源名不是产品名，是历史标识**。它们绑的是集群里已经存在的
-# 对象（label selector、NetworkPolicy、ServiceMonitor 的抓取配置、`kubectl get -l`），
-# 改名是一次带下线的迁移，收益只有一致性——所以部署资源名保持不动，只有镜像跟随发布
-# 口径。详见仓库 docs/maven-module-design.md §4.3。
+# 资源名与镜像名同一个词根：metadata.name / selector / 标签是 lakehouse-rest-server，
+# 镜像是 lakehouse-rest-catalog。**改这个名字不是改一处**：Deployment 的 selector 与
+# Service / PDB 的 selector 必须同时改（三者是同一条链），Secret 与 ConfigMap 的引用
+# 名、Service DNS（lakehouse-rest-server.lakehouse-rest.svc）、集群外那些按标签选资源的
+# 东西（NetworkPolicy / ServiceMonitor / `kubectl get -l` 脚本）也都在本目录之外。
 #
 # image 是阿里云 ACR 的完整引用（1.0.0 起随版本发布推送）。imagePullPolicy 保持
 # IfNotPresent 而不是 Always：tag 固定为发布版本号，IfNotPresent 即可；滚动更新时
@@ -16,9 +16,9 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: paimon-rest-server
+  name: lakehouse-rest-server
   labels:
-    app.kubernetes.io/name: paimon-rest-server
+    app.kubernetes.io/name: lakehouse-rest-server
     app.kubernetes.io/component: server
 spec:
   # 固定 1 副本，不是保守，是当前存储形态下的硬约束：
@@ -36,12 +36,12 @@ spec:
       maxUnavailable: 0
   selector:
     matchLabels:
-      app.kubernetes.io/name: paimon-rest-server
+      app.kubernetes.io/name: lakehouse-rest-server
       app.kubernetes.io/component: server
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: paimon-rest-server
+        app.kubernetes.io/name: lakehouse-rest-server
         app.kubernetes.io/component: server
     spec:
       # 比 spring.lifecycle.timeout-per-shutdown-phase（30s）留 15s 余量，
@@ -85,7 +85,7 @@ spec:
             - name: DB_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: paimon-rest-credentials
+                  name: lakehouse-rest-credentials
                   key: DB_PASSWORD
           securityContext:
             # 覆盖 Pod 级的 10001：这个 initContainer 用的是 MySQL 官方镜像，
@@ -99,7 +99,7 @@ spec:
               drop:
                 - ALL
       containers:
-        - name: paimon-rest-server
+        - name: lakehouse-rest-server
           image: registry.cn-hangzhou.aliyuncs.com/melin1204/lakehouse-rest-catalog:1.0.0
           imagePullPolicy: IfNotPresent
           ports:
@@ -119,12 +119,12 @@ spec:
             - name: DB_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: paimon-rest-credentials
+                  name: lakehouse-rest-credentials
                   key: DB_PASSWORD
             - name: REST_TOKEN
               valueFrom:
                 secretKeyRef:
-                  name: paimon-rest-credentials
+                  name: lakehouse-rest-credentials
                   key: REST_TOKEN
           # -------------------------------------------------------------------------
           # 探针为什么用 exec + curl，而不用 httpGet
@@ -230,7 +230,7 @@ spec:
       volumes:
         - name: config
           configMap:
-            name: paimon-rest-config
+            name: lakehouse-rest-config
         # 表数据与 Paimon 元数据文件落在持久卷上。
         # 这个卷同时被多个 Pod 引用时会有共享问题，见 replicas 的说明。
         - name: warehouse

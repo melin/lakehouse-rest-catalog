@@ -12,7 +12,7 @@ kind: Kustomization
 
 # 统一注入命名空间，因此各资源文件里都不写 namespace 字段。
 # 这样把整套清单搬到别的命名空间只需要改这一行。
-namespace: paimon-rest
+namespace: lakehouse-rest
 
 resources:
   - namespace.yaml
@@ -54,7 +54,7 @@ resources:
 # ---------------------------------------------------------------------------
 
 # 给所有资源打上统一的标签，便于按整套部署去检索与清理：
-#   kubectl -n paimon-rest get all -l app.kubernetes.io/part-of=paimon-rest
+#   kubectl -n lakehouse-rest get all -l app.kubernetes.io/part-of=lakehouse-rest
 #
 # includeSelectors: false 是必要的：这个标签只用于人工检索，
 # 不该进入 Deployment / StatefulSet 的 selector。
@@ -62,4 +62,4 @@ resources:
 labels:
   - includeSelectors: false
     pairs:
-      app.kubernetes.io/part-of: paimon-rest
+      app.kubernetes.io/part-of: lakehouse-rest

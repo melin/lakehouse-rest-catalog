@@ -25,7 +25,7 @@ kind: PersistentVolumeClaim
 metadata:
   name: paimon-warehouse
   labels:
-    app.kubernetes.io/name: paimon-rest-server
+    app.kubernetes.io/name: lakehouse-rest-server
     app.kubernetes.io/component: warehouse
 spec:
   accessModes:

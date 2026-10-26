@@ -954,7 +954,7 @@ const probeConsequence = computed(() => {
                 tip="必须是「集群里的 Pod 能 curl 通」的服务端地址：同集群用 Service 名（不是 pod 名），跨集群用内网 LB 或对外域名。"
               />
             </template>
-            <el-input v-model="state.form.callbackBaseUrl" placeholder="http://paimon-rest.paimon.svc.cluster.local:8080" />
+            <el-input v-model="state.form.callbackBaseUrl" placeholder="http://lakehouse-rest-server.lakehouse-rest.svc.cluster.local:8080" />
             <div class="pc-field-note pc-field-note-warn">
               同一服务端在不同集群里这一项不同。填错的表现是：Job 起来了、优化跑完了、结果一条都没回来——
               而探活第 5 步（只验服务端 → 地址这个方向）照样通过。

@@ -46,7 +46,7 @@ public final class OptimizerOptions {
         return jobId;
     }
 
-    /** 管理 API 基址，形如 {@code http://paimon-rest:8080/api/management/v1}。 */
+    /** 管理 API 基址，形如 {@code http://lakehouse-rest-server:8080/api/management/v1}。 */
     public String managementUrl() {
         return managementUrl;
     }

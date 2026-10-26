@@ -15,9 +15,9 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: paimon-rest-config
+  name: lakehouse-rest-config
   labels:
-    app.kubernetes.io/name: paimon-rest-server
+    app.kubernetes.io/name: lakehouse-rest-server
     app.kubernetes.io/component: server
 data:
   application-k8s.yml: |
@@ -40,7 +40,7 @@ data:
         timeout-per-shutdown-phase: 30s
       datasource:
         # 主机名是 MySQL 那个 headless Service 的名字。同一命名空间内可直接解析，
-        # 不需要带 .paimon-rest.svc.cluster.local 后缀——写全了反而会让清单
+        # 不需要带 .lakehouse-rest.svc.cluster.local 后缀——写全了反而会让清单
         # 在换命名空间时失效。
         url: jdbc:mysql://paimon-mysql:3306/lakehouse_catalog?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
         username: root

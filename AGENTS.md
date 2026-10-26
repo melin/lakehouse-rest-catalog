@@ -380,7 +380,7 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
   分包后这类引用会整片失效，症状是编译器报「程序包 X 不存在」或「找不到符号」。详见设计文档 §11。
 - **改包名属于「对外契约」级改动：唯一被写进用户配置的名字是 `spark.sql.extensions` 的值**，
   现为 `io.github.melin.lakehouse.rest.spark.ManagementSparkExtensions`。别的名字各有各的约束：
-  `lakehouse.rest.*` 配置前缀与 k8s 资源名（`paimon-rest*`）不能随意改，
+  `lakehouse.rest.*` 配置前缀与 k8s 资源名（`lakehouse-rest*`，见 `deploy/kubernetes/`）不能随意改，
   元数据库是 `lakehouse_catalog`、表前缀 `lakehouse_`——逐项的「谁持有、能不能改」见
   `docs/maven-module-design.md` §4，判据见其 §10。
 - **错误走 `ApiException`**，由 `GlobalExceptionHandler` 统一成规格要的报错形状；

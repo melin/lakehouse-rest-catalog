@@ -9,7 +9,7 @@
 #
 # 若集群里没有 Ingress 控制器，把这一项从 kustomization.yaml 的 resources 里删掉即可。
 # 临时验证也可以用端口转发，不需要 Ingress：
-#   kubectl -n paimon-rest port-forward svc/paimon-rest-server 8080:8080
+#   kubectl -n lakehouse-rest port-forward svc/lakehouse-rest-server 8080:8080
 #
 # ---------------------------------------------------------------------------
 # 暴露到集群外的安全前提
@@ -27,9 +27,9 @@
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: paimon-rest-server
+  name: lakehouse-rest-server
   labels:
-    app.kubernetes.io/name: paimon-rest-server
+    app.kubernetes.io/name: lakehouse-rest-server
     app.kubernetes.io/component: server
   annotations:
     # nginx-ingress 的常规调优：请求体上限与后端协议。
@@ -41,7 +41,7 @@ spec:
   # 集群里装了多个控制器时必须显式填写，否则 Ingress 不会有任何控制器接管。
   ingressClassName: nginx
   rules:
-    - host: paimon-rest.example.com
+    - host: lakehouse-rest.example.com
       http:
         paths:
           # 一并转发 /v1 与管理 API。若只想暴露数据面，
@@ -50,6 +50,6 @@ spec:
             pathType: Prefix
             backend:
               service:
-                name: paimon-rest-server
+                name: lakehouse-rest-server
                 port:
                   name: http

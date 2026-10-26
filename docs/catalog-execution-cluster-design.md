@@ -304,7 +304,7 @@ AWS CLI」。所以它必须是硬拒，而且拒绝文案要给出替代路径�
 
 | 任务跑在哪 | `callbackBaseUrl` 应该是 |
 | --- | --- |
-| 服务端所在集群 | `http://paimon-rest.paimon.svc.cluster.local:8080`（Service 名，**不是** pod 名——driver 可能起在别的节点） |
+| 服务端所在集群 | `http://lakehouse-rest-server.lakehouse-rest.svc.cluster.local:8080`（Service 名，**不是** pod 名——driver 可能起在别的节点） |
 | 另一个集群（同 VPC / 对等连接） | 那个集群能解析到的地址，通常是内网 LB |
 | 另一个云 / 公网 | 对外域名 + 网关；此时 `catalogToken` 必须有值 |
 
@@ -645,7 +645,7 @@ Job job = new JobBuilder()
         .withNewMetadata().withName("paimon-optimize-" + jobId)
             .withNamespace(namespace)
             .addToLabels("app", "paimon-optimizer")
-            .addToLabels("paimon-rest-job", jobId).endMetadata()
+            .addToLabels("lakehouse-rest-job", jobId).endMetadata()
         .withNewSpec()
             .withBackoffLimit(0)                       // 重试是批次级语义，k8s 不该自己重试
             .withTtlSecondsAfterFinished(3600)

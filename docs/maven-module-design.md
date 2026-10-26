@@ -24,8 +24,8 @@ Paimon 与 Iceberg」的协议方案。本文件解决它的前置问题：**代
 | 集群侧模块 | `lakehouse-rest-optimizer`；Spark 侧自 §13 起拆成 `lakehouse-rest-spark-parent` + `-common` + `-3.5` + `-4.1`（一份源码、两个版本产物）；Flink 侧（§14）拆成 `lakehouse-rest-flink-parent` + `-1.20` + `-2.3`（同样一份源码、两个版本产物） |
 | Maven 项目数 | **15**（构成见 §3.1 的结构树：聚合 + 两个父 POM + 服务端 5 jar + Spark 4 件 + Flink 3 件 + optimizer） |
 | Java 包名 | **`io.github.melin.lakehouse.rest`**，与 artifactId 的 `lakehouse` 对齐；协议面各独占一层格式子包（§11） |
-| Spring 配置前缀 | **`lakehouse.rest.*`**。客户端键 `spark.lakehouse.rest.*` 与 k8s 资源名不跟它走（§4） |
-| k8s 资源名 | **`paimon-rest*` 不改**——它绑的是已部署的实例与已有数据，不是构建产物（§4） |
+| Spring 配置前缀 | **`lakehouse.rest.*`**。客户端键 `spark.lakehouse.rest.*` 与 k8s 资源名各有各的判据，都不跟它走（§4） |
+| k8s 资源名 | **`lakehouse-rest*`**，与镜像名同词根；改名要连带改 selector、Secret 引用与 Service DNS（§4） |
 | 加新格式面 | 按 §5 的顺序，新格式的代码从第一天就落进新的 `-protocol-<格式>` 模块 |
 | 当前形态 | 15 个 Maven 项目（见上一行）；四个服务端模块嵌在 `spring-parent/` 下（§9）；类的实际落点见 §8 |
 
@@ -35,8 +35,8 @@ Paimon 与 Iceberg」的协议方案。本文件解决它的前置问题：**代
 
 ### 2.1 为什么要一个格式中立的名字
 
-现在的名字把「实现」写进了「产品」：`paimon-rest-server` 说明的是它服务哪种表格式，
-而这恰恰是本方案要改掉的事实。加一个格式就要重新思考命名，加第三个格式（仓库里
+`paimon-rest-server` 这样的名字把「实现」写进了「产品」：它说明的是这个服务端
+服务哪种表格式，而格式恰恰是会增加的那一维。加一个格式就要重新思考命名，加第三个格式（仓库里
 已经出现 Lance，见 [`console-table-detail.md`](console-table-detail.md) 的页签清单）
 就再想一次。中立名的收益不是好看，是**再也没有下一次改名**：
 
@@ -60,7 +60,7 @@ Paimon 与 Iceberg」的协议方案。本文件解决它的前置问题：**代
 | 协议面 | 格式名 + `protocol-` 前缀 | `lakehouse-rest-protocol-paimon`、`-protocol-iceberg` |
 | 引擎侧客户端 / 任务 | 引擎名 | `lakehouse-rest-spark`、`lakehouse-rest-optimizer` |
 | Java 包 | `io.github.melin.lakehouse.rest` | 与模块边界正交；但**对外不是自由的名字**——它出现在用户的 `spark.sql.extensions` 里，动它要按 §10 的判据先问「谁写过它」 |
-| 部署资源名 | **不动** | namespace `paimon-rest`、Service `paimon-rest-server`（§4） |
+| 部署资源名 | `lakehouse-rest*` | namespace `lakehouse-rest`、Service `lakehouse-rest-server`，与镜像同词根（§4） |
 
 ### 2.3 候选名与取舍
 
@@ -238,7 +238,7 @@ public interface CatalogProtocolFace {
 | --- | --- | --- |
 | `lakehouse.rest.*`（Spring 配置前缀） | 用户的 `application.yml` | 当前前缀 |
 | `spark.lakehouse.rest.{token,management.url,catalog.url,management.timeoutSeconds}` | 用户的 Spark 配置 | **故意保留**：客户端键一旦发布就是配置 API，改它等于一次要带迁移工具的破坏性发布 |
-| k8s 资源名 / namespace `paimon-rest*` | 集群里的对象（StatefulSet 与 PVC 引用） | **故意保留**：改它是一次带停机风险的存量迁移，收益只有一致性 |
+| k8s 资源名 / namespace `lakehouse-rest*` | 集群里的对象，以及集群外按这些名字写的东西（selector、Secret / ConfigMap 引用、Service DNS、NetworkPolicy、ServiceMonitor、`kubectl get -l` 脚本） | 当前名：与镜像名同词根。改它要连带改 Deployment / Service / PDB 三处 selector 与全部引用点，见 `deploy/kubernetes/README.md` §2.2 |
 | 元数据库 `lakehouse_catalog` / 表前缀 `lakehouse_` | 本服务自己的元数据库 | 客户端全走 REST、不直连库；表划分见 [`data-model.md`](data-model.md) |
 | `spark.sql.extensions` 的 FQCN | 用户的 Spark 配置 | 写当前名 `io.github.melin.lakehouse.rest.spark.ManagementSparkExtensions`；为旧包名留过的兼容壳已删除——壳的数量等于「历史的对外名字数」，不是「改过几次」，确认没有部署再用旧名就撤 |
 | Maven 坐标 `lakehouse-rest-*` | 远端仓库 | 从未 `deploy`（无 `distributionManagement`），产物只有本地 `install` 与镜像分发，**不需要 relocation**。将来一旦对外发布过坐标，改名要补一个旧坐标 POM，用 Maven 原生 `<distributionManagement><relocation>` 重定向，不要自造兼容层 |

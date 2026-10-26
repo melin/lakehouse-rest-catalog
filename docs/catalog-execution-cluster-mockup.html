@@ -970,7 +970,7 @@ users:
         </div>
         <div class="fld span2">
           <label>回调地址（callbackBaseUrl）<span class="req">*</span></label>
-          <input type="text" value="http://paimon-rest.paimon.svc.cluster.local:8080" />
+          <input type="text" value="http://lakehouse-rest-server.lakehouse-rest.svc.cluster.local:8080" />
           <div class="note warn">
             要填<b>集群里的 Pod 能 curl 通</b>的地址。同一服务端在不同集群里这一项不同：
             同集群用 Service 名（不是 pod 名，driver 可能起在别的节点），跨集群用内网 LB 或对外域名。

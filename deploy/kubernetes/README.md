@@ -29,9 +29,9 @@ kubectl apply -k deploy/kubernetes
 `secret.yaml` 里是两个占位值，**必须先替换**。推荐不提交这个文件，改用命令行创建：
 
 ```bash
-kubectl create namespace paimon-rest
+kubectl create namespace lakehouse-rest
 
-kubectl -n paimon-rest create secret generic paimon-rest-credentials \
+kubectl -n lakehouse-rest create secret generic lakehouse-rest-credentials \
   --from-literal=DB_PASSWORD="$(openssl rand -base64 24)" \
   --from-literal=REST_TOKEN="$(openssl rand -hex 32)"
 ```
@@ -54,12 +54,12 @@ docker build -t registry.cn-hangzhou.aliyuncs.com/melin1204/lakehouse-rest-catal
 `imagePullPolicy` 是 `IfNotPresent`——tag 固定为发布版本号，IfNotPresent 即可；
 发布新版本时同步更新三处 tag（`Dockerfile` 构建命令、两份清单）。
 
-**关于名字：清单里的 Deployment / Service / 标签 / namespace 是 `paimon-rest`，
-而镜像是 `lakehouse-rest-catalog`，这不是笔误。** k8s 资源名绑的是集群里**已经存在**
-的对象——label selector、NetworkPolicy、ServiceMonitor 的抓取配置、`kubectl get -l`
-脚本、Service DNS（`paimon-rest-server.paimon-rest.svc`）。改它们是一次带下线的
-迁移，收益只有一致性，所以部署资源名保持不动，镜像名跟随发布口径。取舍详见
-[`docs/maven-module-design.md`](../../docs/maven-module-design.md) §4.3。
+**关于名字：清单里的 Deployment / Service / 标签 / namespace 与镜像同一个词根**
+（`lakehouse-rest`，镜像为 `lakehouse-rest-catalog`）。改名的影响面不止本目录：
+Deployment 的 selector 与 Service / PDB 的 selector 是同一条链，Secret 与 ConfigMap
+的引用名、Service DNS（`lakehouse-rest-server.lakehouse-rest.svc`）、以及集群里按标签
+选资源的对象（NetworkPolicy / ServiceMonitor / `kubectl get -l` 脚本）都要一起动。
+名字的定义与判据见 [`docs/maven-module-design.md`](../../docs/maven-module-design.md) §4。
 
 ```bash
 # 单节点集群（kind / minikube）也可以把镜像直接送进节点，跳过 registry：
@@ -93,19 +93,19 @@ PUSH=1 IMAGE=registry.cn-hangzhou.aliyuncs.com/melin1204/lakehouse-rest-catalog:
 kubectl apply -k deploy/kubernetes
 
 # 看进度
-kubectl -n paimon-rest get pods -w
+kubectl -n lakehouse-rest get pods -w
 ```
 
 期望顺序：`paimon-mysql-0` 先 Init → Running → Ready，然后
-`paimon-rest-server` 的 `wait-for-mysql` 初始化容器通过，主容器启动。
+`lakehouse-rest-server` 的 `wait-for-mysql` 初始化容器通过，主容器启动。
 
-首次启动 MySQL 要执行建表语句（22 张表），会比后续重启慢。
+首次启动 MySQL 要执行建表语句（`sql/schema-mysql.sql`，当前 26 张表），会比后续重启慢。
 
 ### 2.4 验证
 
 ```bash
 # 端口转发
-kubectl -n paimon-rest port-forward svc/paimon-rest-server 8080:8080 &
+kubectl -n lakehouse-rest port-forward svc/lakehouse-rest-server 8080:8080 &
 
 # 目录发现：清单开了鉴权，无令牌应为 401
 curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/v1/config
@@ -230,7 +230,7 @@ Pod 启动验证**。已经做过的是：
 | --- | --- | --- |
 | kustomize 组装 | `kubectl kustomize deploy/kubernetes` | 渲染出 10 个资源，命名空间与标签注入正确 |
 | 清单内部引用 | `scripts/verify-k8s-manifests.py` | §1–§9 全部通过 |
-| 建表语句可用 | 在真实 MySQL 8.0.46 上执行 `sql/schema-mysql.sql` | 22 张表建出，`ddl-auto: validate` 通过（加入三张优化表后重跑） |
+| 建表语句可用 | 在真实 MySQL 8.0.46 上执行 `sql/schema-mysql.sql` | 当时建出 22 张表，`ddl-auto: validate` 通过。现库为 26 张，后加的那几张只在 H2 集成测试里验证过，没有在该实例上复跑 |
 | **配置能否被服务端解析** | 把 ConfigMap 里的 `application-k8s.yml` 原样交给服务端（仅替换 MySQL 主机名与 warehouse 路径这两处本机不可达的值） | profile 生效、`${DB_PASSWORD}` 与 `${REST_TOKEN}` 解析成功、Hikari 连上 MySQL |
 | **鉴权与授权** | 同上实例 | 无令牌 401、错误令牌 401、正确令牌 200（`/v1/config` 与管理 API 都是） |
 | **warehouse 配置生效** | 同上实例 | `/v1/config` 返回配置的路径；建表后表路径为 `<warehouse>/k8s_check.db/orders` |

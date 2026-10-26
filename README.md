@@ -135,9 +135,10 @@ Maven 坐标与包名：`groupId` 为 `io.github.melin`，十五个 artifact 是
 **请写** `io.github.melin.lakehouse.rest.spark.ManagementSparkExtensions`。
 其余位置都不是自由名字，判定与现状见
 [`maven-module-design.md`](docs/maven-module-design.md) §4 / §10：配置前缀 `lakehouse.rest.*`；
-k8s 资源名的 `paimon-` 前缀**故意不改**（它不是产品名，是历史标识，改了要动存量部署——
-StatefulSet 与 PVC 引用）；元数据库 `lakehouse_catalog`、表前缀 `lakehouse_`
-（表划分见 [`data-model.md`](docs/data-model.md)）。
+k8s 资源名（namespace / Deployment / Service / Secret / ConfigMap）与镜像同一个词根
+`lakehouse-rest`——改它要连带改 selector、Secret 引用与 Service DNS，
+见 [`deploy/kubernetes/README.md`](deploy/kubernetes/README.md) §2.2；元数据库
+`lakehouse_catalog`、表前缀 `lakehouse_`（表划分见 [`data-model.md`](docs/data-model.md)）。
 
 `docs/` 里二十六份文档的分工：
 
@@ -1130,7 +1131,7 @@ BUILDER=mirrorb ./scripts/build-image.sh
 `deploy/kubernetes/` 是一套用 kustomize 组装的清单：
 
 ```bash
-kubectl -n paimon-rest create secret generic paimon-rest-credentials \
+kubectl -n lakehouse-rest create secret generic lakehouse-rest-credentials \
   --from-literal=DB_PASSWORD=... --from-literal=REST_TOKEN=...
 kubectl apply -k deploy/kubernetes
 ```
