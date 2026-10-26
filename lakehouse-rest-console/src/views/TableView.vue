@@ -1092,16 +1092,17 @@ function isPartitionKey(field) {
 }
 
 function onTabChange(name) {
+  // 数据策略 / 存储优化：数据在面板组件实例里，而页签内容是 v-else-if——切走即销毁，
+  // 切回来是全新实例（loaded=false、detail=null）。对这两个页签「已加载只拉一次」
+  // 不成立，每次切到都要触发 load（面板已挂载就直接调，未挂载攒 pending）。
+  // load 是幂等的单表 GET，重复触发的代价是回页签时一次轻量请求，换来的是永远不空白
+  if (name === 'policy') { loadPolicy(); return }
+  if (name === 'optimization') { loadOptimization(); return }
   if (loadedTabs.has(name)) return
   loadedTabs.add(name)
   if (name === 'snapshots') snapshots.load()
   if (name === 'tags') tags.load()
   if (name === 'branches') branches.load()
-  // 存储优化：策略与历史都不在概览里，切过来才拉；组件内部按 catalog/database/table
-  // 自己拼请求，父组件只发一声「该加载了」（这一声可能得等组件挂载，见 loadOptimization）
-  if (name === 'optimization') loadOptimization()
-  // 数据策略：同一个「面板挂载前先攒请求」的机制，见 loadOptimization 的注释
-  if (name === 'policy') loadPolicy()
   // 文件列表要等概览回来才有 tableId：概览没到时先不请求（加载器会返回 null），
   // 等下次切到这个页签、或概览加载完成后的 reloadAll 再拉
   if (name === 'files' && table0.value && !tableFilesLoaded.value && !tableFilesLoading.value) {
@@ -1142,8 +1143,10 @@ watch([prefix, database, table], () => {
     tab.value = requested
   }
   overview.load()
+  // 注意：这里只负责触发，不替 onTabChange 登记 loadedTabs——它的第一行就是
+  // 「已登记则跳过」，先 add 再调等于把首次加载静默吞掉（2026-10-25 修复：深链接
+  // 落在策略 / 优化等懒加载页签时整页空白，再点页签也不补，因为 loadedTabs 已标记）
   if (!SELF_CONTAINED_TABS.has(tab.value)) {
-    loadedTabs.add(tab.value)
     onTabChange(tab.value)
   }
 }, { immediate: true })
