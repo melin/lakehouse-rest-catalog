@@ -1853,12 +1853,15 @@ LineageExtractor.extract(plan: LogicalPlan, sqlText: Option[String]): Option[Lin
 
 无 `-De2e.management.url` 时整体 skip（与现有两个 e2e 脚本同规矩）。
 
-**只在 3.5 上能跑。** 4.1 侧卡在建会话那一刻：Paimon 2.0.0 没有 Spark 4.1 的 bundle，4.1 模块
-用 `paimon-spark-4.0_2.13`，它的 Spark 扩展加载 `Spark4Shim` 失败（`Unable to get public no-arg
-constructor` → `Error while instantiating 'SessionStateBuilder'`），一条语句都发不出去。既有的
-`ManagementSqlLiveServerTests` 在 4.1 上一模一样地红，可以拿它做对照——**这不是血缘的问题**。
-4.1 侧靠 24 条抽取器单测（不建整会话）覆盖。Paimon 发布 4.1 bundle 后把脚本里的
-`VERSIONS` 改回 `"3.5 4.1"` 即可（`docs/maven-module-design.md` §13.6）。
+**两版都能跑（Paimon 2.1.0 起）。** 此前只有 3.5 能跑：4.1 侧卡在建会话那一刻——Paimon 2.0.0 没有
+Spark 4.1 的 bundle，4.1 模块用 `paimon-spark-4.0_2.13`，它的 Spark 扩展加载 `Spark4Shim` 失败
+（`Unable to get public no-arg constructor` → `Error while instantiating 'SessionStateBuilder'`），
+一条语句都发不出去。既有的 `ManagementSqlLiveServerTests` 在 4.1 上一模一样地红，可以拿它做对照
+——**这不是血缘的问题**（`docs/maven-module-design.md` §13.6）。
+
+Paimon 2.1.0 提供了原生 `paimon-spark-4.1_2.13`，4.1 模块已切过去、建会话用例恢复执行，
+脚本里的 `VERSIONS` 因此改回 `"3.5 4.1"`。这条留作记录，因为它的教训是通用的：
+**「某版本上全红」先查依赖坐标对不对得上，不要先去怀疑被测代码。**
 
 ### 11.5 文档与契约一致性
 

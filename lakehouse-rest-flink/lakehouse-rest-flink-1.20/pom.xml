@@ -15,7 +15,7 @@
 	<description>Flink 1.20：通过 REST catalog 访问 Paimon 与 Iceberg</description>
 
 	<!--
-		Flink 1.20.1 而不是 1.20.5：Paimon 2.0.0 的 `paimon-flink-1.20` 是按 1.20.1 编译的
+		Flink 1.20.1 而不是 1.20.5：Paimon 2.1.0 的 `paimon-flink-1.20` 仍是按 1.20.1 编译的
 		（pom 里 `flink-streaming-java` / `flink-table-common` 都是 1.20.1、provided），
 		Iceberg 的 `iceberg-flink-runtime-1.20` 也按 1.20 系列编译。1.20.x 内部二进制兼容，
 		但既然连接器就是用 1.20.1 编的，测试也钉同一个值，省掉「到底是补丁版差异还是

@@ -108,14 +108,15 @@ fi
 
 # 一次一个版本：一个 JVM 只能有一个 SparkContext，两个版本各自起 JVM 才干净。
 #
-# 默认只跑 3.5。**4.1 这一层跑不起来**，而且与血缘无关：Paimon 2.0.0 没有 Spark 4.1 的
-# bundle，4.1 模块用的是 `paimon-spark-4.0_2.13`，它的 Spark 扩展在建会话时加载
+# 两版都跑（Paimon 2.1.0 起）。此前 4.1 这一层跑不起来，但与血缘无关：Paimon 2.0.0 没有
+# Spark 4.1 的 bundle，4.1 模块用的是 `paimon-spark-4.0_2.13`，它的 Spark 扩展在建会话时加载
 # `Spark4Shim` 直接失败（`Unable to get public no-arg constructor`），表现为
 # `Error while instantiating 'SessionStateBuilder'`，一条语句都还没发出去。既有的
 # `ManagementSqlLiveServerTests` 在 4.1 上一模一样地红，可以拿它做对照。
-# 4.1 侧的抽取器由 24 条单测覆盖（不建整会话），两版本都过。
-# Paimon 发布 4.1 bundle 后把这里改回 "3.5 4.1" 即可（见 docs/maven-module-design.md §13.6）。
-VERSIONS=${SPARK:-"3.5"}
+#
+# 2.1.0 发布了原生 `paimon-spark-4.1_2.13`，`-4.1/pom.xml` 已切过去，默认值因此回到两版
+# （见 docs/maven-module-design.md §13.6）。要只跑一版仍可用 SPARK=3.5 覆盖。
+VERSIONS=${SPARK:-"3.5 4.1"}
 STATUS=0
 for V in $VERSIONS; do
   echo "== 血缘端到端（Spark ${V}） =="

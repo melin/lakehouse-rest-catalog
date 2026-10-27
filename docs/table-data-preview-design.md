@@ -581,7 +581,7 @@ GET /api/console/v1/tables/{tableId}/partitions?page=1&pageSize=50&keyword=&snap
 
 | 模块 | 新增依赖 | 体积 | 说明 |
 | --- | --- | --- | --- |
-| `lakehouse-rest-protocol-paimon` | `org.apache.paimon:paimon-format:2.0.0` | **25 MB** | 含 shaded parquet / orc / avro 读取器（jar 内 parquet 已 relocate 到 `org.apache.paimon.shade.org.apache.parquet`，**与 Iceberg 的原生 parquet 不冲突**——已核对：1907 个 shade 类） |
+| `lakehouse-rest-protocol-paimon` | `org.apache.paimon:paimon-format:2.1.0` | **25 MB** | 含 shaded parquet / orc / avro 读取器（jar 内 parquet 已 relocate 到 `org.apache.paimon.shade.org.apache.parquet`，**与 Iceberg 的原生 parquet 不冲突**——已核对：1907 个 shade 类） |
 | `lakehouse-rest-protocol-iceberg` | `iceberg-data` / `iceberg-parquet`（自带 `parquet-hadoop` + `parquet-avro` 1.17.1） | **约 9 MB** | `iceberg-data` 提供 `GenericDeleteFilter`（position / equality delete 抵扣）与通用记录读取；三者本地仓库已有（离线构建不受影响）。**不引 `iceberg-aws`**：数据文件的 `FileIO` 由 `IcebergPreviewFileIo` 接到 `StorageFileAccess` 上，与元数据、Paimon 面共用同一套凭据解析（省下 AWS SDK 与其自带的凭据逻辑） |
 | `lakehouse-rest-server` | `org.apache.hadoop:hadoop-client-api` / `hadoop-client-runtime:3.3.4`（`runtime`） | **50 MB** | 见下面「Hadoop 这一条为什么必须有」。放在 server 是因为「产物里装什么」是部署决策（与 `paimon-s3` 同一个理由），`dependencyManagement` 里两边共用一份坐标 |
 

@@ -212,11 +212,11 @@ SQL 侧同样是 `WITH ('type' = 'format-table')`。本服务端认四种取值�
 > 它的行是**读的时候现列目录**算出来的（固定六列），所以「写入」= 用存储侧的手段把对象
 > 放进那个目录：`aws s3 cp`、`hdfs dfs -put`、应用自己的 SDK PUT，或 Spark 把 DataFrame
 > 写成普通文件。放进去下一次查询就能看到，**不需要 refresh**——上游 1.0 时代 Flink 的
-> `CALL sys.refresh_object_table(...)` 与 `object-location` 选项在 2.0.0 里已经不存在
-> （2.0.0 的所有 paimon jar 里都搜不到这两个字符串）。实测见
+> `CALL sys.refresh_object_table(...)` 与 `object-location` 选项在 2.1.0 里仍不存在
+> （2.1.0 与 2.0.0 的所有 paimon jar 里都搜不到这两个字符串）。实测见
 > [spark-paimon-rest-e2e.md §4.4](spark-paimon-rest-e2e.md#44-三种非-paimon-表format--object--lance-的能力边界)。
 
-> **Lance 表能建、不能读写。** Paimon 2.0.0 尚未实现它的读写，因此接口这层**不拦**
+> **Lance 表能建、不能读写。** Paimon 2.1.0 仍未实现它的读写，因此接口这层**不拦**
 > 建表请求（拦了会连「先登记、后用别的引擎读」这个用法一起堵死），只在控制台的
 > 新建表表单里不给入口（见 [console-catalog-detail.md](console-catalog-detail.md) §3.5）。
 > 能力边界与证据：[spark-paimon-rest-e2e.md](spark-paimon-rest-e2e.md) §4.4。

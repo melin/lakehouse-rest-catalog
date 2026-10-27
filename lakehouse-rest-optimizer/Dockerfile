@@ -42,16 +42,23 @@ COPY lakehouse-rest-optimizer/target/lakehouse-rest-optimizer-1.0.0.jar /opt/opt
 # 为什么钉进镜像而不是靠 spark.jars.packages 启动时拉：生产集群常常没有公网出口，
 # 而「任务起不来」的最常见原因就是拉包失败。对象存储的访问凭据仍由服务端下发，
 # 那是数据面的事，与这里无关。
-COPY lakehouse-rest-optimizer/target/jars/paimon-spark-3.5_2.12-2.0.0.jar /opt/spark/jars/
-COPY lakehouse-rest-optimizer/target/jars/paimon-s3-2.0.0.jar /opt/spark/jars/
+#
+# **文件名不带版本号**：`maven-dependency-plugin` 的 `stripVersion=true` 让 target/jars
+# 里的文件叫 `paimon-spark-3.5_2.12.jar` 这种固定名字，版本只由 pom 的 `paimon.version`
+# 决定。这里曾经写死 `…-2.0.0.jar`，升到 2.1.0 后 COPY 直接失败
+# （"failed to compute cache key … not found"，与「忘了 package」同一句报错）。
+# 固定名字还顺带保证：target/jars 里残留的旧版本文件不会被装进镜像。
+COPY lakehouse-rest-optimizer/target/jars/paimon-spark-3.5_2.12.jar /opt/spark/jars/
+COPY lakehouse-rest-optimizer/target/jars/paimon-s3.jar /opt/spark/jars/
 
 # Iceberg 的 Spark bundle。一个镜像同时服务两种格式的批次：会话的
 # `spark.sql.extensions` 与 catalog 实现由任务按批次格式选，jar 本身一起放着即可。
 #
-# 版本必须与 lakehouse-rest-optimizer/pom.xml 的 iceberg.version 对齐；
+# 版本必须与 lakehouse-rest-optimizer/pom.xml 的 iceberg.version 对齐（同样由 pom 决定，
+# 文件名不带版本号，理由见上面 Paimon 两行的注释）；
 # 对象存储是 s3:// 时还需要 org.apache.iceberg:iceberg-aws-bundle（本镜像没有内置，
 # 见 docs/iceberg-storage-optimization.md 的「部署前提」一节）。
-COPY lakehouse-rest-optimizer/target/jars/iceberg-spark-runtime-3.5_2.12-1.11.0.jar /opt/spark/jars/
+COPY lakehouse-rest-optimizer/target/jars/iceberg-spark-runtime-3.5_2.12.jar /opt/spark/jars/
 
 # 容器就是 driver：整个批次只建一次 Spark 会话，在一张 pod 里以 local 模式跑完所有表。
 #

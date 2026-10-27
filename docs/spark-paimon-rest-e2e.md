@@ -20,7 +20,7 @@
 
 | 构件 | 版本 | 说明 |
 | --- | --- | --- |
-| `org.apache.paimon:paimon-spark-3.5_2.12` | `2.0.0` | Paimon 的 Spark bundle，自带 Paimon 核心与文件系统实现，并把 Guava / Jackson / netty 等 shade 到 `org.apache.paimon.shade.*`，因此不会与 Spark 自带的依赖冲突 |
+| `org.apache.paimon:paimon-spark-3.5_2.12` | `2.1.0` | Paimon 的 Spark bundle，自带 Paimon 核心与文件系统实现，并把 Guava / Jackson / netty 等 shade 到 `org.apache.paimon.shade.*`，因此不会与 Spark 自带的依赖冲突 |
 | `org.apache.spark:spark-hive_2.12` | 与 Spark 同版本 | Paimon 的 Spark 扩展在初始化时引用其中的 `HiveUDFExpressionBuilder`。用 `spark-submit` / `spark-sql` 时发行版自带，直接跑 JUnit 时要显式引入 |
 
 构件名带 Scala 二进制版本后缀（`_2.12`），换 Spark 或 Scala 版本时必须同步换。
@@ -38,7 +38,7 @@ for scheme 's3' in the classpath. Hadoop FileSystem also cannot access this path
 ```
 
 失败。这条报错来自**引擎的类路径，与服务端无关**：服务端做不做 S3 都改变不了它。
-S3 加 `org.apache.paimon:paimon-s3:2.0.0`（OBS / OSS 分别是 `paimon-obs` / `paimon-oss`），
+S3 加 `org.apache.paimon:paimon-s3:2.1.0`（OBS / OSS 分别是 `paimon-obs` / `paimon-oss`），
 生产上放进 `spark/jars`，本仓库的测试已经在 `lakehouse-rest-spark/pom.xml` 里声明。
 
 ### 1.2 会话配置
@@ -69,7 +69,7 @@ Spark 原生解析器，与 Paimon 注入的规则不重叠，因此谁在前都
 
 ```bash
 spark-sql \
-  --jars paimon-spark-3.5_2.12-2.0.0.jar \
+  --jars paimon-spark-3.5_2.12-2.1.0.jar \
   --conf spark.sql.extensions=io.github.melin.lakehouse.rest.spark.ManagementSparkExtensions,org.apache.paimon.spark.extensions.PaimonSparkSessionExtensions \
   --conf spark.sql.catalog.paimon=org.apache.paimon.spark.SparkCatalog \
   --conf spark.sql.catalog.paimon.metastore=rest \
@@ -391,7 +391,7 @@ schema 物化补上之后它们已经翻转成断言写入成功。这个类保�
 `Table <x> does not support <operation>.` 拼出，`operation` 取 `batch scan` /
 `append in batch mode`。也就是说它们在**分析期**就抛出——Paimon 的 `LanceTableImpl`
 根本没被调用，更没走到文件系统或 lance 的原生代码。补 `com.lancedb:lance-core`
-之类的 jar 不会改变结论：上游 2.0.0 的 `paimon-lance` 模块（真正的 lance 集成）在
+之类的 jar 不会改变结论：上游 2.1.0 的 `paimon-lance` 模块（真正的 lance 集成）在
 `paimon-spark-common` 的 pom 里是 `test` scope 且主动 exclude 了 `lance-core`，
 本项目 `lakehouse-rest-spark` 的依赖树里也完全没有 lance 相关 artifact。
 要读 Lance 数据得用 Lance 生态自己的 Spark 连接器，拿 `LanceTable.location()` 指过去；
@@ -416,8 +416,8 @@ Object 表没有 `INSERT`，也不需要 `INSERT`：它不存数据，行是**�
 一个目录位置、不带快照）。所以「写入」= 用存储侧的手段把对象放进那个目录：
 `aws s3 cp`、`hdfs dfs -put`、应用自己的 SDK PUT，或 Spark 把 DataFrame 写成普通文件。
 放进去下一次查询就能看到，**没有 refresh 这一步**——上游 1.0 时代 Flink 连接器里的
-`CALL sys.refresh_object_table(...)` 与 `object-location` 选项在 2.0.0 里已不存在
-（2.0.0 的所有 paimon jar 里都搜不到这两个字符串），Spark 侧从来就没有过刷新入口。
+`CALL sys.refresh_object_table(...)` 与 `object-location` 选项在 2.1.0 里仍不存在
+（2.1.0 与 2.0.0 的所有 paimon jar 里都搜不到这两个字符串），Spark 侧从来就没有过刷新入口。
 
 那么「那个目录」是哪个目录？通过 REST catalog，它是**服务端回给客户端的表位置**
 （`GetTableResponse.path`），不是客户端留在 `options.path` 里的值：
@@ -455,7 +455,7 @@ options.put(PATH.key(), response.getPath());   // put，不是 putIfAbsent
 | 服务端 WARN 里出现 `ServiceConfigurationError: java.net.spi.InetAddressResolverProvider: Provider org.xbill.DNS.spi.DnsjavaInetAddressResolverProvider not found` | 服务端跑在 JDK 18+ 上，而 `paimon-s3` 插件包把 dnsjava 那个 provider 的实现类放在 `META-INF/versions/18/`，插件 loader 加载不到 → 该作用域内任何 `InetAddress` 解析都失败（触发点是 Hadoop 度量系统的 `getHostname`） | **把服务端运行时换成 JDK 17**，见 4.2。这是唯一可靠的处理；这条 WARN 会让对象存储上的 schema / 快照都写不出去，而 REST 读写看着一切正常 |
 | `Cannot get latest schema for table <表名>`（服务端日志里**没有**对应 WARN） | 物化那一步压根没被触发：`lakehouse.rest.table-metadata.enabled=false`，或者表是**外部表**——`register` 登记进来的，或建表时客户端自己给了 `path` 的非 Paimon 表（见 4.4.1） | 前者打开开关；后者是有意不物化的（位置不归本服务端所有），需要引擎侧自己保证目录里有 schema |
 | `Content-Type 'text/plain;charset=UTF-8' is not supported` | 服务端未放宽 JSON 转换器。Paimon 客户端（Apache HttpClient 5）把 JSON 请求体标成 `text/plain`，早期版本会因此 415 | 已由 `JsonContentTypeConfig` 修复；若仍遇到，确认服务端版本 |
-| `Table <库.表> does not support batch scan.` / `does not support append in batch mode.` | 表的 `capabilities()` 里没有 `BATCH_READ` / `BATCH_WRITE`。Lance 表（连同 Iceberg 表）在 Paimon 2.0.0 里就是空集——上游只搭了 API 骨架，`LanceTableImpl` 的 `newScan()` / `newRead()` 都抛 `UnsupportedOperationException`，见 4.4 | **不是缺 jar**，补 `lance-core` 也没用。要读 Lance 数据用 Lance 生态自己的 Spark 连接器，拿 `LanceTable.location()` 指过去；Paimon 的 Spark 连接器在当前版本不解 |
+| `Table <库.表> does not support batch scan.` / `does not support append in batch mode.` | 表的 `capabilities()` 里没有 `BATCH_READ` / `BATCH_WRITE`。Lance 表（连同 Iceberg 表）在 Paimon 2.1.0 里就是空集——上游只搭了 API 骨架，`LanceTableImpl` 的 `newScan()` / `newRead()` 都抛 `UnsupportedOperationException`，见 4.4 | **不是缺 jar**，补 `lance-core` 也没用。要读 Lance 数据用 Lance 生态自己的 Spark 连接器，拿 `LanceTable.location()` 指过去；Paimon 的 Spark 连接器在当前版本不解 |
 
 ---
 

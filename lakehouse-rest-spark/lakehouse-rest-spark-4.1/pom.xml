@@ -57,12 +57,13 @@
 		<jackson2.version>2.21.2</jackson2.version>
 
 		<!--
-			Paimon 2.0.0 **没有** Spark 4.1 的 bundle，只有 `paimon-spark-4.0_2.13`。
-			这里用它（同属 Spark 4 的 API 面），并在测试里让 Paimon 相关的用例
-			依赖真实是否可用——见 docs/maven-module-design.md 的「Spark 4.1 的已知边界」。
-			Paimon 发布 4.1 bundle 后只改这一行。
+			Paimon 2.0.0 没有 Spark 4.1 的 bundle（只有 paimon-spark-4.0_2.13），当时借它
+			顶了一段时间；**2.1.0 起有了 paimon-spark-4.1_2.13**，已换回原生那份。
+			换回的意义不只是「名实相符」：4.0 的 bundle 里嵌的是 Spark 4.0 的
+			shade 产物，与 4.1 的 catalyst 在同一会话里混用时，个别 plan 节点的
+			class identity 会对不上（本模块当初为此跳过了若干 Paimon 用例）。
 		-->
-		<paimon.spark.artifact>paimon-spark-4.0_2.13</paimon.spark.artifact>
+		<paimon.spark.artifact>paimon-spark-4.1_2.13</paimon.spark.artifact>
 	</properties>
 
 	<dependencies>

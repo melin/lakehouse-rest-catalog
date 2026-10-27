@@ -361,7 +361,7 @@ baseline 就推到新值，按钮回到「与服务端一致」。
 **不直接删掉它**：Paimon 支持的格式就是四种，删掉之后用户只会觉得「怎么少了一种」，
 摆在那里加一句原因，才答得上这个问题。
 
-原因是没有可用的读写能力：Paimon 2.0.0 的 `SparkLanceTable` 什么都不声明
+原因是没有可用的读写能力：Paimon 2.1.0 的 `SparkLanceTable` 仍然什么都不声明
 （`capabilities` 为空集），查询与写入都在 Spark 的**分析阶段**被拒
 （`does not support batch scan.` / `does not support append in batch mode.`），
 `LanceTableImpl` 的 `newScan()` / `newRead()` 也都抛 `UnsupportedOperationException`。

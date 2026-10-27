@@ -700,7 +700,7 @@ DROP PRINCIPAL doc_demo_etl;
 SHOW CATALOGS;
 
 -- ⑥ 数据策略：行过滤、列脱敏、主体白名单、查询、清理
-SET spark.lakehouse.rest.sql.confirm-destructive = true;
+SET `spark.lakehouse.rest.sql.confirm-destructive`=true;
 ALTER TABLE default.orders IN CATALOG paimon SET ROW FILTER amount > 100;
 ALTER TABLE default.orders IN CATALOG paimon ALTER COLUMN phone SET MASK show_last_n(4);
 ALTER TABLE default.orders IN CATALOG paimon SET POLICY FOR USER doc_demo_etl;
@@ -787,6 +787,18 @@ ALTER TABLE <库>.<表> IN CATALOG <catalog> DROP POLICY
 删除整份策略必须先把 `spark.lakehouse.rest.sql.confirm-destructive` 设为 `true`，
 否则报错并点名这个配置键（第 1.3 节）。只删行过滤、只删某一列的 mask、只改主体清单都不需要
 确认——它们是可逆的字段修改；`DROP POLICY` 一次性撤掉整张表的保护，不是。
+
+**这个键名里有连字符，用 SQL 设置时键必须加反引号**：
+
+```sql
+SET `spark.lakehouse.rest.sql.confirm-destructive`=true;
+```
+
+不加反引号（或写成 `SET ... = true` 带空格）会得到 Spark 自己的报错
+`[INVALID_SET_SYNTAX] Expected format is 'SET', 'SET key', or 'SET key=value'`
+——看起来像我们的语法没实现，其实与扩展无关：Spark 的 `SET` 只接受
+「常规标识符」形式的键，连字符要按提示用反引号包起来。另一种等效做法是在会话外配：
+`--conf spark.lakehouse.rest.sql.confirm-destructive=true`。
 
 ---
 

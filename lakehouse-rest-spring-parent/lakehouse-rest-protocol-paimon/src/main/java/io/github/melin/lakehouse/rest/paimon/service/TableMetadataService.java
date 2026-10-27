@@ -17,8 +17,8 @@ import org.apache.paimon.Snapshot;
 import org.apache.paimon.fs.FileIO;
 import org.apache.paimon.fs.FileStatus;
 import org.apache.paimon.fs.Path;
+import org.apache.paimon.schema.FileSystemSchemaManager;
 import org.apache.paimon.schema.Schema;
-import org.apache.paimon.schema.SchemaManager;
 import org.apache.paimon.schema.TableSchema;
 import org.apache.paimon.utils.JsonSerdeUtil;
 import org.apache.paimon.utils.SnapshotManager;
@@ -118,7 +118,7 @@ public class TableMetadataService {
         }
         attempt("write schema-0", table, () -> {
             TableSchema materialized =
-                    new SchemaManager(fileIO(table), new Path(table.getPath()))
+                    new FileSystemSchemaManager(fileIO(table), new Path(table.getPath()))
                             .createTable(parsedSchema(table), /* externalTable= */ true);
             log.info("materialized schema-{} for table {} at {}",
                     materialized.id(), table.getName(), table.getPath());
@@ -144,14 +144,16 @@ public class TableMetadataService {
      * 但它是唯一一个「按给定 id 写完整 TableSchema」的公开入口，
      * 且内部会走 {@code SchemaValidation.validateTableSchema} 做结构与选项校验。
      * 换来的是与 {@code commitChanges} 同等的校验强度，代价是这一处依赖了
-     * 版本升级时可能变动的 API——paimon.version 钉在 2.0.0，升级时要看这里。
+     * 版本升级时可能变动的 API。2.0.0 → 2.1.0 就撞过一次：{@code SchemaManager} 从类
+     * 改成了接口，实现类改名 {@code FileSystemSchemaManager}（构造器签名不变）。
+     * {@code commit} 本身仍留在接口上，所以这次只换了构造点。
      */
     public void materializeSchemaVersion(TableEntity table, long schemaId) {
         if (!materializationEnabled(table) || schemaFileIsForeign(table)) {
             return;
         }
         attempt("write schema-" + schemaId, table, () -> {
-            new SchemaManager(fileIO(table), new Path(table.getPath()))
+            new FileSystemSchemaManager(fileIO(table), new Path(table.getPath()))
                     .commit(TableSchema.create(schemaId, parsedSchema(table)));
             log.info("materialized schema-{} for table {} at {}", schemaId, table.getName(), table.getPath());
         });

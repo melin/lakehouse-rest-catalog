@@ -96,7 +96,7 @@ Iceberg 的 `rewrite_data_files` 只有 `strategy => 'binpack' | 'sort'`，Z-Ord
 
 **时间窗口：Paimon 的两个 procedure 各只有一种写法——这是踩过坑才写清的。**
 
-Paimon 2.0.0 的 `older_than` **不是时长**，而是「窗口起点这个时刻」：
+Paimon 的 `older_than` **不是时长**，而是「窗口起点这个时刻」（2.0.0 如此，2.1.0 照旧）：
 `ExpireSnapshotsProcedure` 走 `ProcedureUtils.fillInSnapshotOptions`、
 `RemoveOrphanFilesProcedure` 走 `OrphanFilesClean.olderThanMillis`，两条路都是
 `DateTimeUtils.parseTimestampData(olderThan, 3, TimeZone.getDefault())`，没有「时长」这个分支。
@@ -364,7 +364,7 @@ expire 其实也能用 `older_than` 表达同一件事（我们算好 `now - N �
   不是「无副作用的重试」，它会重写文件。
 - **三个动作都走 `CALL` 语句，不依赖 Paimon 的 Java API**：procedure 的参数名与取值语义随
   Paimon 版本变，交给目标集群的 Paimon 解释，本模块的产物就不会把 Paimon 版本焊死。
-  参数名与类型是照 2.0.0 的 class 文件反解出来的，逐项对应（`compact` 八个参数全是 StringType，
+  参数名与类型是照 2.1.0 的 class 文件反解出来的，逐项对应（`compact` 八个参数全是 StringType，
   其中 `options` 是 `k1=v1,k2=v2` 字符串；`expire_snapshots` 的 `retain_max`/`retain_min`/
   `max_deletes` 是整数；`remove_orphan_files` 的 `dry_run` 是布尔），因此渲染时按类型走
   ——把整数写成 `'10'` 在 ANSI 模式下会直接抛转换错误。
@@ -385,8 +385,10 @@ expire 其实也能用 `older_than` 表达同一件事（我们算好 `now - N �
   重跑一次 compaction 会重写文件，代价远大于少两行数字。
 - **什么都没动时上报 `SKIPPED` 而不是 `SUCCESS`**：未达阈值、没有过期快照、没有孤儿文件
   都属这一类，控制台上要能一眼分出「真的合了文件」和「扫了一遍没动」。
-- **保留时长要用 `snapshot.time-retained`，不要塞给 `older_than`**：Paimon 2.0.0 的 `older_than`
+- **保留时长要用 `snapshot.time-retained`，不要塞给 `older_than`**：Paimon 的 `older_than`
   只认绝对时间戳（`yyyy-MM-dd HH:mm:ss`），写 `'24 h'` 会在执行期 `DateTimeParseException`。
+  升级到 2.1.0 时逐项核对过：`expire_snapshots` 仍带 `options` 形参、`remove_orphan_files`
+  仍然没有，两条语句因此都不用改。
   expire 有 `options` 形参可给时长；orphan 没有，只能由任务侧算成时刻，且必须按 **JVM 默认时区**
   格式化（解析方用同一时区；照 Iceberg 那样按 UTC 写，容器时区不是 UTC 时窗口就平移，orphan 会多删文件）。
 

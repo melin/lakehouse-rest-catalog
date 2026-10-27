@@ -13,7 +13,7 @@ import org.apache.paimon.data.GenericRow;
 import org.apache.paimon.fs.FileIO;
 import org.apache.paimon.fs.local.LocalFileIO;
 import org.apache.paimon.schema.Schema;
-import org.apache.paimon.schema.SchemaManager;
+import org.apache.paimon.schema.FileSystemSchemaManager;
 import org.apache.paimon.schema.TableSchema;
 import org.apache.paimon.table.FileStoreTable;
 import org.apache.paimon.table.FileStoreTableFactory;
@@ -135,7 +135,7 @@ class PaimonPreviewReadTests {
                 new org.apache.paimon.fs.Path(dir.resolve("t").toUri().toString());
         // 先落 schema-0 再开表：FileStoreTableFactory 只按内存里的 TableSchema 组装对象，
         // 不写文件；少了这一步，第一次 commit 会以「Cannot get latest schema」收场
-        TableSchema tableSchema = new SchemaManager(fileIO, tablePath).createTable(schema);
+        TableSchema tableSchema = new FileSystemSchemaManager(fileIO, tablePath).createTable(schema);
         return FileStoreTableFactory.create(fileIO, tablePath, tableSchema);
     }
 

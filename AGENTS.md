@@ -230,8 +230,8 @@ lakehouse-rest-spark/      语法扩展（16 条管理语句），一份源码�
 lakehouse-rest-flink/      Flink SQL 读写 Paimon / Iceberg，一份源码、两个版本（1.20 / 2.3）：
                         shared/src/main/java/…/LakehouseRestFlinkCatalogs.java   两套 catalog 选项
                         shared/src/test/java/…        Paimon 主键更新 / Iceberg 读写（各 3 例）
-                        lakehouse-rest-flink-1.20/   Flink 1.20.1 + Paimon 2.0.0 + Iceberg 1.11.0
-                        lakehouse-rest-flink-2.3/    Flink 2.3.0 + Paimon 2.0.0（2.2 连接器）+ Iceberg 1.12.0
+                        lakehouse-rest-flink-1.20/   Flink 1.20.1 + Paimon 2.1.0 + Iceberg 1.11.0
+                        lakehouse-rest-flink-2.3/    Flink 2.3.0 + Paimon 2.1.0（2.2 连接器）+ Iceberg 1.12.0
 lakehouse-rest-optimizer/  表优化执行体（被 k8s 提交起来跑，不经服务端 classpath）：
                         PaimonProcedures、TableOptimizerJob、OptimizerOptions、OptimizationApiClient
 deploy/kubernetes/      单文件三文档：configmap / deployment / service（有独立 README；

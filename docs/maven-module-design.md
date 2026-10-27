@@ -93,8 +93,8 @@ io.github.melin:lakehouse-rest-parent                     pom   聚合器 + 集�
 │   └── lakehouse-rest-spark-4.1                          jar   Spark 4.1 / Scala 2.13 / ANTLR 4.13.1
 │       （shared/ 不是模块：两个版本模块共用的源码目录，见 §13）
 ├── lakehouse-rest-flink-parent                           pom   Flink 侧的聚合（复用根 POM 的依赖世界）
-│   ├── lakehouse-rest-flink-1.20                         jar   Flink 1.20.1 + Paimon 2.0.0 + Iceberg 1.11.0
-│   └── lakehouse-rest-flink-2.3                          jar   Flink 2.3.0 + Paimon 2.0.0（2.2 连接器）+ Iceberg 1.12.0
+│   ├── lakehouse-rest-flink-1.20                         jar   Flink 1.20.1 + Paimon 2.1.0 + Iceberg 1.11.0
+│   └── lakehouse-rest-flink-2.3                          jar   Flink 2.3.0 + Paimon 2.1.0（2.2 连接器）+ Iceberg 1.12.0
 │       （shared/ 同上：catalog 选项与端到端用例的唯一一份，见 §14）
 └── lakehouse-rest-optimizer                              jar   k8s 优化任务
 ```
@@ -339,20 +339,58 @@ enforcer 会拦下来，但更好的做法是别让这种事有机会发生。
 | protocol-paimon | 默认（true） | `org.apache.iceberg:*`、`lakehouse-rest-protocol-iceberg` | 不变量 2 与 3 |
 | server | **false（只禁直接声明）** | `org.apache.iceberg:*` | 可执行产物最终要靠 `server → protocol-iceberg` 把 iceberg-core 带进来。要守的不是「产物里有它」，而是「除了那个面，没有第二个地方**声明**它」——默认的 true 会把这条规则读成「server 不许装配 Iceberg 面」，与设计相反 |
 
-### 8.4 `paimon.version` 钉在 2.0.0
+### 8.4 `paimon.version` 与升级记录
 
-`paimon.version` 定为 **2.0.0**，不是「越新越好」：Paimon **2.1.0 把
-`org.apache.paimon.schema.SchemaManager` 从类改成了接口**，而 `TableMetadataService`
-还在用 `new SchemaManager(fileIO, path)`。升到 2.1.0 是一次独立的代码迁移
-（迁移 `SchemaManager` 的用法、两处 `paimon.version` 一起改），不要顺手夹带。
-另一个教训值得记：POM 里写 2.1.0 而代码编不过的现象**只在全量编译时出现**——
+当前是 **2.1.0**（2026-10-27 从 2.0.0 升上来）。两处 `paimon.version`（根 POM 与
+`spring-parent`）一起改，这是本节唯一的硬约束——它们分属两个依赖世界，靠人工守。
+
+**2.0.0 → 2.1.0 实际动到的东西**（比预估的少）：
+
+| 变动 | 影响 | 处理 |
+|---|---|---|
+| `org.apache.paimon.schema.SchemaManager` 从类改成接口 | 服务端两处 `new SchemaManager(fileIO, path)` 编不过 | 换成实现类 `FileSystemSchemaManager`，构造器签名不变；`createTable` / `commit` / `latestOrThrow` 都还在接口上 |
+| `DataTypeRoot` 多了 `GEOMETRY` / `GEOGRAPHY` | 预览侧对 `getTypeRoot()` 的 switch 不再穷尽，**编译期**就红 | `PaimonPreviewTable.kindOf` 归到 `BINARY`（WKB 字节，不能排序/筛选）；`RowValues` 走既有 `default` 渲染成 `<GEOMETRY>`——没有稳定的长度访问器，不去猜字节 |
+| 发布 `paimon-spark-4.1_2.13` | 4.1 模块不必再借 4.0 的 bundle | 改 `-4.1/pom.xml` 一行（见 §13.6） |
+| `ProcedureUtils.fillInSnapshotOptions`、`ExpireConfig` | 签名未变 | 无需改动，`PaimonProceduresTests` 的往返校验照旧通过 |
+| 优化任务镜像 `Dockerfile` 写死了 `…-2.0.0.jar` 的文件名 | 升级后 target/jars 里变成 `…-2.1.0.jar`，`COPY` 当场失败（报错与「忘了 package」同一句） | 把 `maven-dependency-plugin` 的 `stripVersion` 改成 `true`，target/jars 里落成不带版本的名字（`paimon-spark-3.5_2.12.jar`、`paimon-s3.jar`、`iceberg-spark-runtime-3.5_2.12.jar`），Dockerfile 用固定名 COPY —— **版本只在 POM 里出现一次**，还顺带避免了旧版本残留被装进镜像 |
+
+代价可忽略，收益是空间类型与 4.1 原生 bundle。**再升版本时优先看 `SchemaManager`
+与 `DataTypeRoot` 这两个类**：它们是本仓库唯一直接依赖 Paimon 内部形状的地方，
+而且两处都会在编译期暴露，不会拖到运行期。
+
+另一个教训值得记：POM 里写新版本而代码编不过的现象**只在全量编译时出现**——
 增量编译在源码未变时会整模块跳过，平时看起来是好的。
+
+**2.1.0 下的验收**（2026-10-27）：
+
+| 验收 | 结果 |
+|---|---|
+| 服务端全量 | 506 例 / 4 失败（即 §8.5 记的既有红，无新增）；Paimon 相关 `PaimonPreviewReadTests` 3、`PolicyPreviewTests` 9、`PaimonRestCatalogApiTests` 13 全绿 |
+| Spark 单测 | 4.1 **195 例 0 失败**（41 skip）；3.5 197 例、2 个 S3 用例要真实对象存储（见 §13.5） |
+| optimizer | 38 例全绿（procedure 语义未变） |
+| `e2e-flink-sql.sh` | 1.20 与 2.3 各 6 例（Paimon 3 + Iceberg 3）**全过**，连真服务端 |
+| `e2e-spark-sql.sh` | `PaimonTableDdlTests` 10、`NonPaimonTableSqlTests` 6、`IcebergTableDdlTests` 10 **全过**；另有 6 条既有红（见下） |
+
+Spark e2e 那 6 条既有红与升级无关，记在这里免得下次误判：
+
+1. **服务端没有 `catalogs/{catalog}/catalog-roles` 这组端点**（客户端 `ManagementApiClient`
+   有调用）。命中它的是 `SparkSqlAuthorizationTests` 4 例与 `ManagementSqlLiveServerTests` 1 例，
+   报错是 `No static resource …/catalog-roles`——按本仓的约定，这句读作「路由没匹配」，
+   即端点缺失，不是权限问题。
+2. **`SparkSqlDocExamplesTests` 依赖的示例不自足**：`docs/spark-sql-reference.md` 第 10 节的
+   可执行块直接对 `default.orders` 动手，但块内没有建表语句，跑起来报
+   `The given table does not exist`。要么让示例自建前置对象，要么由用例准备夹具，两处都没做。
+
+顺带修掉的两个文档侧真问题（都是被上面这条用例照出来的，此前因路径 bug 一直没跑起来）：
+`SparkSqlDocExamplesTests` 找文档只试到 `../docs`（拆分后应到 `../../docs`，见 §13.5 的模块层级）；
+`docs/spark-sql-reference.md` 里 `SET spark.lakehouse.rest.sql.confirm-destructive=true` 的键含连字符，
+Spark 的 `SET` 要求加反引号，否则报 `[INVALID_SET_SYNTAX]`。
 
 ### 8.5 遗留
 
 | # | 事项 | 说明 |
 | --- | --- | --- |
-| 1 | Paimon 升到 2.1.0 | 需要先迁移 `SchemaManager` 的用法（见 §8.4） |
+| 1 | ~~Paimon 升到 2.1.0~~ | **已完成（2026-10-27）**：迁移内容见 §8.4 |
 | 2 | 测试分区 | 全部集成测试留在 `server`：它们需要完整应用上下文。真正划算的分区是把 `JwtTests` / `CredentialCipherTests` 这类**纯单元测试**随被测类下移——但那要在多个模块各配一份 surefire，收益不大 |
 
 ---
@@ -475,7 +513,7 @@ server 侧也有同类边（如 `ManagementCatalogService → DatabaseService`�
 | 2 · 两个协议面互不依赖 | 照旧；两个模块各在 `bannedDependencies` 里禁对方。唯一真冲突的产物是 core 的 `CatalogRenameController` |
 | 3 · `iceberg-core` 只出现在 `protocol-iceberg` | 照旧，但需要**两处配套**：① `storage` 的 `paimon-core` 必须 `<optional>true</optional>`——它是唯一允许依赖 Paimon 的非协议模块，而 `searchTransitive` 会把它传给 `protocol-iceberg`，于是 iceberg 面被自己的规则误杀；② `server` 的 `bannedDependencies` 要 `searchTransitive=false`（只禁直接声明）——它的可执行产物**必须**通过 `server → protocol-iceberg` 把 `iceberg-core` 带进来，默认的 true 会把这条规则读成「server 不许装配 Iceberg 面」，与设计正好相反 |
 
-第二条那个「必须关掉默认值」的坑，§8.4 已经记过一次（`searchTransitive` 的语义）；
+第二条那个「必须关掉默认值」的坑，§8.3 已经记过一次（`searchTransitive` 的语义）；
 这次是同一个坑的另一面：**规则越严越要写清它是查直接声明还是查整棵树**，
 否则下一个人会以为规则坏了。
 
@@ -587,24 +625,39 @@ mvn -o -f lakehouse-rest-spark/pom.xml -DskipTests install
 
 | 模块 | 用例 | 结果 |
 | --- | --- | --- |
-| `-3.5` | 107 | 0 失败 / 37 跳过（需要 e2e 参数的实时服务端用例） |
-| `-4.1` | 107 | 0 失败 / 37 跳过（同上） |
+| `-3.5` | 197（实跑 156） | 0 失败 / **2 报错（`PaimonS3Test`、`IcebergS3Test`）** / 41 跳过 |
+| `-4.1` | 195（实跑 154） | **0 失败 0 报错** / 41 跳过 |
+
+这里的数字是 **Paimon 2.1.0** 下的实测（2026-10-27）。3.5 比 4.1 多两个用例类，就是那两个
+S3 用例——它们**只存在于 3.5 模块**（`lakehouse-rest-spark-3.5/src/test`），且要连真实
+对象存储端点：
+
+- 不配端点时都会在 `initialize` 阶段抛 `RESTError: Error occurred while processing GET request`；
+- 已在 **2.0.0** 上复跑同一对用例做对照，报的是**同一句**错，因此是**既有的环境依赖**，
+  与本次升级无关；
+- 全量跑时 `PaimonS3Test` 可能先撞上 Paimon 的 `spark.sql.extensions` 配置检查
+  （前一个用例类建的会话被复用），单独跑则直接走到网络错误——两种表现同一根因，
+  别把前者当成「升级带来的新校验」。
 
 同一份测试源码在两版上各跑一遍，是这次拆分顺带得到的收益：**「语法改一处、两边都验」**，
 不需要靠人工记得在另一个版本上再跑一次。
 
 ### 13.6 4.1 侧的已知边界
 
-1. **Paimon 还没有 Spark 4.1 的 bundle。** Paimon 2.0.0 只发布到 `paimon-spark-4.0_2.13`，
-   4.1 模块用它（同属 Spark 4 的 API 面）。因此 4.1 上**凡是真建 SparkSession 的用例一例也跑不了**
-   （`PaimonTableDdlTests`、`ManagementSqlLiveServerTests`、`LineageLiveServerTests` 等）：
-   Paimon 的 Spark 扩展在装配会话状态时加载 `org.apache.spark.sql.paimon.shims.Spark4Shim` 失败
+1. **~~Paimon 还没有 Spark 4.1 的 bundle~~（Paimon 2.1.0 已解决）。** 2.0.0 只发布到
+   `paimon-spark-4.0_2.13`，4.1 模块当时拿它顶（同属 Spark 4 的 API 面），结果是 4.1 上
+   **凡是真建 SparkSession 的用例一例也跑不了**：Paimon 的 Spark 扩展在装配会话状态时加载
+   `org.apache.spark.sql.paimon.shims.Spark4Shim` 失败
    （`java.util.ServiceConfigurationError: … Unable to get public no-arg constructor`），
    包上去的表现是 `IllegalArgumentException: Error while instantiating
    'org.apache.spark.sql.internal.SessionStateBuilder'`，栈里一个 Paimon 的类名都不在头顶，
    极具误导性。**这条一度写成「起真服务端就能跑」，实测不成立**——服务端起不起都在同一个地方炸。
-   4.1 侧能验的只有「不建整会话」的那部分（抽取器单测、解析、对桩执行）。Paimon 发布 4.1 bundle
-   后改 `-4.1/pom.xml` 的 `paimon.spark.artifact` 一行即可。
+
+   Paimon 2.1.0 发布了原生的 `paimon-spark-4.1_2.13`，`-4.1/pom.xml` 的
+   `paimon.spark.artifact` 已切过去，**该边界随之消失**：4.1 侧的建会话用例全部恢复执行，
+   实跑数与 3.5 基本对齐（见 §13.5 的统计）。这也是升 2.1.0 最直接的收益——此前 4.1 只能验
+   「不建整会话」的那部分（抽取器单测、解析、对桩执行）。
+   仍要记住的是：**「3.5 能跑而 4.1 不能跑」在这个项目里从来不是引擎差异，而是缺 bundle**。
 2. **JDK 上限照旧**：两个版本都只能在 JDK 17 / 21 上跑测试（JDK 24 移除了 Security
    Manager，Hadoop 的 `getSubject` 会失败），由 `SparkJdkRequirement` 在建会话前拦下。
 3. **`spark-hive` 仍是测试期依赖**：Paimon 的 Spark 扩展初始化时会引用
@@ -647,7 +700,7 @@ Java 包        ：io.github.melin.lakehouse.rest；协议面各独占一层格�
 3. 版本属性只在本模块内：`flink.version` / `paimon.flink.artifact` / `iceberg.flink.artifact`，
    不进根 POM——根 POM 的 `spark.version` 那组已经够多，再混进来分不清谁绑谁。
 
-**版本取舍**：1.20 钉 1.20.1（Paimon 2.0.0 连接器就是按它编的）；2.3 用 2.3.0 +
+**版本取舍**：1.20 钉 1.20.1（Paimon 2.1.0 连接器仍然按它编的：其 POM 里 flink.version=1.20.1）；2.3 用 2.3.0 +
 Iceberg 1.12.0（`iceberg-flink-runtime-2.3` 从 1.12.0 才有）。Paimon 没有 2.3 构件，
 2.2 的连接器实测在 2.3.0 上可用——这是实测结论，Paimon 发布 2.3 构件后应换回。
 

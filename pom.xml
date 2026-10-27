@@ -103,7 +103,7 @@
 			两个依赖世界不共用父 POM，所以这个一致性目前靠人工守——
 			改任一处时两处一起改（见 docs/maven-module-design.md §3.2）。
 		-->
-		<paimon.version>2.0.0</paimon.version>
+		<paimon.version>2.1.0</paimon.version>
 
 		<!--
 			Iceberg 的版本（集群世界）。

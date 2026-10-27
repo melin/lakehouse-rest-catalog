@@ -41,11 +41,20 @@ class SparkSqlDocExamplesTests {
 
   private def session: SparkSession = ManagementSqlLiveServerTests.session
 
-  /** 文档路径：相对模块目录解析，因此从仓库根或模块目录运行都能找到。 */
+  /**
+   * 文档路径：相对**工作目录**解析，因此从仓库根、模块目录运行都能找到。
+   *
+   * <p>为什么要试到 `../../`：Surefire 的工作目录是**模块**目录，而这份源码在
+   * `shared/` 里、被 `-3.5` / `-4.1` 两个模块共用。拆分前模块目录就是仓库根下的
+   * `lakehouse-rest-spark/`（`../docs` 够用），拆分后多了一层，`../docs` 落到了
+   * `lakehouse-rest-spark/docs`（不存在）。症状是只有带 `-De2e.management.url`
+   * 真跑时才炸，平时的 `mvn test` 因为整体跳过而看不出来。
+   */
   private def docPath: Path = {
     val candidates = Seq(
       Paths.get("docs/spark-sql-reference.md"),
-      Paths.get("../docs/spark-sql-reference.md"))
+      Paths.get("../docs/spark-sql-reference.md"),
+      Paths.get("../../docs/spark-sql-reference.md"))
     candidates.find(Files.exists(_)).getOrElse(
       throw new IllegalStateException(
         "找不到 docs/spark-sql-reference.md，当前目录: " + Paths.get("").toAbsolutePath))

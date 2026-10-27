@@ -247,7 +247,7 @@ class NonPaimonTableSqlTests {
    * 的 scan 只有位置、没有快照，{@code ObjectRead.createReader} 每次执行才去
    * {@code fileIO.listFilesIterative}。因此上游 1.0 时代 Flink 连接器里的
    * {@code CALL sys.refresh_object_table(...)}（那套还需要 {@code object-location} 选项）
-   * 在 2.0.0 里已经没有对应物——2.0.0 的所有 paimon jar 里都不存在这两个字符串。
+   * 早已没有对应物——2.1.0 与 2.0.0 的所有 paimon jar 里都不存在这两个字符串。
    */
   @Test
   def objectTableSeesObjectsDroppedIntoItsDirectory(): Unit = {

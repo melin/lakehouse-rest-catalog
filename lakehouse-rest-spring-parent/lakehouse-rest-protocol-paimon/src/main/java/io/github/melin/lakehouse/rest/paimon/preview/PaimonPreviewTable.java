@@ -330,7 +330,9 @@ public class PaimonPreviewTable implements PreviewTable {
             case DATE, TIME_WITHOUT_TIME_ZONE, TIMESTAMP_WITHOUT_TIME_ZONE,
                  TIMESTAMP_WITH_LOCAL_TIME_ZONE -> PreviewColumn.Kind.TEMPORAL;
             case BOOLEAN -> PreviewColumn.Kind.BOOLEAN;
-            case BINARY, VARBINARY, BLOB -> PreviewColumn.Kind.BINARY;
+            // GEOMETRY / GEOGRAPHY 是 Paimon 2.1.0 新增的空间类型（WKB 字节），
+            // 与 BINARY 一样按「不可当文本渲染的原始字节」处理，所以归到 BINARY。
+            case BINARY, VARBINARY, BLOB, GEOMETRY, GEOGRAPHY -> PreviewColumn.Kind.BINARY;
             case ARRAY, MAP, ROW, MULTISET, VARIANT, VECTOR -> PreviewColumn.Kind.COMPLEX;
         };
     }

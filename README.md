@@ -33,7 +33,7 @@
   `schema.options.type` 里，建表时的归一化与边界见第 6 节第 23 条。后三种的位置就是
   数据目录本身，可以由建表请求里的 `path` 指定（指向一个已经存在的目录，如对象存储上
   放图片的前缀），不指定则由目录按模板分配。
-  其中 **Lance 表只登记不读写**（Paimon 2.0.0 未实现，见
+  其中 **Lance 表只登记不读写**（Paimon 2.1.0 未实现，见
   [`docs/spark-paimon-rest-e2e.md`](docs/spark-paimon-rest-e2e.md) §4.4）：
   接口照常接受建表请求，控制台的新建表表单不给入口
 - 默认表属性：catalog 的 `properties` 里写 `table-default.<属性名>`（如
@@ -65,8 +65,8 @@ paimon-rest/
 │   └── lakehouse-rest-spark-4.1/     Spark 4.1.2 / Scala 2.13 / ANTLR 4.13.1
 ├── lakehouse-rest-flink/       Flink SQL 通过 REST catalog 读写：一份源码、两个版本
 │   ├── shared/                 两个 Flink 版本共用的源码（catalog 选项 + 端到端用例）
-│   ├── lakehouse-rest-flink-1.20/  Flink 1.20.1 + Paimon 2.0.0 + Iceberg 1.11.0
-│   └── lakehouse-rest-flink-2.3/   Flink 2.3.0 + Paimon 2.0.0（2.2 连接器）+ Iceberg 1.12.0
+│   ├── lakehouse-rest-flink-1.20/  Flink 1.20.1 + Paimon 2.1.0 + Iceberg 1.11.0
+│   └── lakehouse-rest-flink-2.3/   Flink 2.3.0 + Paimon 2.1.0（2.2 连接器）+ Iceberg 1.12.0
 ├── lakehouse-rest-optimizer/   表存储优化任务（Spark，由服务端投到 k8s 运行）
 ├── deploy/kubernetes/       Kubernetes 部署清单（单文件三文档，见其目录下的 README）
 ├── spec/                    OpenAPI 规格副本（两套协议面各一份）
@@ -364,8 +364,8 @@ lakehouse-rest-flink/        一份源码、两个版本产物（Flink 1.20 与 
                                                           （不 import 任何 Flink 类型）
   shared/src/test/java/…/PaimonFlinkSqlTests.java          建主键表 / 读写 / 主键更新（配 sequence.field）
   shared/src/test/java/…/IcebergFlinkSqlTests.java         建表（format-version=2）/ 读写 / 二次写入
-  lakehouse-rest-flink-1.20/  Flink 1.20.1 + Paimon 2.0.0 + Iceberg 1.11.0
-  lakehouse-rest-flink-2.3/   Flink 2.3.0 + Paimon 2.0.0（2.2 连接器）+ Iceberg 1.12.0
+  lakehouse-rest-flink-1.20/  Flink 1.20.1 + Paimon 2.1.0 + Iceberg 1.11.0
+  lakehouse-rest-flink-2.3/   Flink 2.3.0 + Paimon 2.1.0（2.2 连接器）+ Iceberg 1.12.0
 ```
 
 关键设计：
@@ -691,7 +691,7 @@ Azure 只下发定位元数据是个明确的缺口：Polaris 的 `polaris.stora
 21. **运行服务端只能用 JDK 17，不能用 18 及以上。** 第 17 条说服务端要把 schema 与快照
     写进仓库；仓库在对象存储上时，这条链路在 JDK 18+ 上**必然失败**，且报错与 S3 毫无关系：
     JDK 18 的 JEP 418 给 `InetAddress` 加了解析器 SPI，`InetAddress.loadResolver()` 会
-    `ServiceLoader` 找 `InetAddressResolverProvider`；而 Paimon 2.0.0 的 `paimon-s3` 插件包把
+    `ServiceLoader` 找 `InetAddressResolverProvider`；而 Paimon 2.1.0 的 `paimon-s3` 插件包仍把
     dnsjava 那个 provider 的声明放在插件根、实现类放在 `META-INF/versions/18/`
     （多版本 jar 布局，解成插件目录后不再生效），`PluginFileIO` 又把线程上下文类加载器切成
     插件 loader，于是那块作用域里任何 `InetAddress` 解析都抛
@@ -741,7 +741,7 @@ Azure 只下发定位元数据是个明确的缺口：Polaris 的 `polaris.stora
     **没有 refresh 这一步**（见 `docs/spark-paimon-rest-e2e.md` §4.4.1）。
     数据由引擎直接读写那个目录，因此快照、标签、分支、分区状态与提交累计的文件统计都不适用：
     控制台只给它们「详细信息」与「文件列表」两个页签，详细信息页里也不画那四张统计卡片。
-    三者中 **Lance 表只登记不能读写**（Paimon 2.0.0 未实现，见
+    三者中 **Lance 表只登记不能读写**（Paimon 2.1.0 未实现，见
     [`docs/spark-paimon-rest-e2e.md`](docs/spark-paimon-rest-e2e.md) §4.4），
     服务端照常接受它的建表请求，控制台的新建表表单把它标成不可选。
 24. **catalog 级默认表属性（`table-default.*`）两种格式都支持，只作用于新建的表**。

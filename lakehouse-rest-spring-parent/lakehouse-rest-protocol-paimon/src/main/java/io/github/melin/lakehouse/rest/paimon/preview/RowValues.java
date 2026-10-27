@@ -97,6 +97,10 @@ final class RowValues {
                 case ARRAY -> array(row.getArray(position));
                 case MAP -> map(row.getMap(position));
                 case ROW -> nested(row, position, (RowType) type);
+                // 落到这里的是我们没有专门渲染的类型：Paimon 2.1.0 新增的
+                // GEOMETRY / GEOGRAPHY（WKB 字节，没有稳定的长度访问器）、
+                // 以及 MULTISET / VARIANT / VECTOR。统一渲染成 `<TYPE_ROOT>`，
+                // 比按「大概能当字节读」去猜安全——猜错会把整页拖进异常分支。
                 default -> "<" + type.getTypeRoot() + ">";
             };
         } catch (RuntimeException exception) {

@@ -80,13 +80,14 @@
 			schema 是否是同一套。两个依赖世界不共用父 POM，这个一致性靠人工守，
 			改任一处时两处一起改（仓库根 POM 的注释里有详细说明）。
 
-			为什么是 2.0.0 而不是更高的 2.1.0：Paimon 2.1.0 把
-			org.apache.paimon.schema.SchemaManager 从类改成了接口，而
-			lakehouse-rest-protocol-paimon 的 TableMetadataService 仍在用
-			它的构造器（`new SchemaManager(fileIO, path)`）。升到 2.1.0 需要先做
-			一次代码迁移，那是独立的一件事，不该藏在「改坐标 + 拆模块」里。
+			2.1.0 的迁移点（2026-10-27 从 2.0.0 升上来）：Paimon 2.1.0 把
+			org.apache.paimon.schema.SchemaManager 从类改成了接口，文件系统实现改名
+			FileSystemSchemaManager（构造器签名不变：(FileIO, Path)）。服务端两处
+			`new SchemaManager(...)` 与两处测试夹具因此改成 `new FileSystemSchemaManager(...)`，
+			其余方法（createTable / commit / latestOrThrow）都在接口上保持不变。
+			再升版本时优先看这个类：它是本服务端唯一直接构造 Paimon 内部对象的地方。
 		-->
-		<paimon.version>2.0.0</paimon.version>
+		<paimon.version>2.1.0</paimon.version>
 		<!--
 			Iceberg 的版本（服务端世界）。
 

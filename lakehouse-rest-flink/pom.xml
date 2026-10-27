@@ -59,9 +59,11 @@
 			Paimon 的 Flink 连接器。构件名带 Flink 主次版本后缀，因此用属性承载完整名字，
 			dependencyManagement 里只引用属性。
 
-			版本跟根 POM 的 paimon.version 走（当前 2.0.0）：连接器自带 paimon-core，
+			版本跟根 POM 的 paimon.version 走（当前 2.1.0）：连接器自带 paimon-core，
 			它决定「引擎侧把 schema / 提交信息写成什么样」，必须与服务端
 			（spring-parent 的 paimon.version）一致，否则症状是引擎读不回自己刚写的表。
+			2.1.0 的 `paimon-flink-1.20` / `paimon-flink-2.2` 都还在发，且 1.20 版的 POM 里
+			flink.version 仍是 1.20.1，与这里钉的版本对得上，因此两侧都只改版本号即可。
 		-->
 		<paimon.flink.artifact>paimon-flink-1.20</paimon.flink.artifact>
 		<!--

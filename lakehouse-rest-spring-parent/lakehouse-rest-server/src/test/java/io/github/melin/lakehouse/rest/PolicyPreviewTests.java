@@ -35,7 +35,7 @@ import org.apache.paimon.data.GenericRow;
 import org.apache.paimon.fs.FileIO;
 import org.apache.paimon.fs.local.LocalFileIO;
 import org.apache.paimon.schema.Schema;
-import org.apache.paimon.schema.SchemaManager;
+import org.apache.paimon.schema.FileSystemSchemaManager;
 import org.apache.paimon.schema.TableSchema;
 import org.apache.paimon.table.FileStoreTable;
 import org.apache.paimon.table.FileStoreTableFactory;
@@ -368,7 +368,7 @@ class PolicyPreviewTests {
         FileIO fileIO = LocalFileIO.create();
         org.apache.paimon.fs.Path tablePath =
                 new org.apache.paimon.fs.Path(dir.resolve("customers").toUri().toString());
-        TableSchema tableSchema = new SchemaManager(fileIO, tablePath).createTable(schema);
+        TableSchema tableSchema = new FileSystemSchemaManager(fileIO, tablePath).createTable(schema);
         FileStoreTable table = FileStoreTableFactory.create(fileIO, tablePath, tableSchema);
         write(table, rows());
         return table;
@@ -405,7 +405,7 @@ class PolicyPreviewTests {
         FileIO fileIO = LocalFileIO.create();
         org.apache.paimon.fs.Path tablePath =
                 new org.apache.paimon.fs.Path(dir.resolve("customers_part").toUri().toString());
-        TableSchema tableSchema = new SchemaManager(fileIO, tablePath).createTable(schema);
+        TableSchema tableSchema = new FileSystemSchemaManager(fileIO, tablePath).createTable(schema);
         FileStoreTable table = FileStoreTableFactory.create(fileIO, tablePath, tableSchema);
         write(table,
                 GenericRow.of(1, BinaryString.fromString("alice"),

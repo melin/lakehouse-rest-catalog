@@ -13,8 +13,8 @@ lakehouse-rest-flink/
 ├── shared/src/test/java/…/FlinkE2eSupport.java               起 catalog、批模式 TableEnvironment、跑 SQL
 ├── shared/src/test/java/…/PaimonFlinkSqlTests.java           建表 / 读写 / 主键更新
 ├── shared/src/test/java/…/IcebergFlinkSqlTests.java          建表 / 读写 / 二次写入
-├── lakehouse-rest-flink-1.20/   Flink 1.20.1 + Paimon 2.0.0 + Iceberg 1.11.0
-└── lakehouse-rest-flink-2.3/    Flink 2.3.0 + Paimon 2.0.0（2.2 连接器）+ Iceberg 1.12.0
+├── lakehouse-rest-flink-1.20/   Flink 1.20.1 + Paimon 2.1.0 + Iceberg 1.11.0
+└── lakehouse-rest-flink-2.3/    Flink 2.3.0 + Paimon 2.1.0（2.2 连接器）+ Iceberg 1.12.0
 ```
 
 **为什么拆两个模块**：Flink 的 `CatalogFactory` / Table 工厂是按版本编译的，
@@ -74,7 +74,7 @@ mvn -o -pl :lakehouse-rest-flink-1.20 test \
 
 | 组合 | 建表 | 写入 / 读回 | 主键更新 | 服务端元数据 |
 | --- | --- | --- | --- | --- |
-| Flink 1.20.1 + Paimon 2.0.0 | ✅ | ✅ | ✅ | `primaryKeys` 落库 |
+| Flink 1.20.1 + Paimon 2.1.0 | ✅ | ✅ | ✅ | `primaryKeys` 落库 |
 | Flink 1.20.1 + Iceberg 1.11.0 | ✅ | ✅ | —（Iceberg 无 upsert） | `metadata-location` / `format-version=2` |
 | Flink 2.3.0 + Paimon（2.2 连接器） | ✅ | ✅ | ✅ | `primaryKeys` 落库 |
 | Flink 2.3.0 + Iceberg 1.12.0 | ✅ | ✅ | — | `metadata-location` / `format-version=2` |
@@ -110,7 +110,7 @@ mvn -o -pl :lakehouse-rest-flink-1.20 test \
 - **Flink 2.3 没有 Paimon 连接器。** Maven Central 上只到 `paimon-flink-2.2`。
   2.2 的连接器实测在 2.3.0 上可用（Paimon 只用 Table/Catalog 工厂的稳定面），
   但这是**实测结论不是保证**：Paimon 发布 2.3 构件后应换回官方版本。
-- **1.20 钉 1.20.1 而不是 1.20.5。** Paimon 2.0.0 的连接器是按 1.20.1 编译的
+- **1.20 钉 1.20.1 而不是 1.20.5。** Paimon 2.1.0 的连接器仍是按 1.20.1 编译的
   （pom 里 `flink-streaming-java` / `flink-table-common` 都是 1.20.1、provided）。
   1.20.x 内部兼容，但既然连接器就是用它编的，测试也钉同一个值，省掉一类排查。
 - **Iceberg 版本要按 Flink 版本选。** `iceberg-flink-runtime-2.3` 从 1.12.0 才存在，
