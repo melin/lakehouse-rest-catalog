@@ -27,7 +27,7 @@
 # 又最没有收益的那部分工作。版本必须与根 POM 的 `spark.version` / `paimon.version` 对齐。
 
 # 与 lakehouse-rest-spark 的目标运行时一致：Spark 3.5.9 / Scala 2.12 / Java 17。
-FROM apache/spark:3.5.9-scala2.12-java17-python3-ubuntu
+FROM docker.1ms.run/apache/spark:3.5.9-scala2.12-java17-python3-ubuntu
 
 WORKDIR /opt/optimizer
 

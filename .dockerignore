@@ -27,7 +27,9 @@
 # 对「父目录已排除」的处理方式——Docker 各版本之间、以及 podman / kaniko 这类
 # 其它构建器之间，这一点并不一致。
 **/target/*
-!lakehouse-rest-spring-parent/lakehouse-rest-server/target/*.jar
+!lakehouse-rest-optimizer/target/*.jar
+!lakehouse-rest-optimizer/target/jars/
+!lakehouse-rest-optimizer/target/jars/*.jar
 build/
 **/build/
 
