@@ -4,13 +4,13 @@
 
     <!-- 格式不支持或外部表本来进不到这个页签（页签按表格式伸缩），这条分支兜的是
          「表在别处被改动过」的情况：策略接口仍会回答，页面要说清为什么没有开关 -->
-    <el-alert v-if="loaded && !supported" type="info" :closable="false" show-icon class="pc-hint">
+    <TipAlert v-if="loaded && !supported" type="info" class="pc-hint">
       <template #title>{{ unsupportedReason || '这张表不支持存储优化' }}</template>
       <div>
         三项动作（Compaction / Snapshot Expire / Orphan File Remove）只对 Paimon 与 Iceberg 表
         可用；外部表也不支持——它的位置不归本服务所有，对它做 compaction 等于在别人的目录里写文件。
       </div>
-    </el-alert>
+    </TipAlert>
 
     <template v-else-if="loaded">
       <!-------------------------------- 总开关 --------------------------------->
@@ -206,11 +206,9 @@
 
         <!-- 干跑是三项里唯一「现在不会删东西」的档位，值得单独一句；
              关掉它的那一刻起，扫描到的东西就被真删了 -->
-        <el-alert
+        <TipAlert
           v-if="spec.action === 'orphan' && cards.orphan.values['dry-run'] === 'false'"
           type="warning"
-          :closable="false"
-          show-icon
           class="pc-hint"
         >
           <template #title>干跑预览已关闭：孤儿文件清理会真的删除文件</template>
@@ -218,7 +216,7 @@
             它删除的依据是「没有被任何快照引用」，因此清理窗口必须大于这张表的最大提交间隔。
             建议先开着干跑跑一轮，核对将要删除的文件之后再关掉。
           </div>
-        </el-alert>
+        </TipAlert>
       </PanelCard>
 
       <!-------------------------------- 执行历史 -------------------------------->
@@ -299,6 +297,7 @@
 import { computed, reactive, ref, watch } from 'vue'
 
 import { optimizationApi } from '@/api/optimization.js'
+import TipAlert from '@/components/TipAlert.vue'
 import FieldLabel from '@/components/FieldLabel.vue'
 import PanelCard from '@/components/PanelCard.vue'
 import ResourceState from '@/components/ResourceState.vue'

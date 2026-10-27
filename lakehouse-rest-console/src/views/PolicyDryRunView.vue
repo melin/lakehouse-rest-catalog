@@ -62,27 +62,23 @@
         试算返回 <b>{{ result.preview?.rows?.length ?? 0 }}</b> 行。
         <code v-if="result.rowFilterSql" class="pc-mono pc-dryrun-sql">{{ result.rowFilterSql }}</code>
       </el-alert>
-      <el-alert
+      <TipAlert
         v-else-if="result.status === 'EXEMPT'"
         type="warning"
-        :closable="false"
-        show-icon
         class="pc-gap"
       >
         <template #title>豁免名单内 · 按原样明文返回</template>
         <span class="pc-mono">{{ principal }}</span> 在豁免名单里，读这张表完全绕过策略。
         豁免优先于一切判定——确认名单里应该有他。
-      </el-alert>
-      <el-alert
+      </TipAlert>
+      <TipAlert
         v-else-if="result.status === 'DISABLED'"
         type="info"
-        :closable="false"
-        show-icon
         class="pc-gap"
       >
         <template #title>策略已停用 · 放行</template>
         这张表的策略存在但被停用（enabled=false），对该主体等价于没策略。
-      </el-alert>
+      </TipAlert>
       <el-alert v-else type="error" :closable="false" show-icon class="pc-gap">
         <template #title>未命中策略 · 按默认放行，全部为明文</template>
         <span class="pc-mono">{{ principal }}</span> 没有匹配到这张表的任何策略（或不在主体
@@ -137,12 +133,12 @@
         </ResourceState>
       </PanelCard>
 
-      <el-alert type="info" :closable="false" show-icon>
+      <TipAlert type="info">
         <template #title>一致性要求</template>
         试算结果与 Spark 实际返回必须<strong>逐行一致</strong>（同一份 AST、两套求值器）。
         不一致就是缺陷，不是「预览精度问题」。脱敏列的取值已按策略改写；角标标记哪些列被改了。
         试算只读、不落库——审计里记的是操作者本人（TABLE_PREVIEWED），不是被模拟的主体。
-      </el-alert>
+      </TipAlert>
     </template>
   </div>
 </template>
@@ -154,6 +150,7 @@ import { useRoute } from 'vue-router'
 import { describeError } from '@/api/client.js'
 import { managementApi } from '@/api/management.js'
 import { policyApi } from '@/api/policy.js'
+import TipAlert from '@/components/TipAlert.vue'
 import PageHeader from '@/components/PageHeader.vue'
 import PanelCard from '@/components/PanelCard.vue'
 import ResourceState from '@/components/ResourceState.vue'

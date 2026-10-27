@@ -13,12 +13,12 @@
             </el-button>
           </template>
 
-          <el-alert type="info" :closable="false" show-icon class="pc-hint">
+          <TipAlert type="info" class="pc-hint">
             <template #title>保存即整份替换</template>
             这里提交的是<strong>完整策略</strong>：行过滤、脱敏列、豁免名单、主体白名单都以本次
             保存为准——「这次少了一列脱敏」就是删掉那一列，不是保持原样。并发修改时后保存的
             一方会收到冲突提示，需要刷新后重看最新版本再决定怎么改。
-          </el-alert>
+          </TipAlert>
 
           <!-- ---------------- 行过滤 ---------------- -->
           <SectionTitle>行过滤</SectionTitle>
@@ -339,13 +339,13 @@
             </div>
           </div>
 
-          <el-alert type="info" :closable="false" show-icon class="pc-hint pc-policy-footnote">
+          <TipAlert type="info" class="pc-hint pc-policy-footnote">
             <template #title>预览已按策略渲染，文件下载已禁用</template>
             本页「数据预览」的行与列都按这份策略改写（与服务端预览求值器同一份逻辑）；
             文件下载对带策略的表一律 403。注意这是<strong>引擎内强制</strong>
             （enforcedScope = {{ detail.enforcedScope || 'engine' }}）：拿到存储凭据的程序
             直读底层文件时策略不生效，详见设计文档第 7.1 节。
-          </el-alert>
+          </TipAlert>
         </PanelCard>
       </template>
 
@@ -371,6 +371,7 @@ import { ElMessageBox } from 'element-plus'
 
 import { ApiError, describeError } from '@/api/client.js'
 import { policyApi } from '@/api/policy.js'
+import TipAlert from '@/components/TipAlert.vue'
 import PanelCard from '@/components/PanelCard.vue'
 import ResourceState from '@/components/ResourceState.vue'
 import SectionTitle from '@/components/SectionTitle.vue'

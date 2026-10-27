@@ -9,7 +9,9 @@
     "build": "vite build",
     "preview": "vite preview",
     "check:login": "vite build --config tools/console-login-check/vite.config.mjs && node tools/console-login-check/dist/main.js",
-    "test:lineage": "node --test \"tools/lineage-tests/*.test.mjs\""
+    "test": "node --test \"tools/*-tests/*.test.mjs\"",
+    "test:lineage": "node --test \"tools/lineage-tests/*.test.mjs\"",
+    "test:auto-refresh": "node --test \"tools/auto-refresh-tests/*.test.mjs\""
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.2",

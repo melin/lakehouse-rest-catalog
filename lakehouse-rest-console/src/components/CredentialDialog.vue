@@ -7,13 +7,13 @@
     @update:model-value="emit('update:modelValue', $event)"
     destroy-on-close
   >
-    <el-alert type="warning" :closable="false" show-icon class="pc-cred-alert">
+    <TipAlert type="warning" class="pc-cred-alert">
       <template #title>密钥只在这里显示一次</template>
       <div>
         服务端只保存密钥摘要，关闭本窗口后无法再取回。请立即复制、导出或妥善保存；
         遗失了只能重置凭据。
       </div>
-    </el-alert>
+    </TipAlert>
 
     <el-descriptions :column="1" border size="small" class="pc-cred-desc">
       <el-descriptions-item label="主体">
@@ -37,6 +37,7 @@
 <script setup>
 import { computed } from 'vue'
 
+import TipAlert from '@/components/TipAlert.vue'
 import CopyText from '@/components/CopyText.vue'
 
 const props = defineProps({

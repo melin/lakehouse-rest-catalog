@@ -18,11 +18,11 @@
       </template>
     </PageHeader>
 
-    <el-alert type="warning" :closable="false" show-icon class="pc-gap">
+    <TipAlert type="warning" class="pc-gap">
       <template #title>发布前请确认 · 这一步之后没有「预览模式」</template>
       策略一发布就对新查询生效。要小范围验证，先去「试算」里换几个主体看结果，再发布。
       保存是<strong>整份替换</strong>：本次提交的行过滤、脱敏列、豁免名单、主体范围就是全部。
-    </el-alert>
+    </TipAlert>
 
     <div class="pc-wizard-split">
       <div>
@@ -323,6 +323,7 @@ import { useRouter } from 'vue-router'
 import { catalogApi } from '@/api/catalog.js'
 import { managementApi } from '@/api/management.js'
 import { policyApi } from '@/api/policy.js'
+import TipAlert from '@/components/TipAlert.vue'
 import PanelCard from '@/components/PanelCard.vue'
 import PageHeader from '@/components/PageHeader.vue'
 import { notifyError, notifySuccess } from '@/composables/index.js'

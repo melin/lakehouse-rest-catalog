@@ -2,6 +2,12 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 import { describeError } from '@/api/client.js'
+import {
+  autoRefreshKey,
+  readPreference,
+  shouldTick,
+  writePreference,
+} from '@/utils/autoRefresh.js'
 
 /** 顶栏刷新按钮广播的事件名。 */
 export const REFRESH_EVENT = 'console:refresh'
@@ -16,41 +22,161 @@ export const REFRESH_EVENT = 'console:refresh'
 export function useResource(loader, { immediate = true } = {}) {
   const loading = ref(false)
   const error = ref('')
+  /**
+   * 静默刷新（定时刷新）最近一次的失败原因。
+   * 有值时表格里仍是**上一次成功**的数据——所以它是一个「数据可能旧了」的提示，
+   * 不是错误态：用它去替换整张表，会让页面每 5 秒闪一次错误。
+   */
+  const staleError = ref('')
   const data = ref(null)
   let sequence = 0
+  // 在途请求计数而不是布尔：静默刷新与手动刷新可能重叠，谁先回来都要等最后一个。
+  let pending = 0
 
-  async function load() {
+  async function fetchData({ silent = false } = {}) {
     const current = ++sequence
-    loading.value = true
-    error.value = ''
+    pending += 1
+    if (!silent) {
+      loading.value = true
+      error.value = ''
+    }
     try {
       const result = await loader()
       if (current === sequence) {
         data.value = result
+        error.value = ''
+        staleError.value = ''
       }
       return result
     } catch (cause) {
       if (current === sequence) {
-        error.value = describeError(cause)
+        if (silent) {
+          staleError.value = describeError(cause)
+        } else {
+          error.value = describeError(cause)
+        }
       }
       return null
     } finally {
-      if (current === sequence) {
+      pending -= 1
+      if (pending === 0) {
         loading.value = false
       }
     }
   }
 
+  function load() {
+    return fetchData()
+  }
+
+  /** 定时刷新用：不出遮罩、失败不清空、不切错误态。 */
+  function silentLoad() {
+    return fetchData({ silent: true })
+  }
+
   if (immediate) {
     onMounted(load)
   }
-  return { loading, error, data, load }
+  return { loading, error, staleError, data, load, silentLoad }
 }
 
 /** 订阅顶栏的刷新广播，组件卸载时自动退订。 */
 export function onConsoleRefresh(handler) {
   onMounted(() => window.addEventListener(REFRESH_EVENT, handler))
   onUnmounted(() => window.removeEventListener(REFRESH_EVENT, handler))
+}
+
+/**
+ * 定时刷新：按节拍调用 `tick`，开关与节拍由用户改、记在 localStorage。
+ *
+ * <p><b>默认开启、5 秒一次</b>（见 `utils/autoRefresh.js` 的说明）。`tick` 必须走
+ * 静默刷新（`silentLoad`）：定时器触发的是「同一页数据的重取」，不是用户发起的
+ * 一次操作，因此不该出遮罩、更不该在失败时把表格清空。
+ *
+ * <p>三件容易被忘掉、忘了也不报错的事，都在这里做掉：
+ * ① 卸载时清定时器（否则离开页面后还在打接口）；
+ * ② 后台标签页跳过（`visibilitychange`，切回前台时补一拍）；
+ * ③ 上一拍没回来不发下一拍（慢网络下请求会堆叠成雪崩）。
+ *
+ * @param {() => Promise<unknown>|unknown} tick 一拍要做什么（通常是几个静默刷新）
+ * @param {object} options
+ * @param {string} options.page 偏好存储的页名（每个列表页一份，互不影响）
+ * @param {() => boolean} [options.blocked] 页面自己的「现在不该刷新」判断
+ * @returns 开关 `enabled`、节拍 `seconds`（秒，双向绑定给控件）、
+ *          最近一次自动刷新的时刻 `lastAt`、手点一次 `tickNow`
+ */
+export function useAutoRefresh(tick, { page, blocked = () => false } = {}) {
+  const key = autoRefreshKey(page)
+  const stored = readPreference(window.localStorage, key)
+  const enabled = ref(stored.enabled)
+  const seconds = ref(stored.seconds)
+  const lastAt = ref(0)
+  let timer = null
+  let inFlight = false
+
+  function clear() {
+    if (timer !== null) {
+      window.clearInterval(timer)
+      timer = null
+    }
+  }
+
+  async function run() {
+    const hidden = typeof document !== 'undefined' && document.visibilityState === 'hidden'
+    if (!shouldTick({ enabled: enabled.value, hidden, inFlight, blocked: blocked() })) {
+      return
+    }
+    inFlight = true
+    try {
+      await tick()
+      lastAt.value = Date.now()
+    } finally {
+      inFlight = false
+    }
+  }
+
+  function schedule() {
+    clear()
+    if (enabled.value) {
+      timer = window.setInterval(run, seconds.value * 1000)
+    }
+  }
+
+  // 改完立刻重排：不这样的话，把 5 秒改成 30 秒之后还要按旧节拍再跑一拍，
+  // 看起来像「设置没生效」。
+  watch(enabled, (value) => {
+    writePreference(window.localStorage, key, { enabled: value, seconds: seconds.value })
+    schedule()
+    // 打开开关时立刻刷一次：否则用户按下开关后要盯着旧数据等满一拍
+    // （最长 60 秒），而那正是「开了没反应」的样子
+    if (value) {
+      run()
+    }
+  })
+
+  watch(seconds, (value) => {
+    writePreference(window.localStorage, key, { enabled: enabled.value, seconds: value })
+    schedule()
+  })
+
+  function onVisibilityChange() {
+    // 回到前台补一拍：后台是不刷新的，等下一个整拍最长要 60 秒，
+    // 而这段时间里页面看起来是「实时的」——那是最坏的一种旧数据。
+    if (document.visibilityState === 'visible') {
+      run()
+    }
+  }
+
+  onMounted(() => {
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    schedule()
+  })
+  onUnmounted(() => {
+    clear()
+    document.removeEventListener('visibilitychange', onVisibilityChange)
+  })
+
+  return { enabled, seconds, lastAt, tickNow: run }
 }
 
 /**
@@ -82,16 +208,27 @@ export function onConsoleRefresh(handler) {
 export function useRemotePaging(loader, { pageSize = 20, immediate = true } = {}) {
   const loading = ref(false)
   const error = ref('')
+  /** 静默刷新（定时刷新）最近一次的失败原因，见 {@link useResource} 里的同名说明。 */
+  const staleError = ref('')
   const rows = ref([])
   const total = ref(0)
   const page = ref(1)
   const size = ref(pageSize)
   let sequence = 0
+  let pending = 0
 
-  async function load() {
+  /**
+   * @param {object} [options]
+   * @param {boolean} [options.silent] 定时刷新：不置 `loading`（表格不出遮罩、
+   *        `ResourceState` 不切到加载态），失败时**保留上一页数据**只记 {@code staleError}
+   */
+  async function fetchPage({ silent = false } = {}) {
     const current = ++sequence
-    loading.value = true
-    error.value = ''
+    pending += 1
+    if (!silent) {
+      loading.value = true
+      error.value = ''
+    }
     try {
       const result = await loader({ page: page.value, pageSize: size.value })
       if (current !== sequence) {
@@ -99,25 +236,43 @@ export function useRemotePaging(loader, { pageSize = 20, immediate = true } = {}
       }
       rows.value = result?.items || []
       total.value = result?.total || 0
+      error.value = ''
+      staleError.value = ''
       // 删掉最后一页的最后一行后，页码会停在已经不存在的页上。往前退到最后一页，
       // 而不是把表格清空——清空会被读成「数据没了」，而实际上只是少了一页。
       if (!rows.value.length && total.value > 0 && page.value > 1) {
         page.value = Math.max(1, Math.ceil(total.value / size.value))
-        return load()
+        return fetchPage({ silent })
       }
       return result
     } catch (cause) {
       if (current === sequence) {
-        error.value = describeError(cause)
-        rows.value = []
-        total.value = 0
+        if (silent) {
+          // 静默刷新失败**不清空表格**：定时器每 5 秒把有数据的表换成空表，
+          // 比不刷新糟得多（而且看起来像「数据被删了」）。
+          staleError.value = describeError(cause)
+        } else {
+          error.value = describeError(cause)
+          rows.value = []
+          total.value = 0
+        }
       }
       return null
     } finally {
-      if (current === sequence) {
+      pending -= 1
+      if (pending === 0) {
         loading.value = false
       }
     }
+  }
+
+  function load() {
+    return fetchPage()
+  }
+
+  /** 定时刷新用：静默重取当前页（页码不动，用户翻到第 3 页就还是第 3 页）。 */
+  function silentLoad() {
+    return fetchPage({ silent: true })
   }
 
   function onPageChange(value) {
@@ -141,7 +296,10 @@ export function useRemotePaging(loader, { pageSize = 20, immediate = true } = {}
     onMounted(load)
   }
 
-  return { loading, error, rows, total, page, pageSize: size, load, reload, onPageChange, onSizeChange }
+  return {
+    loading, error, staleError, rows, total, page, pageSize: size,
+    load, silentLoad, reload, onPageChange, onSizeChange,
+  }
 }
 
 /**

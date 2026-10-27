@@ -16,10 +16,10 @@
       </template>
     </PageHeader>
 
-    <el-alert v-if="!prefix" type="warning" :closable="false" show-icon class="pc-hint">
+    <TipAlert v-if="!prefix" type="warning" class="pc-hint">
       <template #title>还没有可浏览的 catalog</template>
       <div>先在「Catalogs」里创建一个 Iceberg catalog。</div>
-    </el-alert>
+    </TipAlert>
 
     <div v-else class="pc-browse-body">
       <!-- 左：命名空间（平铺，点号拼接；一期不做层级树） -->
@@ -323,14 +323,14 @@
 
     <!-- 登记已有表 -->
     <el-dialog v-model="registerDialog.open" title="登记已有表" width="560px" :close-on-click-modal="false" destroy-on-close>
-      <el-alert type="info" :closable="false" show-icon class="pc-hint">
+      <TipAlert type="info" class="pc-hint">
         <template #title>登记只写经目录，不搬动数据</template>
         <div>
           <code class="pc-mono">metadata-location</code> 必须指向仓库里一份可读的
           <code class="pc-mono">metadata.json</code>；登记进来的表对外标记为外部表，
           删除时服务端不会清理它的文件。
         </div>
-      </el-alert>
+      </TipAlert>
       <el-form label-position="top" size="small" class="pc-form">
         <el-form-item label="表名" required>
           <el-input v-model="registerDialog.name" />
@@ -351,14 +351,14 @@
 
     <!-- 登记已有视图：与登记表同一套「内容以仓库为准」的语义，但没有 overwrite（规格没给） -->
     <el-dialog v-model="viewRegisterDialog.open" title="登记已有视图" width="560px" :close-on-click-modal="false" destroy-on-close>
-      <el-alert type="info" :closable="false" show-icon class="pc-hint">
+      <TipAlert type="info" class="pc-hint">
         <template #title>登记只写经目录，不搬动数据</template>
         <div>
           <code class="pc-mono">metadata-location</code> 必须指向仓库里一份可读的
           <code class="pc-mono">ViewMetadata</code> 文件；视图重名时服务端会拒绝（409），
           没有「覆盖」选项——规格的请求体里没有这个字段。
         </div>
-      </el-alert>
+      </TipAlert>
       <el-form label-position="top" size="small" class="pc-form">
         <el-form-item label="视图名" required>
           <el-input v-model="viewRegisterDialog.name" />
@@ -491,6 +491,7 @@
 import { computed, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
+import TipAlert from '@/components/TipAlert.vue'
 import FieldLabel from '@/components/FieldLabel.vue'
 import IconAction from '@/components/IconAction.vue'
 import JsonBlock from '@/components/JsonBlock.vue'

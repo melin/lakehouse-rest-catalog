@@ -246,6 +246,29 @@ body {
   max-width: 560px;
 }
 
+/* --- 一行高的提示条（components/TipAlert.vue）----------------------------
+ * 提示性告警的正文收进问号后，标题那一行要能「文字 + 图标」居中对齐：
+ * el-alert 的 `.el-alert__title` 是块级的 span，直接塞一个 el-icon 会按
+ * 基线下沉，看起来像掉了一格。用 inline-flex 排一行，行高由内容决定。 */
+.pc-tip-alert-head {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px;
+}
+
+/* 标题本身不折行时保持原样；长标题仍允许折行（它是最该被读到的部分） */
+.pc-tip-alert-title {
+  display: inline;
+}
+
+/* 收起正文后，单行提示条的上下留白可以比默认（8px 16px）更紧一点，
+ * 免得「一行字」占掉三行的高度 */
+.pc-tip-alert.el-alert {
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+
 /* --- 按钮高度 -----------------------------------------------------------
  * Element Plus 把按钮高度钉在组件自己的变量上：`.el-button { height: 32px }`
  * 与 `.el-button--small { --el-button-size: 24px }`，上面的

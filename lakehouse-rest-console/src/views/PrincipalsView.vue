@@ -72,10 +72,10 @@
     <!-- 新建主体 -->
     <el-dialog v-model="createDialog.open" title="新建主体" width="520px" :close-on-click-modal="false"
       destroy-on-close>
-      <el-alert type="warning" :closable="false" show-icon class="pc-hint">
+      <TipAlert type="warning" class="pc-hint">
         <template #title>服务端只保存密钥摘要</template>
         <div>创建成功后，明文密钥只返回一次，请当场保存。</div>
-      </el-alert>
+      </TipAlert>
       <el-form label-position="top" size="small" class="pc-form">
         <el-form-item label="名称" required>
           <el-input v-model="createDialog.name" placeholder="例如 spark-job、flink-prod" />
@@ -169,6 +169,7 @@
 <script setup>
 import { computed, reactive } from 'vue'
 
+import TipAlert from '@/components/TipAlert.vue'
 import CopyText from '@/components/CopyText.vue'
 import FieldLabel from '@/components/FieldLabel.vue'
 import SectionTitle from '@/components/SectionTitle.vue'

@@ -16,10 +16,10 @@
       </template>
     </PageHeader>
 
-    <el-alert v-if="!catalogName" type="warning" :closable="false" show-icon>
+    <TipAlert v-if="!catalogName" type="warning">
       <template #title>请先在右上角选择一个 catalog</template>
       <div>权限按 catalog 隔离，列表与授权都作用在当前选中的 catalog 上。</div>
-    </el-alert>
+    </TipAlert>
 
     <template v-else>
       <!------------------------------ 授权清单 ------------------------------>
@@ -283,6 +283,7 @@
 import { computed, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
+import TipAlert from '@/components/TipAlert.vue'
 import PageHeader from '@/components/PageHeader.vue'
 import PanelCard from '@/components/PanelCard.vue'
 import ResourceState from '@/components/ResourceState.vue'

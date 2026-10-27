@@ -76,10 +76,14 @@ lakehouse-rest-console/
     │   └── oidc.js                OIDC 授权码 + PKCE：授权 URL、state、换令牌
     ├── components/                ResourceState（三态）、PropertiesEditor、StorageConfigFields、
     │                              CredentialDialog、FieldLabel（字段备注收进问号图标）、
-    │                              TipNote（区块说明收进问号图标）、SectionTitle（表单小节头，
+    │                              TipNote（区块说明收进问号图标）、
+    │                              TipAlert（提示性告警的一行化：正文收进标题旁问号）、SectionTitle（表单小节头，
     │                              替代 el-divider 的分组标题）、
+    │                              AutoRefreshControl（列表的定时刷新开关 + 节拍）、
     │                              JsonBlock、CopyText、TimeText、PageHeader、PanelCard
-    ├── composables/index.js       useResource（竞态丢弃）、刷新事件、通知与危险确认
+    ├── composables/index.js       useResource（竞态丢弃）、useRemotePaging、
+    │                              useAutoRefresh（定时刷新：后台暂停、在途不叠加、卸载清定时器）、
+    │                              刷新事件、通知与危险确认
     ├── layouts/ConsoleLayout.vue  侧边导航 + catalog 选择器 + 主题切换 + 刷新
     ├── router/index.js            路由表；侧边菜单由它聚合生成；登录守卫
     ├── store/                     auth（登录态）、session（catalog 与 meta）、
@@ -88,6 +92,7 @@ lakehouse-rest-console/
     │                              （列表头 .pc-list-head、工具行 .pc-tools-row、
     │                              授权表单栅格 .pc-form-grid 等）也收敛在这里
     ├── utils/format.js            时间、字节、JSON 等展示格式化
+    ├── utils/autoRefresh.js       定时刷新的默认值、节拍档位与「这一拍要不要发请求」的纯函数
     └── views/                     12 个页面，见 §4
 ```
 
@@ -141,7 +146,7 @@ lakehouse-rest-console/
 | `/` | 控制台概览 | 统计块（三个数量）、服务端配置摘要、**连接自检**、catalog 清单、`GET /v1/config` 展示 |
 | `/browse` | 目录浏览 | 按选中 catalog 的**表格式**换一套实现：Paimon catalog 是「左库右对象、三页签（表/视图/函数；语义视图的 4 条端点仍在服务端，控制台不再暴露）」；Iceberg catalog 换成 `IcebergBrowseView`（左命名空间右表/视图，见 §4.6）。Paimon 侧能力：建库、建表（Paimon 表 / Format 表 / Object 表三种表格式，Lance 表留在选项里但禁用，见 [console-catalog-detail.md](console-catalog-detail.md) §3.5）、注册表、按表 ID 定位、重命名、删除、详情抽屉。表页签列出表名 / 表格式 / 表类型（Managed 或外部表）/ 创建时间 / 元数据更新时间 / 操作六列，数据取自 `table-details`（只回表名的 `/tables` 给不出这几列）；「元数据更新时间」是服务端这条表记录的最后改动时间，快照提交与回滚也会推动它。表页签的过滤为空时说明「没有匹配 ×××」，与「库里没有表」区分开。**建表入口在「表」页签工具条的右侧**（页头只留刷新与新建数据库）：三类对象的工具条都写在 `ResourceState` 之外——那个组件命中空态时只渲染 `el-empty`、默认插槽整个不渲染，工具条若在里面，「这个库还是空的」这一刻就正好没有新建按钮 |
 | `/tables/:prefix/:database/:table` | [表详情](console-table-detail.md) | 十页签：详细信息 / **血缘** / 数据预览 / 快照 / 标签 / 分支 / **文件列表** / 数据访问 / **数据策略** / **存储优化**（血缘与数据预览、数据策略都不随表格式伸缩：页签自己判空，见 [console-table-detail.md](console-table-detail.md) §1.1）；含快照与标签的**回滚**。**没有「变更」页签**：改表结构走 HTTP 或 Spark SQL，理由见该文档 §2。详细信息首屏的四张统计卡片取自 `getTableSnapshot`（三个文件统计的来路与「什么时候会空」见该文档 §2.1），内含**字段列表 / 分区列表**二级页签（名称过滤 + 分页：字段表在浏览器里切片，分区列表走远程分页且前缀过滤下推，分区按需加载）。文件列表按表目录物理内容列一层（根是表目录，出不了表外），目录名可点下钻、文件可下载、前缀过滤与页码都下推服务端。存储优化页签承载表级策略与执行历史（见 [table-optimization.md](table-optimization.md) §7）。血缘页签给三视图（图 / 邻接表 / 列映射），图是 Canvas 与「跳数即层号」的纯函数布局（见 [lineage-design.md](lineage-design.md) §9）。授权不在这张表上做——表级权限统一到「权限管理」页 |
-| `/catalogs` | Catalogs | 列出 / 创建 / 详情 / 更新（带版本）/ 删除。名称链到详情页；操作列另有「浏览库与对象」直达 `/browse` |
+| `/catalogs` | Catalogs | 列出 / 创建 / 详情 / 更新（带版本）/ 删除。名称链到详情页；操作列另有「浏览库与对象」直达 `/browse`。页头带**定时刷新**开关与节拍（默认开启、5 秒，偏好存 localStorage；见 §4.9） |
 | `/catalogs/:catalogName` | [Catalog 详情](console-catalog-detail.md) | 四页签：概览 / 存储 / 文件列表 / 配置。**存储**页回答「哪些表该做 compaction」：文件数、存储、平均文件大小、小文件占比（按库聚合），两种格式都支持，口径参考 AWS《Monitoring Iceberg workloads》但取数只用已有端点，见 [console-catalog-detail.md §3.2](console-catalog-detail.md)。文件列表按仓库物理目录列一层，目录名可点下钻、带面包屑与「返回上级」；只读，不提供删除与建目录。**配置页签**两种格式是同一套设计：都编辑「表默认参数」（`table-default.*`，见 [catalog-api-endpoints.md](catalog-api-endpoints.md#catalog-级默认表属性table-default)），Iceberg 另附只读的 `/v1/config` `defaults` / `overrides`（连接参数，非表属性）；其余 catalog 属性不在此页重复展示（概览已有） |
 | `/principals` | 主体 | 列出 / 创建 / 更新 / 删除 / rotate / reset；授予与撤销角色。创建、轮换、重置后的凭据弹窗可一键导出 JSON 文件（`{principal, clientId, clientSecret}`，文件名 `<主体>-credentials.json`），密钥仍只在弹窗期间可见 |
 | `/principal-roles` | 角色 | 列出 / 创建 / 更新 / 删除；查看成员（授予成员要按主体操作，在「主体」页做）。角色是**纯分组**，自身不携带权限；管理规格里的 `federated` 字段控制台不暴露——本服务不接入外部 IdP，勾了只存一个标记，且 PUT 不接受该字段，勾错改不回来 |
@@ -149,7 +154,7 @@ lakehouse-rest-console/
 | `/policies` | 数据保护 | 行过滤与列脱敏策略的总览页（数据来自扩展端点 `GET /api/management/v1/policies`）。四张统计卡（受保护表 / 带行过滤 / 脱敏列 / 豁免主体）与列表共用**一次全量拉取**：策略量级是「几十」（`DataPolicyService.list` 的注释口径），要跨页 KPI 与组合过滤，只有整份列表在手才数得准——这是「先过滤再切页」规则的又一实例，与「全站远程分页」的例外判据（有没有列表端点之外的整份列表需求）一致；此处列表端点本身支持分页，但页面刻意不传 `page`。列表列：表（三段名拆解，链接到表详情 `?tab=policy` 深链接）/ 行过滤 SQL（`code` 展示）/ 脱敏列（tags）/ 状态 / 版本 / 更新时间与操作者；操作列「试算」跳主体视角试算页、「详情」跳表详情的数据策略页签。表详情的「数据策略」页签见 [row-filter-column-mask-design.md](row-filter-column-mask-design.md) §8.3 |
 | `/policies/new` | 新建策略向导 | 目标表三段级联（catalog / database / table，watch 级联清空）→ 拿表 schema 做候选列 → 主体范围与豁免（fail-closed 不可关）→ 行过滤 / 列脱敏编辑器（与表详情页签共用 `src/utils/policyAst.js`，保证两处建出的 AST 形状一致）→ 发布（PUT 整份替换）。**已绑定策略的表不给新建**：PUT 是整份替换，向导里再建一次会静默顶掉现有策略，此时给红色提示并引导去表详情编辑 |
 | `/policies/:catalog/:database/:table/dryrun` | 主体视角试算 | 按**被模拟主体**（不是当前调用者）跑 `POST .../policies/tables/{c}/{d}/{t}/dry-run`，四态横幅：FOUND（生效中，附折叠后的行过滤 SQL）/ EXEMPT（豁免，明文）/ DISABLED（策略停用）/ NONE（无策略或白名单外——**红色**，提示「按默认放行，全部为明文」）。结果表按返回列渲染，脱敏列单元格带「脱敏 / 置空」角标。被模拟主体**不需要存在**（`$principal` 折名字字面量、角色名单查不到折 false），这正是「新建主体还没挂角色」要试算的场景。端点判权 TABLE:ALTER——试算结果本身就是策略内容，放宽到 SELECT 等于任何能读表的人可看策略文本 |
-| `/optimization-jobs` | 优化任务 | 表存储优化的批次运维页（数据来自管理 API `/api/management/v1/optimization/**`，策略配置在表详情的「存储优化」页签）。四张统计卡（运行中 / 排队中 / 今日批次 / 失败 24h）与列表共用**最近 200 个批次**的窗口，状态 / 动作 / Catalog / 触发方式四个过滤器在本地做——统计卡与列表若是两个口径，「失败 3 个」就会在列表里数不出来。批次表展开行按需拉表级明细（每行指标摘要与失败原因），「批次详情」抽屉给键值对 + 时间线 + 回调令牌 + 原始响应；操作列的重试（只重跑失败表，原批次保留）与取消都带确认框。`?job=` 查询参数用于从表详情的历史点批次号跳过来直接展开 |
+| `/optimization-jobs` | 优化任务 | 表存储优化的批次运维页（数据来自管理 API `/api/management/v1/optimization/**`，策略配置在表详情的「存储优化」页签）。四张统计卡（运行中 / 排队中 / 今日批次 / 失败 24h）与列表共用**最近 200 个批次**这个窗口，但统计卡**不随筛选变化**：卡片回答「这个系统现在什么状态」，筛选回答「我在找某个批次」——两者绑在一起时一筛状态卡片就全变 0，读起来像系统出故障。状态 / 动作 / Catalog / 触发方式四个过滤器**下推服务端**（只筛当前页等于没筛，`total` 也来自 `page.total`）。批次表展开行按需拉表级明细（每行指标摘要与失败原因），「批次详情」抽屉给键值对 + 时间线 + 回调令牌 + 原始响应；操作列的重试（只重跑失败表，原批次保留）与取消都带确认框。`?job=` 查询参数用于从表详情的历史点批次号跳过来直接展开。页头带**定时刷新**开关与节拍（默认开启、5 秒；展开中的批次明细跟着静默刷新，见 §4.9） |
 | `/events` | 事件 | 目录事件流（数据来自控制台扩展端点 `/api/console/v1/events`，事件语义见 [event-framework.md](event-framework.md)）。**这里的「刷新」是带游标的增量拉取而不是全量重拉**：首次进入显示当前最新的一页（最近 200 条，游标落在「现在」），之后每次刷新只取比游标新的事件、插到列表最前面——事件是只增不改的事实，增量流保证每个事件至少被看到一次，全量重拉的间隙会漏事件。列表头右侧显示当前游标；「重置游标」清掉游标重新取最新一页（不是回放全部历史，更早的记录去查库）；顶栏的全局「刷新」也走同一条增量路径。**Catalog 与类别过滤在服务端做**（都是查询参数，换挡会重置游标——换筛选要的是「这个范围现在最新的一页」），事件类型过滤在本地做、候选按类别分组（38 个类型平铺太长），换类别时会清掉不属于该类的类型筛选。列表列：时间 / 事件（38 类中文标签）/ 目录 / 目标（类型 + 定位符）/ 主体 / 属性摘要；展开行给事件 ID、**请求 ID**（同一次 API 调用产生的所有事件共享它，按它串起「这次调用到底动了什么」）、类型与类别、完整属性 JSON |
 | `/settings` | 连接设置 | API 基址、访问令牌、登录状态、主题；`/api/console/v1/meta` 原始响应 |
 | `/:pathMatch(.*)*` | 未找到 | 兜底 |
@@ -238,6 +243,11 @@ lakehouse-rest-console/
   用 `TipNote` 收进一个问号图标，悬停才展开——原先它们是两三行一段直接铺开的
   `.pc-tip`，一页几处就把数据挤出视野。字段级的备注仍走 `FieldLabel`
   （图标跟在字段名后），两者共用同一套图标与气泡样式。
+  **提示性告警（info / warning）同一待遇**：`TipAlert` 把 `el-alert` 的正文
+  收进标题旁的问号，页面只留一行「结论」。边界写在组件注释里、由 `verify-console`
+  第 16 组盯着——错误（error）不收（必须一眼看到）、正文里带按钮/复制控件的
+  不收（气泡里点不到，动作等于丢了）、调用点必须带标题（没标题就只剩一个
+  点了没反应的图标）。
 
 ### 4.1 连接自检
 
@@ -442,6 +452,37 @@ Iceberg 的 drop 非级联、非空回 409，误触成本高，已按需求把�
   若页面里先编一次、API 层再编一次，会得到 `accounting%1Ftax` 字面量这样的双级命名空间。
   服务端判定这一侧的比较口径见 [authorization.md](authorization.md) §2.6。
 
+### 4.9 列表的定时刷新
+
+`/catalogs` 与 `/optimization-jobs` 这两个列表都是「等状态变」的页面：前者的执行集群一列
+（探活、保存都在别处发生，这张表是唯一能一眼看出「哪个 catalog 的优化不会跑」的地方），
+后者的批次状态（提交中 → 运行中 → 部分成功，一个批次通常几分钟）。让人反复点「刷新」
+比每 5 秒查一次贵得多，因此两页页头各有一个开关 + 节拍选择。
+
+**默认开启、5 秒一次**，偏好按页存在 `localStorage`（`lakehouse.console.autoRefresh.<page>`），
+两个页面互不影响——优化任务页需要更密的节拍时，不必连带把 catalogs 也调密。节拍只给
+3 / 5 / 10 / 30 / 60 五档，**不给自由输入**：低于 3 秒只是把同一个查询连打几遍
+（列表端点是分页查询，不是增量游标），高于 60 秒与手动刷新没有区别。
+
+四条实现约定，每条都对应一种「不报错但把人带偏」的错法：
+
+- **每一拍都走静默刷新（`silentLoad`），不是 `load` / `reload`。** 后者会置 `loading`，
+  于是表格每 5 秒盖一次遮罩、`ResourceState` 也切到加载态——看起来像一直在加载。
+  静默刷新保持当前页码（翻到第 3 页就还是第 3 页），只换数据。
+- **静默失败不清空表格。** 失败时保留上一份数据，把原因放到控件上的一颗警示角标里
+  （悬浮给完整原因）。反过来做（清空 + 红色错误面板）会让有数据的一屏每 5 秒变空一次，
+  看起来像「数据被删了」。
+- **后台标签页暂停，切回前台补一拍。** 页签开着过夜不该继续轮询；而切回来时若还等
+  下一个整拍（最长 60 秒），这段时间页面看起来是实时的，其实是最旧的那一刻。
+- **页面可以拦某一拍。** catalogs 在新建/编辑表单打开时不刷（表格在弹层后面没人看，
+  刷新只会让行里的 `entityVersion` 与表单里那份悄悄分叉，保存时得到一个莫名其妙的 409），
+  优化任务页在批次详情抽屉打开时不刷（抽屉里是打开时的快照，背后列表跳动会让人以为
+  「点开的不是这一行」）。展开中的批次明细**照常刷**（那才是「跑到哪张表了」的答案），
+  同样走静默路径。
+
+手动「刷新」与它并存：两者是同一件事的自动与手动两种模式，所以控件就摆在刷新按钮左边。
+顶栏的全局刷新广播（`onConsoleRefresh`）仍走可见路径——那是用户明确按下去的。
+
 ---
 
 ## 5. 契约表与机械校验
@@ -480,7 +521,7 @@ python3 scripts/verify-console.py      # 退出码 0 通过 / 1 不一致 / 2 �
 PYTHON=/path/to/python3 scripts/verify-console.py   # 多解释器时指定装了 PyYAML 的那个
 ```
 
-它**不构建前端、不启动服务端**，只做静态比对，因此可以放进提交前的检查。23 组 150 项：
+它**不构建前端、不启动服务端**，只做静态比对，因此可以放进提交前的检查。24 组 168 项：
 
 | 组 | 校验内容 |
 | --- | --- |
@@ -499,14 +540,15 @@ PYTHON=/path/to/python3 scripts/verify-console.py   # 多解释器时指定装�
 | 13. Iceberg 浏览 | Iceberg catalog 的目录浏览走 `namespaces/**` 而不是 `databases/**`。这一组钉的是**契约形状**，不是像素：13 条 `iceberg*` 端点逐条对 Iceberg 规格（不靠第 1 组的并集蒙混）、浏览页只调 `icebergApi` 不混用 `catalogApi`、namespace 路径段用 `0x1F` 拼（点号只是显示口径）、分页键是 `pageSize` 而不是 `maxResults`、三个列表（表 / 视图 / 函数）都按 `identifiers` 取（逐表 `loadTable` 只许出现在表详情页）、建表体是 Iceberg 的 `schema` / `partition-spec`（`schema-id`、`required`、`source-id`、`field-id`）、浏览页与 API 层都不出现 `/databases`、浏览页不再提供删除命名空间的入口（按钮已移除）、两页共用的骨架样式留在全局；以及 **Iceberg 表详情页**（`IcebergTableView`）：有独立路由、只调 `icebergApi`、文件列表走 catalog 级文件端点（不用 Paimon 的 `tableId` 端点）、快照处理 `-1` 无快照哨兵、存储优化页签复用共用面板并显式传 `format="ICEBERG"`（页签自己调端点会绕过 format 分派）、建表表单的 `format-version` 提供 1/2/3 |
 | 14. 存储字段分层 | catalog 表单的字段拆成「基本 / 高级」两张表，高级那张进默认收起的折叠区。判据对着**服务端 record**，不在前端另抄名单：两张表合并后与 record 的专属字段**不丢不多**、两表之间不重叠、`build()` 既**不读折叠状态**又仍读合并后的视图、`FILE` 没有高级字段、折叠区按「有没有高级字段」出现而非硬编码某类型、默认收起、收起态给出计数与「可以不管它」的说明 |
 | 15. 事件页 | 事件页从「游标增量」改成「远程分页」之后，最容易退化的两件事要钉住：`listEvents` 端点路径与端点名一致、`EventsView` 真的接了 `useRemotePaging`（页码下推、`total` 取自 `page.total`）——游标只能往前看，页码模式才能往回翻历史；**事件类型也跟着下推**（类型只在前端筛时只筛得到当页，筛出空页会被读成「窗口里没有这种事件」）、事件类型清单逐个覆盖 `CatalogEventType` 的 wire 值、**类别清单逐个覆盖 `CatalogEventCategory` 的取值**、类别作为 `category` 参数随页码一起发出、目标类型显示名逐个覆盖 `CatalogEvent` 的 `TARGET_*` 常量（前端另抄名单漏了新类型的表现是那条事件显示成 wire 原文，静默）、`/events` 有独立路由并进侧边菜单 |
-| 16. 提示图标 | 问号图标（`TipNote` / `FieldLabel`）必须**悬停即显示**：`trigger="hover"` 显式写明、`show-after` 为 0，且命中区比 14px 的图标本身大一圈。这条约束的起因是用户反馈「移到问号上没反应、点一下才弹」——`show-after` 的 100ms 让快速划过什么都不出现，而 14px 的命中区偏一两个像素就落在容器上（点击时整块区域都算命中，所以点击反而有效）。两个原因都不会让页面报错 |
+| 16. 提示图标 | 问号图标（`TipNote` / `FieldLabel`）必须**悬停即显示**：`trigger="hover"` 显式写明、`show-after` 为 0，且命中区比 14px 的图标本身大一圈。这条约束的起因是用户反馈「移到问号上没反应、点一下才弹」——`show-after` 的 100ms 让快速划过什么都不出现，而 14px 的命中区偏一两个像素就落在容器上（点击时整块区域都算命中，所以点击反而有效）。两个原因都不会让页面报错。**提示性告警（info / warning）的正文统一收进标题旁的问号**（`TipAlert`，16 个文件 28 处调用点）：复用 `TipNote`（不另写 el-tooltip）、每个调用点必须带标题、`type` 必须是字面量且不得是 error（错误必须直显）、带按钮 / 复制控件的正文留在可见区（气泡里点不到） |
 | 17. 目录浏览的入口 | 两个浏览页（`BrowseView` / `IcebergBrowseView`）的三条工具条都写在 `ResourceState` **之外**：那个组件命中空态时只渲染 `el-empty`、默认插槽整个不渲染，「这个库还是空的」这一刻新建按钮会跟着表格一起消失（表页签当时靠页头那颗按钮躲过，代价是同一动作两个入口）。因此还断言：页头不再放「新建表」、`/browse` 不再有「语义视图」页签，以及 Iceberg 视图页签的创建入口与 `endpoints.js` 的 `icebergCreateView`、控制器上的 `@PostMapping` 三处对齐——缺一处按钮就是 404 |
 | 18. Catalog 详情·存储 | catalog 详情的「存储」页：两种格式共用 `CatalogStoragePanel`（格式只作参数），数据源是管理面两个聚合端点 `/table-stats`（汇总：KPI/按库/Top10/直方图 SQL 一次算完，永远全量）与 `/table-stats/tables`（表明细远程分页，默认取全部表）——采集文件只许这两个调用，**不得残留 catalogApi / icebergApi 的逐表调用**（非快照管理的表尤其不该被问到快照端点）、「有数据的表」分子在前端算（服务端 `Totals` 没有 `withData` 字段，读不到就是「—」）、加权平均与小文件判据的口径钉在服务端聚合 SQL 里、面板不许直接调协议面或管理面（写动作在表页的「存储优化」）、「只统计 Paimon 表」以 onlyPaimon 参数在服务端过滤、明细分页/关键字/排序下推 SQL 且排序 `custom`（不得再挂「选库才请求」的门）、按库/Top10 两卡不吃堆叠边距（顶部对齐）。两个端点同时在扩展白名单里登记，控制台引用了规格之外又没登记的路径会当场报错 |
 | 19. 表格远程分页 | 全站表格统一走「页码与过滤下推，页面只持有一页」。十条判据：`composables` 只导出 `useRemotePaging`（通用 `useLocalPaging` 已删——它的产物是「共 N 条 = 这一批的条数」）、11 个列表视图逐个接上它、分页器只有 `TablePager` 一个（各写一份 `el-pagination` 会漂出「这页能选 100、那页最大 50」）、16 处 `TablePager` 用法都带 `total` / `page` / `page-size`、12 个分页端点都接受 `page`（少了它前端翻页会被当成不分页，症状是「点了下一页，内容没变」）、存储明细按页码取数（不再在浏览器里编码 `pageToken`——那等于把服务端的私有 token 格式变成前端契约，服务端换编码后这一页会安静地永远停在第 1 页）、调用 API 时 `query` 写在 `params` 里（写在顶层会被静默丢弃——分页与过滤一个都传不过去）、全局样式不占用组件私有的 `pc-opt-*` 前缀（控制台的两处缩写撞过车：选择卡曾叫 `pc-opt`，与「存储优化」面板的根节点同名，整整一屏被套上选择卡的边框、内边距与 pointer 光标，hover 时边框还会变蓝；同族的 `pc-opt-dot` 更隐蔽——面板拿它当分隔符 `·`，全局却把它画成 9px 圆点。现在选择卡叫 `pc-pick*`）、带行内动作的表格把「操作」列钉在右侧（`fixed="right"`，展开箭头同理钉在左侧——列多时横向滚动是常态，操作列跟着滚走等于「滚到右边才找得到按钮」）、`total` 为 0 时不渲染分页器。**过滤必须一起下推**：本地筛只作用于当页，「筛出 3 条」与「库里有 3000 条只给了 200 条」在界面上长得一模一样 |
 | 20. 数据预览 | 预览是控制台第一个**真的读行数据**的页面，它的错法都不报错、只把话说错：`TablePreviewPanel` 只许调 `previewApi` 两个方法（拼下载端点或直连协议面就绕过了 TABLE 级 `SELECT` 与采样限额）；采样提示必须在，且 `filesRead` / `filesInScope` / `filesInTable` 三个分母都在（只说「只读了 K 个文件」等于不说全表多大，只留一个分母就把「3/12（本分区）」说成「3/128（全表）」）；分区 chip 要有「自动」角标分支，且 `×` 的含义是**切到全部分区**而不是删掉自动条件；面板不许自己排序/取 max 算「最新分区」（两处实现迟早不一致，表现是「刷新一次分区变了」）；页签只对快照托管表渲染（Format / Object / Lance 表点进去只剩「不支持」）；六类失败各有各的文案（400/403/404/409/429/504——混成一句「加载失败」时用户只能刷新，而其中三类刷新没用）；「加载更多」只靠游标（`hasMore` 为假必须清空游标，否则再点一次会在同一段上重复读）；两条端点在服务端真的存在、且判权用 `Access.SELECT` 而不是 `DESCRIBE`（能看元数据不等于能看数据）；Iceberg 表详情页挂**同一个面板**而不是另写一个（它按名字加载表，因此先 `lookupTable` 换内部 id，换到才挂；换表与刷新时必须作废旧 id，否则拿旧表的 id 去读新表）；**`lookupTable` 的三个查询参数必须写进 `params.query`**（平铺在 `params` 顶层会被静默丢掉，数据预览固定回「Required parameter 'prefix' is not present」的 400） |
 | 21. 血缘 | 表详情页的「血缘」页签：两个详情页都用异步组件挂 `LineagePanel`（同步 import 会让每张表的详情页为一块多数人不看的图付下载与解析成本）、页签名与正文条件一致、页签登记为「自带数据」（面板挂载即查，父组件替它发请求就是两次）、图与绘制层**不 import element-plus**（否则布局逻辑只能靠 Vue 运行时才测得到）、三个格式色只读 CSS 变量且变量定义在全局样式里（画布、图例、目录页徽标三处同源）、布局是纯函数（不读 DOM、无随机数与时钟——否则刷新一次位置全变）、LOD 阈值只有一处带滞回的实现（两处阈值不同会在临界点上闪）、**拖单张卡片只叠加视图位移**（偏移不进 `layout()`——写回布局就等于「同一份数据两次出不同坐标」，刷新一次位置全变；换根时整份清掉）、边按「颜色 + 线宽」分组后用 `Path2D` 批量描边（1500 条边逐条 stroke 会掉帧）、面板只经 `lineageApi` 取数、**控制台不声明血缘的写入口**（手工上报等于让人写一条假依赖）、列映射切到「列」视图才发第二次请求、节点超过 500 自动落邻接表且留「仍要看图」的出口、两个表格用 `el-table-v2`（虚拟滚动，也是 Canvas 的无障碍替代）、抽屉打开时画布让位、五个端点在服务端都有实现、图端点处理 `If-None-Match` 回 304（`no-cache` 而不是 `no-store`）、表被删除时级联清边（否则图上留下查不到也清不掉的节点） |
 | 22. 执行集群 | catalog 级执行集群（优化任务提交到哪个 k8s、用什么身份）。这一组钉的是**多集群这件事的形状**，因为它的错法全都不报错：五个端点都必须挂在 `catalogs/{catalogName}/execution-cluster` 下（不引入一级资源——没有「列出全部执行集群」的需求，也没有「不属于任何 catalog 的执行集群」）、控制器类级路由与端点前缀逐字一致且六个动词映射齐全、三种集群类型（`SELF_HOSTED` / `EKS` / `AKS`）在服务端 `ClusterType` 与前端 `CLUSTER_TYPES` 两处取值完全相同、五种状态（`NOT_CONFIGURED` / `DISABLED` / `UNVERIFIED` / `HEALTHY` / `FAILING`）同样两处一致、**前端代码里不出现 `configHash` / `probeConfigHash`**（状态只由服务端算；两边各算一份的漂移表现是「列表说正常、点进去说待验证」，而那一屏最难解释）、`Catalog` DTO 带摘要且 `list()` 用批量 `summaries(...)` 而不是逐行 `summaryOf(...)`（列表是打开最频繁的页，N+1 在这里等于「catalog 越多越慢」）、列表有那一列并走 `clusterCell` 翻译、未配置的行按钮是主色（那一刻它是待办）、**读模型不含任何凭据明文**（`kubeconfig` 只回摘要、秘密只回 `has*`）、秘密字段有显式的 `clearCredentials` / `clearCatalogToken`（留空＝不改，清空要单独说）、`application.yml` 的 `optimization` 段只剩三个节拍键且 12 个提交参数一个不剩、`RestServerProperties.Optimization` 与之对齐（就三个字段）、fail-closed 的两个落点都在（保存策略与「立即优化」各一次 `assertDispatchable`）、出批侧在造批次之前判「可派发」、旧的两种提交器已删除、fabric8 客户端禁用 `autoConfigure` 回落并断言 master URL（缺了它，填错 apiServer 的 catalog 会静默把 Job 提交到服务端自己所在的集群）、`sql/schema-mysql.sql` 里真有这张表（实体加了没重新生成 DDL，部署时会因 `ddl-auto=validate` 起不来） |
-| 23. 文档计数 | 本节这张表上方的「N 组 M 项」与脚本实际一致（`docs/console.md` 与 `README.md` 各一条）。期望值由脚本自身推出——组数是源码里分组标题的条数，项数是本次校验的总条数——因此加/删校验项时这里不用改，但**文档必须跟着改** |
+| 23. 定时刷新 | Catalog 与优化任务列表的定时刷新（§4.9）。这一组钉的是它的**静默性**与**唯一实现**，因为错法全都不报错：默认值（开启 + 5 秒）只在 `utils/autoRefresh.js` 定义一次、节拍档位只有一份且控件按它 `v-for` 渲染、两个列表页都真的接了 `useAutoRefresh` 且偏好键不重名、**每一拍只走 `silentLoad`**（定时器实参块里不出现 `load()` / `reload()`——它们会置 `loading`，症状是表格每 5 秒闪一次遮罩）、静默失败时保留上一份数据（`rows.value = []` 在整个 composables 里只能出现在非静默分支一次）、失败原因有地方显示、后台标签页跳过并在切回时补一拍、上一拍没回来不发下一拍、离开页面清掉定时器、优化任务页连展开中的批次明细一起刷 |
+| 24. 文档计数 | 本节这张表上方的「N 组 M 项」与脚本实际一致（`docs/console.md` 与 `README.md` 各一条）。期望值由脚本自身推出——组数是源码里分组标题的条数，项数是本次校验的总条数——因此加/删校验项时这里不用改，但**文档必须跟着改** |
 
 第 7 组是这套机制里最实用的一条：**产物过期不会让任何东西报错**，
 它只是安静地少一个按钮。
@@ -833,6 +875,17 @@ ls lakehouse-rest-spring-parent/lakehouse-rest-server/target/classes/static/cons
 ```bash
 ./mvnw -o -pl :lakehouse-rest-server -Dtest=ConsoleApiTests test
 ```
+
+前端另有一层**纯函数单测**（`node --test`，不需要浏览器也不需要构建）：
+
+```bash
+cd lakehouse-rest-console && npm test          # tools/*-tests/*.test.mjs
+npm run test:auto-refresh                      # 只跑定时刷新的判定（7 个用例）
+```
+
+放在这一层的都是「看一眼界面验不出来」的性质：血缘的布局是纯函数（同一份数据两次出同一批坐标）、
+定时刷新该不该发这一拍（后台标签页 / 在途请求 / 页面拦截）、偏好收敛（坏 localStorage 不能变成
+`setInterval(fn, NaN)`）。
 
 ---
 

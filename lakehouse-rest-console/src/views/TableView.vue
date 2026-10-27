@@ -29,7 +29,7 @@
       把「本页不适用」与「Iceberg 版表详情页在哪儿」一起说出来。
     -->
     <PanelCard v-else>
-      <el-alert type="info" :closable="false" show-icon>
+      <TipAlert type="info">
         <template #title>catalog「{{ prefix }}」是 Iceberg 协议面，请使用 Iceberg 版表详情页</template>
         <div>
           本页读的是 Paimon 协议面的表端点
@@ -39,7 +39,7 @@
           图的含义、快照的代数与视图的形状都不一样。
           Iceberg 表的详细信息 / 快照 / 文件列表在 Iceberg 版表详情页里。
         </div>
-      </el-alert>
+      </TipAlert>
       <div class="pc-tools-row">
         <el-button
           size="small"
@@ -418,11 +418,9 @@
               </el-button>
             </div>
 
-            <el-alert
+            <TipAlert
               v-if="tableFileListing?.truncated"
               type="warning"
-              :closable="false"
-              show-icon
               class="pc-hint"
             >
               <template #title>只显示了前 {{ tableFileListing.maxEntries }} 条（共 {{ tableFileListing.total }} 条）</template>
@@ -430,7 +428,7 @@
                 排序是目录优先、名称升序，因此被截掉的是尾部的文件。下钻到更具体的子目录，
                 或调大 <span class="pc-mono">lakehouse.rest.file-browser.max-entries</span>。
               </div>
-            </el-alert>
+            </TipAlert>
 
             <ResourceState
               :loading="tableFilesLoading"
@@ -655,6 +653,7 @@
 import { computed, defineAsyncComponent, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
+import TipAlert from '@/components/TipAlert.vue'
 import CopyText from '@/components/CopyText.vue'
 import JsonBlock from '@/components/JsonBlock.vue'
 import IconAction from '@/components/IconAction.vue'

@@ -20,13 +20,13 @@
       </template>
     </PageHeader>
 
-    <el-alert v-if="!prefix" type="warning" :closable="false" show-icon class="pc-hint">
+    <TipAlert v-if="!prefix" type="warning" class="pc-hint">
       <template #title>还没有可浏览的 catalog</template>
       <div>
         服务端没有登记任何 catalog。先在「Catalogs」里创建一个，
         或确认 <code class="pc-mono">lakehouse.rest.auto-create-catalog</code> 是否开启。
       </div>
-    </el-alert>
+    </TipAlert>
 
     <!--
       Iceberg catalog：整页换成 Iceberg 协议面的浏览（namespace / tables / views）。
@@ -459,10 +459,10 @@
     <!-- 注册已有表 -->
     <el-dialog v-model="registerDialog.open" title="注册已有表" width="520px" :close-on-click-modal="false"
       destroy-on-close>
-      <el-alert type="info" :closable="false" show-icon class="pc-hint">
+      <TipAlert type="info" class="pc-hint">
         <template #title>注册只写元数据，不搬动数据</template>
         <div>路径下必须已存在一张完整的 Paimon 表（含 schema 与快照目录），否则读取时会失败。</div>
-      </el-alert>
+      </TipAlert>
       <el-form label-position="top" size="small" class="pc-form">
         <el-form-item label="表名" required>
           <el-input v-model="registerDialog.name" />
@@ -587,6 +587,7 @@
 import { computed, reactive, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 
+import TipAlert from '@/components/TipAlert.vue'
 import FieldLabel from '@/components/FieldLabel.vue'
 import IconAction from '@/components/IconAction.vue'
 import JsonBlock from '@/components/JsonBlock.vue'

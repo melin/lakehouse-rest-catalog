@@ -5,7 +5,16 @@
       subtitle="跨 catalog 的 Spark 优化批次：定时调度与手动触发都会先创建任务记录，再异步提交到 k8s 执行，逐表回调上报结果。一个批次 = 同一 catalog 里同时到期的一组表。"
     >
       <template #actions>
-        <el-button size="small" :loading="jobs.loading.value" @click="reload">
+        <!-- 定时刷新（开关 + 节拍）在手动刷新左边：两者是同一件事的自动/手动两种模式 -->
+        <AutoRefreshControl
+          v-model:enabled="autoEnabled"
+          v-model:seconds="autoSeconds"
+          :stale-error="staleError"
+          :last-at="autoRefreshedAt"
+        />
+        <!-- 只绑表格那一路的 loading：统计卡是另一次请求，让它也转圈会把
+             「列表在刷」说成「整页在刷」 -->
+        <el-button size="small" :loading="loading" @click="reload">
           <el-icon><Refresh /></el-icon>
           <span class="pc-btn-text">刷新</span>
         </el-button>
@@ -318,6 +327,7 @@ import { computed, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import { optimizationApi } from '@/api/optimization.js'
+import AutoRefreshControl from '@/components/AutoRefreshControl.vue'
 import CopyText from '@/components/CopyText.vue'
 import IconAction from '@/components/IconAction.vue'
 import JsonBlock from '@/components/JsonBlock.vue'
@@ -332,6 +342,7 @@ import {
   confirmDanger,
   notifyError,
   notifySuccess,
+  useAutoRefresh,
   useRemotePaging,
   useResource,
 } from '@/composables/index.js'
@@ -417,8 +428,10 @@ const {
   pageSize,
   loading,
   error,
+  staleError: rowsStaleError,
   load,
   reload: reloadRows,
+  silentLoad: silentLoadRows,
   onPageChange,
   onSizeChange,
 } = useRemotePaging(({ page: current, pageSize: size }) => optimizationApi
@@ -482,12 +495,18 @@ function detailOf(jobId) {
   return details[jobId] || { loading: false, error: '', items: [] }
 }
 
-async function loadItems(jobId) {
-  details[jobId] = { ...detailOf(jobId), loading: true, error: '' }
+async function loadItems(jobId, { silent = false } = {}) {
+  const previous = detailOf(jobId)
+  if (!silent) {
+    details[jobId] = { ...previous, loading: true, error: '' }
+  }
   try {
     const payload = await optimizationApi.job(jobId)
     details[jobId] = { loading: false, error: '', items: payload.items || [], job: payload }
   } catch (error) {
+    // 静默刷新失败时**留着上一次的明细**：展开行正被读着，把它换成
+    // 一行红字比不刷新更糟（用户会以为批次明细没了）
+    if (silent) return
     details[jobId] = { loading: false, error: error?.message || String(error), items: [] }
   }
 }
@@ -594,6 +613,38 @@ async function cancelJob(row) {
 if (!session.state.catalogsLoaded && !session.state.loadingCatalogs) {
   session.loadCatalogs().catch(() => {})
 }
+
+// ------------------------------------------------------------------ 定时刷新
+//
+// 这一屏是「等状态变」的页面（提交中 → 运行中 → 部分成功），批次从创建到结束
+// 通常几分钟：不自动刷新的话，用户只能反复点「刷新」看进度。
+//
+// 三处都走静默路径，否则每 5 秒会出现三次可见的抖动：表格遮罩、统计卡遮罩、
+// 展开行里的「正在加载明细…」。失败时一律保留上一份数据（见各 composable 的说明），
+// 原因收在控件那颗角标里。
+const {
+  enabled: autoEnabled,
+  seconds: autoSeconds,
+  lastAt: autoRefreshedAt,
+} = useAutoRefresh(async () => {
+  await Promise.all([
+    statsSource.silentLoad(),
+    silentLoadRows(),
+    // 展开中的批次跟着刷（明细才是「跑到哪张表了」的答案），但同样不出加载态
+    ...expandedKeys.value.map((id) => loadItems(id, { silent: true })),
+  ])
+}, {
+  page: 'optimization-jobs',
+  // 读详情抽屉时不刷列表：抽屉里那份是打开时的快照，让背后的表格跳来跳去
+  // 只会让人以为「我点开的不是这一行」
+  blocked: () => drawer.open,
+})
+
+/**
+ * 定时刷新失败的原因（列表或统计任一）。合成一条给控件：
+ * 两处各自弹一次提示，同一个故障会在屏幕上出现两条同样的红字。
+ */
+const staleError = computed(() => rowsStaleError.value || statsSource.staleError.value)
 </script>
 
 <style scoped>

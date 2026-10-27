@@ -38,7 +38,7 @@
 
       <!-- 服务端既不校验令牌也不要求控制台登录：这里不是登录，只是告诉来访者为什么不需要登录 -->
       <template v-else-if="mode === 'not-required'">
-        <el-alert type="info" :closable="false" show-icon class="pc-login-alert">
+        <TipAlert type="info" class="pc-login-alert">
           <template #title>服务端未要求登录</template>
           <div>
             当前部署的 <code class="pc-mono">lakehouse.rest.auth.enabled=false</code>
@@ -49,7 +49,7 @@
             或至少把 <code class="pc-mono">console.required</code> 设为
             <code class="pc-mono">true</code>（只挡界面，见该配置项的说明）。
           </div>
-        </el-alert>
+        </TipAlert>
         <el-button type="primary" class="pc-login-submit" size="large" @click="enterConsole">
           进入控制台
         </el-button>
@@ -112,16 +112,14 @@
           {{ tabs[0].label }}
         </div>
 
-        <el-alert
+        <TipAlert
           v-if="auth.state.credentialRotationRequired"
           type="warning"
-          :closable="false"
-          show-icon
           class="pc-login-alert"
         >
           <template #title>这个主体的凭据待轮换</template>
           <div>登录成功，但服务端把该主体标记为凭据待轮换。请在主体管理页轮换后更新本地配置。</div>
-        </el-alert>
+        </TipAlert>
 
         <!-- 方式一：用户名 + 密码（服务端配置里的账号，默认 admin/admin） -->
         <template v-if="activeTab === 'password'">
@@ -288,6 +286,7 @@ import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { beginAuthorization, resolveRedirectUri } from '@/api/oidc.js'
 import { AUTH_METHOD, auth } from '@/store/auth.js'
 import { theme } from '@/store/theme.js'
+import TipAlert from '@/components/TipAlert.vue'
 
 const route = useRoute()
 const router = useRouter()

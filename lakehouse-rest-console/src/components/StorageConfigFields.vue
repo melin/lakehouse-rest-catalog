@@ -221,16 +221,14 @@
         （展开可查看；留空的项不会出现在提交体里）
       </p>
 
-      <el-alert
+      <TipAlert
         v-if="carriedKeys.length"
         type="info"
-        :closable="false"
-        show-icon
         class="pc-storage-carry"
       >
         <template #title>以下字段没有对应控件，保存时原样带回服务端</template>
         <div class="pc-mono pc-break">{{ carriedKeys.join('、') }}</div>
-      </el-alert>
+      </TipAlert>
     </el-form>
   </div>
 </template>
@@ -238,6 +236,7 @@
 <script setup>
 import { computed, reactive, ref, watch } from 'vue'
 
+import TipAlert from '@/components/TipAlert.vue'
 import FieldLabel from '@/components/FieldLabel.vue'
 import SectionTitle from '@/components/SectionTitle.vue'
 

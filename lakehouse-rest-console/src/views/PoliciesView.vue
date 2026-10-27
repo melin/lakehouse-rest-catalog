@@ -19,13 +19,13 @@
     <!-- 强制等级是部署属性不是策略属性（设计 §7.1 / §2.3）：徽标只能看不能改。
          「整列不可见」故意不放入口：注入点晚于 SELECT * 展开，做不了（§5.8）——
          放一个开关然后默默不生效，比不放更糟。 -->
-    <el-alert type="warning" :closable="false" show-icon class="pc-gap">
+    <TipAlert type="warning" class="pc-gap">
       <template #title>强制等级 L0 · 引擎内强制</template>
       策略只改写 Spark 的执行计划，<strong>存储凭据仍在客户端</strong>：持有凭据的程序
       <code class="pc-mono">spark.read.parquet()</code> 直读文件仍能看到明文。要升级到 L1
       （网关代理、用户只有 SQL 连接），需要把 Spark 会话收进网关。控制台自己的三个口子
       （数据预览、文件下载、列统计）已按策略收口。
-    </el-alert>
+    </TipAlert>
 
     <!-- KPI：跨页统计，因此列表一次取全量（治理对象量级是「几十」，见 data 注释） -->
     <div class="pc-policy-kpis">
@@ -163,12 +163,12 @@
     </PanelCard>
 
     <!-- 默认语义必须显式说（mockup 画面 1 说明 6） -->
-    <el-alert type="info" :closable="false" show-icon class="pc-gap">
+    <TipAlert type="info" class="pc-gap">
       <template #title>默认语义 · 没有策略 = 不保护</template>
       没有绑定策略的表对所有主体明文。「取不到策略就拒绝」只发生在策略服务不可达或
       版本校验失败时（fail-closed）——两者在语义上必须分开表达，否则运维会以为
       「建了策略就全拦住了」。
-    </el-alert>
+    </TipAlert>
   </div>
 </template>
 
@@ -176,6 +176,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
+import TipAlert from '@/components/TipAlert.vue'
 import IconAction from '@/components/IconAction.vue'
 import PageHeader from '@/components/PageHeader.vue'
 import PanelCard from '@/components/PanelCard.vue'

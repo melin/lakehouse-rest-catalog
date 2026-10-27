@@ -5,6 +5,13 @@
       subtitle="catalog 是元数据与数据的命名空间，每个 catalog 指向一处存储位置。名称同时是客户端连接时用的 prefix，创建后不能改名；表格式（Paimon / Iceberg）决定它服务哪一套 REST 协议，同样是创建时选定、之后不能改。"
     >
       <template #actions>
+        <!-- 定时刷新（开关 + 节拍）在手动刷新左边：两者是同一件事的自动/手动两种模式 -->
+        <AutoRefreshControl
+          v-model:enabled="autoEnabled"
+          v-model:seconds="autoSeconds"
+          :stale-error="staleError"
+          :last-at="autoRefreshedAt"
+        />
         <el-button size="small" :loading="loading" @click="load">
           <el-icon><Refresh /></el-icon>
           <span class="pc-btn-text">刷新</span>
@@ -206,15 +213,14 @@
           <!-- 选 Iceberg 时再多一条：下面的说明讲的是「协议面不一样」，
                这条讲的是「控制台这一期只跟到哪」，两件事不能合成一句——
                合并之后，用户会把「界面没做」读成「Iceberg 不支持」。 -->
-          <el-alert
+          <TipAlert
             v-if="isIcebergCatalog(dialog.catalogFormat)"
             class="pc-form-alert"
             type="warning"
-            :closable="false"
-            show-icon
             title="控制台一期不提供 Iceberg catalog 的表管理与数据浏览"
-            description="创建后可以在 catalog 详情查看协议与能力，表数据请通过 Spark 等 Iceberg REST 客户端访问。"
-          />
+          >
+            创建后可以在 catalog 详情查看协议与能力，表数据请通过 Spark 等 Iceberg REST 客户端访问。
+          </TipAlert>
         </el-form-item>
 
         <el-form-item v-if="dialog.mode === 'edit'">
@@ -255,11 +261,9 @@
         </el-form-item>
       </el-form>
 
-      <el-alert
+      <TipAlert
         v-if="!supportedTypes.length"
         type="warning"
-        :closable="false"
-        show-icon
         class="pc-dialog-alert"
       >
         <template #title>未能读取服务端支持的存储类型</template>
@@ -268,7 +272,7 @@
           当前读不到，表单只能给出保守的默认值（FILE），提交时可能被服务端以
           「本部署未接入该存储实现」拒绝。可先到「连接设置」确认地址与令牌。
         </div>
-      </el-alert>
+      </TipAlert>
 
       <SectionTitle title="存储配置（storageConfigInfo）" />
       <!--
@@ -303,8 +307,10 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
 
+import TipAlert from '@/components/TipAlert.vue'
 import FieldLabel from '@/components/FieldLabel.vue'
 import SectionTitle from '@/components/SectionTitle.vue'
+import AutoRefreshControl from '@/components/AutoRefreshControl.vue'
 import ExecutionClusterDrawer from '@/components/ExecutionClusterDrawer.vue'
 import IconAction from '@/components/IconAction.vue'
 import PageHeader from '@/components/PageHeader.vue'
@@ -315,7 +321,14 @@ import StorageConfigFields from '@/components/StorageConfigFields.vue'
 import TablePager from '@/components/TablePager.vue'
 import TimeText from '@/components/TimeText.vue'
 import { managementApi } from '@/api/management.js'
-import { confirmDanger, notifyError, notifySuccess, onConsoleRefresh, useRemotePaging } from '@/composables/index.js'
+import {
+  confirmDanger,
+  notifyError,
+  notifySuccess,
+  onConsoleRefresh,
+  useAutoRefresh,
+  useRemotePaging,
+} from '@/composables/index.js'
 import { session } from '@/store/session.js'
 import {
   CATALOG_FORMATS,
@@ -342,8 +355,10 @@ const {
   pageSize,
   loading,
   error,
+  staleError,
   load,
   reload,
+  silentLoad,
   onPageChange,
   onSizeChange,
 } = useRemotePaging(({ page: current, pageSize: size }) => managementApi
@@ -363,7 +378,7 @@ const unfilteredTotal = ref(0)
 
 // 一次轻量请求取回「一共几个 catalog」（`pageSize=1` 只为拿 `page.total`）。
 // 筛选之后标题要能写出「筛出 3 / 共 12」，而这个分母不能跟着筛选变。
-onMounted(async () => {
+async function loadUnfilteredTotal() {
   try {
     const payload = await managementApi.listCatalogs({ page: 1, pageSize: 1 })
     unfilteredTotal.value = payload.page?.total ?? 0
@@ -371,7 +386,9 @@ onMounted(async () => {
     // 分母取不到就不显示——比显示一个 0 强
     unfilteredTotal.value = 0
   }
-})
+}
+
+onMounted(loadUnfilteredTotal)
 
 /**
  * 顶部格式筛选器的候选。空串是「全部」，不是「不筛选」——见模板里的说明。
@@ -625,6 +642,31 @@ async function confirmDelete(row) {
 }
 
 onConsoleRefresh(() => reload())
+
+// ------------------------------------------------------------------ 定时刷新
+//
+// 这一屏最该自动刷新的东西是「执行集群」那一列：探活与保存都在别处发生，
+// 而这张表是唯一能一眼看到「哪个 catalog 的优化不会跑」的地方。
+//
+// 两处静默：
+// ① 列表走 `silentLoad`（不出遮罩、失败不清空表格）；
+// ② 标题里的分母只在**筛选生效时**才跟着取（没筛选时它不显示，
+//    每 5 秒多打一次请求纯属浪费）。
+const {
+  enabled: autoEnabled,
+  seconds: autoSeconds,
+  lastAt: autoRefreshedAt,
+} = useAutoRefresh(async () => {
+  await silentLoad()
+  if (formatFilter.value) {
+    await loadUnfilteredTotal()
+  }
+}, {
+  page: 'catalogs',
+  // 新建/编辑表单打开时不刷：表格在弹层后面没人看，而刷新只会让
+  // 行里的 `entityVersion` 与表单里那份悄悄分叉，保存时得到一个莫名其妙的 409
+  blocked: () => dialog.open,
+})
 </script>
 
 <style scoped>

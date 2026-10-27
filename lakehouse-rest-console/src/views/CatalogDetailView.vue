@@ -253,11 +253,9 @@
               </el-button>
             </div>
 
-            <el-alert
+            <TipAlert
               v-if="fileListing?.truncated"
               type="warning"
-              :closable="false"
-              show-icon
               class="pc-hint"
             >
               <template #title>只显示了前 {{ fileListing.maxEntries }} 条（共 {{ fileListing.total }} 条）</template>
@@ -265,7 +263,7 @@
                 排序是目录优先、名称升序，因此被截掉的是尾部的文件。需要看全部的话，
                 下钻到更具体的子目录，或调大 <span class="pc-mono">lakehouse.rest.file-browser.max-entries</span>。
               </div>
-            </el-alert>
+            </TipAlert>
 
             <ResourceState
               :loading="filesLoading"
@@ -486,6 +484,7 @@ import { consoleApi } from '@/api/console.js'
 import { describeError } from '@/api/client.js'
 import { catalogApi } from '@/api/catalog.js'
 import { managementApi } from '@/api/management.js'
+import TipAlert from '@/components/TipAlert.vue'
 import CatalogStoragePanel from '@/components/CatalogStoragePanel.vue'
 import CopyText from '@/components/CopyText.vue'
 import IconAction from '@/components/IconAction.vue'

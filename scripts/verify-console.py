@@ -60,7 +60,11 @@ spec/rest-catalog-open-api-iceberg.yaml）。路径写错时前端只表现为�
                   三类型/五状态在前端与 enum 各只有一份、凭据只进不出、yml 里不再有提交参数、
                   fail-closed 的两个落点都在。这些错法全都不报错——任务静默地不跑，
                   或者跑到了服务端自己所在的集群
- 23. 文档计数     文档里写的「N 组 M 项」与脚本实际一致——加校验组的人要顺手改文档，
+ 23. 定时刷新     Catalog 与优化任务列表的「定时刷新」：默认开启 5 秒、档位与默认值各只有一份、
+                  每一拍走静默路径（不出遮罩、失败不清空表格）、后台标签页暂停、卸载清定时器。
+                  这些错法都不报错——页面看起来在跑，数据其实停在几分钟前，
+                  或者反过来：表格每 5 秒闪一次空
+ 24. 文档计数     文档里写的「N 组 M 项」与脚本实际一致——加校验组的人要顺手改文档，
                   而这条约定此前没人执行（真漂过一次：docs/console.md 37、实际 38）
 
 用法：
@@ -1357,6 +1361,61 @@ check("问号图标的命中区比图标本身大（鼠标差一两个像素也�
       "styles/index.css 里 .pc-tip-icon / .pc-field-label-icon 应带 padding，"
       "把 14px 图标的可悬停范围撑大一圈")
 
+# --- 16.1 提示性告警的正文收进问号（components/TipAlert.vue） ----------------
+# el-alert 的「一句结论 + 一段解释」一页里多了之后，解释把数据挤到折叠线以下。
+# TipAlert 把解释收进标题旁的问号；这一组钉住它的边界，因为这些错法全都不报错：
+# 错误也被收进气泡（出事要多点一下才知道）、气泡里塞按钮（点不到，动作等于丢了）、
+# 调用点没写标题（只剩一个问号，什么信息都没有）。
+TIP_ALERT_SOURCE = read(os.path.join(CONSOLE_DIR, "src/components/TipAlert.vue"))
+check("TipAlert 复用 TipNote（图标与气泡全站只有一套交互，不另写 el-tooltip）",
+      "TipNote" in TIP_ALERT_SOURCE and "<el-tooltip" not in TIP_ALERT_SOURCE,
+      "提示图标分开两套实现，迟早一种悬停即显、一种要点一下")
+
+
+def tip_alert_blocks(source):
+    """取 `<TipAlert ...>...</TipAlert>`（或自闭合）块；粗解析够用，块里没有嵌套同名标签。"""
+    blocks = []
+    for match in re.finditer(r"<TipAlert\b", source):
+        gt = source.find(">", match.start())
+        if source[gt - 1] == "/":
+            blocks.append(source[match.start():gt + 1])
+        else:
+            close = source.find("</TipAlert>", gt)
+            blocks.append(source[match.start():close + len("</TipAlert>")])
+    return blocks
+
+
+untitled = []
+wrong_type = []
+interactive = []
+tip_alert_files = []
+for base, _, names in os.walk(os.path.join(CONSOLE_DIR, "src")):
+    for name in names:
+        if not name.endswith(".vue") or name == "TipAlert.vue":
+            continue
+        path = os.path.join(base, name)
+        source = read(path)
+        if "<TipAlert" not in source:
+            continue
+        tip_alert_files.append(os.path.relpath(path, CONSOLE_DIR))
+        for block in tip_alert_blocks(source):
+            if "#title" not in block and re.search(r":?title=\"", block) is None:
+                untitled.append((os.path.relpath(path, CONSOLE_DIR), block[:60]))
+            if 'type="error"' in block or ":type=" in block:
+                wrong_type.append(os.path.relpath(path, CONSOLE_DIR))
+            if any(marker in block for marker in ("<el-button", "<CopyText", "pc-tools-row")):
+                interactive.append(os.path.relpath(path, CONSOLE_DIR))
+
+check(f"提示性告警已接入 TipAlert（{len(tip_alert_files)} 个文件）",
+      len(tip_alert_files) >= 10,
+      "TipAlert 一个调用点都没有：说明这次收进问号的约定没有落地")
+check("每个 TipAlert 都带标题（问号挂在标题旁，没标题就只剩一个点了没反应的图标）",
+      not untitled, "以下调用点没有 #title / title：" + "、".join(f"{f}" for f, _ in untitled))
+check("TipAlert 只用于 info / warning，且 type 是字面量（错误类正文必须直显）",
+      not wrong_type, "以下文件把错误或动态类型接进了 TipAlert：" + "、".join(sorted(set(wrong_type))))
+check("带按钮/复制控件的提示条不收进气泡（气泡里点不到，动作等于丢了）",
+      not interactive, "以下文件的 TipAlert 块里有交互控件：" + "、".join(sorted(set(interactive))))
+
 # ------------------------------------------------------------------ 17. 目录浏览的入口
 
 print()
@@ -2102,10 +2161,91 @@ check("sql/schema-mysql.sql 里有 lakehouse_catalog_execution_cluster",
       "create table lakehouse_catalog_execution_cluster" in read(SCHEMA_SQL).lower(),
       "实体加了但没重新执行 scripts/gen-mysql-ddl.sh")
 
-# ------------------------------------------------------------------ 23. 文档计数
+# ------------------------------------------------------------------ 23. 定时刷新
 
 print()
-print("23. 文档计数（文档写的「N 组 M 项」必须与脚本实际一致）")
+print("23. 定时刷新（Catalog / 优化任务列表；默认开启、5 秒一拍、静默重取）")
+
+# 这一组钉的是「定时刷新」的**静默性**与**唯一实现**，因为它的错法全都不报错：
+# 定时器里调了 `reload()` → 表格每 5 秒闪一次遮罩（看起来像一直在加载，其实是坏的）；
+# 静默刷新失败时把表格清空 → 有数据的一屏突然变空，像「数据被删了」；
+# 后端标签页照常轮询 → 页签开一夜，第二天账单上多几千次查询；
+# 离开页面没清定时器 → 换一个页面还在打上一个页面的接口；
+# 默认值/档位抄两份 → 两个列表页的默认节拍悄悄不一样。
+AUTO_REFRESH_UTIL = os.path.join(CONSOLE_DIR, "src/utils/autoRefresh.js")
+AUTO_REFRESH_CONTROL = os.path.join(CONSOLE_DIR, "src/components/AutoRefreshControl.vue")
+COMPOSABLES_JS = os.path.join(CONSOLE_DIR, "src/composables/index.js")
+OPTIMIZATION_JOBS_VIEW = os.path.join(CONSOLE_DIR, "src/views/OptimizationJobsView.vue")
+
+auto_util = read(AUTO_REFRESH_UTIL)
+auto_control = read(AUTO_REFRESH_CONTROL)
+composables_js = read(COMPOSABLES_JS)
+
+# --- 23.1 默认值只有一份 ---------------------------------------------------
+check("默认「开启 + 5 秒」只在 utils/autoRefresh.js 里定义一次",
+      "AUTO_REFRESH_DEFAULT = Object.freeze({ enabled: true, seconds: 5 })" in auto_util
+      and "seconds: 5" not in auto_control,
+      "控件或视图里另写一份默认值：改一处之后两个列表页的默认节拍就不一样了")
+
+# --- 23.2 档位只有一份，控件按它渲染 --------------------------------------
+check("节拍档位只有一份（控件 v-for 渲染 AUTO_REFRESH_INTERVALS，不另抄数字）",
+      'v-for="option in AUTO_REFRESH_INTERVALS"' in auto_control
+      and "3, 5, 10, 30, 60" not in auto_control,
+      "档位抄两处：加一档时下拉里没有它，而手选的节拍可能不在档位里")
+
+# --- 23.3 两个列表页各接一份，偏好键不重名 -------------------------------
+for label, view_path in (("CatalogsView", CATALOGS_VIEW),
+                         ("OptimizationJobsView", OPTIMIZATION_JOBS_VIEW)):
+    view_source = read(view_path)
+    check(f"{label} 同时挂了控件与定时器（useAutoRefresh）",
+          "AutoRefreshControl" in view_source and "useAutoRefresh(" in view_source,
+          "只画了开关没接定时器：打开开关什么都不会发生")
+page_keys = re.findall(r"page: '([\w-]+)'", read(CATALOGS_VIEW) + read(OPTIMIZATION_JOBS_VIEW))
+check("两个列表页的偏好键不重名（各存一份，开关互不影响）",
+      len(page_keys) == 2 and len(set(page_keys)) == 2, f"实际：{page_keys}")
+
+# --- 23.4 每一拍都走静默路径（不出遮罩、不清表格） ------------------------
+# 只取 useAutoRefresh(...) 调用的实参块来看：视图别处出现 load/reload 是正常的，
+# 要拦的是**定时器那一拍**里出现它们。
+for label, view_path in (("CatalogsView", CATALOGS_VIEW),
+                         ("OptimizationJobsView", OPTIMIZATION_JOBS_VIEW)):
+    tick = re.search(r"useAutoRefresh\(([\s\S]{0,1500}?)\n\}\)", read(view_path))
+    body = tick.group(1) if tick else ""
+    check(f"{label} 的定时刷新只走 silentLoad（不出现 load()/reload()）",
+          "silentLoad" in body and ".load()" not in body and "reload(" not in body,
+          "定时器里调用会置 loading 的 load/reload：那一拍会出遮罩，失败时还会清空表格")
+
+check("静默刷新失败时保留上一份数据（清空表格只发生在非静默路径）",
+      composables_js.count("rows.value = []") == 1
+      and composables_js.count("staleError.value = describeError(cause)") >= 2,
+      "静默路径清空 rows：有数据的一屏每 5 秒被清空一次")
+
+check("静默刷新的失败原因有地方显示（控件上的角标，不抢眼但必须在）",
+      "staleError" in auto_control and "定时刷新失败" in auto_control,
+      "失败后页面看起来一切正常，数据其实停在几分钟前——这是最坏的一种旧数据")
+
+# --- 23.5 后台暂停、在途不叠加、卸载清定时器 ------------------------------
+auto_refresh_fn = re.search(r"export function useAutoRefresh\(([\s\S]*?)\n\}", composables_js)
+auto_refresh_fn = auto_refresh_fn.group(0) if auto_refresh_fn else ""
+check("后台标签页跳过刷新，切回前台补一拍",
+      "visibilitychange" in auto_refresh_fn and "shouldTick(" in auto_refresh_fn,
+      "页签开着过夜会一直轮询；切回来又要等满一个整拍才更新，而页面看起来是实时的")
+check("上一拍没回来不发下一拍",
+      "inFlight" in auto_refresh_fn and "shouldTick(" in auto_refresh_fn,
+      "慢网络下请求会堆叠，最后一起返回、一起覆盖，页面开始闪")
+check("离开页面时清掉定时器",
+      "onUnmounted" in auto_refresh_fn and "clearInterval" in auto_refresh_fn,
+      "换到别的页面后还在打上一个页面的接口")
+
+# --- 23.6 展开中的批次明细跟着刷 ------------------------------------------
+check("优化任务页连展开中的批次明细一起刷，且同样静默",
+      "loadItems(id, { silent: true })" in read(OPTIMIZATION_JOBS_VIEW),
+      "展开行停在打开那一刻：用户盯着「跑到哪张表」看的正是这一块")
+
+# ------------------------------------------------------------------ 24. 文档计数
+
+print()
+print("24. 文档计数（文档写的「N 组 M 项」必须与脚本实际一致）")
 
 # 这一组是**元校验**，起因是一次真实的漂移：docs/console.md 写「12 组 37 项」、
 # README 写「12 组 38 项」，而脚本实际是 38——两个数字都没人核对，因为脚本此前

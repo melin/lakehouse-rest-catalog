@@ -28,7 +28,7 @@
 
     <!-- 深链接敲到 Paimon catalog 上：整页建立在 namespaces/** 上，对 Paimon catalog 注定被拒 -->
     <PanelCard v-else-if="!icebergCatalog">
-      <el-alert type="info" :closable="false" show-icon>
+      <TipAlert type="info">
         <template #title>catalog「{{ prefix }}」是 Paimon 协议面，本页不适用</template>
         <div>
           本页读的是 Iceberg 协议面的表端点
@@ -38,7 +38,7 @@
           Paimon 表的详情（快照 / 标签 / 分支 / 分区 / 数据访问）在
           <b>Paimon 版表详情页</b>里看。
         </div>
-      </el-alert>
+      </TipAlert>
       <div class="pc-tools-row">
         <el-button size="small" @click="$router.push({ name: 'table', params: { prefix, database, table } })">
           <el-icon><Document /></el-icon>
@@ -90,13 +90,13 @@
                 <div class="pc-stat-foot">format-version：{{ metadata['format-version'] ?? '—' }}</div>
               </div>
             </div>
-            <el-alert v-else type="info" :closable="false" show-icon class="pc-hint">
+            <TipAlert v-else type="info" class="pc-hint">
               <template #title>还没有任何提交（current-snapshot-id = -1）</template>
               <div>
                 建表后还没写入过数据时，Iceberg 用 <code class="pc-mono">-1</code> 表示「无快照」，
                 不是快照 ID。写入后这里的统计与「快照」页签会有内容。
               </div>
-            </el-alert>
+            </TipAlert>
 
             <div class="pc-detail-grid">
               <dl class="pc-kv">
@@ -274,11 +274,9 @@
                 </el-button>
               </div>
 
-              <el-alert
+              <TipAlert
                 v-if="fileListing?.truncated"
                 type="warning"
-                :closable="false"
-                show-icon
                 class="pc-hint"
               >
                 <template #title>只显示了前 {{ fileListing.maxEntries }} 条（共 {{ fileListing.total }} 条）</template>
@@ -286,7 +284,7 @@
                   排序是目录优先、名称升序，因此被截掉的是尾部的文件。下钻到更具体的子目录，
                   或调大 <span class="pc-mono">lakehouse.rest.file-browser.max-entries</span>。
                 </div>
-              </el-alert>
+              </TipAlert>
 
               <ResourceState
                 :loading="filesLoading"
@@ -419,6 +417,7 @@
 import { computed, defineAsyncComponent, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
+import TipAlert from '@/components/TipAlert.vue'
 import CopyText from '@/components/CopyText.vue'
 import IconAction from '@/components/IconAction.vue'
 import JsonBlock from '@/components/JsonBlock.vue'
