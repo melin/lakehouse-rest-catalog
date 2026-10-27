@@ -22,7 +22,7 @@
 | 格式怎么区分 | `lakehouse_catalog.catalog_format` 增加 `LANCE`，创建时必选、**不可变**（沿用 Iceberg 的定案） |
 | 数据模型 | **加 2 列、0 张新表**（`properties_json` 必加；`table_version` 在 P1 加） |
 | 做多少端点 | P0 **13 个**（5 个 namespace + 8 个 table），P1 再 **2 个**（版本只读） |
-| 剩下 35 个怎么办 | **显式 406 + `{"code":0,"error":"..."}`**，不是 404、不是 500，更不是「假装成功」 |
+| 剩下 35 个怎么办 | 其中 5 个（P1 的 2 个 + P2 的 3 个）预留待做，**其余 30 个恒 `406` + `{"code":0,"error":"..."}`**，不是 404、不是 500，更不是「假装成功」 |
 | 数据面（query / insert / index） | **不做**。规范原文把这类操作列为「catalog 不该承担」，我们照抄这条理由 |
 | `CreateTable` / `DropTable` | **不做**，只做 `DeclareTable` / `DeregisterTable`（规范专门写了「Why Not」一节） |
 | `managed_versioning` | **恒 `false`**。我们不做提交协调；P2 再评估（这一项要有单独的评审） |
@@ -494,6 +494,12 @@ DescribeTable / DeclareTable 的请求参数 vend_credentials=true
 - 递归删除（`DropNamespace` 的 `Cascade`）
 - 通过 Lance API 创建 catalog（默认关闭，见 D2）
 
+**一个下游能力**：Lance 表的 compaction / 版本清理（Spark `OPTIMIZE` / `VACUUM`）单独成文
+——[`lance-table-optimization-design.md`](lance-table-optimization-design.md)。它复用现有的存储优化链路
+（0 张新表、0 个新端点），但**以本文的 L0-5 为前置**：`describe` 拿不到 `location` + `storage_options`，
+优化任务的 Spark 会话就建不起来。反过来它对本文有两个反馈：L0-5 的 `describe` 会被**除客户端以外**的
+第二个调用方使用（优化任务的每次巡检），以及 L1-3 的 `ListTableVersions` 会用来做「清理前预览」。
+
 ---
 
 ## 7. 控制台与事件
@@ -501,7 +507,7 @@ DescribeTable / DeclareTable 的请求参数 vend_credentials=true
 | 位置 | 改动 | 理由 |
 | --- | --- | --- |
 | catalog 列表 / 详情 | `catalog_format` 徽标加 `LANCE`；「协议与能力」卡片显示基址 `/lance` 与「13 个端点已实现、其余不支持」 | 与 Iceberg catalog 的卡片同形（`console-catalog-detail.md` §3.1.1） |
-| 表详情 | 只显示「详细信息 / 文件列表 / 血缘」三个页签；**不显示**快照、数据预览、数据策略 | Lance 表没有我们的快照概念；预览需要 Lance reader（§3.3）；行过滤在 Lance 侧无落点 |
+| 表详情 | 只显示「详细信息 / 文件列表 / 血缘」三个页签；**不显示**快照、数据预览、数据策略。启用存储优化后再加第四个「存储优化」页签（见 [`lance-table-optimization-design.md`](lance-table-optimization-design.md) §7.5） | Lance 表没有我们的快照概念；预览需要 Lance reader（§3.3）；行过滤在 Lance 侧无落点 |
 | 建表表单 | **不给 Lance 入口**（与 `lance-table` 的处理一致） | 建表要写数据集，我们没有写路径 |
 | 文件列表 | 复用现有的对象存储浏览（`_versions/`、`data/` 直接可见） | 这是唯一能看到「表里到底有什么」的地方，成本为零 |
 | 事件 | 复用现有表生命周期事件，payload 增加 `format=LANCE`；**不新增事件类型** | 事件消费者是按 `category/type` 订阅的，新增类型会让所有 listener 漏事件 |

@@ -140,6 +140,18 @@ expire 其实也能用 `older_than` 表达同一件事（我们算好 `now - N �
 > 备注：`CALL` 在 Iceberg 里由 `IcebergSparkSessionExtensions` 注册成 procedure，
 > 只把 `iceberg-spark-runtime` 放进类路径不够（见 §6.5）。
 
+### 2.6 Lance 的对应物（设计稿，未实现）
+
+Lance 面见 [`lance-table-optimization-design.md`](lance-table-optimization-design.md)。与上面两节的关系只有三条要点，其余全部复用本文：
+
+| 项 | Paimon / Iceberg | Lance |
+| --- | --- | --- |
+| 语句 | 三条 `CALL` | **两条解析器命令**：`OPTIMIZE`（= compact）、`VACUUM`（= expire **兼** orphan） |
+| 动作数 | 三 | **两**。`orphan` 恒不可用（`VACUUM` 一步就做完），响应里用动作级 `supported=false` 表达，不是前端硬隐藏 |
+| 指标 | 前后快照（Paimon `$files`）/ procedure 计数 | **只有增量四元组**（`fragments_removed` / `fragments_added` / `files_removed` / `files_added`），Lance 在 Spark 里没有系统表可查 |
+
+三个动作的**名字、执行顺序、批次状态机、回调协议、并发闸门、`SKIPPED` 语义全部不变**——本文 §3 之后的每一节都适用于 Lance。真正会「静默走错」的只有两处二元分派：服务端 `OptimizationOptions` 的 7 个 `isIceberg(format) ? … : …` 重载，与执行侧 `TableOptimizerJob.isIceberg(plan)`；不改它们，Lance 批次会用 Paimon 的键表校验参数、并用 Paimon 的会话去连 `/v1/{prefix}`（于是失败信息说「表不存在」）。
+
 ---
 
 ## 3. 执行架构

@@ -241,7 +241,7 @@ spec/                   三份 OpenAPI 规格的仓库副本（不随服务端�
                         rest-management-open-api.yaml（Paimon 官方 REST Management API）
 sql/                    MySQL 建表语句（生成物）
 scripts/                验收 / 生成 / 校验 / 镜像构建脚本
-docs/                   28 份设计文档（另有五份配套效果图 HTML）
+docs/                   29 份设计文档（另有五份配套效果图 HTML）
 ```
 
 服务端四模块的**类数**：core 117 · storage 9 · protocol-paimon 38 · server 46（共 210）。
@@ -287,6 +287,7 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
 | `polaris-capabilities-and-design.md` | 对比 Polaris、看整体设计与已知缺口 |
 | `iceberg-rest-catalog-design.md` | 让同一基址、同一份元数据同时服务原生 Iceberg REST 客户端：双协议方案、两套面的差异与代价、catalog 建时区分格式；**已落地的实测记录与与方案不一致的十六处**（§11） |
 | `lance-rest-catalog-design.md` | 支持 Lance（Lance Namespace / REST Catalog 协议面）或评审该方案（**设计稿，未实现**）：规范自己划的「最小集 + 两条降级许可」为什么正好覆盖我们（§1.5）、48 个 operation 的三档取舍、为什么不做 `CreateTable`/数据面/`managed_versioning`（§3）、三种「Lance」的区分（Paimon `lance-table` / 通用表 / 本面，§2）、基址与 id 解析、`catalog_format=LANCE` 加 2 列 0 新表、授权与凭据的落点、P0/P1/P2 需求清单与验收脚本、六个待拍板决策（§8） |
+| `lance-table-optimization-design.md` | 给 Lance 表做存储优化（compaction）或评审该方案（**设计稿，未实现**，前置是上一条的 P0）：为什么只有两条维护语句（`OPTIMIZE` / `VACUUM`）→ 三动作变两动作、`orphan` 恒不可用；Daft 那两层参数（`num_partitions`/`concurrency`/`micro_commit_batch_size`）在 Spark 侧不存在；指标是**增量四元组**不是前后快照；`VACUUM` 无干跑的三层补偿；`isIceberg()` 与 `actionsFor()` 两处二元分派不改就静默走 Paimon（§5.1 / §7.2）；`--add-opens` 只能进镜像 ENV（§5.6）；三条抓包门禁与 P0/P1 需求清单 |
 
 ---
 
