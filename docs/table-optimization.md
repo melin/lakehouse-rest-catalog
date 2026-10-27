@@ -316,7 +316,7 @@ Iceberg 的 `rewrite_data_files` 只有 `strategy => 'binpack' | 'sort'`，Z-Ord
 | 参数 | 说明 |
 | --- | --- |
 | `--job-id` | 批次 id |
-| `--management-url` | 管理 API 基址；catalog API 基址由它去掉 `/api/management/v1` 推出，可用 `--catalog-url` 覆盖 |
+| `--management-url` | 管理 API 基址，由执行集群的 `callbackBaseUrl` **加上** `/api/management/v1` 拼出（`OptimizerJob.managementApiUrl`）；catalog API 基址再由它去掉该后缀推出，可用 `--catalog-url` 覆盖 |
 | `--token` | 批次级回调令牌（请求头 `X-Optimization-Token`） |
 | `--catalog-token` | **可选**：catalog 数据面令牌。批次令牌只对优化回调端点有效，不能当 catalog 凭据——任务要访问 `/v1/{prefix}` 才能拿到 Paimon 表。没开认证的部署不传这个参数 |
 

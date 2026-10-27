@@ -559,20 +559,28 @@ spec:
         # 「warehouse 目录不可写」，而报错位置离真正原因很远。
         #
         # fsGroup 在这里帮不上忙：hostPath 不参与属主管理，这是它与 PVC 的关键差别。
-        # 因此用 root 跑一次 chown，之后主容器全程非 root。
+        # 因此用 root 跑一次 chown + chmod，之后主容器全程非 root。
+        #
+        # 这里用到的两个能力都必须在 securityContext 里显式列出（下面 drop ALL）：
+        # CHOWN 给 chown，FOWNER 给 chmod。少一个就是 Init 阶段 EPERM。
         - name: prepare-warehouse
           image: registry.cn-hangzhou.aliyuncs.com/melin1204/lakehouse-rest-catalog:1.0.0
           imagePullPolicy: Always
           # 复用服务端镜像，不额外引入 busybox——多一个镜像就是多一处要同步的
-          # 镜像源与架构问题，而这里的命令只需要 sh + chown。
+          # 镜像源与架构问题，而这里的命令只需要 sh + chmod + chown。
           command:
             - /bin/sh
             - -c
             - |
               set -e
+              # 顺序不能反：`chown 10001:10001 /data` 执行后目录属主已经是 10001，
+              # 而当前 fsuid 仍是 0——此时 chmod 属于「改别人的文件」，需要 CAP_FOWNER。
+              # 把 chmod 写在 chown 后面，就会报
+              #   chmod: changing permissions of '/data': Operation not permitted
+              # 先 chmod（属主还是 root，改自己的文件不需要额外能力），再把属主交出去。
               mkdir -p /data
-              chown 10001:10001 /data
               chmod 0750 /data
+              chown 10001:10001 /data
               echo "warehouse 目录属主已就绪: $(ls -ld /data)"
           securityContext:
             # 覆盖 Pod 级的 runAsNonRoot / runAsUser：chown 必须是 root。
@@ -580,12 +588,17 @@ spec:
             runAsUser: 0
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
-            # 只保留 chown 需要的 CAP_CHOWN，其余全丢——root 身份不等于全权限。
+            # root 身份在这里**不等于**全权限：drop ALL 之后只剩显式 add 的能力。
+            #   CHOWN  —— chown 改属主
+            #   FOWNER —— chmod 改权限（目录属主不是 0 时的必要条件）
+            # 缺 FOWNER 的表现就是 initContainer 报 Operation not permitted，
+            # Pod 卡在 Init 阶段，日志里只有一句 chmod 失败。
             capabilities:
               drop:
                 - ALL
               add:
                 - CHOWN
+                - FOWNER
           volumeMounts:
             # 挂的就是主容器那份 warehouse 卷，这里的 /data 即节点上的
             # /data/paimon-warehouse——chown 落在卷根目录上。

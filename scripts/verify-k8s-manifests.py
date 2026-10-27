@@ -444,6 +444,30 @@ for kind, w in all_workloads():
 check("exec 都是 {command: [...]} 形状", not bad_exec, "；".join(bad_exec))
 
 # ---------------------------------------------------------------------------
+print("\n§12 root initContainer 的能力与其命令匹配")
+# ---------------------------------------------------------------------------
+# hostPath 卷根由 kubelet 以 root:root 创建，主容器以 uid 10001 运行，
+# 所以有一个以 root 跑的 initContainer 负责 chmod/chown。这里的坑是：
+# securityContext 一旦 `drop: [ALL]`，root 就**只剩显式 add 的能力**——
+# 实测漏掉 FOWNER 时，`chown 10001:10001 /data` 之后的 `chmod 0750 /data`
+# 属于「改别人的文件」，直接报
+#   chmod: changing permissions of '/data': Operation not permitted
+# Pod 卡在 Init 阶段，日志只有这一句。这条错误只在真集群里暴露，
+# （client dry-run 与 schema 校验都放行），所以在脚本里静态断言一次。
+CAP_FOR = {"chown": "CHOWN", "chmod": "FOWNER", "chgrp": "CHOWN"}
+for kind, w in all_workloads():
+    for c in pod_spec(w).get("initContainers", []) or []:
+        sc = c.get("securityContext") or {}
+        if sc.get("runAsUser") != 0 and not sc.get("privileged"):
+            continue
+        caps = set(((sc.get("capabilities") or {}).get("add")) or [])
+        script = " ".join(list(c.get("command", []) or []) + list(c.get("args", []) or []))
+        missing = sorted({cap for cmd, cap in CAP_FOR.items()
+                          if cmd in script and cap not in caps})
+        check(f"initContainer {c['name']} 具备其命令所需的能力", not missing,
+              f"缺 {missing}；add={sorted(caps)}")
+
+# ---------------------------------------------------------------------------
 print()
 if failures:
     print(f"校验未通过：{len(failures)} 项不一致")

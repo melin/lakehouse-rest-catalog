@@ -162,11 +162,28 @@ warehouse 是节点本地目录 + `file://` 协议。扩到 2 个副本，第二
 
 `hostPath` 目录由 kubelet 以 root 创建（0755），而主容器以 uid 10001 运行、
 根文件系统只读。**`fsGroup` 对 hostPath 不生效**（这是它与 PVC 的关键差别），
-所以有 `prepare-warehouse` 这个 initContainer：以 root 跑一次 `chown 10001:10001`，
-只保留 `CAP_CHOWN`，其余 capability 全丢。不修的话启动报「warehouse 目录不可写」。
+所以有 `prepare-warehouse` 这个 initContainer：以 root 跑一次 `chmod 0750` +
+`chown 10001:10001`，之后主容器全程非 root。不修的话启动报「warehouse 目录不可写」。
+
+**这里有两个必须一起做对的细节**，错任一个都只在真集群里暴露：
+
+```yaml
+command: ["/bin/sh", "-c", "chmod 0750 /data && chown 10001:10001 /data"]
+securityContext:
+  runAsUser: 0
+  capabilities: {drop: [ALL], add: [CHOWN, FOWNER]}
+```
+
+- **顺序**：必须先 `chmod` 再 `chown`。`chown` 一执行，`/data` 的属主就变成 10001，
+  此时当前 fsuid 仍是 0——再 `chmod` 就是「改别人的文件」，需要 `CAP_FOWNER`。
+- **能力**：`drop: [ALL]` 之后 root 只剩显式 add 的能力。`chown` 要 `CAP_CHOWN`，
+  `chmod` 在属主不是 0 时要 `CAP_FOWNER`。只给 `CHOWN` 的后果是
+  `chmod: changing permissions of '/data': Operation not permitted`，
+  Pod 卡在 `Init:0/1`，日志里只有这一句。
 
 它复用服务端镜像而不是 busybox——多一个镜像就是多一处镜像源与架构问题，
-而这里的命令只需要 `sh` + `chown`。
+而这里的命令只需要 `sh` + `chmod` + `chown`。`scripts/verify-k8s-manifests.py` §12
+会按命令里出现的 `chmod`/`chown` 反查能力是否够（漏了直接红）。
 
 ### 3.4 建表语句走镜像，不走 ConfigMap
 
@@ -209,6 +226,11 @@ Dockerfile 里有构建命令。
 `--dry-run=client --validate=false`，但 apiserver 会拒绝：
 `cannot unmarshal array into Go struct field LifecycleHandler...preStop.exec of type v1.ExecAction`。
 
+§12 盯 root initContainer 的能力是否配齐：脚本里出现 `chmod` 就必须有 `CAP_FOWNER`、
+出现 `chown` 就必须有 `CAP_CHOWN`。缺了的表现是 Init 阶段
+`chmod: changing permissions of '/data': Operation not permitted`——
+dry-run 和 schema 校验都不会拦，只有 Pod 真的跑起来才报。
+
 这些错误 `kubectl apply` 时都不会报，只在运行时表现成 Pod Pending 或启动时报「解析不了占位符」。
 
 ---
@@ -217,7 +239,7 @@ Dockerfile 里有构建命令。
 
 | 项目 | 方式 | 结果 |
 | --- | --- | --- |
-| YAML 语法与跨文件引用 | `scripts/verify-k8s-manifests.py` | §1–§11 全部通过（3 个资源） |
+| YAML 语法与跨文件引用 | `scripts/verify-k8s-manifests.py` | §1–§12 全部通过（3 个资源） |
 | API schema 能否被 apiserver 接受 | `kubectl apply --dry-run=client --validate=true -f deploy/kubernetes/lakehouse-rest.yaml` | 三件对象均通过（`--validate=true` 会拉集群 OpenAPI，`preStop.exec` 那类 schema 错误能抓到；不需要写权限，命名空间正在 Terminating 时也能跑） |
 | 配置能否被服务端解析 | 把 ConfigMap 里的 `application-k8s.yml` 原样交给服务端 | profile 生效、Hikari 连上 MySQL、`/v1/config` 返回配置的 warehouse |
 | 鉴权与授权 | 同上实例 | 无令牌 401、错误令牌 401、正确令牌 200 |
@@ -265,7 +287,20 @@ kubectl get namespace lakehouse-rest -o json \
 
 **Pod 起不来，日志报 warehouse 目录不可写**
 `prepare-warehouse` 没跑成功，或者节点上的 `/data/paimon-warehouse` 被别的
-Pod/人以别的属主占着。手工修：`sudo chown -R 10001:10001 /data/paimon-warehouse`。
+Pod/人以别的属主占着。先确认 initContainer 的日志：
+`kubectl -n lakehouse-rest logs <pod> -c prepare-warehouse`。
+手工修：`sudo chmod 0750 /data/paimon-warehouse && sudo chown -R 10001:10001 /data/paimon-warehouse`。
+
+**initContainer 报 `chmod: changing permissions of '/data': Operation not permitted`**
+两种成因，按顺序排查：
+1. `securityContext.capabilities` 只 add 了 `CHOWN`，缺 `FOWNER`——`drop: [ALL]` 之后
+   root 也只剩显式列出的能力。补上 `FOWNER`（§3.3）。
+2. 命令顺序是 `chown` 在前、`chmod` 在后：`chown` 已经把属主改成 10001，
+   随后的 `chmod` 就是在改别人的文件。调成先 `chmod` 再 `chown`。
+
+如果节点上的目录根本不允许改（NFS/CIFS 带 `root_squash`、或宿主机是
+只读挂载），那不是能力问题，`chmod` 永远会 EPERM——这种场景要把 warehouse
+换成对象存储，或改用能正常做属主管理的 PVC。
 
 **表在、数据没了**
 容器内 warehouse 路径与 `catalog.warehouse` 对不上（见 2.4），或者

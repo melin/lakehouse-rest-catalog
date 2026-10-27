@@ -32,6 +32,9 @@ public final class OptimizerJob {
     /** 资源名前缀。k8s 名字上限 63 字符，批次 id 是 32 位十六进制，加前缀仍在限内。 */
     public static final String NAME_PREFIX = "paimon-optimize-";
 
+    /** 管理 API 的固定前缀，与 {@code OptimizationController} 的类级映射一致。 */
+    private static final String MANAGEMENT_PATH = "/api/management/v1";
+
     private OptimizerJob() {
     }
 
@@ -50,7 +53,7 @@ public final class OptimizerJob {
         args.add("--job-id");
         args.add(jobId);
         args.add("--management-url");
-        args.add(cluster.callbackBaseUrl());
+        args.add(managementApiUrl(cluster.callbackBaseUrl()));
         args.add("--token");
         args.add(callbackToken);
         // 数据面令牌是可选的：没开认证的部署（本地、测试）不需要它。
@@ -94,6 +97,37 @@ public final class OptimizerJob {
                     .endTemplate()
                 .endSpec()
                 .build();
+    }
+
+    /**
+     * 把「服务端根地址」拼成管理 API 基址。
+     *
+     * <p>这两个地址**不是同一个东西**，混用的代价在真机上才显形：
+     *
+     * <ul>
+     *   <li>{@code callbackBaseUrl} 的语义是**根**——探活那一步用的是
+     *       {@code callbackBaseUrl + "/api/console/v1/meta"}，同样不带前缀。
+     *   <li>任务侧 {@code --management-url} 要的是**管理 API 基址**：
+     *       {@code OptimizationApiClient} 直接往上拼
+     *       {@code /optimization/jobs/{id}/submission}。
+     * </ul>
+     *
+     * <p>早期版本把根地址原样传下去，任务一启动就报
+     * {@code HTTP 404 ... No static resource optimization/jobs/...}。
+     * 那个 404 来自静态资源处理器，说明请求**根本没匹配上任何控制器**；
+     * 而批次不存在时的 404 带 {@code resourceType=OPTIMIZATION_JOB}。
+     * 两者要分清——前者是地址拼错，后者才是数据问题。
+     *
+     * <p>已经带前缀的配置不再重复拼：有人会把 callbackBaseUrl 直接填成管理地址
+     * （探活那一步也就跟着变成了 {@code /api/management/v1/api/console/v1/meta}，
+     * 他们会自己发现），这里至少别把任务也一起弄坏。
+     */
+    static String managementApiUrl(String callbackBaseUrl) {
+        String base = callbackBaseUrl;
+        while (base.endsWith("/")) {
+            base = base.substring(0, base.length() - 1);
+        }
+        return base.endsWith(MANAGEMENT_PATH) ? base : base + MANAGEMENT_PATH;
     }
 
     private static String blankToNull(String value) {

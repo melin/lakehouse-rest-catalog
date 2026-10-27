@@ -1166,7 +1166,9 @@ python3 scripts/verify-k8s-manifests.py
 （目录只有这一个 YAML、清单里不许出现 Namespace 对象、集群内只有三类对象、
 不允许残留 Secret / PVC 引用、Service 必须是 NodePort 30818），§11 盯
 `exec` 必须写成 `exec.command: [...]`（写成裸数组会被 apiserver 拒绝，
-而 `--dry-run=client --validate=false` 看不出来）。
+而 `--dry-run=client --validate=false` 看不出来），§12 按 root initContainer 的命令
+反查 capability（`chmod` 缺 `CAP_FOWNER` 会让 Pod 卡在 Init 阶段、
+只报一句 `Operation not permitted`）。
 这些错误 `kubectl apply` 时都不会报，只在运行时表现成 Pod 一直 Pending
 或启动时报「解析不了占位符」。
 
