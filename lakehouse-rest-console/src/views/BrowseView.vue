@@ -193,7 +193,7 @@
                 </el-table-column>
                 <!-- 列数变多后右面板在窄屏上会横向滚动，操作固定在右侧，
                      否则「重命名 / 删除」要滚到最右边才够得着 -->
-                <el-table-column label="操作" width="104" align="right" fixed="right">
+                <el-table-column label="操作" width="76" align="right" fixed="right">
                   <template #default="{ row }">
                     <IconAction icon="EditPen" label="重命名" @click="openRenameTable(row.name)" />
                     <IconAction icon="Delete" label="删除" type="danger" @click="confirmDropTable(row.name)" />
@@ -206,7 +206,7 @@
             <template v-else-if="tab === 'views'">
               <el-table v-loading="viewsList.loading.value" :data="viewsList.rows.value" size="small">
                 <el-table-column prop="name" label="视图名" min-width="200" />
-                <el-table-column label="操作" width="150" align="right" fixed="right">
+                <el-table-column label="操作" width="100" align="right" fixed="right">
                   <template #default="{ row }">
                     <IconAction icon="View" label="详情" @click="showView(row)" />
                     <IconAction icon="EditPen" label="重命名" @click="openRenameView(row.name)" />
@@ -220,7 +220,7 @@
             <template v-else-if="tab === 'functions'">
               <el-table v-loading="functionsList.loading.value" :data="functionsList.rows.value" size="small">
                 <el-table-column prop="name" label="函数名" min-width="200" />
-                <el-table-column label="操作" width="110" align="right" fixed="right">
+                <el-table-column label="操作" width="76" align="right" fixed="right">
                   <template #default="{ row }">
                     <IconAction icon="View" label="详情" @click="showFunction(row)" />
                     <IconAction icon="Delete" label="删除" type="danger" @click="confirmDropFunction(row.name)" />

@@ -145,7 +145,7 @@
               <template v-if="row.updatedBy"> · {{ row.updatedBy }}</template>
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="150" fixed="right">
+          <el-table-column label="操作" width="76" fixed="right">
             <template #default="{ row }">
               <IconAction icon="View" label="试算" @click="openDryRun(row)" />
               <IconAction icon="Edit" label="详情" type="primary" @click="openDetail(row)" />

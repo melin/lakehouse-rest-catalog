@@ -50,7 +50,7 @@
           <el-table-column label="创建时间" width="170">
             <template #default="{ row }"><TimeText :millis="row.createTimestamp" /></template>
           </el-table-column>
-          <el-table-column label="操作" width="200" fixed="right">
+          <el-table-column label="操作" width="124" fixed="right">
             <template #default="{ row }">
               <IconAction icon="Avatar" label="角色" type="primary" @click="openRoles(row)" />
               <IconAction icon="Refresh" label="轮换密钥" @click="rotate(row)" />

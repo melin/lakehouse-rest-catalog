@@ -45,7 +45,7 @@
           <el-table-column label="创建时间" width="170">
             <template #default="{ row }"><TimeText :millis="row.createTimestamp" /></template>
           </el-table-column>
-          <el-table-column label="操作" width="160" fixed="right">
+          <el-table-column label="操作" width="100" fixed="right">
             <template #default="{ row }">
               <IconAction icon="User" label="成员主体" type="primary" @click="openDetail(row)" />
               <IconAction icon="Edit" label="编辑" @click="openEdit(row)" />

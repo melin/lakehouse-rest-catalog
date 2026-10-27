@@ -109,7 +109,7 @@
               <TimeText :millis="row.lastUpdateTimestamp" mode="relative" />
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="240" fixed="right">
+          <el-table-column label="操作" width="150" fixed="right">
             <template #default="{ row }">
               <IconAction icon="Edit" label="编辑" type="primary" @click="openEdit(row)" />
               <!--

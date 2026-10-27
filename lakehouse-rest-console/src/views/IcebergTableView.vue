@@ -346,7 +346,7 @@
                     <span class="pc-mono pc-dim pc-break">{{ row.path }}</span>
                   </template>
                 </el-table-column>
-                <el-table-column label="操作" width="90" align="center" fixed="right">
+                <el-table-column label="操作" width="52" align="center" fixed="right">
                   <template #default="{ row }">
                     <IconAction
                       v-if="!row.directory"

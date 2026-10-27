@@ -390,7 +390,7 @@
               <el-table-column prop="branchName" label="分支名" min-width="200">
                 <template #default="{ row }">{{ row.branchName || row.name || row }}</template>
               </el-table-column>
-              <el-table-column label="操作" width="160" align="right" fixed="right">
+              <el-table-column label="操作" width="100" align="right" fixed="right">
                 <template #default="{ row }">
                   <IconAction icon="EditPen" label="重命名" @click="openRenameBranch(branchName(row))" />
                   <IconAction icon="DArrowRight" label="推进到最新" @click="forwardBranch(branchName(row))" />
@@ -498,7 +498,7 @@
                   <span class="pc-mono pc-dim pc-break">{{ row.path }}</span>
                 </template>
               </el-table-column>
-              <el-table-column label="操作" width="90" align="center" fixed="right">
+              <el-table-column label="操作" width="52" align="center" fixed="right">
                 <template #default="{ row }">
                   <!-- 只有文件可下载：目录用列表下钻；表目录里没有「下载整个目录」 -->
                   <IconAction

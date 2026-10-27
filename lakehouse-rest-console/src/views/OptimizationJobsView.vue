@@ -197,7 +197,7 @@
               <span v-else class="pc-dim">—</span>
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="150" align="right" fixed="right">
+          <el-table-column label="操作" width="100" align="right" fixed="right">
             <template #default="{ row }">
               <IconAction icon="View" label="详情" @click="openDetail(row)" />
               <IconAction

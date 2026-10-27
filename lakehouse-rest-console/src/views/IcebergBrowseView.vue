@@ -130,7 +130,7 @@
                     <a class="pc-link pc-mono" @click.prevent="openTable(row.name)">{{ row.name }}</a>
                   </template>
                 </el-table-column>
-                <el-table-column label="操作" width="152" align="right" fixed="right">
+                <el-table-column label="操作" width="100" align="right" fixed="right">
                   <template #default="{ row }">
                     <IconAction icon="View" label="详情" @click="openTable(row.name)" />
                     <IconAction icon="EditPen" label="重命名" @click="openRenameTable(row.name)" />
@@ -143,7 +143,7 @@
             <template v-else-if="tab === 'views'">
               <el-table v-loading="viewsList.loading.value" :data="viewsList.rows.value" size="small">
                 <el-table-column prop="name" label="视图名" min-width="220" />
-                <el-table-column label="操作" width="110" align="right" fixed="right">
+                <el-table-column label="操作" width="76" align="right" fixed="right">
                   <template #default="{ row }">
                     <IconAction icon="View" label="详情" @click="showView(row)" />
                     <IconAction icon="Delete" label="删除" type="danger" @click="confirmDropView(row.name)" />
@@ -155,7 +155,7 @@
             <template v-else>
               <el-table v-loading="functionsList.loading.value" :data="functionsList.rows.value" size="small">
                 <el-table-column prop="name" label="函数名" min-width="220" />
-                <el-table-column label="操作" width="90" align="right" fixed="right">
+                <el-table-column label="操作" width="52" align="right" fixed="right">
                   <template #default="{ row }">
                     <IconAction icon="View" label="详情" @click="showFunction(row)" />
                   </template>
