@@ -1,6 +1,7 @@
 package io.github.melin.lakehouse.rest.optimizer;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -9,12 +10,15 @@ import org.apache.spark.sql.execution.SparkSqlParser;
 import org.junit.jupiter.api.Test;
 
 /**
- * compaction 前后取文件数用的那条 SQL 的形状。
+ * 两件事：compaction 前后取文件数用的那条 SQL 的形状，以及失败原因怎么写。
  *
- * <p>这里断言的是「Spark 能不能解析它」，而不是字符串拼接本身——因为线上事故正是
+ * <p>SQL 形状部分断言的是「Spark 能不能解析它」，而不是字符串拼接本身——因为线上事故正是
  * 解析期失败：{@code FROM demo.paimon_sample2$files} 报
  * {@code PARSE_SYNTAX_ERROR Syntax error at or near '$'}，整个优化任务在第一步就挂了，
  * 而 {@code CALL ... compact} 还没轮到。
+ *
+ * <p>失败原因部分断言的是「语句在不在、排第几、有没有撑破列宽」：这三条决定的是
+ * 「看到控制台上一条失败原因，能不能直接照着重放」。
  *
  * <p>用真实的 {@link SparkSqlParser} 而不是正则比对：{@code $}、反引号、三级命名空间
  * 这几件事的判定权在解析器手里，抄一份规则到断言里只会跟着错。
@@ -80,5 +84,52 @@ class TableOptimizerJobTests {
         // 服务端与 Spark 两侧表现不一致
         String name = TableOptimizerJob.fileStatisticsTable("paimon_catalog", "demo.paimon_sample2");
         assertTrue(name.startsWith("paimon_catalog.demo.`"), name);
+    }
+
+    /**
+     * 失败原因里必须带上**失败的那条语句**。
+     *
+     * <p>Spark 的异常常常只说「解析失败 / 分析失败」，而控制台上的人要复现，需要的是参数、
+     * 窗口、表名都在里面的那条 {@code CALL}。语句还要排在 cause 链**前面**：失败原因列宽 1000，
+     * 后面的链可以被截，语句不能。
+     */
+    @Test
+    void failureReasonCarriesTheStatementThatFailed() {
+        String sql = "CALL paimon_catalog.sys.expire_snapshots(table => 'demo.t1',"
+                + " options => 'snapshot.time-retained=24 h', retain_min => 10)";
+
+        String reason = TableOptimizerJob.describe(new TableOptimizerJob.StepFailure(
+                "expire", sql, new IllegalArgumentException("Text '24 h' could not be parsed")));
+
+        assertTrue(reason.startsWith("expire failed. SQL: " + sql), reason);
+        assertTrue(reason.contains("IllegalArgumentException: Text '24 h' could not be parsed"), reason);
+        // 不套 "StepFailure: "：它是给用户看的自述句，不是内部异常名
+        assertFalse(reason.contains("StepFailure"), reason);
+    }
+
+    /** 语句再长、cause 链再深，也不能撑破 1000 字的列（留 100 字余量给服务端）。 */
+    @Test
+    void failureReasonFitsTheColumn() {
+        String sql = "CALL paimon_catalog.sys.compact(table => 'demo.t1', options => '"
+                + "compaction.min.file-num=5,target-file-size=128 mb')";
+        RuntimeException cause = new RuntimeException("x".repeat(2000));
+        cause = new RuntimeException("y".repeat(500), cause);
+
+        String reason = TableOptimizerJob.describe(
+                new TableOptimizerJob.StepFailure("compact", sql, cause));
+
+        assertTrue(reason.length() <= 900, "length=" + reason.length());
+        // 截断发生在尾部：语句整条还在
+        assertTrue(reason.contains(sql), reason);
+    }
+
+    /** 普通异常仍带类名——那是唯一能看出「哪一层抛的」的信息。 */
+    @Test
+    void plainFailureKeepsTheExceptionType() {
+        String reason = TableOptimizerJob.describe(
+                new IllegalStateException("cannot fetch the plan", new RuntimeException("connection refused")));
+
+        assertEquals("IllegalStateException: cannot fetch the plan"
+                + " <- RuntimeException: connection refused", reason);
     }
 }

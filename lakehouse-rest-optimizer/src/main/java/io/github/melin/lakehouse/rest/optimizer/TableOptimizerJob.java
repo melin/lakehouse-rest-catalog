@@ -122,6 +122,22 @@ public final class TableOptimizerJob {
     private record Step(String action, String statement) {
     }
 
+    /**
+     * 一步执行失败，带着**失败的那条语句**往外抛。
+     *
+     * <p>为什么单开一个类型：Spark 的异常常常只说「解析失败 / 分析失败」，
+     * 而真正要复现的是那条 {@code CALL}——参数、窗口、表名全在里面。能拿到语句的作用域只有
+     * 步骤循环内部（{@code execute} 的 catch 在外层，手里只有表名），所以用异常把它带出去：
+     * 日志与上报的失败原因里就都带着它，控制台上不用翻 Pod 日志也能照原样重放。
+     */
+    static final class StepFailure extends RuntimeException {
+
+        StepFailure(String action, String statement, RuntimeException cause) {
+            // 语句放在最前面：失败原因列只有 1000 字，后面的 cause 链可以被截，语句不能。
+            super(action + " failed. SQL: " + statement, cause);
+        }
+    }
+
     /** 按固定顺序执行该表的动作，采集指标，最后上报一次结论。 */
     private static void execute(SparkSession session, OptimizationApiClient client, Plan plan, Table table) {
         String within = PaimonProcedures.withinCatalog(plan.catalog(), table.table());
@@ -139,9 +155,18 @@ public final class TableOptimizerJob {
         boolean changed = false;
         for (Step step : steps) {
             long started = System.currentTimeMillis();
-            StepResult result = isIceberg(plan)
-                    ? runIcebergStep(session, step)
-                    : runPaimonStep(session, plan.catalog(), within, step);
+            StepResult result;
+            try {
+                result = isIceberg(plan)
+                        ? runIcebergStep(session, step)
+                        : runPaimonStep(session, plan.catalog(), within, step);
+            } catch (RuntimeException exception) {
+                // 单独打一行「语句」，而不是只靠上面的栈：栈里那条 CallSite 是 Paimon/Spark 的
+                // 内部帧，日志里按 "statement:" 一搜就能找到本次到底发了什么。
+                log.error("table {}: {} step failed, statement: {}",
+                        within, step.action(), step.statement());
+                throw new StepFailure(step.action(), step.statement(), exception);
+            }
             result.metrics().forEach((key, value) -> metrics.put(step.action() + "." + key, value));
             metrics.put(step.action() + ".duration-ms", Long.toString(System.currentTimeMillis() - started));
             log.info("table {} {} done in {} ms: {}", within, step.action(),
@@ -169,7 +194,7 @@ public final class TableOptimizerJob {
                 steps.add(new Step(step.action(), step.statement()));
             }
         } else {
-            for (PaimonProcedures.Step step : PaimonProcedures.steps(plan.catalog(), within, actions, options)) {
+            for (PaimonProcedures.Step step : PaimonProcedures.steps(plan.catalog(), within, actions, options, now)) {
                 steps.add(new Step(step.action(), step.statement()));
             }
         }
@@ -353,17 +378,35 @@ public final class TableOptimizerJob {
         }
     }
 
-    private static String describe(Throwable cause) {
+    /**
+     * 上报的失败原因上限。列宽 1000（`lakehouse_optimization_job_item.error_message`），
+     * 留 100 字余量——宁可少一段 cause 链，也不要让服务端截断时把开头的语句切掉。
+     */
+    private static final int REASON_LIMIT = 900;
+
+    /**
+     * 把异常链压成一行给服务端看。
+     *
+     * <p>{@link StepFailure} 的消息自带「动作 + 语句」，不再套类名：它的消息就是要给用户看的
+     * 那句话，套上 {@code StepFailure: } 只会白占长度。
+     */
+    static String describe(Throwable cause) {
         StringBuilder message = new StringBuilder();
         Throwable current = cause;
-        while (current != null && message.length() < 900) {
+        while (current != null && message.length() < REASON_LIMIT) {
             if (!message.isEmpty()) {
                 message.append(" <- ");
             }
-            message.append(current.getClass().getSimpleName()).append(": ").append(current.getMessage());
+            if (current instanceof StepFailure) {
+                message.append(current.getMessage());
+            } else {
+                message.append(current.getClass().getSimpleName())
+                        .append(": ").append(current.getMessage());
+            }
             current = current.getCause();
         }
-        return message.toString();
+        return message.length() > REASON_LIMIT
+                ? message.substring(0, REASON_LIMIT) : message.toString();
     }
 
     // ------------------------------------------------------------------ Spark 会话
@@ -382,8 +425,10 @@ public final class TableOptimizerJob {
         String catalog = plan.catalog();
         org.apache.spark.sql.SparkSession.Builder builder = SparkSession.builder()
                 .appName("lakehouse-rest-optimizer-" + options.jobId())
-                // Iceberg 的 older_than 是 absolute timestamp；Paimon 侧用的是相对时长，
-                // 这个设置对它没有影响。两边都钉成 UTC，窗口不会随集群默认时区平移。
+                // Iceberg 的 older_than 是 TIMESTAMP 字面量，Spark 按会话时区把它折算成时刻，
+                // 所以这里钉 UTC，语句里也按 UTC 格式化。**Paimon 不看这个设置**：expire 走
+                // options 里的 snapshot.time-retained（时长，没有时区），orphan 的 older_than
+                // 按 JVM 默认时区解析（见 PaimonProcedures.windowStart），格式化也用同一时区。
                 .config("spark.sql.session.timeZone", "UTC");
         if (isIceberg(plan)) {
             builder.config("spark.sql.extensions", ICEBERG_EXTENSION)

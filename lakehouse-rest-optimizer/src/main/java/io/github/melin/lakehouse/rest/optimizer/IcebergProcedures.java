@@ -21,11 +21,13 @@ import java.util.Map;
  * <p><b>两处与 Paimon 不同，都是 Iceberg 的规格带来的：</b>
  *
  * <ul>
- *   <li><b>时间窗口是绝对时间戳。</b>Paimon 的 {@code older_than} 收「相对时长」
- *       （{@code 24 h}），没有时区问题；Iceberg 的 {@code older_than} 是
- *       {@code timestamp}，必须由任务侧算出绝对时刻。这里统一按 **UTC** 格式化，
- *       同时把会话的 {@code spark.sql.session.timeZone} 钉成 UTC——两边都是 UTC，
- *       窗口就不会因为集群默认时区而整体平移（平移在 orphan 清理上的后果是多删文件）。</li>
+ *   <li><b>时间窗口是绝对时间戳。</b>Iceberg 的 {@code older_than} 是 {@code timestamp}，
+ *       必须由任务侧算出绝对时刻。这里统一按 **UTC** 格式化，同时把会话的
+ *       {@code spark.sql.session.timeZone} 钉成 UTC——TIMESTAMP 字面量按会话时区折算成时刻，
+ *       两边都是 UTC 就不会因为集群默认时区而整体平移（平移在 orphan 清理上的后果是多删文件）。
+ *       Paimon 侧只有 orphan 用绝对时间戳（那边 expire 有 {@code options} 形参，
+ *       用表选项 {@code snapshot.time-retained} 直接表达时长），而它的时间戳**按 JVM 默认时区
+ *       解析、不看会话时区**，因此格式化也跟着 JVM 默认时区，见 {@link PaimonProcedures}。</li>
  *   <li><b>Z-Order 不是独立策略。</b>Iceberg 没有 {@code z_order_columns} 参数：
  *       {@code strategy => 'sort'} 配 {@code sort_order => 'zorder(c1,c2)'}。
  *       策略层仍把它暴露成第三个取值（用户理解的是「按什么方式重排」），
@@ -164,7 +166,12 @@ public final class IcebergProcedures {
         args.put("dry_run", Arg.flag(Boolean.parseBoolean(text(values, P_DRY_RUN, "true"))));
     }
 
-    /** 窗口起点：UTC 的 {@code now - hours}。 */
+    /**
+     * 窗口起点：UTC 的 {@code now - hours}。
+     *
+     * <p>UTC 是配套 {@code spark.sql.session.timeZone=UTC} 的选择，别照抄到 Paimon 侧：
+     * Paimon 用 JVM 默认时区解析，见 {@link PaimonProcedures}。
+     */
     private static String windowStart(Instant now, String hours) {
         long amount;
         try {

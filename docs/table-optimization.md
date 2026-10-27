@@ -48,7 +48,7 @@
 
 | 项 | 说明 |
 | --- | --- |
-| Paimon 原生 | `CALL sys.expire_snapshots(older_than => ..., retain_max => ..., retain_min => ...)` |
+| Paimon 原生 | `CALL sys.expire_snapshots(options => 'snapshot.time-retained=24 h', retain_min => 10)`（`older_than` 收的是时刻、不是时长，见 §2.5 后的时间窗口说明） |
 | 可配参数 | `保留时间`（快照保留时长，默认 24 h——DLF 截图里是 1 h，但 1 h 对可回溯性太激进，默认取保守值）；`最少保留个数`（默认 10）；`执行间隔`（默认 24 h，对齐 AWS 的 deletion run rate） |
 | 安全性 | Paimon expire 自身会尊重 consumer 位点与标签引用，不会删被挂住的快照；服务端仍在 item 上记录 `删除快照数 / 释放空间` |
 | 展示 | 配置卡下方放「快照现状」卡（吸收 DLF）：当前 snapshot 个数、最早 snapshot 的 ID / 提交时间 / 提交类型 / 表总行数——数据源就是已有的 `lakehouse_snapshot` 表 |
@@ -82,7 +82,7 @@
 | 参数来源 | `OptimizationOptions` | `IcebergOptimizationOptions`（`support/` 下独立一个类） |
 | 参数键 | `strategy` / `sort-columns` / `min-input-files` / `target-file-size-mb` / `retain-min` / `retention-hours` / `older-than-hours` / `interval-*` / `dry-run` | 同名为主，三处不同：`retain-min` → **`retain-last`**、新增 **`max-concurrent-file-group-rewrites`**、`target-file-size-mb` 默认 **512** |
 | 内置默认 | compact `{binpack, 5, 128MB, 1h}`；expire `{24h, 10, 24h}`；orphan `{72h, 7d, dry-run}` | compact `{binpack, 5, **512MB**, 5 并发, 1h}`；expire `{**120h**, 10, 24h}`；orphan `{72h, 7d, dry-run}` |
-| 窗口参数 | `older_than => '24 h'`（相对时长） | `older_than => TIMESTAMP '...'`（**绝对时间戳**，任务侧按 UTC 格式化） |
+| 窗口参数 | expire `options => 'snapshot.time-retained=24 h'`（**时长**，Paimon 自己折算）；orphan `older_than => '2026-10-27 10:00:00'`（**绝对时间戳**，任务侧按 JVM 默认时区格式化） | `older_than => TIMESTAMP '...'`（**绝对时间戳**，任务侧按 UTC 格式化）；两侧都是绝对时刻 |
 
 **为什么参数表要单开一个类而不是加 if。** 两边的键名能对上「策略 / 阈值 / 保留窗口」这三件事，
 但 `retain-min`（最少保留几个快照）与 `retain-last`（保留最后几个祖先快照）是**语义相反**的一对，
@@ -94,10 +94,37 @@ Iceberg 的 `rewrite_data_files` 只有 `strategy => 'binpack' | 'sort'`，Z-Ord
 `strategy => 'sort'` + `sort_order => 'zorder(c1,c2)'` 的组合。控制台仍按「策略」这一档呈现三种选择，
 翻译发生在执行侧（`IcebergProcedures`），并在控制台文案里说明「Z-Order 建议 2～4 列」。
 
-**时区。** Paimon 收相对时长（`24 h`），没有时区问题；Iceberg 的 `expire_snapshots` / `remove_orphan_files`
-收绝对时间戳 `older_than`。任务侧把 `Instant` 按 **UTC** 格式化成 `TIMESTAMP 'yyyy-MM-dd HH:mm:ss'`，
-同时把会话钉在 `spark.sql.session.timeZone=UTC`：两处都要做——只用其中一处时，集群默认时区不是 UTC
-就会把窗口整体平移，而 orphan 的窗口平移的后果是**多删文件**。
+**时间窗口：Paimon 的两个 procedure 各只有一种写法——这是踩过坑才写清的。**
+
+Paimon 2.0.0 的 `older_than` **不是时长**，而是「窗口起点这个时刻」：
+`ExpireSnapshotsProcedure` 走 `ProcedureUtils.fillInSnapshotOptions`、
+`RemoveOrphanFilesProcedure` 走 `OrphanFilesClean.olderThanMillis`，两条路都是
+`DateTimeUtils.parseTimestampData(olderThan, 3, TimeZone.getDefault())`，没有「时长」这个分支。
+早先 expire 与 orphan 共用一句 `older_than => '24 h'`（读起来很自然地像相对时长），集群上直接
+`DateTimeParseException: Text '24 h' could not be parsed at index 0`，整张表 FAILED。
+
+收时长的键是表属性 `snapshot.time-retained`。于是三处各走各的路：
+
+| | 我们给的参数 | 谁把「保留 N 小时」折算成时刻 |
+| --- | --- | --- |
+| Paimon expire | `options => 'snapshot.time-retained=24 h'` + `retain_min` | Paimon，在**执行瞬间**折算（正好 N 小时）；时长语法由 `CoreOptions` 解析 |
+| Paimon orphan | `older_than => '2026-10-26 10:20:20'`（绝对时刻，任务侧按 **JVM 默认时区**格式化） | 我们，批次开始前算好——它没有 `options` 形参，表达不了时长 |
+| Iceberg expire / orphan | `older_than => TIMESTAMP '...'`（绝对时刻，任务侧按 **UTC** 格式化） | 我们（Iceberg 看 `spark.sql.session.timeZone`，会话已钉 UTC） |
+
+为什么 Paimon 这两处不能统一：`expire_snapshots` 有形参 `options`，`remove_orphan_files` 没有。
+为什么 Paimon 侧格式化必须用 JVM 默认时区：解析方就是同一个 JVM 的 `TimeZone.getDefault()`
+（procedure 在 driver 进程里跑，调用栈里能看到 `SparkSession.sql`），同进程同时区 → 往返严格相等；
+若照 Iceberg 那样按 UTC 写，而容器 TZ 是 +08:00，窗口就平移 8 小时，orphan 的后果是**多删文件**。
+
+expire 其实也能用 `older_than` 表达同一件事（我们算好 `now - N 小时`），差别在折算时刻：那个 `now`
+是批次开始前取的，compaction 跑了几小时，窗口就宽几小时（方向偏保守，多留不少删）；而且它要自己
+格式化时间戳，就多了一条「格式化时区 ≠ 解析时区」的失败面。既然策略参数叫「保留时长」，就用时长形态。
+
+两条护栏，都在 `PaimonProceduresTests`：`orphanWindowIsParseableByPaimonItself` 用 Paimon 自己的
+`DateTimeUtils` 做往返校验；`retentionOptionSurvivesPaimonOwnOptionParsing` 把语句里的选项喂回
+`CoreOptions` + `ProcedureUtils.fillInSnapshotOptions`，断言最终 `ExpireConfig.snapshotTimeRetain == 24h`
+——键名写错一个字符时 Paimon 读不到这个键、也不会报错，「保留 24 小时」就悄悄退化成表的默认 1 天
+（默认值恰好也是 1 天，肉眼更难发现），只有这条断言能发现。
 
 **指标口径不顺译。** 执行侧报的是 procedure 真实输出的列，不是把 Iceberg 的读数套进 Paimon 的键：
 
@@ -327,6 +354,12 @@ Iceberg 的 `rewrite_data_files` 只有 `strategy => 'binpack' | 'sort'`，Z-Ord
   取自该 catalog 的执行集群）、每张三项配置，序列化进参数会让命令行失控，
   而且会让「集群里跑的那份参数」成为策略的第二个版本。
 - **每张表独立 try/catch**：一张表失败不拖死同批其它表（这正是 `PARTIAL_SUCCESS` 存在的意义）。
+- **失败时打印失败的那条语句**：步骤循环内部 catch 后先打一行
+  `table demo.t2: expire step failed, statement: CALL ...`（按 `statement:` 一搜就是全批的失败语句），
+  再把语句塞进 `StepFailure` 抛出——上报给服务端的失败原因因此也带着它
+  （`expire failed. SQL: CALL ... <- DateTimeParseException: ...`），控制台的「说明」列里就能直接照着重放，
+  不必先去翻 Pod 日志。语句排在 cause 链**前面**：`error_message` 列宽 1000，后面的链可以被截，语句不能
+  （任务侧仍按 900 字收口，留 100 字给它）。
 - **已经上报过结果的表会被跳过**（清单里带 `status`）：pod 被驱逐后重排时，compaction 重跑
   不是「无副作用的重试」，它会重写文件。
 - **三个动作都走 `CALL` 语句，不依赖 Paimon 的 Java API**：procedure 的参数名与取值语义随
@@ -352,9 +385,10 @@ Iceberg 的 `rewrite_data_files` 只有 `strategy => 'binpack' | 'sort'`，Z-Ord
   重跑一次 compaction 会重写文件，代价远大于少两行数字。
 - **什么都没动时上报 `SKIPPED` 而不是 `SUCCESS`**：未达阈值、没有过期快照、没有孤儿文件
   都属这一类，控制台上要能一眼分出「真的合了文件」和「扫了一遍没动」。
-- **时间窗口用相对时长**（`older_than => '24 h'`）而不是绝对时间戳：绝对时间戳要由任务侧按
-  某个时区格式化、再由 Paimon 按会话时区解析，两个时区不一致时窗口会整体平移，
-  而窗口平移在 orphan 清理上的后果是多删文件。
+- **保留时长要用 `snapshot.time-retained`，不要塞给 `older_than`**：Paimon 2.0.0 的 `older_than`
+  只认绝对时间戳（`yyyy-MM-dd HH:mm:ss`），写 `'24 h'` 会在执行期 `DateTimeParseException`。
+  expire 有 `options` 形参可给时长；orphan 没有，只能由任务侧算成时刻，且必须按 **JVM 默认时区**
+  格式化（解析方用同一时区；照 Iceberg 那样按 UTC 写，容器时区不是 UTC 时窗口就平移，orphan 会多删文件）。
 
 单元测试覆盖参数翻译（`PaimonProceduresTests` / `IcebergProceduresTests`）、启动参数解析
 （`OptimizerOptionsTests`）与系统表 SQL 的形状（`TableOptimizerJobTests`，用真实的

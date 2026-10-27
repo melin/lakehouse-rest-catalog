@@ -1,5 +1,9 @@
 package io.github.melin.lakehouse.rest.optimizer;
 
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -31,6 +35,29 @@ import java.util.Map;
  *
  * <p>把 {@code retain_min} 写成 {@code '10'}（带引号）在 ANSI 模式下会直接抛转换错误，
  * 而在非 ANSI 模式下静默走一次 string→int 转换——两种表现都不该依赖，所以按类型渲染。
+ *
+ * <p><b>「保留最近 N 小时」有两个不同的入口，两个 procedure 各只能用其中一个。</b>
+ * {@code older_than} 的语义是「窗口起点**这个时刻**」，Paimon 用
+ * {@code DateTimeUtils.parseTimestampData(..., TimeZone.getDefault())} 解析
+ * （2.0.0：{@code ProcedureUtils.fillInSnapshotOptions} 与
+ * {@code OrphanFilesClean.olderThanMillis}），传 {@code '24 h'} 会在**执行期**抛
+ * {@code DateTimeParseException: Text '24 h' could not be parsed at index 0}；
+ * 收时长的键是表选项 {@code snapshot.time-retained}。于是：
+ *
+ * <ul>
+ *   <li>{@code expire_snapshots} 有形参 {@code options}，用
+ *       {@code options => 'snapshot.time-retained=24 h'}——时长交给 Paimon 解析，
+ *       窗口在**执行瞬间**按当前时刻折算（正好 N 小时），也不必由我们格式化时间戳；</li>
+ *   <li>{@code remove_orphan_files} 没有 {@code options}，只有 {@code older_than}，
+ *       那边只能由任务侧算成绝对时刻，见 {@link #windowStart}。</li>
+ * </ul>
+ *
+ * <p>两者在 {@code ExpireSnapshotsProcedure} 内部最终都折算成
+ * {@code ExpireConfig.snapshotTimeRetain}，差别在折算时刻：选项形式以执行时的
+ * {@code System.currentTimeMillis()} 为基准，而 {@code older_than} 会把
+ * {@code now - olderThan} 当成时长——这个 {@code now} 是执行瞬间，于是窗口会**多出**
+ * 「批次开始到这一步实际执行」的那段时间。方向偏保守（多留不少删），但既然我们表达的是
+ * 「保留 N 小时」，就该用选项形态。
  */
 public final class PaimonProcedures {
 
@@ -77,6 +104,11 @@ public final class PaimonProcedures {
     /** Paimon 的表选项名。翻译发生在这里，服务端只认「策略参数名」。 */
     private static final String O_MIN_FILE_NUM = "compaction.min.file-num";
     private static final String O_TARGET_FILE_SIZE = "target-file-size";
+    /**
+     * 保留窗口的时长。这是 Paimon 里**唯一**接受 {@code '24 h'} / {@code '7 d'} 这类时长的键，
+     * 与 {@code older_than}（绝对时刻）是两回事，见类注释。
+     */
+    private static final String O_SNAPSHOT_TIME_RETAINED = "snapshot.time-retained";
 
     private PaimonProcedures() {
     }
@@ -92,9 +124,10 @@ public final class PaimonProcedures {
      * @param table            表在 catalog 内的限定名（{@code database.table}，**不含** catalog 前缀）
      * @param actions          该表要执行的动作（服务端已按批内交集的语义裁剪过）
      * @param options          按动作给出的**合并后全部参数**
+     * @param now              orphan 窗口的基准时刻（由调用方给一次，批内各表共用，避免时钟漂移）
      */
     public static List<Step> steps(String catalog, String table, List<String> actions,
-                                   Map<String, Map<String, String>> options) {
+                                   Map<String, Map<String, String>> options, Instant now) {
         requireName(catalog, "catalog");
         requireName(table, "table");
         List<Step> steps = new ArrayList<>();
@@ -104,19 +137,20 @@ public final class PaimonProcedures {
             }
             Map<String, String> values = options == null || options.get(action) == null
                     ? Map.of() : options.get(action);
-            steps.add(new Step(action, statement(catalog, action, table, values)));
+            steps.add(new Step(action, statement(catalog, action, table, values, now)));
         }
         return steps;
     }
 
     /** 单个动作的语句。{@code action} 用 wire 名。 */
-    public static String statement(String catalog, String action, String table, Map<String, String> values) {
+    public static String statement(String catalog, String action, String table,
+                                   Map<String, String> values, Instant now) {
         Map<String, Arg> args = new LinkedHashMap<>();
         args.put("table", Arg.text(table));
         switch (action) {
             case COMPACT -> compactArgs(args, values);
             case EXPIRE -> expireArgs(args, values);
-            case ORPHAN -> orphanArgs(args, values);
+            case ORPHAN -> orphanArgs(args, values, now);
             default -> throw new IllegalArgumentException("unsupported optimization action: " + action);
         }
         return "CALL " + catalog + ".sys." + PROCEDURES.get(action) + arguments(args);
@@ -143,8 +177,12 @@ public final class PaimonProcedures {
     }
 
     private static void expireArgs(Map<String, Arg> args, Map<String, String> values) {
-        args.put("older_than", Arg.text(duration(required(values, P_RETENTION_HOURS,
-                "retention-hours is required"), "h")));
+        // 保留窗口走表选项 snapshot.time-retained：它收时长，且由 Paimon 在执行瞬间折算成
+        // 「早于该时刻的快照过期」。用 older_than 也能表达同一件事（我们算好一个绝对时刻），
+        // 但那是「窗口起点」而不是「保留多久」——compaction 跑多久，窗口就宽多久，
+        // 而且要自己格式化时间戳（格式化时区与解析时区一旦不一致，窗口就整体平移）。
+        args.put("options", Arg.text(O_SNAPSHOT_TIME_RETAINED + "="
+                + hours(values, P_RETENTION_HOURS, "retention-hours is required") + " h"));
         // retain_min 是整数形参，必须写裸数字。
         args.put("retain_min", Arg.number(required(values, P_RETAIN_MIN, "retain-min is required")));
         // retain_max 刻意不传：本工程的策略只表达「保留窗口」与「最少保留个数」两个概念，
@@ -153,21 +191,58 @@ public final class PaimonProcedures {
         // 不传时 Paimon 回落表的 snapshot.num-retained.max，保持表本身的语义。
     }
 
-    private static void orphanArgs(Map<String, Arg> args, Map<String, String> values) {
-        args.put("older_than", Arg.text(duration(required(values, P_OLDER_THAN_HOURS,
-                "older-than-hours is required"), "h")));
+    private static void orphanArgs(Map<String, Arg> args, Map<String, String> values, Instant now) {
+        args.put("older_than", Arg.text(windowStart(now,
+                hours(values, P_OLDER_THAN_HOURS, "older-than-hours is required"))));
         args.put("dry_run", Arg.flag(Boolean.parseBoolean(text(values, P_DRY_RUN, "true"))));
     }
 
     /**
-     * 时间窗口的写法：Paimon 的时长语法（{@code <n> <单位>}）。
+     * 保留窗口的小时数。
      *
-     * <p>刻意不用绝对时间戳（{@code yyyy-MM-dd HH:mm:ss}）：那种形式要由任务侧按某个时区
-     * 格式化、再由 Paimon 按会话时区解析，两个时区不一致时窗口会整体平移若干小时——
-     * 而窗口平移在 orphan 清理上的后果是多删文件。相对时长没有时区，也就没有这个问题。
+     * <p>取值来自策略，写错（{@code 'abc'}、{@code 0}、负数）要在**生成语句时**就失败：
+     * 把 {@code 'abc h'} 发到集群上才炸的话，同一批次里排在它前面的步骤已经跑完了，
+     * 而重试会把那些步骤再跑一遍（compaction 不是幂等操作）。
      */
-    private static String duration(String amount, String unit) {
-        return amount.trim() + " " + unit;
+    private static long hours(Map<String, String> values, String key, String message) {
+        String raw = required(values, key, message);
+        long amount;
+        try {
+            amount = Long.parseLong(raw.trim());
+        } catch (NumberFormatException exception) {
+            throw new IllegalArgumentException("window must be a number of hours: " + raw);
+        }
+        if (amount <= 0) {
+            throw new IllegalArgumentException("window must be positive, got " + amount + " hour(s)");
+        }
+        return amount;
+    }
+
+    /**
+     * 窗口起点：{@code now - hours} 的**绝对时刻**，写成 Paimon 认的
+     * {@code yyyy-MM-dd HH:mm:ss}（本地时间）。只给 {@code remove_orphan_files} 用——
+     * 它没有 {@code options} 形参，表达不了「保留多久」，只能给一个时刻。
+     *
+     * <p><b>为什么不是相对时长（{@code '24 h'}）。</b>Paimon 2.0.0 把 {@code older_than}
+     * 当时间戳解析：{@code RemoveOrphanFilesProcedure} 走
+     * {@code OrphanFilesClean.olderThanMillis} →
+     * {@code DateTimeUtils.parseTimestampData(olderThan, 3, TimeZone.getDefault())}，
+     * **没有「时长」这个分支**。曾经这里拼的是 {@code '24 h'}（expire 与 orphan 共用），
+     * 于是集群上以 {@code DateTimeParseException: Text '24 h' could not be parsed at index 0}
+     * 失败。
+     *
+     * <p><b>为什么用 JVM 默认时区而不是 UTC。</b>解析那边取的是
+     * {@code TimeZone.getDefault()}——即**执行这个 procedure 的同一个 JVM** 的默认时区
+     * （procedure 就在 driver 进程里跑，见调用栈里 {@code SparkSession.sql}）。格式化与
+     * 解析同进程同时区，往返严格相等；反过来若这里按 UTC 格式化，而容器 TZ 是 +08:00，
+     * 窗口会平移 8 小时，orphan 清理就会多删文件。注意这跟
+     * {@code spark.sql.session.timeZone} 无关，Paimon 不看那个设置——Iceberg 侧才看，
+     * 所以 {@link IcebergProcedures} 反过来钉 UTC。
+     */
+    private static String windowStart(Instant now, long hours) {
+        return DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
+                .withZone(ZoneId.systemDefault())
+                .format(now.minus(hours, ChronoUnit.HOURS));
     }
 
     private static String joinOptions(Map<String, String> options) {
