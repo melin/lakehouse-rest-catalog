@@ -53,6 +53,9 @@ public final class TableOptimizerJob {
     /** 清单里的格式取值，与服务端 {@code CatalogFormat} 的 wire 名逐字一致。 */
     private static final String ICEBERG = "ICEBERG";
 
+    /** Paimon 的「数据文件清单」系统表名，跟着表名用 {@code $} 相连（{@code tbl$files}）。 */
+    private static final String PAIMON_FILES_TABLE = "files";
+
     private TableOptimizerJob() {
     }
 
@@ -138,7 +141,7 @@ public final class TableOptimizerJob {
             long started = System.currentTimeMillis();
             StepResult result = isIceberg(plan)
                     ? runIcebergStep(session, step)
-                    : runPaimonStep(session, within, step);
+                    : runPaimonStep(session, plan.catalog(), within, step);
             result.metrics().forEach((key, value) -> metrics.put(step.action() + "." + key, value));
             metrics.put(step.action() + ".duration-ms", Long.toString(System.currentTimeMillis() - started));
             log.info("table {} {} done in {} ms: {}", within, step.action(),
@@ -179,19 +182,25 @@ public final class TableOptimizerJob {
     }
 
     /** 执行一步 Paimon procedure，把输出行转成指标。{@code step.action()} 是动作的 wire 名。 */
-    private static StepResult runPaimonStep(SparkSession session, String table, Step step) {
+    private static StepResult runPaimonStep(SparkSession session, String catalog, String table, Step step) {
         Map<String, String> metrics = new LinkedHashMap<>();
         switch (step.action()) {
             case PaimonProcedures.COMPACT -> {
-                Files filesBefore = files(session, table);
+                Files filesBefore = files(session, catalog, table);
                 Row row = session.sql(step.statement()).head();
                 boolean applied = asBoolean(row, "result");
-                Files filesAfter = files(session, table);
-                metrics.put("files-before", Long.toString(filesBefore.files()));
-                metrics.put("files-after", Long.toString(filesAfter.files()));
-                metrics.put("size-before", humanSize(filesBefore.bytes()));
-                metrics.put("size-after", humanSize(filesAfter.bytes()));
-                return new StepResult(applied || filesAfter.files() != filesBefore.files(), metrics);
+                Files filesAfter = files(session, catalog, table);
+                boolean grew = filesBefore != null && filesAfter != null
+                        && filesAfter.files() != filesBefore.files();
+                // 读不到文件数时（系统表不可用）不写这两组指标，而不是写 0：
+                // 0 在控制台上看起来像「表里没有文件」，与「没测到」是两件事。
+                if (filesBefore != null && filesAfter != null) {
+                    metrics.put("files-before", Long.toString(filesBefore.files()));
+                    metrics.put("files-after", Long.toString(filesAfter.files()));
+                    metrics.put("size-before", humanSize(filesBefore.bytes()));
+                    metrics.put("size-after", humanSize(filesAfter.bytes()));
+                }
+                return new StepResult(applied || grew, metrics);
             }
             case PaimonProcedures.EXPIRE -> {
                 Row row = session.sql(step.statement()).head();
@@ -266,11 +275,64 @@ public final class TableOptimizerJob {
         return step.statement().contains("dry_run => true");
     }
 
-    /** 表的文件数/总大小。走 Paimon 的 {@code $files} 系统表，不需要 Paimon 的 Java 依赖。 */
-    private static Files files(SparkSession session, String table) {
-        Row row = session.sql("SELECT count(1) AS files, coalesce(sum(file_size_in_bytes), 0) AS bytes FROM "
-                + table + "$files").head();
-        return new Files(asLong(row, "files"), asLong(row, "bytes"));
+    /**
+     * 表的文件数/总大小。走 Paimon 的 {@code $files} 系统表，不需要 Paimon 的 Java 依赖。
+     *
+     * <p><b>拿不到就返回 null，不让整张表失败。</b>系统表是 Paimon 的实现细节：它要对
+     * {@code table$files} 这个名字做本地解析、再自己读 manifest 与文件系统。任何一环
+     * 不成立（catalog 实现不支持、令牌拿不到对象存储、表是外部表），失败的都只是
+     * 「compaction 前后各少一组数字」，而 compaction 本身与它无关。指标缺失可以在控制台
+     * 上看见，整表 FAILED 却会让批次重跑一遍——重跑 compaction 不是无副作用的。
+     */
+    private static Files files(SparkSession session, String catalog, String table) {
+        String statement = "SELECT count(1) AS files, coalesce(sum(file_size_in_bytes), 0) AS bytes FROM "
+                + fileStatisticsTable(catalog, table);
+        try {
+            Row row = session.sql(statement).head();
+            return new Files(asLong(row, "files"), asLong(row, "bytes"));
+        } catch (RuntimeException failure) {
+            log.warn("cannot read the file statistics of {} via {} ({}):"
+                    + " compaction still runs, only the before/after counts are missing",
+                    table, statement, describe(failure));
+            return null;
+        }
+    }
+
+    /**
+     * Paimon {@code $files} 系统表的 Spark 名字。
+     *
+     * <p>三件都不能少，每一件都对应一个踩过的坑：
+     *
+     * <ol>
+     *   <li><b>表名段加反引号</b>：{@code $} 不是 Spark 未加引号标识符的合法字符，
+     *       {@code FROM demo.tbl$files} 会在解析期报
+     *       {@code PARSE_SYNTAX_ERROR Syntax error at or near '$'}。用反引号包住**最后一段**
+     *       （{@code demo.`tbl$files`}），既让解析器接受，又让整串作为一个标识符交给
+     *       Paimon 的 {@code Identifier} 去按 {@code $} 拆成「表 + 系统表名」。
+     *       给整串加反引号（{@code `demo.tbl$files`}）不行：那样成了单段标识符。
+     *   <li><b>catalog 必须全限定</b>：任务会话把批次所属 catalog 注册成
+     *       {@code spark.sql.catalog.<name>}，但清单里的表名是 catalog 内的
+     *       {@code database.table}（见 {@link PaimonProcedures#withinCatalog}）。
+     *       少了 catalog 前缀，{@code demo.tbl} 会去默认的 {@code spark_catalog} 里找。
+     *   <li><b>不能用 {@code USE} 之类的会话状态代替前缀</b>：这里只借用当前 catalog，
+     *       不做隐式状态，下次换 catalog 时不会有一半语句落在旧 catalog 上。
+     * </ol>
+     */
+    static String fileStatisticsTable(String catalog, String table) {
+        int dot = table.lastIndexOf('.');
+        // 恰好两段。多出来的段说明清单给的不是 catalog 内的 database.table，
+        // 按最后一段当表名会拼出一个解析不了的三级名，不如在这里直接说清楚。
+        if (dot < 0 || dot != table.indexOf('.')) {
+            throw new IllegalArgumentException("table name must be database.table, got " + table);
+        }
+        String database = table.substring(0, dot);
+        String name = table.substring(dot + 1);
+        for (String part : new String[] {catalog, database, name}) {
+            if (part.indexOf('`') >= 0) {
+                throw new IllegalArgumentException("illegal identifier (contains a backquote): " + part);
+            }
+        }
+        return catalog + "." + database + ".`" + name + "$" + PAIMON_FILES_TABLE + "`";
     }
 
     private record Files(long files, long bytes) {

@@ -335,17 +335,31 @@ Iceberg 的 `rewrite_data_files` 只有 `strategy => 'binpack' | 'sort'`，Z-Ord
   其中 `options` 是 `k1=v1,k2=v2` 字符串；`expire_snapshots` 的 `retain_max`/`retain_min`/
   `max_deletes` 是整数；`remove_orphan_files` 的 `dry_run` 是布尔），因此渲染时按类型走
   ——把整数写成 `'10'` 在 ANSI 模式下会直接抛转换错误。
-- **指标**：compaction 前后各查一次 `表$files`（文件数 + 总大小）算前后对比；
+- **指标**：compaction 前后各查一次 Paimon 的 `$files` 系统表（文件数 + 总大小）算前后对比；
   expire/orphan 直接用 procedure 的返回行（`deleted_snapshots_count` /
   `deletedFileCount` / `deletedFileTotalLenInBytes`）。采集口径在任务侧定，一次采集到处展示。
+  这条 SQL 有三处必须写对，少一处就是解析期或解析后的失败：
+
+  | 要素 | 写法 | 写错的后果 |
+  | --- | --- | --- |
+  | `$` | 表名段加反引号：`` paimon_catalog.demo.`t2$files` `` | `FROM demo.t2$files` 直接 `PARSE_SYNTAX_ERROR ... at or near '$'`——`$` 不是 Spark 未加引号标识符的合法字符 |
+  | catalog 前缀 | 必须全限定 | 清单里的表名是 catalog 内的 `database.table`，少了前缀会去默认的 `spark_catalog` 找表 |
+  | 反引号位置 | 只包最后一段 | 包整串（`` `demo.t2$files` ``）会变成一个单段标识符，解析能过但语义完全不同 |
+
+  另外**指标读不到不阻塞 compaction**：系统表要自己读 manifest 与文件（对象存储还要 data-token），
+  任何一环不成立都只是少两组数字。`file://` 仓库尤其如此——优化任务的 Pod 不挂载服务端那个
+  hostPath 目录，`$files` 读不到文件，此时任务按「没有指标」继续跑，而不是整表 FAILED。
+  重跑一次 compaction 会重写文件，代价远大于少两行数字。
 - **什么都没动时上报 `SKIPPED` 而不是 `SUCCESS`**：未达阈值、没有过期快照、没有孤儿文件
   都属这一类，控制台上要能一眼分出「真的合了文件」和「扫了一遍没动」。
 - **时间窗口用相对时长**（`older_than => '24 h'`）而不是绝对时间戳：绝对时间戳要由任务侧按
   某个时区格式化、再由 Paimon 按会话时区解析，两个时区不一致时窗口会整体平移，
   而窗口平移在 orphan 清理上的后果是多删文件。
 
-单元测试覆盖参数翻译（`PaimonProceduresTests` / `IcebergProceduresTests`）与启动参数解析
-（`OptimizerOptionsTests`）——这两块是「编译能过、跑起来才错」的高风险区，必须钉住。真跑一张表的
+单元测试覆盖参数翻译（`PaimonProceduresTests` / `IcebergProceduresTests`）、启动参数解析
+（`OptimizerOptionsTests`）与系统表 SQL 的形状（`TableOptimizerJobTests`，用真实的
+`SparkSqlParser` 断言「反引号写法能解析、裸 `$` 解析失败」，而不是把解析规则抄进断言）。
+这几块都是「编译能过、跑起来才错」的高风险区。真跑一张表的
 端到端用例属于 P3（需要一个可用的集群与仓库）。`IcebergProceduresTests` 除参数翻译外还钉住了三条
 容易写错的地方：binpack 不传 `strategy`、zorder 走 `sort` + `sort_order`（且**不含** `z_order_columns`
 ——那是别人的参数名）、`expire` / `orphan` 的时间戳是 UTC 字面量。
