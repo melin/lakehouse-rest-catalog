@@ -319,6 +319,59 @@ class PolicySparkTests {
       () => query(s"SELECT id FROM $icebergTable").collect())
   }
 
+  /**
+   * §5.3.2.1 的 hash mask 落在字符串列上：Md5 / Sha2 要 BinaryType 输入，而注入点
+   * 在分析之后、分析器的隐式 cast 不会再来——表达式必须自带 cast。缺了它，未解析的
+   * 别名会让 {@code PolicyProjectExec.output} 吐出 UnresolvedAttribute，
+   * {@code RemoveRedundantProjects} 炸出 {@code Invalid call to exprId}——
+   * {@code SELECT *} + {@code show()} 是必经形态（PaimonS3Test 实测）。
+   */
+  @Test
+  def hashMaskOnStringColumnResolvesAndExecutes(): Unit = {
+    ensureTables()
+    usePolicy(Map(icebergRef ->
+      policy(null, Seq("phone" -> MaskPhoneSha256), exempted = false)))
+
+    val df = query(s"SELECT * FROM $icebergTable ORDER BY id")
+    // schema 透明性：列名 / 顺序 / 类型不变
+    assertSchemaUnchanged(df)
+    // 值 = 对 UTF-8 字节做 SHA-256 的小写十六进制（与服务端 digest 语义一致）
+    val rows = df.collect()
+    assertEquals(sha256Hex("13800000001"), rows(0).getString(2))
+    assertEquals(sha256Hex("13900000002"), rows(1).getString(2))
+    // 原样列不受影响
+    assertEquals("alice", rows(0).getString(1))
+
+    // escape hatch 的 md5 / sha2 fn 同族同修
+    usePolicy(Map(icebergRef ->
+      policy(null, Seq("phone" -> """{"expr":{"fn":"md5","args":[{"col":"phone"}]}}"""),
+        exempted = false)))
+    assertEquals(md5Hex("13800000001"),
+      query(s"SELECT phone FROM $icebergTable WHERE id = 1").collect()(0).getString(0))
+  }
+
+  /**
+   * fail-closed 的形状验证：mask 输入类型不满足函数要求时，报错必须是能看懂的
+   * PolicyEnforcementException，而不是物理规则深处的 UnresolvedException。
+   * 形状选 date_format 落 BIGINT 列（结果类型 string == name 能过类型关，但
+   * DateFormatClass 要求 date/timestamp 输入，只卡在解析关）——数字列上
+   * 「格式化日期」没有语义，服务端建策略时应拒；引擎侧的解析闸门兜底。
+   */
+  @Test
+  def typeMismatchedMaskFailsClosedWithClearError(): Unit = {
+    ensureTables()
+    usePolicy(Map(icebergRef ->
+      policy(null,
+        Seq("name" -> """{"expr":{"fn":"date_format","args":[{"col":"id"},{"lit":"yyyy"}]}}"""),
+        exempted = false)))
+    val e = assertThrows(classOf[PolicyEnforcementException],
+      () => query(s"SELECT id FROM $icebergTable").collect())
+    assertTrue(e.getMessage.contains("mask for column name"),
+      "报错应指名列: " + e.getMessage)
+    assertFalse(e.getMessage.contains("Invalid call to exprId"),
+      "不能是 UnresolvedException 穿透到物理规则: " + e.getMessage)
+  }
+
   /** 扩展默认关闭：enforced=false 的会话（本仓其它测试的形态）完全不受影响。 */
   @Test
   def enforcementDefaultsToOff(): Unit = {
@@ -516,6 +569,20 @@ object PolicySparkTests {
 
   /** mask：手机号保留前 4 位，其余按 alphanum 替换。 */
   private val MaskPhoneFirst4 = """{"fn":"show_first_n","args":[4]}"""
+
+  /** mask：整列 SHA-256（落在 STRING 列上——结果类型必须等于列类型）。 */
+  private val MaskPhoneSha256 = """{"fn":"hash","args":["SHA-256"]}"""
+
+  private def sha256Hex(value: String): String =
+    hex(java.security.MessageDigest.getInstance("SHA-256")
+      .digest(value.getBytes(java.nio.charset.StandardCharsets.UTF_8)))
+
+  private def md5Hex(value: String): String =
+    hex(java.security.MessageDigest.getInstance("MD5")
+      .digest(value.getBytes(java.nio.charset.StandardCharsets.UTF_8)))
+
+  private def hex(bytes: Array[Byte]): String =
+    bytes.map("%02x" format _).mkString
 
   /** mask：整列置空（落在 BIGINT 列上——置空后类型不变）。 */
   private val MaskSalaryNull = """{"fn":"replace_with_null"}"""

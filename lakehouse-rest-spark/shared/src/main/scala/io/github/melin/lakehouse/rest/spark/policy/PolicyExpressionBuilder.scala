@@ -4,7 +4,9 @@ import java.util.{Map => JMap}
 
 import scala.collection.JavaConverters._
 
+import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
 import org.apache.spark.sql.catalyst.expressions._
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 /**
@@ -20,6 +22,9 @@ import org.apache.spark.sql.types._
  * 行过滤必须是布尔——服务端已把行过滤包进 {@code coalesce(expr, false)} 保证非 NULL，
  * 这里再守一次类型。比较两侧类型不一致时优先把**字面量**一侧 cast 到另一侧：
  * 注入点在分析之后，分析器的隐式转换不会再跑，只能在这里做最小的一份。
+ * <b>每个内建函数的输入类型也要自己满足</b>（如 Md5 / Sha2 要 BinaryType，见
+ * {@link #toUtf8Bytes}）——构造出的表达式若未解析，必须 fail-closed 拒绝，
+ * 不能把半成品放进物理计划。
  *
  * <p>{@code $principal} 在这里**不应该再出现**：服务端下发前已折成字面量（§5.3.4），
  * 见到它说明协议被绕过了，fail-closed 报错而不是本地折叠——本地折叠等于把
@@ -31,7 +36,17 @@ private[spark] object PolicyExpressionBuilder {
 
   /** 行过滤 AST → Catalyst 布尔表达式。 */
   def rowFilter(node: Any, attrs: Seq[AttributeReference]): Expression = {
-    val expr = build(node, attrs, inRowFilter = true)
+    val expr = resolveTimeZones(build(node, attrs, inRowFilter = true))
+    // 本类在分析之后构造表达式，分析器的隐式 cast 不会再跑——类型不吻合的表达式
+    // 在这里就是「未解析」，放出去会在物理规则里以 UnresolvedAttribute 的面目炸出
+    // 一句谁也看不懂的 `Invalid call to exprId`（实测：Sha2 落在 string 列上）。
+    // fail-closed：现在就说清楚是策略表达式的问题。
+    if (!expr.resolved) {
+      throw new PolicyEnforcementException(
+        s"row filter did not resolve against the table schema (an input type does not match"
+          + s" the operator's requirement, got ${describeTypes(expr)}); fix or drop the policy"
+          + " before querying this table")
+    }
     expr.dataType match {
       case BooleanType => expr
       case other => throw new PolicyEnforcementException(
@@ -54,16 +69,26 @@ private[spark] object PolicyExpressionBuilder {
         s"mask for column ${target.name} must use either 'fn' (standard set) or"
           + " \"expr\" (escape hatch), not both")
     }
-    val expr =
+    val built =
       if (node.containsKey("fn")) standardMask(node, target)
       else if (node.containsKey("expr")) build(node.get("expr"), attrs, inRowFilter = false)
       else throw new PolicyEnforcementException(
         s"mask for column ${target.name} must contain either 'fn' or 'expr'")
+    val expr = resolveTimeZones(built)
     if (expr.dataType != target.dataType) {
       throw new PolicyEnforcementException(
         s"mask for column ${target.name} produces ${expr.dataType.simpleString} but the"
           + s" column is ${target.dataType.simpleString} — the result type must equal the"
           + " column type (design §5.3.3, no implicit casts)")
+    }
+    // 同 rowFilter：分析期已过，隐式 cast 不会再来。未解析的 mask 一旦包进
+    // PolicyProjectExec，其 output 会把这一列吐成 UnresolvedAttribute，
+    // RemoveRedundantProjects 一碰就炸（实测教训，见 rowFilter 内的注释）
+    if (!expr.resolved) {
+      throw new PolicyEnforcementException(
+        s"mask for column ${target.name} did not resolve against the table schema (an input"
+          + s" type does not match the function's requirement, got ${describeTypes(expr)});"
+          + " fix or drop the policy before querying this table")
     }
     expr
   }
@@ -87,6 +112,7 @@ private[spark] object PolicyExpressionBuilder {
     val col: Expression = target
     fn match {
       case "mask_alphanum" =>
+        requireNoArgs(args, fn)
         alphanum(col)
 
       case "show_first_n" =>
@@ -109,20 +135,30 @@ private[spark] object PolicyExpressionBuilder {
 
       case "replace_with_null" =>
         // 最常见的脱敏就是置空；结果类型必须等于列类型，所以 NULL 字面量按列类型造
+        requireNoArgs(args, fn)
         Literal.create(null, target.dataType)
 
       case "mask_to_fixed_value" =>
-        if (args.size() != 1 || !args.get(0).isInstanceOf[String]) {
+        // 与服务端 isBlank() 同口径：空白串（含空串）等于「固定值没写」，两侧都拒
+        if (args.size() != 1 || !args.get(0).isInstanceOf[String]
+            || args.get(0).asInstanceOf[String].isBlank) {
           throw new PolicyEnforcementException(
             "mask mask_to_fixed_value takes one non-empty string")
         }
         Literal(args.get(0))
 
       case "truncate_to_year" | "truncate_to_month" =>
+        requireNoArgs(args, fn)
         val unit = if (fn == "truncate_to_year") "year" else "month"
-        // DATE 与 TIMESTAMP 都收敛到 TruncDate：它按输入类型返回同类结果，
-        // 因此「结果类型 = 列类型」在外层校验自然成立
-        TruncDate(col, Literal(unit))
+        // DATE 与 TIMESTAMP 都放行（服务端 requireTemporal 同口径，inferType 按列类回）：
+        // TruncDate 只收 DATE 且恒返回 DATE；TIMESTAMP 列必须走 TruncTimestamp
+        // （inputTypes 收 TIMESTAMP，恒返回 TIMESTAMP）——两者的结果类型都与目标列
+        // 一致，「结果类型 = 列类型」的外层校验自然成立。日期以外落到 TruncDate 会
+        // 未解析，由 mask() 出口的 resolved 闸门 fail-closed
+        col.dataType match {
+          case TimestampType => TruncTimestamp(Literal(unit), col)
+          case _ => TruncDate(col, Literal(unit))
+        }
 
       case "hash" =>
         if (args.size() != 1 || !args.get(0).isInstanceOf[String]) {
@@ -131,9 +167,13 @@ private[spark] object PolicyExpressionBuilder {
             + " from cluster config (design §3.4)")
         }
         args.get(0).asInstanceOf[String].toUpperCase(java.util.Locale.ROOT) match {
-          case "MD5" => Md5(col)
-          case "SHA-256" => Sha2(col, Literal(256))
-          case "SHA-512" => Sha2(col, Literal(512))
+          // Md5 / Sha2 的输入类型是 BinaryType：hash 的语义是「对 UTF-8 字节做摘要、
+          // 输出小写十六进制」（与服务端 PolicyExpressionEvaluator#digest 对齐）。
+          // 这里在分析之后构造表达式，分析器的隐式 string→binary cast 不会再跑，
+          // 必须自己补——否则表达式未解析，RemoveRedundantProjects 直接炸（实测）
+          case "MD5" => Md5(toUtf8Bytes(col))
+          case "SHA-256" => Sha2(toUtf8Bytes(col), Literal(256))
+          case "SHA-512" => Sha2(toUtf8Bytes(col), Literal(512))
           case other => throw new PolicyEnforcementException(
             s"unsupported hash algorithm $other; allowed: MD5, SHA-256, SHA-512")
         }
@@ -156,8 +196,20 @@ private[spark] object PolicyExpressionBuilder {
     if (args.size() != 1 || !args.get(0).isInstanceOf[Number]) {
       throw new PolicyEnforcementException(s"mask $fn takes one non-negative integer")
     }
-    args.get(0).asInstanceOf[Number].intValue()
+    // 负数在服务端建策略时已拒（PolicyExpressions：number.intValue() < 0）；
+    // 这里是第二道闸——负的 n 会让 substr 的语义漂移（起点从尾部倒数），必须拒绝
+    val v = args.get(0).asInstanceOf[Number].intValue()
+    if (v < 0) {
+      throw new PolicyEnforcementException(s"mask $fn takes one non-negative integer, got $v")
+    }
+    v
   }
+
+  /** mask_alphanum / replace_with_null / truncate_to_* 不收参数（服务端同口径）。 */
+  private def requireNoArgs(args: java.util.List[Any], fn: String): Unit =
+    if (!args.isEmpty) {
+      throw new PolicyEnforcementException(s"mask $fn takes no arguments")
+    }
 
   // ------------------------------------------------------------------ AST 节点
 
@@ -273,14 +325,16 @@ private[spark] object PolicyExpressionBuilder {
         if (args.length < 2 || args.length > 3) {
           throw new PolicyEnforcementException("substr requires two or three arguments")
         }
-        Substring(args(0), coerceToInt(args(1), "substr start"),
+        // 服务端语义是「先 displayString 再截取」（substr/upper/lower/trim 同一惯例，
+        // inferType 也一律回 STRING）：数字等非字符串列同样可用，这里显式补 cast
+        Substring(castToString(args(0)), coerceToInt(args(1), "substr start"),
           if (args.length > 2) coerceToInt(args(2), "substr length") else Literal(Int.MaxValue))
       case "concat" =>
         // Concat 要求全 String：非字符串参数显式 cast（分析器不会再做隐式转换）
         Concat(args.map(castToString))
-      case "upper" => Upper(single(args, fn))
-      case "lower" => Lower(single(args, fn))
-      case "trim" => StringTrim(single(args, fn))
+      case "upper" => Upper(castToString(single(args, fn)))
+      case "lower" => Lower(castToString(single(args, fn)))
+      case "trim" => StringTrim(castToString(single(args, fn)))
       case "regexp_replace" =>
         if (args.length != 3) {
           throw new PolicyEnforcementException("regexp_replace requires exactly three arguments")
@@ -290,11 +344,20 @@ private[spark] object PolicyExpressionBuilder {
         val replacement = requireStringLiteral(args(2), "regexp_replace replacement")
         RegExpReplace(castToString(args(0)), pattern, replacement, Literal(1))
       case "date_trunc" =>
-        // Spark 的签名是 date_trunc(format, ts)；协议按同一顺序存（§5.3.2）
+        // Spark 的签名是 date_trunc(format, ts)；协议按同一顺序存（§5.3.2）。
+        // 与 truncate_to_* 同口径：TIMESTAMP 参数走 TruncTimestamp，DATE 走 TruncDate——
+        // 服务端把 date_trunc 的结果类型推断为参数列自己的类型（inferType(args[1])），
+        // 引擎的结果类型必须跟上，否则比较两侧对不齐
         if (args.length != 2) {
           throw new PolicyEnforcementException("date_trunc requires exactly two arguments")
         }
-        TruncDate(args(1), requireStringLiteral(args(0), "date_trunc unit"))
+        val unit = requireStringLiteral(args(0), "date_trunc unit")
+        args(1).dataType match {
+          case TimestampType => TruncTimestamp(unit, args(1))
+          case DateType => TruncDate(args(1), unit)
+          case other => throw new PolicyEnforcementException(
+            s"date_trunc expects a date / timestamp input, got $other")
+        }
       case "year" => Year(single(args, fn))
       case "month" => Month(single(args, fn))
       case "to_date" =>
@@ -310,12 +373,12 @@ private[spark] object PolicyExpressionBuilder {
           throw new PolicyEnforcementException("date_format requires exactly two arguments")
         }
         DateFormatClass(args(0), requireStringLiteral(args(1), "date_format pattern"))
-      case "md5" => Md5(castToString(single(args, fn)))
+      case "md5" => Md5(toUtf8Bytes(single(args, fn)))
       case "sha2" =>
         if (args.length != 2) {
           throw new PolicyEnforcementException("sha2 requires exactly two arguments")
         }
-        Sha2(castToString(args(0)), coerceToInt(args(1), "sha2 digest length"))
+        Sha2(toUtf8Bytes(args(0)), coerceToInt(args(1), "sha2 digest length"))
       case "coalesce" =>
         if (args.length < 2) {
           throw new PolicyEnforcementException("coalesce requires at least two arguments")
@@ -397,6 +460,40 @@ private[spark] object PolicyExpressionBuilder {
   private def castToString(expr: Expression): Expression = expr.dataType match {
     case StringType => expr
     case _ => Cast(expr, StringType)
+  }
+
+  /**
+   * 补会话时区。{@code TimeZoneAwareExpression}（TruncTimestamp / ParseToDate /
+   * 涉及时区的 Cast 等）的 {@code resolved} 要求 {@code timeZoneId.isDefined}，
+   * 正常链路由分析期的 {@code ResolveTimeZone} 规则填入——而本类在分析之后构造，
+   * 没人替我们填，时区敏感的表达式会永远「未解析」。这里在构造出口统一补上
+   * 会话时区（与 Spark 对用户查询的行为一致：date_trunc 按会话时区截断）。
+   */
+  private def resolveTimeZones(expr: Expression): Expression =
+    expr.transformUp {
+      case tz: TimeZoneAwareExpression if tz.timeZoneId.isEmpty =>
+        tz.withTimeZone(SQLConf.get.sessionLocalTimeZone)
+    }
+
+  /**
+   * 摘要函数的输入收敛：Md5 / Sha2 要求 BinaryType，语义是「对 UTF-8 字节做摘要」
+   * （服务端 {@code digest} 是 {@code displayString(value).getBytes(UTF_8)}）。
+   * 字符串列直接 cast（Cast(string→binary) 即取 UTF-8 字节）；其它类型先转字符串
+   * 再取字节，与「先显示串再编码」的顺序一致。分析期已过，这一步没人替我们做。
+   */
+  private def toUtf8Bytes(expr: Expression): Expression = expr.dataType match {
+    case BinaryType => expr
+    case StringType => Cast(expr, BinaryType)
+    case _ => Cast(Cast(expr, StringType), BinaryType)
+  }
+
+  /** 报错辅助：把表达式里未解析子节点的形态摊开，策略写错类型时能一眼定位。 */
+  private def describeTypes(expr: Expression): String = {
+    val bad = expr.collect { case u: UnresolvedAttribute => u.name.mkString(".") }.distinct
+    val types = expr.children.map(c =>
+      s"${c.getClass.getSimpleName}(${if (c.resolved) c.dataType.simpleString else "unresolved"})")
+    (if (bad.nonEmpty) s"unresolved columns: ${bad.mkString(", ")}; " else "") +
+      types.mkString(", ")
   }
 
   private def requireStringLiteral(expr: Expression, what: String): Literal = expr match {

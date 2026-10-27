@@ -83,6 +83,16 @@ private[spark] class PolicyEnforcementStrategy extends SparkStrategy {
     // 必须用 PolicyProjectExec 而不是 ProjectExec：后者会被 RemoveRedundantProjects
     // 当作冗余投影删除（判据是「输出 exprId 与 child 一致」，而我们的别名恰好沿用
     // 原 exprId——规则不知道别名换了值）。详见 PolicyProjectExec 类注释
+    // 最后一道防线：投影里有未解析的 NamedExpression 时，output 的 toAttribute 会
+    // 吐出 UnresolvedAttribute，物理规则一碰就炸出 `Invalid call to exprId`——
+    // 表达式构造层（PolicyExpressionBuilder）有同款闸门，这里兜底指名哪一列
+    val unresolved = projections.filterNot(_.resolved)
+    if (unresolved.nonEmpty) {
+      throw new PolicyEnforcementException(
+        s"mask projection for ${policy.tableRef} did not resolve for columns:"
+          + unresolved.map(_.name).mkString(" ", ", ", "")
+          + "; refusing to attach a half-built mask")
+    }
     PolicyProjectExec(projections, filtered)
   }
 }

@@ -16,7 +16,7 @@ class PaimonS3Test {
    */
   val token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJwYWltb24tcmVzdCIsInN1YiI6InJlZ3Jlc3MtcHJpbmNpcGFsIiwiaWF0IjoxNzkxNTk1ODI2LCJleHAiOjE3OTE1OTk0MjYsImp0aSI6Ijg3MmVlYWUwLTQxYzctNDE2Ni04OGI3LTAzNDgwMWMxNjcyMCIsInNjb3BlIjoiUFJJTkNJUEFMX1JPTEU6QUxMIn0.OonQtdHvb-scEg2zk2ijGKiZDFEyXAdauDXM06FsXG8"
 
-  // @org.junit.jupiter.api.Test
+  @org.junit.jupiter.api.Test
   def test(): Unit = {
     val warehouse = java.nio.file.Files.createTempDirectory("paimon-rest-warehouse")
     val spark = SparkSession.builder()
@@ -45,6 +45,7 @@ class PaimonS3Test {
       .config("spark.sql.catalog." + catalog + ".s3.secret-key", "PbICbD6H7iyq0PuefHa383YoqJn3JCjedQHSYmbp")
       .config("spark.sql.catalog." + catalog + ".s3.path.style.access", "true")
       .config("spark.lakehouse.rest.lineage.enabled", "true")
+      .config("spark.lakehouse.rest.policy.enforced", "true")
 
       .config(PaimonRestManagement.MANAGEMENT_URL, "http://127.0.0.1:8080/api/management/v1")
       .config(PaimonRestManagement.TOKEN, token)
@@ -97,8 +98,9 @@ class PaimonS3Test {
     //spark.sql(insertSql1)
 
     val insertSql2 = "insert into table demo.paimon_sample4 select * from demo.paimon_sample2"
-    spark.sql(insertSql2)
+    //spark.sql(insertSql2)
 
-    //spark.sql("select * from demo.paimon_sample4").show()
+    spark.sql("explain select * from demo.paimon_sample2").show(false)
+    spark.sql("select * from demo.paimon_sample2").show(false)
   }
 }

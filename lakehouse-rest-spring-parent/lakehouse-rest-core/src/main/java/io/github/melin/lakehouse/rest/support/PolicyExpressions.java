@@ -471,6 +471,11 @@ public final class PolicyExpressions {
                 if ("truncate_to_year".equals(fn) || "truncate_to_month".equals(fn)) {
                     requireTemporal(columnCategory, column, fn);
                 }
+                if ("mask_alphanum".equals(fn)) {
+                    // X/x/n 是字符类替换，对数字 / 时间列没有意义；引擎的 StringTranslate
+                    // 也要求字符串输入（结果类型必须等于列类型，§5.3.3）——建策略时就拒
+                    requireStringColumn(columnCategory, column, fn);
+                }
             }
             case "show_first_n", "show_last_n" -> {
                 if (rawArgs.size() != 1 || !(rawArgs.get(0) instanceof Number number)
