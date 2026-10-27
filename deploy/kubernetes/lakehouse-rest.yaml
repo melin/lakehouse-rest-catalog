@@ -1,0 +1,762 @@
+# LakeHouse Catalog Server —— 整套部署只有这一个文件。
+#
+# ---------------------------------------------------------------------------
+# 本文件创建什么、不创建什么
+# ---------------------------------------------------------------------------
+# 包含三个对象，按书写顺序：
+#   1. ConfigMap/lakehouse-rest-config     服务端配置（含外部 MySQL 连接串）
+#   2. Deployment/lakehouse-rest-server
+#   3. Service/lakehouse-rest-server（NodePort 30818）
+#
+# **不含 Namespace**。`lakehouse-rest` 需要事先存在，本文件只往里塞对象。
+# 命名空间是集群级的前置资源，通常由平台统一创建并附带配额、NetworkPolicy、
+# 镜像仓库凭据；写进应用清单就多一份「谁先建」的顺序依赖——上一版拆成
+# namespace / configmap / deployment 三份时正是栽在这里：`kubectl apply -f <目录>`
+# 按文件名排序，configmap.yaml 排在 namespace.yaml 之前，第一个对象就报
+#   Error from server (NotFound): namespaces "lakehouse-rest" not found
+# 命名空间明明「已经创建」，只是创建在它后面。现在不依赖顺序了。
+#
+# 首次部署：
+#   kubectl create namespace lakehouse-rest
+# 之后每次：
+#   kubectl apply -f deploy/kubernetes/lakehouse-rest.yaml
+#
+# 三个对象都必须自己写 `namespace: lakehouse-rest`——不再由 kustomize 统一注入。
+# 漏写的那份会落到 default，表现是「apply 成功但 Pod 找不到 ConfigMap」。
+#
+# 取舍与排错见同目录的 README.md。
+
+# ---------------------------------------------------------------------------
+# 1. ConfigMap（服务端配置，含外部 MySQL 连接串）
+# ---------------------------------------------------------------------------
+# 服务端配置的 K8s 覆盖层。
+#
+# 这里的文件名 application-k8s.yml 不是随便起的：Pod 通过
+# SPRING_CONFIG_ADDITIONAL_LOCATION=file:/app/config/ 把整份 ConfigMap 挂进
+# /app/config/，再通过 SPRING_PROFILES_ACTIVE=k8s 让它生效。
+# Spring 会先读镜像里的 application.yml（默认值基底），再叠加这一份，
+# 因此**这里只写 K8s 环境需要改的部分**，看这一份就知道相对默认改了什么。
+#
+# 为什么不把配置摊成环境变量（SPRING_DATASOURCE_URL=...）：
+#   - lakehouse.rest.initial-catalog.databases 这种嵌套列表用环境变量表达要写成
+#     LAKEHOUSE_REST_INITIALCATALOG_DATABASES_0_NAME，可读性差且容易拼错；
+#   - 环境变量散在 Deployment 的 env 列表里，看不出「生效配置长什么样」，
+#     而这份文件本身就是一份可读的配置全文。
+# 也正因为整份是明文，这份 ConfigMap 不适合放进共享集群的公共命名空间——
+# 数据库口令就在里面。真要收紧，把口令拆到 Secret 再改回环境变量注入，
+# 但那样就得重新引入 secret.yaml（本版刻意不做）。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: lakehouse-rest-config
+  # 不再由 kustomize 统一注入命名空间，每份文件自己写。
+  namespace: lakehouse-rest
+  labels:
+    app.kubernetes.io/name: lakehouse-rest-server
+    app.kubernetes.io/component: server
+data:
+  application-k8s.yml: |
+    server:
+      port: 8080
+      # LakeHouse Catalog 客户端会把 database / table 名称作为单个 UTF-8 路径段传入，
+      # Tomcat 默认拒绝路径中的部分编码字符，这里放宽以便名称中含点号、空格等情况正常工作。
+      tomcat:
+        relaxed-path-chars: "[,]"
+        relaxed-query-chars: "[,]"
+    
+    spring:
+      application:
+        name: lakehouse-rest-server
+      # 元数据存储默认使用 MySQL。建表语句见仓库根目录的 sql/schema-mysql.sql，
+      # 首次部署需要先执行它；之后由 ddl-auto: validate 在启动时校验实体与库结构是否一致，
+      # 不一致就启动失败，而不是悄悄改表。
+      #
+      # 需要即用即丢的实例（本地调试、端到端脚本）时换用 h2 profile：
+      #   java -jar lakehouse-rest-spring-parent/lakehouse-rest-server/target/lakehouse-rest-server-1.0.0.jar --spring.profiles.active=h2
+      datasource:
+        url: jdbc:mysql://172.18.6.181:3306/lakehouse_catalog?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+        driver-class-name: com.mysql.cj.jdbc.Driver
+        username: root
+        password: "Root2024!@"
+        hikari:
+          maximum-pool-size: 20
+      jpa:
+        hibernate:
+          ddl-auto: validate
+        # 刻意不设 database-platform：由 JDBC 连接自动探测，
+        # 这样 h2 / postgresql profile 与测试不需要各自覆盖方言。
+        open-in-view: false
+        properties:
+          hibernate:
+            format_sql: false
+      jackson:
+        default-property-inclusion: non_null
+        serialization:
+          indent-output: false
+    
+    # ---------------------------------------------------------------------------
+    # 服务端行为配置
+    # ---------------------------------------------------------------------------
+    lakehouse:
+      rest:
+        # 目录（catalog）默认值：GET /v1/config?warehouse=X 会把 prefix 回给客户端
+        default-prefix: paimon
+        default-warehouse: file:///tmp/paimon-warehouse
+        # 未注册的 prefix 是否自动登记为一个 catalog，便于客户端零配置接入
+        auto-create-catalog: true
+        # 表路径模板，支持 {warehouse} {database} {table} 占位符
+        path-template: "{warehouse}/{database}.db/{table}"
+        # 分页默认值与上限
+        default-page-size: 100
+        max-page-size: 1000
+    
+        # -------------------------------------------------------------------------
+        # 表元数据物化：把 schema 与快照写进 Paimon 表目录
+        # （<warehouse>/<db>.db/<表>/schema/schema-<n> 与 snapshot/snapshot-<n>）。
+        #
+        # 为什么服务端要管这件事：Paimon 的 REST Catalog 客户端是瘦客户端——
+        # RESTCatalog.createTable 只把 schema POST 给服务端，物理目录从来不由客户端写；
+        # 提交快照同理，RESTCatalog.supportsVersionManagement() 恒为 true，
+        # 客户端走 CatalogSnapshotCommit 把快照 POST 给服务端，自己那份写 snapshot-<n>
+        # 的代码（RenamingSnapshotCommit）根本不会被实例化。
+        # 对照之下 HiveCatalog（自己就是表的拥有者）会在 createTableImpl 里调
+        # SchemaManager.createTable 写 schema 文件。换到 REST 形态，这份责任就落到了服务端。
+        #
+        # 不写会怎样：引擎提交快照前要读 schema/schema-<n> 取 schemaId，读不到就抛
+        # Cannot get latest schema for table <表名> 并回滚，留下已经写好的数据文件当孤儿。
+        # 快照文件的缺失更难发现：REST 的读路径也走服务端（SnapshotLoaderImpl 查的就是
+        # 本服务端的数据库），所以用 catalog 读写一切正常，只有绕开服务端直接看仓库
+        # 才会发现那是一张没有快照的表。
+        #
+        # 开关的意义与取舍见 docs/spark-paimon-rest-e2e.md 第 4 节，逐项说明见 README 第 5 节。
+        # -------------------------------------------------------------------------
+        table-metadata:
+          # 是否物化。默认开启。external=true 的表（register 进来的）始终不物化：
+          # 它的位置不归本服务端所有，往里写 schema / 快照是数据损坏而不是补全。
+          enabled: true
+          # 物化失败时是否让请求失败（500 且事务回滚）。
+          # 默认 false（尽力而为）：服务端写仓库需要 FileIO 实现、凭据、网络三者同时到位，
+          # 任缺一项，严格失败会让**建表整体不可用**——影响面比「表暂时写不进去」大得多。
+          # 置 true 适合「宁可建不出表，也不要有表写着写着写不进去」的部署。
+          # 注意：仓库在 s3:// / obs:// / oss:// 上时，服务端自己也要有对应 scheme 的
+          # FileIO 实现（paimon-core 只带 file / hdfs / viewfs），否则这里一直是 WARN。
+          fail-on-error: false
+          # DROP TABLE 时是否连表目录一起删除。
+          # 默认 false：删数据不可逆，默认值得是「谁都没看过这份文档时会发生什么」的那一个。
+          # 代价是「删表 -> 同名重建」会撞 Schema in filesystem exists, creation is not
+          # allowed.，此时要么打开这一项，要么手工清掉旧表目录。
+          purge-on-drop: false
+    
+        auth:
+          # true 时所有 /v1/**、/api/catalog/v1/**、/api/management/v1/**、/api/console/v1/** 都要求
+          # Authorization: Bearer <token>（例外只三条：登录引导 /api/console/v1/auth、
+          # 登录 /api/console/v1/login 与令牌端点 /api/catalog/v1/oauth/tokens）
+          enabled: false
+          # 关闭鉴权时请求落到哪个主体名下
+          principal: anonymous
+          # 静态令牌：给机器用——Spark / Flink 客户端把它写死在配置里，之后不再变更。
+          # 浏览器不要用它：换人不改配置就区分不了，写在客户端配置里的令牌也很难轮转。
+          # 浏览器走下面的 console 两种登录方式。
+          tokens: []
+          # 令牌 → 主体名映射；授权判定按主体名查授权链路，未配置的令牌退化为「令牌即主体名」
+          token-principals: {}
+          # -----------------------------------------------------------------------
+          # 控制台登录签发的访问令牌。
+          #
+          # 令牌是自包含的 JWT，服务端不存任何会话。因此：
+          #   - 多实例部署下任一实例签发的令牌其余实例都认；
+          #   - 服务端重启不会让已登录的人掉线；
+          #   - 代价是无法即时撤销：令牌签发后在有效期内始终有效，TTL 是唯一的暴露窗口
+          #     上限。要踢掉某个人只能轮换 signing-key，而那会踢掉所有人。
+          # -----------------------------------------------------------------------
+          access-token:
+            # 浏览器一次工作会话的长度。没有撤销机制时这个值不宜大
+            ttl: 1h
+            # JWT 的 iss，用于自校验
+            issuer: paimon-rest
+            # HMAC-SHA256 签名密钥，Base64，解码后至少 32 字节。生成：openssl rand -base64 48
+            # 留空则进程启动时随机生成——本地单机调试可用，但重启会让所有人掉线、
+            # 多实例之间互相 401，生产必须显式配置（启动日志会就此告警）
+            signing-key: ""
+          # -----------------------------------------------------------------------
+          # 浏览器访问控制台时的登录方式，三种，可同时启用。
+          # 三者都只产出一个 access token，之后走同一条 Authorization: Bearer 通道。
+          #
+          # 两个开关别混在一起看：
+          #   auth.console.required（默认 true）——控制台要不要先登录（只挡界面与
+          #     /api/console/v1/**）。
+          #   auth.enabled（默认 false）——整个服务端要不要令牌，管的是 /v1/**、
+          #     /api/catalog/v1/**、/api/management/v1/**，也就是引擎用的数据面。
+          # 数据面默认仍匿名可调，因此控制台门禁挡的是「随手打开这个地址」，
+          # 不是「想拿数据的人」。要真正的访问控制就把 auth.enabled 设为 true。
+          # -----------------------------------------------------------------------
+          console:
+            # 控制台是否要求先登录。设 false 后打开控制台不再需要登录
+            # （只有 auth.enabled 也为 true 时才有意义，否则等于把界面上的门打开）。
+            required: true
+            # 方式一（默认）：用户名 + 密码，账号就在下面，不需要先建主体。
+            password:
+              enabled: true
+              # 用户名 → 密码。默认 admin/admin 是「开箱能用」，不是建议值：
+              # 任何能访问这个地址的人都能用它进来。密码仍是默认值时启动会告警。
+              users:
+                admin: admin
+              # 用户名 → 主体名；未配置的用户名即主体名。用于让「开门的账号」与
+              # 「授权链路里的主体」叫不同名字，例如把 admin 映射到已有的服务管理员主体
+              principals: {}
+              # 用户名密码比客户端凭据更怕爆破（密码是人定的，可能只有六七个字符），
+              # 因此阈值比下面那组更严。按「直连地址 + 用户名」分桶，只在失败时计数。
+              rate-limit:
+                enabled: true
+                max-failures: 5
+                window: 1m
+            # 方式二（默认）：OAuth 2.0 客户端凭据流程。
+            # 控制台把用户填的 clientId / clientSecret POST 到
+            # /api/catalog/v1/oauth/tokens，换回一个 Bearer 令牌。
+            # 凭据校验走 lakehouse_principal 表，与引擎调用管理 API 用的是同一份数据。
+            client-credentials:
+              enabled: true
+              # 令牌端点是这套鉴权里唯一能匿名反复调用的地方，失败限速防的是
+              # 「用已知 clientId 反复猜 clientSecret」时把数据库打满。
+              # 按「直连地址 + clientId」分桶，只在失败时计数。
+              # 若前置了反向代理，所有请求会被视为同一来源，此时应调大阈值或关掉限速。
+              rate-limit:
+                enabled: true
+                max-failures: 10
+                window: 1m
+            # 方式三（可选）：OpenID Connect 授权码 + PKCE，令牌由外部 IdP 签发，
+            # 本服务端只验签（RS256 / ES256，公钥从 IdP 的 JWKS 取）。
+            oidc:
+              enabled: false
+              # IdP 的 issuer URL，服务端据此拉 /.well-known/openid-configuration，
+              # 把授权端点、令牌端点与 JWKS 地址一并发现出来，并转告控制台。
+              # 例如：https://keycloak.example.com/realms/EXTERNAL
+              issuer-uri: ""
+              # 在 IdP 注册的公开客户端标识（PKCE，没有密钥——浏览器里放不下秘密）
+              client-id: ""
+              # 必须在 IdP 侧登记过的回调地址，例如
+              # http://localhost:8080/console/auth/callback
+              redirect-uri: ""
+              scope: openid profile email
+              # 从哪个 claim 取主体名。取到的值需要与 lakehouse_principal.name 或
+              # authorization.service-admins 里的名字对得上，否则登录成功但什么也看不到
+              principal-claim: sub
+              # 期望的 aud。留空不校验；同一 issuer 下还有别的应用时应当填上
+              audience: ""
+              metadata-cache-ttl: 10m
+              # 刷新失败时沿用旧值，因此 IdP 短暂不可用不会把已在用控制台的人踢出去
+              jwks-cache-ttl: 1h
+              # IdP 与本服务端的时钟不可能完全一致，留一点余量
+              clock-skew: 60s
+        # 管理 API（/api/management/v1/**）的 RBAC 授权，默认关闭以保持既有行为
+        authorization:
+          enabled: false
+          # 服务管理员：可管理 principal 与 principal role，并可在任意 catalog 上操作角色与授权。
+          # 管理规格的权限枚举没有覆盖「管理主体」的层级，故用名单表达
+          service-admins:
+            - root
+          # 启动时预置的引导主体与引导角色链（主体 → 角色 → 各 catalog 的 catalog_admin）
+          bootstrap-principal: root
+          bootstrap-principal-role: service_admin
+        credential:
+          # 数据访问令牌（凭证下发）有效期
+          ttl-seconds: 3600
+        # -----------------------------------------------------------------------
+        # 存储与凭据，对应 Polaris 1.8.0 配置参考的「Storage & Credentials」一节。
+        # 键名逐项对应，只把前缀从 polaris 换成 lakehouse.rest，运维迁配置时可以按名字平移。
+        # 例外是下面 obs / oss 两组：Polaris 没有这两个存储类型（它用 S3 兼容层接入），
+        # 因此没有可平移的键名，是本工程按厂商 FileIO 配置面新加的。
+        # -----------------------------------------------------------------------
+        storage:
+          aws:
+            # 默认 S3 凭据：未指定 storageName 的 S3 catalog 用它。两项留空则退化为
+            # 环境凭据链（实例角色、环境变量、配置文件），与 Polaris 的行为一致
+            access-key: ""
+            secret-key: ""
+            # 具名存储，键为 catalog 的 storageConfigInfo.storageName。
+            # 密钥只留在服务端配置里，不落进 catalog 元数据——这是本工程里唯一
+            # 让 S3 密钥不出现在管理 API 报文中的途径
+            storages: {}
+          gcp:
+            # GCS 访问令牌；留空则交给引擎自己的凭据链
+            token: ""
+            # 令牌有效期；非空时会同时收窄令牌自身与响应里的 expiresAt
+            lifespan: null
+          # 华为云 OBS 凭据。与 aws 分开而不是共用：三家的 AK/SK 独立签发、独立轮转、
+          # 独立授权，挤进同一个键空间后「给 OBS 换钥匙」与「给生产 S3 换钥匙」就没法区分。
+          # 这一组没有 Polaris 的对应项——Polaris 用 S3 兼容层接入 OBS，本工程单列。
+          obs:
+            # 三项都留空则退化为环境凭据链：引擎用自己的 fs.obs.security.provider
+            # （环境变量 / ECS 委托身份）去取，服务端不下发任何密钥
+            access-key: ""
+            secret-key: ""
+            # 临时凭据的安全令牌（华为的键名是 fs.obs.session.token）。
+            # 临时凭据必须 AK + SK + 令牌成套提供，只给令牌不会失败、只会签名不过
+            session-token: ""
+            # 具名存储，键为 catalog 的 storageConfigInfo.storageName。
+            # 密钥只留在服务端配置里，不落进 catalog 元数据
+            storages: {}
+          # 阿里云 OSS 凭据，结构同 obs
+          oss:
+            access-key: ""
+            secret-key: ""
+            # 阿里云侧的键名是 fs.oss.securityToken，这里沿用同一命名约定
+            session-token: ""
+            storages: {}
+          # 以下连接参数当前只做取值校验与启动日志输出：JDK 的 HttpClient 没有
+          # 对应的调节项，保留它们是为了配置面与 Polaris 一一对应
+          clients-cache-max-size: 100
+          max-http-connections: 20
+          read-timeout: 30s
+          connect-timeout: 10s
+          connection-acquisition-timeout: 10s
+          connection-max-idle-time: 5m
+          connection-time-to-live: 30m
+          expect-continue-enabled: true
+          credential-secret-key: mVPu1SDrF2tyq6mIBILyy/0STBS+gUiTcyMQkEEGiX0=
+        storage-credential-cache:
+          # 已下发凭据的复用上限；条目按各自过期时间失效，这个值只兜住内存占用
+          max-entries: 10000
+        credential-manager:
+          # default：按 catalog 的存储类型下发凭据
+          # noop：不下发，读表走到凭据下发接口时返回 501（引擎自带云凭据的部署用）
+          type: default
+        file-io:
+          # 本部署接入了哪些存储实现，决定 catalog 允许的 storageType：
+          # default -> FILE/S3/AZURE/GCS/OBS/OSS；s3|azure|gcs|obs|oss -> 对应云存储 + FILE；
+          # local -> 仅 FILE。obs / oss 两个取值是本工程扩展，Polaris 侧没有
+          type: default
+        initial-catalog:
+          # 启动时预置的 catalog；留空表示不预置
+          prefix: paimon
+          warehouse: file:///tmp/paimon-warehouse
+          databases:
+            - name: default
+              options:
+                owner: paimon
+    
+        # -----------------------------------------------------------------------
+        # 表存储优化（Compaction / Snapshot Expire / Orphan File Remove）
+        #
+        # 三项动作的参数默认值不放这里：它们属于**每个 catalog 自己的默认设置**
+        # （catalog 属性里 `optimization.<动作>.<参数>` 前缀的键，与 table-default.* 同一套做法），
+        # 由控制台或管理 API 维护。这里只配**调度节拍**——「任务跑到哪里」属于每个 catalog
+        # 的执行集群配置（见下）。
+        #
+        # 完整设计见 docs/table-optimization.md。
+        # -----------------------------------------------------------------------
+        optimization:
+          # 关掉只停调度，不影响手动「立即优化」与状态查询。
+          # 用途：优化任务由外部系统触发出批的部署，以及需要确定性行为的测试。
+          scheduler-enabled: true
+          # 多久扫一次「有策略到期了、有批次等着提交/跟踪」。调快它不会让优化跑得更勤，
+          # 只影响「到期后多久被看见」。
+          scan-interval: 1m
+          # 提交与跟踪节拍。比扫描快：提交要趁热，跟踪决定用户看到「运行中」到什么精度。
+          dispatch-interval: 10s
+          #
+          # 这里**只有节拍**。任务跑到哪个集群、用什么镜像、命名空间、回调地址、
+          # 数据面令牌、单批表数、并发数、超时——全部搬到了「每个 catalog 的执行集群」：
+          # 控制台 catalog 列表 →「执行集群」，或
+          #   PUT /api/management/v1/catalogs/{catalog}/execution-cluster
+          # 上一版那些键（namespace / image / api-server / token-file / ca-file /
+          # management-url / catalog-token / max-tables-per-job / max-concurrent-jobs /
+          # job-timeout / submitter）在这里**已删除**，别再写回来：它们都假设
+          # 「整个服务端只有一个执行集群，而且就是服务端自己所在的那个」，
+          # 而在「不同 catalog 用不同集群」的前提下没有一个是全局的。
+    
+        # -----------------------------------------------------------------------
+        # Spark SQL 血缘（docs/lineage-design.md）。
+        #
+        # 数据从哪来：Spark 作业侧的抽取器（lakehouse-rest-spark 模块）把每次写入的
+        # 表级 / 列级依赖 POST 到 /api/management/v1/lineage/runs，服务端只管收、存、查。
+        # 没有客户端埋点就没有数据——这里开着也不会自己长出图来；Spark 侧要配
+        #   spark.lakehouse.rest.lineage.enabled=true
+        #   spark.sql.queryExecutionListeners=io.github.melin.lakehouse.rest.spark.lineage.LakehouseLineageListener
+        # （或本仓 ManagementSparkExtensions 的扩展懒注册，见 docs/lineage-design.md §10.2）
+        #
+        # 读端点（/lineage/tables、/lineage/columns、/lineage/runs...）不受 enabled 限制：
+        # 关闭只影响写入，已有的边仍然能查——关掉采集的部署不该连带看不见历史图。
+        # 注意边表不按时间清（只有 run 按 run-retention-days 清），一旦开始写，
+        # 回收路径只有「删表时级联删边」，量级要先在测试环境跑准。
+        # -----------------------------------------------------------------------
+        lineage:
+          # 是否接受血缘上报（POST /lineage/runs）。默认 false（与 RestServerProperties 的
+          # 代码默认一致——yml 里写非默认值会盖掉「缺省关闭」的语义，测试与安全基线都按
+          # 默认关来验）。要采集的部署用启动参数显式打开：
+          #   --lakehouse.rest.lineage.enabled=true
+          # 读端点不受它限制：关掉采集的部署仍然查得到已有的边与运行历史。
+          enabled: true
+          # lineage_run 表的保留天数（清理只删 run，不清边；边的 last_seen 自带「最近一次」）。
+          # 默认 90。
+          run-retention-days: 90
+          # 单次上报最多几条 run，超了直接 400（不静默截断，客户端该自己切批）。默认 50。
+          max-runs-per-batch: 50
+          # 单个目标表的列级边上限；超了服务端降级为「只有表级边」并把该 run 标记 truncated。
+          # 宽表 1000 列 × 5 张源表能到 5000 条边，一次写完的代价远大于图上的收益。默认 2000。
+          max-columns-per-target: 2000
+          # 图遍历深度上限；请求的 depth 超过它时报 400（不静默截断）。默认 5。
+          max-depth: 5
+          # 单次图查询返回节点数上限（服务端硬上限 2000，这里配的是默认档位）。默认 500。
+          max-nodes: 500
+          # 过期 run 的清理节拍（cron，秒 分 时 日 月 周）。默认每天 03:30。
+          # 注意：这个键在 LineageRetentionJob 的 @Scheduled 占位符里还出现一次，
+          # 改默认值时两处要同步（占位符在 bean 绑定前解析，注入不了本对象）。
+          cleanup-cron: "0 30 3 * * *"
+    
+        # -----------------------------------------------------------------------
+        # 行过滤 / 列脱敏（docs/row-filter-column-mask-design.md）。
+        #
+        # 策略模型：一张表最多一条策略（行过滤 + 列脱敏 + 整列不可见），管理端点在
+        # /api/management/v1/policies，控制台「数据策略」页签与总览 / 向导 / 试算三屏
+        # 共用同一套 API。这里只有服务端这一个开关——引擎侧不读服务端 yml，Spark / Flink
+        # 会话要配的是（见 docs/spark-sql-extension.md）：
+        #   spark.lakehouse.rest.policy.enforced=true   （默认 false，缺省不注入）
+        # 并把 ManagementSparkExtensions 装进 spark.sql.extensions。
+        #
+        # enabled 只锁写入口（PUT / DELETE 回 403 且报错写明本配置项），读照常：
+        # 策略详情 / resolve / 列表在关闭时仍然可达——「功能没开」与「本来就没策略」
+        # 必须分得开，否则引擎侧的 fail-closed 无法区分故障与空态。
+        #
+        # 这里写 false（与代码默认一致）：yml 里写非默认值会盖掉「缺省关闭」的语义，
+        # DataPolicyDisabledTests 按默认关来验（血缘的 LineageDisabledTests 就是这么红的）。
+        # 要开的部署用启动参数显式打开：--lakehouse.rest.policy.enabled=true
+        # -----------------------------------------------------------------------
+        policy:
+          # 是否允许创建 / 修改 / 删除策略（PUT / DELETE）。默认 false。
+          enabled: true
+    
+    # ===========================================================================
+    # 接口文档（knife4j-next，Boot 4 线：springdoc 3.x）
+    #
+    #   /doc.html      阅览页面（React 版 UI，中文界面）
+    #   /v3/api-docs   OpenAPI 3 原文；分组版在 /v3/api-docs/{group}
+    #
+    # **阅览页面不需要登录。** 它不在 WebConfig 注册的三个受管前缀
+    # （/v1/**、/api/catalog/v1/**、/api/management/v1/**、/api/console/v1/**）
+    # 里，浏览器直接打就能看；`/api/console/v1/auth` 那几条豁免与它无关。
+    # 端点自身的鉴权一条都没变——页面上的「调试」发出去的请求照样要过 Bearer
+    # 鉴权与表级授权（在那条接口的「认证」里填令牌即可）。这一点是刻意的：
+    # 文档只负责「把端点说清楚」，不负责「让端点变宽松」。
+    #
+    # 分组按控制器所在包划分，三组覆盖全部控制器（漏一个包的表现是那一组接口
+    # 消失，而不是报错）。协议面按格式分开：`/v1/{prefix}` 归属哪个协议要看
+    # catalog 的 catalogFormat，混在一张表里读不出这条边界。
+    # ===========================================================================
+    knife4j:
+      enable: true
+      setting:
+        language: zh_cn
+    
+    springdoc:
+      api-docs:
+        path: /v3/api-docs
+      # 原生 Swagger UI 一起留着：knife4j 的页面出问题（版本不匹配、静态资源 404）
+      # 时，至少还有一个能确认「问题在 UI 还是在 OpenAPI 文档本身」的地方
+      swagger-ui:
+        path: /swagger-ui.html
+      group-configs:
+        - group: paimon
+          display-name: Paimon REST Catalog
+          packages-to-scan: io.github.melin.lakehouse.rest.paimon.web
+        - group: iceberg
+          display-name: Iceberg REST Catalog
+          packages-to-scan: io.github.melin.lakehouse.rest.iceberg.web
+        - group: management
+          display-name: 公共 / 管理与控制台
+          packages-to-scan: io.github.melin.lakehouse.rest.web
+---
+# ---------------------------------------------------------------------------
+# 2+3. Deployment 与 Service（服务端本体 + NodePort 入口）
+# ---------------------------------------------------------------------------
+# LakeHouse Catalog Server —— 这两件对象就是集群里的全部工作负载与入口。
+#
+# ---------------------------------------------------------------------------
+# 与上一版相比：删掉了 mysql / warehouse-pvc / secret / pdb / ingress / namespace
+# 六份，Service 与 ConfigMap 合并进本文件。
+# ---------------------------------------------------------------------------
+# 删掉的每一份都对应一个「交给集群外部」的决定：
+#
+#   - MySQL       → 外部实例，连接串写在本文件 ConfigMap 段的 application-k8s.yml 里
+#                   （jdbc:mysql://<host>:3306/lakehouse_catalog）。集群里不再起
+#                   数据库，因此也没有「等 MySQL 就绪」的 initContainer。
+#   - warehouse   → 节点本地目录 /data/paimon-warehouse，用 hostPath 挂进来。
+#                   单副本 + 单节点目录，Pod 重建数据不丢；扩副本前必须先换对象存储。
+#   - 凭据        → 不做 Secret。鉴权默认关闭，数据库口令直接写在 ConfigMap 里，
+#                   配置中没有任何 ${...} 占位符——这也是删掉 secret.yaml 的前提。
+#   - 入口        → Service 用 NodePort，集群外 http://<节点IP>:30818；集群内仍可用
+#                   lakehouse-rest-server.lakehouse-rest.svc:8080。
+#   - 高可用      → 没有 PDB、没有 Ingress。单副本本来就没有可用性冗余，PDB 只能
+#                   二选一（拦住排空 / 形同虚设），不如不写。
+#
+# 应用（命名空间需先存在，见文件头）：
+#   kubectl create namespace lakehouse-rest
+#   kubectl apply -f deploy/kubernetes/lakehouse-rest.yaml
+#
+# 名字的词根是 lakehouse-rest-server，镜像是 lakehouse-rest-catalog。改名字不是改一处：
+# Deployment 的 selector 与 Service 的 selector 是同一条链，ConfigMap 的引用名、
+# Service DNS、以及集群外按标签选资源的东西（NetworkPolicy / ServiceMonitor /
+# `kubectl get -l` 脚本）也要一起动。
+#
+# 镜像来自仓库根目录的 Dockerfile（单阶段：JRE 17 + 一个预构建的 jar）：
+#   mvn -o -pl :lakehouse-rest-server -am clean package -DskipTests
+#   docker build -t registry.cn-hangzhou.aliyuncs.com/melin1204/lakehouse-rest-catalog:1.0.0 .
+#
+# imagePullPolicy 保持 IfNotPresent 而不是 Always：tag 固定为发布版本号，
+# 滚动更新时换新 tag 自然会拉取。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lakehouse-rest-server
+  # 不再由 kustomize 统一注入，每份文件自己写——漏写会落到 default 命名空间，
+  # 表现是「apply 成功但 Pod 里找不到 ConfigMap」。
+  namespace: lakehouse-rest
+  labels:
+    app.kubernetes.io/name: lakehouse-rest-server
+    app.kubernetes.io/component: server
+spec:
+  # 固定 1 副本，不是保守，是当前存储形态下的硬约束：
+  # warehouse 是节点本地目录 + file:// 协议，多副本若调度到不同节点会各写一份
+  # 互不相干的数据（表现为「建的表时有时无」）。要横向扩展必须先把仓库换成对象存储
+  # （S3 / Azure Blob / GCS / 阿里云 OSS / 华为云 OBS），服务端已支持这几种。
+  replicas: 1
+  # 滚动更新时先起新 Pod 再停旧 Pod。配合 server.shutdown=graceful，
+  # 更新过程中不会有请求失败。
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: lakehouse-rest-server
+      app.kubernetes.io/component: server
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: lakehouse-rest-server
+        app.kubernetes.io/component: server
+    spec:
+      # 比 spring.lifecycle.timeout-per-shutdown-phase（30s）留 15s 余量，
+      # 用于 preStop 的等待与 JVM 收尾。设小了会把优雅停机截断。
+      terminationGracePeriodSeconds: 45
+      securityContext:
+        # Dockerfile 里创建的 app 用户就是 10001，这里对齐。
+        # 用固定数字而不是名字：名字要靠镜像里的 /etc/passwd 解析，
+        # 而 kubelet 在容器启动前就要完成属主检查。
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        # fsGroup 对 emptyDir 生效；对 hostPath **不生效**（hostPath 不支持
+        # 属主管理），warehouse 目录的可写性由下面的 initContainer 负责。
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        # hostPath 目录是 kubelet 以 root 建的（0755 root:root），而主容器以
+        # uid 10001 运行、根文件系统只读——不 chown 的话启动会直接报
+        # 「warehouse 目录不可写」，而报错位置离真正原因很远。
+        #
+        # fsGroup 在这里帮不上忙：hostPath 不参与属主管理，这是它与 PVC 的关键差别。
+        # 因此用 root 跑一次 chown，之后主容器全程非 root。
+        - name: prepare-warehouse
+          image: registry.cn-hangzhou.aliyuncs.com/melin1204/lakehouse-rest-catalog:1.0.0
+          imagePullPolicy: Always
+          # 复用服务端镜像，不额外引入 busybox——多一个镜像就是多一处要同步的
+          # 镜像源与架构问题，而这里的命令只需要 sh + chown。
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              mkdir -p /data
+              chown 10001:10001 /data
+              chmod 0750 /data
+              echo "warehouse 目录属主已就绪: $(ls -ld /data)"
+          securityContext:
+            # 覆盖 Pod 级的 runAsNonRoot / runAsUser：chown 必须是 root。
+            runAsNonRoot: false
+            runAsUser: 0
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            # 只保留 chown 需要的 CAP_CHOWN，其余全丢——root 身份不等于全权限。
+            capabilities:
+              drop:
+                - ALL
+              add:
+                - CHOWN
+          volumeMounts:
+            # 挂的就是主容器那份 warehouse 卷，这里的 /data 即节点上的
+            # /data/paimon-warehouse——chown 落在卷根目录上。
+            - name: warehouse
+              mountPath: /data
+      containers:
+        - name: lakehouse-rest-server
+          image: registry.cn-hangzhou.aliyuncs.com/melin1204/lakehouse-rest-catalog:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            # 让 Spring 读挂进来的配置覆盖层。末尾的斜杠表示「这是目录」，
+            # 去掉它 Spring 会把它当成文件路径而找不到任何东西。
+            - name: SPRING_CONFIG_ADDITIONAL_LOCATION
+              value: file:/app/config/
+            - name: SPRING_PROFILES_ACTIVE
+              value: k8s
+            # 凭据不从这里注入：数据库口令写在 ConfigMap 的 application-k8s.yml 里，
+            # 鉴权（lakehouse.rest.auth.enabled）默认关闭，因此没有 REST_TOKEN。
+            # 要回到「配置里引用 ${DB_PASSWORD}」的形态，就得再加一个 Secret 与
+            # 两个 secretKeyRef——那正是简化时删掉的东西。
+          # -------------------------------------------------------------------------
+          # 探针用 exec + curl，而不是 httpGet
+          # -------------------------------------------------------------------------
+          # httpGet 只把 200–399 视为成功。清单若开启鉴权，/v1/config 未带令牌会返回
+          # 401——用 httpGet 的话 readinessProbe 永远失败，Pod 永远不会被加入
+          # Endpoints，表现是「容器在跑、日志正常、但 Service 没有后端」。
+          # 所以显式把 401/403 也算作「进程已经在处理请求」，与 Dockerfile 的
+          # HEALTHCHECK 保持一致。当前鉴权关闭、返回 200，这条判断依然成立。
+          # -------------------------------------------------------------------------
+          startupProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/v1/config)
+                  case "$code" in 200|401|403) exit 0 ;; *) exit 1 ;; esac
+            # 30 × 4s = 120s 上限：JVM 冷启动 + Hibernate 对 26 张表做 validate，
+            # 在资源紧张的节点上会比本地慢不少。有 startupProbe 挡着，livenessProbe
+            # 的计时应从它成功之后才开始，因此不必为「启动慢」放大 liveness 的容忍度。
+            periodSeconds: 4
+            timeoutSeconds: 3
+            failureThreshold: 30
+          livenessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/v1/config)
+                  case "$code" in 200|401|403) exit 0 ;; *) exit 1 ;; esac
+            periodSeconds: 20
+            timeoutSeconds: 5
+            # 连续 3 次失败（约 60s）才重启。单次超时可能只是 GC 停顿或节点负载抖动，
+            # 立刻重启会把一个自愈的问题变成一次真实中断。
+            failureThreshold: 3
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/v1/config)
+                  case "$code" in 200|401|403) exit 0 ;; *) exit 1 ;; esac
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          lifecycle:
+            preStop:
+              exec:
+                # 这里的等待是为了让 Service 的 Endpoints 先把这个 Pod 摘掉，
+                # 再开始关进程。摘除是异步的：kube-proxy 改转发规则需要一点时间，
+                # 这段时间里仍会有新请求被转发进来。
+                #
+                # sleep 用 exec 形式直接调二进制，不套 sh——套了会多一个进程，
+                # 而这个进程的存在与否会影响 SIGTERM 的传递路径。
+                #
+                # **必须写成 exec.command，不能把命令直接挂在 exec 下面**：
+                # exec 的 schema 是 ExecAction{command: []string}，直接写列表会得到
+                #   json: cannot unmarshal array into Go struct field
+                #   LifecycleHandler...preStop.exec of type v1.ExecAction
+                # 这是 apply 时才暴露的错误——`--dry-run=client --validate=false`
+                # 只做 YAML 解析，看不出这种 schema 级问题。
+                command:
+                  - sleep
+                  - "5"
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              # 不设 cpu limit 是有意的：JVM 的线程调度窗口与 GC 停顿对配额很敏感，
+              # 一旦被 cgroup 限流，表现是延迟尖刺而 CPU 使用率看起来并不高，
+              # 排查方向容易被带偏。用 requests 保证调度时的资源量即可。
+              #
+              # 内存必须设：Dockerfile 里的 -XX:MaxRAMPercentage=75 要以容器内存
+              # 上限为基数算堆大小，没有 limits 时 JVM 会按宿主机的物理内存来算，
+              # 在内存大的节点上会给自己开一个远超合理范围的堆。
+              memory: 2Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            # 根文件系统只读。JVM 与 Spring Boot 需要写的位置只有临时目录，
+            # 下面用 emptyDir 单独挂到 /tmp。
+            #
+            # 这一条能挡住的是一整类攻击：镜像里的任何写操作都无法落地，
+            # 例如下载 shell 脚本、改写 jar、往启动脚本里注入内容。
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: config
+              mountPath: /app/config
+              readOnly: true
+            # 顺序有意为之：先挂 /tmp（emptyDir），再挂它下面的 /tmp/paimon-warehouse
+            # （hostPath）。反过来写会出现子挂载被父挂载遮蔽——表现是 warehouse
+            # 目录看起来是空的，而数据其实写进了 emptyDir，Pod 一重建就没了。
+            - name: tmp
+              mountPath: /tmp
+            - name: warehouse
+              mountPath: /tmp/paimon-warehouse
+      volumes:
+        - name: config
+          configMap:
+            name: lakehouse-rest-config
+        - name: tmp
+          emptyDir: {}
+        # 表数据与 Paimon 元数据文件（schema/、snapshot/、manifest/）落在节点目录上。
+        # MySQL 里只有 catalog / namespace / table 的定义，两者都要持久化：
+        # 只保住 MySQL 会得到一堆指向不存在文件的表定义。
+        #
+        # 容器内路径**刻意仍是 /tmp/paimon-warehouse**：ConfigMap 里
+        # default-warehouse 与 initial-catalog.warehouse 都写着 file:///tmp/paimon-warehouse，
+        # 而已登记 catalog 的 warehouse 存在 MySQL 里、不随清单改。改容器内路径会让
+        # 那些 catalog 全部指向一个不存在的目录。节点上的真实目录是 /data/paimon-warehouse，
+        # 名字取得清楚一些，容器内沿用旧路径只为兼容。
+        - name: warehouse
+          hostPath:
+            path: /data/paimon-warehouse
+            # 目录不存在时由 kubelet 以 root 创建（0755），属主由 prepare-warehouse 修正。
+            type: DirectoryOrCreate
+---
+# 服务端入口。集群内的引擎（Spark / Flink 任务）走
+# lakehouse-rest-server.lakehouse-rest.svc:8080；集群外用 NodePort。
+#
+# 用 NodePort 而不是 LoadBalancer：后者要云厂商的 LB 控制器与额外计费，
+# 而这里只需要一个固定端口能从节点访问到。nodePort 显式写死 30818，
+# 是为了让客户端的配置稳定——随机端口每次重建都会变。
+#
+# 要临时从本机访问，也可以完全绕开 Service：
+#   kubectl -n lakehouse-rest port-forward deploy/lakehouse-rest-server 8080:8080
+apiVersion: v1
+kind: Service
+metadata:
+  name: lakehouse-rest-server
+  namespace: lakehouse-rest
+  labels:
+    app.kubernetes.io/name: lakehouse-rest-server
+    app.kubernetes.io/component: server
+spec:
+  type: NodePort
+  selector:
+    app.kubernetes.io/name: lakehouse-rest-server
+    app.kubernetes.io/component: server
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP
+      nodePort: 30818

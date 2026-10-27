@@ -68,7 +68,7 @@ paimon-rest/
 │   ├── lakehouse-rest-flink-1.20/  Flink 1.20.1 + Paimon 2.0.0 + Iceberg 1.11.0
 │   └── lakehouse-rest-flink-2.3/   Flink 2.3.0 + Paimon 2.0.0（2.2 连接器）+ Iceberg 1.12.0
 ├── lakehouse-rest-optimizer/   表存储优化任务（Spark，由服务端投到 k8s 运行）
-├── deploy/kubernetes/       Kubernetes 部署清单（kustomize 组装，见其目录下的 README）
+├── deploy/kubernetes/       Kubernetes 部署清单（单文件三文档，见其目录下的 README）
 ├── spec/                    OpenAPI 规格副本（两套协议面各一份）
 ├── sql/                     MySQL 建表语句（由实体生成，见第 7 节「代码生成」）
 ├── docs/                    设计文档、契约基线与 SQL 语法参考
@@ -135,8 +135,8 @@ Maven 坐标与包名：`groupId` 为 `io.github.melin`，十五个 artifact 是
 **请写** `io.github.melin.lakehouse.rest.spark.ManagementSparkExtensions`。
 其余位置都不是自由名字，判定与现状见
 [`maven-module-design.md`](docs/maven-module-design.md) §4 / §10：配置前缀 `lakehouse.rest.*`；
-k8s 资源名（namespace / Deployment / Service / Secret / ConfigMap）与镜像同一个词根
-`lakehouse-rest`——改它要连带改 selector、Secret 引用与 Service DNS，
+k8s 资源名（namespace / Deployment / Service / ConfigMap）与镜像同一个词根
+`lakehouse-rest`——改它要连带改两个 selector 与 Service DNS，
 见 [`deploy/kubernetes/README.md`](deploy/kubernetes/README.md) §2.2；元数据库
 `lakehouse_catalog`、表前缀 `lakehouse_`（表划分见 [`data-model.md`](docs/data-model.md)）。
 
@@ -1128,24 +1128,31 @@ BUILDER=mirrorb ./scripts/build-image.sh
 
 ### 8.2 Kubernetes
 
-`deploy/kubernetes/` 是一套用 kustomize 组装的清单：
+`deploy/kubernetes/` 只有**一个文件** `lakehouse-rest.yaml`，三个文档按序排好：
+ConfigMap（服务端配置，含外部 MySQL 连接串）→ Deployment → Service。
 
 ```bash
-kubectl -n lakehouse-rest create secret generic lakehouse-rest-credentials \
-  --from-literal=DB_PASSWORD=... --from-literal=REST_TOKEN=...
-kubectl apply -k deploy/kubernetes
+kubectl create namespace lakehouse-rest        # 仅在不存在时
+kubectl apply -f deploy/kubernetes/lakehouse-rest.yaml
 ```
 
-包含服务端 Deployment、MySQL StatefulSet、warehouse 的 PVC、配置与凭据、
-Service / Ingress / PDB。完整说明在其目录下的 `README.md`，三条比较关键的取舍：
+**Namespace 不在清单里**：它是集群级前置资源，由使用方先建。这样也顺带消掉了
+顺序依赖——`kubectl apply -f <目录>` 按文件名排序逐个 apply，早期拆成多份时
+`configmap.yaml` 排在 `namespace.yaml` 前面，第一个对象就报
+`namespaces "lakehouse-rest" not found`，而 Namespace 其实「已经创建」，只是创建在后面。
 
-- **副本数固定为 1**：warehouse 用 `file://` 加 ReadWriteOnce 卷，多副本会各挂一份
+上一版那套自洽清单（MySQL StatefulSet、warehouse PVC、Secret、PDB、Ingress、
+kustomize 组装）已经简化掉：元数据库用外部实例、warehouse 用节点目录 hostPath、
+凭据直接写在 ConfigMap 里（鉴权默认关闭）、入口是 NodePort 30818。
+完整说明在其目录下的 `README.md`，三条比较关键的取舍：
+
+- **副本数固定为 1**：warehouse 是节点本地目录 + `file://`，多副本会各写一份
   不同的数据。要横向扩展需要先把仓库换成对象存储（服务端已支持 S3 / Azure Blob / GCS）。
 - **探针用 exec + curl 而不是 httpGet**：`httpGet` 只把 200–399 视为成功，
   而开启鉴权后 `/v1/config` 无令牌返回 401，会让 Pod 永远不 Ready——
   表现是「容器在跑、日志正常，但 Service 没有后端」。
-- **建表语句走镜像而不是 ConfigMap**：kustomize 不允许引用 kustomization 目录之外的
-  文件，而把 DDL 复制进 `deploy/` 必然漂移。代价是改完 DDL 必须重新构建镜像。
+- **hostPath 的属主要自己修**：`fsGroup` 对 hostPath 不生效（这是它与 PVC 的关键差别），
+  靠一个以 root 跑的 initContainer 做一次 `chown 10001:10001`，否则启动报目录不可写。
 
 清单的内部一致性有脚本检查，不需要集群：
 
@@ -1154,10 +1161,18 @@ python3 scripts/verify-k8s-manifests.py
 ```
 
 它核对的是跨文件引用——selector 能否选中 Pod、卷名与卷定义是否对得上、
-`secretKeyRef` 的 key 是否存在、**配置里的 `${...}` 是否都有对应环境变量**、
-探针端口与 containerPort 是否一致、清单引用的镜像是否都在 Dockerfile 里有构建命令。
+**配置里的 `${...}` 是否都有对应环境变量**、探针端口与 containerPort 是否一致、
+清单引用的镜像是否都在 Dockerfile 里有构建命令；§10 另外盯住「简化」的形态
+（目录只有这一个 YAML、清单里不许出现 Namespace 对象、集群内只有三类对象、
+不允许残留 Secret / PVC 引用、Service 必须是 NodePort 30818），§11 盯
+`exec` 必须写成 `exec.command: [...]`（写成裸数组会被 apiserver 拒绝，
+而 `--dry-run=client --validate=false` 看不出来）。
 这些错误 `kubectl apply` 时都不会报，只在运行时表现成 Pod 一直 Pending
 或启动时报「解析不了占位符」。
+
+真要做 schema 级校验，用 `kubectl apply --dry-run=client --validate=true -f deploy/kubernetes/lakehouse-rest.yaml`
+（拉集群 OpenAPI 校验，不写任何东西）；要连调度与准入一起试，才用 `--dry-run=server`，
+但它要求目标命名空间处于 Active 状态。
 
 ### 8.3 可运行的端到端示例
 

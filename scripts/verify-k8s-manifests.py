@@ -12,18 +12,25 @@ Service 的 selector 差一个标签、卷名写错、ConfigMap 里引用了 Pod
 用法：
     python3 scripts/verify-k8s-manifests.py
 
-优先用 `kubectl kustomize` 渲染（顺带验证 kustomize 组装是否正确）；
-取不到 kubectl 时退回直接读目录下的 YAML。
+清单已简化为**单个文件** `deploy/kubernetes/lakehouse-rest.yaml`（三个文档，
+不再用 kustomize 组装）。直接读它并按 `---` 拆成多个资源。
+
+**Namespace 不在清单里**：`lakehouse-rest` 是集群级前置资源，由使用方先建。
+因此这里也不再能靠「文档里的 Namespace」推断命名空间名——`NAMESPACE` 是常量，
+§10 反过来断言清单里**没有** Namespace 对象（混进来会重新引入 apply 顺序依赖）。
 """
 import os
 import re
-import subprocess
 import sys
 
 import yaml
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 KDIR = os.path.join(ROOT, "deploy", "kubernetes")
+
+# 所有资源都必须落在这个命名空间里。它不在清单内声明（需先 `kubectl create namespace`），
+# 所以这里写死，不从前面的文档里推断。
+NAMESPACE = "lakehouse-rest"
 
 failures = []
 
@@ -39,27 +46,20 @@ def check(label, ok, detail=""):
 
 
 def render():
-    """返回 (资源列表, 渲染方式说明)。"""
-    try:
-        out = subprocess.run(
-            ["kubectl", "kustomize", KDIR],
-            capture_output=True, text=True, timeout=60, cwd=ROOT,
-        )
-        if out.returncode == 0 and out.stdout.strip():
-            docs = [d for d in yaml.safe_load_all(out.stdout) if d]
-            return docs, f"kubectl kustomize（{len(docs)} 个资源）"
-        return None, f"kubectl kustomize 失败：{out.stderr.strip()[:200]}"
-    except FileNotFoundError:
-        pass
+    """返回 (资源列表, 渲染方式说明)。
+
+    直接读目录下的 YAML：这套清单已经不用 kustomize，`kubectl apply -f <目录>`
+    看到的就是文件本身。多文档文件按 `---` 拆开。
+    """
     if not os.path.isdir(KDIR):
         return None, f"目录不存在：{KDIR}"
     docs = []
     for name in sorted(os.listdir(KDIR)):
-        if not name.endswith((".yaml", ".yml")) or name == "kustomization.yaml":
+        if not name.endswith((".yaml", ".yml")):
             continue
         with open(os.path.join(KDIR, name), encoding="utf-8") as fp:
             docs += [d for d in yaml.safe_load_all(fp) if d]
-    return docs, f"直接读取 YAML（未找到 kubectl，{len(docs)} 个资源）"
+    return docs, f"直接读取 YAML（{len(docs)} 个资源）"
 
 
 docs, how = render()
@@ -117,15 +117,14 @@ for d in docs:
     check(f"{kind}/{name} 有 apiVersion 与 kind", bool(d.get("apiVersion")) and kind != "?")
     check(f"{kind}/{name} 有 metadata.name", name != "?")
 
-# 非 Namespace 的资源都必须有 namespace（由 kustomization 统一注入）。
-# 漏注会表现为「apply 到了 default 命名空间」，而清单文件本身看不出异常。
+# 所有资源都必须写明 namespace（这一版不再有 kustomize 统一注入，也不再声明 Namespace）。
+# 漏写会表现为「apply 到了 default 命名空间」，而清单文件本身看不出异常。
 mismatched = [
     (d["kind"], d["metadata"]["name"], d["metadata"].get("namespace"))
     for d in docs
-    if d.get("kind") != "Namespace"
-    and d["metadata"].get("namespace") != by_kind["Namespace"][0]["metadata"]["name"]
+    if d["metadata"].get("namespace") != NAMESPACE
 ]
-check("所有资源都被注入到同一个命名空间", not mismatched,
+check(f"所有资源都在 {NAMESPACE} 命名空间里", not mismatched,
       f"命名空间不一致或缺失：{mismatched}")
 
 # ---------------------------------------------------------------------------
@@ -376,6 +375,73 @@ if os.path.exists(dockerfile):
     # 结果集群里 ImagePullBackOff，而 `docker images` 里明明躺着这个镜像。
     check("Dockerfile 构建的镜像都被清单引用",
           built <= used, f"Dockerfile 构建：{sorted(built)}；清单用到：{sorted(used)}")
+
+# ---------------------------------------------------------------------------
+print("\n§10 「简化」的形态不被悄悄回退")
+# ---------------------------------------------------------------------------
+# 这一版刻意只留一个多文档文件、只在集群里跑一个 Deployment + 一个 Service：
+# 元数据库与 warehouse 都在集群外部（后者是节点目录）。文件被拆开、资源种类变多，
+# 都会让「命名空间自己写」「apply 顺序」这些假设失效——所以把形态本身也断言住。
+ALLOWED_FILES = {"lakehouse-rest.yaml"}
+present = {n for n in os.listdir(KDIR) if n.endswith((".yaml", ".yml"))}
+check("清单目录只有约定的单个 YAML", present == ALLOWED_FILES,
+      f"多出：{sorted(present - ALLOWED_FILES)}；缺少：{sorted(ALLOWED_FILES - present)}")
+
+# 踩过的坑：`kubectl apply -f <目录>` 会**按文件名排序**逐个 apply，拆成多份时
+# configmap.yaml 排在 namespace.yaml 前，第一个对象就报
+# `namespaces "lakehouse-rest" not found`。现在的解法是清单里**根本不声明 Namespace**，
+# 顺序依赖从根上去掉——所以这条反向断言：Namespace 一旦被加回来，
+# 就说明「靠文档顺序保证创建次序」的假设又回来了。
+check("清单内不含 Namespace（命名空间由使用方预先创建）",
+      "Namespace" not in by_kind,
+      f"发现 Namespace 对象：{[d['metadata']['name'] for d in by_kind.get('Namespace', [])]}")
+
+check("集群内只有 ConfigMap / Deployment / Service 三种对象",
+      set(by_kind) <= {"ConfigMap", "Deployment", "Service"},
+      f"实际出现：{sorted(by_kind)}")
+
+dangling = []
+for kind, w in all_workloads():
+    for v in pod_spec(w).get("volumes", []):
+        if v.get("secret"):
+            dangling.append(f"{kind}/{w['metadata']['name']} 卷 {v['name']} 引用 Secret")
+        if v.get("persistentVolumeClaim"):
+            dangling.append(f"{kind}/{w['metadata']['name']} 卷 {v['name']} 引用 PVC")
+    for c in containers_of(pod_spec(w)):
+        for e in c.get("env", []) or []:
+            if (e.get("valueFrom") or {}).get("secretKeyRef"):
+                dangling.append(f"{kind}/{w['metadata']['name']} 的 {e['name']} 引用 Secret")
+check("没有残留的 Secret / PVC 引用（这两种对象已不在清单里）", not dangling,
+      "；".join(dangling))
+
+svcs = [s for s in by_kind.get("Service", []) if s["spec"].get("type") == "NodePort"]
+check("Service 用 NodePort 且端口写死（客户端配置不随重建漂移）",
+      len(svcs) == 1 and all(p.get("nodePort") == 30818
+                             for s in svcs for p in s["spec"].get("ports", [])),
+      f"NodePort Service：{[s['metadata']['name'] for s in svcs]}")
+
+# ---------------------------------------------------------------------------
+print("\n§11 exec 形式都写成 exec.command")
+# ---------------------------------------------------------------------------
+# `exec:` 在 schema 里是 ExecAction{command: []string}。把命令直接挂在 exec 下面
+# （写成 YAML 列表）能通过 YAML 解析，`--dry-run=client --validate=false` 也放过，
+# 但 apiserver 会拒绝：
+#   json: cannot unmarshal array into Go struct field
+#   LifecycleHandler...preStop.exec of type v1.ExecAction
+# 实测就是这么栽的（preStop 那一段少写了 command:）。
+bad_exec = []
+for kind, w in all_workloads():
+    for c in containers_of(pod_spec(w)):
+        spots = [(n, c.get(n)) for n in
+                 ("startupProbe", "livenessProbe", "readinessProbe")]
+        spots.append(("lifecycle.preStop", (c.get("lifecycle") or {}).get("preStop")))
+        for label, obj in spots:
+            if not obj or "exec" not in obj:
+                continue
+            ex = obj["exec"]
+            if not isinstance(ex, dict) or "command" not in ex:
+                bad_exec.append(f"{kind}/{w['metadata']['name']} 容器 {c['name']} 的 {label}.exec")
+check("exec 都是 {command: [...]} 形状", not bad_exec, "；".join(bad_exec))
 
 # ---------------------------------------------------------------------------
 print()

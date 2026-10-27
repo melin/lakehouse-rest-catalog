@@ -1,197 +1,181 @@
 # Kubernetes 部署
 
-`deploy/kubernetes/` 下是一套自洽的清单：服务端 Deployment、MySQL StatefulSet、
-warehouse 的持久卷、配置与凭据、Service / Ingress / PDB，用 kustomize 组装，
-一条命令应用。
+`deploy/kubernetes/` 只有一个文件 `lakehouse-rest.yaml`，里面三个文档按顺序排好：
 
 ```
-kubectl apply -k deploy/kubernetes
+1. ConfigMap     lakehouse-rest-config（application-k8s.yml，数据库连接串在这里）
+2. Deployment    lakehouse-rest-server
+3. Service       lakehouse-rest-server（NodePort 30818）
 ```
 
----
-
-## 1. 前置条件
-
-| 条件 | 说明 |
-| --- | --- |
-| Kubernetes | 1.24 及以上。清单用了 `policy/v1` 的 PodDisruptionBudget（1.21 GA）与 `networking.k8s.io/v1` 的 Ingress |
-| 镜像 | 需要在能访问集群节点的机器上先构建，见第 2.2 节；节点架构不一致时要推多架构镜像 |
-| 构建产物 | 服务端 jar 必须先用 `mvn -o -pl :lakehouse-rest-server -am clean package -DskipTests` 产出——镜像只装 jar、不编译，见第 2.2 节 |
-| 存储 | 集群要有默认 StorageClass，否则 `paimon-warehouse` 与 MySQL 的 PVC 会一直 Pending |
-| Ingress | 仅在需要从集群外访问时才要，没有的话把 ingress.yaml 从 kustomization.yaml 里去掉 |
-
----
-
-## 2. 部署
-
-### 2.1 替换凭据
-
-`secret.yaml` 里是两个占位值，**必须先替换**。推荐不提交这个文件，改用命令行创建：
+**Namespace 不在这个文件里**，需要先建：
 
 ```bash
-kubectl create namespace lakehouse-rest
-
-kubectl -n lakehouse-rest create secret generic lakehouse-rest-credentials \
-  --from-literal=DB_PASSWORD="$(openssl rand -base64 24)" \
-  --from-literal=REST_TOKEN="$(openssl rand -hex 32)"
-```
-
-用这种方式创建时，把 `secret.yaml` 从 `kustomization.yaml` 的 `resources` 里去掉
-（否则 apply 会用占位值把它覆盖回去）。
-
-`REST_TOKEN` 是客户端调用时 `Authorization: Bearer <值>` 里的那个值。
-
-### 2.2 构建并让节点拿到镜像
-
-```bash
-# 先产出 jar —— 镜像里没有 JDK 与 Maven，构建镜像不编译
-mvn -o -pl :lakehouse-rest-server -am clean package -DskipTests
-
-docker build -t registry.cn-hangzhou.aliyuncs.com/melin1204/lakehouse-rest-catalog:1.0.0 .
-```
-
-`deployment.yaml` 与 `mysql.yaml` 引用的都是这个镜像（阿里云 ACR 的完整引用），
-`imagePullPolicy` 是 `IfNotPresent`——tag 固定为发布版本号，IfNotPresent 即可；
-发布新版本时同步更新三处 tag（`Dockerfile` 构建命令、两份清单）。
-
-**关于名字：清单里的 Deployment / Service / 标签 / namespace 与镜像同一个词根**
-（`lakehouse-rest`，镜像为 `lakehouse-rest-catalog`）。改名的影响面不止本目录：
-Deployment 的 selector 与 Service / PDB 的 selector 是同一条链，Secret 与 ConfigMap
-的引用名、Service DNS（`lakehouse-rest-server.lakehouse-rest.svc`）、以及集群里按标签
-选资源的对象（NetworkPolicy / ServiceMonitor / `kubectl get -l` 脚本）都要一起动。
-名字的定义与判据见 [`docs/maven-module-design.md`](../../docs/maven-module-design.md) §4。
-
-```bash
-# 单节点集群（kind / minikube）也可以把镜像直接送进节点，跳过 registry：
-# kind
-kind load docker-image registry.cn-hangzhou.aliyuncs.com/melin1204/lakehouse-rest-catalog:1.0.0
-
-# minikube
-minikube image load registry.cn-hangzhou.aliyuncs.com/melin1204/lakehouse-rest-catalog:1.0.0
-```
-
-多节点集群走 registry：`docker push`（或 `scripts/build-image.sh` 带 `PUSH=1`）
-把镜像推上去，节点按各自架构拉取。
-
-**节点架构不一致时要用多架构镜像。** 上面 `docker build` 产出的是**构建机自己**的
-架构（Apple Silicon 上是 arm64）。集群里若既有 x86 又有 ARM 节点，各节点会按自己的
-架构去拉，只有多架构镜像才都拉得到：
-
-```bash
-PLATFORMS=linux/amd64,linux/arm64 \
-PUSH=1 IMAGE=registry.cn-hangzhou.aliyuncs.com/melin1204/lakehouse-rest-catalog:1.0.0 \
-  ../../scripts/build-image.sh
-```
-
-多架构镜像**不能**走 `kind load` / `minikube image load`——那两条是把本机镜像塞进单
-节点，本来就与多架构无关。异构集群只能推 registry（清单里已经是完整引用，无需再改）。
-踩坑与验证细节见仓库根 README 第 8.1 节「多架构镜像」。
-
-### 2.3 应用
-
-```bash
-kubectl apply -k deploy/kubernetes
-
-# 看进度
+kubectl create namespace lakehouse-rest        # 仅在不存在时
+kubectl apply -f deploy/kubernetes/lakehouse-rest.yaml
 kubectl -n lakehouse-rest get pods -w
 ```
 
-期望顺序：`paimon-mysql-0` 先 Init → Running → Ready，然后
-`lakehouse-rest-server` 的 `wait-for-mysql` 初始化容器通过，主容器启动。
+命名空间是集群级前置资源，通常由平台统一创建（并附带 ResourceQuota、NetworkPolicy、
+镜像仓库凭据）。写进应用清单的代价是引入「谁先建」的顺序依赖：
+`kubectl apply -f <目录>` 会**按文件名排序**逐个 apply，`configmap.yaml` 排在
+`namespace.yaml` 前面，于是第一个对象就报
+`Error from server (NotFound): namespaces "lakehouse-rest" not found`——而 Namespace
+明明「已经创建」，只是创建在后面。现在清单里不声明它，这个顺序问题从根上消失了，
+代价是首次部署多一条命令。
 
-首次启动 MySQL 要执行建表语句（`sql/schema-mysql.sql`，当前 26 张表），会比后续重启慢。
+三个文档都必须自己写 `namespace: lakehouse-rest`（没有 kustomize 统一注入）。
+漏写的那份会落到 `default`，表现是「apply 成功但 Pod 找不到 ConfigMap」。
 
-### 2.4 验证
+---
+
+## 1. 为什么不带数据库、卷、Secret、PDB、Ingress
+
+上一版是一套自洽清单：MySQL StatefulSet、warehouse PVC、Secret、PDB、Ingress、
+kustomize 组装，一条 `kubectl apply -k` 起全套。**这一版把这些都推到集群外部**，
+理由是这套部署的真实用法：元数据库是现成的外部实例，仓库是节点本地目录，
+入口只需要一个固定端口。
+
+| 删掉的 | 现在怎么来 |
+| --- | --- |
+| `mysql.yaml`（StatefulSet + Service） | 外部 MySQL。连接串写在 `configmap.yaml` 的 `spring.datasource.url`，建表语句见仓库 `sql/schema-mysql.sql` |
+| `warehouse-pvc.yaml`（PVC） | 节点本地目录 `/data/paimon-warehouse`，`hostPath` 挂进容器（单副本，Pod 重建数据不丢） |
+| `secret.yaml`（Secret） | 不做 Secret。鉴权默认关闭，数据库口令直接写在 ConfigMap 里；配置中没有任何 `${...}` 占位符 |
+| `pdb.yaml`（PodDisruptionBudget） | 单副本本来没有可用性冗余，PDB 只能二选一：`minAvailable: 1` 会卡住节点排空，`maxUnavailable: 1` 等于没有保护 |
+| `ingress.yaml`（Ingress） | Service 用 NodePort 30818，从节点 IP 直接访问，不需要 Ingress 控制器 |
+| `service.yaml` | 合并进同一个文件（Service 对象还在，只是不再单独一个文件） |
+| `namespace.yaml` | 也不在清单里。命名空间改为使用方预先创建（`kubectl create namespace lakehouse-rest`），清单只管往里放对象 |
+| `kustomization.yaml` | 不再组装。三个文档各自写 `namespace: lakehouse-rest`，单文件直接 apply |
+
+**代价说清楚**：
+
+- 没有 Secret，数据库口令是明文写在 ConfigMap 里的——任何能读 ConfigMap 的人都能看到。
+  要换回「凭据单独授权」，得加一个 Secret + 两个 `secretKeyRef`，并在配置里写回
+  `${DB_PASSWORD}`；那正是这次简化删掉的东西。
+- hostPath 把 Pod 绑在节点上：换节点部署会看不到原来的数据。要跨节点，先换对象存储。
+- 没有 PDB，节点排空时这个 Pod 直接被驱逐；没有 Ingress，只有 NodePort 一条入口。
+
+---
+
+## 2. 部署步骤
+
+### 2.1 前置条件
+
+| 条件 | 说明 |
+| --- | --- |
+| Kubernetes | 1.24 及以上（清单只用 `apps/v1` 与 `v1` 的稳定 API） |
+| 外部 MySQL | 8.0，库为 `lakehouse_catalog`，已执行 `sql/schema-mysql.sql`（26 张表）。`ddl-auto: validate` 会在启动时校验表结构，不一致则启动失败 |
+| 节点目录 | `/data/paimon-warehouse` 由清单自动创建（`DirectoryOrCreate`），属主由 initContainer 修正为 10001 |
+| 镜像 | 需先构建并让节点拿得到，见 2.2 |
+
+### 2.2 构建镜像
+
+镜像里只有 jar，不编译：
 
 ```bash
-# 端口转发
-kubectl -n lakehouse-rest port-forward svc/lakehouse-rest-server 8080:8080 &
-
-# 目录发现：清单开了鉴权，无令牌应为 401
-curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/v1/config
-
-# 带令牌应返回 warehouse 与 prefix
-curl -s -H "Authorization: Bearer $REST_TOKEN" http://127.0.0.1:8080/v1/config
-
-# 管理面：列出 catalog，应能看到预置的 paimon
-curl -s -H "Authorization: Bearer $REST_TOKEN" \
-  http://127.0.0.1:8080/api/management/v1/catalogs
+mvn -o -pl :lakehouse-rest-server -am clean package -DskipTests
+docker build -t registry.cn-hangzhou.aliyuncs.com/melin1204/lakehouse-rest-catalog:1.0.0 .
 ```
 
+单节点集群（kind / minikube）可以直接送进节点，跳过 registry：
+
+```bash
+kind load docker-image registry.cn-hangzhou.aliyuncs.com/melin1204/lakehouse-rest-catalog:1.0.0
+minikube image load registry.cn-hangzhou.aliyuncs.com/melin1204/lakehouse-rest-catalog:1.0.0
+```
+
+多节点集群推 registry；节点架构不一致时要用多架构镜像
+（`PLATFORMS=linux/amd64,linux/arm64 PUSH=1 ../../scripts/build-image.sh`，详见仓库根 README §8.1）。
+
+**改镜像 tag 要同步改清单**：`lakehouse-rest.yaml` 里两处引用（`prepare-warehouse`
+与主容器）。`scripts/verify-k8s-manifests.py` §9 会核对清单引用的镜像是不是
+Dockerfile 里构建的那个。
+
+### 2.3 改配置
+
+文件里 ConfigMap 段的 `application-k8s.yml` 是完整配置（相对镜像内 `application.yml`
+只写覆盖项）。部署前至少要确认三处：
+
+```yaml
+spring.datasource.url:      jdbc:mysql://<外部 MySQL>:3306/lakehouse_catalog?...
+spring.datasource.password: <口令>
+lakehouse.rest.default-warehouse: file:///tmp/paimon-warehouse   # 见 2.4 的路径说明
+```
+
+### 2.4 warehouse 路径为什么还是 `/tmp/paimon-warehouse`
+
+节点上的目录是 `/data/paimon-warehouse`，容器里挂的却是 `/tmp/paimon-warehouse`。
+不是笔误：**已登记 catalog 的 warehouse 存在 MySQL 里**（`catalog.warehouse` 列），
+不随清单改。把容器内路径换掉，这些 catalog 会指向一个不存在的目录，表现为
+「表还在、数据没了」。所以容器内沿用旧路径，节点目录取个清楚的名字。
+
+代价是这一层挂载落在 emptyDir `/tmp` 之内——`volumeMounts` 里 `/tmp` 必须排在
+`/tmp/paimon-warehouse` 之前，否则子挂载会被父挂载遮蔽，数据写进 emptyDir，
+Pod 一重建就丢。
+
+新建集群（库里没有 catalog 记录）可以把两边都改成 `/data/paimon-warehouse`，
+配置也一起改，那样更直观。
+
+### 2.5 应用与验证
+
+```bash
+kubectl apply -f deploy/kubernetes/lakehouse-rest.yaml
+kubectl -n lakehouse-rest rollout status deploy/lakehouse-rest-server
+```
+
+访问：
+
+```bash
+# 集群外（NodePort，端口写死 30818）
+curl -s http://<节点IP>:30818/v1/config
+
+# 本机临时转发，不必关心节点 IP
+kubectl -n lakehouse-rest port-forward deploy/lakehouse-rest-server 8080:8080 &
+curl -s http://127.0.0.1:8080/v1/config
+
+# 管理面：列出 catalog
+curl -s http://127.0.0.1:8080/api/management/v1/catalogs
+```
+
+`/v1/config` 会返回 warehouse 与 prefix。鉴权默认关闭（`lakehouse.rest.auth.enabled: false`），
+要开的话在 ConfigMap 里打开并配上 `tokens`，客户端带 `Authorization: Bearer <token>`。
+
 ---
 
-## 3. 清单构成
+## 3. 几个取舍
 
-| 文件 | 内容 | 作用 |
-| --- | --- | --- |
-| `namespace.yaml` | Namespace | 独立命名空间，删除时能一次清干净 |
-| `secret.yaml` | Secret | MySQL 口令与 REST 令牌 |
-| `configmap.yaml` | ConfigMap | 服务端配置的 K8s 覆盖层（`application-k8s.yml`） |
-| `warehouse-pvc.yaml` | PVC | Paimon 表数据与元数据文件的落盘位置 |
-| `mysql.yaml` | Service + StatefulSet | 元数据存储，含首次初始化逻辑 |
-| `deployment.yaml` | Deployment | 服务端本体，含三类探针与安全上下文 |
-| `service.yaml` | Service | 集群内入口，端口 8080 |
-| `pdb.yaml` | PodDisruptionBudget | 约束节点排空时的中断 |
-| `ingress.yaml` | Ingress | 集群外入口（可选） |
-| `kustomization.yaml` | — | 组装、命名空间注入、统一标签 |
+### 3.1 副本数固定为 1
 
-分层的做法：**结构性配置在 ConfigMap**（可读、可评审、可 diff），
-**凭据在 Secret**（可单独授权，不进版本库）。ConfigMap 里以 `${DB_PASSWORD}`
-这样的占位符引用 Secret 注入的环境变量。
+warehouse 是节点本地目录 + `file://` 协议。扩到 2 个副本，第二个 Pod 要么调度到
+同一节点、要么各写一份互不相干的数据（表现为「建的表时有时无」）。
+要横向扩展必须先把仓库换成对象存储（S3 / Azure Blob / GCS / 华为云 OBS / 阿里云 OSS），
+换成 `s3://...` 之后 `hostPath` 卷与 `prepare-warehouse` 都可以删掉。
 
----
+### 3.2 探针用 exec + curl，而不是 httpGet
 
-## 4. 几个取舍
+`httpGet` 只把 200–399 视为成功。清单若开启鉴权，`/v1/config` 无令牌返回 401，
+用 `httpGet` 的话 readinessProbe 永远失败、Pod 永不进 Endpoints，表现是
+「容器在跑、日志正常，但 Service 没有后端」。所以探针显式把 401/403 也算作
+「进程已经在处理请求」，与 Dockerfile 的 `HEALTHCHECK` 一致。
 
-这些都是有意为之，改动前建议先读一下理由。
+### 3.3 hostPath 的属主要自己修
 
-### 4.1 副本数固定为 1
+`hostPath` 目录由 kubelet 以 root 创建（0755），而主容器以 uid 10001 运行、
+根文件系统只读。**`fsGroup` 对 hostPath 不生效**（这是它与 PVC 的关键差别），
+所以有 `prepare-warehouse` 这个 initContainer：以 root 跑一次 `chown 10001:10001`，
+只保留 `CAP_CHOWN`，其余 capability 全丢。不修的话启动报「warehouse 目录不可写」。
 
-warehouse 用的是 `file://` 加 `ReadWriteOnce` 卷。扩到 2 个副本后，第二个 Pod
-要么调度不到有卷的节点，要么在不同节点上各挂一份不同的数据——后者的表现是
-「建的表时有时无」，取决于请求落到哪个 Pod。
+它复用服务端镜像而不是 busybox——多一个镜像就是多一处镜像源与架构问题，
+而这里的命令只需要 `sh` + `chown`。
 
-**要横向扩展，必须先把仓库换成对象存储**（S3 / Azure Blob / GCS / 华为云 OBS / 阿里云 OSS）。
-服务端已支持这几种存储类型，换成 `s3://...` 之后不再需要 `warehouse-pvc.yaml`，
-多副本也就没有共享问题。同时 PDB 应从 `maxUnavailable: 1` 改成
-`minAvailable: 1`，Service 不需要做会话保持。
+### 3.4 建表语句走镜像，不走 ConfigMap
 
-### 4.2 探针用 exec + curl，而不是 httpGet
+DDL 由 Dockerfile 打进镜像，与 jar 来自同一次构建；`ddl-auto: validate` 校验的
+正是 jar 里的实体定义，两者天然同版本。代价：**改完 DDL 必须重新构建镜像**，
+并在库上手工执行迁移（`/docker-entrypoint-initdb.d` 那套随 `mysql.yaml` 一起删了，
+现在建库是外部 MySQL 的事）。
 
-`httpGet` 只把 200–399 视为成功。清单开启了鉴权，而 `/v1/config` 是规格里唯一
-豁免权限判定的端点，未带令牌时返回 401——用 `httpGet` 的话 readinessProbe
-永远失败，Pod 永远不会被加入 Endpoints。表现是「容器在跑、日志正常、
-但 Service 没有后端」。
-
-所以探针显式把 401/403 也算作「进程已经在处理请求」，与 Dockerfile 里的
-`HEALTHCHECK` 保持一致。
-
-### 4.3 建表语句走镜像，不走 ConfigMap
-
-直觉做法是给 DDL 加一段 `configMapGenerator`，挂到 MySQL 的
-`/docker-entrypoint-initdb.d`。这行不通：kustomize 拒绝加载 kustomization
-目录之外的文件（防止 `..` 逃逸），要引用仓库里的 `sql/schema-mysql.sql`
-就得放弃 `kubectl apply -k`；而把 DDL 复制一份进 `deploy/` 又必然漂移。
-
-所以 DDL 由 Dockerfile 打进镜像，MySQL 的 `seed-initdb` 初始化容器再把它
-投递到初始化目录。附加的好处是 **DDL 与 jar 来自同一次构建**——
-而 `ddl-auto: validate` 校验的正是 jar 里的实体定义，两者天然同版本。
-
-代价：**改完 DDL 必须重新构建镜像**，只改清单不生效。
-
-### 4.4 单副本下的 PDB 用 maxUnavailable
-
-PDB 在单副本时无法两全：`minAvailable: 1` 会让节点排空永远卡住（报错只说
-「被 PDB 阻止」），`maxUnavailable: 1` 等于没有保护但排空能完成。
-这里选后者——与其留下一个会卡住集群运维的死结，不如显式承认单副本没有冗余。
-
-### 4.5 MySQL 容器不以非 root 运行
-
-MySQL 官方镜像的 entrypoint 需要以 root 启动，先 chown 数据目录、初始化数据，
-再降权到 mysql 用户运行真正的 mysqld。强行指定非 root 会让它在初始化阶段就失败。
-服务端容器则相反，全程以 uid 10001 运行，且根文件系统只读。
-
-### 4.6 优雅停机的三处配合
+### 3.5 优雅停机的三处配合
 
 | 位置 | 值 | 作用 |
 | --- | --- | --- |
@@ -203,7 +187,7 @@ MySQL 官方镜像的 entrypoint 需要以 root 启动，先 chown 数据目录�
 
 ---
 
-## 5. 校验
+## 4. 校验
 
 清单的内部一致性有脚本检查，不需要集群：
 
@@ -211,63 +195,90 @@ MySQL 官方镜像的 entrypoint 需要以 root 启动，先 chown 数据目录�
 python3 scripts/verify-k8s-manifests.py
 ```
 
-它用 `kubectl kustomize` 渲染后逐项核对跨文件的引用：selector 能否选中 Pod、
-卷名与卷定义是否对得上、`secretKeyRef` 的 key 是否存在、
-**配置里的 `${...}` 占位符是否都有对应的环境变量**、探针端口与 containerPort
-是否一致、清单引用的镜像是否都在 Dockerfile 里有构建命令。
+它直接读这一个文件（按 `---` 拆成三个资源），核对跨文件引用：selector 能否选中 Pod、
+卷名与卷定义是否对得上、`ConfigMap` 引用是否存在、**配置里的 `${...}` 是否都有
+对应环境变量**、探针端口与 containerPort 是否一致、清单引用的镜像是否都在
+Dockerfile 里有构建命令。
 
-这些错误在 `kubectl apply` 时都不会报，只在运行时表现成 Pod 一直 Pending
-或 Spring 报「解析不了占位符」，报错位置离真正的原因很远。
+§10 盯「简化」的形态：目录只能有这一个 YAML、**清单里不许出现 Namespace 对象**
+（命名空间由使用方预先创建）、集群内只允许 ConfigMap / Deployment / Service 三种对象、
+不允许残留 Secret / PVC 引用、Service 必须是 NodePort 30818。
+
+§11 盯 schema 里容易写错的一处：所有 `exec` 必须写成 `exec.command: [...]`。
+把命令直接挂在 `exec:` 下面（YAML 列表）能过 YAML 解析、也能过
+`--dry-run=client --validate=false`，但 apiserver 会拒绝：
+`cannot unmarshal array into Go struct field LifecycleHandler...preStop.exec of type v1.ExecAction`。
+
+这些错误 `kubectl apply` 时都不会报，只在运行时表现成 Pod Pending 或启动时报「解析不了占位符」。
 
 ---
 
-## 6. 已验证到什么程度
-
-本机的 Kubernetes 集群当前不可达，因此**没有做过真实的 `kubectl apply` 与
-Pod 启动验证**。已经做过的是：
+## 5. 已验证到什么程度
 
 | 项目 | 方式 | 结果 |
 | --- | --- | --- |
-| kustomize 组装 | `kubectl kustomize deploy/kubernetes` | 渲染出 10 个资源，命名空间与标签注入正确 |
-| 清单内部引用 | `scripts/verify-k8s-manifests.py` | §1–§9 全部通过 |
-| 建表语句可用 | 在真实 MySQL 8.0.46 上执行 `sql/schema-mysql.sql` | 当时建出 22 张表，`ddl-auto: validate` 通过。现库为 26 张，后加的那几张只在 H2 集成测试里验证过，没有在该实例上复跑 |
-| **配置能否被服务端解析** | 把 ConfigMap 里的 `application-k8s.yml` 原样交给服务端（仅替换 MySQL 主机名与 warehouse 路径这两处本机不可达的值） | profile 生效、`${DB_PASSWORD}` 与 `${REST_TOKEN}` 解析成功、Hikari 连上 MySQL |
-| **鉴权与授权** | 同上实例 | 无令牌 401、错误令牌 401、正确令牌 200（`/v1/config` 与管理 API 都是） |
-| **warehouse 配置生效** | 同上实例 | `/v1/config` 返回配置的路径；建表后表路径为 `<warehouse>/k8s_check.db/orders` |
-| **预置 catalog** | 同上实例 | `paimon` catalog 按 `initial-catalog` 建出，`storageType=FILE` |
+| YAML 语法与跨文件引用 | `scripts/verify-k8s-manifests.py` | §1–§11 全部通过（3 个资源） |
+| API schema 能否被 apiserver 接受 | `kubectl apply --dry-run=client --validate=true -f deploy/kubernetes/lakehouse-rest.yaml` | 三件对象均通过（`--validate=true` 会拉集群 OpenAPI，`preStop.exec` 那类 schema 错误能抓到；不需要写权限，命名空间正在 Terminating 时也能跑） |
+| 配置能否被服务端解析 | 把 ConfigMap 里的 `application-k8s.yml` 原样交给服务端 | profile 生效、Hikari 连上 MySQL、`/v1/config` 返回配置的 warehouse |
+| 鉴权与授权 | 同上实例 | 无令牌 401、错误令牌 401、正确令牌 200 |
 | 端到端可用 | 同上实例 | 建库 200、建表 200、读回表列表正确、MySQL 中有对应记录 |
 
-结论：**清单逻辑与配置解析已经验证，剩下的是集群侧的行为**（调度、卷挂载、
-镜像拉取、探针在真实环境下的时序）。首次在集群里部署时，重点看这几处。
+**Pod 真正跑起来这件事没有在本仓库验证过**：本地只有 `--dry-run=server` 这一层
+（它证明 schema 与命名空间都对，但不会调度 Pod）。首次在集群里部署时重点看三处：
+hostPath 的属主是否修好、`/tmp` 与 `/tmp/paimon-warehouse` 两层挂载的先后、
+NodePort 是否被节点防火墙放行。
+
+> 提一句代价：`--dry-run=client --validate=false` 只做 YAML 解析，抓不到 schema 级
+> 错误——`preStop.exec` 写成裸数组就是被它放过去的。要提前发现这类问题，
+> 本地要么用 `--dry-run=server`，要么靠 §11 那条断言。
 
 ---
 
-## 7. 常见问题
+## 6. 常见问题
 
-**Pod 一直 Pending**
-多半是 PVC 没绑上——集群没有默认 StorageClass。
+**Pod 一直 ContainerCreating，事件里说找不到 configmap**
+apply 的是 `deploy/kubernetes/lakehouse-rest.yaml` 这一个文件（三个文档按序创建）。
+如果只 apply 了其中一段（例如把 Deployment 单独摘出来），就会缺 ConfigMap。
 
-**服务端容器一直 ContainerCreating，事件里说找不到 configmap 或 secret**
-清单没渲染就 apply 了。用 `kubectl apply -k deploy/kubernetes`，
-别直接 `kubectl apply -f deploy/kubernetes/`（后者不会执行 kustomize 的
-命名空间注入，资源会落到 `default`）。
+**apply 报 `namespaces "lakehouse-rest" not found`**
+命名空间还没建（本版清单**不再声明 Namespace**）：`kubectl create namespace lakehouse-rest`。
+早期版本把 Namespace 写在多文件里，`kubectl apply -f <目录>` 按文件名排序会让
+ConfigMap 排在它前面，也会报同一个错——那种情况下 Namespace 其实建成了，只是靠后。
 
-**readinessProbe 一直失败**
-先确认容器端口是不是 8080，以及服务端是否真的起来了
-（`kubectl logs`）。探针容忍 401/403，所以鉴权本身不会导致它失败。
+**命名空间一直 `Terminating`，里面已经空了**
+`kubectl get ns lakehouse-rest` 显示 `Terminating` 且 `kubectl -n lakehouse-rest get all`
+为空，通常是 finalizer 卡住（残留的 APIService、webhook 或 CRD 未清理干净）：
+
+```bash
+kubectl get ns lakehouse-rest -o json | jq '.spec.finalizers'
+kubectl get namespace lakehouse-rest -o json \
+  | jq '.spec.finalizers = []' \
+  | kubectl replace --raw /api/v1/namespaces/lakehouse-rest/finalize -f -
+```
+
+强制清 finalizer 前先确认里面真的没有还在用的资源（PV、外部 LoadBalancer 等）。
+
+**apply 报 `cannot unmarshal array into Go struct field ... preStop.exec of type v1.ExecAction`**
+`exec` 下少了 `command:` 键。正确形状是
+`exec: {command: [sleep, "5"]}`，不是 `exec: [sleep, "5"]`。
+`--dry-run=client --validate=false` 看不出这个错，用 `--dry-run=server` 才能提前发现。
+
+**Pod 起不来，日志报 warehouse 目录不可写**
+`prepare-warehouse` 没跑成功，或者节点上的 `/data/paimon-warehouse` 被别的
+Pod/人以别的属主占着。手工修：`sudo chown -R 10001:10001 /data/paimon-warehouse`。
+
+**表在、数据没了**
+容器内 warehouse 路径与 `catalog.warehouse` 对不上（见 2.4），或者
+`/tmp` 与 `/tmp/paimon-warehouse` 的挂载顺序被写反了（数据写进了 emptyDir）。
+
+**启动失败，报 schema validation 错误**
+外部 MySQL 的表结构与 jar 里的实体定义不一致。外部库需要自己执行
+`sql/schema-mysql.sql`（新建）或做迁移（升级）。
 
 **ImagePullBackOff，但 `docker images` 里明明有这个镜像**
-镜像是本地构建的，节点拉的却不是同一个。单节点集群用第 2.2 节的
-`load` 命令；多节点集群推仓库。
+镜像是本地构建的，节点拉的却不是同一个。单节点集群用 2.2 的 `load` 命令；
+多节点集群推仓库。混合架构集群要推多架构镜像。
 
-**`no match for platform in manifest` / `no matching manifest for linux/arm64`**
-节点架构与镜像不一致：镜像只构建了构建机的架构。混合架构集群要推多架构镜像
-（见 2.2），单平台镜像即便推上仓库也救不了——x86 节点就是找不到 amd64 那份。
-
-**改了 `sql/schema-mysql.sql` 但新集群建出的表还是旧的**
-DDL 只在镜像构建时进入镜像，改完要重新 `docker build`（见 4.3）。
-
-**已有数据卷上怎么升级表结构**
-`/docker-entrypoint-initdb.d` 只在数据目录为空时执行一次。升级流程是：
-重新生成 DDL → 重新构建镜像 → 手工在库上执行迁移 →
-滚动更新服务端（`ddl-auto: validate` 会校验结果，不一致就启动失败）。
+**从集群外连不上 30818**
+先确认 `kubectl -n lakehouse-rest get svc` 里 `nodePort: 30818` 已生效，
+再确认节点安全组/防火墙放行该端口；也可以用 2.5 的 `port-forward` 绕开网络问题。

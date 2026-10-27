@@ -238,7 +238,7 @@ public interface CatalogProtocolFace {
 | --- | --- | --- |
 | `lakehouse.rest.*`（Spring 配置前缀） | 用户的 `application.yml` | 当前前缀 |
 | `spark.lakehouse.rest.{token,management.url,catalog.url,management.timeoutSeconds}` | 用户的 Spark 配置 | **故意保留**：客户端键一旦发布就是配置 API，改它等于一次要带迁移工具的破坏性发布 |
-| k8s 资源名 / namespace `lakehouse-rest*` | 集群里的对象，以及集群外按这些名字写的东西（selector、Secret / ConfigMap 引用、Service DNS、NetworkPolicy、ServiceMonitor、`kubectl get -l` 脚本） | 当前名：与镜像名同词根。改它要连带改 Deployment / Service / PDB 三处 selector 与全部引用点，见 `deploy/kubernetes/README.md` §2.2 |
+| k8s 资源名 / namespace `lakehouse-rest*` | 集群里的对象，以及集群外按这些名字写的东西（selector、ConfigMap 引用、Service DNS、NodePort、NetworkPolicy、ServiceMonitor、`kubectl get -l` 脚本） | 当前名：与镜像名同词根。改它要连带改 Deployment 与 Service 两处 selector、ConfigMap 引用名与 NodePort 约定，见 `deploy/kubernetes/README.md` §2.2 |
 | 元数据库 `lakehouse_catalog` / 表前缀 `lakehouse_` | 本服务自己的元数据库 | 客户端全走 REST、不直连库；表划分见 [`data-model.md`](data-model.md) |
 | `spark.sql.extensions` 的 FQCN | 用户的 Spark 配置 | 写当前名 `io.github.melin.lakehouse.rest.spark.ManagementSparkExtensions`；为旧包名留过的兼容壳已删除——壳的数量等于「历史的对外名字数」，不是「改过几次」，确认没有部署再用旧名就撤 |
 | Maven 坐标 `lakehouse-rest-*` | 远端仓库 | 从未 `deploy`（无 `distributionManagement`），产物只有本地 `install` 与镜像分发，**不需要 relocation**。将来一旦对外发布过坐标，改名要补一个旧坐标 POM，用 Maven 原生 `<distributionManagement><relocation>` 重定向，不要自造兼容层 |

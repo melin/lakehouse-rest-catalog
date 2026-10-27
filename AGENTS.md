@@ -234,7 +234,8 @@ lakehouse-rest-flink/      Flink SQL 读写 Paimon / Iceberg，一份源码、�
                         lakehouse-rest-flink-2.3/    Flink 2.3.0 + Paimon 2.0.0（2.2 连接器）+ Iceberg 1.12.0
 lakehouse-rest-optimizer/  表优化执行体（被 k8s 提交起来跑，不经服务端 classpath）：
                         PaimonProcedures、TableOptimizerJob、OptimizerOptions、OptimizationApiClient
-deploy/kubernetes/      kustomize 清单（有独立 README）
+deploy/kubernetes/      单文件三文档：configmap / deployment / service（有独立 README；
+                        Namespace 由使用方 `kubectl create namespace` 预先创建，不在清单里）
 spec/                   三份 OpenAPI 规格的仓库副本（不随服务端分发）：
                         rest-catalog-open-api-paimon.yaml / -iceberg.yaml /
                         rest-management-open-api.yaml（Paimon 官方 REST Management API）
