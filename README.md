@@ -140,7 +140,7 @@ k8s 资源名（namespace / Deployment / Service / ConfigMap）与镜像同一�
 见 [`deploy/kubernetes/README.md`](deploy/kubernetes/README.md) §2.2；元数据库
 `lakehouse_catalog`、表前缀 `lakehouse_`（表划分见 [`data-model.md`](docs/data-model.md)）。
 
-`docs/` 里二十六份文档的分工：
+`docs/` 里二十八份文档的分工：
 
 | 文档 | 读它的时机 |
 | --- | --- |
@@ -162,6 +162,7 @@ k8s 资源名（namespace / Deployment / Service / ConfigMap）与镜像同一�
 | [`polaris-capabilities-and-design.md`](docs/polaris-capabilities-and-design.md) | 要对比 Polaris 或看整体设计——核心能力提取、映射关系、已知缺口 |
 | [`event-framework.md`](docs/event-framework.md) | 要加一种事件、接一个 listener 或理解事件流的边界——9 类 33 个领域事件与触发点、与 Polaris 事件枚举的逐类映射、audit_event 表、发布监听链路、按监听器的类别/类型订阅（`lakehouse.rest.event-listener.*`）、增量拉取契约（`?since=` 游标 + `?category=`）与不发清单 |
 | [`iceberg-rest-catalog-design.md`](docs/iceberg-rest-catalog-design.md) | 要看「同一份元数据同时服务 Paimon 与 Iceberg」怎么做的——双协议方案：创建时区分格式、22 张表复用只加 9 列、路径冲突与错误模型、能力边界与效果图（`outputs/iceberg-rest-catalog/mockup.html`），以及**已落地的实测记录与与方案不一致的几处**（§11） |
+| [`lance-rest-catalog-design.md`](docs/lance-rest-catalog-design.md) | 要支持 Lance、或评审「要不要做 Lance REST Catalog」——**设计稿，未实现**：Lance Namespace 规范自己划的推荐最小集与两条降级许可（只做 `Restrict` 删命名空间、`DescribeTable` 只回 `location`）为什么正好覆盖我们、48 个 operation 的三档取舍（13 做 / 5 预留 / 30 显式 406）、为什么不做 `CreateTable`、数据面与 `managed_versioning`、三种「Lance」的区分（Paimon `lance-table` / 通用表 / Lance catalog）、`uri=/lance` + catalog 作第一级的基址决策、`catalog_format=LANCE` 加 2 列 0 张新表、授权与凭据下发落点、P0/P1/P2 需求与验收脚本、六个待拍板决策 |
 | [`generic-table-design.md`](docs/generic-table-design.md) | 要把 parquet / orc / lance / vortex 目录也纳入目录服务，或评审「通用表」方案——**设计稿，未实现**：Polaris Generic Table 的事实基线、四种格式的能力矩阵、复用 `lakehouse_table` 加 `table_kind` 的三方案对比、4 个端点与权限映射、凭据下发为什么是唯一的数据面控制点、Spark 侧按格式分派（`FileTable` 子类 / `ServiceLoader<TableProvider>`）、影响面与风险 |
 | [`metrics-design.md`](docs/metrics-design.md) | 要加指标、接 Prometheus 或判断「这个指标该不该打标签」——**设计稿，未实现**：Polaris telemetry 的事实基线（HTTP / API / 持久化 / 缓存四类来源，`realm_id` 基数闸门与「超限即停记」、SLO 显式桶、Iceberg 客户端用量报告与运维指标的区别）、`lakehouse.*` 指标目录与 <1500 的基数预算、标签黑名单与 catalog 折叠成 `__other__`、切面替代逐端点 `@Timed`、管理端口 8081 + ServiceMonitor、告警与看板、`verify-metrics-doc.py` 一致性校验 |
 | [`maven-module-design.md`](docs/maven-module-design.md) | 要改模块布局、加协议面或动对外名字——`lakehouse-rest-*` 命名定案、两个父 POM / 两个依赖世界、三条用 enforcer 守住的依赖不变量、对外名字的持有者清单与改名判据（§4 / §10）、类的实际落点与依赖分工（§8） |

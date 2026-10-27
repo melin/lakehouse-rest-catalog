@@ -241,7 +241,7 @@ spec/                   三份 OpenAPI 规格的仓库副本（不随服务端�
                         rest-management-open-api.yaml（Paimon 官方 REST Management API）
 sql/                    MySQL 建表语句（生成物）
 scripts/                验收 / 生成 / 校验 / 镜像构建脚本
-docs/                   27 份设计文档（另有五份配套效果图 HTML）
+docs/                   28 份设计文档（另有五份配套效果图 HTML）
 ```
 
 服务端四模块的**类数**：core 117 · storage 9 · protocol-paimon 38 · server 46（共 210）。
@@ -286,6 +286,7 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
 | `semantic-layer-design.md` | 做语义层 / 语义模型 / 给 agent 供语义上下文，或评审该方案——**设计稿，未实现**：参照 Polaris 1.7.0 的 Ossie（OSI）语义模型与它的三条社区批评（drift / 复用 / 只存不消费）——格式跟随 Ossie 不发明、模型挂 catalog 不挂 namespace、**引用校验**（source 必须解析到真实表，字段对 schema，建时 fail-closed 读时标 stale）、描述分层（表/列注释是权威源，模型只存增量）；八类使用场景与 text-to-SQL 的四类错误对照（§3）；**agent 上下文包端点 + 只读 MCP + OpenAPI 三通道**（§6）、ai_context 是数据不是指令的注入对策、语义层 fail-open 与策略层 fail-closed 的方向对比（§5.4）、13 条验收断言；配套原型 `semantic-layer-mockup.html`（六画面：列表 / 详情 / 编辑·校验 / 上下文包 / Agent 接入 / 表详情联动） |
 | `polaris-capabilities-and-design.md` | 对比 Polaris、看整体设计与已知缺口 |
 | `iceberg-rest-catalog-design.md` | 让同一基址、同一份元数据同时服务原生 Iceberg REST 客户端：双协议方案、两套面的差异与代价、catalog 建时区分格式；**已落地的实测记录与与方案不一致的十六处**（§11） |
+| `lance-rest-catalog-design.md` | 支持 Lance（Lance Namespace / REST Catalog 协议面）或评审该方案（**设计稿，未实现**）：规范自己划的「最小集 + 两条降级许可」为什么正好覆盖我们（§1.5）、48 个 operation 的三档取舍、为什么不做 `CreateTable`/数据面/`managed_versioning`（§3）、三种「Lance」的区分（Paimon `lance-table` / 通用表 / 本面，§2）、基址与 id 解析、`catalog_format=LANCE` 加 2 列 0 新表、授权与凭据的落点、P0/P1/P2 需求清单与验收脚本、六个待拍板决策（§8） |
 
 ---
 
