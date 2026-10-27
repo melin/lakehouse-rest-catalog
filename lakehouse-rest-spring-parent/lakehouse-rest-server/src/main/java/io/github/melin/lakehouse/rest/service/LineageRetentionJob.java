@@ -30,11 +30,19 @@ import org.springframework.stereotype.Component;
 public class LineageRetentionJob {
 
     private final LineageService lineageService;
+    private final SchedulerLease lease;
     private final RestServerProperties properties;
     private final Clock clock;
 
     @Scheduled(cron = "${lakehouse.rest.lineage.cleanup-cron:0 30 3 * * *}")
     public void purgeExpiredRuns() {
+        // 多副本下必须单写者：这个 DELETE 虽然是幂等的，但两台机器同时扫同一段范围
+        // 会撞上 InnoDB 的 gap lock，出现死锁与回滚日志。这条脏活交给租约最省心，
+        // 代价是「持有者挂掉后当天可能整轮空窗」——日级幂等任务，次日重跑等价。
+        if (!lease.tryAcquire(SchedulerLease.CHANNEL_LINEAGE)) {
+            log.debug("Skip lineage cleanup: another instance holds {}", SchedulerLease.CHANNEL_LINEAGE);
+            return;
+        }
         long now = clock.millis();
         try {
             int deleted = lineageService.purgeExpiredRuns(now);

@@ -5,7 +5,7 @@
 > （见 `docs/authorization.md` §7）。落地过程中与原方案的偏差都写在对应小节里，
 > 并注明了改动的理由——本文同时是「当时为什么这么设计」的记录。
 >
-> 各节的实现状态：§2 动作映射 ✅（含 §2.5 Iceberg） · §3 执行架构 ✅ · §4 数据模型 ✅（`sql/schema-mysql.sql` 当时是 22 张表，**Iceberg 未新增表**；现为 26 张，后来加了行过滤/列脱敏 2 张与执行集群 1 张）·
+> 各节的实现状态：§2 动作映射 ✅（含 §2.5 Iceberg） · §3 执行架构 ✅ · §4 数据模型 ✅（`sql/schema-mysql.sql` 当时是 22 张表，**Iceberg 未新增表**；现为 27 张，后来加了行过滤/列脱敏 2 张、执行集群 1 张与调度通道租约 1 张）·
 > §5 API ✅ · §6 优化任务模块 ✅（`lakehouse-rest-optimizer`）· §7 控制台 ✅（Paimon 与 Iceberg 表详情页共用同一面板）· §8 分期见文末。
 >
 > 对标对象：阿里云 DLF 的表存储优化（Compaction / Snapshot Expire / Orphan File Remove 三个子页签）与 AWS Lake Formation 的 Enable optimization（三项勾选 + 默认/自定义配置 + 三块历史）。**产品分层以 AWS 为基准**（总开关 → 三项独立启用 → 默认/自定义 → 历史三块），DLF 的快照详情卡、「立即清理」按钮与中文文案吸收进来。执行链路是本方案的自有部分：DLF 由服务端托管调度，AWS 由托管 optimizer（按 DPU 计费），我们用**先落库、再异步提交 k8s 运行 Spark 任务、多表合并执行**的方式实现。
@@ -463,10 +463,17 @@ P1/P2 的服务端部分由 `OptimizationApiTests`（9 个用例）覆盖：策�
 
 ## 9. 开放问题
 
-1. ~~**服务端多副本时的调度互斥**~~ → **已按候选方案落地**：`lakehouse_table_optimization.next_run_at`
+1. ~~**服务端多副本时的调度互斥**~~ → **出批这一环已按候选方案落地**：`lakehouse_table_optimization.next_run_at`
    上的条件更新（`UPDATE ... WHERE id = ? AND next_run_at = ?`）即分布式抢占，不引入额外锁或选举组件。
    配套的一条规则是判断并发配额**先于**抢占——拿不到执行配额就不动游标，否则这一轮的调度机会
    会被白白吃掉（下一拍这张表还在，但已经「假装跑过」了）。`OptimizationApiTests` 里有对应断言。
+   **其余四处已另行实现**（原先只有出批这一环）：跟踪收尾、提交崩溃后的 `SUBMITTING` 回收、
+   出批配额的 read-then-write 窗口、手动「立即优化」不经过抢占。做法不再是加锁或选主，而是
+   ①三通道调度租约（`lakehouse_scheduler_lease`）把同一拍的重复工作压成一份，
+   ②每处状态写入都改成条件更新（`UPDATE ... WHERE 旧状态` 且 `claim_attempt` 代数递增）——
+   租约只降噪，行数判定才保正确，所以租约过期、`kill -9`、双实例同拍都不会产生第二条终态事件。
+   出批见本文 §6，其余见
+   [`optimization-multi-instance-design.md`](optimization-multi-instance-design.md) §5 与 §13（落地记录）。
 2. **目标集群是否已部署 Spark Operator** → **结论：不引入**。曾计划做成「有 operator 就用
    `SparkApplication` CRD、没有就回落 k8s Job」，评审后否决：① operator 的 `restartPolicy` /
    `backoffLimit` 自动重试与「compaction 重跑非幂等」直接冲突；② 它的 cron 触发与

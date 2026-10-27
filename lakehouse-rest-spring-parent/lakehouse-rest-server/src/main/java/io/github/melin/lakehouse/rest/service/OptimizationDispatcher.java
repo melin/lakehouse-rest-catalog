@@ -19,27 +19,28 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 /**
- * 优化批次的调度节拍：出批、提交、跟踪。
+ * 优化批次的调度节拍：出批、提交、回收、跟踪。
  *
  * <p>三个动作拆成两个节拍，间隔不同：
  * <ul>
  *   <li><b>扫描</b>（{@code lakehouse.rest.optimization.scan-interval}，默认 1 分钟）：
  *       把到期策略攒成批次落库；
  *   <li><b>提交与跟踪</b>（{@code dispatch-interval}，默认 10 秒）：把 {@code PENDING}
- *       的批次发出去、问 {@code RUNNING} 的批次跑到哪了。
+ *       的批次发出去、回收卡住的提交、问 {@code RUNNING} 的批次跑到哪了。
  * </ul>
  * 拆开的原因是它们的时效性要求不同：出批是分钟级的事，而「提交」与「状态刷新」
  * 决定用户看到多久的延迟——一个批次落库后等 60 秒才提交，控制台上就会出现
  * 「排队中」卡住一分钟的观感。
  *
+ * <p><b>多副本下谁跑哪一段。</b>出批与提交都有外部副作用（推游标、建 k8s Job），
+ * 因此挂在自己的租约通道上（{@link SchedulerLease}）：抢不到就整拍早退，只记 debug。
+ * <b>跟踪不占租约</b>：{@code pollRunning} 的每一处写都是条件更新，多台机器同时 poll
+ * 只会多几次 GET，不会写出第二个终态。把它留在租约里反而有害——持有者挂掉后要等
+ * 一个 TTL（默认 60 秒）别人才能接手收尾，而放开之后接管只需一拍（10 秒）。
+ *
  * <p><b>逐条独立失败。</b>一个批次提交失败不影响同一节拍里其它批次：
  * 循环里每个批次各自 try/catch，失败写进批次自己的 {@code error_message}。
  * 反过来（整节拍失败退出）会让「有一个坏批次」变成「所有批次都停摆」。
- *
- * <p><b>并发上限是 per-catalog 的。</b>上一版只有一个全局数字，那是「全局只有一个
- * 执行集群」的遗留：现在每个 catalog 有自己的集群与算力，一个 catalog 的上限
- * 不该占用另一个的额度。数的是「这个 catalog 已经放出去的批次数」，
- * 上限取它自己那份执行集群配置里的 {@code maxConcurrentJobs}。
  *
  * <p><b>不可派发的 catalog 只跳过、不判失败。</b>没配置执行集群、被停用、
  * 密文解不开——这些时候 {@code PENDING} 的批次留在队列里（下一拍再看），
@@ -63,6 +64,7 @@ public class OptimizationDispatcher {
     private final OptimizationJobSubmitter submitter;
     private final ExecutionClusterService clusters;
     private final RestServerProperties properties;
+    private final SchedulerLease lease;
     private final Clock clock;
 
     /** 出批节拍：扫描到期策略，攒批落库。 */
@@ -72,6 +74,12 @@ public class OptimizationDispatcher {
         if (!properties.getOptimization().isSchedulerEnabled()) {
             return;
         }
+        // 抢不到就整拍早退：另一台机器正在扫。不是错误，连 WARN 都不该有——
+        // 多副本的常态就是「一半的拍次不由我跑」
+        if (!lease.tryAcquire(SchedulerLease.CHANNEL_SCAN)) {
+            log.debug("skip optimization scan: another instance holds {}", SchedulerLease.CHANNEL_SCAN);
+            return;
+        }
         try {
             batchService.scanAndCreateBatches();
         } catch (RuntimeException exception) {
@@ -79,14 +87,20 @@ public class OptimizationDispatcher {
         }
     }
 
-    /** 提交与跟踪节拍。 */
+    /** 提交、回收与跟踪节拍。 */
     @Scheduled(fixedDelayString = "${lakehouse.rest.optimization.dispatch-interval:PT10S}",
             initialDelayString = "${lakehouse.rest.optimization.dispatch-interval:PT10S}")
     public void dispatch() {
         if (!properties.getOptimization().isSchedulerEnabled()) {
             return;
         }
-        submitPending();
+        if (lease.tryAcquire(SchedulerLease.CHANNEL_DISPATCH)) {
+            submitPending();
+            reapStaleSubmissions();
+        } else {
+            log.debug("skip optimization submit: another instance holds {}", SchedulerLease.CHANNEL_DISPATCH);
+        }
+        // 跟踪不占租约：写全是条件更新，并发安全；放开之后接管只差一拍
         pollRunning();
     }
 
@@ -113,7 +127,7 @@ public class OptimizationDispatcher {
             // 执行侧闸门：这个 catalog 同时在跑的批次不超过它自己的上限，
             // 放不出去的 PENDING 留在队列里等下一拍。
             //
-            // 与出批侧那道检查（{@code OptimizationBatchService}）数的是不同的口径，两道都要有：
+            // 与出批侧那道检查（{@code OptimizationBatchCreator}）数的是不同的口径，两道都要有：
             // 出批侧数「已承诺的批次」（含排队中的），决定**还该不该造新批次**；这里数
             // 「已经放出去的」，决定**造好的批次放不放行**。少了这一道，手动「立即优化」
             // 与重试就能绕过上限——它们直接建批次，压根不经过出批那条路，
@@ -128,13 +142,21 @@ public class OptimizationDispatcher {
                         limit, catalogId);
                 continue;
             }
-            if (!jobService.claimForSubmission(job.getId())) {
+            // 抢占同时写提交租约，拿到的是本次提交的代数（fencing）
+            int attempt = jobService.claimForSubmission(job.getId());
+            if (attempt <= 0) {
                 continue;
             }
             try {
                 Submitted submitted = submitter.submit(
                         new SubmissionRequest(job.getId(), catalogId, job.getCallbackToken()));
-                jobService.markSubmitted(job.getId(), submitted);
+                if (!jobService.markSubmitted(job.getId(), submitted, attempt)) {
+                    // 回写被丢弃：租约在提交期间过期并被别的实例回收了。那个实例会重投，
+                    // 而重投命中同名 Job（幂等），所以这里什么都不用做
+                    log.warn("optimization batch {} submitted but the claim was lost, another instance takes over",
+                            job.getId());
+                    continue;
+                }
                 dispatched.merge(catalogId, 1L, Long::sum);
                 log.info("optimization batch {} submitted to {} as {}/{}",
                         job.getId(), submitter.name(), submitted.namespace(), submitted.resource());
@@ -142,9 +164,28 @@ public class OptimizationDispatcher {
                 // 提交失败是终态失败而不是重试：重试要由用户显式发起（可能配置错了镜像或权限，
                 // 盲目重投只会反复失败并把执行环境的错误日志刷满）。
                 jobService.markSubmitFailed(job.getId(), "提交优化任务失败：" + exception.getMessage()
-                        + "（提交方式：" + submitter.name() + "）");
+                        + "（提交方式：" + submitter.name() + "）", attempt);
                 log.error("cannot submit optimization batch {}", job.getId(), exception);
             }
+        }
+    }
+
+    /**
+     * 回收「提交中」的孤儿批次。
+     *
+     * <p>与 {@link #submitPending} 同一拍、同一租约：回收会改状态（{@code SUBMITTING → PENDING}），
+     * 而下一拍提交会读同一批行。放在提交之后跑，是为了让「刚提交完、租约还没到期」的批次
+     * 不被误回收（回收语句自己也有 {@code claim_expires_at < now} 兜着）。
+     */
+    void reapStaleSubmissions() {
+        try {
+            int reaped = jobService.reapStaleSubmissions();
+            if (reaped > 0) {
+                log.warn("reclaimed {} optimization batch(es) stuck in SUBMITTING", reaped);
+            }
+        } catch (RuntimeException exception) {
+            // 回收失败不该影响下一拍：坏掉的是「某个批次卡住」，不是整条调度
+            log.error("cannot reap stale optimization submissions", exception);
         }
     }
 

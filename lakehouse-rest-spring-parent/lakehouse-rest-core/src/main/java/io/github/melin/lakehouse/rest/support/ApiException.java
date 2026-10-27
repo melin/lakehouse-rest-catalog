@@ -107,6 +107,17 @@ public class ApiException extends RuntimeException {
     }
 
     /**
+     * 请求与实体当前状态冲突（既不是「已存在」，也不是「版本不符」）。
+     *
+     * <p>目前的使用者是「这张表已经在一个活跃批次里」：用户点「立即优化」时表被调度器
+     * 抢先一步拿走了。用 409 而不是 400，是因为请求本身没有错——刷新一下、换个表或者
+     * 跳去看那个批次就能继续，这正是 409 的语义。
+     */
+    public static ApiException conflict(String message) {
+        return new ApiException(409, null, null, message);
+    }
+
+    /**
      * 按外部规范报错：带上协议自己的错误码。
      *
      * <p>目前的唯一使用者是 OAuth 令牌端点。为什么不直接用状态码表达：

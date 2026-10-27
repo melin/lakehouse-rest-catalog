@@ -2,9 +2,12 @@ package io.github.melin.lakehouse.rest.service;
 
 import io.github.melin.lakehouse.rest.domain.entity.CatalogEntity;
 import io.github.melin.lakehouse.rest.domain.entity.DatabaseEntity;
+import io.github.melin.lakehouse.rest.domain.entity.OptimizationJobItemEntity;
 import io.github.melin.lakehouse.rest.domain.entity.TableEntity;
 import io.github.melin.lakehouse.rest.domain.entity.TableOptimizationEntity;
+import io.github.melin.lakehouse.rest.domain.repo.CatalogRepository;
 import io.github.melin.lakehouse.rest.domain.repo.DatabaseRepository;
+import io.github.melin.lakehouse.rest.domain.repo.OptimizationJobItemRepository;
 import io.github.melin.lakehouse.rest.domain.repo.TableOptimizationRepository;
 import io.github.melin.lakehouse.rest.domain.repo.TableRepository;
 import io.github.melin.lakehouse.rest.dto.ManagementDtos;
@@ -24,6 +27,7 @@ import io.github.melin.lakehouse.rest.support.ApiException;
 import io.github.melin.lakehouse.rest.support.CatalogFormat;
 import io.github.melin.lakehouse.rest.support.OptimizationOptions;
 import io.github.melin.lakehouse.rest.support.OptimizationOptions.Action;
+import io.github.melin.lakehouse.rest.support.OptimizationStatus;
 import io.github.melin.lakehouse.rest.support.Paging;
 import java.time.Clock;
 import java.util.ArrayList;
@@ -60,7 +64,13 @@ public class TableOptimizationService {
     public static final int MAX_SCHEDULE_SECONDS = 86400;
     public static final int DEFAULT_SCHEDULE_SECONDS = 3600;
 
+    /** 明细的活跃状态：同一张表最多出现在一条活跃明细里（不变式 I1）。 */
+    private static final List<String> ACTIVE_ITEMS =
+            List.of(OptimizationStatus.Item.PENDING.name(), OptimizationStatus.Item.RUNNING.name());
+
     private final TableOptimizationRepository policyRepository;
+    private final OptimizationJobItemRepository itemRepository;
+    private final CatalogRepository catalogRepository;
     private final DatabaseRepository databaseRepository;
     private final TableRepository tableRepository;
     private final ManagementCatalogService catalogService;
@@ -258,6 +268,15 @@ public class TableOptimizationService {
         // 立即执行同样 fail-closed：它直接建批次，不经过出批那条路，
         // 因此这里不拦的话，「没有执行集群」的时候点一下按钮就会造出一个永远 PENDING 的批次
         clusters.assertDispatchable(prefix);
+        // 与出批同一把锁、同一顺序（catalog → 明细）：先把 catalog 行锁住，再复查这张表
+        // 有没有活跃明细。不复查就会与调度批次同表双跑——这不是多副本才有的问题，
+        // 单机两个线程（用户点按钮 vs 调度扫描）就能复现
+        catalogRepository.lockById(table.getCatalogId());
+        itemRepository.findFirstByTableIdAndStatusInOrderByCreatedAtDesc(table.getId(), ACTIVE_ITEMS)
+                .ifPresent(active -> {
+                    throw ApiException.conflict("table " + prefix + "." + ref.database().getName() + "."
+                            + table.getName() + " is already in batch " + active.getJobId());
+                });
         String fullName = prefix + "." + ref.database().getName() + "." + table.getName();
         return jobService.detail(jobService.createJob(table.getCatalogId(),
                 OptimizationJobService.TRIGGER_MANUAL,

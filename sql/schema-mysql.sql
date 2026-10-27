@@ -240,7 +240,9 @@ USE `lakehouse_catalog`;
     ) comment='表级血缘边：一对 (源, 目标) 一行，重复执行只累加计数' engine=InnoDB;
 
     create table lakehouse_optimization_job (
+        claim_attempt integer not null comment '提交代数（fencing）：每次重新抢占 +1',
         table_count integer not null comment '批次覆盖的表数',
+        claim_expires_at bigint comment '提交租约到期时刻（epoch 毫秒）；到期后可被别的实例回收',
         created_at bigint comment '创建时刻（epoch 毫秒）',
         deadline_at bigint comment '超时时刻，超过仍未终态则判失败并清理资源',
         finished_at bigint comment '进入终态的时刻（epoch 毫秒）',
@@ -255,6 +257,7 @@ USE `lakehouse_catalog`;
         catalog_id varchar(64) not null comment '所属 catalog id',
         id varchar(64) not null comment '主键',
         retry_of varchar(64) comment '重试来源批次 id（只重跑失败表时指向原批次）',
+        claim_owner varchar(128) comment '当前提交租约持有者（实例标识 = hostname/pid）；只在 SUBMITTING 期间有值',
         k8s_namespace varchar(128) comment 'k8s 命名空间',
         spark_app_id varchar(128) comment 'Spark 应用 id',
         k8s_resource varchar(256) comment 'k8s 侧资源名（Job 或 SparkApplication），用于跟踪与取消',
@@ -367,6 +370,16 @@ USE `lakehouse_catalog`;
         updated_by varchar(255) comment '最后更新者主体名（写入前已按列宽归一化）',
         primary key (id)
     ) comment='主体与主体角色的成员关系（多对多）' engine=InnoDB;
+
+    create table lakehouse_scheduler_lease (
+        acquired_at bigint comment '本轮租约开始时刻（epoch 毫秒）',
+        expires_at bigint comment '租约到期时刻（epoch 毫秒）；到期即可被他人抢走',
+        fencing_token bigint not null comment '代数：每次易主 +1，用于识别过期持有者',
+        updated_at bigint comment '最后续约时刻（epoch 毫秒）',
+        name varchar(64) not null comment '通道名',
+        lease_owner varchar(128) comment '当前持有者（实例标识 = hostname/pid）',
+        primary key (name)
+    ) comment='调度通道租约（多副本部署下的单写者）' engine=InnoDB;
 
     create table lakehouse_semantic_view (
         created_at bigint comment '创建时刻（epoch 毫秒）',

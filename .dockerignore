@@ -1,11 +1,13 @@
-# 构建上下文过滤。目的只剩一个：缩小上下文体积——Dockerfile 不编译，
-# 也没有 `COPY . .`，它只从上下文里取两个文件。
+# 构建上下文过滤。目的只剩一个：缩小上下文体积——两个 Dockerfile 都不编译，
+# 也没有 `COPY . .`，它们只从上下文里取几个文件。
 #
-# 必须留在上下文里的两样东西：
+# 必须留在上下文里的三样东西：
 #   - lakehouse-rest-spring-parent/lakehouse-rest-server/target/lakehouse-rest-server-1.0.0.jar
-#     （镜像的主体，由使用者在宿主机上先构建出来）
+#     （服务端镜像的主体，由使用者在宿主机上先构建出来）
 #   - sql/schema-mysql.sql
 #     （K8s 的 initContainer 用它初始化空库）
+#   - lakehouse-rest-optimizer/target/ 下的 jar 与 jars/
+#     （优化任务镜像的主体，同样是宿主机先构建）
 
 # 版本控制与编辑器
 .git
@@ -19,14 +21,21 @@
 .DS_Store
 .DS_Store?
 
-# 构建产物：只放行服务端 jar，其余（classes/、测试报告、其它模块的产物）都排除。
+# 构建产物：只放行两个镜像要装的那几个 jar，其余（classes/、测试报告、其它模块的产物）都排除。
 #
 # 这里写 `**/target/*` 而不是 `**/target/`：前者只排除 target 目录里的**内容**，
-# 目录本身仍在遍历范围内，下一行的 `!` 才能把这个 jar 捞回来；
+# 目录本身仍在遍历范围内，下面的 `!` 才能把 jar 捞回来；
 # 后者连目录本身一起排除，再想从被排除的目录里放行单个文件，就要依赖构建工具
 # 对「父目录已排除」的处理方式——Docker 各版本之间、以及 podman / kaniko 这类
 # 其它构建器之间，这一点并不一致。
+#
+# 两个镜像各自的放行规则必须都在：删掉服务端那条，`docker build` 会在 COPY 处
+# 报 `failed to compute cache key ... not found`——报错说的是「文件不存在」，
+# 而文件在宿主机上明明躺着，真正的原因是它没进构建上下文。
 **/target/*
+# 服务端镜像（根 Dockerfile）：jar 由宿主机先 package 出来
+!lakehouse-rest-spring-parent/lakehouse-rest-server/target/*.jar
+# 优化任务镜像（lakehouse-rest-optimizer/Dockerfile）：启动脚本依赖 lib/ 下的 jar
 !lakehouse-rest-optimizer/target/*.jar
 !lakehouse-rest-optimizer/target/jars/
 !lakehouse-rest-optimizer/target/jars/*.jar

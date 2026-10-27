@@ -14,12 +14,16 @@ import io.github.melin.lakehouse.rest.domain.entity.TableEntity;
 import io.github.melin.lakehouse.rest.domain.entity.TableOptimizationEntity;
 import io.github.melin.lakehouse.rest.domain.entity.CatalogEntity;
 import io.github.melin.lakehouse.rest.domain.entity.CatalogExecutionClusterEntity;
+import io.github.melin.lakehouse.rest.domain.repo.AuditEventRepository;
 import io.github.melin.lakehouse.rest.domain.repo.CatalogExecutionClusterRepository;
 import io.github.melin.lakehouse.rest.domain.repo.CatalogRepository;
 import io.github.melin.lakehouse.rest.domain.repo.OptimizationJobItemRepository;
 import io.github.melin.lakehouse.rest.domain.repo.OptimizationJobRepository;
+import io.github.melin.lakehouse.rest.domain.repo.SchedulerLeaseRepository;
 import io.github.melin.lakehouse.rest.domain.repo.TableOptimizationRepository;
 import io.github.melin.lakehouse.rest.domain.repo.TableRepository;
+import io.github.melin.lakehouse.rest.event.CatalogEventType;
+import io.github.melin.lakehouse.rest.service.SchedulerLease;
 import io.github.melin.lakehouse.rest.dto.CommonDtos;
 import io.github.melin.lakehouse.rest.paimon.dto.DatabaseDtos;
 import io.github.melin.lakehouse.rest.paimon.dto.TableDtos;
@@ -58,6 +62,7 @@ import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
+import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 import tools.jackson.databind.node.JsonNodeFactory;
@@ -125,6 +130,12 @@ class OptimizationApiTests {
     private CatalogRepository catalogRepository;
     @Autowired
     private CatalogExecutionClusterRepository clusterRepository;
+    @Autowired
+    private SchedulerLease lease;
+    @Autowired
+    private SchedulerLeaseRepository leaseRepository;
+    @Autowired
+    private AuditEventRepository auditEventRepository;
 
     private final JsonMapper mapper = JsonMapper.builder().build();
 
@@ -657,10 +668,14 @@ class OptimizationApiTests {
     /**
      * 手动触发的批次同样受并发上限约束。
      *
-     * <p>出批侧那道配额检查（{@code OptimizationBatchService}）只拦「自动调度造批次」——
+     * <p>出批侧那道配额检查（{@code OptimizationBatchCreator}）只拦「自动调度造批次」——
      * 手动「立即优化」与重试都是直接建批次，压根不经过那条路。少了提交侧这道闸门，
      * 运维连点几次就能在集群里堆起同等数量的 Spark 任务，而这条上限本来就是
      * 「给集群留余量」用的（每个批次一个驱动），绕过它等于上限不存在。
+     *
+     * <p>用**三张不同的表**造三个批次：同一张表连点三次现在会被 409 挡住
+     * （不变式 I1，见 {@link #manualRunRejectsTableAlreadyInAnActiveBatch()}），
+     * 而这条用例要测的是提交侧配额，不是同表互斥。
      */
     @Test
     @Order(9)
@@ -669,8 +684,9 @@ class OptimizationApiTests {
         clearActiveJobs();
         parkPolicies();
 
-        for (int i = 0; i < 3; i++) {
-            json(201, "POST", runPath(DB, TABLE), "{\"actions\":[\"compact\"]}");
+        for (String table : List.of(TABLE, "t3", "t4")) {
+            createPaimonTable(DB, table);
+            json(201, "POST", runPath(DB, table), "{\"actions\":[\"compact\"]}");
         }
         assertEquals(3, pendingJobIds().size());
 
@@ -687,6 +703,164 @@ class OptimizationApiTests {
         assertEquals(2, jobRepository.countByStatusIn(List.of(Job.RUNNING.name())));
         assertEquals(0, pendingJobIds().size(), "配额一空，队列立刻往前走");
         clearActiveJobs();
+    }
+
+    // ------------------------------------------------------------------ 6. 多副本：同表互斥与终态只写一次
+
+    /**
+     * 「立即优化」与调度批次抢同一张表时，后到的那个必须被挡住。
+     *
+     * <p>这不是多副本才有的问题：调度扫描与用户点按钮在同一个进程里也是两个线程，
+     * 而两者的「这张表没人跑」都是读出来的结论。修法是同一把 catalog 锁内复查活跃明细。
+     * 409 的报文要带上已有批次 id——控制台据此把用户导过去，而不是让他盯着一个
+     * 「什么都没发生」的按钮。
+     */
+    @Test
+    @Order(10)
+    void manualRunRejectsTableAlreadyInAnActiveBatch() throws Exception {
+        StubSubmitter.INSTANCE.reset();
+        clearActiveJobs();
+
+        JsonNode first = json(201, "POST", runPath(DB, TABLE), "{\"actions\":[\"compact\"]}");
+        String jobId = first.get("id").asString();
+
+        JsonNode conflict = json(409, "POST", runPath(DB, TABLE), "{\"actions\":[\"compact\"]}");
+        assertTrue(conflict.get("message").asString().contains(jobId),
+                "409 要说清是哪张表进了哪个批次，实际：" + conflict);
+        clearActiveJobs();
+    }
+
+    /**
+     * 终态只写一次：这是多副本下**必然发生**的那一处。
+     *
+     * <p>每台机器都会 poll 到同一个 {@code RUNNING} 批次，因此收尾必须是条件更新。
+     * 这里用「成功之后再判一次超时」来覆盖同一个场景——超时判定是最危险的那条路径，
+     * 它会把 {@code SUCCESS} 改写成 {@code PARTIAL_SUCCESS}。
+     */
+    @Test
+    @Order(11)
+    void terminalStateIsWrittenOnceAndNeverDowngraded() throws Exception {
+        StubSubmitter.INSTANCE.reset();
+        clearActiveJobs();
+
+        JsonNode created = json(201, "POST", runPath(DB, TABLE), "{\"actions\":[\"compact\"]}");
+        String jobId = created.get("id").asString();
+        dispatcher.submitPending();
+        String token = job(jobId).get("callbackToken").asString();
+        report(jobId, itemsOf(jobId).get(0), token, "{\"status\":\"SUCCESS\",\"metrics\":{}}");
+        assertEquals(Job.SUCCESS.name(), finishWith(jobId, JobState.SUCCEEDED).get("status").asString(),
+                "明细全成功 -> SUCCESS");
+        Long finishedAt = jobRepository.findById(jobId).orElseThrow().getFinishedAt();
+
+        // 另一个实例也在收尾：它的条件更新返回 0 行，状态与完成时刻都不该变
+        jobService.finishFromSubmitter(jobId, JobState.SUCCEEDED, null);
+        assertEquals(finishedAt, jobRepository.findById(jobId).orElseThrow().getFinishedAt());
+
+        // 最危险的一条：超时判定不能把一个已成功的批次改写成部分成功（I5）
+        OptimizationJobEntity entity = jobRepository.findById(jobId).orElseThrow();
+        entity.setDeadlineAt(System.currentTimeMillis() - 1000);
+        jobRepository.save(entity);
+        jobService.markTimedOut(jobId);
+        assertEquals(Job.SUCCESS.name(), jobRepository.findById(jobId).orElseThrow().getStatus(),
+                "成功一旦写入，不能被超时路径改写");
+
+        // 事件只发一次（I3）：由 db 监听器落进 lakehouse_audit_event
+        assertEquals(1, auditCount(CatalogEventType.OPTIMIZATION_JOB_SUCCEEDED.wire(), jobId),
+                "同一个批次只能有一条成功事件");
+        clearActiveJobs();
+    }
+
+    // ------------------------------------------------------------------ 7. 多副本：提交租约的 fencing 与回收
+
+    /**
+     * 进程在 {@code submit()} 之后、回写之前被杀：租约过期 → 别人回收 → 重新抢占，
+     * 而**上一代的回写必须被丢弃**（否则它会把接管者的 deadline 覆盖掉）。
+     */
+    @Test
+    @Order(12)
+    void submissionLeaseFencingDropsStaleWriteBack() throws Exception {
+        StubSubmitter.INSTANCE.reset();
+        clearActiveJobs();
+
+        String jobId = json(201, "POST", runPath(DB, TABLE), "{\"actions\":[\"compact\"]}")
+                .get("id").asString();
+        int first = jobService.claimForSubmission(jobId);
+        assertTrue(first > 0, "PENDING 批次应当能抢到");
+        OptimizationJobEntity claimed = jobRepository.findById(jobId).orElseThrow();
+        assertEquals(lease.instanceId(), claimed.getClaimOwner(), "抢占要写提交租约的持有者");
+        assertEquals(Job.SUBMITTING.name(), claimed.getStatus());
+
+        // 模拟持有者已死：租约过期（不调 markSubmitted）
+        claimed.setClaimExpiresAt(System.currentTimeMillis() - 1);
+        jobRepository.save(claimed);
+        assertEquals(1, jobService.reapStaleSubmissions(), "过期的提交租约要被回收");
+        assertEquals(Job.PENDING.name(), jobRepository.findById(jobId).orElseThrow().getStatus(),
+                "回收之后回到队列，下一拍重投（命中同名 Job，不会双跑）");
+
+        int second = jobService.claimForSubmission(jobId);
+        assertEquals(first + 1, second, "每次重新抢占代数 +1");
+        assertFalse(jobService.markSubmitted(jobId, new Submitted("stub-ns", "stub-" + jobId), first),
+                "上一代的回写必须被丢弃");
+        assertTrue(jobService.markSubmitted(jobId, new Submitted("stub-ns", "stub-" + jobId), second));
+        assertEquals(Job.RUNNING.name(), jobRepository.findById(jobId).orElseThrow().getStatus());
+        clearActiveJobs();
+    }
+
+    /** 反复中断的提交不再无限重投：代数封顶之后直接判失败，原因写清楚。 */
+    @Test
+    @Order(13)
+    void repeatedlyInterruptedSubmissionFailsInsteadOfRetryingForever() throws Exception {
+        StubSubmitter.INSTANCE.reset();
+        clearActiveJobs();
+
+        String jobId = json(201, "POST", runPath(DB, TABLE), "{\"actions\":[\"compact\"]}")
+                .get("id").asString();
+        OptimizationJobEntity entity = jobRepository.findById(jobId).orElseThrow();
+        entity.setStatus(Job.SUBMITTING.name());
+        entity.setClaimOwner("dead-instance/1");
+        entity.setClaimAttempt(OptimizationJobService.MAX_SUBMIT_ATTEMPTS);
+        entity.setClaimExpiresAt(System.currentTimeMillis() - 1);
+        jobRepository.save(entity);
+
+        jobService.reapStaleSubmissions();
+        OptimizationJobEntity failed = jobRepository.findById(jobId).orElseThrow();
+        assertEquals(Job.FAILED.name(), failed.getStatus(), "第 3 次中断之后不再回队列");
+        assertTrue(failed.getErrorMessage().contains("反复中断"));
+        assertEquals("FAILED", itemRepository.findAllByJobIdOrderByCreatedAtAsc(jobId).get(0).getStatus(),
+                "没跑起来的表要留一条可读的失败");
+        clearActiveJobs();
+    }
+
+    // ------------------------------------------------------------------ 8. 调度通道租约
+
+    /**
+     * 通道租约的语义：持有者续约 → 别人抢不到；让出（或到期）→ 别人立刻能接手。
+     *
+     * <p>这里直接用仓储模拟「另一台机器」：两个实例之间没有任何进程内共享，
+     * 唯一的裁判就是这一行。
+     *
+     * <p>方法上带 {@code @Transactional}：{@code @Modifying} 查询必须在一个事务里执行，
+     * 而且整段断言结束后回滚——租约是全局共享行，不该让这条用例影响别的用例。
+     */
+    @Test
+    @Order(14)
+    @Transactional
+    void schedulerLeaseIsExclusiveAndReleasable() {
+        assertEquals(SchedulerLease.channels().size(), leaseRepository.count(),
+                "启动时要把所有通道的行补齐（少一行 = 那个通道没有单写者）");
+
+        assertTrue(lease.tryAcquire(SchedulerLease.CHANNEL_SCAN));
+        long now = System.currentTimeMillis();
+        assertEquals(0, leaseRepository.acquire(SchedulerLease.CHANNEL_SCAN, "other-instance/1",
+                        now, now + 60_000), "别人持有且未过期时抢不到");
+
+        lease.release(SchedulerLease.CHANNEL_SCAN);
+        assertEquals(1, leaseRepository.acquire(SchedulerLease.CHANNEL_SCAN, "other-instance/1",
+                        now, now + 60_000), "让出之后别人立刻能接手");
+
+        // 换回本实例，保持夹具干净
+        leaseRepository.release(SchedulerLease.CHANNEL_SCAN, "other-instance/1", now);
+        assertTrue(lease.tryAcquire(SchedulerLease.CHANNEL_SCAN));
     }
 
     // ------------------------------------------------------------------ 工具
@@ -707,6 +881,20 @@ class OptimizationApiTests {
 
     private JsonNode job(String jobId) throws Exception {
         return json(200, "GET", M + "/jobs/" + jobId, null);
+    }
+
+    /** 让桩提交器给出终态，再跑一拍跟踪，返回刷新后的批次。 */
+    private JsonNode finishWith(String jobId, JobState state) throws Exception {
+        StubSubmitter.INSTANCE.finish(jobId, state);
+        dispatcher.pollRunning();
+        return job(jobId);
+    }
+
+    /** 某个批次在某类事件上落了几条审计（I3：终态事件只发一次）。 */
+    private long auditCount(String type, String target) {
+        return auditEventRepository.findAll().stream()
+                .filter(event -> type.equals(event.getType()) && target.equals(event.getTarget()))
+                .count();
     }
 
     /** 批次详情里的明细列表，用来按行上报结果。顺序由服务端保证（创建先后）。 */

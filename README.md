@@ -22,7 +22,7 @@
   Management API 的 **3 个官方权限端点**（`permissions`）+ 服务端扩展端点（catalog / principal / 角色 / 优化）
   （概览见 [`docs/management-api-overview.md`](docs/management-api-overview.md)）
 - 元数据存储：**MySQL 8.0**（建表语句由实体生成，见 `sql/schema-mysql.sql`；
-26 张表的划分与设计取舍见 [`docs/data-model.md`](docs/data-model.md)），
+27 张表的划分与设计取舍见 [`docs/data-model.md`](docs/data-model.md)），
   通过 JPA 访问；另有 H2 内存库与 PostgreSQL 两个 profile 可选
 - 模块：**12 个 Maven 模块**——服务端拆为 `core`（与格式无关的地基）/ `storage`（FileIO）/
   `protocol-paimon`（Catalog API）/ `protocol-iceberg`（Iceberg REST）/ `server`（可执行）五个，
@@ -147,7 +147,7 @@ k8s 资源名（namespace / Deployment / Service / ConfigMap）与镜像同一�
 | [`catalog-api-endpoints.md`](docs/catalog-api-endpoints.md) | 要查 Catalog API 有哪些端点——Paimon 的 60 个与 Iceberg 的 26 个按资源分组，含基址、前缀与授权映射说明 |
 | [`management-api-overview.md`](docs/management-api-overview.md) | 要读 Management API——Paimon 官方权限端点与服务端扩展端点各落在哪几个控制器上、几处容易读错的语义 |
 | [`management-api-contract.md`](docs/management-api-contract.md) | **存档**：由已移除的 Polaris 管理规格生成的字段与权限枚举（catalog role、64 项 privilege 已不存在）；当前契约看上一行与 [`authorization.md`](docs/authorization.md) |
-| [`data-model.md`](docs/data-model.md) | 要改实体或看表结构——26 张表的划分、摘要列与审计列的设计理由、实体与仓储分在哪两个模块 |
+| [`data-model.md`](docs/data-model.md) | 要改实体或看表结构——27 张表的划分、摘要列与审计列的设计理由、实体与仓储分在哪两个模块 |
 | [`spark-sql-reference.md`](docs/spark-sql-reference.md) | 要用 SQL 管理主体与授权——语句级参考，含完整示例 |
 | [`spark-sql-extension.md`](docs/spark-sql-extension.md) | 要改这个 Spark 扩展——语法扩展的做法、两个必须知道的约束、测试分层 |
 | [`spark-paimon-rest-e2e.md`](docs/spark-paimon-rest-e2e.md) | 要让 Spark 通过本服务端建 Paimon 表——连接配置、可执行的 SQL、报错对照表 |
@@ -165,6 +165,7 @@ k8s 资源名（namespace / Deployment / Service / ConfigMap）与镜像同一�
 | [`generic-table-design.md`](docs/generic-table-design.md) | 要把 parquet / orc / lance / vortex 目录也纳入目录服务，或评审「通用表」方案——**设计稿，未实现**：Polaris Generic Table 的事实基线、四种格式的能力矩阵、复用 `lakehouse_table` 加 `table_kind` 的三方案对比、4 个端点与权限映射、凭据下发为什么是唯一的数据面控制点、Spark 侧按格式分派（`FileTable` 子类 / `ServiceLoader<TableProvider>`）、影响面与风险 |
 | [`metrics-design.md`](docs/metrics-design.md) | 要加指标、接 Prometheus 或判断「这个指标该不该打标签」——**设计稿，未实现**：Polaris telemetry 的事实基线（HTTP / API / 持久化 / 缓存四类来源，`realm_id` 基数闸门与「超限即停记」、SLO 显式桶、Iceberg 客户端用量报告与运维指标的区别）、`lakehouse.*` 指标目录与 <1500 的基数预算、标签黑名单与 catalog 折叠成 `__other__`、切面替代逐端点 `@Timed`、管理端口 8081 + ServiceMonitor、告警与看板、`verify-metrics-doc.py` 一致性校验 |
 | [`maven-module-design.md`](docs/maven-module-design.md) | 要改模块布局、加协议面或动对外名字——`lakehouse-rest-*` 命名定案、两个父 POM / 两个依赖世界、三条用 enforcer 守住的依赖不变量、对外名字的持有者清单与改名判据（§4 / §10）、类的实际落点与依赖分工（§8） |
+| [`optimization-multi-instance-design.md`](docs/optimization-multi-instance-design.md) | 要多副本部署、或排查「同一个优化任务被两台机器发起」——**设计稿，未实现**：现状审计（出批的逐表 CAS 与提交的状态 CAS 已有；跟踪收尾、提交崩溃回收、出批配额、手动入口四处没有，其中收尾在多副本下必然重复）、租约 + 代理（fencing）与三条终态 CAS、锁顺序与事务拆分、部署七条前提、双实例验收 |
 | [`table-optimization.md`](docs/table-optimization.md) | 要改表存储优化或排查优化任务——三个动作的语义、批次与并发两道闸门、k8s 提交与状态跟踪、控制台两处页面 |
 | [`catalog-execution-cluster-design.md`](docs/catalog-execution-cluster-design.md) | 要给 catalog 配「优化任务跑在哪个 k8s 集群」或评审该方案——**已实现**（M1–M3 全部落地；M4 文档回填随本次提交完成）：配置从 `application.yml` 下移到 catalog（1:1）、三种集群类型的认证（kubeconfig / EKS 令牌 / AKS 令牌）、kubeconfig 逐 context 解析（`exec:` 是硬拒，不是没支持）、探活五问与状态机、fabric8 落地要点（防回落、客户端缓存、AKS scope 修正）；配套效果图 [`catalog-execution-cluster-mockup.html`](docs/catalog-execution-cluster-mockup.html) |
 | [`lineage-design.md`](docs/lineage-design.md) | 要做 Spark SQL 血缘（表级 / 列级）或评审方案——**三层都已实现**（服务端：三张表 + 5 个端点；控制台：表详情页「血缘」页签；引擎侧：Spark 3.5/4.1 抽取器与上报器；端到端 `scripts/e2e-lineage.sh` 只在 3.5 上能跑，4.1 受 Paimon bundle 限制）：为什么必须在引擎侧抽而不是服务端重解析（五个错法）、为什么是 `analyzed` 而不是 `optimized`、参考实现 `kyuubi-spark-lineage` 的机制拆解（属性集下推、16 行节点规则、`__count__` 等三个占位、表名归一化）与「抄了什么 / 改了 10 处」、归一化模型（`~` 保留前缀、五种列的 `kind`）、上报契约与异步丢弃、run（事件）与边（状态）两张语义不同的表、图查询口径与环、控制台展现（跳数即层号的分层布局、单张 Canvas + 三档 LOD、折叠与按需展开、列级聚合与虚拟列表、性能预算）、前端落地视角（§9.11–9.14：组件清单与 0 新增依赖、表详情页「血缘」页签集成、数据流；效果图 `docs/lineage-mockup.html`）、配置与验收；**只做 Spark，Flink 留位** |
@@ -186,7 +187,7 @@ k8s 资源名（namespace / Deployment / Service / ConfigMap）与镜像同一�
 mysql -h 127.0.0.1 -u root -p < sql/schema-mysql.sql
 ```
 
-`sql/schema-mysql.sql` 由 `scripts/gen-mysql-ddl.sh` 从 JPA 实体生成（26 张表、24 个唯一约束、
+`sql/schema-mysql.sql` 由 `scripts/gen-mysql-ddl.sh` 从 JPA 实体生成（27 张表、24 个唯一约束、
 30 个索引），**不要手工修改**——下次生成会覆盖。它会建出 `lakehouse_catalog` 库并切过去，
 库名与 `application.yml` 里的 `spring.datasource.url` 必须一致（用 `DB_NAME=... ` 重新生成可改）。
 
@@ -329,7 +330,7 @@ lakehouse-rest-spring-parent/
   lakehouse-rest-core/          与格式无关的地基
     web/          两套协议共用的端点：/v1/config、/v1/oauth/tokens、两条同路径 rename
     service/      协议分派（CatalogFormat / CatalogProtocol / CatalogProtocols）、错误形状判定、RBAC 判定
-    domain/       JPA 实体与仓储（26 张表）
+    domain/       JPA 实体与仓储（27 张表）
     dto/          两套规格共用的 DTO 词表、管理 API 与远程控制台契约
     support/      公共设施：JSON 编解码、schema 字段树、分页、路径、错误、存储配置
     config/       服务端配置、Bearer 鉴权、授权拦截器、启动初始化
@@ -398,7 +399,7 @@ lakehouse-rest-flink/        一份源码、两个版本产物（Flink 1.20 与 
 [Paimon 60 个与 Iceberg 30 个端点](docs/catalog-api-endpoints.md)、Management API 的
 [操作概览](docs/management-api-overview.md)（逐字契约见
 [`management-api-contract.md`](docs/management-api-contract.md)）、以及
-[26 张表的数据模型与设计取舍](docs/data-model.md)。
+[27 张表的数据模型与设计取舍](docs/data-model.md)。
 
 ---
 
@@ -1005,7 +1006,7 @@ python3 -m pip install --user PyYAML
 ```
 
 `gen-mysql-ddl.sh` 内部跑 `MysqlDdlGeneratorTests`：DDL 由 Hibernate 依实体元数据生成，
-**不手工维护**——26 张表、24 个唯一约束、31 个索引，手工维护必然漂移。生成器连的是 H2
+**不手工维护**——27 张表、24 个唯一约束、31 个索引，手工维护必然漂移。生成器连的是 H2
 但方言被钉在 MySQL 8.0（`MySql8DialectResolver`），因此生成过程不需要 MySQL，
 产出则已用真实 MySQL 8.0.46 验证过可直接执行。`DB_NAME=...` 可改建库语句里的库名。
 Iceberg 协议面落地的 9 个新列也由它产出（`catalog_format` 是
@@ -1049,8 +1050,14 @@ jar 是 17 编的还是 21 编的都不影响：根 POM 钉了 `maven.compiler.r
 为镜像单独养一份 Maven 依赖缓存；更关键的一点是**镜像里跑的就是你本地跑过的那个
 jar**（同一份字节），而不是镜像内按同一份源码又编一遍的另一份产物——后者只要有一处
 环境差异，就变成「测过的」与「部署的」不是一回事。代价是工件必须先存在：忘了第 1 步，
-`docker build` 会在 `COPY` 处直接报找不到文件（`.dockerignore` 只放行
+`docker build` 会在 `COPY` 处报找不到文件（`.dockerignore` 只放行
 `lakehouse-rest-spring-parent/lakehouse-rest-server/target/*.jar`）。
+
+这份 `.dockerignore` 在仓库根，**两个镜像共用**（优化任务镜像也用 `-f lakehouse-rest-optimizer/Dockerfile .`
+以根目录为上下文），所以里面必须同时有两套放行规则。删掉其中任何一条，另一个镜像就会在
+`COPY` 处报 `failed to compute cache key ... not found`——报错说的是文件不存在，而文件在宿主机上
+明明躺着，真正的原因是它没进构建上下文。`**/target/*` 那一行按目录内容排除，`!` 才有机会把
+指定 jar 捞回来，别改成 `**/target/`。
 
 运行时以 uid 10001 非 root 运行；`ENTRYPOINT` 用 exec 形式，让 SIGTERM 直达 JVM，
 配合 Spring Boot 的优雅停机。

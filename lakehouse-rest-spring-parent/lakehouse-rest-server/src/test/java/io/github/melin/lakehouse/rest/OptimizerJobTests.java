@@ -91,16 +91,34 @@ class OptimizerJobTests {
     }
 
     /**
-     * 报文里的两条取舍：k8s 自己重试会把「哪张表失败」的事实冲掉，
-     * 因此失败即止；跑完一小时自动清理，避免 Job 对象越积越多。
+     * 报文里的三条取舍：k8s 自己重试会把「哪张表失败」的事实冲掉，因此失败即止；
+     * 跑完一段时间后自动清理，避免 Job 对象越积越多；而清理延迟必须**大于批次超时**——
+     * 否则 Job 被清掉之后 {@code state()} 只能返回 UNKNOWN，一个已经成功的批次
+     * 会被 deadline 判成超时（夹具里 {@code jobTimeoutSeconds=3600}，因此是 4200）。
      */
     @Test
     void retryAndCleanupFollowTheBatchSemantics() {
         Job job = OptimizerJob.build("job-6", cluster(CALLBACK_BASE, null), "tk");
 
         assertEquals(0, job.getSpec().getBackoffLimit().intValue());
-        assertEquals(3600, job.getSpec().getTtlSecondsAfterFinished().intValue());
+        assertEquals(OptimizerJob.ttlSecondsAfterFinished(cluster(CALLBACK_BASE, null)),
+                job.getSpec().getTtlSecondsAfterFinished().intValue());
+        assertTrue(job.getSpec().getTtlSecondsAfterFinished() > 3600,
+                "清理延迟必须大于批次超时（3600），否则成功会被记成超时");
         assertEquals("Never", job.getSpec().getTemplate().getSpec().getRestartPolicy());
         assertEquals("paimon-optimize-job-6", job.getMetadata().getName());
+    }
+
+    /** 超时配得很大（例如一天）时，清理延迟要跟着变大，而不是停在 1 小时。 */
+    @Test
+    void cleanupDelayFollowsALongBatchTimeout() {
+        ResolvedCluster longBatch = new ResolvedCluster(
+                ClusterType.SELF_HOSTED, "demo", "ctx", "https://172.88.0.153:6443",
+                null, null, ResolvedCluster.Auth.EMPTY, null, "lakehouse-rest",
+                "registry.example.com/lakehouse-rest-catalog:1.0.0", "IfNotPresent", List.of(),
+                null, CALLBACK_BASE, 20, 2, 86400);
+
+        assertTrue(OptimizerJob.ttlSecondsAfterFinished(longBatch) > 86400,
+                "批次超时一天时，Job 不能在收尾之前被清掉");
     }
 }

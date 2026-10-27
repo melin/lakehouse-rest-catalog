@@ -61,6 +61,33 @@ public class OptimizationJobEntity extends AuditedEntity {
             comment = "批次状态：PENDING / SUBMITTING / RUNNING / 终态")
     private String status;
 
+    /**
+     * 提交租约持有者（实例标识 = {@code hostname/pid}）。
+     *
+     * <p>只在 {@code SUBMITTING} 期间有值，转 {@code RUNNING} 时清空。它的作用是让
+     * 「提交中」这件事**可回收**：进程在 {@code submit()} 与回写之间被杀时，
+     * 别的实例能看到「谁拿的、什么时候到期」，到期后凭 {@link #claimAttempt} 回收。
+     */
+    @Column(name = "claim_owner", length = 128,
+            comment = "当前提交租约持有者（实例标识 = hostname/pid）；只在 SUBMITTING 期间有值")
+    private String claimOwner;
+
+    @Column(name = "claim_expires_at",
+            comment = "提交租约到期时刻（epoch 毫秒）；到期后可被别的实例回收")
+    private Long claimExpiresAt;
+
+    /**
+     * 提交代数（fencing）：每被重新抢占一次 +1。
+     *
+     * <p>回写（{@code SUBMITTING → RUNNING}）与回收都要带上代数：过期持有者「复活」时
+     * 手里那个代数已经不是当前值，条件更新返回 0 行，于是它写不进去——这就是
+     * 「上一代不能覆盖这一代」的实现方式。MySQL 没有 {@code RETURNING}，
+     * 抢占后要在同一事务里回读一次（读到的必然是自己刚写的那一代）。
+     */
+    @Column(name = "claim_attempt", nullable = false,
+            comment = "提交代数（fencing）：每次重新抢占 +1")
+    private int claimAttempt;
+
     @Column(name = "table_count", nullable = false, comment = "批次覆盖的表数")
     private int tableCount;
 

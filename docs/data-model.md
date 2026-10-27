@@ -1,6 +1,6 @@
 # 数据模型
 
-服务端把 catalog 元数据与授权关系全部放进关系库，共 **26 张表、26 个 JPA 仓储接口**。
+服务端把 catalog 元数据与授权关系全部放进关系库，共 **27 张表、27 个 JPA 仓储接口**。
 本文件说明表的划分，以及三个容易看错或踩坑的设计点：摘要列、审计列、JSON 文档列。
 
 - 实体与仓储按模块分两处（模块划分见 [`maven-module-design.md`](maven-module-design.md) §8，
@@ -11,7 +11,7 @@
   - `lakehouse-rest-spring-parent/lakehouse-rest-server/.../domain/entity/` —— **4 个实体**
     （表存储优化 3：`TableOptimization` / `OptimizationJob` / `OptimizationJobItem`；
     加 catalog 执行集群 1：`CatalogExecutionCluster`）；同级 `domain/repo/` 有 4 个仓储接口
-  - 合计 26 个实体 + 26 个仓储接口。分家的依据是**谁读它**而不是谁写它：
+  - 合计 27 个实体 + 27 个仓储接口。分家的依据是**谁读它**而不是谁写它：
     优化三表只有 server 侧的调度与控制器会读，留在 server；执行集群表只被提交与探活链路读，
     同样留在 server；其余实体被协议层（`protocol-paimon`）的面复用，所以下沉到 core，
     否则协议层要反向依赖 server。血缘三表虽然只由 core 的
@@ -106,8 +106,15 @@
 | 表 | 对应资源 | 说明 |
 | --- | --- | --- |
 | `lakehouse_table_optimization` | 表存储优化策略 | 与表 1:1（`uk_table_optimization`）：总开关、调度间隔、调度游标、三项动作各自的开关与**配置差异** |
-| `lakehouse_optimization_job` | 优化批次 | 一个批次 = 一次 k8s 提交；组批以 catalog 为界，一个批次含多张表 |
+| `lakehouse_optimization_job` | 优化批次 | 一个批次 = 一次 k8s 提交；组批以 catalog 为界，一个批次含多张表。另有三个**提交租约**列（`claim_owner` / `claim_expires_at` / `claim_attempt`），只在 `SUBMITTING` 期间有值 |
 | `lakehouse_optimization_job_item` | 批次内单表结果 | 批次 1:N；每张表的动作、状态、前后指标、错误原因 |
+
+**批次表那三个租约列的理由**（多副本调度，见
+[`optimization-multi-instance-design.md`](optimization-multi-instance-design.md) §5.3）：
+「提交中」这一步有外部副作用（建 k8s Job），进程在 `submit()` 与回写之间被杀时不能
+永久卡住。`claim_owner` 记谁在提交，`claim_expires_at` 是它的到期时刻（默认 30 秒），
+`claim_attempt` 是代数——回写与回收都带它，于是「上一代的写」会被条件更新挡在门外。
+代数到 3 次仍反复中断就判失败，而不是无限重投。
 
 ## 2.2 事件审计（1 张）
 
@@ -206,6 +213,18 @@ STS 令牌、`AKS`→AAD 客户端凭据）。一行一 catalog（`catalog_id` �
   两者不能混用一套判空逻辑。
 
 ---
+
+## 2.6 调度通道租约（1 张）
+
+| 表 | 对应资源 | 说明 |
+| --- | --- | --- |
+| `lakehouse_scheduler_lease` | 调度通道的「谁跑这一拍」 | 一行一个通道（`optimization.scan` / `optimization.dispatch` / `lineage.cleanup`），`lease_owner` + `expires_at` 是租约，`fencing_token` 每次易主 +1 |
+
+它**不是业务数据**，是并发控制的落点：行在启动时补齐（不写进 DDL 的种子数据，
+因为 `sql/schema-mysql.sql` 是生成物）。选租约而不是锁，是因为多副本里最常见的故障是
+进程不告而别——锁会永久留在那里，租约到期即失效，代价只是空窗一个 TTL。
+正确性不依赖它（各处的条件更新才是裁判），所以这张表丢了、过期了、被手工清空了，
+最坏结果都是「多跑几拍」而不是「重复执行」。
 
 ## 3. 为什么有两个摘要列
 

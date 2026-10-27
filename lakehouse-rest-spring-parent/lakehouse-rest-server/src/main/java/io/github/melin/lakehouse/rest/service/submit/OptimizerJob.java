@@ -20,14 +20,27 @@ import java.util.List;
  * <ul>
  *   <li>{@code backoffLimit=0}：重试是**批次级**语义（只重跑失败的表），k8s 自己重试会把
  *       「哪张表失败」的事实冲掉，也会重复删一遍孤儿文件。</li>
- *   <li>{@code ttlSecondsAfterFinished}：跑完一小时由 k8s 清掉，Job 对象不会越积越多。
- *       要排障的人在这一小时内仍然能 {@code kubectl describe}。</li>
+ *   <li>{@code ttlSecondsAfterFinished}：跑完由 k8s 清掉，Job 对象不会越积越多。
+ *       要排障的人在这段时间内仍然能 {@code kubectl describe}。</li>
  * </ul>
+ *
+ * <p><b>TTL 必须大于批次的超时时间（{@link #ttlSecondsAfterFinished}）。</b>
+ * 服务端的跟踪是「读 Job 的 condition」：如果 Job 在被收尾之前就被 TTL 清掉，
+ * {@code state()} 只能返回 {@code UNKNOWN}，而 {@code pollRunning} 对 {@code UNKNOWN}
+ * 的处置是「不动它」——于是一个**已经成功**的批次要一直等到 deadline 才被判超时。
+ * 固定 3600 秒 + 默认 7200 秒的超时曾经正好落进这个坑里。
  */
 public final class OptimizerJob {
 
-    /** 批次结束后由 k8s 自动清理资源，避免 Job 对象越积越多。 */
+    /**
+     * {@code ttlSecondsAfterFinished} 的下限：跑完后至少留一小时给排障。
+     *
+     * <p>实际取值还要大于批次的超时时间，见 {@link #ttlSecondsAfterFinished}。
+     */
     public static final int TTL_SECONDS_AFTER_FINISHED = 3600;
+
+    /** TTL 相对超时的余量：至少覆盖「deadline 到点后一到两拍才被收尾」的窗口。 */
+    public static final int TTL_MARGIN_SECONDS = 600;
 
     /** 资源名前缀。k8s 名字上限 63 字符，批次 id 是 32 位十六进制，加前缀仍在限内。 */
     public static final String NAME_PREFIX = "paimon-optimize-";
@@ -38,9 +51,25 @@ public final class OptimizerJob {
     private OptimizerJob() {
     }
 
-    /** 资源名。探活用它建 dry-run 对象，提交用它建真对象——同一个函数，同一条命名规则。 */
+    /**
+     * 资源名。探活用它建 dry-run 对象，提交用它建真对象——同一个函数，同一条命名规则。
+     *
+     * <p>这条稳定性还是**提交回收**的安全支点：被回收的批次重投时必须命中同名 Job，
+     * 才不会出现「集群里跑着一个、数据库里说没提交」的状态。
+     */
     public static String resourceName(String jobId) {
         return NAME_PREFIX + jobId;
+    }
+
+    /**
+     * Job 的清理延迟：{@code max(1 小时, 批次超时 + 10 分钟)}。
+     *
+     * <p>为什么不能只用一个固定值：服务端靠读 Job 的 condition 判定成败，Job 一旦被
+     * TTL 清掉，{@code state()} 只能返回 {@code UNKNOWN}，收尾就只能等 deadline。
+     * 因此 TTL 必须**大于**批次的超时时间——否则「执行成功」会被记成「超时」。
+     */
+    public static int ttlSecondsAfterFinished(ResolvedCluster cluster) {
+        return Math.max(TTL_SECONDS_AFTER_FINISHED, cluster.jobTimeoutSeconds() + TTL_MARGIN_SECONDS);
     }
 
     /**
@@ -77,7 +106,7 @@ public final class OptimizerJob {
                 .endMetadata()
                 .withNewSpec()
                     .withBackoffLimit(0)
-                    .withTtlSecondsAfterFinished(TTL_SECONDS_AFTER_FINISHED)
+                    .withTtlSecondsAfterFinished(ttlSecondsAfterFinished(cluster))
                     .withNewTemplate()
                         .withNewMetadata()
                             .addToLabels("app", "paimon-optimizer")

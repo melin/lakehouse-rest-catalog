@@ -25,15 +25,22 @@ import java.util.Map;
  *
  * <p><b>回调必须能被重试</b>：网络抖动、服务端滚动重启都会让一次上报失败，而
  * 「表已经优化完但结果没记上」比「没优化」更难排查——用户看到批次部分失败，
- * 却不知道数据其实已经合过了。因此 {@link #report} 内部自带有限次重试，
+ * 却不知道数据其实已经合过了。因此 {@link #report} 内部自带有限次**退避**重试，
  * 且成功判据只看 HTTP 状态码（服务端上是幂等写入，同一 item 重复上报以最后一次为准）。
+ *
+ * <p>退避而不是立刻重发：多副本部署下最常见的一次失败是「那台服务端刚好被滚动掉」，
+ * 立刻重发只会打到同一个正在关闭的连接上；等几百毫秒之后 Service 已经把流量切走了。
  */
 public final class OptimizationApiClient implements AutoCloseable {
 
     /** 回调令牌的请求头名，与服务端 {@code OptimizationController.TOKEN_HEADER} 一致。 */
     private static final String TOKEN_HEADER = "X-Optimization-Token";
 
+    /** 上报最多尝试几次。三次覆盖「一台服务端关闭 + 一次网络抖动」。 */
     private static final int REPORT_ATTEMPTS = 3;
+
+    /** 退避基数（毫秒）：第 n 次失败后等 {@code n × 基数}。 */
+    private static final long REPORT_BACKOFF_MILLIS = 300L;
 
     private final ObjectMapper mapper = new ObjectMapper()
             // 服务端将来加字段时不该让在跑的任务解析失败
@@ -95,9 +102,27 @@ public final class OptimizationApiClient implements AutoCloseable {
                 return;
             } catch (RuntimeException exception) {
                 last = exception;
+                if (attempt < REPORT_ATTEMPTS) {
+                    backoff(attempt, itemId, exception);
+                }
             }
         }
         throw last == null ? new IllegalStateException("cannot report item " + itemId) : last;
+    }
+
+    /**
+     * 失败后等一会儿再试。
+     *
+     * <p>被打断时保留中断标记并直接放弃重试：这个线程的取消意味着任务正在收尾，
+     * 继续重试只会把停机拖长。
+     */
+    private static void backoff(int attempt, String itemId, RuntimeException cause) {
+        try {
+            Thread.sleep(REPORT_BACKOFF_MILLIS * attempt);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("interrupted while retrying the report of item " + itemId, cause);
+        }
     }
 
     private HttpResponse<String> send(HttpRequest request, String what) {
