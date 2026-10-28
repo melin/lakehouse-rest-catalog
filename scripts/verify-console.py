@@ -106,6 +106,12 @@ CATALOG_SPEC = os.path.join(ROOT, "spec/rest-catalog-open-api-paimon.yaml")
 # （namespaces / identifiers / kebab-case 报文），因此端点比对必须把两份规格
 # 并起来——只比 Paimon 那份的话，新加的 Iceberg 端点会被判成「规格里没有」。
 ICEBERG_SPEC = os.path.join(ROOT, "spec/rest-catalog-open-api-iceberg.yaml")
+# Lance 面是第三份规格，且**挂在另一个前缀下**：控制台写的是服务端真实路径
+# `/lance/v1/namespace/{id}/list`，而规格里是 `/v1/namespace/{id}/list`
+# （见该文件 servers 段——Lance 没有 `/v1/config` 握手，基址由调用方直接拼）。
+# 因此比对时给规格路径补 `/lance`，而不是让控制台写一个它在服务端并不存在的路径。
+LANCE_SPEC = os.path.join(ROOT, "spec/lance-namespace-rest-openapi.yaml")
+LANCE_PATH_PREFIX = "/lance"
 # 管理面的当前契约是 Paimon 官方 REST Management API（spec/rest-management-open-api.yaml）：
 # 只有 labels / permissions / policies 共 7 条路径，服务端实现的 3 个 `permissions`
 # 端点落在里面。catalog / principal / principal-role / 优化 / 表统计这些**扩展端点**
@@ -145,6 +151,11 @@ CATALOG_FORMAT_UTIL = os.path.join(CONSOLE_DIR, "src/utils/catalogFormat.js")
 CATALOG_FORMAT_ENUM = os.path.join(CORE_JAVA, "support/CatalogFormat.java")
 CATALOG_DETAIL_VIEW = os.path.join(CONSOLE_DIR, "src/views/CatalogDetailView.vue")
 BROWSE_VIEW = os.path.join(CONSOLE_DIR, "src/views/BrowseView.vue")
+# Lance 面的只读浏览：组件本身、以及它唯一的调用面（`api/lance.js`）。
+# 两者要一起看——「页面只读」这件事一半由端点表保证（没有写端点可调），
+# 一半由组件保证（不引 confirmDanger / notifySuccess，就没有写动作）。
+LANCE_BROWSE_VIEW = os.path.join(CONSOLE_DIR, "src/views/LanceBrowseView.vue")
+LANCE_API = os.path.join(CONSOLE_DIR, "src/api/lance.js")
 TABLE_VIEW = os.path.join(CONSOLE_DIR, "src/views/TableView.vue")
 PERMISSIONS_VIEW = os.path.join(CONSOLE_DIR, "src/views/PermissionsView.vue")
 
@@ -334,6 +345,7 @@ for match in entry_pattern.finditer(endpoints_source):
 catalog_paths = yaml.safe_load(read(CATALOG_SPEC))["paths"]
 iceberg_paths = yaml.safe_load(read(ICEBERG_SPEC))["paths"]
 management_paths = yaml.safe_load(read(MANAGEMENT_SPEC))["paths"]
+lance_paths = yaml.safe_load(read(LANCE_SPEC))["paths"]
 
 spec_routes = set()
 for path, operations in catalog_paths.items():
@@ -342,6 +354,10 @@ for path, operations in catalog_paths.items():
 for path, operations in iceberg_paths.items():
     for method in operations:
         spec_routes.add((method.upper(), path))
+# Lance 规格里的路径是 `/v1/...`，服务端把它挂在前缀 `/lance` 下（控制台也照这个写）。
+for path, operations in lance_paths.items():
+    for method in operations:
+        spec_routes.add((method.upper(), LANCE_PATH_PREFIX + path))
 # 官方管理规格的路径自带 `/v1/{prefix}`（catalog API 的基址），不拼管理面基址；
 # 扩展端点在 `/api/management/v1/**` 下、没有规格，靠 EXTENSION_ENDPOINTS 兜底。
 for path, operations in management_paths.items():
@@ -1018,6 +1034,8 @@ check("详情页「不声明支持」的条数与 verify-iceberg-endpoints.py �
 #    （端点 / operation / 恒 406）只能与 `verify-lance-endpoints.py` 的台账对账——
 #    这一页是唯一把它们摆在人眼前的地方，漂了不会报错，只会让人对着过期的数字排障。
 lance_script = read(os.path.join(ROOT, "scripts/verify-lance-endpoints.py"))
+lance_browse_view = read(LANCE_BROWSE_VIEW)
+lance_api = read(LANCE_API)
 # 注意：路径里本身就带 `}`（`{id}`），因此只能按「行首的 `}`」切，不能按字符切
 implemented_block = lance_script.split("IMPLEMENTED = {", 1)[1].split("\n}", 1)[0]
 implemented_endpoints = len(re.findall(r'"(?:GET|POST|PUT|DELETE) /v1', implemented_block))
@@ -1032,14 +1050,29 @@ lance_wiring = {
     "Lance 下不发 /v1/config（守卫在 loader 里）": "if (isLance.value) return null" in detail_view,
     "Lance 下藏掉「存储」页签": 'v-if="!isLance" name="storage"' in detail_view,
     "Lance 下藏掉「配置」页签": 'v-if="!isLance" name="config"' in detail_view,
-    "目录浏览：Lance 换成一段说明而不是 Paimon 的列表": 'v-else-if="lanceCatalog"' in browse_view,
-    "目录浏览：Lance 下不出现「新建数据库」": 'v-if="!lanceCatalog"' in browse_view,
+    "目录浏览：Lance 换成独立组件（不是 Paimon 的列表）": '<LanceBrowseView v-else-if="lanceCatalog" />' in browse_view,
+    "目录浏览：Lance 组件只调三条读端点（列举 / 列表 / 描述）": all(
+        name in lance_api
+        for name in ('lanceListNamespaces', 'lanceListTables', 'lanceDescribeTable'))
+        and 'lanceApi.' in lance_browse_view,
+    "目录浏览：Lance 组件没有任何写动作（不引 confirmDanger / notifySuccess）":
+        'confirmDanger' not in lance_browse_view and 'notifySuccess' not in lance_browse_view,
+    "目录浏览：describe 带 check_declared（否则「有没有数据集」恒为未探测）":
+        'check_declared: true' in lance_api,
     "新建表单给出 Lance 的提示（与 Iceberg 那条分开）": "isLanceCatalog(dialog.catalogFormat)" in catalogs_view,
     "表详情：lance-table 藏掉「数据策略」": 'v-if="!isLanceTable" label="数据策略"' in table_view,
 }
 check("Lance catalog 的三个页面都按格式收敛（基址、发现请求、两个页签、浏览入口）",
       all(lance_wiring.values()),
       "\n".join(name for name, ok in lance_wiring.items() if not ok))
+
+# 端点表是「页面能做什么」的上界：只要没有写端点可调，页面上出现一个写按钮也发不出请求。
+# 反过来，有人日后把 declare 加进 endpoints.js 并接上按钮，这一条会先响。
+lance_write_endpoints = re.findall(
+    r"lance(?:Declare|Register|Deregister|Rename|Create|Drop)\w*:", endpoints_source)
+check("端点表里没有 Lance 面的写端点（declare / register / deregister / rename / create / drop）",
+      not lance_write_endpoints,
+      "、".join(lance_write_endpoints))
 
 endpoints_front = re.search(r"const LANCE_ENDPOINTS = (\d+)", detail_view)
 operations_front = re.search(r"const LANCE_OPERATIONS = (\d+)", detail_view)

@@ -168,6 +168,20 @@ export const ENDPOINTS = {
   icebergListFunctions: { method: 'GET', path: '/v1/{prefix}/namespaces/{namespace}/functions' },
   icebergLoadFunction: { method: 'GET', path: '/v1/{prefix}/namespaces/{namespace}/functions/{function}' },
 
+  // ------------------------------------------------------------------ Lance 协议面：只读浏览
+  // 第三个协议面，**不在 `/v1/{prefix}` 下**：资源树是 `/lance/v1/namespace/{id}` 与
+  // `/lance/v1/table/{id}`，`{id}` 是 `catalog$schema$table` 这样的拼接串（一段路径，
+  // 不是三段）。因此这三条路径里的占位符叫 `id` 而不是 `prefix` / `namespace`。
+  //
+  // 路径与 `spec/lance-namespace-rest-openapi.yaml` 逐字一致（规格写的是 `/v1/...`，
+  // 服务端把它挂在 `/lance` 前缀下；`verify-console.py` 第 1 组按这个前缀换算后比对）。
+  //
+  // 只登记这三条：declare / register / deregister / create / drop 都是客户端的写路径，
+  // 控制台对 Lance 面**只读**（`docs/lance-rest-catalog-design.md` §3.2、§7）。
+  lanceListNamespaces: { method: 'GET', path: '/lance/v1/namespace/{id}/list' },
+  lanceListTables: { method: 'GET', path: '/lance/v1/namespace/{id}/table/list' },
+  lanceDescribeTable: { method: 'POST', path: '/lance/v1/table/{id}/describe' },
+
   // ------------------------------------------------------------------ 管理 API：catalog
   listCatalogs: { method: 'GET', path: '/api/management/v1/catalogs' },
   createCatalog: { method: 'POST', path: '/api/management/v1/catalogs' },

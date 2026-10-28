@@ -1,10 +1,10 @@
 <template>
   <div class="pc-page pc-browse">
-    <!-- Iceberg 分支整页换成 IcebergBrowseView，本页的页头与对话框都不该再出现：
+    <!-- Iceberg / Lance 两个分支整页换成各自组件，本页的页头与对话框都不该再出现：
          页头里的动作（刷新 / 新建数据库）是 Paimon 语义的，留下只会出现
-         「同一屏两个页头、两套按钮」。IcebergBrowseView 自带页头与对话框。 -->
+         「同一屏两个页头、两套按钮」。两个子组件自带页头与对话框。 -->
     <PageHeader
-      v-if="!icebergCatalog"
+      v-if="!icebergCatalog && !lanceCatalog"
       title="Catalog"
       :subtitle="`浏览 catalog「${prefix || '未选择'}」下的库与对象。这里看到的元数据与引擎客户端读到的是同一份，改动会立刻反映到它们的查询上。`"
     >
@@ -37,53 +37,12 @@
     <IcebergBrowseView v-if="icebergCatalog" />
 
     <!--
-      Lance catalog：本页不浏览。
-      Lance 的 namespace / 表走 `/lance/v1/**`（不在 `/v1/{prefix}` 下），而这台服务端
-      对 Lance 只做**元数据登记**（declare / register），没有 CreateTable、也不写数据集。
-      因此这里不给一个「看起来能建库建表」的界面——建出来的东西与盘上的数据集对不上。
-      能看的是仓库里的物理目录（`_versions/` 与 `data/`），在 catalog 详情的「文件列表」。
+      Lance catalog：只读浏览（`LanceBrowseView`）。
+      与 Iceberg 一样是另一个组件而不是本页的一串 v-if——id 是 `catalog$schema$table`
+      这样的拼接串、列举只回 id（位置与版本要逐表 describe），契约差异不是参数级的。
+      这里仍然不给任何写入口：建表与 declare 是客户端的活，本服务端对 Lance 没有写入路径。
     -->
-    <div v-else-if="lanceCatalog" class="pc-browse-body">
-      <PanelCard>
-        <SectionTitle title="Lance catalog 不在控制台浏览">
-          <template #tip>
-            <TipNote>
-              控制台的目录浏览调的是 <code>/v1/{prefix}/databases/**</code>（Paimon 协议面），
-              而 Lance 的资源树在 <code>/lance/v1/namespace/{id}</code> 与
-              <code>/lance/v1/table/{id}</code>，两者不是参数级的差别。
-              一期不做 Lance 的浏览页，是为了不给一个「看起来能建库建表」的入口——
-              这台服务端对 Lance 没有写入路径。
-            </TipNote>
-          </template>
-        </SectionTitle>
-        <ul class="pc-lance-points">
-          <li>
-            看「表里到底有什么」：回到 catalog 详情的<b>文件列表</b>，从仓库根往下钻，
-            <code class="pc-mono">_versions/</code> 里是 manifest、
-            <code class="pc-mono">data/</code> 里是数据文件。
-          </li>
-          <li>
-            看元数据：用 Lance 客户端连 <code class="pc-mono">/lance/v1</code>，
-            或在服务端直接调 <code class="pc-mono">ListTableVersions</code> /
-            <code class="pc-mono">ListTableTags</code>（这两个 operation 已实现）。
-          </li>
-          <li>
-            这次登记的库与表仍在服务端的元数据里：<b>事件页</b>能看到 declare / register /
-            deregister 的完整记录（payload 带 <code class="pc-mono">format=LANCE</code>）。
-          </li>
-        </ul>
-        <div class="pc-lance-actions">
-          <el-button size="small" @click="$router.push({ name: 'catalogDetail', params: { catalogName: prefix } })">
-            <el-icon><Back /></el-icon>
-            <span class="pc-btn-text">去 catalog 详情看文件列表</span>
-          </el-button>
-          <el-button size="small" @click="$router.push({ name: 'events' })">
-            <el-icon><Files /></el-icon>
-            <span class="pc-btn-text">看事件流</span>
-          </el-button>
-        </div>
-      </PanelCard>
-    </div>
+    <LanceBrowseView v-else-if="lanceCatalog" />
 
     <div v-else class="pc-browse-body">
       <!-- 左：数据库 -->
@@ -649,6 +608,7 @@ import TimeText from '@/components/TimeText.vue'
 import TipNote from '@/components/TipNote.vue'
 import TablePager from '@/components/TablePager.vue'
 import IcebergBrowseView from '@/views/IcebergBrowseView.vue'
+import LanceBrowseView from '@/views/LanceBrowseView.vue'
 import { catalogApi } from '@/api/catalog.js'
 import { confirmDanger, notifyError, notifySuccess, useRemotePaging, useResource } from '@/composables/index.js'
 import { session } from '@/store/session.js'
@@ -742,9 +702,10 @@ const icebergCatalog = computed(() => isIcebergCatalog(session.catalogByName(pre
 /**
  * 这个 catalog 是不是 Lance 协议面。
  *
- * <p>Lance 与 Iceberg 的共同点是「本页一条路径都不适用」，差别是：Iceberg 换一个组件
- * （`IcebergBrowseView` 走 `namespaces/**`），Lance 换成一段说明——这台服务端对 Lance
- * 只做元数据登记，没有 CreateTable、也不写数据集，给一个能建库建表的界面是错误的承诺。
+ * <p>Lance 与 Iceberg 的共同点是「本页一条路径都不适用」，两页都换成独立组件：
+ * Iceberg 走 `namespaces/**`，Lance 走 `/lance/v1/**`（`LanceBrowseView`）。
+ * Lance 那一页**只读**——这台服务端对 Lance 只做元数据登记，没有 CreateTable、
+ * 也不写数据集，因此它连一个写按钮都不给。
  *
  * <p>同样要**在 loader 里再挡一道**：`refresh` 与 watch 都会绕过模板直接调 load()。
  */

@@ -605,9 +605,9 @@ Paimon/Iceberg 的孤儿清理有「干跑预览 → 确认」两步。Lance 没
      `<catalogUrl>/lance`）解析表名的。让它进来只会把一张**永远跑不了**的表显示成
      「可以开」——比不给页签更糟。
   2. 真正的 Lance 表（`table_type=LANCE`，由 `LanceTableService` 登记）挂在 LANCE 格式的
-     catalog 下，而 Lance catalog 的目录浏览与控制台视图还没有落地
-     （`lance-rest-catalog-design.md` §7：「目录浏览整页换成一段说明」），因此它今天
-     根本到不了表详情页。
+     catalog 下。Lance 的目录浏览已经落地且只读（`LanceBrowseView`，
+     `lance-rest-catalog-design.md` §7），但它点开的是**详情抽屉**而不是表详情页——
+     `table_type=LANCE` 的表今天没有 `TableView` 路由，因此到不了「存储优化」页签。
 
   面板本身对 Lance 已经完全就绪（`LANCE_ACTIONS` + 第三张卡置灰 + 指标口径），
   等 Lance 表详情页落地时，那一行加上 `|| isLanceTable` 就通了——`TableView.vue` 里

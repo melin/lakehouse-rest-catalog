@@ -5,10 +5,13 @@ import jakarta.persistence.Convert;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Index;
+import jakarta.persistence.PrePersist;
+import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
 import jakarta.persistence.UniqueConstraint;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.Setter;
 
@@ -156,8 +159,53 @@ public class TableEntity extends AuditedEntity {
      * 它是一个**硬承诺**（客户端看到 {@code true} 就改用版本端点写），
      * 因此必须有一个「唯一、可索引、能被断言」的落点，
      * 而不是散落在透传属性里的一行字符串。
+     *
+     * <p><b>这里必须是包装类型 {@link Boolean}，不能是 {@code boolean}。</b>
+     * 老库升级时这一列常常是手工 {@code alter table ... add column} 加上去的
+     * （没有 {@code not null default}），存量行因此是 {@code NULL}；
+     * 一旦映射成基本类型，Hibernate 读这些行会在
+     * {@code SetterFieldImpl#set} 抛
+     * {@code IllegalArgumentException: Can not set boolean field ... to null value}——
+     * 报错点离真正的原因（一行历史数据）很远，整张表的读都挂掉，
+     * 而 DDL 里写着 {@code not null} 这件事会让人完全想不到那里。
+     * 读侧用 {@link #isManagedVersioning()} 把 {@code NULL} 解释成 {@code false}
+     * （与默认值一致），写侧由 {@link #normalizeManagedVersioning()} 兜底，
+     * 不让 {@code NULL} 再写回 {@code not null} 的列。
+     *
+     * <p>字段级 {@code @Getter(AccessLevel.NONE)} 是为了只留一个读方法：
+     * 否则 Lombok 会额外生成 {@code getManagedVersioning()}，与
+     * {@code isManagedVersioning()} 撞成同一个 JSON 属性名、两种返回类型。
      */
+    @Getter(AccessLevel.NONE)
     @Column(name = "managed_versioning", nullable = false,
             comment = "Lance：版本是否由服务端记账（managed_versioning）")
-    private boolean managedVersioning;
+    private Boolean managedVersioning = Boolean.FALSE;
+
+    /**
+     * {@code managed_versioning} 的读法：{@code NULL} 一律当 {@code false}。
+     *
+     * <p>与 {@code docs/lance-rest-catalog-design.md} 的「默认 {@code false}」一致：
+     * 老行没有这个开关，等于没开托管版本，而不是「不知道」。
+     */
+    public boolean isManagedVersioning() {
+        return Boolean.TRUE.equals(managedVersioning);
+    }
+
+    /**
+     * 写库前把 {@code NULL} 归一成 {@code false}。
+     *
+     * <p>只改读是不够的：一行 {@code NULL} 被读出来后只要有任何字段更新，
+     * Hibernate 会把整个实体写回去（包括这个 {@code null}），
+     * 撞上列上的 {@code not null} 约束——症状变成
+     * {@code Column 'managed_versioning' cannot be null}，
+     * 看起来像另一个缺陷。回调覆盖所有写入路径，与
+     * {@link AuditedEntity#normalizeAuditColumns()} 是同一个理由。
+     */
+    @PrePersist
+    @PreUpdate
+    public void normalizeManagedVersioning() {
+        if (managedVersioning == null) {
+            managedVersioning = Boolean.FALSE;
+        }
+    }
 }

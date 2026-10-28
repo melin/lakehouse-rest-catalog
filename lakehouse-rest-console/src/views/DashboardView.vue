@@ -134,6 +134,7 @@ import { onConsoleRefresh, useResource } from '@/composables/index.js'
 import { auth } from '@/store/auth.js'
 import { session } from '@/store/session.js'
 import { credentials } from '@/store/credentials.js'
+import { isLanceCatalog } from '@/utils/catalogFormat.js'
 import { formatNumber } from '@/utils/format.js'
 
 /**
@@ -155,6 +156,10 @@ const directory = useResource(async () => {
 })
 
 const configResource = useResource(async () => {
+  // Lance 面没有 `/v1/config` 这条发现端点（Lance 规范里根本不定义它，客户端按 id
+  // 直接打 `/lance/v1/**`）。发了服务端会回「no protocol implementation is registered
+  // for catalog format LANCE」，自检里就成了一个红「失败」——那是在报一个不存在的问题。
+  if (lanceSelected.value) return null
   const prefix = session.state.selectedCatalog
   return catalogApi.config(prefix || undefined)
 })
@@ -162,6 +167,17 @@ const configResource = useResource(async () => {
 const loading = computed(() => directory.loading.value || session.state.loadingCatalogs)
 const error = computed(() => directory.error.value)
 const configData = computed(() => configResource.data.value)
+
+/**
+ * 当前选中的 catalog 是不是 Lance 协议面。
+ *
+ * <p>比的是 `catalogs` 里那一行而不是名字字符串：`catalogFormatOf()` 只在拿到
+ * catalog 对象或取值本身时判得准，光给一个 prefix 只会回落到 Paimon。
+ */
+const lanceSelected = computed(() => {
+  const row = session.state.catalogs.find((item) => item.name === session.state.selectedCatalog)
+  return isLanceCatalog(row)
+})
 
 /**
  * 「目录清单」的空态主文案。
@@ -259,11 +275,15 @@ const checks = computed(() => {
     },
     {
       label: 'catalog API',
-      path: 'GET /v1/config',
-      state: configResource.error.value
-        ? { type: 'danger', text: '失败' }
-        : (configData.value ? { type: 'success', text: '正常' } : { type: 'info', text: '检测中' }),
-      detail: configResource.error.value || '',
+      path: lanceSelected.value ? 'GET /v1/config（Lance 面没有这条握手，不发）' : 'GET /v1/config',
+      state: lanceSelected.value
+        ? { type: 'info', text: '不适用' }
+        : (configResource.error.value
+          ? { type: 'danger', text: '失败' }
+          : (configData.value ? { type: 'success', text: '正常' } : { type: 'info', text: '检测中' })),
+      detail: lanceSelected.value
+        ? 'Lance 规范里没有发现端点，客户端直接按 id 打 /lance/v1/namespace/{id}'
+        : (configResource.error.value || ''),
     },
     {
       label: '访问令牌',

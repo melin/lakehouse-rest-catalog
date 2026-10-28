@@ -55,12 +55,12 @@ export const CATALOG_FORMAT_NOTES = {
   [ICEBERG]:
     'Iceberg REST 协议面：客户端走 /v1/{prefix}/namespaces/**，表元数据以仓库里的 '
     + 'metadata.json 为准；没有 Paimon 的分区、消费者与语义视图。'
-    + '控制台一期不浏览 Iceberg 表，库里与仓库里的文件仍可在详情页看到。',
+    + '控制台的目录浏览与表详情按这一面另做了一套，写路径（快照回滚与过期）仍不代劳。',
   [LANCE]:
     'Lance REST 协议面：客户端走 /lance/v1/namespace/{id} 与 /lance/v1/table/{id}，'
     + '基址不含 /v1/{prefix}，也没有 /v1/config 握手（客户端直接按 id 打）。服务端只做元数据：'
     + 'declare / register 两条登记路径，加版本与标签的只读；manifest 由客户端写进仓库。'
-    + '控制台一期只给「概览」与「文件列表」，不浏览 Lance 的库表。',
+    + '控制台只读浏览它的命名空间与表（没有建表 / 删除入口），表详情页与「数据策略」不给。',
 }
 
 /**

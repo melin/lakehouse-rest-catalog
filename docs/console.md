@@ -144,7 +144,7 @@ lakehouse-rest-console/
 | `/login` | 登录 | 按服务端下发的登录方式渲染页签：用户名密码（默认）/ 主体凭据（OAuth 2.0 客户端凭据）/ SSO（OIDC）/ 静态令牌（需配 `auth.tokens`）。**未开启的方式不渲染**；一个可用方式都没有时说明该开哪个配置项。门禁单开时先显示一句「只挡住界面」。不套管理布局 |
 | `/auth/callback` | SSO 回调 | 校验 `state` → 用授权码换令牌 → 让服务端确认 → 回跳原页面。不套管理布局 |
 | `/` | 控制台概览 | 统计块（三个数量）、服务端配置摘要、**连接自检**、catalog 清单、`GET /v1/config` 展示 |
-| `/browse` | 目录浏览 | 按选中 catalog 的**表格式**换一套实现：Paimon catalog 是「左库右对象、三页签（表/视图/函数；语义视图的 4 条端点仍在服务端，控制台不再暴露）」；Iceberg catalog 换成 `IcebergBrowseView`（左命名空间右表/视图，见 §4.6）。Paimon 侧能力：建库、建表（Paimon 表 / Format 表 / Object 表三种表格式，Lance 表留在选项里但禁用，见 [console-catalog-detail.md](console-catalog-detail.md) §3.5）、注册表、按表 ID 定位、重命名、删除、详情抽屉。表页签列出表名 / 表格式 / 表类型（Managed 或外部表）/ 创建时间 / 元数据更新时间 / 操作六列，数据取自 `table-details`（只回表名的 `/tables` 给不出这几列）；「元数据更新时间」是服务端这条表记录的最后改动时间，快照提交与回滚也会推动它。表页签的过滤为空时说明「没有匹配 ×××」，与「库里没有表」区分开。**建表入口在「表」页签工具条的右侧**（页头只留刷新与新建数据库）：三类对象的工具条都写在 `ResourceState` 之外——那个组件命中空态时只渲染 `el-empty`、默认插槽整个不渲染，工具条若在里面，「这个库还是空的」这一刻就正好没有新建按钮 |
+| `/browse` | 目录浏览 | 按选中 catalog 的**表格式**换一套实现：Paimon catalog 是「左库右对象、三页签（表/视图/函数；语义视图的 4 条端点仍在服务端，控制台不再暴露）」；Iceberg catalog 换成 `IcebergBrowseView`（左命名空间右表/视图，见 §4.6）；Lance catalog 换成 `LanceBrowseView`（左命名空间右表，**只读**——不带建库 / 建表 / 删除入口，见 §4.6.1）。Paimon 侧能力：建库、建表（Paimon 表 / Format 表 / Object 表三种表格式，Lance 表留在选项里但禁用，见 [console-catalog-detail.md](console-catalog-detail.md) §3.5）、注册表、按表 ID 定位、重命名、删除、详情抽屉。表页签列出表名 / 表格式 / 表类型（Managed 或外部表）/ 创建时间 / 元数据更新时间 / 操作六列，数据取自 `table-details`（只回表名的 `/tables` 给不出这几列）；「元数据更新时间」是服务端这条表记录的最后改动时间，快照提交与回滚也会推动它。表页签的过滤为空时说明「没有匹配 ×××」，与「库里没有表」区分开。**建表入口在「表」页签工具条的右侧**（页头只留刷新与新建数据库）：三类对象的工具条都写在 `ResourceState` 之外——那个组件命中空态时只渲染 `el-empty`、默认插槽整个不渲染，工具条若在里面，「这个库还是空的」这一刻就正好没有新建按钮 |
 | `/tables/:prefix/:database/:table` | [表详情](console-table-detail.md) | 十页签：详细信息 / **血缘** / 数据预览 / 快照 / 标签 / 分支 / **文件列表** / 数据访问 / **数据策略** / **存储优化**（血缘与数据预览、数据策略都不随表格式伸缩：页签自己判空，见 [console-table-detail.md](console-table-detail.md) §1.1）；含快照与标签的**回滚**。**没有「变更」页签**：改表结构走 HTTP 或 Spark SQL，理由见该文档 §2。详细信息首屏的四张统计卡片取自 `getTableSnapshot`（三个文件统计的来路与「什么时候会空」见该文档 §2.1），内含**字段列表 / 分区列表**二级页签（名称过滤 + 分页：字段表在浏览器里切片，分区列表走远程分页且前缀过滤下推，分区按需加载）。文件列表按表目录物理内容列一层（根是表目录，出不了表外），目录名可点下钻、文件可下载、前缀过滤与页码都下推服务端。存储优化页签承载表级策略与执行历史（见 [table-optimization.md](table-optimization.md) §7）。血缘页签给三视图（图 / 邻接表 / 列映射），图是 Canvas 与「跳数即层号」的纯函数布局（见 [lineage-design.md](lineage-design.md) §9）。授权不在这张表上做——表级权限统一到「权限管理」页 |
 | `/catalogs` | Catalogs | 列出 / 创建 / 详情 / 更新（带版本）/ 删除。名称链到详情页；操作列另有「浏览库与对象」直达 `/browse`。页头带**定时刷新**开关与节拍（默认开启、5 秒，偏好存 localStorage；见 §4.9） |
 | `/catalogs/:catalogName` | [Catalog 详情](console-catalog-detail.md) | 四页签：概览 / 存储 / 文件列表 / 配置。**存储**页回答「哪些表该做 compaction」：文件数、存储、平均文件大小、小文件占比（按库聚合），两种格式都支持，口径参考 AWS《Monitoring Iceberg workloads》但取数只用已有端点，见 [console-catalog-detail.md §3.2](console-catalog-detail.md)。文件列表按仓库物理目录列一层，目录名可点下钻、带面包屑与「返回上级」；只读，不提供删除与建目录。**配置页签**两种格式是同一套设计：都编辑「表默认参数」（`table-default.*`，见 [catalog-api-endpoints.md](catalog-api-endpoints.md#catalog-级默认表属性table-default)），Iceberg 另附只读的 `/v1/config` `defaults` / `overrides`（连接参数，非表属性）；其余 catalog 属性不在此页重复展示（概览已有） |
@@ -255,6 +255,11 @@ lakehouse-rest-console/
 而其表现是「每个页面都是空列表」，看不出根因。它逐个探测控制台依赖的端点，
 把失败的那一个连同 HTTP 状态与错误消息一起列出来，一眼能分辨
 「服务端没起来」「令牌不对」「路径写错了」。
+
+第三条探测是 `GET /v1/config?warehouse=<当前 catalog>`，**选中 Lance catalog 时不发**，
+显示为「不适用」并说明理由：Lance 规范里没有这条发现端点，发了服务端只会回
+`no protocol implementation is registered for catalog format LANCE`，那一行就成了
+一个在报「不存在的问题」的红「失败」。
 
 ### 4.2 表单取值的来源
 
@@ -376,17 +381,34 @@ Iceberg 的 drop 非级联、非空回 409，误触成本高，已按需求把�
   页面上也直说了这一点。
 - **不按表 ID 定位。** Iceberg 协议面没有 `tables/id/{id}` 这条反查端点。
 
-### 4.6.1 Lance catalog：不给浏览页
+### 4.6.1 Lance catalog：只读浏览
 
-Lance catalog 打开 `/browse` 时是一段说明，不是列表——**这台服务端对 Lance 没有写入路径**
-（没有 `CreateTable`，数据集由客户端写进仓库，服务端只 declare / register），
-给一个能建库建表的界面，用户建出来的东西与盘上的数据集对不上，而错误现场在几小时后的客户端查询里。
+Lance catalog 打开 `/browse` 时渲染 `LanceBrowseView`：左命名空间右表，
+点表名开详情抽屉。**只读——没有建库、建表、登记、重命名、删除任何入口。**
+
+浏览与建表曾被混在一起，所以早先干脆整页不给。两件事拆开看就清楚了：浏览只需
+`ListNamespaces` / `ListTables` / `DescribeTable`，这三条服务端都有（§7 的 Lance 面），
+而写入是另一回事——**这台服务端对 Lance 没有建立数据的路径**（没有 `CreateTable`，
+数据集由客户端写进仓库，服务端只 declare / register）。给一个能建库建表的界面，
+用户建出来的东西与盘上的数据集对不上，而错误现场在几小时后的客户端查询里。
+因此本页只做「看得见」，不做「改得动」。
+
+三条取数决定：
+
+| 位置 | 怎么取 | 理由 |
+| --- | --- | --- |
+| 命名空间 | `GET /lance/v1/namespace/{id}/list`，`id` 从 catalog 名起逐级拼 | Lance 的 `id` 是 delimiter 拼的整串（`catalog$schema$table`），没有 `/v1/{prefix}` 那种前缀路径 |
+| 表列表 | `GET /lance/v1/namespace/{id}/table/list`，行里存**完整 id**，界面只显示 `lanceLeaf(id)` | 服务端回的是完整 id 而非短名（照短名拼会得到 `cat$db$cat$db$tbl`）；详情要的也是整串 |
+| 详情 | `POST /lance/v1/table/{id}/describe`，带 `check_declared=true` | 详情抽屉显示 id / 位置 / 版本 / `is_only_declared` / `managed_versioning` / 字段。表只有登记没有数据集时服务端回 code 19，页面把这句翻成「先由客户端写入数据，详细元数据才有内容」，不当错误弹 |
+
+「读取详细元数据」按钮再发一次 `load_detailed_metadata=true`——默认不带，
+因为那要多读一遍 manifest，浏览时用不上。
 
 三处伴随的收敛（都由第 12 组钉住）：
 
 | 位置 | 收敛成什么 | 理由 |
 | --- | --- | --- |
-| 目录浏览 | 一段「去哪儿看」的说明，且**不出现**「新建数据库」 | 本页调的是 `/v1/{prefix}/databases/**`，那面对 Lance catalog 是 404 |
+| 目录浏览 | 只读列表，且**不出现**「新建数据库」/「建表」 | 写入那一套调的是 `/v1/{prefix}/databases/**` 与建表端点，对 Lance catalog 是 404 / 不实现 |
 | catalog 详情 | 只剩「概览」与「文件列表」 | 「存储」的数字来自快照 / 表元数据统计；「配置」编辑的 `table-default.*` 只在建表时合并 |
 | 表详情 | 藏掉「数据策略」 | 行过滤 / 列脱敏在 Spark 侧按 `PolicyRelation` 注入，Lance 的读取路径不经过那一层 |
 
@@ -540,7 +562,7 @@ python3 scripts/verify-console.py      # 退出码 0 通过 / 1 不一致 / 2 �
 PYTHON=/path/to/python3 scripts/verify-console.py   # 多解释器时指定装了 PyYAML 的那个
 ```
 
-它**不构建前端、不启动服务端**，只做静态比对，因此可以放进提交前的检查。24 组 171 项：
+它**不构建前端、不启动服务端**，只做静态比对，因此可以放进提交前的检查。24 组 172 项：
 
 | 组 | 校验内容 |
 | --- | --- |
@@ -555,7 +577,7 @@ PYTHON=/path/to/python3 scripts/verify-console.py   # 多解释器时指定装�
 | 9. 下拉候选来源 | 每个 `el-select` 都声明了候选来源（`el-option` / `:options` 等）；确属自由输入的要在源码里写 `el-select-free-input` 标记显式豁免（否则「下拉是空的」这类 bug 只有打开页面才看得到） |
 | 10. 静态凭据 | catalog 自带 AK/SK 这条链路横跨四个文件（服务端 DTO 的字段名、`supportsStaticCredentials` 认可的类型、meta 里的能力开关、前端表单），逐处对齐：字段名与三种类型的 record 参数逐字一致、类型集合两侧一致、**规格里确实没有这两个字段**（否则不再是扩展，要先对齐语义）、能力开关从 meta 一路传到表单 prop、能力关着时给的是可操作提示而不是把字段藏起来、读路径仍做脱敏 |
 | 11. 优化参数键 | 存储优化各动作的表单字段名与服务端逐字一致：Paimon 那份对 `OptimizationOptions.KNOWN_KEYS`、Iceberg 那份对 `IcebergOptimizationOptions.KNOWN_KEYS`、Lance 那份对 `LanceOptimizationOptions.KNOWN_KEYS`，并断言三套键**两两不相等**、Lance 的 `orphan` 是空集（键名写错的表现是保存时吃一个 400，而编译、类型检查与单元测试都不会报；三套键混用的表现更糟——`retain-min` / `retain-last` / `target-rows-per-fragment` 被互相收下、然后静默不生效） |
-| 12. catalog 表格式 | `PAIMON` / `ICEBERG` / `LANCE` 这条链路跨六处：服务端 `CatalogFormat` 枚举 ↔ 前端兜底取值逐字一致、meta 下发的候选与默认值都来自枚举本身、新建表单从 meta 取候选与默认值且提交体带 `catalogFormat`、**编辑不回传它**（格式不可变）、列表有徽标与格式筛选（筛选与徽标用同一个归属函数）、三个页面按 catalog 格式伸缩**且在 loader 里就挡住请求**、详情页的能力清单读服务端 `/v1/config` 而不是前端抄一份、**权限页的候选来源按格式分派**（Iceberg 走 `namespaces/**` 并按层递归、Paimon 走 `databases/**`，选错来源的表现是空下拉而不是报错）、**两种格式的「配置」页签是同一套设计**（都编辑 `table-default.*`，标题按格式换名；Iceberg 另附只读的 `/v1/config` 的 `defaults` / `overrides`——那是连接参数，不是表属性；Paimon 不再重复列出概览已有的「其它属性」）。**Lance 另有三处独有**：详情页不发 `/v1/config`（规范里没有这个握手，发了只会拿到 404，而 404 会以「读不到」出现在概览上）、基址换成 `/lance/v1/namespace`、以及那一栏的三个数字（端点 / operation / 恒 406）与 `verify-lance-endpoints.py` 的台账**相加**对账（21 = 6+8+5+2，19 = 21 − 2 条兼容形态，35 = `NOT_IMPLEMENTED_OPERATIONS`）；浏览页对 Lance 换成一段说明而不是 Paimon 的列表、且不出现「新建数据库」；表详情页对 `lance-table` 藏掉「数据策略」（它的读取路径不经过策略注入层，那一页只能是「存得下、永不生效」） |
+| 12. catalog 表格式 | `PAIMON` / `ICEBERG` / `LANCE` 这条链路跨六处：服务端 `CatalogFormat` 枚举 ↔ 前端兜底取值逐字一致、meta 下发的候选与默认值都来自枚举本身、新建表单从 meta 取候选与默认值且提交体带 `catalogFormat`、**编辑不回传它**（格式不可变）、列表有徽标与格式筛选（筛选与徽标用同一个归属函数）、三个页面按 catalog 格式伸缩**且在 loader 里就挡住请求**、详情页的能力清单读服务端 `/v1/config` 而不是前端抄一份、**权限页的候选来源按格式分派**（Iceberg 走 `namespaces/**` 并按层递归、Paimon 走 `databases/**`，选错来源的表现是空下拉而不是报错）、**两种格式的「配置」页签是同一套设计**（都编辑 `table-default.*`，标题按格式换名；Iceberg 另附只读的 `/v1/config` 的 `defaults` / `overrides`——那是连接参数，不是表属性；Paimon 不再重复列出概览已有的「其它属性」）。**Lance 另有三处独有**：详情页不发 `/v1/config`（规范里没有这个握手，发了只会拿到 404，而 404 会以「读不到」出现在概览上）、基址换成 `/lance/v1/namespace`、以及那一栏的三个数字（端点 / operation / 恒 406）与 `verify-lance-endpoints.py` 的台账**相加**对账（21 = 6+8+5+2，19 = 21 − 2 条兼容形态，35 = `NOT_IMPLEMENTED_OPERATIONS`）；浏览页对 Lance 挂独立组件 `LanceBrowseView`（`/lance/v1/namespace/{id}/list` + `/table/list` + `describe`，**只读**：组件不引 `confirmDanger` / `notifySuccess`，端点表里也没有 declare / register / create / drop 可调）、`describe` 带 `check_declared` 以回答「表到底建出来没有」；表详情页对 `lance-table` 藏掉「数据策略」（它的读取路径不经过策略注入层，那一页只能是「存得下、永不生效」） |
 | 13. Iceberg 浏览 | Iceberg catalog 的目录浏览走 `namespaces/**` 而不是 `databases/**`。这一组钉的是**契约形状**，不是像素：13 条 `iceberg*` 端点逐条对 Iceberg 规格（不靠第 1 组的并集蒙混）、浏览页只调 `icebergApi` 不混用 `catalogApi`、namespace 路径段用 `0x1F` 拼（点号只是显示口径）、分页键是 `pageSize` 而不是 `maxResults`、三个列表（表 / 视图 / 函数）都按 `identifiers` 取（逐表 `loadTable` 只许出现在表详情页）、建表体是 Iceberg 的 `schema` / `partition-spec`（`schema-id`、`required`、`source-id`、`field-id`）、浏览页与 API 层都不出现 `/databases`、浏览页不再提供删除命名空间的入口（按钮已移除）、两页共用的骨架样式留在全局；以及 **Iceberg 表详情页**（`IcebergTableView`）：有独立路由、只调 `icebergApi`、文件列表走 catalog 级文件端点（不用 Paimon 的 `tableId` 端点）、快照处理 `-1` 无快照哨兵、存储优化页签复用共用面板并显式传 `format="ICEBERG"`（页签自己调端点会绕过 format 分派）、建表表单的 `format-version` 提供 1/2/3 |
 | 14. 存储字段分层 | catalog 表单的字段拆成「基本 / 高级」两张表，高级那张进默认收起的折叠区。判据对着**服务端 record**，不在前端另抄名单：两张表合并后与 record 的专属字段**不丢不多**、两表之间不重叠、`build()` 既**不读折叠状态**又仍读合并后的视图、`FILE` 没有高级字段、折叠区按「有没有高级字段」出现而非硬编码某类型、默认收起、收起态给出计数与「可以不管它」的说明 |
 | 15. 事件页 | 事件页从「游标增量」改成「远程分页」之后，最容易退化的两件事要钉住：`listEvents` 端点路径与端点名一致、`EventsView` 真的接了 `useRemotePaging`（页码下推、`total` 取自 `page.total`）——游标只能往前看，页码模式才能往回翻历史；**事件类型也跟着下推**（类型只在前端筛时只筛得到当页，筛出空页会被读成「窗口里没有这种事件」）、事件类型清单逐个覆盖 `CatalogEventType` 的 wire 值、**类别清单逐个覆盖 `CatalogEventCategory` 的取值**、类别作为 `category` 参数随页码一起发出、目标类型显示名逐个覆盖 `CatalogEvent` 的 `TARGET_*` 常量（前端另抄名单漏了新类型的表现是那条事件显示成 wire 原文，静默）、`/events` 有独立路由并进侧边菜单 |
@@ -577,8 +599,9 @@ PYTHON=/path/to/python3 scripts/verify-console.py   # 多解释器时指定装�
 - **按格式伸缩那一项断言的是「loader 里挡了请求」，不是「模板里有 `v-if`」。**
   只在模板上藏内容，请求照样发得出去——对一个 Iceberg catalog 打 Paimon 的
   `/databases/**`，页面上会留下一串 404，看起来像故障。
-  目录浏览这一条在 Iceberg 浏览落地后变成两半：**换页那一半**断言
-  `<IcebergBrowseView v-if="icebergCatalog" />` 真的在，**挡请求那一半**
+  目录浏览这一条在 Iceberg / Lance 浏览落地后变成两半：**换页那一半**断言
+  `<IcebergBrowseView v-if="icebergCatalog" />` 与
+  `<LanceBrowseView v-else-if="lanceCatalog" />` 真的在，**挡请求那一半**
   断言 Paimon 的五个 loader 仍保留守卫——`watch`、刷新与「重试」都会绕过模板
   直接调 `load()`，只换页不挡请求仍然会发出去。
 - **能力清单那一项断言「读 `/v1/config`」并且「源码里没有端点字面量」。**
