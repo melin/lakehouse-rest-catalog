@@ -5,6 +5,7 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
+import org.springframework.transaction.annotation.Transactional;
 
 /**
  * 调度通道租约的抢/续/让。
@@ -12,6 +13,13 @@ import org.springframework.data.repository.query.Param;
  * <p><b>抢与续刻意拆成两条语句。</b>合成一条时「只在易主时 +1」需要在 {@code set} 里判断旧值，
  * 而 MySQL 的 {@code UPDATE} 赋值按从左到右生效，后一个表达式读到的是前面刚写的新值——
  * 这种依赖求值顺序的写法迟早被人改错。两条语句各自只有一个条件，读起来就是它的语义。
+ *
+ * <p><b>每条语句自带 {@code @Transactional}，不能省。</b>调用方是 {@code @Scheduled} 节拍
+ * （{@code SchedulerLease#tryAcquire}）与 {@code @PreDestroy}（{@code releaseAll}），这两个
+ * 上下文里都没有事务，而 {@code @Modifying} 的 JPQL 必须在活动事务里执行，否则抛
+ * {@code "No EntityManager with actual transaction available"}——每拍一条 ERROR 刷日志、
+ * 且租约永远抢不到，多副本退化成「每台都跑」。也不该指望在调用方补：{@code releaseAll}
+ * 调 {@code release} 是自调用，注解不生效。每条语句本来就是单条条件更新（CAS），独立事务足够。
  */
 public interface SchedulerLeaseRepository extends JpaRepository<SchedulerLeaseEntity, String> {
 
@@ -22,6 +30,7 @@ public interface SchedulerLeaseRepository extends JpaRepository<SchedulerLeaseEn
      * 我自己上一次崩溃留下的过期租约、以及行是新建的（{@code expires_at} 为空）。
      */
     @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Transactional
     @Query("update SchedulerLeaseEntity l"
             + " set l.leaseOwner = :me, l.acquiredAt = :now, l.expiresAt = :expires,"
             + "     l.fencingToken = l.fencingToken + 1, l.updatedAt = :now"
@@ -38,6 +47,7 @@ public interface SchedulerLeaseRepository extends JpaRepository<SchedulerLeaseEn
      * 那段空窗里别人完全可能已经抢走（哪怕它还没开始跑）。过期之后走 {@link #acquire}。
      */
     @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Transactional
     @Query("update SchedulerLeaseEntity l set l.expiresAt = :expires, l.updatedAt = :now"
             + " where l.name = :name and l.leaseOwner = :me and l.expiresAt > :now")
     int renew(@Param("name") String name, @Param("me") String me,
@@ -53,6 +63,7 @@ public interface SchedulerLeaseRepository extends JpaRepository<SchedulerLeaseEn
      * 见 {@code docs/optimization-multi-instance-design.md} §5.1。
      */
     @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Transactional
     @Query("update SchedulerLeaseEntity l set l.expiresAt = 0, l.updatedAt = :now"
             + " where l.name = :name and l.leaseOwner = :me")
     int release(@Param("name") String name, @Param("me") String me, @Param("now") long now);
