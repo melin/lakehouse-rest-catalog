@@ -1,6 +1,10 @@
 # Lance REST Catalog：把 Lance 数据集纳入同一目录服务
 
-> 状态：**设计稿，未实现**（本文只给方案与需求清单，不含代码）。
+> 状态：**P0 已落地**（2026-10-28）。13 个 operation + 「未实现 operation 恒 406」的兜底
+> 控制器都已实现并通过测试（`LanceRestCatalogApiTests` / `LanceIdParsingTests` /
+> `LanceEndpointAuthorizationTests`）；**P1（2 个版本只读）与 P2（3 个版本写）未做**，
+> 控制台只读那一节（§7）也还没开工。下面的正文仍是当时的设计口径，
+> 与实现有偏差的地方在 [§12 实测偏差](#12-实测偏差落地后回填) 里逐条记着。
 > 对标：Apache Gravitino 1.3.1 的 [Lance REST service](https://gravitino.apache.org/docs/1.3.1/lance-rest-service)，
 > 规范以 [Lance Namespace / REST Catalog](https://lance.org/format/namespace/) 为准（OpenAPI 文档版本 `1.0.0`，
 > operation 版本 `V1`，共 **48 个 operation**）。
@@ -579,6 +583,53 @@ DescribeTable / DeclareTable 的请求参数 vend_credentials=true
 | manifest | `_versions/` 下的 protobuf，一个版本一份，含 schema 与 fragments | 不是 Iceberg 的 `metadata.json` |
 | `managed_versioning` | 版本由 catalog 记账（`true`）还是 Lance 原生（`false`） | 我们恒 `false` |
 | declared-only | 登记了但存储里还没有数据集 | 不等于「空表」（空表也有 manifest） |
+
+---
+
+## 12. 实测偏差（落地后回填）
+
+P0 落地时与本文口径不一致、或本文没写到但实现必须决定的地方，都记在这里。
+**后面的项目若要改这一面，先读这一节**——它的信息密度比上面任何一节都高。
+
+### 12.1 已落地 / 未落地
+
+| 项 | 状态 |
+| --- | --- |
+| P0 的 13 个 operation | 已实现（`LanceNamespaceController` + `LanceTableController`） |
+| 其余 35 个 operation | `LanceUnsupportedController`（最低优先级兜底）恒回 **406 + code 0** |
+| P1 的 2 个（版本只读）· P2 的 3 个（版本写） | 未做，走兜底 406 |
+| 控制台只读（§7） | 未做；只把 `LANCE` 加进了 `catalogFormat.js`（徽标与新建表单的取值集合），目录浏览仍是 Paimon 那一套 |
+| `properties_json`（2 列之一） | 已加（`lakehouse_table`）；`table_version` 属 P1，未加 |
+
+### 12.2 四处「静默放行」——都是设计稿没写、实现里才撞上的
+
+1. **`/lance/**` 不在 `/v1/**` 之下。** `BearerAuthInterceptor` 与 `AuthorizationInterceptor`
+   原本各只登记 `/v1/**`，漏任何一处 = 整个面不认证 / 不授权，**且既有测试一条都不红**。
+   是 `LanceEndpointAuthorizationTests` 把它抓出来的（匿名请求拿到 200）。
+2. **`getRequestURI()` 给的是编码后的串。** catalog 名会变成 `cat%24sales`，而不存在的
+   catalog 在授权判定里是「跳过」而不是「拒绝」——于是又一个静默放行。授权层解析 id
+   必须逐段 `URLDecoder.decode`。
+3. **未登记的 Lance 路径要回退到 `CATALOG:DESCRIBE` 而不是返回 `null`。** 返回 `null` 会让
+   拦截器抛 403，于是「这个 operation 不支持」变成「你没权限」，406 那条语义就没了。
+4. **兜底控制器的优先级必须最低。** `/lance/v1/**` 与具体端点同路径前缀，用
+   `@Order` 之外的手段（映射优先级的天然顺序）才能保证不被它吃掉；否则 13 个端点全变 406。
+
+### 12.3 三处与本文写法不同
+
+- **`is_only_declared` 是三态**（`true` / `false` / `null`），`null` = 这次没做存在性检查
+  （没带 `check_declared` 或存储不可达）。它是「has dataset」的**取反**，第一次实现时
+  写反了方向。
+- **`declare` 不落任何文件，`register` 只做弱检查**（探 `_versions/1.manifest` 与
+  `_versions/latest_version_hint.json`），探不到不报错——存储不可达时是 `null` 而不是失败。
+- **`LanceException` 刻意不继承 `ApiException`**：两者「真值字段」不同（Lance 是 `code` 决定
+  状态码），继承下去会让 `GlobalExceptionHandler` 的那条分派链多一个要猜的分支。
+
+### 12.4 测试里两个只有 MockMvc 才有的坑
+
+- `MockMvcRequestBuilders.post(String)` 会把 `%24` 再编码成 `%2524`；构造请求必须走
+  `post(URI.create(path))`。
+- 表 id 里的 `delimiter` 缺省时不能是 `null`，否则 `join()` NPE——`LanceIds.Id.join()`
+  现在对 null / 空串回落到默认 `$`。
 
 ---
 

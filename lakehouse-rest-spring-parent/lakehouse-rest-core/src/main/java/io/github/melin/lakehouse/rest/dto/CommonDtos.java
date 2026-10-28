@@ -68,4 +68,19 @@ public final class CommonDtos {
         public record IcebergError(String message, String type, Integer code) {
         }
     }
+
+    /**
+     * Lance 错误响应：{@code {error, code, detail, instance}}（RFC 7807 风格）。
+     *
+     * <p>与另两套形状的差别不止是字段数：这里 {@code code} 是 **Lance 自己的枚举**，
+     * HTTP 状态码由它算出来（见 {@code support.LanceErrors.Code}），因此
+     * {@code 404} 不一定对应 {@code code=4}——不带表 id 的路径上 404 是
+     * {@code NamespaceNotFound(1)}。
+     *
+     * <p><b>四个字段一个都不能多。</b>Lance 的客户端是 OpenAPI 生成的代码，
+     * 多一个字段就会在反序列化时报错，而那个报错会覆盖掉真正的失败原因。
+     * {@code detail} 与 {@code instance} 可空，但键本身照规范出现。
+     */
+    public record LanceErrorResponse(String error, Integer code, String detail, String instance) {
+    }
 }

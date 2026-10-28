@@ -14,11 +14,12 @@
 REST Management API**（RBAC 管理面）与一个 **Vue 3 管理控制台**；另有 Spark SQL 语法扩展，
 用 SQL 管理主体、角色与授权。
 
-三个对外面 + 一个界面 + 一份接口文档（记牢这几个基址，改动都要落在对应面上）：
+四个对外面 + 一个界面 + 一份接口文档（记牢这几个基址，改动都要落在对应面上）：
 
 | 面 | 基址 | 规格来源 | 鉴权 |
 | --- | --- | --- | --- |
 | Catalog API（数据面） | `/v1/{prefix}/...` + `/v1/config` | `spec/rest-catalog-open-api-paimon.yaml` | `lakehouse.rest.auth.*` |
+| **Lance Catalog API** | **`/lance/v1/...`** | Lance Namespace REST spec（`docs/lance-rest-catalog-design.md`；spec 副本未入库，见该文 §9） | 同上，**且必须同时登记在认证与授权两条拦截器的路径清单里**（`WebConfig` 两处各一行，漏一处就是整个面不判权且无测试发现） |
 | Management API | `/api/management/v1/...` | Paimon REST Management API：`spec/rest-management-open-api.yaml`（官方只覆盖 `permissions` 3 个；扩展端点的形状源自已移除的 Polaris 规格） | 同上 |
 | Console API + OAuth | `/api/console/v1/...`、`/api/catalog/v1/oauth/tokens` | 自有（`docs/console-auth.md`） | 同上（登录端点豁免） |
 | 控制台界面 | `/console/`（SPA 深链回退 `index.html`） | — | 开关 `lakehouse.rest.auth.console.required` |
@@ -58,7 +59,7 @@ REST Management API**（RBAC 管理面）与一个 **Vue 3 管理控制台**；�
    Spark 模块直接坏。**不要把 Boot 提为根聚合器的父。**
    两条附带约束：
 
-   - **`<relativePath>` 不用写——四个服务端模块的目录就嵌在 `spring-parent/` 里面。**
+   - **`<relativePath>` 不用写——五个服务端模块的目录就嵌在 `spring-parent/` 里面。**
      子目录到父 POM 的距离是默认值：`../pom.xml` 恰好就是 `spring-parent/pom.xml`。
      反过来才是坑：若把它们放成仓库根下的**平级兄弟**目录，就必须显式写
      `<relativePath>../lakehouse-rest-spring-parent/pom.xml</relativePath>`——默认值会解析到
@@ -92,11 +93,13 @@ REST Management API**（RBAC 管理面）与一个 **Vue 3 管理控制台**；�
    Maven 不受影响（`sendJavaToScalac=false`，scalac 读的是 class 文件），于是「Maven 绿、IDE 红」。
    被 Scala 摸到（**按名字或靠返回值推断都算**，如 `client.listCatalogs().asScala.map { c => c.name() }`）
    的类型一律写普通静态嵌套类，见 `ManagementApiClient` 里五个摘要类型及其上方注释。
-10. **模块依赖方向由 maven-enforcer 守着，破方向即构建失败。** 三条不变量：
+10. **模块依赖方向由 maven-enforcer 守着，破方向即构建失败。** 四条不变量：
     `core` 不含任何表格式依赖（`org.apache.paimon:*` / `org.apache.iceberg:*` 一律禁止）；
-    两个协议面（`protocol-paimon` 与 `protocol-iceberg`）**互不依赖**；
-    `iceberg-core` 只准出现在 `protocol-iceberg`。
-    合法依赖图：`core ← storage ← protocol-paimon / protocol-iceberg ← server`（箭头读作「被谁依赖」），
+    三个协议面（`protocol-paimon` / `protocol-iceberg` / `protocol-lance`）**两两互不依赖**；
+    `iceberg-core` 只准出现在 `protocol-iceberg`；`protocol-lance` **不引任何 Lance / 格式库**
+    （manifest 由客户端写，服务端只做元数据）。
+    合法依赖图：`core ← storage ← protocol-paimon / protocol-iceberg / protocol-lance ← server`
+    （箭头读作「被谁依赖」），
     `spark` / `optimizer` 不参与这条链。三个容易踩的点：
     - **`searchTransitive` 的默认值是 `true`**（查整棵依赖树），`core` / `storage` /
       `protocol-paimon` 靠它拦住「传递依赖里混进格式库」。但 `server` 必须显式写
@@ -119,7 +122,7 @@ REST Management API**（RBAC 管理面）与一个 **Vue 3 管理控制台**；�
 # ---- 构建 / 测试（JDK 17 或 21）----
 JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn -o -DskipTests clean install   # 全量（11 个模块，含 enforcer 校验）
 JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn -o -DskipTests -pl :lakehouse-rest-server -am clean package
-                                                # 只要服务端 jar（-am 会连上游 core/storage/两个协议面一起构建）
+                                                # 只要服务端 jar（-am 会连上游 core/storage/三个协议面一起构建）
 JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn -o test        # 全量测试
 
 # ---- 容器镜像（Dockerfile 只装 jar、不编译，见第 8 节）----
@@ -198,6 +201,13 @@ lakehouse-rest-spring-parent/   服务端世界的父 POM（继承 Boot 4.1.1）
     paimon/dto/           与 rest-catalog-open-api-paimon.yaml 的 schema 对应的 9 个 DTO 文件
     paimon/support/       Codecs、SchemaSupport、TableDefaults、TableKinds
     ↑ 唯一一个包名比 core / storage / server 多一层 `.paimon` 的模块，理由见第 7 节
+
+  lakehouse-rest-protocol-lance/  Lance 协议面（8 个类）：基址 **`/lance/v1/**`**，不在 `/v1/{prefix}` 下
+    lance/web/          3 个控制器：namespace / table / 未实现 operation 的兜底（恒 406 + code 0）
+    lance/service/      declare / register 两条登记路径、弱存在性检查、storage_options 与凭据下发
+    lance/support/      LanceIds：`delimiter` 拼出的 id 解析（catalog 是第一级）与字符白名单
+    lance/dto/          Lance 契约（snake_case）；错误模型 `LanceErrors` 在 core（22 个 code → 状态码）
+    ↑ 不引任何 Lance / 格式库；认证与授权两条拦截器都要登记这个基址，见第 1 节第 10 条
 
   lakehouse-rest-server/   可执行服务端（39 个类；测试也在这一模块：47 个测试类 + `TestClock` 支撑类）
     PaimonRestServerApplication.java   启动类（组件扫描按**包**不按 jar，见第 7 节）
@@ -372,7 +382,7 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
 - **Strict 分层**：`web → service → domain/repo`；DTO 不泄漏实体，实体不外传
   （对外一律过 DTO，存储配置对外必须先 `withoutSecrets`）。跨模块方向见第 1 节第 10 条。
 - **包名是 `io.github.melin.lakehouse.rest.*`。core / storage / server 共用同一个包树，
-  两个协议面各占一层子树。**
+  三个协议面各占一层子树。**
   共用是刻意的：Spring 组件扫描与 JPA 实体扫描按**包**匹配，不认 jar，所以把一个类从
   `server` 搬到 `core` 不需要改一行 `import`，也不需要动任何 `@ComponentScan` 配置。
   **代价**是包名不再能告诉你类在哪个模块——判断方式只有「看它在哪个目录」，

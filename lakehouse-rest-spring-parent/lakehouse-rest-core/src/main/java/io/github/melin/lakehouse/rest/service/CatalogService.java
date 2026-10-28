@@ -130,7 +130,7 @@ public class CatalogService {
     private static String withArticle(CatalogFormat format) {
         return switch (format) {
             case ICEBERG -> "an " + format.wireName();
-            case PAIMON -> "a " + format.wireName();
+            case PAIMON, LANCE -> "a " + format.wireName();
         };
     }
 

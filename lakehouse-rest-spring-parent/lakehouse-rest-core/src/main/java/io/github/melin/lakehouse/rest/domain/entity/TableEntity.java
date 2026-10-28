@@ -1,11 +1,14 @@
 package io.github.melin.lakehouse.rest.domain.entity;
 
 import jakarta.persistence.Column;
+import jakarta.persistence.Convert;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Index;
 import jakarta.persistence.Table;
 import jakarta.persistence.UniqueConstraint;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import lombok.Getter;
 import lombok.Setter;
 
@@ -115,4 +118,22 @@ public class TableEntity extends AuditedEntity {
     /** Iceberg 的 {@code format-version}（1 / 2 / 3）；Paimon 表为 {@code null}。 */
     @Column(name = "format_version", comment = "Iceberg format-version（1/2/3）；Paimon 表为空")
     private Integer formatVersion;
+
+    /**
+     * Lance dataset 的属性（{@code DescribeTable.properties} / {@code DeclareTable} 入参）。
+     *
+     * <p><b>为什么必须新增一列而不是复用既有的：</b>
+     * {@code metadata_doc} 是 **Iceberg {@code TableMetadata} 的真相源**——往里塞 Lance
+     * 属性会让两个格式的语义互相污染（谁改这一列都等于改另一个格式的元数据）；
+     * {@code options} 在 Paimon 侧是 **schema 的一部分、要随 schema 文件写进仓库**，
+     * 而 Lance 面的属性不进任何文件。两个既有的「属性位」都有明确归属，
+     * 复用任何一个都是把 Lance 的语义借放在别人的抽屉里。
+     *
+     * <p>这一列同样服务 {@code generic-table-design.md} 的通用表（它的
+     * {@code properties} 也没有落处），因此列名叫 {@code properties_json} 而不是
+     * {@code lance_properties}。
+     */
+    @Convert(converter = JsonConverters.StringMap.class)
+    @Column(name = "properties_json", length = 65535, comment = "Lance 表 / 通用表的属性（JSON 对象）")
+    private Map<String, String> propertiesJson = new LinkedHashMap<>();
 }

@@ -65,6 +65,7 @@
 		<module>lakehouse-rest-storage</module>
 		<module>lakehouse-rest-protocol-paimon</module>
 		<module>lakehouse-rest-protocol-iceberg</module>
+		<module>lakehouse-rest-protocol-lance</module>
 		<module>lakehouse-rest-server</module>
 	</modules>
 
@@ -180,11 +181,16 @@
 				<artifactId>lakehouse-rest-protocol-paimon</artifactId>
 				<version>${project.version}</version>
 			</dependency>
-			<dependency>
-				<groupId>io.github.melin</groupId>
-				<artifactId>lakehouse-rest-protocol-iceberg</artifactId>
-				<version>${project.version}</version>
-			</dependency>
+		<dependency>
+			<groupId>io.github.melin</groupId>
+			<artifactId>lakehouse-rest-protocol-iceberg</artifactId>
+			<version>${project.version}</version>
+		</dependency>
+		<dependency>
+			<groupId>io.github.melin</groupId>
+			<artifactId>lakehouse-rest-protocol-lance</artifactId>
+			<version>${project.version}</version>
+		</dependency>
 
 			<!--
 				Iceberg：只有 lakehouse-rest-protocol-iceberg 会用到。

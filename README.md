@@ -24,8 +24,9 @@
 - 元数据存储：**MySQL 8.0**（建表语句由实体生成，见 `sql/schema-mysql.sql`；
 27 张表的划分与设计取舍见 [`docs/data-model.md`](docs/data-model.md)），
   通过 JPA 访问；另有 H2 内存库与 PostgreSQL 两个 profile 可选
-- 模块：**12 个 Maven 模块**——服务端拆为 `core`（与格式无关的地基）/ `storage`（FileIO）/
-  `protocol-paimon`（Catalog API）/ `protocol-iceberg`（Iceberg REST）/ `server`（可执行）五个，
+- 模块：**16 个 Maven 项目**——服务端拆为 `core`（与格式无关的地基）/ `storage`（FileIO）/
+  `protocol-paimon`（Catalog API）/ `protocol-iceberg`（Iceberg REST）/ `protocol-lance`
+  （Lance REST）/ `server`（可执行）六个，
   Spark SQL 扩展再拆 `common` + `3.5` + `4.1` 三个，另有表存储优化任务、两个父 POM 与根聚合 POM；
   Web 控制台是 Vite 工程，不走 Maven。目录见第 1 节
 - 表格式：**Paimon 表**与三种不受快照管理的表——**Format 表**（目录里的既有文件）、
@@ -56,6 +57,7 @@ paimon-rest/
 │   ├── lakehouse-rest-storage/       数据目录文件访问与 FileIO 构造（唯一允许依赖 paimon-core 的非协议模块）
 │   ├── lakehouse-rest-protocol-paimon/  Paimon 协议面：Catalog API 全部 60 个端点
 │   ├── lakehouse-rest-protocol-iceberg/ Iceberg 协议面：35 个端点里实现的 30 个 + `iceberg-core` 元数据代数
+│   ├── lakehouse-rest-protocol-lance/   Lance 协议面：48 个 operation 里 P0 的 13 个，基址 `/lance/v1/**`
 │   └── lakehouse-rest-server/        可执行服务端：Management API + 控制台 API + 优化调度，最终 jar 在这里
 ├── lakehouse-rest-console/     Web 管理控制台（Vue 3 + Vite，产物构建进服务端，见第 9 节）
 ├── lakehouse-rest-spark/       Spark SQL 语法扩展：用 SQL 管理主体、角色与授权
@@ -75,11 +77,15 @@ paimon-rest/
 └── scripts/                 验收、代码生成、文档校验与镜像构建脚本
 ```
 
-**两个协议面在同一个进程、同一个 `/v1` 基址、同一套元数据库上服务。**
+**三个协议面在同一个进程、同一套元数据库上服务，但基址分成两处。**
+Paimon 与 Iceberg 共用 `/v1/{prefix}` 基址（靠 prefix 查到的 `catalog_format` 分派），
+Lance 走自己的 `/lance/v1/**`——它的标识符合义与错误报文形状都与另两面不同，
+没有 `/v1/config` 握手，因此不可能并进同一个 prefix 路由。
 一个 catalog 只有一种格式（`lakehouse_catalog.catalog_format`，创建时定下、不可变），
 因此「路径 → `{prefix}` → catalog → 格式 → 协议处理链」这条链上唯一需要判断的地方
-就是 core 的协议分派；两个面本身互不认识，也不互相依赖（见第 3 节与
-[`iceberg-rest-catalog-design.md`](docs/iceberg-rest-catalog-design.md)）。
+就是 core 的协议分派；三个面本身互不认识，也不互相依赖（见第 3 节、
+[`iceberg-rest-catalog-design.md`](docs/iceberg-rest-catalog-design.md) 与
+[`lance-rest-catalog-design.md`](docs/lance-rest-catalog-design.md)）。
 
 **模块划分的取舍：两个父 POM ＝ 两个依赖世界。**
 
@@ -95,20 +101,21 @@ Spark 侧是 Scala 2.12 / Spark 3.5 / Jackson 2 / ANTLR 4.9.3。
 
 服务端模块**嵌在** `lakehouse-rest-spring-parent/` 目录之下，因此各子模块的 `<parent>`
 **不需要写 `<relativePath>`**——默认的 `../pom.xml` 恰好就是那份父 POM。
-这一点是嵌套布局立下的功劳：若把五个模块放成仓库根下的平级兄弟目录，就必须显式写
+这一点是嵌套布局立下的功劳：若把六个模块放成仓库根下的平级兄弟目录，就必须显式写
 `<relativePath>../lakehouse-rest-spring-parent/pom.xml</relativePath>`，
 因为默认值会解析到根聚合器，那里没有这个 artifactId，Maven 便回退去远程仓库找，
 离线构建会直接失败。**不要把 Boot 提为根聚合器的父 POM。**
 
-三条依赖不变量由 `maven-enforcer-plugin` 守住（`core` 不含任何表格式依赖；两个协议面互不依赖；
-`iceberg-core` 只在 `protocol-iceberg` 里出现），违反即构建失败——这些规则不是文档约定，
+四条依赖不变量由 `maven-enforcer-plugin` 守住（`core` 不含任何表格式依赖；三个协议面互不依赖；
+`iceberg-core` 只在 `protocol-iceberg` 里出现；Lance 面不引任何格式库），违反即构建失败——
+这些规则不是文档约定，
 是构建期断言。完整依赖图与规则细节见
 [`maven-module-design.md`](docs/maven-module-design.md)。
 
-Maven 坐标与包名：`groupId` 为 `io.github.melin`，十五个 artifact 是
+Maven 坐标与包名：`groupId` 为 `io.github.melin`，十六个 artifact 是
 `lakehouse-rest-parent`（聚合）、`lakehouse-rest-spring-parent`（服务端父 POM）、
 `lakehouse-rest-core`、`lakehouse-rest-storage`、`lakehouse-rest-protocol-paimon`、
-`lakehouse-rest-protocol-iceberg`、`lakehouse-rest-server`、
+`lakehouse-rest-protocol-iceberg`、`lakehouse-rest-protocol-lance`、`lakehouse-rest-server`、
 `lakehouse-rest-spark-parent`（Spark 侧聚合）、`lakehouse-rest-spark-common`、
 `lakehouse-rest-spark-3.5`、`lakehouse-rest-spark-4.1`、
 `lakehouse-rest-flink-parent`（Flink 侧聚合）、`lakehouse-rest-flink-1.20`、
@@ -126,7 +133,8 @@ Maven 坐标与包名：`groupId` 为 `io.github.melin`，十五个 artifact 是
 代价是包名不再告诉你类在哪个模块，只能看它在哪个目录。
 **协议面例外**：Paimon 面的类独占 `io.github.melin.lakehouse.rest.paimon.{web,service,dto,support}`
 子树、Iceberg 面同理独占 `…rest.iceberg.*`，两者与 core 的 `rest.{dto,service,support,web}`
-平级而不重合——协议面注定有两个且互不依赖，删掉或新增一整面不会波及另一面。
+平级而不重合；Lance 面独占 `…rest.lance.*`——协议面互不知道彼此存在，
+删掉或新增一整面不会波及另一面。
 因此**同一个前缀不能出现在两个面里**：两套规格里唯一真冲突的两条
 （`POST /v1/{prefix}/tables/rename`、`…/views/rename`）上移到 core 的
 `CatalogRenameController`，否则 Spring 会以 `Ambiguous mapping` 拒绝启动。
@@ -162,11 +170,11 @@ k8s 资源名（namespace / Deployment / Service / ConfigMap）与镜像同一�
 | [`polaris-capabilities-and-design.md`](docs/polaris-capabilities-and-design.md) | 要对比 Polaris 或看整体设计——核心能力提取、映射关系、已知缺口 |
 | [`event-framework.md`](docs/event-framework.md) | 要加一种事件、接一个 listener 或理解事件流的边界——9 类 33 个领域事件与触发点、与 Polaris 事件枚举的逐类映射、audit_event 表、发布监听链路、按监听器的类别/类型订阅（`lakehouse.rest.event-listener.*`）、增量拉取契约（`?since=` 游标 + `?category=`）与不发清单 |
 | [`iceberg-rest-catalog-design.md`](docs/iceberg-rest-catalog-design.md) | 要看「同一份元数据同时服务 Paimon 与 Iceberg」怎么做的——双协议方案：创建时区分格式、22 张表复用只加 9 列、路径冲突与错误模型、能力边界与效果图（`outputs/iceberg-rest-catalog/mockup.html`），以及**已落地的实测记录与与方案不一致的几处**（§11） |
-| [`lance-rest-catalog-design.md`](docs/lance-rest-catalog-design.md) | 要支持 Lance、或评审「要不要做 Lance REST Catalog」——**设计稿，未实现**：Lance Namespace 规范自己划的推荐最小集与两条降级许可（只做 `Restrict` 删命名空间、`DescribeTable` 只回 `location`）为什么正好覆盖我们、48 个 operation 的三档取舍（13 做 / 5 预留 / 30 显式 406）、为什么不做 `CreateTable`、数据面与 `managed_versioning`、三种「Lance」的区分（Paimon `lance-table` / 通用表 / Lance catalog）、`uri=/lance` + catalog 作第一级的基址决策、`catalog_format=LANCE` 加 2 列 0 张新表、授权与凭据下发落点、P0/P1/P2 需求与验收脚本、六个待拍板决策 |
+| [`lance-rest-catalog-design.md`](docs/lance-rest-catalog-design.md) | 要支持 Lance、或评审「要不要做 Lance REST Catalog」——**P0 已实现**（13 个 operation + 未实现 operation 恒 406；P1 版本只读 / P2 版本写未做）：Lance Namespace 规范自己划的推荐最小集与两条降级许可（只做 `Restrict` 删命名空间、`DescribeTable` 只回 `location`）为什么正好覆盖我们、48 个 operation 的三档取舍（13 做 / 5 预留 / 30 显式 406）、为什么不做 `CreateTable`、数据面与 `managed_versioning`、三种「Lance」的区分（Paimon `lance-table` / 通用表 / Lance catalog）、`uri=/lance` + catalog 作第一级的基址决策、`catalog_format=LANCE` 加 2 列 0 张新表、授权与凭据下发落点、P0/P1/P2 需求与验收脚本、六个待拍板决策 |
 | [`generic-table-design.md`](docs/generic-table-design.md) | 要把 parquet / orc / lance / vortex 目录也纳入目录服务，或评审「通用表」方案——**设计稿，未实现**：Polaris Generic Table 的事实基线、四种格式的能力矩阵、复用 `lakehouse_table` 加 `table_kind` 的三方案对比、4 个端点与权限映射、凭据下发为什么是唯一的数据面控制点、Spark 侧按格式分派（`FileTable` 子类 / `ServiceLoader<TableProvider>`）、影响面与风险 |
 | [`lance-table-optimization-design.md`](docs/lance-table-optimization-design.md) | 要给 Lance 表做 compaction / 快照清理，或评审「Lance 能不能接进现有存储优化」——**设计稿，未实现**（前置是上面那份的 P0）：两条语句覆盖三件动作（`OPTIMIZE` / `VACUUM`）导致 `orphan` 恒不可用、四层参数里 Daft 那两层在 Spark 侧不存在、指标只有增量没有前后快照、`VACUUM` 不可逆且无干跑的三层补偿、`isIceberg()` 与服务端 `isIceberg(format)` 共 11 处二元分派不改就静默走 Paimon、`--add-opens` 只能进镜像 ENV、三条抓包门禁 |
 | [`metrics-design.md`](docs/metrics-design.md) | 要加指标、接 Prometheus 或判断「这个指标该不该打标签」——**设计稿，未实现**：Polaris telemetry 的事实基线（HTTP / API / 持久化 / 缓存四类来源，`realm_id` 基数闸门与「超限即停记」、SLO 显式桶、Iceberg 客户端用量报告与运维指标的区别）、`lakehouse.*` 指标目录与 <1500 的基数预算、标签黑名单与 catalog 折叠成 `__other__`、切面替代逐端点 `@Timed`、管理端口 8081 + ServiceMonitor、告警与看板、`verify-metrics-doc.py` 一致性校验 |
-| [`maven-module-design.md`](docs/maven-module-design.md) | 要改模块布局、加协议面或动对外名字——`lakehouse-rest-*` 命名定案、两个父 POM / 两个依赖世界、三条用 enforcer 守住的依赖不变量、对外名字的持有者清单与改名判据（§4 / §10）、类的实际落点与依赖分工（§8） |
+| [`maven-module-design.md`](docs/maven-module-design.md) | 要改模块布局、加协议面或动对外名字——`lakehouse-rest-*` 命名定案、两个父 POM / 两个依赖世界、四条用 enforcer 守住的依赖不变量、对外名字的持有者清单与改名判据（§4 / §10）、类的实际落点与依赖分工（§8） |
 | [`optimization-multi-instance-design.md`](docs/optimization-multi-instance-design.md) | 要多副本部署、或排查「同一个优化任务被两台机器发起」——**设计稿，未实现**：现状审计（出批的逐表 CAS 与提交的状态 CAS 已有；跟踪收尾、提交崩溃回收、出批配额、手动入口四处没有，其中收尾在多副本下必然重复）、租约 + 代理（fencing）与三条终态 CAS、锁顺序与事务拆分、部署七条前提、双实例验收 |
 | [`table-optimization.md`](docs/table-optimization.md) | 要改表存储优化或排查优化任务——三个动作的语义、批次与并发两道闸门、k8s 提交与状态跟踪、控制台两处页面 |
 | [`catalog-execution-cluster-design.md`](docs/catalog-execution-cluster-design.md) | 要给 catalog 配「优化任务跑在哪个 k8s 集群」或评审该方案——**已实现**（M1–M3 全部落地；M4 文档回填随本次提交完成）：配置从 `application.yml` 下移到 catalog（1:1）、三种集群类型的认证（kubeconfig / EKS 令牌 / AKS 令牌）、kubeconfig 逐 context 解析（`exec:` 是硬拒，不是没支持）、探活五问与状态机、fabric8 落地要点（防回落、客户端缓存、AKS scope 修正）；配套效果图 [`catalog-execution-cluster-mockup.html`](docs/catalog-execution-cluster-mockup.html) |
@@ -205,7 +213,7 @@ mysql -h 127.0.0.1 -u root -p < sql/schema-mysql.sql
 # 全量构建（11 个模块；用 install 而不是 package，因为模块之间有内部依赖）
 JAVA_HOME=/path/to/jdk-21 mvn -o -DskipTests install
 
-# 只要服务端可执行 jar：-am 会一并构建它依赖的 core / storage / 两个协议面
+# 只要服务端可执行 jar：-am 会一并构建它依赖的 core / storage / 三个协议面
 JAVA_HOME=/path/to/jdk-21 mvn -o -DskipTests -pl :lakehouse-rest-server -am clean package
 
 # 运行全部测试（服务端 473 + Spark 175，共 648 个用例；Spark 侧有 1 个示例用例
@@ -344,6 +352,11 @@ lakehouse-rest-spring-parent/
     web/          namespace / table / view 三棵控制器
     service/      update 代数、requirements 校验、CAS 提交、投影派生
     support/      元数据文件命名、端点清单（endpoints）、update 编解码
+  lakehouse-rest-protocol-lance/    Lance 面：48 个 operation 里 P0 的 13 个 + 兜底 406
+    web/          namespace / table 两棵控制器 + 未实现 operation 的兜底控制器
+    service/      declare / register 两条登记路径、弱存在性检查、表 uri 与 storage_options
+    support/      `delimiter` 拼出的 id 解析与校验（catalog 是第一级）
+    dto/          Lance 契约（snake_case）与 22 个错误 code → HTTP 状态
   lakehouse-rest-server/        可执行产物与「不属于任何协议面」的东西
     web/          管理 API 的 4 个控制器、控制台扩展端点
     service/      管理服务、控制台 meta、凭据与存储策略、优化调度
@@ -375,8 +388,9 @@ lakehouse-rest-flink/        一份源码、两个版本产物（Flink 1.20 与 
 - **前缀路由 + 格式分派**：`{prefix}` 是 catalog 的对外标识，由 `GET /v1/config` 下发。
   未登记的 prefix 在 `lakehouse.rest.auto-create-catalog=true`（默认）时自动登记，客户端可零配置接入。
   一个 catalog 只有一种**格式**（`catalog_format`，创建时定下、不可变），它决定这个 prefix
-  服务哪一套协议：路径 → prefix → catalog → 格式 → 协议处理链。两个面互不依赖，
+  服务哪一套协议：路径 → prefix → catalog → 格式 → 协议处理链。三个面互不依赖，
   装配层靠 Spring 收集 `List<CatalogProtocol>` 拿到它们，因此 core 不需要认识任何一个面。
+  Lance 面基址是 `/lance/v1/**`（不在 `/v1/{prefix}` 下），路径里没有 prefix。
 - **格式不匹配要报「格式不对」**：一个 Iceberg 客户端敲了 Paimon catalog 的 prefix（或反过来）
   时回 404，消息里点出两个格式——否则客户端只会以为自己的库名/表名写错了。
   自动登记时**按请求所属的面的格式建**，避免「一次失败的请求留下一个格式不对的 catalog」。
@@ -385,9 +399,11 @@ lakehouse-rest-flink/        一份源码、两个版本产物（Flink 1.20 与 
 - **catalog API 的授权映射集中在一张表**：`CatalogAccessRules` 把 `/v1/**` 路径映射到所需权限，
   **未登记映射的端点直接拒绝而不是放行**；测试从运行时的请求映射里枚举全部端点核对覆盖率，
   新增端点若忘记登记会让构建失败。详见 `docs/authorization.md`。
-- **两套错误形状，按请求所属的协议面二选一**：Paimon 是扁平的
+- **三套错误形状，按请求所属的协议面三选一**：Paimon 是扁平的
   `{message, resourceType, resourceName, code}`，Iceberg 是嵌套一层的
-  `{error: {message, type, code}}`。判据优先看路径形状（两套规格用的是不同的资源名词），
+  `{error: {message, type, code}}`，Lance 是四个字段的
+  `{error, code, detail, instance}` 且 **HTTP 状态码由 `code` 决定**（`code 0` → 406）。
+  判据优先看路径形状（三套规格用的是不同的资源名词，Lance 还多一层基址），
   只在四条同路径端点上回落到按 catalog 格式查。
 - **JSON 文档列**：schema、函数定义、分区 spec、Iceberg 的整份 `TableMetadata` 等结构以
   JSON 文本存单列，实体字段保持强类型，避免为每个属性建表；复杂结构通过 `AttributeConverter` 转换。

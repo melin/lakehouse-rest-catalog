@@ -20,14 +20,14 @@ Paimon 与 Iceberg」的协议方案。本文件解决它的前置问题：**代
 | --- | --- |
 | 命名族 | **`lakehouse-rest-*`**，groupId 仍是 `io.github.melin` |
 | 骨架模块 | `lakehouse-rest-parent`（聚合）、`lakehouse-rest-spring-parent`（服务端世界的父）、`-core`、`-storage`、`-server` |
-| 协议面模块 | `lakehouse-rest-protocol-paimon`、`lakehouse-rest-protocol-iceberg` —— **格式名只允许出现在协议面模块的 artifactId 里**（§2.2） |
+| 协议面模块 | `lakehouse-rest-protocol-paimon`、`lakehouse-rest-protocol-iceberg`、`lakehouse-rest-protocol-lance` —— **格式名只允许出现在协议面模块的 artifactId 里**（§2.2） |
 | 集群侧模块 | `lakehouse-rest-optimizer`；Spark 侧自 §13 起拆成 `lakehouse-rest-spark-parent` + `-common` + `-3.5` + `-4.1`（一份源码、两个版本产物）；Flink 侧（§14）拆成 `lakehouse-rest-flink-parent` + `-1.20` + `-2.3`（同样一份源码、两个版本产物） |
-| Maven 项目数 | **15**（构成见 §3.1 的结构树：聚合 + 两个父 POM + 服务端 5 jar + Spark 4 件 + Flink 3 件 + optimizer） |
+| Maven 项目数 | **16**（构成见 §3.1 的结构树：聚合 + 两个父 POM + 服务端 6 jar + Spark 4 件 + Flink 3 件 + optimizer） |
 | Java 包名 | **`io.github.melin.lakehouse.rest`**，与 artifactId 的 `lakehouse` 对齐；协议面各独占一层格式子包（§11） |
 | Spring 配置前缀 | **`lakehouse.rest.*`**。客户端键 `spark.lakehouse.rest.*` 与 k8s 资源名各有各的判据，都不跟它走（§4） |
 | k8s 资源名 | **`lakehouse-rest*`**，与镜像名同词根；改名要连带改 selector、Secret 引用与 Service DNS（§4） |
 | 加新格式面 | 按 §5 的顺序，新格式的代码从第一天就落进新的 `-protocol-<格式>` 模块 |
-| 当前形态 | 15 个 Maven 项目（见上一行）；四个服务端模块嵌在 `spring-parent/` 下（§9）；类的实际落点见 §8 |
+| 当前形态 | 16 个 Maven 项目（见上一行）；五个服务端模块嵌在 `spring-parent/` 下（§9）；类的实际落点见 §8 |
 
 ---
 
@@ -36,12 +36,13 @@ Paimon 与 Iceberg」的协议方案。本文件解决它的前置问题：**代
 ### 2.1 为什么要一个格式中立的名字
 
 `paimon-rest-server` 这样的名字把「实现」写进了「产品」：它说明的是这个服务端
-服务哪种表格式，而格式恰恰是会增加的那一维。加一个格式就要重新思考命名，加第三个格式（仓库里
-已经出现 Lance，见 [`console-table-detail.md`](console-table-detail.md) 的页签清单）
-就再想一次。中立名的收益不是好看，是**再也没有下一次改名**：
+服务哪种表格式，而格式恰恰是会增加的那一维。加一个格式就要重新思考命名，加第三个格式
+就再想一次。中立名的收益不是好看，是**再也没有下一次改名**——Iceberg 与 Lance
+两个面先后加进来（§12），骨架确实一行没改：
 
 - **骨架**（聚合器、可执行物、共享库）按**问题域**命名 → `lakehouse-rest-*`；
-- **协议面**（每个只服务一种格式）按**格式**命名 → `-protocol-paimon` / `-protocol-iceberg`。
+- **协议面**（每个只服务一种格式）按**格式**命名 → `-protocol-paimon` /
+  `-protocol-iceberg` / `-protocol-lance`。
 
 第二条不是自相矛盾，而是分层的必然：`-protocol-iceberg` 里写着「Iceberg」是正确的，
 因为它**就是** Iceberg 的实现；将来加 `-protocol-hudi` 时，骨架一行都不用动。
@@ -57,7 +58,7 @@ Paimon 与 Iceberg」的协议方案。本文件解决它的前置问题：**代
 | 层 | 命名依据 | 例 |
 | --- | --- | --- |
 | 骨架 / 部署物 / 共享库 | 问题域，中立 | `lakehouse-rest-{parent,spring-parent,core,storage,server}` |
-| 协议面 | 格式名 + `protocol-` 前缀 | `lakehouse-rest-protocol-paimon`、`-protocol-iceberg` |
+| 协议面 | 格式名 + `protocol-` 前缀 | `lakehouse-rest-protocol-paimon`、`-protocol-iceberg`、`-protocol-lance` |
 | 引擎侧客户端 / 任务 | 引擎名 | `lakehouse-rest-spark`、`lakehouse-rest-optimizer` |
 | Java 包 | `io.github.melin.lakehouse.rest` | 与模块边界正交；但**对外不是自由的名字**——它出现在用户的 `spark.sql.extensions` 里，动它要按 §10 的判据先问「谁写过它」 |
 | 部署资源名 | `lakehouse-rest*` | namespace `lakehouse-rest`、Service `lakehouse-rest-server`，与镜像同词根（§4） |
@@ -86,6 +87,7 @@ io.github.melin:lakehouse-rest-parent                     pom   聚合器 + 集�
 │   ├── lakehouse-rest-storage                            jar   对象存储访问
 │   ├── lakehouse-rest-protocol-paimon                    jar   Paimon 协议面（60 端点）
 │   ├── lakehouse-rest-protocol-iceberg                   jar   Iceberg 协议面（35 端点里实现的 30 个）
+│   ├── lakehouse-rest-protocol-lance                      jar   Lance 协议面（48 端点里 P0 的 13 个 + 兜底 406）
 │   └── lakehouse-rest-server                             jar   可执行：装配 / 管理 API / 控制台宿主
 ├── lakehouse-rest-spark-parent                           pom   Spark 侧的聚合（复用根 POM 的依赖世界）
 │   ├── lakehouse-rest-spark-common                       jar   管理 API 的 REST 客户端（纯 Java）
@@ -99,7 +101,7 @@ io.github.melin:lakehouse-rest-parent                     pom   聚合器 + 集�
 └── lakehouse-rest-optimizer                              jar   k8s 优化任务
 ```
 
-> 磁盘布局与这棵树**一致**：四个服务端模块的目录就嵌在 `lakehouse-rest-spring-parent/`
+> 磁盘布局与这棵树**一致**：五个服务端模块的目录就嵌在 `lakehouse-rest-spring-parent/`
 > 里面，所以 `spring-parent` 的 `<module>` 写裸名字、子模块的 `<parent>` 不用写
 > `<relativePath>`。嵌套布局换来的是「父子关系在磁盘上看得见」与少一条要记着写的配置。
 
@@ -109,18 +111,20 @@ Java 包与这棵树**部分对齐**——对齐到「面」这一级，不对�
 io.github.melin.lakehouse.rest            core / storage / server 三者共用
 ├── {config,domain,dto,service,support,web}
 ├── paimon.{dto,service,support,web}      protocol-paimon 独占
-└── iceberg.{dto,service,support,web}     protocol-iceberg 独占（见 §12）
+├── iceberg.{dto,service,support,web}     protocol-iceberg 独占（见 §12）
+└── lance.{dto,service,support,web}        protocol-lance 独占（见 §12.6）
 ```
 
 > 共用是为了「搬类不改 import」（§7 那条：组件扫描按包不按 jar）；独占是为了让协议面的
 > 边界写进包名，而不只是 artifactId。两者的取舍见 §11。
 
-依赖方向（箭头 = 编译期依赖），三条不变量用 maven-enforcer 的 `bannedDependencies` 机械守住：
+依赖方向（箭头 = 编译期依赖），四条不变量用 maven-enforcer 的 `bannedDependencies` 机械守住：
 
 ```
 lakehouse-rest-server
   ├─→ lakehouse-rest-protocol-paimon ──→ core, storage, org.apache.paimon
   ├─→ lakehouse-rest-protocol-iceberg ─→ core, storage, org.apache.iceberg
+  ├─→ lakehouse-rest-protocol-lance ───→ core, storage（Lance 没有 Java 库依赖）
   ├─→ lakehouse-rest-storage ──────────→ core, org.apache.paimon(仅 FileIO)
   └─→ lakehouse-rest-core ─────────────→ ∅ 格式依赖
 ```
@@ -128,8 +132,9 @@ lakehouse-rest-server
 | # | 不变量 | 守它的方式 |
 | --- | --- | --- |
 | 1 | `core` 不依赖任何格式（`org.apache.paimon:*`、`org.apache.iceberg:*` 一律禁用） | core 的 POM 里 `bannedDependencies` |
-| 2 | 两个协议面互不依赖 | protocol-iceberg 里禁 `lakehouse-rest-protocol-paimon`，反之亦然 |
+| 2 | 三个协议面互不依赖 | 每个面里都禁另外两个面（paimon / iceberg / lance 三份 `bannedDependencies`） |
 | 3 | `iceberg-core` 只出现在 protocol-iceberg | 其余模块禁 `org.apache.iceberg:*`（这也把 `iceberg-rest-catalog-design.md` §8 风险 7 的承诺从「靠自觉」变成「编译期事实」） |
+| 4 | Lance 面不引任何 Lance / 格式库 | `protocol-lance` 里禁 `org.apache.paimon:*` 与 `org.apache.iceberg:*`：manifest 由客户端写，服务端只做元数据（[`lance-rest-catalog-design.md`](lance-rest-catalog-design.md) §3） |
 
 > 已核对这条可行：服务端主源码里**真正 `import org.apache.paimon` 的只有 4 个类**
 > （`StorageFileIoFactory`、`CatalogFileService`、`TableKinds`、`TableMetadataService`），
@@ -173,6 +178,7 @@ Jackson 2.15.2 抬到 Boot 的版本）。拆成 5 个服务端模块后，这�
 | `-storage` | `StorageFileIoFactory`、`CatalogFileService`、`Paths`、`StorageConfigs`、`FileIoType`、凭据管理器的实现与缓存 | 它是唯一需要「往仓库写文件」的模块（Paimon 的 `FileIO` 在这里承担的是**通用文件系统客户端**：s3 插件加载、凭据刷新、路径模板）。若 Iceberg 面另引一套 hadoop-aws 做同样的事，就会有两套 s3 凭据解析逻辑——设计文档 §5.5 要的「凭据统一」当场破功 |
 | `-protocol-paimon` | `paimon/web/` 下 9 个控制器、`paimon/dto/` 的 Paimon 契约、`TableMetadataService`（schema/snapshot 物化）、`TableKinds`、`SchemaChangeService`、`CredentialService` | 唯一允许 `import org.apache.paimon` 的服务端模块（`storage` 除外，且只用于 FileIO）；包名独占 `rest.paimon.*`（§11） |
 | `-protocol-iceberg` | 35 个端点、Iceberg DTO、元数据代数（update 应用 / requirements 校验 / CAS）、投影派生（`schemas[]`/`snapshots[]`/`refs` → 行）、Iceberg 错误模型、`iceberg/preview/`（数据预览的读取器与只读 `FileIO`） | 唯一允许 `import org.apache.iceberg` 的模块；`iceberg-core` / `iceberg-data` / `iceberg-parquet` 带来的 avro、parquet 等依赖被关在这里 |
+| `-protocol-lance` | `/lance/v1/**` 的 13 个 P0 端点 + 兜底 `LanceUnsupportedController`（其余 35 个 operation 恒 406）、`LanceIds`（`delimiter` 拼 id 的解析与校验）、Lance DTO、Lance 错误模型（22 个 code → HTTP 状态） | **基址不在 `/v1` 下**，错误体是第三种形状（`{error,code,detail,instance}`），catalog 与表都要按 `LANCE` 格式另走一套解析——它是表里唯一「不靠格式库、靠协议形状」独立的面，见 §12.6 |
 | `-server` | 启动类、管理 API 控制器（33 个 operation）、控制台宿主与静态资源、安全装配、优化调度与 k8s 提交、`application.yml` | **唯一产出可执行 jar 与镜像**的模块。镜像里有什么，看这一个 POM 就够了 |
 
 ### 3.4 跨模块的判断表（几个没写在包名里的类）
@@ -185,7 +191,7 @@ Jackson 2.15.2 抬到 Boot 的版本）。拆成 5 个服务端模块后，这�
 | `ConfigController`（`GET /v1/config`） | core | 两套协议共用同一个端点，按 `catalog_format` 组装两份响应（设计文档 §5.2） |
 | `OAuthTokenController`（`POST /v1/oauth/tokens`） | core | Iceberg 客户端在拿到 catalog 配置**之前**就要换令牌，路径不带 prefix，与协议面无关（设计文档 §2.1 第 3 点） |
 | `GlobalExceptionHandler` | core 基类 + 各面各一个 `@RestControllerAdvice` | 错误体形状按格式分派（设计文档 §2.3）；基类管兜底与日志，面内覆盖形状 |
-| `CatalogAccessRules` / `AuthorizationInterceptor` / `BearerAuthInterceptor` | core | 按路径登记，与协议无关；两个面的请求都要过（Iceberg 路径逐条登记） |
+| `CatalogAccessRules` / `LanceAccessRules` / `AuthorizationInterceptor` / `BearerAuthInterceptor` | core | 按路径登记，与协议无关；三个面的请求都要过（Iceberg 路径逐条登记，Lance 走独立的 `LanceAccessRules`）。**两个拦截器的路径清单都要登记新基址**：`/lance/**` 不在 `/v1/**` 之下，漏一处等于整个面既不认证也不授权，且没有任何既有测试会红 |
 | `RestServerProperties`（`lakehouse.rest.*`） | core | 配置项被协议面与装配都读（配置前缀见 §4） |
 | `TableKinds` | protocol-paimon | import 了 Paimon 的对象表/格式表类型。「表种类」是 Paimon 特有概念——Iceberg catalog 里的表没有这一套，`protocol-iceberg` 里的类一处都不引用 `TableKinds`，所以它留在协议面而不是 core。控制台按**先看 catalog 格式、再看表种类**的顺序伸缩（`docs/console.md` §10） |
 | `TableMetadataService` | protocol-paimon | `SchemaManager` / `SnapshotManager` / `JsonSerdeUtil` 都是 Paimon 的类 |
@@ -291,7 +297,8 @@ public interface CatalogProtocolFace {
 
 §3.3 / §3.4 的两张表按「名字看着像谁」写，实际落点按**依赖图**定——搬迁前逐类核过
 「搬完会不会出现反向依赖」（真按原文搬会产生 46 条反向边）。实测规模：
-**core 117 · storage 9 · protocol-paimon 38 · server 46**（共 210 个类）。
+**core 128 · storage 9 · protocol-paimon 38 · protocol-iceberg 20 · protocol-lance 8 · server 67**
+（共 270 个类；数字随实现滚动，改完跑一遍 `find … -name '*.java' | wc -l` 再回填这里与 §15）。
 读 §3.3 / §3.4 时要配合本节的差异。
 
 ### 8.1 六处与「名字看着像谁」不同的落点
@@ -396,7 +403,7 @@ Spark 的 `SET` 要求加反引号，否则报 `[INVALID_SET_SYNTAX]`。
 ---
 ## 9. 目录层级与构建命令
 
-四个服务端模块嵌在 `lakehouse-rest-spring-parent/` 之下：父 POM 的 `<module>` 不带 `../`，
+五个服务端模块嵌在 `lakehouse-rest-spring-parent/` 之下：父 POM 的 `<module>` 不带 `../`，
 子模块不写 `<relativePath>`（默认值 `../pom.xml` 恰好正确）。
 
 **`-pl` 必须写 `:artifactId`，不能写裸名字。** `-pl` 收的是 `[groupId]:artifactId` **或相对路径**，
@@ -462,10 +469,11 @@ server 侧也有同类边（如 `ManagementCatalogService → DatabaseService`�
 `paimon/service` 与 `paimon.service` 在打印里只差一个字符。
 
 ---
-## 12. `-protocol-iceberg`：加一个面
+## 12. 加协议面：`-protocol-iceberg` 与 `-protocol-lance`
 
-这是唯一一次**新建**的服务端模块（Spark / Flink 侧的拆分见 §13 / §14），因此它才是这份文件里
-三条不变量的第一次真检验：新增一个协议面，骨架一行不改，而规则自己会拦住越界。
+下面 §12.1–§12.5 是第一次（Iceberg），§12.6–§12.7 是第二次（Lance）。两次都是**新建**
+的服务端模块（Spark / Flink 侧的拆分见 §13 / §14），因此它们才是这份文件里不变量的真检验：
+新增一个协议面，骨架一行不改，而规则自己会拦住越界。
 
 ### 12.1 加一个面 = 加一行依赖
 
@@ -527,7 +535,7 @@ server 侧也有同类边（如 `ManagementCatalogService → DatabaseService`�
 
 | 项 | 值 |
 | --- | --- |
-| Maven 项目数 | 4 → **9** |
+| Maven 项目数 | 4 → **9**（本节是 Iceberg 那次的读数；Lance 之后是 16 / 服务端 6 个模块，见 §12.6） |
 | 服务端 Artifact | 5 个模块（core / storage / protocol-paimon / protocol-iceberg / server） |
 | 服务端用例 | 318 → **331**（新增 `IcebergRestCatalogApiTests` 10 个、`IcebergClientEndToEndTests` 3 个，并修好被新端点顶爆的 `CatalogEndpointAuthorizationTests`） |
 | 全量用例 | 414 → **427**（服务端 331 + Spark 96）。服务端侧 `mvn -o test -pl :lakehouse-rest-server -am` 实测 **331 run / 0 failures / 0 errors / BUILD SUCCESS** |
@@ -536,6 +544,42 @@ server 侧也有同类边（如 `ManagementCatalogService → DatabaseService`�
 这次落地**先后三次被构建与测试拦住**，而三处都不是靠读文档发现的：
 enforcer 抓出 `paimon-core` 的传递泄露；HTTP 用例抓出 server 漏写的那一行依赖；
 同一批用例抓出「Paimon 面缺格式门禁」与「错误形状对集合路径判错」。
+
+### 12.6 `-protocol-lance`：第二个新增面，且它不引格式库
+
+Lance 面是同一套规则的第二次检验，但它检验的是**另一条**：前面两个面各自靠
+「禁掉对方格式库」来独立，Lance 面**连一个 Lance 库都不引**（manifest 由客户端写，
+服务端只做元数据），所以「不变量 3」那种判据在它身上不成立——它靠的是新增的**不变量 4**。
+
+| 位置 | 改动 |
+| --- | --- |
+| `spring-parent/pom.xml` | `<module>` 加一条；`dependencyManagement` 加一条 |
+| `lakehouse-rest-protocol-lance/pom.xml` | 新建：依赖 core + storage；`bannedDependencies` 禁 `protocol-paimon`、`protocol-iceberg`、`org.apache.paimon:*`、`org.apache.iceberg:*` |
+| `lakehouse-rest-server/pom.xml` | **加一行** `lakehouse-rest-protocol-lance`（漏写的症状与 §12.1 同：运行时 500，不是编译错） |
+| core | **有改动**，这是与 Iceberg 那次最大的不同：`CatalogFormat` 加 `LANCE`、新增 `LanceErrors` 与 `LanceAccessRules`、`AuthorizationInterceptor` 加 `/lance/` 分支、`WebConfig` 的两个拦截器路径清单各加 `/lance/v1/**`、`GlobalExceptionHandler` 加第三种错误形状、`CatalogFormatResolver` 先认 `/lance/v1/` |
+
+最后一行的两处清单是最容易漏、且漏了最安静的地方：`/lance/**` **不在 `/v1/**` 之下**，
+而两个拦截器原本都只登记 `/v1/**`。漏掉 `bearerAuth` 的那条 = 整个面不认证；
+漏掉 `authorization` 的那条 = 整个面不授权；两者都不会让任何既有测试变红——
+是新写的 `LanceEndpointAuthorizationTests` 把它抓出来的（匿名请求拿到 200 而不是 403）。
+这条也解释了为什么「加一个协议面」在 core 里不是零改动：**基址不同就要重新登记一次认证与授权**，
+而基址相同（`Paimon` 与 `Iceberg` 共用 `/v1`）时不用。
+
+`LanceIds` 里还有一个只在 URL 层出现的坑：`{id}` 是 `cat$schema$table` 这种
+`delimiter` 拼出来的串，`$` 在路径里编码成 `%24`，而 `getRequestURI()` 给的是**编码后**的串，
+所以授权层解析 id 必须逐段 `URLDecoder.decode`，否则 catalog 名会变成 `cat%24sales`
+——不存在的 catalog 在授权判定里是「跳过」而不是「拒绝」，于是又一个静默放行。
+
+### 12.7 三个面的基址与错误形状（一眼看清为什么 Lance 不能并进 `/v1`）
+
+| 面 | 基址 | 错误体形状 | 标识符合义 |
+| --- | --- | --- | --- |
+| Paimon | `/v1/{prefix}/...` | 扁平 `{message,resourceType,resourceName,code}` | `{prefix}` = catalog，其余在请求体里 |
+| Iceberg | `/v1/{prefix}/...` | `{error:{message,type,code}}` | 同上 |
+| Lance | **`/lance/v1/...`** | `{error,code,detail,instance}`，**状态码由 `code` 决定**（`code 0` → 406） | `{id}` = `delimiter` 拼出的 `cat$schema$table`，catalog 是第一级 |
+
+`/v1/config` 握手 Lance **没有**，客户端只配 `uri` + `delimiter`；因此它不可能与另两面
+共用一个 prefix 路由——前缀冲突时两条链的解析规则是互斥的。
 
 ---
 

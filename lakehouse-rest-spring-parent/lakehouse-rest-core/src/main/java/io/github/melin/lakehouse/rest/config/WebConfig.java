@@ -62,6 +62,10 @@ public class WebConfig implements WebMvcConfigurer {
         registry.addInterceptor(bearerAuthInterceptor)
                 .addPathPatterns(
                         "/v1/**",
+                        // Lance 面挂在自己的基址上，不在 /v1/** 之下——漏了这一行，
+                        // 整个面就是匿名可调，而且没有任何既有测试会发现
+                        // （见 docs/lance-rest-catalog-design.md §4.5 风险 8）。
+                        "/lance/v1/**",
                         "/api/catalog/v1/**",
                         "/api/management/v1/**",
                         "/api/console/v1/**")
@@ -80,6 +84,9 @@ public class WebConfig implements WebMvcConfigurer {
                         "/webjars/**",
                         "/knife4j/**");
         registry.addInterceptor(authorizationInterceptor)
-                .addPathPatterns("/v1/**");
+                .addPathPatterns("/v1/**",
+                        // Lance 面：与上面那条认证路径成对出现。只改拦截器内部的分支
+                        // 而漏这一行，效果是「/lance/** 完全不判权」——静默的那一类
+                        "/lance/v1/**");
     }
 }

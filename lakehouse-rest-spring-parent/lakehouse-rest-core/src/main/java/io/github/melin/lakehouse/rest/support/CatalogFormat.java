@@ -26,7 +26,17 @@ public enum CatalogFormat {
     PAIMON,
 
     /** Apache Iceberg 的 REST Catalog（35 个端点）。 */
-    ICEBERG;
+    ICEBERG,
+
+    /**
+     * Lance 的 REST Catalog（{@code /lance/v1/**}，规范共 48 个 operation，本服务端实现 13 个）。
+     *
+     * <p>它与上面两种的差别不是「又一种表格式」，而是**协议面形状不同**：Lance 没有
+     * {@code /v1/config} 握手、{@code id} 用分隔符拼在路径里、错误体是
+     * {@code {error, code, detail, instance}} 四字段。因此它挂在自己的基址上，
+     * 不复用 {@code /v1/{prefix}}。见 {@code docs/lance-rest-catalog-design.md}。
+     */
+    LANCE;
 
     /** 建表 / 自动登记时未指定格式的兜底值，与列默认值一致。 */
     public static final CatalogFormat DEFAULT = PAIMON;

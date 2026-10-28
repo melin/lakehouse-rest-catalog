@@ -20,22 +20,25 @@
  */
 
 /** 兜底用的取值集合；正常路径上取 `meta.enums.catalogFormats`。 */
-export const CATALOG_FORMATS = ['PAIMON', 'ICEBERG']
+export const CATALOG_FORMATS = ['PAIMON', 'ICEBERG', 'LANCE']
 
-/** 两个取值各有一个名字：判断分支时用它，避免全文散落裸字符串。 */
+/** 三个取值各有一个名字：判断分支时用它，避免全文散落裸字符串。 */
 export const PAIMON = 'PAIMON'
 export const ICEBERG = 'ICEBERG'
+export const LANCE = 'LANCE'
 
-/** 徽标上的显示名。首字母大写与官方写法一致（Paimon / Iceberg），取值本身仍是大写。 */
+/** 徽标上的显示名。首字母大写与官方写法一致（Paimon / Iceberg / Lance），取值本身仍是大写。 */
 export const CATALOG_FORMAT_LABELS = {
   [PAIMON]: 'Paimon',
   [ICEBERG]: 'Iceberg',
+  [LANCE]: 'Lance',
 }
 
-/** 徽标颜色（el-tag 的 type）。两个值必须不同——这一列的作用就是一眼分得开。 */
+/** 徽标颜色（el-tag 的 type）。三个值必须不同——这一列的作用就是一眼分得开。 */
 export const CATALOG_FORMAT_TAG_TYPES = {
   [PAIMON]: 'info',
   [ICEBERG]: 'primary',
+  [LANCE]: 'success',
 }
 
 /**
@@ -53,6 +56,10 @@ export const CATALOG_FORMAT_NOTES = {
     'Iceberg REST 协议面：客户端走 /v1/{prefix}/namespaces/**，表元数据以仓库里的 '
     + 'metadata.json 为准；没有 Paimon 的分区、消费者与语义视图。'
     + '控制台一期不浏览 Iceberg 表，库里与仓库里的文件仍可在详情页看到。',
+  [LANCE]:
+    'Lance REST 协议面：客户端走 /lance/v1/namespace/{id} 与 /lance/v1/table/{id}，'
+    + '基址不含 /v1/{prefix}，也没有 /v1/config 握手。服务端只做元数据（'
+    + 'declare / register 两条登记路径），manifest 由客户端写进仓库。',
 }
 
 /**
@@ -111,6 +118,12 @@ export const CATALOG_FORMAT_OPTIONS = {
     desc: 'Apache Iceberg REST Catalog（规格 35 个端点）：多级 namespace、视图与更新代数。',
     path: '/v1/{prefix}/namespaces/**',
   },
+  [LANCE]: {
+    label: 'Lance',
+    desc: 'Lance REST Catalog（规格 48 个 operation，P0 实现 13 个）：namespace 与表的登记，'
+      + '无 /v1/config 握手，id 由 delimiter 拼成。',
+    path: '/lance/v1/namespace/{id}',
+  },
 }
 
 /**
@@ -129,4 +142,20 @@ export function catalogFormatOption(value) {
 /** 是不是 Iceberg 协议面。页面里按它决定「哪些是 Paimon 专有的东西」。 */
 export function isIcebergCatalog(value) {
   return catalogFormatOf(value) === ICEBERG
+}
+
+/** 是不是 Lance 协议面。它的基址不在 `/v1/{prefix}` 下，Paimon 面那些路径都不适用。 */
+export function isLanceCatalog(value) {
+  return catalogFormatOf(value) === LANCE
+}
+
+/**
+ * 是不是 Paimon 协议面。
+ *
+ * <p>**只按 Paimon 写的页面应当直接用这个判据**，而不是「不是 Iceberg 就是 Paimon」——
+ * 加第三个面之后，那个取反会静默地把 Lance catalog 送进 Paimon 的请求链，
+ * 而表现是一连串「格式不匹配」的 404，看起来像故障而不是「这一期不支持」。
+ */
+export function isPaimonCatalog(value) {
+  return catalogFormatOf(value) === PAIMON
 }

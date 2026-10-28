@@ -19,6 +19,10 @@ import org.springframework.web.servlet.HandlerInterceptor;
  * <p><b>失败关闭。</b>授权开启时，{@code /v1/**} 下未在映射表登记的端点返回 403 而不是放行。
  * 只有 {@link CatalogAccessRules#isPublic(String)} 明示豁免的端点可以匿名访问。
  *
+ * <p><b>Lance 面（{@code /lance/v1/**}）经过本拦截器</b>，判定用 {@link LanceAccessRules}。
+ * 它挂在自己的基址上（没有 {@code /v1/config} 握手），因此不会「顺带」被
+ * {@code /v1/} 那条规则覆盖；漏了这一分支就是整个面不判权。
+ *
  * <p>管理 API（{@code /api/management/v1/**}）不经过本拦截器：那些端点的授权要求
  * 依赖请求体里的实体（catalog、principal），由控制器在拿到参数后判定。
  */
@@ -34,6 +38,23 @@ public class AuthorizationInterceptor implements HandlerInterceptor {
             return true;
         }
         String uri = request.getRequestURI();
+        if (uri.startsWith("/lance/v1/")) {
+            // Lance 面：路径形状与 /v1/** 完全不同，走它自己的映射表。
+            // 这一分支不能省——漏了它的后果是「整个 Lance 面不判权且没有任何测试会发现」。
+            if (!(handler instanceof HandlerMethod)) {
+                return true;
+            }
+            String lanceAction = request.getMethod() + " " + uri;
+            CatalogAccessRules.Requirement lance = LanceAccessRules.resolve(
+                    uri, request.getMethod(), request.getParameter("delimiter"));
+            if (lance == null) {
+                throw ApiException.forbidden("The caller does not have permission to " + lanceAction
+                        + ": no authorization rule is registered for this endpoint");
+            }
+            authorizationService.require(lance.catalog(), lance.resourceType(), lance.namespace(),
+                    lance.objectName(), lance.access(), lanceAction);
+            return true;
+        }
         if (!uri.startsWith("/v1/")) {
             return true;
         }

@@ -5,6 +5,7 @@ import io.github.melin.lakehouse.rest.service.CatalogFormatResolver;
 import io.github.melin.lakehouse.rest.support.ApiException;
 import io.github.melin.lakehouse.rest.support.CatalogFormat;
 import io.github.melin.lakehouse.rest.support.IcebergErrors;
+import io.github.melin.lakehouse.rest.support.LanceErrors;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
@@ -50,7 +51,25 @@ public class GlobalExceptionHandler {
                 new Failure(message,
                         exception.getResourceType() == null ? null : exception.getResourceType().name(),
                         exception.getResourceName(),
-                        IcebergErrors.typeOf(exception)));
+                        IcebergErrors.typeOf(exception),
+                        null,
+                        null));
+    }
+
+    /**
+     * Lance 面抛出的失败：{@code code} 先定、HTTP 状态由它算出来。
+     *
+     * <p>它走独立的 handler 而不是复用 {@link ApiException} 那条路，是因为两者的
+     * 「真相字段」不同：那边是状态码，这边是 {@code code}。合并会让其中一个变成
+     * 派生值，而在 {@code code 0 → 406} 这一条上，派生方向反了就答不出「不支持」。
+     */
+    @ExceptionHandler(LanceErrors.LanceException.class)
+    public ResponseEntity<?> handleLanceException(LanceErrors.LanceException exception,
+                                                   HttpServletRequest request) {
+        return respond(request, exception.status(),
+                new Failure(exception.getMessage(), null, null,
+                        IcebergErrors.typeOf(exception.status(), null),
+                        exception.detail(), exception.code()));
     }
 
     @ExceptionHandler(HttpMessageNotReadableException.class)
@@ -99,6 +118,16 @@ public class GlobalExceptionHandler {
      * 这件事不可能发生——分支只有这里一处。
      */
     private ResponseEntity<?> respond(HttpServletRequest request, int status, Failure failure) {
+        if (formatResolver.of(request) == CatalogFormat.LANCE) {
+            // HTTP 状态由 code 决定，而不是沿用异常里那个：两者在 406 那条上不一致，
+            // 而客户端只按 code 分支。
+            LanceErrors.Code code = failure.lanceCode() != null
+                    ? failure.lanceCode()
+                    : LanceErrors.fromStatus(status, isTableLevel(request));
+            return ResponseEntity.status(code.status()).body(new CommonDtos.LanceErrorResponse(
+                    failure.message(), code.value(), failure.detail(),
+                    request == null ? null : request.getRequestURI()));
+        }
         if (formatResolver.of(request) == CatalogFormat.ICEBERG) {
             return ResponseEntity.status(status).body(new CommonDtos.IcebergErrorResponse(
                     new CommonDtos.IcebergErrorResponse.IcebergError(
@@ -108,11 +137,28 @@ public class GlobalExceptionHandler {
                 failure.message(), failure.resourceType(), failure.resourceName(), status));
     }
 
-    /** 一次失败在两套形状里各自需要的那些值，先算齐再分派。 */
-    private record Failure(String message, String resourceType, String resourceName, String icebergType) {
+    /**
+     * 一次失败在三套形状里各自需要的那些值，先算齐再分派。
+     *
+     * @param lanceCode Lance 的错误码；为空表示「不是 Lance 面抛的」，由状态码反推
+     * @param detail    Lance 的 {@code detail}，仅排障用
+     */
+    private record Failure(String message, String resourceType, String resourceName, String icebergType,
+                           String detail, LanceErrors.Code lanceCode) {
     }
 
     private static Failure failure(String message, int status) {
-        return new Failure(message, null, null, IcebergErrors.typeOf(status, null));
+        return new Failure(message, null, null, IcebergErrors.typeOf(status, null), null, null);
+    }
+
+    /**
+     * 这个 Lance 请求打在表级路径上吗。
+     *
+     * <p>只影响 404 的细分（{@code TABLE_NOT_FOUND} 还是 {@code NAMESPACE_NOT_FOUND}），
+     * 但对客户端是两种动作：前者它去建表，后者它去建 schema。
+     */
+    private static boolean isTableLevel(HttpServletRequest request) {
+        String path = request == null ? null : request.getRequestURI();
+        return path != null && (path.contains("/table/") || path.endsWith("/table"));
     }
 }

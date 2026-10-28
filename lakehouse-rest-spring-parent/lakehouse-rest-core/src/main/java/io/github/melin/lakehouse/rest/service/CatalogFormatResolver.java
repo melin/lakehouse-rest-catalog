@@ -45,6 +45,19 @@ public class CatalogFormatResolver {
 
     private static final String V1 = "/v1/";
 
+    /**
+     * Lance 面的基址。
+     *
+     * <p>它**不是** {@code /v1/} 的子路径，因此必须单独判——而且要在
+     * {@code /v1/} 那套判据之前：{@code /lance/v1/...} 不以 {@code /v1/} 开头，
+     * 落进下面那套逻辑会被当成「管理 API」而按 Paimon 形状回错误。
+     *
+     * <p>为什么 Lance 面不挂 {@code /v1/{prefix}}：它**没有 config 握手**，客户端只配
+     * {@code uri} 与 {@code delimiter}，{@code id} 的第一级才是 catalog。三条理由与
+     * 选型的取舍见 {@code docs/lance-rest-catalog-design.md} §4.1。
+     */
+    private static final String LANCE_V1 = "/lance/v1/";
+
     private final CatalogRepository catalogRepository;
 
     /**
@@ -57,6 +70,9 @@ public class CatalogFormatResolver {
             return CatalogFormat.DEFAULT;
         }
         String path = request.getRequestURI();
+        if (path != null && path.startsWith(LANCE_V1)) {
+            return CatalogFormat.LANCE;
+        }
         if (path == null || !path.startsWith(V1)) {
             // 管理 API / 控制台扩展端点：它们有自己的形状，与协议面无关
             return CatalogFormat.DEFAULT;

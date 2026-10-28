@@ -67,6 +67,15 @@
 			<groupId>io.github.melin</groupId>
 			<artifactId>lakehouse-rest-protocol-iceberg</artifactId>
 		</dependency>
+		<!--
+			Lance 面：/lance/v1/** 的 13 个 operation。它不引任何 Lance 库
+			（manifest 由客户端写，本服务端只做登记），因此这里只是把控制器与
+			服务装配进可执行产物——少写它的表现是 Lance 请求全部 404。
+		-->
+		<dependency>
+			<groupId>io.github.melin</groupId>
+			<artifactId>lakehouse-rest-protocol-lance</artifactId>
+		</dependency>
 
 		<!--
 			Paimon 的三个运行时构件集中声明在这里，而不是散在 core / protocol-paimon：

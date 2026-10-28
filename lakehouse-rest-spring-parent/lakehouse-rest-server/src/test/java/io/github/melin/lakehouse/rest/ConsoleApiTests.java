@@ -102,7 +102,8 @@ class ConsoleApiTests {
         assertEquals(List.of("INTERNAL", "EXTERNAL"), strings(enums.get("catalogTypes")));
         // 表格式与托管模式正交，两个列表都要下发：控制台的新建表单用它渲染格式选择，
         // 顺序即建议的展示顺序（默认格式在前），因此这里断言顺序而不只是集合
-        assertEquals(List.of("PAIMON", "ICEBERG"), strings(enums.get("catalogFormats")));
+        // LANCE 是第三个协议面（/lance/v1/**），catalog 一建就定型，建的入口与其它两种一致
+        assertEquals(List.of("PAIMON", "ICEBERG", "LANCE"), strings(enums.get("catalogFormats")));
         // 两个扩展存储类型必须在取值集合里：控制台的存储类型下拉框据此渲染
         assertEquals(Set.of("S3", "GCS", "AZURE", "OBS", "OSS", "FILE"),
                 new LinkedHashSet<>(strings(enums.get("storageTypes"))));

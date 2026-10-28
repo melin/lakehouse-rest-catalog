@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+	<modelVersion>4.0.0</modelVersion>
+
+	<parent>
+		<groupId>io.github.melin</groupId>
+		<artifactId>lakehouse-rest-spring-parent</artifactId>
+		<version>1.0.0</version>
+	</parent>
+
+	<artifactId>lakehouse-rest-protocol-lance</artifactId>
+	<packaging>jar</packaging>
+	<name>lakehouse-rest-protocol-lance</name>
+	<description>LakeHouse Catalog 协议面：Lance Namespace / REST Catalog（/lance/v1/**，13 个 operation）</description>
+
+	<!--
+		装什么（Lance catalog API `/lance/v1/**`，规范 48 个 operation 里实现 13 个）：
+		  lance/web/      Namespace 控制器（5 个 operation）、Table 控制器（8 个）、
+		                  以及未实现 operation 的 406 兜底控制器
+		  lance/service/  LanceNamespaceService / LanceTableService / LanceCatalogSupport
+		                  （catalog 定位、格式校验、location 生成、凭据下发）
+		  lance/support/  LanceIds（id 解析：delimiter / 段数 / 白名单 / 路径与 body 一致）
+		  lance/dto/      这些端点各自的请求与响应契约（字段名与规范逐字一致）
+
+		包名比其他服务端模块多一层 `.lance`，理由与 iceberg 面相同：两个协议面各占
+		一层子树（rest.paimon.* / rest.iceberg.* / rest.lance.*），互不依赖。
+
+		凭什么值得一个模块：**它是唯一允许出现 Lance 契约名词的地方**。Lance 面与另两面
+		的差别不在依赖（它一个 Lance 库都不引），而在**契约形状**：
+		  - 没有 `/v1/config` 握手，客户端只配 uri + delimiter；
+		  - `{id}` 是 `cat$schema$table` 这样的拼接串，放在路径里；
+		  - 错误体是 `{error, code, detail, instance}`，code 决定 HTTP 状态。
+		把这三样与 Paimon / Iceberg 的契约混在一个模块里，等于让「这条请求该答什么形状」
+		变成读代码才能知道的事。
+
+		注意本模块**不做**协议分派：进来的请求已经由基址（/lance/v1/）确定属于本面，
+		由 core 的装配层确认过 catalog 格式，这里只处理 Lance 形状的契约。
+	-->
+	<dependencies>
+		<dependency>
+			<groupId>io.github.melin</groupId>
+			<artifactId>lakehouse-rest-core</artifactId>
+		</dependency>
+		<!--
+			存储层：`StorageFileAccess` 用于 RegisterTable 的存在性探测（列 `_versions/`
+			下有没有 manifest），`StorageCredentialManager` 用于下发 storage_options。
+			两者对外只暴露「路径 + 文本」与「凭据 map」，本模块因此看不到任何 Paimon 类型。
+		-->
+		<dependency>
+			<groupId>io.github.melin</groupId>
+			<artifactId>lakehouse-rest-storage</artifactId>
+		</dependency>
+	</dependencies>
+
+	<build>
+		<plugins>
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-enforcer-plugin</artifactId>
+				<executions>
+					<execution>
+						<id>single-face</id>
+						<goals>
+							<goal>enforce</goal>
+						</goals>
+						<configuration>
+							<rules>
+								<bannedDependencies>
+									<excludes>
+										<!--
+											不变量 2：协议面之间互不依赖。装配层按基址与格式选面，
+											面与面之间没有调用关系——一旦有，就说明有代码放错了层。
+										-->
+										<exclude>io.github.melin:lakehouse-rest-protocol-paimon</exclude>
+										<exclude>io.github.melin:lakehouse-rest-protocol-iceberg</exclude>
+										<!--
+											不变量 3：格式实现只允许出现在它自己那一面。
+											Lance 面刻意**不引任何 Lance 库**——manifest 由客户端写，
+											服务端不打开数据集（docs/lance-rest-catalog-design.md §3.2/§3.3）。
+											这里的排除项是给「将来想加 manifest 读取器」那一天准备的提醒：
+											那属于 P1，且要单独评审。
+										-->
+										<exclude>org.apache.paimon:*</exclude>
+										<exclude>org.apache.iceberg:*</exclude>
+									</excludes>
+									<message>
+										lakehouse-rest-protocol-lance 不能依赖其它协议面或它们的格式实现。
+										见 docs/maven-module-design.md §3.1 的三条不变量与
+										docs/lance-rest-catalog-design.md §3。
+									</message>
+								</bannedDependencies>
+							</rules>
+						</configuration>
+					</execution>
+				</executions>
+			</plugin>
+		</plugins>
+	</build>
+
+</project>

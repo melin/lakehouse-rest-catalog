@@ -449,6 +449,7 @@ USE `lakehouse_catalog`;
         updated_by varchar(255) comment '最后更新者主体名（写入前已按列宽归一化）',
         metadata_doc mediumtext comment 'Iceberg TableMetadata 原文 JSON，Iceberg 表的唯一真相源',
         schema_doc mediumtext comment '当前 schema 的 JSON 文档',
+        properties_json text comment 'Lance 表 / 通用表的属性（JSON 对象）；另两种格式的属性住在各自的真相源里',
         primary key (id)
     ) comment='表实体（Paimon 表与 Iceberg 表共用）' engine=InnoDB;
 
