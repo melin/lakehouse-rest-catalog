@@ -35,6 +35,18 @@ lakehouse:
     initial-catalog:
       warehouse: "file://${java.io.tmpdir}/lakehouse-rest-server-tests/warehouse"
 
+    # 认证与授权在测试里显式关闭（默认已是 true，这里要把默认压回去）。
+    #
+    # 为什么压回去：服务端绝大多数测试类验证的是「功能行为」，它们用 MockMvc 直打
+    # 端点且不带令牌；默认开着会把每一个这样的用例都变成 401/403，让授权语义之外
+    # 的回归被鉴权噪音淹没。显式开授权的用例（AuthorizationTests、PermissionManagementTests
+    # 等 4 个类）在各自的 @SpringBootTest properties 里置 true——那个优先级更高，
+    # 不受这里影响，授权链路照样测得到。
+    auth:
+      enabled: false
+    authorization:
+      enabled: false
+
     # 把落库加密密钥置空，让测试跑在「本部署没有密钥」这个状态下。
     #
     # application.yml 里配着一份（本地调试用，已被 git 跟踪），而

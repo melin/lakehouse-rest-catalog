@@ -43,8 +43,9 @@
 > 被列进 `service-admins` 或被授予了某个 principal role。
 > 服务端会为这种「账号在授权链路里查不到」的情况在启动日志里告警。
 
-`lakehouse.rest.auth.enabled=false`（默认）时，数据面（`/v1/**`、`/api/catalog/v1/**`、
-`/api/management/v1/**`）的请求都以 `lakehouse.rest.auth.principal`（默认 `anonymous`）通过。
+`lakehouse.rest.auth.enabled=false`（仅 h2 即用即丢 profile 与测试 profile）时，数据面
+（`/v1/**`、`/api/catalog/v1/**`、`/api/management/v1/**`）的请求都以
+`lakehouse.rest.auth.principal`（默认 `anonymous`）通过。
 
 ---
 
@@ -274,7 +275,7 @@ catalog 存在但主体无权时仍返回 403。
 
 | 配置 | 默认值 | 说明 |
 | --- | --- | --- |
-| `lakehouse.rest.auth.enabled` | `false` | 是否要求 `Authorization: Bearer <token>` |
+| `lakehouse.rest.auth.enabled` | `true` | 是否要求 `Authorization: Bearer <token>`；h2 / 测试 profile 显式为 `false` |
 | `lakehouse.rest.auth.principal` | `anonymous` | 认证关闭或未带令牌时使用的主体名 |
 | `lakehouse.rest.auth.tokens` | 空 | 允许的静态令牌列表 |
 | `lakehouse.rest.auth.token-principals` | 空 | 静态令牌 → 主体名映射；未登记的令牌退化为「令牌即主体名」（审计列超长的记摘要，见 §6 第 7 条） |
@@ -287,13 +288,15 @@ catalog 存在但主体无权时仍返回 403。
 | `lakehouse.rest.auth.console.password.principals` | 空 | 账号名 → 主体名映射；不填则两者同名 |
 | `lakehouse.rest.auth.console.client-credentials.enabled` | `true` | 是否允许用主体凭据换令牌 |
 | `lakehouse.rest.auth.console.oidc.*` | 关闭 | 外部身份提供方登录；见 [`console-auth.md`](console-auth.md) |
-| `lakehouse.rest.authorization.enabled` | `false` | 是否启用授权判定 |
+| `lakehouse.rest.authorization.enabled` | `true` | 是否启用授权判定；h2 / 测试 profile 显式为 `false` |
 | `lakehouse.rest.authorization.service-admins` | `[root]` | 服务管理员主体名单 |
 | `lakehouse.rest.authorization.bootstrap-principal` | `root` | 启动时预置的引导主体；留空则不预置 |
 | `lakehouse.rest.authorization.bootstrap-principal-role` | `service_admin` | 引导角色名；启动时把 `role:<该名>` 授成 `CATALOG/ALL` + `CATALOG_ALL/ALL` |
 
 `authorization.enabled=false` 时不做判定，认证仍然生效——即所有请求以读取到的
-主体名通过，便于在既有部署上先只做认证。
+主体名通过，便于在既有部署上先只做认证。**两个开关要么都开、要么都关：**
+`auth.enabled=false` 时「认不出的令牌退化为令牌即主体名」，`Bearer root` 就是管理员，
+只开授权没有安全意义；只开认证不开授权则所有请求以真实主体名全量放行（审计仍归属正确）。
 
 ---
 

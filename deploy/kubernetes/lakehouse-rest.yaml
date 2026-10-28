@@ -248,9 +248,20 @@ data:
               jwks-cache-ttl: 1h
               # IdP 与本服务端的时钟不可能完全一致，留一点余量
               clock-skew: 60s
-        # 管理 API（/api/management/v1/**）的 RBAC 授权，默认关闭以保持既有行为
+        # 管理 API（/api/management/v1/**）与全端点的 RBAC 授权。
+        #
+        # enabled 已不再在这里写：默认值就是 true（fail-closed），auth.enabled 同为 true，
+        # 两个开关必须同开——认证认出「你是谁」，授权判定「你能干什么」，只开一个要么
+        # 形同虚设（Bearer root 即管理员）、要么把请求全记到 anonymous 名下。
+        #
+        # 开启后的前置（缺一则「登录成功但什么也看不到」或引擎全 401）：
+        #   - 控制台登录方式至少配一种（下方 console 段的密码 / 客户端凭据 / OIDC），
+        #     登录主体名要能对上 service-admins 或被授予引导角色链；
+        #   - Spark / Flink 客户端要配 headers.Authorization（auth.tokens 静态令牌，
+        #     令牌 → 主体映射见 auth.token-principals）；
+        #   - 优化任务的 k8s 回调走批次级令牌，不受影响。
+        # 本地即用即丢实例（h2 profile）与测试 profile 各自显式关闭，不受默认值影响。
         authorization:
-          enabled: false
           # 服务管理员：可管理 principal 与 principal role，并可在任意 catalog 上操作角色与授权。
           # 管理规格的权限枚举没有覆盖「管理主体」的层级，故用名单表达
           service-admins:

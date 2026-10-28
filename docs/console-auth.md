@@ -10,8 +10,9 @@
 
 > **一句话说清两个开关。** `lakehouse.rest.auth.console.required`（默认 `true`）要求**浏览器**
 > 先登录才能打开控制台，只作用于控制台界面与 `/api/console/v1/**`；
-> `lakehouse.rest.auth.enabled`（默认 `false`）要求 `/v1/**`、`/api/catalog/v1/**`、
-> `/api/management/v1/**` 带令牌。**只开门禁时数据接口仍然匿名可调，它不是安全边界**——
+> `lakehouse.rest.auth.enabled`（默认 `true`，h2 / 测试 profile 显式 `false`）要求 `/v1/**`、
+> `/api/catalog/v1/**`、`/api/management/v1/**` 带令牌。**门禁只作用于界面，不是安全边界**——
+> 数据面的保护由 `auth.enabled` 与 `authorization.enabled`（同开同关）提供，
 > 详见 [§2.1](#21-两个开关门禁不是安全边界)。
 
 ---
@@ -72,21 +73,21 @@
 | 配置项 | 默认 | 管什么 | 关掉会怎样 |
 | --- | --- | --- | --- |
 | `lakehouse.rest.auth.console.required` | `true` | **控制台界面**与 `/api/console/v1/**` | 浏览器不用登录就能打开控制台；数据接口是否受保护不受它影响 |
-| `lakehouse.rest.auth.enabled` | `false` | `/v1/**`、`/api/catalog/v1/**`、`/api/management/v1/**` | 数据接口匿名可调 |
+| `lakehouse.rest.auth.enabled` | `true` | `/v1/**`、`/api/catalog/v1/**`、`/api/management/v1/**` | 数据接口匿名可调；h2 / 测试 profile 显式为 `false` |
 
-因此**默认部署（`console.required=true` + `auth.enabled=false`）的真实状态**是：
+下面用 **h2 即用即丢实例**（两个开关显式关闭）演示门禁与数据面的边界：
 
 ```bash
 # 浏览器：被拦在登录页，必须先登录
 open http://localhost:8080/console/
 
-# 但数据面完全敞开：
+# 但数据面完全敞开（h2 profile：auth/authorization 显式关闭）：
 curl -s http://localhost:8080/v1/config?warehouse=paimon       # 200
 curl -s http://localhost:8080/api/management/v1/catalogs       # 200
 ```
 
 **这层门禁只挡住界面。** 它解决的问题是「误入的人看到一堆管理表单」，
-不是「数据被保护」。要保护数据必须把 `auth.enabled` 设为 `true`：
+不是「数据被保护」。默认部署（`auth.enabled=true`）下数据面是受保护的：
 
 ```bash
 curl -s -o /dev/null -w '%{http_code}\n' \
@@ -96,7 +97,8 @@ curl -s -o /dev/null -w '%{http_code}\n' \
 这句话在**四处**如实写着：本节、`RestServerProperties.Auth.Console` 的 javadoc、
 `application.yml` 的注释、以及登录页与「连接设置」页的界面文案。
 服务端在「门禁开着而 `auth.enabled=false`」时还会在启动日志里告警——
-默认配置必然触发这条告警，这是有意的：**默认值应当是「装好能用」，但用的人必须知道边界在哪**。
+h2 profile（两个开关显式关闭）必然触发这条告警，这是有意的：**那个实例装好能用，
+但用的人必须知道边界在哪**。
 
 ### 关键决定：自包含令牌，而不是服务端会话
 
@@ -135,7 +137,8 @@ Polaris Console 的 `README.md` 定义了两种模式，本工程逐条对齐：
 
 **本工程多出来的一个方式**：用户名 + 密码（默认 `admin/admin`）。
 Polaris Console 没有这一路——它假设你手上已经有一个主体或一个 IdP。
-本工程补上它，是因为默认部署 `auth.enabled=false` 时一个主体都不会被创建，
+本工程补上它，是因为一个全新部署里一个主体都不会被创建
+（引导主体由 `authorization.bootstrap-principal` 预置，见 [`authorization.md`](authorization.md)），
 而控制台默认要求登录（见 [§2.1](#21-两个开关门禁不是安全边界)）：
 没有这条路，装好之后第一个界面就是「进不去」。它的接口刻意**不**做成 OAuth 形状
 （`POST /api/console/v1/login`，JSON 进 JSON 出），免得被误当成 RFC 6749 的一部分。

@@ -16,3 +16,17 @@ spring:
   jpa:
     hibernate:
       ddl-auto: update
+
+# 认证与授权在此 profile 下显式关闭（默认已是 true，这里要把默认压回去）。
+#
+# 为什么：h2 实例是「即用即丢」的本地调试与端到端脚本载体，Spark / Flink 示例、
+# scripts/e2e-*.sh 都不带令牌直连。给它们配令牌是把调试成本转嫁给每一次起手式，
+# 而这个实例的生命周期本来就是一次性——关掉两个开关不损失任何真实资产。
+# 保留这份显式声明而不是靠默认回退，是为了让「h2 不鉴权」成为看得见的决定，
+# 而不是默认值变更时被顺手带走的隐式行为。
+lakehouse:
+  rest:
+    auth:
+      enabled: false
+    authorization:
+      enabled: false
