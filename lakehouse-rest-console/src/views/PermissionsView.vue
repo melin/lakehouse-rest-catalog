@@ -33,7 +33,6 @@
             placeholder="按 principal / 库 / 表过滤"
             class="pc-filter"
           />
-          <span class="pc-mono pc-dim">catalog API /{{ catalogName }}/permissions</span>
         </div>
 
         <ResourceState

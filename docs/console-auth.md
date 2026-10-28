@@ -521,7 +521,15 @@ lakehouse:
           enabled: true              # 方式一（默认开启，装好就能进）
           users:
             admin: admin             # 明文；生产必须改，且建议写成 ${ENV_VAR}
-          principals: {}             # 账号名 → 主体名；不填则两者同名（§4.3）
+          # 账号名 → 主体名；不填则两者同名（§4.3）。
+          # 仓库自带的 application.yml 里配的是 admin → root：root 是
+          # authorization.bootstrap-principal，且默认在 service-admins 名单里，
+          # 因此本地起服务后管理面的 catalog 列表不会被可见性过滤（主体名若停在
+          # admin，它一条赋权都没有，列表会是空的——看上去像查询坏了）。
+          # 这一行只适合本地开发：它等于把服务管理员权限交给一个弱口令账号，
+          # 生产应删掉它，改为真实主体名，或直接用下面的方式二 / 方式三。
+          principals:
+            admin: root
           rate-limit:                # 比客户端凭据更严：猜的是人定的密码
             enabled: true
             max-failures: 5

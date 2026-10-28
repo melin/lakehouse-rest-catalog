@@ -184,15 +184,32 @@ public final class CatalogAccessRules {
     }
 
     /**
-     * Paimon 官方权限端点：{@code /v1/{prefix}/permissions[/grant|/revoke]}。
+     * Paimon 官方权限端点：{@code /v1/{prefix}/permissions[/grant|/revoke]}，
+     * 加上服务端扩展的 {@code /permissions/scopes}（控制台授权清单）。
      *
-     * <p>列赋权要求调用者在 catalog 的后代集合上具备 {@code GRANT}；
+     * <p>列赋权与看清单都要求调用者在 catalog 的后代集合上具备 {@code GRANT}；
      * grant/revoke 的目标资源在请求体里，标为 deferred 交给控制器精确判定。
      * GET 落在 grant/revoke 路径上返回 {@code null} → 拒绝，
      * 避免把写端点误当读端点探测。
+     *
+     * <p>这里每加一条端点都要想清楚「谁该看见它」：漏登记的表现不是放行，
+     * 而是拦截器在控制器之前按失败关闭拒成 403。
      */
     private static Requirement permissions(String catalog, List<String> path, boolean read) {
         if (path.size() == 1) {
+            return read
+                    ? at(catalog, ResourceType.CATALOG_ALL, List.of(), null, Access.GRANT)
+                    : null;
+        }
+        if (path.size() == 2 && "scopes".equals(path.get(1))) {
+            // 控制台的授权清单（按「主体 × 作用范围」折叠后的一页）。
+            // 与 GET /permissions 同一档：能看到全站谁被授了什么，就等同于
+            // 「能查看并分配权限」，因此同样落在 CATALOG_ALL:GRANT 上。
+            //
+            // 这一条曾经漏登记：控制器里它自己会 require 一次，
+            // 但拦截器先执行，未登记就直接按失败关闭拒成 403 —— 于是
+            // 「控制器判了权」和「拦截器不认识这个端点」同时成立，
+            // 表现为控制台权限页一打开就报 no authorization rule is registered。
             return read
                     ? at(catalog, ResourceType.CATALOG_ALL, List.of(), null, Access.GRANT)
                     : null;

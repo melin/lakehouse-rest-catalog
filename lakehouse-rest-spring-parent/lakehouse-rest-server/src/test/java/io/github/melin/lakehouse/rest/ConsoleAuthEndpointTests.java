@@ -48,7 +48,11 @@ import tools.jackson.databind.json.JsonMapper;
         // 静态令牌：给机器用的那条路径不能被这次改动波及
         "lakehouse.rest.auth.tokens[0]=static-token-for-tests",
         "lakehouse.rest.auth.token-principals.static-token-for-tests=static-machine-user",
-        // 用户名密码：一个与主体同名的账号，一个映射到主体的账号
+        // 用户名密码：一个与主体同名的账号，一个映射到主体的账号。
+        // 「同名」这条规则必须用**本类自己声明的账号**验证，不能借默认的 admin：
+        // 仓库自带的 application.yml 把 admin 映射到了 root（本地开发用），
+        // 默认账号已经不再代表「未配映射」这个场景。
+        "lakehouse.rest.auth.console.password.users.console-auth-plain=plain-hd-ro",
         "lakehouse.rest.auth.console.password.users.console-auth-test=let-me-in",
         "lakehouse.rest.auth.console.password.principals.console-auth-test=console-auth-test-principal",
         // 阈值调小，让「连续失败后被拒」能在几行内测到
@@ -81,6 +85,11 @@ class ConsoleAuthEndpointTests {
     private static final String MAPPED_USER = "console-auth-test";
 
     private static final String MAPPED_PASSWORD = "let-me-in";
+
+    /** 配置里**没有**映射的账号：用来验证「未配映射时主体名 = 用户名」。 */
+    private static final String UNMAPPED_USER = "console-auth-plain";
+
+    private static final String UNMAPPED_PASSWORD = "plain-hd-ro";
 
     @Autowired
     private MockMvc mockMvc;
@@ -186,18 +195,36 @@ class ConsoleAuthEndpointTests {
     }
 
     /**
-     * 开箱即用的默认账号 {@code admin/admin}。
+     * 开箱即用的默认账号 {@code admin/admin} 仍然能登录。
      *
-     * <p>这是控制台「装好就能进」的那条路，也是本次改动的默认值本身。
-     * 把它写成断言而不是只在 {@code application.yml} 里留一行注释：
-     * 默认值一旦被谁改掉，登录页会直接不可用，而那种故障很难从日志上看出来。
+     * <p>这是控制台「装好就能进」的那条路。把它写成断言而不是只在
+     * {@code application.yml} 里留一行注释：默认值一旦被谁改掉，登录页会
+     * 直接不可用，而那种故障很难从日志上看出来。
+     *
+     * <p>只断言「换得到令牌」，不断言主体名：主体名由配置决定，仓库自带的
+     * {@code application.yml} 把它映射到了 {@code root}（本地开发要看数据），
+     * 而部署方可以改成任何主体。断言具体名字等于把这个测试和一份配置绑死。
      */
     @Test
     void theDefaultAdminAccountWorksOutOfTheBox() throws Exception {
         JsonNode body = json(login("admin", "admin"), 200);
 
         assertFalse(body.get("accessToken").asString().isBlank());
-        assertEquals("admin", body.get("principal").asString(), "没有配 principals 映射时主体名就是用户名");
+        assertFalse(body.get("principal").asString().isBlank(), "登录成功必须带一个主体名");
+    }
+
+    /**
+     * 没有配 {@code principals} 映射时，主体名就是用户名。
+     *
+     * <p>用一个本类自己声明的、没有映射的账号验证，不借默认的 {@code admin}——
+     * 默认账号已经被映射到别的主体，拿它验证这条规则即使在代码正确时也会失败。
+     */
+    @Test
+    void accountWithoutPrincipalMappingKeepsItsOwnName() throws Exception {
+        JsonNode body = json(login(UNMAPPED_USER, UNMAPPED_PASSWORD), 200);
+
+        assertEquals(UNMAPPED_USER, body.get("principal").asString(),
+                "没有配 principals 映射时主体名就是用户名");
     }
 
     /**

@@ -97,12 +97,15 @@ class AuditPrincipalEndpointTests {
     /** 正常路径不受影响：服务端自己签发的令牌解析出的是真实主体名。 */
     @Test
     void aRecognizedConsoleTokenIsRecordedByItsPrincipalName() throws Exception {
-        String issued = consoleAccessToken();
+        Issued issued = consoleLogin();
 
-        assertEquals(200, createTable("t_admin", issued).getResponse().getStatus());
+        assertEquals(200, createTable("t_admin", issued.token()).getResponse().getStatus());
 
-        JsonNode audit = auditOf("t_admin", issued);
-        assertEquals(ADMIN, audit.get("createdBy").asString(), "签发令牌的主体名应当原样入库");
+        JsonNode audit = auditOf("t_admin", issued.token());
+        // 期望值取自登录响应，而不是硬编码用户名：账号名与主体名本来就允许不同
+        // （password.principals 映射），仓库自带的配置就把 admin 映射到了 root。
+        // 硬编码 "admin" 等于把这条测试绑死在一份具体配置上。
+        assertEquals(issued.principal(), audit.get("createdBy").asString(), "签发令牌的主体名应当原样入库");
         assertTrue(audit.get("createdBy").asString().length() <= 255);
     }
 
@@ -143,6 +146,26 @@ class AuditPrincipalEndpointTests {
     }
 
     /** 用默认账号登录控制台，拿一个服务端自己签发的访问令牌。 */
+    /**
+     * 用默认账号登录一次，同时拿到令牌与**映射之后**的主体名。
+     *
+     * <p>为什么要一起拿：审计列写的是主体名，而主体名不一定等于账号名，
+     * 所以断言不能对着账号名硬编码。
+     */
+    private Issued consoleLogin() throws Exception {
+        MvcResult result = mockMvc.perform(post("/api/console/v1/login")
+                .contentType("application/json")
+                .content("{\"username\":\"" + ADMIN + "\",\"password\":\"" + ADMIN + "\"}")).andReturn();
+        assertEquals(200, result.getResponse().getStatus(),
+                () -> "控制台登录失败，响应=" + body(result));
+        JsonNode payload = mapper.readTree(body(result));
+        return new Issued(payload.get("accessToken").asString(), payload.get("principal").asString());
+    }
+
+    /** 一次登录的结果：令牌本体 + 解析出的主体名。 */
+    private record Issued(String token, String principal) {
+    }
+
     private String consoleAccessToken() throws Exception {
         MvcResult result = mockMvc.perform(post("/api/console/v1/login")
                 .contentType(MediaType.APPLICATION_JSON)

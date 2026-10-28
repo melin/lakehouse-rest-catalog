@@ -52,6 +52,20 @@
         :empty-text="emptyText"
       >
         <template #actions>
+          <!--
+            「列表为空」有两种完全不同的成因，而响应体里没有区分它们的字段
+            （服务端刻意不返回「过滤掉了 N 条」，否则不可见的 catalog 会通过条数泄露出去）。
+            因此这里的文案只做条件式说明：可能真的没登记，也可能是当前主体看不见。
+          -->
+          <p v-if="!formatFilter" class="pc-empty-hint">
+            如果服务端确实登记过 catalog，多半是当前登录主体
+            <span class="pc-mono">{{ auth.state.principal || '（未认证）' }}</span>
+            在任何一个 catalog 上都没有赋权：开启授权后，服务端会把不可见的 catalog
+            从列表里过滤掉，于是「库里有数据、页面是空」是一个正常结论，不是查询失败。
+            要让它出现，把该主体加入
+            <span class="pc-mono">lakehouse.rest.authorization.service-admins</span>，
+            或在某个 catalog 上给它授权。
+          </p>
           <el-button size="small" type="primary" @click="openCreate">
             <el-icon><Plus /></el-icon>
             <span class="pc-btn-text">新建 Catalog</span>
@@ -340,6 +354,7 @@ import {
   useAutoRefresh,
   useRemotePaging,
 } from '@/composables/index.js'
+import { auth } from '@/store/auth.js'
 import { session } from '@/store/session.js'
 import {
   CATALOG_FORMATS,
@@ -426,10 +441,16 @@ watch(formatFilter, () => {
   reload()
 })
 
-/** 筛出 0 条与「一个都没登记」是两件事，空态文案要分开。 */
+/**
+ * 筛出 0 条、一个都没登记、以及「登记了但当前主体看不见」是三件事。
+ *
+ * <p>第三种以前被写成了第一、二种之一（「还没有登记任何 catalog」）——那句断言在
+ * 开着授权、调用者又没有任何赋权时是**假话**：库里明明有行，页面却说他没登记过。
+ * 现在主文案只说「可见」范围内的结论，成因交给空态里的条件式说明去解释。
+ */
 const emptyText = computed(() => (formatFilter.value
   ? `没有 ${catalogFormatLabel(formatFilter.value)} 格式的 catalog。把上面的筛选切回「全部格式」可以看到其余 catalog。`
-  : '还没有登记任何 catalog。新建一个，引擎客户端就能用它连接了。'))
+  : '没有可见的 catalog。'))
 
 const meta = computed(() => session.state.meta)
 const catalogTypes = computed(() => meta.value?.enums?.catalogTypes || ['INTERNAL', 'EXTERNAL'])
@@ -682,6 +703,17 @@ const {
 </script>
 
 <style scoped>
+/* 空态里的成因说明：比 el-empty 的 description 长，因此单独一段并限宽，
+ * 不让它把「新建 Catalog」按钮推得很远。 */
+.pc-empty-hint {
+  max-width: 560px;
+  margin: 0 auto 12px;
+  font-size: 12px;
+  line-height: 1.75;
+  color: var(--pc-text-dim);
+  text-align: left;
+}
+
 /* 执行集群那一格：chip 在上、位置在下。
  * 用两行而不是一行「正常 · EKS · paimon-opt」是刻意的：这一列回答的是两个不同的问题——
  * 「会不会跑」与「跑在哪」，前者要能一眼扫过去（对齐的 chip），后者是次要信息。 */

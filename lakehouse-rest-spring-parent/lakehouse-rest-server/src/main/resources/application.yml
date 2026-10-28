@@ -148,8 +148,19 @@ lakehouse:
           users:
             admin: admin
           # 用户名 → 主体名；未配置的用户名即主体名。用于让「开门的账号」与
-          # 「授权链路里的主体」叫不同名字，例如把 admin 映射到已有的服务管理员主体
-          principals: {}
+          # 「授权链路里的主体」叫不同名字，例如把 admin 映射到已有的服务管理员主体。
+          #
+          # 这里配了 admin → root，是为了让本机起服务后能直接看到数据：root 既是
+          # authorization.bootstrap-principal，又默认在 authorization.service-admins
+          # 名单里，所以管理面的 catalog 列表对它不做可见性过滤。主体名若停在 admin，
+          # 授权（authorization.enabled，默认 true）会因为它「一条赋权都没有」而把
+          # 列表过滤成空——页面上看起来像查询坏了，实际是看不见。
+          #
+          # 这一行只适合本地开发。它等于把服务管理员权限交给一个弱口令账号
+          # （下面 users 里的密码还是默认值），生产必须删掉它，并改成强口令或走
+          # client-credentials / OIDC。密码仍是默认值时启动会继续告警，别把告警关掉。
+          principals:
+            admin: root
           # 用户名密码比客户端凭据更怕爆破（密码是人定的，可能只有六七个字符），
           # 因此阈值比下面那组更严。按「直连地址 + 用户名」分桶，只在失败时计数。
           rate-limit:

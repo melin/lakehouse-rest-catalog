@@ -61,9 +61,18 @@
         :loading="session.state.loadingCatalogs"
         :error="session.state.catalogsError"
         :empty="!session.state.catalogs.length"
-        empty-text="还没有登记任何 catalog。新建一个，引擎客户端就能用它连接了。"
+        :empty-text="catalogEmptyText"
       >
         <template #actions>
+          <!-- 与「Catalogs」页同一条说明：空列表可能来自可见性过滤，不是没登记 -->
+          <p class="pc-empty-hint">
+            若服务端登记过 catalog，当前登录主体
+            <span class="pc-mono">{{ auth.state.principal || '（未认证）' }}</span>
+            可能没有任何 catalog 的赋权——开启授权后列表会按可见性过滤，
+            于是「库里有数据、这里为空」是正常结论。把它加入
+            <span class="pc-mono">lakehouse.rest.authorization.service-admins</span>，
+            或在某个 catalog 上授权后即可看到。
+          </p>
           <el-button size="small" type="primary" @click="$router.push({ name: 'catalogs' })">
             去创建
           </el-button>
@@ -153,6 +162,15 @@ const configResource = useResource(async () => {
 const loading = computed(() => directory.loading.value || session.state.loadingCatalogs)
 const error = computed(() => directory.error.value)
 const configData = computed(() => configResource.data.value)
+
+/**
+ * 「目录清单」的空态主文案。
+ *
+ * <p>以前这里写的是「还没有登记任何 catalog」——在开着授权、而调用者没有任何赋权时
+ * 那句话是假的：库里明明有行。服务端也不会告诉我们「过滤掉了 N 条」（不可见的
+ * catalog 会因此通过条数泄露），所以主文案只断言「可见」范围，成因交给空态里的说明。
+ */
+const catalogEmptyText = computed(() => '没有可见的 catalog。')
 
 const stats = computed(() => {
   const meta = session.state.meta
@@ -269,6 +287,16 @@ onConsoleRefresh(reloadAll)
 </script>
 
 <style scoped>
+
+/* 空态里的成因说明（与 Catalogs 页同一段文字，样式各自保留在各自的 scoped 块里） */
+.pc-empty-hint {
+  max-width: 560px;
+  margin: 0 auto 12px;
+  font-size: 12px;
+  line-height: 1.75;
+  color: var(--pc-text-dim);
+  text-align: left;
+}
 
 .pc-grid {
   display: grid;

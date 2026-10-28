@@ -151,7 +151,11 @@ data:
           # true 时所有 /v1/**、/api/catalog/v1/**、/api/management/v1/**、/api/console/v1/** 都要求
           # Authorization: Bearer <token>（例外只三条：登录引导 /api/console/v1/auth、
           # 登录 /api/console/v1/login 与令牌端点 /api/catalog/v1/oauth/tokens）
-          enabled: false
+          #
+          # 默认 true（fail-closed）：认证关着时「认不出的令牌退化为令牌即主体名」，
+          # 任何人发 Bearer root 就是管理员，下面的授权因此形同虚设——两个开关要么都开、
+          # 要么都关，只开授权不认证没有安全意义。本地即用即丢实例（h2 profile）显式关。
+          enabled: true
           # 关闭鉴权时请求落到哪个主体名下
           principal: anonymous
           # 静态令牌：给机器用——Spark / Flink 客户端把它写死在配置里，之后不再变更。
@@ -204,6 +208,19 @@ data:
               # 用户名 → 主体名；未配置的用户名即主体名。用于让「开门的账号」与
               # 「授权链路里的主体」叫不同名字，例如把 admin 映射到已有的服务管理员主体
               principals: {}
+              # 「授权链路里的主体」叫不同名字，例如把 admin 映射到已有的服务管理员主体。
+              #
+              # 这里配了 admin → root，是为了让本机起服务后能直接看到数据：root 既是
+              # authorization.bootstrap-principal，又默认在 authorization.service-admins
+              # 名单里，所以管理面的 catalog 列表对它不做可见性过滤。主体名若停在 admin，
+              # 授权（authorization.enabled，默认 true）会因为它「一条赋权都没有」而把
+              # 列表过滤成空——页面上看起来像查询坏了，实际是看不见。
+              #
+              # 这一行只适合本地开发。它等于把服务管理员权限交给一个弱口令账号
+              # （下面 users 里的密码还是默认值），生产必须删掉它，并改成强口令或走
+              # client-credentials / OIDC。密码仍是默认值时启动会继续告警，别把告警关掉。
+              principals:
+                admin: root
               # 用户名密码比客户端凭据更怕爆破（密码是人定的，可能只有六七个字符），
               # 因此阈值比下面那组更严。按「直连地址 + 用户名」分桶，只在失败时计数。
               rate-limit:
@@ -248,20 +265,11 @@ data:
               jwks-cache-ttl: 1h
               # IdP 与本服务端的时钟不可能完全一致，留一点余量
               clock-skew: 60s
-        # 管理 API（/api/management/v1/**）与全端点的 RBAC 授权。
-        #
-        # enabled 已不再在这里写：默认值就是 true（fail-closed），auth.enabled 同为 true，
-        # 两个开关必须同开——认证认出「你是谁」，授权判定「你能干什么」，只开一个要么
-        # 形同虚设（Bearer root 即管理员）、要么把请求全记到 anonymous 名下。
-        #
-        # 开启后的前置（缺一则「登录成功但什么也看不到」或引擎全 401）：
-        #   - 控制台登录方式至少配一种（下方 console 段的密码 / 客户端凭据 / OIDC），
-        #     登录主体名要能对上 service-admins 或被授予引导角色链；
-        #   - Spark / Flink 客户端要配 headers.Authorization（auth.tokens 静态令牌，
-        #     令牌 → 主体映射见 auth.token-principals）；
-        #   - 优化任务的 k8s 回调走批次级令牌，不受影响。
-        # 本地即用即丢实例（h2 profile）与测试 profile 各自显式关闭，不受默认值影响。
+        # 管理 API（/api/management/v1/**）的 RBAC 授权，默认开启（fail-closed）：
+        # 与 auth.enabled 同开同关——认证认出「你是谁」，授权判定「你能干什么」，
+        # 只开一个要么形同虚设、要么把所有请求记到 anonymous 名下
         authorization:
+          enabled: true
           # 服务管理员：可管理 principal 与 principal role，并可在任意 catalog 上操作角色与授权。
           # 管理规格的权限枚举没有覆盖「管理主体」的层级，故用名单表达
           service-admins:
@@ -476,6 +484,7 @@ data:
         - group: management
           display-name: 公共 / 管理与控制台
           packages-to-scan: io.github.melin.lakehouse.rest.web
+
 ---
 # ---------------------------------------------------------------------------
 # 2+3. Deployment 与 Service（服务端本体 + NodePort 入口）

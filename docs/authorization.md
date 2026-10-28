@@ -285,7 +285,7 @@ catalog 存在但主体无权时仍返回 403。
 | `lakehouse.rest.auth.console.required` | `true` | 浏览器进控制台是否必须先登录；**只作用于界面，不是安全边界** |
 | `lakehouse.rest.auth.console.password.enabled` | `true` | 是否允许用配置里的账号密码换令牌 |
 | `lakehouse.rest.auth.console.password.users` | `admin: admin` | 控制台账号表（明文）；**生产必须改** |
-| `lakehouse.rest.auth.console.password.principals` | 空 | 账号名 → 主体名映射；不填则两者同名 |
+| `lakehouse.rest.auth.console.password.principals` | 空（仓库自带 `admin: root`） | 账号名 → 主体名映射；不填则两者同名。自带配置映射到服务管理员 `root`，让本地开发能看到 catalog 列表；生产应删掉 |
 | `lakehouse.rest.auth.console.client-credentials.enabled` | `true` | 是否允许用主体凭据换令牌 |
 | `lakehouse.rest.auth.console.oidc.*` | 关闭 | 外部身份提供方登录；见 [`console-auth.md`](console-auth.md) |
 | `lakehouse.rest.authorization.enabled` | `true` | 是否启用授权判定；h2 / 测试 profile 显式为 `false` |

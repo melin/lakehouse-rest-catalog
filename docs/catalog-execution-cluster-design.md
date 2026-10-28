@@ -815,3 +815,15 @@ M1–M3 按本稿实现，下列五处**刻意偏离**，原因都写在这里�
 （`CatalogEndpointAuthorizationTests` / `PermissionManagementTests` 缺
 `/v1/{prefix}/permissions/scopes` 的授权规则；`DataPolicyDisabledTests` / `LineageDisabledTests`
 的前提与 `application.yml` 实为 `true` 相反）。
+
+> **后续进展（2026-10-28）**：`CatalogAccessRules.permissions()` 已补登记
+> `/v1/{prefix}/permissions/scopes`（`CATALOG_ALL:GRANT`，与 `GET /permissions` 同口径），
+> 前两条已转绿；剩下 `DataPolicyDisabledTests` / `LineageDisabledTests` 两条，
+> 性质是「测试前提与 `application.yml` 相反」，不是缺规则。
+>
+> 这条缺陷的表现值得记下来：控制器里**本来就有** `require(prefix, CATALOG_ALL, GRANT)`，
+> 但拦截器先于控制器执行，映射表没登记 → 直接按失败关闭拒成 403。
+> 于是「控制器判了权」与「拦截器不认识这个端点」同时成立，控制台的权限页一打开就报
+> `no authorization rule is registered for this endpoint`。
+> 加端点时只加控制器判权是不够的，映射表必须同步登记——`CatalogEndpointAuthorizationTests`
+> 的「运行时端点数 == 映射表登记数」断言就是专门守这一点的。

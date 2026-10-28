@@ -379,7 +379,7 @@ Catalog 侧与鉴权：
 | `lakehouse.rest.auth.console.required` | `true` | 浏览器进控制台是否必须先登录。**只作用于控制台界面与 `/api/console/v1/**`，不是安全边界** |
 | `lakehouse.rest.auth.console.password.enabled` | `true` | 允许用配置里的用户名 + 密码换访问令牌 |
 | `lakehouse.rest.auth.console.password.users` | `admin: admin` | 控制台账号表（明文，可写 `${ENV_VAR}`）；**生产必须改**，启动日志会告警 |
-| `lakehouse.rest.auth.console.password.principals` | 空 | 账号名 → 主体名映射；未登记时两者同名 |
+| `lakehouse.rest.auth.console.password.principals` | 空（仓库自带 `admin: root`） | 账号名 → 主体名映射；未登记时两者同名。自带配置映射到服务管理员 `root`，使本地开发能看到 catalog 列表；**生产要删掉这行**（详见 [`console-auth.md`](docs/console-auth.md) §9） |
 | `lakehouse.rest.auth.console.password.rate-limit.max-failures` / `.window` | `5` / `1m` | 该方式的失败限速（比客户端凭据更严：猜的是人定的密码） |
 | `lakehouse.rest.auth.console.client-credentials.enabled` | `true` | 允许用主体 `clientId` / `clientSecret` 换访问令牌 |
 | `lakehouse.rest.auth.console.client-credentials.rate-limit.max-failures` / `.window` | `10` / `1m` | 该方式的失败限速 |
