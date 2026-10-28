@@ -136,4 +136,28 @@ public class TableEntity extends AuditedEntity {
     @Convert(converter = JsonConverters.StringMap.class)
     @Column(name = "properties_json", length = 65535, comment = "Lance 表 / 通用表的属性（JSON 对象）")
     private Map<String, String> propertiesJson = new LinkedHashMap<>();
+
+    /**
+     * Lance：最近一次读到的版本号（P1）。
+     *
+     * <p><b>纯展示缓存，不参与任何判定</b>——这是它唯一能安全存在的用法。
+     * 一旦有逻辑读它（比如「下一个版本 = 它 + 1」），缓存就变成了第二个真相源，
+     * 而真相在 {@code _versions/} 里、且不由我们写。缓存写失败**不能**让请求失败：
+     * 调用方要的是 schema 与位置，版本号是附带的。
+     */
+    @Column(name = "table_version", comment = "Lance：最近一次读到的版本号（纯展示缓存，不参与判定）")
+    private Long tableVersion;
+
+    /**
+     * Lance：{@code managed_versioning}——{@code true} 时这张表的版本由**服务端记账**
+     * （{@code CreateTableVersion} 那一组，P2）。
+     *
+     * <p>开关放在列上而不是每次去 {@code properties_json} 里查那个键：
+     * 它是一个**硬承诺**（客户端看到 {@code true} 就改用版本端点写），
+     * 因此必须有一个「唯一、可索引、能被断言」的落点，
+     * 而不是散落在透传属性里的一行字符串。
+     */
+    @Column(name = "managed_versioning", nullable = false,
+            comment = "Lance：版本是否由服务端记账（managed_versioning）")
+    private boolean managedVersioning;
 }

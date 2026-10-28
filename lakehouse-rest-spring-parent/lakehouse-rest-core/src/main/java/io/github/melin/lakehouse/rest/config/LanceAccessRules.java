@@ -20,7 +20,7 @@ import java.util.Locale;
  * 这一面**没有** {@code isPublic} 豁免：Lance 没有 {@code /v1/config} 那样的连接前握手，
  * 因此也没有「还没换到凭据就必须可达」的端点。
  *
- * <p><b>未实现的 operation 也要登记。</b>48 个 operation 里本服务端只实现 13 个，
+ * <p><b>未实现的 operation 也要登记。</b>规范 54 个 operation 里本服务端实现 19 个，
  * 其余由控制器回 {@code 406 + code 0}（规范里「本实现不支持」的表达）。它们仍然要
  * 在表里有一条：否则调用者拿到的是「没有授权规则」的 403，而 403 会被理解成
  * 「我没有权限」，进而去申请一个永远用不上的授权——真正的事实是**这个能力不存在**。
@@ -129,6 +129,25 @@ public final class LanceAccessRules {
         }
         List<String> namespace = List.of(levels.get(1));
         String table = levels.get(2);
+        // 版本端点：table/{id}/version/{op}。读用 SELECT（版本画像属于读），
+        // 写用 ALTER（它改的是这张表的版本账）。
+        if (segments.size() == 4 && "version".equals(segments.get(2))) {
+            return switch (operation) {
+                case "list", "describe" -> at(catalog, ResourceType.TABLE, namespace, table, Access.SELECT);
+                case "create", "delete" -> at(catalog, ResourceType.TABLE, namespace, table, Access.ALTER);
+                default -> at(catalog, ResourceType.CATALOG, List.of(), null, Access.DESCRIBE);
+            };
+        }
+        // 标签端点：table/{id}/tags/{op}。注意最后一段是 `list` / `version`，不是
+        // `tags` —— 判断必须看**倒数第二段**，否则 `/tags/list` 会被上面的 switch
+        // 当成表的 `list`（那一条不存在，于是掉进 default 的 406 语义）而放错权。
+        if (segments.size() == 4 && "tags".equals(segments.get(2))) {
+            return switch (operation) {
+                case "list", "version" -> at(catalog, ResourceType.TABLE, namespace, table, Access.SELECT);
+                // tags/create|delete|update 仍不支持（406），只需要「看得见这个 catalog」
+                default -> at(catalog, ResourceType.CATALOG, List.of(), null, Access.DESCRIBE);
+            };
+        }
         return switch (operation) {
             case "describe", "exists" -> at(catalog, ResourceType.TABLE, namespace, table, Access.DESCRIBE);
             case "declare", "register" -> at(catalog, ResourceType.DATABASE, namespace, null, Access.CREATETABLE);

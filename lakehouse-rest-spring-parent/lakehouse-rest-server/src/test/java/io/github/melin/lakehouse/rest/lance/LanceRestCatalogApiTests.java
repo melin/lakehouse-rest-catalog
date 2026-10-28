@@ -214,9 +214,10 @@ class LanceRestCatalogApiTests {
                 "/lance/v1/table/" + TABLE_ID + "/describe?with_table_uri=true", null);
         assertTrue(uri.get("table_uri").asString().contains("://"), uri.toString());
 
-        // load_detailed_metadata=true → P0 显式 406
-        assertLanceError(json(406, "POST",
-                "/lance/v1/table/" + TABLE_ID + "/describe?load_detailed_metadata=true", null), 0);
+        // load_detailed_metadata=true 且存储里还没有数据集 → 409 / code 19
+        // （P1 会去读 manifest；只登记过的表没有 manifest，规范允许这种失败）
+        assertLanceError(json(409, "POST",
+                "/lance/v1/table/" + TABLE_ID + "/describe?load_detailed_metadata=true", null), 19);
 
         // exists
         call(200, postAt("/lance/v1/table/" + TABLE_ID + "/exists"));
@@ -279,8 +280,11 @@ class LanceRestCatalogApiTests {
     @Test
     @Order(6)
     void unimplementedOperationsAnswerWith406() throws Exception {
+        // version/* 已经由 LanceVersionApiTests 单独覆盖（P1 读 + P2 写），
+        // tags/list 与 tags/version 由 LanceTagApiTests 覆盖（P2·L2-2 的只读代理）；
+        // 这里只留仍然真不做的那些——写标签、索引、数据面
         for (String operation : List.of("insert", "query", "create", "drop",
-                "version/list", "alter_columns", "index/create")) {
+                "alter_columns", "index/create", "tags/create")) {
             JsonNode failure = json(406, "POST",
                     "/lance/v1/table/" + TABLE_ID + "/" + operation, "{}");
             assertLanceError(failure, 0);

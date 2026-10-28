@@ -108,6 +108,15 @@ class LanceEndpointAuthorizationTests {
         as(null, 403, "/lance/v1/namespace/" + NS_ID + "/describe", null);
         as(BOB, 403, "/lance/v1/namespace/" + NS_ID + "/describe", null);
         as(BOB, 403, "/lance/v1/namespace/" + NS_ID + "/table/list", null);
+        // 版本端点（P1 读 / P2 写）同样要过授权：它们是后来加的，
+        // 而「加了端点忘了登记规则」在这一面的后果是静默放行
+        as(BOB, 403, "/lance/v1/table/" + NS_ID + "%24orders/version/list", null);
+        as(BOB, 403, "/lance/v1/table/" + NS_ID + "%24orders/version/create", "{\"version\":1}");
+        as(BOB, 403, "/lance/v1/table/" + NS_ID + "%24orders/version/delete", "{\"ranges\":[]}");
+        // 标签只读代理（P2·L2-2）：读也一样要判权。它的路径最后一段是
+        // list / version 而不是 tags，规则若只看最后一段就会被判成表的 list
+        as(BOB, 403, "/lance/v1/table/" + NS_ID + "%24orders/tags/list", null);
+        as(BOB, 403, "/lance/v1/table/" + NS_ID + "%24orders/tags/version", "{\"tag\":\"v1\"}");
     }
 
     @Test

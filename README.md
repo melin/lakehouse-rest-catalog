@@ -57,7 +57,7 @@ paimon-rest/
 │   ├── lakehouse-rest-storage/       数据目录文件访问与 FileIO 构造（唯一允许依赖 paimon-core 的非协议模块）
 │   ├── lakehouse-rest-protocol-paimon/  Paimon 协议面：Catalog API 全部 60 个端点
 │   ├── lakehouse-rest-protocol-iceberg/ Iceberg 协议面：35 个端点里实现的 30 个 + `iceberg-core` 元数据代数
-│   ├── lakehouse-rest-protocol-lance/   Lance 协议面：48 个 operation 里 P0 的 13 个，基址 `/lance/v1/**`
+│   ├── lakehouse-rest-protocol-lance/   Lance 协议面：54 个 operation 里 P0+P1+P2 的 19 个，基址 `/lance/v1/**`
 │   └── lakehouse-rest-server/        可执行服务端：Management API + 控制台 API + 优化调度，最终 jar 在这里
 ├── lakehouse-rest-console/     Web 管理控制台（Vue 3 + Vite，产物构建进服务端，见第 9 节）
 ├── lakehouse-rest-spark/       Spark SQL 语法扩展：用 SQL 管理主体、角色与授权
@@ -170,7 +170,7 @@ k8s 资源名（namespace / Deployment / Service / ConfigMap）与镜像同一�
 | [`polaris-capabilities-and-design.md`](docs/polaris-capabilities-and-design.md) | 要对比 Polaris 或看整体设计——核心能力提取、映射关系、已知缺口 |
 | [`event-framework.md`](docs/event-framework.md) | 要加一种事件、接一个 listener 或理解事件流的边界——9 类 33 个领域事件与触发点、与 Polaris 事件枚举的逐类映射、audit_event 表、发布监听链路、按监听器的类别/类型订阅（`lakehouse.rest.event-listener.*`）、增量拉取契约（`?since=` 游标 + `?category=`）与不发清单 |
 | [`iceberg-rest-catalog-design.md`](docs/iceberg-rest-catalog-design.md) | 要看「同一份元数据同时服务 Paimon 与 Iceberg」怎么做的——双协议方案：创建时区分格式、22 张表复用只加 9 列、路径冲突与错误模型、能力边界与效果图（`outputs/iceberg-rest-catalog/mockup.html`），以及**已落地的实测记录与与方案不一致的几处**（§11） |
-| [`lance-rest-catalog-design.md`](docs/lance-rest-catalog-design.md) | 要支持 Lance、或评审「要不要做 Lance REST Catalog」——**P0 已实现**（13 个 operation + 未实现 operation 恒 406；P1 版本只读 / P2 版本写未做）：Lance Namespace 规范自己划的推荐最小集与两条降级许可（只做 `Restrict` 删命名空间、`DescribeTable` 只回 `location`）为什么正好覆盖我们、48 个 operation 的三档取舍（13 做 / 5 预留 / 30 显式 406）、为什么不做 `CreateTable`、数据面与 `managed_versioning`、三种「Lance」的区分（Paimon `lance-table` / 通用表 / Lance catalog）、`uri=/lance` + catalog 作第一级的基址决策、`catalog_format=LANCE` 加 2 列 0 张新表、授权与凭据下发落点、P0/P1/P2 需求与验收脚本、六个待拍板决策 |
+| [`lance-rest-catalog-design.md`](docs/lance-rest-catalog-design.md) | 要支持 Lance、或评审「要不要做 Lance REST Catalog」——**P0 + P1 + P2 里能做的都已落地**（19 个 operation + 未实现 operation 恒 406；未做：`BatchCreateTableVersions`、索引只读代理、控制台只读）：Lance Namespace 规范自己划的推荐最小集与两条降级许可（只做 `Restrict` 删命名空间、`DescribeTable` 只回 `location`）为什么正好覆盖我们、54 个 operation 的三档取舍（19 做 / 35 显式 406）、为什么不做 `CreateTable`、数据面与 `managed_versioning`、为什么标签读得起而索引读不起、三种「Lance」的区分（Paimon `lance-table` / 通用表 / Lance catalog）、`uri=/lance` + catalog 作第一级的基址决策、`catalog_format=LANCE` 加 2 列 0 张新表、授权与凭据下发落点、P0/P1/P2 需求与验收脚本、六个待拍板决策 |
 | [`generic-table-design.md`](docs/generic-table-design.md) | 要把 parquet / orc / lance / vortex 目录也纳入目录服务，或评审「通用表」方案——**设计稿，未实现**：Polaris Generic Table 的事实基线、四种格式的能力矩阵、复用 `lakehouse_table` 加 `table_kind` 的三方案对比、4 个端点与权限映射、凭据下发为什么是唯一的数据面控制点、Spark 侧按格式分派（`FileTable` 子类 / `ServiceLoader<TableProvider>`）、影响面与风险 |
 | [`lance-table-optimization-design.md`](docs/lance-table-optimization-design.md) | 要给 Lance 表做 compaction / 快照清理，或评审「Lance 能不能接进现有存储优化」——**设计稿，未实现**（前置是上面那份的 P0）：两条语句覆盖三件动作（`OPTIMIZE` / `VACUUM`）导致 `orphan` 恒不可用、四层参数里 Daft 那两层在 Spark 侧不存在、指标只有增量没有前后快照、`VACUUM` 不可逆且无干跑的三层补偿、`isIceberg()` 与服务端 `isIceberg(format)` 共 11 处二元分派不改就静默走 Paimon、`--add-opens` 只能进镜像 ENV、三条抓包门禁 |
 | [`metrics-design.md`](docs/metrics-design.md) | 要加指标、接 Prometheus 或判断「这个指标该不该打标签」——**设计稿，未实现**：Polaris telemetry 的事实基线（HTTP / API / 持久化 / 缓存四类来源，`realm_id` 基数闸门与「超限即停记」、SLO 显式桶、Iceberg 客户端用量报告与运维指标的区别）、`lakehouse.*` 指标目录与 <1500 的基数预算、标签黑名单与 catalog 折叠成 `__other__`、切面替代逐端点 `@Timed`、管理端口 8081 + ServiceMonitor、告警与看板、`verify-metrics-doc.py` 一致性校验 |
@@ -352,10 +352,13 @@ lakehouse-rest-spring-parent/
     web/          namespace / table / view 三棵控制器
     service/      update 代数、requirements 校验、CAS 提交、投影派生
     support/      元数据文件命名、端点清单（endpoints）、update 编解码
-  lakehouse-rest-protocol-lance/    Lance 面：48 个 operation 里 P0 的 13 个 + 兜底 406
-    web/          namespace / table 两棵控制器 + 未实现 operation 的兜底控制器
-    service/      declare / register 两条登记路径、弱存在性检查、表 uri 与 storage_options
-    support/      `delimiter` 拼出的 id 解析与校验（catalog 是第一级）
+  lakehouse-rest-protocol-lance/    Lance 面：54 个 operation 里 P0+P1+P2 的 19 个 + 兜底 406
+    web/          namespace / table / version / tag 四棵控制器 + 未实现 operation 的兜底控制器
+    service/      declare / register 两条登记路径、弱存在性检查、表 uri 与 storage_options；
+                  版本账（list / describe / create / 区间删，managed_versioning 开关）
+    support/      `delimiter` 拼出的 id 解析与校验（catalog 是第一级）；
+                  manifest 的纯 Java protobuf 解析与 V1/V2 命名、JSON Arrow schema；
+                  `_refs/tags/*.json` 的标签名与字段解析（`manifestSize` 是驼峰）
     dto/          Lance 契约（snake_case）与 22 个错误 code → HTTP 状态
   lakehouse-rest-server/        可执行产物与「不属于任何协议面」的东西
     web/          管理 API 的 4 个控制器、控制台扩展端点
@@ -1007,6 +1010,9 @@ python3 scripts/verify-spark-sql-doc.py
 
 # 血缘文档：端点双向一致 + 配置键与默认值对照 RestServerProperties（不读规格，不需要 PyYAML）
 python3 scripts/verify-lineage-doc.py
+
+# Lance 面：规范副本的 operation 数 ↔ 控制器台账 ↔ 授权登记（不读规格，不需要 PyYAML）
+python3 scripts/verify-lance-endpoints.py
 
 # MySQL 建表语句（改实体后必须重跑，否则启动时 validate 会失败）
 ./scripts/gen-mysql-ddl.sh                   # sql/schema-mysql.sql

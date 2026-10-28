@@ -3,13 +3,19 @@ package io.github.melin.lakehouse.rest.service;
 import io.github.melin.lakehouse.rest.domain.entity.CatalogEntity;
 import io.github.melin.lakehouse.rest.domain.repo.CatalogRepository;
 import io.github.melin.lakehouse.rest.support.ApiException;
+import io.github.melin.lakehouse.rest.support.FileEntry;
 import io.github.melin.lakehouse.rest.support.ResourceType;
 import io.github.melin.lakehouse.rest.support.SeekableBytes;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.apache.paimon.fs.FileIO;
+import org.apache.paimon.fs.FileStatus;
 import org.apache.paimon.fs.Path;
 import org.apache.paimon.fs.SeekableInputStream;
 import org.slf4j.Logger;
@@ -141,6 +147,118 @@ public class StorageFileAccess {
                     fileIO.getFileSize(path), location);
         } catch (IOException e) {
             throw failure("open", location, e);
+        }
+    }
+
+    /**
+     * 读一个**二进制**文件（manifest 这类不是文本的东西）。
+     *
+     * <p>与 {@link #read} 分开而不是「读完再转字节」：protobuf 不是文本，
+     * 过一遍 {@code String} 会按 UTF-8 解码，非法序列被替换成 {@code U+FFFD}，
+     * 而那种损坏不会报错——它表现为「某个字段的名字里有一个问号」。
+     *
+     * <p>不缓存、不切块：调用方（Lance 的版本发现）只在被要求时才读 manifest，
+     * 且一次只读一个。
+     */
+    public byte[] readBytes(String catalogId, String location) {
+        try {
+            FileIO fileIO = fileIO(catalogId, location);
+            Path path = new Path(location);
+            if (!fileIO.exists(path)) {
+                throw new ApiException(404, null, location, "No such file: " + location);
+            }
+            long size = fileIO.getFileSize(path);
+            try (SeekableInputStream stream = fileIO.newInputStream(path)) {
+                byte[] bytes = new byte[(int) Math.max(0L, size)];
+                int read = 0;
+                while (read < bytes.length) {
+                    int count = stream.read(bytes, read, bytes.length - read);
+                    if (count < 0) {
+                        break;
+                    }
+                    read += count;
+                }
+                if (read < bytes.length) {
+                    throw new IOException("expected " + bytes.length + " bytes from " + location
+                            + " but read " + read);
+                }
+                return bytes;
+            }
+        } catch (IOException e) {
+            throw failure("read", location, e);
+        }
+    }
+
+    /**
+     * 批量读若干**文本**文件，**共用一次 FileIO**。
+     *
+     * <p><b>为什么需要批量。</b>{@link #read} / {@link #readBytes} 每次都重新构造
+     * FileIO（见类注释：不缓存凭据），而构造过程要按 catalog 的存储配置解析凭据——
+     * 在对象存储上那可能是几百毫秒的一次 STS 调用。一个目录里几十上百个小文件
+     * （Lance 的 {@code _refs/tags/*.json} 就是这种形状）逐个读，代价与文件数成正比，
+     * 而这与「列举一个目录」的实际工作量完全不成比例。
+     *
+     * <p><b>调用方要保证这些路径同属一个存储</b>：FileIO 是按第一个路径的 scheme 建的。
+     * 本类不做校验——同一个目录下的条目天然满足，而跨存储的批量读本来就没有意义。
+     *
+     * <p><b>不存在的路径被跳过而不是报错</b>（返回值里没有它）：列举与读之间被删掉
+     * 一个文件是正常现象，调用方按「没有这个文件」处理即可；而存储故障仍然抛 500。
+     *
+     * @return 位置 → 文本；顺序与入参一致（{@link java.util.LinkedHashMap}）
+     */
+    public Map<String, String> readTexts(String catalogId, List<String> locations) {
+        if (locations == null || locations.isEmpty()) {
+            return Map.of();
+        }
+        try {
+            FileIO fileIO = fileIO(catalogId, locations.get(0));
+            Map<String, String> found = new LinkedHashMap<>();
+            for (String location : locations) {
+                Path path = new Path(location);
+                if (!fileIO.exists(path)) {
+                    continue;
+                }
+                found.put(location, fileIO.readFileUtf8(path));
+            }
+            return found;
+        } catch (IOException e) {
+            throw failure("read", locations.get(0), e);
+        }
+    }
+
+    /**
+     * 列举一个目录下的**直接**条目。
+     *
+     * <p><b>目录不存在时返回空列表而不是报错。</b>调用方（Lance 面的版本发现）要能
+     * 区分三种状态：「没有这个目录」= 还没有版本，「有目录但空」= 同样没有版本，
+     * 「列不出来」= 存储故障。前两种对它是一样的答案，因此这里把它们合成空列表；
+     * 第三种仍然抛 500。若把「目录不存在」也做成异常，调用方就得靠消息文本判因，
+     * 而那种判断迟早会错。
+     *
+     * <p><b>不做递归、不排序、不切页。</b>调用方要的只是「这一层有什么」：
+     * 版本发现要按文件名自己解释版本号，排序规则属于它那一层
+     * （V2 命名靠字典序、V1 靠数值序，两种规则不能统一成一次 sort）。
+     */
+    public List<FileEntry> list(String catalogId, String location) {
+        try {
+            FileIO fileIO = fileIO(catalogId, location);
+            Path path = new Path(location);
+            if (!fileIO.exists(path)) {
+                return List.of();
+            }
+            List<FileEntry> entries = new ArrayList<>();
+            for (FileStatus status : fileIO.listStatus(path)) {
+                org.apache.paimon.fs.Path child = status.getPath();
+                String name = child == null ? null : child.getName();
+                if (name == null || name.isEmpty()) {
+                    continue;
+                }
+                entries.add(new FileEntry(name, Math.max(0L, status.getLen()),
+                        Math.max(0L, status.getModificationTime()), status.isDir()));
+            }
+            return entries;
+        } catch (IOException e) {
+            throw failure("list", location, e);
         }
     }
 

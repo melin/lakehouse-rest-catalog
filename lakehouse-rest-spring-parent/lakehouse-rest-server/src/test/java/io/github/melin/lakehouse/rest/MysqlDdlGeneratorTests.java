@@ -121,8 +121,11 @@ class MysqlDdlGeneratorTests {
      * 最后那张是**一个 catalog 最多一行**（{@code catalog_id} 唯一 + 级联删除），
      * 不是「一张表多个执行集群」——因为优化任务在这个 catalog 范围内只能落在一个集群上。
      * 多副本调度再加一张 {@code lakehouse_scheduler_lease}（通道租约，一行一个通道）到 27。
+     * Lance 托管版本（P2）的版本账 {@code lakehouse_lance_table_version} 到 28——
+     * 它是本工程第一张**按格式命名**的表：那一面要的是「(table_id, version) 唯一」
+     * 这个可断言的并发落点，塞进任何一张通用表都会把两个格式的语义混在一起。
      */
-    private static final int EXPECTED_TABLES = 27;
+    private static final int EXPECTED_TABLES = 28;
 
     /** MySQL 一张表一行的最大字节数（存储层上限，与列长度上限是两件事）。 */
     private static final long MYSQL_ROW_SIZE_LIMIT = 65535L;

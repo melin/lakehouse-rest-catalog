@@ -188,6 +188,23 @@ USE `lakehouse_catalog`;
         primary key (id)
     ) comment='函数定义（sql / file / lambda）' engine=InnoDB;
 
+    create table lakehouse_lance_table_version (
+        created_at bigint comment '创建时刻（epoch 毫秒）',
+        manifest_size bigint comment 'manifest 字节数（客户端给了才记）',
+        updated_at bigint comment '最后更新时刻（epoch 毫秒）',
+        version bigint not null comment 'Lance 版本号',
+        catalog_id varchar(64) not null comment '所属 catalog id（与表冗余，删表时按 catalog 清理）',
+        id varchar(64) not null comment '主键',
+        table_id varchar(64) not null comment '关联的表 id',
+        e_tag varchar(128) comment 'manifest 的 ETag（乐观并发用）',
+        manifest_path varchar(1024) not null comment '该版本 manifest 的完整路径',
+        created_by varchar(255) comment '创建者主体名（写入前已按列宽归一化）',
+        owner varchar(255) comment '记录归属主体（展示与过滤用，不参与授权判定）',
+        updated_by varchar(255) comment '最后更新者主体名（写入前已按列宽归一化）',
+        metadata_json text comment '版本级 metadata（JSON 对象）',
+        primary key (id)
+    ) comment='Lance 托管版本（managed_versioning）的版本账；删行不动数据集' engine=InnoDB;
+
     create table lakehouse_lineage_column_edge (
         id bigint not null auto_increment comment '自增主键（列边按 ref 摘要 + 列名查，不用它）',
         last_seen bigint not null comment '最近一次观测时刻（epoch 毫秒）',
@@ -431,9 +448,11 @@ USE `lakehouse_catalog`;
     create table lakehouse_table (
         external_flag bit not null comment '是否为 register 注册进来的外部表',
         format_version integer comment 'Iceberg format-version（1/2/3）；Paimon 表为空',
+        managed_versioning bit not null comment 'Lance：版本是否由服务端记账（managed_versioning）',
         created_at bigint comment '创建时刻（epoch 毫秒）',
         latest_snapshot_id bigint comment '最新快照 id；未提交过快照时为空',
         schema_id bigint not null comment '当前 schema 版本号，从 0 递增',
+        table_version bigint comment 'Lance：最近一次读到的版本号（纯展示缓存，不参与判定）',
         updated_at bigint comment '最后更新时刻（epoch 毫秒）',
         catalog_id varchar(64) not null comment '所属 catalog id',
         database_id varchar(64) not null comment '所属库 id',
@@ -447,9 +466,9 @@ USE `lakehouse_catalog`;
         created_by varchar(255) comment '创建者主体名（写入前已按列宽归一化）',
         owner varchar(255) comment '记录归属主体（展示与过滤用，不参与授权判定）',
         updated_by varchar(255) comment '最后更新者主体名（写入前已按列宽归一化）',
+        properties_json text comment 'Lance 表 / 通用表的属性（JSON 对象）',
         metadata_doc mediumtext comment 'Iceberg TableMetadata 原文 JSON，Iceberg 表的唯一真相源',
         schema_doc mediumtext comment '当前 schema 的 JSON 文档',
-        properties_json text comment 'Lance 表 / 通用表的属性（JSON 对象）；另两种格式的属性住在各自的真相源里',
         primary key (id)
     ) comment='表实体（Paimon 表与 Iceberg 表共用）' engine=InnoDB;
 
@@ -556,6 +575,12 @@ USE `lakehouse_catalog`;
 
     alter table lakehouse_function 
        add constraint uk_function unique (catalog_id, database_id, name);
+
+    create index ix_lance_table_version_table 
+       on lakehouse_lance_table_version (table_id);
+
+    alter table lakehouse_lance_table_version 
+       add constraint uk_lance_table_version unique (table_id, version);
 
     create index ix_lineage_column_edge_target 
        on lakehouse_lineage_column_edge (target_ref_hash);

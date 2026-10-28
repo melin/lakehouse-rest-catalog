@@ -12,15 +12,19 @@
 	<artifactId>lakehouse-rest-protocol-lance</artifactId>
 	<packaging>jar</packaging>
 	<name>lakehouse-rest-protocol-lance</name>
-	<description>LakeHouse Catalog 协议面：Lance Namespace / REST Catalog（/lance/v1/**，13 个 operation）</description>
+	<description>LakeHouse Catalog 协议面：Lance Namespace / REST Catalog（/lance/v1/**，19 个 operation）</description>
 
 	<!--
-		装什么（Lance catalog API `/lance/v1/**`，规范 48 个 operation 里实现 13 个）：
+		装什么（Lance catalog API `/lance/v1/**`，规范 54 个 operation 里实现 19 个）：
 		  lance/web/      Namespace 控制器（5 个 operation）、Table 控制器（8 个）、
+		                  版本控制器（4 个）、标签控制器（2 个），
 		                  以及未实现 operation 的 406 兜底控制器
-		  lance/service/  LanceNamespaceService / LanceTableService / LanceCatalogSupport
-		                  （catalog 定位、格式校验、location 生成、凭据下发）
-		  lance/support/  LanceIds（id 解析：delimiter / 段数 / 白名单 / 路径与 body 一致）
+		  lance/service/  LanceNamespaceService / LanceTableService / LanceVersionService /
+		                  LanceTagService / LanceCatalogSupport
+		                  （catalog 定位、格式校验、location 生成、凭据下发、版本账、标签只读）
+		  lance/support/  LanceIds（id 解析）、LanceManifest（protobuf manifest）、
+		                  LanceVersionNaming（V1/V2 命名）、LanceJsonArrow（schema）、
+		                  LanceTagFiles（`_refs/tags/*.json`）
 		  lance/dto/      这些端点各自的请求与响应契约（字段名与规范逐字一致）
 
 		包名比其他服务端模块多一层 `.lance`，理由与 iceberg 面相同：两个协议面各占

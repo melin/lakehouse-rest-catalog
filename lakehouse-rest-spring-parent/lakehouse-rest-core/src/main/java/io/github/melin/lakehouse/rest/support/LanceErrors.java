@@ -17,7 +17,7 @@ import java.util.Locale;
  *
  * <p><b>{@code code 0 → 406} 是这一面最有用的一个位置</b>：它让「本实现不支持这个
  * operation」有一个规范内的表达，而不必编一个假成功、也不必退回 404（那会被客户端
- * 理解成「地址错了」）或 500（那看起来像服务坏了）。本服务端不做的 30 个 operation
+ * 理解成「地址错了」）或 500（那看起来像服务坏了）。规范里我们没实现的 35 个 operation
  * 全部用它。
  *
  * <p><b>为什么放在 core 而不是 lance 模块。</b>{@code GlobalExceptionHandler} 是全局的、
@@ -126,11 +126,11 @@ public final class LanceErrors {
 
     // ------------------------------------------------------------------ 抛出
 
-    /** operation 不在本服务端的实现范围内（30 个不做 + P2 的 3 个都走这里）。 */
+    /** operation 不在本服务端的实现范围内（规范 54 个里剩下的 35 个都走这里）。 */
     public static LanceException unsupported(String operation) {
         return new LanceException(Code.UNSUPPORTED,
                 "operation \"" + operation + "\" is not implemented by this Lance REST catalog",
-                "docs/lance-rest-catalog-design.md §3.1 lists which of the 48 operations this server implements");
+                "docs/lance-rest-catalog-design.md §3.1 lists which of the 54 operations this server implements");
     }
 
     public static LanceException namespaceNotFound(String id) {
@@ -161,6 +161,57 @@ public final class LanceErrors {
 
     public static LanceException permissionDenied(String message) {
         return new LanceException(Code.PERMISSION_DENIED, message);
+    }
+
+    /**
+     * 版本不存在（code 11）。
+     *
+     * <p>与 {@link #tableNotFound} 分开：客户端拿到 4 会去「建表」，拿到 11 才知道
+     * 「表在、这个版本不在」——后者的处置是换版本号或先列一次版本，而不是重建表。
+     */
+    public static LanceException tableVersionNotFound(String id, long version) {
+        return new LanceException(Code.TABLE_VERSION_NOT_FOUND,
+                "Table \"" + id + "\" has no version " + version);
+    }
+
+    /**
+     * 标签不存在（code 8）。
+     *
+     * <p>与 {@link #tableVersionNotFound} 分开的理由相同：{@code 8} 让客户端知道
+     * 「表在、这个标签不在」，处置是换标签名或先列一次标签；{@code 4} 会让它去重建表。
+     */
+    public static LanceException tableTagNotFound(String id, String tag) {
+        return new LanceException(Code.TABLE_TAG_NOT_FOUND,
+                "Table \"" + id + "\" has no tag \"" + tag + "\"");
+    }
+
+    /**
+     * 表的状态不支持这个操作（code 19）。
+     *
+     * <p>典型用法有两个：数据集混用了 V1 / V2 的 manifest 命名（规范禁止），
+     * 以及对一张没有开 {@code managed_versioning} 的表调版本写端点。
+     * 两者都不是「参数错了」（400），而是「这张表现在不能被这样用」。
+     */
+    public static LanceException invalidTableState(String message) {
+        return new LanceException(Code.INVALID_TABLE_STATE, message);
+    }
+
+    /** 存储不可达（code 17）。参数合法但无法验证时使用，避免把环境问题报成 400。 */
+    public static LanceException serviceUnavailable(String message) {
+        return new LanceException(Code.SERVICE_UNAVAILABLE, message);
+    }
+
+    /**
+     * 并发修改（code 14，409）。
+     *
+     * <p>这里专指「同一个版本号被记了两次」：{@code CreateTableVersion} 的
+     * {@code put_if_not_exists} 语义。它与 {@link #tableAlreadyExists} 的区别是
+     * 冲突的对象不同——那边是表的身份，这边是版本账里的一行。
+     */
+    public static LanceException concurrentModification(String id, long version) {
+        return new LanceException(Code.CONCURRENT_MODIFICATION,
+                "Version " + version + " of table \"" + id + "\" already exists",
+                "CreateTableVersion has put-if-not-exists semantics; pick the next version and retry");
     }
 
     // ------------------------------------------------------------------ 兜底

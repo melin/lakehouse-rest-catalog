@@ -11,6 +11,8 @@ import io.github.melin.lakehouse.rest.event.CatalogEventPublisher;
 import io.github.melin.lakehouse.rest.event.CatalogEventType;
 import io.github.melin.lakehouse.rest.lance.dto.LanceDtos;
 import io.github.melin.lakehouse.rest.lance.support.LanceIds;
+import io.github.melin.lakehouse.rest.lance.support.LanceJsonArrow;
+import io.github.melin.lakehouse.rest.lance.support.LanceManifest;
 import io.github.melin.lakehouse.rest.support.LanceErrors;
 import io.github.melin.lakehouse.rest.support.Paging;
 import java.util.ArrayList;
@@ -19,6 +21,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -38,11 +41,13 @@ import org.springframework.transaction.annotation.Transactional;
  */
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class LanceTableService {
 
     private final DatabaseRepository databaseRepository;
     private final TableRepository tableRepository;
     private final LanceCatalogSupport support;
+    private final LanceVersionService versions;
     private final CatalogEventPublisher events;
 
     // ------------------------------------------------------------------ 列举
@@ -58,7 +63,7 @@ public class LanceTableService {
     public LanceDtos.ListTablesResponse list(String id, String delimiter, Integer limit, String pageToken) {
         LanceIds.Id parsee = LanceIds.namespace(id, delimiter);
         CatalogEntity catalog = support.requireCatalog(parsee.catalog());
-        DatabaseEntity database = requireDatabase(catalog, parsee, delimiter);
+        DatabaseEntity database = support.requireDatabase(catalog, parsee, delimiter);
         List<String> tables = new ArrayList<>();
         for (TableEntity table : tableRepository.findAllByDatabaseIdOrderByNameAsc(database.getId())) {
             tables.add(parsee.catalog() + sep(delimiter) + parsee.schema() + sep(delimiter) + table.getName());
@@ -91,8 +96,9 @@ public class LanceTableService {
     /**
      * {@code POST /lance/v1/table/{id}/describe}。
      *
-     * @param loadDetailedMetadata {@code true} 时 P0 回 **406**：读 schema / version /
-     *                             stats 要打开数据集，那属于 P1
+     * @param loadDetailedMetadata {@code true} 时读最新 manifest，补上 {@code schema} /
+     *                             {@code version} / {@code stats} / {@code table} /
+     *                             {@code namespace}（P1）
      * @param checkDeclared        {@code true} 时探测存储，填 {@code is_only_declared}
      * @param withTableUri         {@code true} 时把 location 规范化成合法 URI 填 {@code table_uri}
      * @param vendCredentials      {@code true} 时在 {@code storage_options} 里下发临时凭据
@@ -101,24 +107,85 @@ public class LanceTableService {
     public LanceDtos.DescribeTableResponse describe(String id, String delimiter,
                                                      boolean loadDetailedMetadata, boolean checkDeclared,
                                                      boolean withTableUri, boolean vendCredentials) {
-        if (loadDetailedMetadata) {
-            throw LanceErrors.unsupported("DescribeTable with load_detailed_metadata=true");
-        }
         LanceIds.Id parsee = LanceIds.table(id, delimiter);
         CatalogEntity catalog = support.requireCatalog(parsee.catalog());
-        DatabaseEntity database = requireDatabase(catalog, parsee, delimiter);
-        TableEntity table = requireTable(catalog, database, parsee, delimiter);
+        DatabaseEntity database = support.requireDatabase(catalog, parsee, delimiter);
+        TableEntity table = support.requireTable(catalog, database, parsee, delimiter);
         // is_only_declared 是「登记了但存储里还没有数据集」——与「存储里有数据集」
         // 恰好相反，别把探测结果直接当它用（这两个名字太像，写反了不会报错，
         // 只会让客户端在表还没建好时以为它已经就绪）。
         Boolean has = checkDeclared ? support.hasDataset(catalog, table.getPath()) : null;
         Boolean onlyDeclared = has == null ? null : !has;
+
+        String tableName = null;
+        List<String> namespace = null;
+        Long version = null;
+        Map<String, Object> schema = null;
+        LanceDtos.TableStats stats = null;
+        if (loadDetailedMetadata) {
+            tableName = parsee.table();
+            namespace = List.of(parsee.catalog(), parsee.schema());
+            Detailed detailed = detailedMetadata(catalog, table, parsee.join(sep(delimiter)));
+            version = detailed.version();
+            schema = detailed.schema();
+            stats = detailed.stats();
+        }
         return new LanceDtos.DescribeTableResponse(parsee.join(sep(delimiter)),
                 table.getPath(),
                 propertiesOf(table),
                 support.storageOptions(catalog, table.getId(), table.getPath(), vendCredentials),
                 withTableUri ? tableUri(table.getPath()) : null,
-                onlyDeclared);
+                onlyDeclared,
+                tableName,
+                namespace,
+                version,
+                schema,
+                stats,
+                table.isManagedVersioning() ? Boolean.TRUE : null);
+    }
+
+    /**
+     * 读最新 manifest 换出详细元数据。
+     *
+     * <p><b>三种结果，处置各不相同，别合并：</b>
+     *
+     * <ul>
+     *   <li>还没有 manifest（只登记过）→ {@code InvalidTableState}：规范说
+     *       {@code load_detailed_metadata=true} 对 declared-only 的表可以失败；</li>
+     *   <li>manifest 在但读不出 / 解不出 → **降级**：schema / version / stats 都不给，
+     *       但 {@code location} 照回（P1 验收里「读不出要明确降级而不是给错」那一条）；</li>
+     *   <li>读出来 → 全给。</li>
+     * </ul>
+     *
+     * <p>降级必须是显式的：把「解不出」写成 500，客户端会认为这张表坏了，
+     * 而它其实只是用了我们不支持的新字段布局——表本身完全可用。
+     */
+    private Detailed detailedMetadata(CatalogEntity catalog, TableEntity table, String tableId) {
+        LanceCatalogSupport.VersionFile latest = support.latestVersion(catalog, table.getPath());
+        if (latest == null) {
+            throw LanceErrors.invalidTableState("table \"" + tableId
+                    + "\" has no manifest under _versions/ yet, so detailed metadata cannot be loaded;"
+                    + " it is only declared");
+        }
+        try {
+            LanceManifest.Manifest manifest = support.manifest(catalog, latest);
+            // 缓存写失败不能让这次读失败：调用方要的是 schema 与位置，版本号是附带的
+            try {
+                versions.cacheLatestVersion(table.getId(), manifest.version());
+            } catch (RuntimeException e) {
+                log.debug("could not cache version {} of {}", manifest.version(), tableId, e);
+            }
+            return new Detailed(manifest.version(), LanceJsonArrow.schema(manifest),
+                    new LanceDtos.TableStats(manifest.fragmentCount(), manifest.deletedRows()));
+        } catch (LanceManifest.Unreadable e) {
+            log.warn("cannot read the lance manifest {} of table {}; answering without detailed metadata",
+                    latest.path(), tableId, e);
+            return new Detailed(null, null, null);
+        }
+    }
+
+    /** {@code detailedMetadata} 的结果；三个字段要么全有、要么全无。 */
+    private record Detailed(Long version, Map<String, Object> schema, LanceDtos.TableStats stats) {
     }
 
     /** {@code POST .../exists}：不存在即 404（与 Paimon 面「返回 bool」不同，照规范）。 */
@@ -126,8 +193,8 @@ public class LanceTableService {
     public void requireExists(String id, String delimiter) {
         LanceIds.Id parsee = LanceIds.table(id, delimiter);
         CatalogEntity catalog = support.requireCatalog(parsee.catalog());
-        DatabaseEntity database = requireDatabase(catalog, parsee, delimiter);
-        requireTable(catalog, database, parsee, delimiter);
+        DatabaseEntity database = support.requireDatabase(catalog, parsee, delimiter);
+        support.requireTable(catalog, database, parsee, delimiter);
     }
 
     // ------------------------------------------------------------------ declare / register
@@ -149,7 +216,7 @@ public class LanceTableService {
             LanceIds.requireSameAsBody(id, request.id(), delimiter);
         }
         CatalogEntity catalog = support.requireCatalog(parsee.catalog());
-        DatabaseEntity database = requireDatabase(catalog, parsee, delimiter);
+        DatabaseEntity database = support.requireDatabase(catalog, parsee, delimiter);
         Map<String, String> properties = propertiesOf(request);
 
         TableEntity existing = tableRepository
@@ -160,6 +227,7 @@ public class LanceTableService {
                 case "exist_ok" -> ref(parsee, existing, sep(delimiter), catalog, vendCredentials);
                 case "overwrite" -> {
                     existing.setPropertiesJson(properties);
+                    existing.setManagedVersioning(LanceVersionService.managedVersioningOf(properties));
                     if (request != null && request.location() != null && !request.location().isBlank()) {
                         support.requireAllowedLocation(catalog, request.location());
                         existing.setPath(request.location());
@@ -186,6 +254,7 @@ public class LanceTableService {
         table.setTableType("LANCE");
         table.setExternal(false);
         table.setPropertiesJson(properties);
+        table.setManagedVersioning(LanceVersionService.managedVersioningOf(properties));
         table.markCreated(RequestContext.auditPrincipal(), RequestContext.now());
         tableRepository.save(table);
         events.publish(CatalogEventType.TABLE_CREATED, parsee.catalog(), CatalogEvent.TARGET_TABLE,
@@ -211,7 +280,7 @@ public class LanceTableService {
             throw LanceErrors.invalidInput("register requires location");
         }
         CatalogEntity catalog = support.requireCatalog(parsee.catalog());
-        DatabaseEntity database = requireDatabase(catalog, parsee, delimiter);
+        DatabaseEntity database = support.requireDatabase(catalog, parsee, delimiter);
         support.requireAllowedLocation(catalog, request.location());
         support.requireDataset(catalog, request.location());
 
@@ -235,6 +304,7 @@ public class LanceTableService {
         table.setTableType("LANCE");
         table.setExternal(true);
         table.setPropertiesJson(propertiesOf(request.properties()));
+        table.setManagedVersioning(LanceVersionService.managedVersioningOf(request.properties()));
         tableRepository.save(table);
         events.publish(CatalogEventType.TABLE_REGISTERED, parsee.catalog(), CatalogEvent.TARGET_TABLE,
                 table.getName(), Map.of("format", "LANCE"));
@@ -253,10 +323,13 @@ public class LanceTableService {
     public LanceDtos.DeregisterTableResponse deregister(String id, String delimiter) {
         LanceIds.Id parsee = LanceIds.table(id, delimiter);
         CatalogEntity catalog = support.requireCatalog(parsee.catalog());
-        DatabaseEntity database = requireDatabase(catalog, parsee, delimiter);
-        TableEntity table = requireTable(catalog, database, parsee, delimiter);
+        DatabaseEntity database = support.requireDatabase(catalog, parsee, delimiter);
+        TableEntity table = support.requireTable(catalog, database, parsee, delimiter);
         LanceDtos.DeregisterTableResponse response = new LanceDtos.DeregisterTableResponse(
                 parsee.join(sep(delimiter)), table.getPath(), propertiesOf(table));
+        // 版本账跟着登记走：deregister 之后这一行表都不存在了，留着的行会变成
+        // 没有主人的孤儿（且 ListTableVersions 会去查一张已经不存在的表）
+        versions.deleteVersionsOfTable(table.getId());
         tableRepository.delete(table);
         events.publish(CatalogEventType.TABLE_UNREGISTERED, parsee.catalog(), CatalogEvent.TARGET_TABLE,
                 table.getName(), Map.of("format", "LANCE"));
@@ -281,8 +354,8 @@ public class LanceTableService {
             throw LanceErrors.invalidInput("rename requires new_name");
         }
         CatalogEntity catalog = support.requireCatalog(parsee.catalog());
-        DatabaseEntity database = requireDatabase(catalog, parsee, delimiter);
-        TableEntity table = requireTable(catalog, database, parsee, delimiter);
+        DatabaseEntity database = support.requireDatabase(catalog, parsee, delimiter);
+        TableEntity table = support.requireTable(catalog, database, parsee, delimiter);
 
         String[] target = request.newName().split(java.util.regex.Pattern.quote(sep(delimiter)), -1);
         if (target.length > 2) {
@@ -314,19 +387,6 @@ public class LanceTableService {
     }
 
     // ------------------------------------------------------------------ 内部
-
-    private DatabaseEntity requireDatabase(CatalogEntity catalog, LanceIds.Id parsee, String delimiter) {
-        return databaseRepository.findByCatalogIdAndName(catalog.getId(), parsee.schema())
-                .orElseThrow(() -> LanceErrors.namespaceNotFound(
-                        parsee.catalog() + sep(delimiter) + parsee.schema()));
-    }
-
-    private TableEntity requireTable(CatalogEntity catalog, DatabaseEntity database, LanceIds.Id parsee,
-                                      String delimiter) {
-        return tableRepository
-                .findByCatalogIdAndDatabaseIdAndName(catalog.getId(), database.getId(), parsee.table())
-                .orElseThrow(() -> LanceErrors.tableNotFound(parsee.join(sep(delimiter))));
-    }
 
     private LanceDtos.TableRef ref(LanceIds.Id parsee, TableEntity table, String delimiter,
                                     CatalogEntity catalog, boolean vendCredentials) {

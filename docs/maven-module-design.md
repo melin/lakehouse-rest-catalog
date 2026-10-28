@@ -87,7 +87,7 @@ io.github.melin:lakehouse-rest-parent                     pom   聚合器 + 集�
 │   ├── lakehouse-rest-storage                            jar   对象存储访问
 │   ├── lakehouse-rest-protocol-paimon                    jar   Paimon 协议面（60 端点）
 │   ├── lakehouse-rest-protocol-iceberg                   jar   Iceberg 协议面（35 端点里实现的 30 个）
-│   ├── lakehouse-rest-protocol-lance                      jar   Lance 协议面（48 端点里 P0 的 13 个 + 兜底 406）
+│   ├── lakehouse-rest-protocol-lance                      jar   Lance 协议面（54 operation 里 P0+P1+P2 的 19 个 + 兜底 406）
 │   └── lakehouse-rest-server                             jar   可执行：装配 / 管理 API / 控制台宿主
 ├── lakehouse-rest-spark-parent                           pom   Spark 侧的聚合（复用根 POM 的依赖世界）
 │   ├── lakehouse-rest-spark-common                       jar   管理 API 的 REST 客户端（纯 Java）
@@ -178,7 +178,7 @@ Jackson 2.15.2 抬到 Boot 的版本）。拆成 5 个服务端模块后，这�
 | `-storage` | `StorageFileIoFactory`、`CatalogFileService`、`Paths`、`StorageConfigs`、`FileIoType`、凭据管理器的实现与缓存 | 它是唯一需要「往仓库写文件」的模块（Paimon 的 `FileIO` 在这里承担的是**通用文件系统客户端**：s3 插件加载、凭据刷新、路径模板）。若 Iceberg 面另引一套 hadoop-aws 做同样的事，就会有两套 s3 凭据解析逻辑——设计文档 §5.5 要的「凭据统一」当场破功 |
 | `-protocol-paimon` | `paimon/web/` 下 9 个控制器、`paimon/dto/` 的 Paimon 契约、`TableMetadataService`（schema/snapshot 物化）、`TableKinds`、`SchemaChangeService`、`CredentialService` | 唯一允许 `import org.apache.paimon` 的服务端模块（`storage` 除外，且只用于 FileIO）；包名独占 `rest.paimon.*`（§11） |
 | `-protocol-iceberg` | 35 个端点、Iceberg DTO、元数据代数（update 应用 / requirements 校验 / CAS）、投影派生（`schemas[]`/`snapshots[]`/`refs` → 行）、Iceberg 错误模型、`iceberg/preview/`（数据预览的读取器与只读 `FileIO`） | 唯一允许 `import org.apache.iceberg` 的模块；`iceberg-core` / `iceberg-data` / `iceberg-parquet` 带来的 avro、parquet 等依赖被关在这里 |
-| `-protocol-lance` | `/lance/v1/**` 的 13 个 P0 端点 + 兜底 `LanceUnsupportedController`（其余 35 个 operation 恒 406）、`LanceIds`（`delimiter` 拼 id 的解析与校验）、Lance DTO、Lance 错误模型（22 个 code → HTTP 状态） | **基址不在 `/v1` 下**，错误体是第三种形状（`{error,code,detail,instance}`），catalog 与表都要按 `LANCE` 格式另走一套解析——它是表里唯一「不靠格式库、靠协议形状」独立的面，见 §12.6 |
+| `-protocol-lance` | `/lance/v1/**` 的 19 个端点（P0 13 + P1 版本只读 2 + P2 版本写 2 + 标签只读 2）+ 兜底 `LanceUnsupportedController`（其余 35 个 operation 恒 406）、`LanceIds`（`delimiter` 拼 id 的解析与校验）、`LanceManifest`（纯 Java protobuf 读 manifest，不引格式库）、`LanceTagFiles`（`_refs/tags/*.json`）、Lance DTO、Lance 错误模型（22 个 code → HTTP 状态） | **基址不在 `/v1` 下**，错误体是第三种形状（`{error,code,detail,instance}`），catalog 与表都要按 `LANCE` 格式另走一套解析——它是表里唯一「不靠格式库、靠协议形状」独立的面，见 §12.6 |
 | `-server` | 启动类、管理 API 控制器（33 个 operation）、控制台宿主与静态资源、安全装配、优化调度与 k8s 提交、`application.yml` | **唯一产出可执行 jar 与镜像**的模块。镜像里有什么，看这一个 POM 就够了 |
 
 ### 3.4 跨模块的判断表（几个没写在包名里的类）
@@ -297,8 +297,8 @@ public interface CatalogProtocolFace {
 
 §3.3 / §3.4 的两张表按「名字看着像谁」写，实际落点按**依赖图**定——搬迁前逐类核过
 「搬完会不会出现反向依赖」（真按原文搬会产生 46 条反向边）。实测规模：
-**core 128 · storage 9 · protocol-paimon 38 · protocol-iceberg 20 · protocol-lance 8 · server 67**
-（共 270 个类；数字随实现滚动，改完跑一遍 `find … -name '*.java' | wc -l` 再回填这里与 §15）。
+**core 131 · storage 9 · protocol-paimon 38 · protocol-iceberg 20 · protocol-lance 16 · server 67**
+（共 281 个类；数字随实现滚动，改完跑一遍 `find … -name '*.java' | wc -l` 再回填这里与 §15）。
 读 §3.3 / §3.4 时要配合本节的差异。
 
 ### 8.1 六处与「名字看着像谁」不同的落点

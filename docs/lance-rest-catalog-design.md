@@ -1,13 +1,22 @@
 # Lance REST Catalog：把 Lance 数据集纳入同一目录服务
 
-> 状态：**P0 已落地**（2026-10-28）。13 个 operation + 「未实现 operation 恒 406」的兜底
-> 控制器都已实现并通过测试（`LanceRestCatalogApiTests` / `LanceIdParsingTests` /
-> `LanceEndpointAuthorizationTests`）；**P1（2 个版本只读）与 P2（3 个版本写）未做**，
-> 控制台只读那一节（§7）也还没开工。下面的正文仍是当时的设计口径，
+> 状态：**P0 + P1 + P2 里能做的都已落地**（2026-10-28）。P0 的 13 个 operation、
+> P1 的 2 个版本只读、P2 里 `CreateTableVersion` / `BatchDeleteTableVersions` 两个写端点
+> 与标签只读的 2 个（`ListTableTags` / `GetTableTagVersion`），以及「未实现 operation
+> 恒 406」的兜底控制器都已实现并通过测试
+> （`LanceRestCatalogApiTests` / `LanceVersionApiTests` / `LanceTagApiTests` /
+> `LanceManifestReaderTests` / `LanceIdParsingTests` / `LanceEndpointAuthorizationTests`
+> + `verify-lance-endpoints.py`）。
+> **仍未做的三处**：`BatchCreateTableVersions`（路径不带表标识 → 授权层无法定位资源，
+> 理由见 §12.6）、索引的只读代理（规范没定义 `_indices/` 的盘上格式，§12.8）、
+> 控制台只读那一节（§7）。
+> 下面的正文仍是当时的设计口径，
 > 与实现有偏差的地方在 [§12 实测偏差](#12-实测偏差落地后回填) 里逐条记着。
 > 对标：Apache Gravitino 1.3.1 的 [Lance REST service](https://gravitino.apache.org/docs/1.3.1/lance-rest-service)，
 > 规范以 [Lance Namespace / REST Catalog](https://lance.org/format/namespace/) 为准（OpenAPI 文档版本 `1.0.0`，
-> operation 版本 `V1`，共 **48 个 operation**）。
+> operation 版本 `V1`）。**入库的规范副本有 54 个 operation**，比本文写作时的 48 多 6 个
+> （branches 三个、materialized_view 两个、`update_field_metadata` 一个，全部落在「不做」一栏），
+> 逐条见 [§12.5](#125-规范副本是-54-个-operation-不是-48)。
 > 范围：服务端新增第三个协议面 `/lance/v1/**`（13 个 operation 必达、2 个可选）、
 > `catalog_format=LANCE`、凭据下发、控制台只读；**不做数据面**，也不写仓库里的任何文件。
 > 一句话结论：**能支持，而且比 Iceberg 那一面更省事——因为 Lance 的规范自己就把「catalog 只做登记处」写成了推荐实现。**
@@ -24,12 +33,12 @@
 | 挂在哪 | 新基址 `/lance/v1/**`；Lance 客户端只配 `uri` + `delimiter`，**没有 prefix 握手** |
 | 怎么和现有 catalog 对上 | `{id}` 的**第一级就是我们的 catalog**（Gravitino 同形：metalake 配在服务端，catalog 是第一级） |
 | 格式怎么区分 | `lakehouse_catalog.catalog_format` 增加 `LANCE`，创建时必选、**不可变**（沿用 Iceberg 的定案） |
-| 数据模型 | **加 2 列、0 张新表**（`properties_json` 必加；`table_version` 在 P1 加） |
-| 做多少端点 | P0 **13 个**（5 个 namespace + 8 个 table），P1 再 **2 个**（版本只读） |
-| 剩下 35 个怎么办 | 其中 5 个（P1 的 2 个 + P2 的 3 个）预留待做，**其余 30 个恒 `406` + `{"code":0,"error":"..."}`**，不是 404、不是 500，更不是「假装成功」 |
+| 数据模型 | **加 3 列、1 张新表**（`properties_json` / `table_version` / `managed_versioning`；`lakehouse_lance_table_version` 版本账，P2 加） |
+| 做多少端点 | P0 **13 个**（5 个 namespace + 8 个 table），P1 再 **2 个**（版本只读），P2 再 **4 个**（版本写 2 + 标签只读 2） |
+| 剩下 35 个怎么办 | **全部恒 `406` + `{"code":0,"error":"..."}`**，不是 404、不是 500，更不是「假装成功」；逐个理由见 §3.1（为什么不做数据面、为什么连索引的只读也不做，见 §12.8） |
 | 数据面（query / insert / index） | **不做**。规范原文把这类操作列为「catalog 不该承担」，我们照抄这条理由 |
 | `CreateTable` / `DropTable` | **不做**，只做 `DeclareTable` / `DeregisterTable`（规范专门写了「Why Not」一节） |
-| `managed_versioning` | **恒 `false`**。我们不做提交协调；P2 再评估（这一项要有单独的评审） |
+| `managed_versioning` | 表级开关，**默认 `false`**；`true` 时版本写端点才可用（P2 已落地，§6.3） |
 | 仓库里的物化产物 | **一个字节都不写**。与 Paimon（写 schema 文件）、Iceberg（写 metadata.json）相反 |
 | 权限 | 复用现有 12 个 access 词与 8 个资源类型，新增一张 `LanceAccessRules` 映射表，**失败关闭** |
 | 凭据 | 复用 `StorageCredentialManager`，把 `token` 摊进 `storage_options`，并补 `expires_at_millis` |
@@ -189,23 +198,27 @@ catalog        ← 第一级
 
 ## 3. 定位：只做元数据面与凭据面
 
-### 3.1 48 个 operation 的取舍总表
+### 3.1 operation 的取舍总表（写作时 48 个，入库副本 54 个）
 
 | 分组 | operation | 我们 |
 | --- | --- | --- |
 | Namespace（5） | Create / List / Describe / Drop / Exists | **P0 全做** |
 | 表元数据（8） | ListTables、ListAllTables、DescribeTable、TableExists、RegisterTable、DeregisterTable、DeclareTable、RenameTable | **P0 全做** |
-| 表版本（5） | ListTableVersions、DescribeTableVersion | **P1 做这 2 个**（只读目录，不写） |
-| | CreateTableVersion、BatchCreateTableVersions、BatchDeleteTableVersions | **P2**，且只在 `managed_versioning=true` 时才有意义，默认不做 |
+| 表版本（5） | ListTableVersions、DescribeTableVersion | **P1 已做这 2 个**（只读目录，不写） |
+| | CreateTableVersion、BatchDeleteTableVersions | **P2 已做这 2 个**（只在 `managed_versioning=true` 时可用） |
+| | BatchCreateTableVersions | **不做**（406）：路径不带表标识，授权层无法定位资源，见 §12.6 |
 | 建表/删表（2） | CreateTable、DropTable | **不做**（406），规范自己劝退（§1.5） |
 | 数据面（11） | InsertIntoTable、MergeInsertIntoTable、UpdateTable、DeleteFromTable、QueryTable、CountTableRows、ExplainTableQueryPlan、AnalyzeTableQueryPlan、RefreshMaterializedView、GetTableStats、RestoreTable | **不做**（406） |
 | 列演进（4） | AlterTableAddColumns、AlterTableAlterColumns、AlterTableBackfillColumns、AlterTableDropColumns | **不做**（406）——改 schema 就是改数据集 |
 | Schema 元数据（1） | UpdateTableSchemaMetadata | **不做**（406）——同上 |
-| 索引（5） | CreateTableIndex、CreateTableScalarIndex、ListTableIndices、DescribeTableIndexStats、DropTableIndex | **不做**（406）——索引住在 `_indices/`，是数据面 |
-| 标签（5） | ListTableTags、GetTableTagVersion、CreateTableTag、DeleteTableTag、UpdateTableTag | **不做**（406）——标签住在 `_refs/tags/`，写它等于提交 |
+| 索引（5） | CreateTableIndex、CreateTableScalarIndex、ListTableIndices、DescribeTableIndexStats、DropTableIndex | **不做**（406）——索引住在 `_indices/`，是数据面；**连只读也不做**，因为规范没定义 `_indices/{UUID}/` 里的文件格式（§12.8） |
+| 标签（5） | ListTableTags、GetTableTagVersion | **P2 已做这 2 个**（只读代理：读 `_refs/tags/*.json`，见 §6.3 L2-2 与 §12.8） |
+| | CreateTableTag、DeleteTableTag、UpdateTableTag | **不做**（406）——写标签等于替客户端提交 |
 | 事务（2） | DescribeTransaction、AlterTransaction | **不做**（406）——Lance 的事务文件是提交协调的产物，我们不是协调者 |
 
-合计 48 = 13（P0）+ 2（P1）+ 3（P2）+ 30（恒不做，406）。
+合计（按本文写作时的 48 个算）48 = 13（P0）+ 2（P1）+ 5（P2）+ 28（恒不做，406）；
+**落地时按入库副本的 54 个算**是 54 = 19（已做）+ 35（恒不做，406），
+多出来的 6 个 operation 全在「恒不做」那一栏（§12.5）。
 
 **一张图说清边界**：请求进来，我们只回答两类问题——「这个标识存在吗」「它的位置与凭据是什么」。任何要求我们**打开数据集、算一个数、写一个版本**的调用，都在 406 的那一栏。
 
@@ -319,7 +332,17 @@ Lance 面属于第二条线，而且比通用表**更彻底**：连「schema 快
 
 | 列 | 类型 | 用途 |
 | --- | --- | --- |
-| `table_version` | `bigint` | 最近一次读到的 Lance 版本号，纯缓存；`manifest` 的绝对路径复用 `metadata_location`（它本来就是「当前元数据文件路径」的通用说法） |
+| `table_version` | `bigint` | 最近一次读到的 Lance 版本号，**纯缓存**：它是展示位，不参与任何判定，写失败只记日志（L1-4） |
+
+**P2 再加 1 列 + 1 张表**（`managed_versioning` 落地时才需要）：
+
+| 落点 | 用途 |
+| --- | --- |
+| `lakehouse_table.managed_versioning`（bit，非空） | 「版本由服务端记账」这个硬承诺的落点。开关由 `declare` / `register` 的透传属性键 `lance.managed_versioning` 给定 |
+| `lakehouse_lance_table_version`（新表，唯一约束 `(table_id, version)`） | 版本账。唯一约束是 `put_if_not_exists` 真正的保证（先查再插有窗口），也是 `ListTableVersions` 与范围删除的检索键 |
+
+> 于是「0 张新表」这句话的适用范围是 **P0 + P1**：它们不记账，版本由 Lance 原生机制管。
+> P2 把「版本分配」接到服务端，代价就是这一张表——这正是本文把 P2 单列出来评审的原因。
 
 `path` 存表的 `location`（数据集根），`external` 标记 `register` 进来的表——两者现成正好。`table_type` 填 `LANCE`（与 Paimon 的 `lance-table` 区分，见 §2）。
 
@@ -434,7 +457,7 @@ DescribeTable / DeclareTable 的请求参数 vend_credentials=true
 
 | 参数 | 默认 | 我们的行为 |
 | --- | --- | --- |
-| `load_detailed_metadata` | `false` | `false`：只回 `location`/`properties`/`storage_options`。`true`：**P0 回 406**，P1 打开（读 manifest 补 `schema`/`version`/`stats`） |
+| `load_detailed_metadata` | `false` | `false`：只回 `location`/`properties`/`storage_options`。`true`：**P1 已打开**——读最新 manifest 补 `schema`/`version`/`stats`/`table`/`namespace`；只登记过的表（还没有 manifest）回 `409 + code 19`，manifest 读不出则**降级**（这几项不给，但 `location` 照回） |
 | `check_declared` | `false` | `true`：探测 `_versions/` 是否存在，填 `is_only_declared`；一次 LIST，成本可接受 |
 | `with_table_uri` | `false` | `true`：把 `location` 规范化成合法 URI 填进 `table_uri`（`file:` 补 scheme、`s3://` 原样） |
 
@@ -471,23 +494,24 @@ DescribeTable / DeclareTable 的请求参数 vend_credentials=true
 | L0-9 | 控制台只读 | catalog 列表出现 `LANCE` 徽标；表详情只显示「详细信息 / 文件列表 / 血缘」；无建表入口；`verify-console` 白名单同步 | L0-5 |
 | L0-10 | 端到端 | `scripts/e2e-lance-rest.sh`：起服务端 → 建 LANCE catalog → 用真客户端建 schema → `declare` → 客户端写一个最小数据集 → `describe` 能读回 location → `deregister` → 数据仍在 | L0-9 |
 
-### 6.2 P1：把「表长什么样」补上一半
+### 6.2 P1：把「表长什么样」补上一半（**已落地**）
 
-| 编号 | 需求 | 验收标准 | 依据 |
+| 编号 | 需求 | 验收标准 | 状态 / 依据 |
 | --- | --- | --- | --- |
-| L1-1 | `load_detailed_metadata=true` | 返回 `schema`（JSON Arrow）、`version`、`table`、`namespace`；`stats` 可空 | manifest 是 protobuf，`fields` 自描述，**不需要 JNI**（§1.5 之外的另一条可行性依据） |
-| L1-2 | manifest 读取器 | 纯 Java protobuf 解析 `_versions/` 最新 manifest：支持 V1（`{version}.manifest`）与 V2（`u64::MAX-version` 补零 20 位）两种命名；`latest_version_hint.json` 作为加速但**不作为正确性依赖** | 版本发现规则见 §1.7 附注 |
-| L1-3 | `ListTableVersions` / `DescribeTableVersion` | 列版本号与时间；`descending` / `limit` / `page_token` 生效；`GET` 与 `POST` 两种方法都接 | 兼容矩阵 §1.7 |
-| L1-4 | 版本缓存 | `table_version` 列只做展示缓存，**不参与任何判定**；manifest 读失败时降级为「不回 schema」并记 `warn` | 防止缓存变成第二真相源 |
+| L1-1 | `load_detailed_metadata=true` | 返回 `schema`（JSON Arrow）、`version`、`table`、`namespace`；`stats` 可空 | ✅ 已实现；只登记过的表回 `409 + code 19`，manifest 读不出则降级 |
+| L1-2 | manifest 读取器 | 纯 Java protobuf 解析 `_versions/` 最新 manifest：支持 V1（`{version}.manifest`）与 V2（`u64::MAX-version` 补零 20 位）两种命名 | ✅ `LanceManifest` + `LanceVersionNaming`；**没有**用 `latest_version_hint.json`（§12.7） |
+| L1-3 | `ListTableVersions` / `DescribeTableVersion` | 列版本号与时间；`descending` / `limit` / `page_token` 生效；`GET` 与 `POST` 两种方法都接 | ✅ 已实现；版本来自**存储与库两个来源的并集**（§12.7） |
+| L1-4 | 版本缓存 | `table_version` 列只做展示缓存，**不参与任何判定**；manifest 读失败时降级为「不回 schema」并记 `warn` | ✅ 已实现；缓存写失败只记 debug，不让读失败 |
 
 **P1 的风险要在开工前量化**：manifest 是 Lance 格式的核心结构，字段随版本增长（`reader_feature_flags` 已到 `1<<16`）。我们只解 `fields` / `version` / `timestamp`，其余**不认识的字段一律忽略**（protobuf 的天然特性）。但「忽略」意味着我们读到的 schema 可能不完整（例如 `fields` 与 `covering_fields` 分离声明的那一版）——所以 P1 的验收里要有一条：**用当前 Lance 版本写出的表能读对，且读不出时明确降级而不是给错**。
 
-### 6.3 P2：需要单独评审的两项
+### 6.3 P2：需要单独评审的两项（**L2-1 部分落地、L2-2 的标签已落地**）
 
-| 编号 | 需求 | 为什么单独评审 |
-| --- | --- | --- |
-| L2-1 | `managed_versioning=true` + 3 个版本写端点 | 把 catalog 变成提交协调者（§3.4），需要唯一约束 + CAS + 暂存 manifest 可见性；与「服务端不写仓库」的边界冲突 |
-| L2-2 | 标签 / 索引的**只读**代理 | 读 `_refs/tags/*.json` 与 `_indices/` 是纯读，但会让人以为我们管这些对象；要先把「只读代理」与「登记」的措辞定清 |
+| 编号 | 需求 | 为什么单独评审 | 状态 |
+| --- | --- | --- | --- |
+| L2-1 | `managed_versioning=true` + 3 个版本写端点 | 把 catalog 变成提交协调者（§3.4），需要唯一约束 + CAS + 暂存 manifest 可见性；与「服务端不写仓库」的边界冲突 | **做了 2 个**：`CreateTableVersion` + `BatchDeleteTableVersions`，唯一约束 `(table_id, version)` 就是那个 CAS；`BatchCreateTableVersions` **不做**（§12.6） |
+| L2-2a | 标签的**只读**代理（`ListTableTags` / `GetTableTagVersion`） | 读 `_refs/tags/*.json` 是纯读，但会让人以为我们管这些对象；要先把「只读代理」与「登记」的措辞定清 | ✅ **已做**：盘上格式规范写死了（`_refs/tags/{name}.json`，字段 `branch` / `version` / `manifestSize`），因此读得起。措辞定为「代理」：不落库、不校验版本存在、写端点仍 406（§12.8） |
+| L2-2b | 索引的**只读**代理（`ListTableIndices` / `DescribeTableIndexStats`） | 同上 | **仍未做**：规范对 `_indices/{UUID}/` 只写了一句「different for each index type」，连文件名都不定；`IndexContent` 要的 `index_name` / `columns` / `status` 只能靠解析具体索引文件，凭目录名编字段就是「假装成功」 |
 
 ### 6.4 明确不做（写进 README，避免被当成待办）
 
@@ -510,7 +534,7 @@ DescribeTable / DeclareTable 的请求参数 vend_credentials=true
 
 | 位置 | 改动 | 理由 |
 | --- | --- | --- |
-| catalog 列表 / 详情 | `catalog_format` 徽标加 `LANCE`；「协议与能力」卡片显示基址 `/lance` 与「13 个端点已实现、其余不支持」 | 与 Iceberg catalog 的卡片同形（`console-catalog-detail.md` §3.1.1） |
+| catalog 列表 / 详情 | `catalog_format` 徽标加 `LANCE`；「协议与能力」卡片显示基址 `/lance` 与「21 条端点 / 19 个 operation 已实现、其余 35 个不支持」 | 与 Iceberg catalog 的卡片同形（`console-catalog-detail.md` §3.1.1） |
 | 表详情 | 只显示「详细信息 / 文件列表 / 血缘」三个页签；**不显示**快照、数据预览、数据策略。启用存储优化后再加第四个「存储优化」页签（见 [`lance-table-optimization-design.md`](lance-table-optimization-design.md) §7.5） | Lance 表没有我们的快照概念；预览需要 Lance reader（§3.3）；行过滤在 Lance 侧无落点 |
 | 建表表单 | **不给 Lance 入口**（与 `lance-table` 的处理一致） | 建表要写数据集，我们没有写路径 |
 | 文件列表 | 复用现有的对象存储浏览（`_versions/`、`data/` 直接可见） | 这是唯一能看到「表里到底有什么」的地方，成本为零 |
@@ -538,7 +562,7 @@ DescribeTable / DeclareTable 的请求参数 vend_credentials=true
 | D1 | 基址形态 | A：`/lance` + catalog 作第一级 | B（per-catalog 基址）/ C（单级 namespace） |
 | D2 | 是否允许通过 Lance API 建 catalog | **否**，406 + 指向管理 API | 允许，但强制 `properties.location` |
 | D3 | `DropNamespace` 是否支持 `Cascade` | **否**，406 | 支持，但要求 `?confirm=true` 且只删登记 |
-| D4 | `managed_versioning` | **否**（P2 单独评审） | 是——这是我们唯一能赢过 Gravitino 的点 |
+| D4 | `managed_versioning` | **做成表级开关，默认 `false`**（已落地）：`false` 时与「恒否」行为完全一致，`true` 才开放版本写端点。见 §6.3 与 §12.6 | 常量 `false`——已否决，因为那样 `CreateTableVersion` 永远不可用 |
 | D5 | P1 的 manifest 读取器 | **做**，但只在抓包证明必需时才排期 | 不做，`load_detailed_metadata=true` 永久 406 |
 | D6 | Lance 表与通用表是否允许登记同一目录 | **不允许**（后者拒绝登记已存在的 Lance 表） | 允许，靠文档说明 |
 
@@ -548,14 +572,19 @@ DescribeTable / DeclareTable 的请求参数 vend_credentials=true
 
 | 脚本 / 测试 | 钉住什么 | 何时跑 |
 | --- | --- | --- |
-| `scripts/verify-lance-endpoints.py`（新增） | spec 的 48 个 operation 与 `LanceAccessRules` / 控制器 一一对应；「实现 / 显式 406 / 预留」三档计数与文档一致 | 改端点、改 spec 副本时 |
-| `LanceEndpointAuthorizationTests`（新增） | 13 个端点各自的 access 映射；未登记即 403；`/lance/**` 不被匿名访问 | 改授权时 |
+| `scripts/verify-lance-endpoints.py`（已落地，13 项） | 规范副本的 operation 数（54）与控制器台账（21 条端点 / 19 个 operation）逐条对齐；`WebConfig` 里 `/lance/v1/**` 必须登记两次；`BatchCreateTableVersions` 必须在「不做」一栏 | 改端点、改 spec 副本时 |
+| `LanceEndpointAuthorizationTests`（新增） | 各端点的 access 映射；未登记即 403；`/lance/**` 不被匿名访问；版本端点（读 / 写）同样要判权 | 改授权时 |
+| `LanceVersionApiTests`（新增，10 项） | P1 的读两个 + P2 的写两个：详细元数据、版本列举 / 描述、`put_if_not_exists` 的 409、范围删除、deregister 只删账 | 改版本端点时 |
+| `LanceTagApiTests`（新增，9 项） | 标签只读代理：空 map ≠ 404、`manifestSize` 是驼峰、map 形状、分页、坏标签「列举跳过 / 指名 409」、标签名路径穿越被拒、写标签仍 406 | 改标签端点时 |
+| `LanceManifestReaderTests`（新增，8 项） | protobuf 解析（版本 / 时间戳 / 嵌套 schema / 未知字段跳过）、JSON Arrow 映射、V1 / V2 命名的往返 | 改解析器时 |
 | `LanceErrorModelTests`（新增） | 22 个 code → HTTP 的映射；`/lance/**` 下 404/405/校验/未捕获异常的形状 | 改错误处理时 |
 | `LanceIdParsingTests`（新增） | §4.2 的五条规则 + 三种分隔符 | 改解析器时 |
 | `scripts/e2e-lance-rest.sh`（新增） | 真服务端 + 真客户端：declare → 写数据集 → describe → deregister | 发版前 |
 | `verify-console.py` / `verify-k8s-manifests.py` / `verify-iceberg-endpoints.py` / `verify-lineage-doc.py` / `verify-spark-sql-doc.py`（既有 5 个） | 不受影响，但新增控制台白名单后总数要同步 | 每次改动 |
 
-**一个前置阻塞**：`spec/lance-namespace-rest-openapi.yaml` 目前拿不到（本机代理对 `raw.githubusercontent.com` 返回 502，`lance.org` 的 spec 直链 404）。`verify-lance-endpoints.py` 依赖这份副本，所以 **L0-1 是硬前置**；在拿到之前，端点清单以本文档 §3.1 的 48 条为准（它抄自官方 operations 索引），但**不能声称覆盖率可机械校验**。
+**前置阻塞已解除**：`spec/lance-namespace-rest-openapi.yaml` 已入库（2026-10-28 抓自
+`lance-format/lance-namespace@main` 的 `docs/src/spec.yaml`，228 KB）。L0-1 因此完成，
+端点覆盖率**可以机械校验**了——`verify-lance-endpoints.py` 现在比对的是这份副本而不是本文的清单。
 
 ---
 
@@ -567,7 +596,7 @@ DescribeTable / DeclareTable 的请求参数 vend_credentials=true
 | **M1 只读面** | 13 个端点里先做 6 个读操作（list/describe/exists × 2 层）+ 错误模型 + 授权 | 客户端能「看见」表；写操作还不可用 |
 | **M2 写登记** | `create` / `drop(restrict)` / `declare` / `register` / `deregister` / `rename` + 凭据 | `e2e-lance-rest.sh` 全绿 |
 | **M3 文档与控制台** | 本文档回填实测偏差、README / AGENTS 文档索引、控制台三页签、事件 payload | 五个既有校验脚本 + 两个新脚本全 PASS |
-| **M4 P1/P2** | manifest 读取器（按 M0 结论）、版本只读；P2 两项另行评审 | 单独排期 |
+| **M4 P1/P2** | manifest 读取器（按 M0 结论）、版本只读；P2 两项另行评审 | **已完成**：P1 两项 + P2 的 `CreateTableVersion` / `BatchDeleteTableVersions`；`BatchCreateTableVersions` 与标签 / 索引只读**未做**（§12.6） |
 
 ---
 
@@ -581,7 +610,7 @@ DescribeTable / DeclareTable 的请求参数 vend_credentials=true
 | `delimiter` | 拼 `id` 的分隔符，默认 `$`，URL 里编码为 `%24` | 不是路径分隔符 |
 | `location` | 数据集根目录（`s3://…/x.lance`） | 与 `table_uri` 不同：后者必须是完整合法 URI |
 | manifest | `_versions/` 下的 protobuf，一个版本一份，含 schema 与 fragments | 不是 Iceberg 的 `metadata.json` |
-| `managed_versioning` | 版本由 catalog 记账（`true`）还是 Lance 原生（`false`） | 我们恒 `false` |
+| `managed_versioning` | 版本由 catalog 记账（`true`）还是 Lance 原生（`false`） | 是**表级开关**，默认 `false`；不是常量，别在代码里写死 |
 | declared-only | 登记了但存储里还没有数据集 | 不等于「空表」（空表也有 manifest） |
 
 ---
@@ -596,10 +625,13 @@ P0 落地时与本文口径不一致、或本文没写到但实现必须决定�
 | 项 | 状态 |
 | --- | --- |
 | P0 的 13 个 operation | 已实现（`LanceNamespaceController` + `LanceTableController`） |
+| P1 的 2 个（版本只读） | 已实现（`LanceVersionController` + `LanceVersionService` 的读路径） |
+| P2 的 3 个版本写端点 | 做了 2 个（`CreateTableVersion` / `BatchDeleteTableVersions`）；`BatchCreateTableVersions` **不做**（§12.6） |
+| P2 的标签只读 2 个 | 已实现（`LanceTagController` + `LanceTagService` + `LanceTagFiles`）；索引只读**不做**（§12.8） |
 | 其余 35 个 operation | `LanceUnsupportedController`（最低优先级兜底）恒回 **406 + code 0** |
-| P1 的 2 个（版本只读）· P2 的 3 个（版本写） | 未做，走兜底 406 |
 | 控制台只读（§7） | 未做；只把 `LANCE` 加进了 `catalogFormat.js`（徽标与新建表单的取值集合），目录浏览仍是 Paimon 那一套 |
-| `properties_json`（2 列之一） | 已加（`lakehouse_table`）；`table_version` 属 P1，未加 |
+| `properties_json` / `table_version` / `managed_versioning` | 三列都已加（`lakehouse_table`） |
+| `lakehouse_lance_table_version`（版本账） | 已加；唯一约束 `(table_id, version)` |
 
 ### 12.2 四处「静默放行」——都是设计稿没写、实现里才撞上的
 
@@ -631,6 +663,109 @@ P0 落地时与本文口径不一致、或本文没写到但实现必须决定�
 - 表 id 里的 `delimiter` 缺省时不能是 `null`，否则 `join()` NPE——`LanceIds.Id.join()`
   现在对 null / 空串回落到默认 `$`。
 
+### 12.5 规范副本是 54 个 operation，不是 48
+
+副本落在 `spec/lance-namespace-rest-openapi.yaml`（228 KB，OpenAPI **3.1.1**，operation 版本 `V1`），
+取的是 jsDelivr 的 `lance-format/lance-namespace@main`——`raw.githubusercontent.com` 直连超时。
+入库是为了让校验脚本能**数**出条数，而不是靠本文这张表记住它。
+
+多出来的 6 个（写作时还没进规范）：
+
+| 路径 | 来源 |
+| --- | --- |
+| `/v1/table/{id}/branches/list` · `create` · `delete` | 分支（Git 式多版本线），同一套模型 |
+| `/v1/materialized_view/{id}/create` · `refresh` | 物化视图 |
+| `/v1/table/{id}/update_field_metadata` | 字段描述改写的独立路径 |
+
+三条全落在「恒不做」那一栏，于是**「恒 406」的实际条数是 37**（54 − 17 已实现），
+不是 §0 里写的 30 / 35。`verify-lance-endpoints.py` 直接解析 spec 数路径，
+所以以后规范再涨条数，脚本会先红，本文这张表反而可以慢一步改。
+
+### 12.6 `BatchCreateTableVersions` 为什么不做
+
+路径是 `/v1/table/version/batch-create`——**不带 `{id}`**。表标识只出现在 body 的 `versions[]`
+里，而且每个元素可以指向不同 catalog 下的不同表。
+
+我们的授权在拦截器里做，只看路径：§1.2 抄的就是规范自己那条原则（「反代需要的信息必须不用
+反序列化 body 就能拿到」）。要判权就得先读 body，等于为了这一个端点把原则破掉；更麻烦的是
+一次请求会横跨多张表，语义从「成功 / 失败」变成「部分成功」，partial failure 的错误模型规范
+里没有定义。
+
+于是它留在兜底控制器：**406 + code 0（Unsupported）**，语义是对的，而且
+`verify-lance-endpoints.py` 断言它始终在不支持清单里。真要做，得等规范把路径改成
+`/v1/table/{id}/version/batch-create`——那样它就是 `CreateTableVersion` 的循环，没什么额外成本。
+
+另外两个版本写端点不受影响：`CreateTableVersion` / `BatchDeleteTableVersions` 都带 `{id}`，
+按「表级 ALTER」判权，已在 `LanceAccessRules` 登记。
+
+### 12.7 版本发现：不读 `latest_version_hint.json`
+
+规范里 `latest_version_hint.json` 明说是 **hint**：写漏、写旧都不算错，旧版 Lance 根本不写。
+拿它当「最新版本号」会得到比实际小的答案，而且错得很安静。
+
+所以实现只做一件事：**LIST `_versions/` 一次，按 version 排序取最大**。hint 文件只在 `register`
+的弱存在性检查里被当作「这里像个数据集」的信号之一（与 `_versions/1.manifest` 二选一即可），
+**不参与版本发现**。
+
+命名有两套，混用是错的：
+
+| 套 | 名字 | 为什么 |
+| --- | --- | --- |
+| V1 | `{version}.manifest` | 直白 |
+| V2 | `{u64::MAX - version}` 补零 **20 位** | 字典序 = 版本倒序，scan 时最新在前 |
+
+换算不用 BigInteger：`u64::MAX` 的补码就是 `-1`，所以 `version = -1 - name`。
+但打印必须走 `Long.toUnsignedString(-1L - version)` 再补零——`String.format("%020d", …)`
+会先打出一个负号，长度还对，看着完全正常，实际永远匹配不上。这条踩过一次。
+同一目录里两种命名同时出现 → `InvalidTableState`（code 19 / 409），**不猜**。
+
+版本有两个来源，`list` 取并集按 version 去重，**库里那条赢**：
+
+1. 存储 LIST 出来的（原生与 managed 都会有）；
+2. `lakehouse_lance_table_version` 里记的（只有 `managed_versioning=true` 才可能有），
+   它额外带 `metadata` / `manifest_size` / `e_tag`。
+
+排序一律按 version 数值，不受 V2 命名倒序影响。
+
+`lakehouse_table.table_version` 只是最近一次读到的版本号，**纯展示缓存**：写失败只 `log.debug`，
+绝不参与「表是否存在」「这是不是最新版本」的任何判定——它过期了最多让控制台少显示一个数字。
+
+### 12.8 标签读得起、索引读不起：区别是「规范写没写」，不是难易
+
+L2-2 的两半在同一份规范里待遇不同，值得单独记一笔，因为它决定了以后「能不能再加一个只读端点」：
+
+| | 标签 | 索引 |
+| --- | --- | --- |
+| 位置 | `_refs/tags/{name}.json`（**永远在根级**，不论指向哪个分支） | `_indices/{UUID}/…` |
+| 规范写了什么 | 文件名、扩展名、每个字段（`branch` / `version` / `manifestSize` / `createdAt` / `updatedAt` / `metadata`） | 一句「different for each index type」，连文件名都不定 |
+| 结论 | **读得起** | 读不起：`IndexContent` 要 `index_name` / `columns` / `status`，只能靠解析具体索引文件 |
+
+判据是这一条：**只读代理需要的字段是否都能从盘上唯一地算出来**。算得出就做，算不出就 406——
+按目录名编字段的响应会让调用方以为索引是健康的。
+
+四个写错过一次才会知道的点：
+
+1. **`manifestSize` 是驼峰**，规范里唯一一处没跟 snake_case（`TableVersion` 用的是
+   `manifest_size`）。写错的后果不是编译失败，是客户端读到一个 `null`，
+   看上去像「这个标签没有 size」。
+2. **`tags` 是 map 不是数组**（名字 → 内容）。按数组实现，客户端会拿不到任何标签。
+3. **没有 `_refs/tags/` 是空 map，不是 404**。空 map 说「这里确实没有标签」；
+   只有指着某个具体标签问不到，才是 `TableTagNotFound`（code 8 / 404）。
+4. **坏标签的两种处置不一样**：`tags/list` 跳过并 `warn`（一个坏标签不该把其余标签一起藏起来），
+   `tags/version` 回 `InvalidTableState`（19 / 409）。那次没有「跳过」这个选项，
+   说成「不存在」就是撒谎——文件在那儿，只是读不懂。
+
+还有一条只在授权层出现的坑：**`/table/{id}/tags/list` 的最后一段是 `list`，不是 `tags`**。
+规则若只看最后一段，它会落进表级 switch 的 `default`（那里没有 `list` 这个分支），
+于是判权退化成 `CATALOG:DESCRIBE`——「看得见 catalog 就能读这张表的标签」。
+判断必须看**倒数第二段**（`LanceAccessRules` 里 tags 与 version 两个分支都是这个形状）。
+
+还有一处**性能**上的决定：`tags/list` 必须**一次 FileIO 读完整个目录**，不能逐个读。
+`StorageFileAccess` 刻意不缓存 FileIO（缓存凭据会导致「管理 API 换过钥匙后服务端还在用旧的」），
+因此每读一个文件就重建一次 FileIO 并重新解析凭据——在对象存储上那是几百毫秒一次。
+一百个标签就是一百次。为此 storage 侧加了 `readTexts(catalogId, paths)`，
+它的契约是「同一存储的一批小文件共用一次 FileIO，不存在的跳过」。
+
 ---
 
 ## 附：参考
@@ -638,6 +773,7 @@ P0 落地时与本文口径不一致、或本文没写到但实现必须决定�
 - Lance Namespace 规范总览：<https://lance.org/format/namespace/>
 - Lance REST Catalog 路由与非标准操作：<https://lance.org/format/catalog/rest/>
 - 存储布局与 manifest 命名：<https://lance.org/format/table/layout/>、<https://lance.org/format/table/transaction/>
+- 标签与分支的盘上格式（`_refs/tags/*.json` 的字段）：<https://lance.org/format/table/branch_tag/>
 - 错误码与 `ErrorResponse`：<https://lance.org/format/namespace/operations/errors/>
 - 参考实现：<https://gravitino.apache.org/docs/1.3.1/lance-rest-service>
 - 相关设计文档：[`iceberg-rest-catalog-design.md`](iceberg-rest-catalog-design.md)（双协议面的做法与代价）、[`generic-table-design.md`](generic-table-design.md)（信封式的另一条路）、[`data-model.md`](data-model.md)、[`authorization.md`](authorization.md)、[`console-catalog-detail.md`](console-catalog-detail.md)

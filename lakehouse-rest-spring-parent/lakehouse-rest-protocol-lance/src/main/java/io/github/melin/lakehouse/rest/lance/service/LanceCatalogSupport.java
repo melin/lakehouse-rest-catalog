@@ -1,15 +1,26 @@
 package io.github.melin.lakehouse.rest.lance.service;
 
 import io.github.melin.lakehouse.rest.domain.entity.CatalogEntity;
+import io.github.melin.lakehouse.rest.domain.entity.DatabaseEntity;
+import io.github.melin.lakehouse.rest.domain.entity.TableEntity;
+import io.github.melin.lakehouse.rest.domain.repo.DatabaseRepository;
+import io.github.melin.lakehouse.rest.domain.repo.TableRepository;
+import io.github.melin.lakehouse.rest.lance.support.LanceIds;
+import io.github.melin.lakehouse.rest.lance.support.LanceManifest;
+import io.github.melin.lakehouse.rest.lance.support.LanceTagFiles;
+import io.github.melin.lakehouse.rest.lance.support.LanceVersionNaming;
 import io.github.melin.lakehouse.rest.service.CatalogService;
 import io.github.melin.lakehouse.rest.service.StorageRuntimePolicy;
 import io.github.melin.lakehouse.rest.service.StorageFileAccess;
 import io.github.melin.lakehouse.rest.config.RestServerProperties;
 import io.github.melin.lakehouse.rest.support.ApiException;
 import io.github.melin.lakehouse.rest.support.CatalogFormat;
+import io.github.melin.lakehouse.rest.support.FileEntry;
 import io.github.melin.lakehouse.rest.support.LanceErrors;
 import io.github.melin.lakehouse.rest.support.Paths;
 import io.github.melin.lakehouse.rest.support.VendedStorageCredential;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -44,7 +55,12 @@ public class LanceCatalogSupport {
     private static final List<String> DATASET_MARKERS = List.of(
             "_versions/1.manifest", "_versions/latest_version_hint.json");
 
+    /** 版本目录；manifest 的命名方案见 {@link LanceVersionNaming}。 */
+    private static final String VERSIONS = "_versions";
+
     private final CatalogService catalogService;
+    private final DatabaseRepository databaseRepository;
+    private final TableRepository tableRepository;
     /**
      * 凭据经 {@code StorageRuntimePolicy} 取，而不是直接注入一个
      * {@code StorageCredentialManager}：容器里有 default / noop 两个实现，
@@ -65,6 +81,33 @@ public class LanceCatalogSupport {
      */
     public CatalogEntity requireCatalog(String catalogName) {
         return catalogService.resolveForFormat(catalogName, CatalogFormat.LANCE);
+    }
+
+    // ------------------------------------------------------------------ 定位（表/库共用）
+
+    /**
+     * 按 {@code id} 的第二级取 schema。
+     *
+     * <p>放在这里而不是留在各个服务里：{@code LanceTableService} 与
+     * {@code LanceVersionService} 都要「按 id 取到表」，两处各写一份的后果是
+     * 某天只改了一处的错误码——而错误码不一致正是客户端最难排查的那类问题。
+     */
+    public DatabaseEntity requireDatabase(CatalogEntity catalog, LanceIds.Id parsee, String delimiter) {
+        return databaseRepository.findByCatalogIdAndName(catalog.getId(), parsee.schema())
+                .orElseThrow(() -> LanceErrors.namespaceNotFound(parsee.catalog() + sep(delimiter) + parsee.schema()));
+    }
+
+    /** 按 {@code id} 的第三级取表。 */
+    public TableEntity requireTable(CatalogEntity catalog, DatabaseEntity database,
+                                    LanceIds.Id parsee, String delimiter) {
+        return tableRepository
+                .findByCatalogIdAndDatabaseIdAndName(catalog.getId(), database.getId(), parsee.table())
+                .orElseThrow(() -> LanceErrors.tableNotFound(parsee.join(sep(delimiter))));
+    }
+
+    /** {@code delimiter} 的归一：空值按 {@link LanceIds#DEFAULT_DELIMITER}。 */
+    public static String sep(String delimiter) {
+        return delimiter == null || delimiter.isEmpty() ? LanceIds.DEFAULT_DELIMITER : delimiter;
     }
 
     // ------------------------------------------------------------------ location
@@ -191,6 +234,195 @@ public class LanceCatalogSupport {
             throw LanceErrors.invalidInput("location \"" + location
                     + "\" does not contain a Lance dataset (no manifest under _versions/);"
                     + " use declare to register an intent to create one");
+        }
+    }
+
+    // ------------------------------------------------------------------ 版本（P1）
+
+    /**
+     * {@code _versions/} 下的一个 manifest 文件。
+     *
+     * @param timestampMillis 文件的修改时刻（对象存储 LIST 顺带返回，本地文件系统才有值）；
+     *                        不可得时为 {@code null}——它不是「epoch 0 这个真实时刻」
+     * @param size            字节数；只知道版本号、没列举过文件时为 {@code null}
+     */
+    public record VersionFile(long version, String path, Long size, Long timestampMillis) {
+    }
+
+    /**
+     * 列出数据集的版本（一次 {@code LIST _versions/}）。
+     *
+     * <p><b>只用列举，不读 {@code latest_version_hint.json}。</b>提示文件是给
+     * 「列举代价高」的客户端准备的加速手段；我们为了拿 {@code manifest_size} 与
+     * 时间戳本来就要列举一次，再看提示文件等于引入第二个真相源——它可能与
+     * 目录里的文件不一致（写失败、并发提交），而那时**没有判据**说谁对。
+     *
+     * <p><b>混用 V1 / V2 命名即报错。</b>规范说得很直白：两套方案混在一起会出错。
+     * 这时继续猜「最新版本」会得到两种答案，而客户端拿它去读数据，
+     * 读错版本的后果比报一个错严重得多。
+     *
+     * @return 按版本号升序；没有 {@code _versions/} 目录或目录为空时返回空列表
+     */
+    public List<VersionFile> versions(CatalogEntity catalog, String location) {
+        if (location == null || location.isBlank()) {
+            return List.of();
+        }
+        String directory = Paths.trimTrailingSlash(location) + "/" + VERSIONS;
+        List<VersionFile> found = new ArrayList<>();
+        boolean v1 = false;
+        boolean v2 = false;
+        for (FileEntry entry : files.list(catalog.getId(), directory)) {
+            if (entry.directory()) {
+                continue;
+            }
+            Long version = LanceVersionNaming.versionOf(entry.name());
+            if (version == null) {
+                continue;
+            }
+            if (LanceVersionNaming.isV2(entry.name())) {
+                v2 = true;
+            } else {
+                v1 = true;
+            }
+            found.add(new VersionFile(version, directory + "/" + entry.name(),
+                    entry.length(), entry.modificationTime() == 0 ? null : entry.modificationTime()));
+        }
+        if (v1 && v2) {
+            throw LanceErrors.invalidTableState("dataset \"" + location
+                    + "\" mixes the V1 and V2 manifest naming schemes under _versions/,"
+                    + " which the lance table format forbids; rewrite the dataset with one scheme");
+        }
+        found.sort(Comparator.comparingLong(VersionFile::version));
+        return found;
+    }
+
+    /** 最新版本；数据集还没有任何 manifest 时为 {@code null}。 */
+    public VersionFile latestVersion(CatalogEntity catalog, String location) {
+        List<VersionFile> found = versions(catalog, location);
+        return found.isEmpty() ? null : found.get(found.size() - 1);
+    }
+
+    /**
+     * 读一份 manifest。
+     *
+     * <p>解析失败抛 {@link LanceManifest.Unreadable}，由调用方降级——
+     * 「读不出 schema」不等于「这张表坏了」：它可能是我们不支持的新字段布局，
+     * 而表本身完全可用。这个降级是 P1 验收里明确要的一条。
+     */
+    public LanceManifest.Manifest manifest(CatalogEntity catalog, VersionFile file) {
+        byte[] bytes = files.readBytes(catalog.getId(), file.path());
+        return LanceManifest.parse(bytes);
+    }
+
+    /**
+     * 探测某个版本的 manifest 是否存在（{@code DescribeTableVersion} 用）。
+     *
+     * @return 存在时返回该文件；不存在时返回 {@code null}（两种命名都试：
+     *         调用方拿到的版本号不携带「这份数据集用哪套命名」这个信息）
+     */
+    public VersionFile probeVersion(CatalogEntity catalog, String location, long version) {
+        if (location == null || location.isBlank()) {
+            return null;
+        }
+        String directory = Paths.trimTrailingSlash(location) + "/" + VERSIONS;
+        String v1Name = LanceVersionNaming.manifestName(version, false);
+        if (files.exists(catalog.getId(), directory + "/" + v1Name)) {
+            return new VersionFile(version, directory + "/" + v1Name, null, null);
+        }
+        String v2Name = LanceVersionNaming.manifestName(version, true);
+        if (files.exists(catalog.getId(), directory + "/" + v2Name)) {
+            return new VersionFile(version, directory + "/" + v2Name, null, null);
+        }
+        return null;
+    }
+
+    // ------------------------------------------------------------------ 标签（P2·L2-2）
+
+    /**
+     * 列出数据集里的全部标签（一次 {@code LIST _refs/tags/} + 逐个读）。
+     *
+     * <p><b>这是纯读取，不做任何登记。</b>标签是客户端（Lance 自己）写的，我们既不落库
+     * 也不校验它指向的版本是否还存在——{@code tags/list} 的语义是「目录里有什么」，
+     * 不是「我们担保了什么」。若哪天给标签加了写端点，那个区别就要重新说一遍。
+     *
+     * <p><b>单个文件读不懂就跳过并 {@code warn}，不让整个列举失败。</b>一个坏标签
+     * 不该把其余标签一起藏起来；但直接问那个标签（{@code tags/version}）时会失败，
+     * 因为那一次没有「跳过」这个选项——见 {@link #tag}。
+     *
+     * @return 按名字排序的结果；没有目录、或目录里没有 {@code .json} 时为空列表
+     */
+    public List<LanceTagFiles.Tag> tags(CatalogEntity catalog, String location) {
+        if (location == null || location.isBlank()) {
+            return List.of();
+        }
+        String directory = LanceTagFiles.directoryOf(location);
+        List<String> names = new ArrayList<>();
+        List<String> paths = new ArrayList<>();
+        for (FileEntry entry : files.list(catalog.getId(), directory)) {
+            if (entry.directory()) {
+                continue;
+            }
+            String name = LanceTagFiles.nameOf(entry.name());
+            if (name == null) {
+                continue;
+            }
+            names.add(name);
+            paths.add(directory + "/" + entry.name());
+        }
+        if (paths.isEmpty()) {
+            return List.of();
+        }
+        // 一次 FileIO 读整个目录：逐个读会每个标签重建一次 FileIO 并重新解析凭据
+        // （StorageFileAccess 刻意不缓存，见它自己的注释），几十个标签就是几十次
+        Map<String, String> texts = files.readTexts(catalog.getId(), paths);
+        List<LanceTagFiles.Tag> found = new ArrayList<>();
+        for (int i = 0; i < paths.size(); i++) {
+            String text = texts.get(paths.get(i));
+            if (text == null) {
+                // 列举之后、读之前被删掉了：当成没有，不是错误
+                continue;
+            }
+            try {
+                found.add(LanceTagFiles.parse(names.get(i), text));
+            } catch (LanceTagFiles.Unreadable e) {
+                log.warn("skipping unreadable tag file {}: {}", paths.get(i), e.getMessage());
+            }
+        }
+        return found;
+    }
+
+    /**
+     * 读一个标签。
+     *
+     * @return 文件不存在时 {@code null}（调用方回 {@code TableTagNotFound}）；
+     *         文件在但读不懂时抛 {@link LanceTagFiles.Unreadable}——
+     *         那次没有「跳过」的余地，把它说成「没有这个标签」就是撒谎
+     */
+    public LanceTagFiles.Tag tag(CatalogEntity catalog, String location, String tagName) {
+        if (location == null || location.isBlank()) {
+            return null;
+        }
+        String path = LanceTagFiles.pathOf(location, tagName);
+        String text = files.readTexts(catalog.getId(), List.of(path)).get(path);
+        return text == null ? null : LanceTagFiles.parse(tagName, text);
+    }
+
+    /**
+     * {@code manifest_path} 的弱存在性探测（{@code CreateTableVersion} 用）。
+     *
+     * <p>与 {@link #hasDataset} 同一套三态：{@code null} 是「探测不了」，
+     * 调用方按「不能证明它在」处理（→ 503），而不是当成「不存在」去拒绝——
+     * 存储抖动时不该让客户端以为自己写错了版本号。
+     */
+    public Boolean manifestExists(CatalogEntity catalog, String manifestPath) {
+        if (manifestPath == null || manifestPath.isBlank()) {
+            return Boolean.FALSE;
+        }
+        try {
+            return files.exists(catalog.getId(), manifestPath);
+        } catch (RuntimeException e) {
+            log.debug("could not probe manifest {}", manifestPath, e);
+            return null;
         }
     }
 }

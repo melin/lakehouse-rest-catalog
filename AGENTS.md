@@ -19,7 +19,7 @@ REST Management API**（RBAC 管理面）与一个 **Vue 3 管理控制台**；�
 | 面 | 基址 | 规格来源 | 鉴权 |
 | --- | --- | --- | --- |
 | Catalog API（数据面） | `/v1/{prefix}/...` + `/v1/config` | `spec/rest-catalog-open-api-paimon.yaml` | `lakehouse.rest.auth.*` |
-| **Lance Catalog API** | **`/lance/v1/...`** | Lance Namespace REST spec（`docs/lance-rest-catalog-design.md`；spec 副本未入库，见该文 §9） | 同上，**且必须同时登记在认证与授权两条拦截器的路径清单里**（`WebConfig` 两处各一行，漏一处就是整个面不判权且无测试发现） |
+| **Lance Catalog API** | **`/lance/v1/...`** | Lance Namespace REST spec（副本已入库：`spec/lance-namespace-rest-openapi.yaml`，54 个 operation；设计见 `docs/lance-rest-catalog-design.md`） | 同上，**且必须同时登记在认证与授权两条拦截器的路径清单里**（`WebConfig` 两处各一行，漏一处就是整个面不判权且无测试发现） |
 | Management API | `/api/management/v1/...` | Paimon REST Management API：`spec/rest-management-open-api.yaml`（官方只覆盖 `permissions` 3 个；扩展端点的形状源自已移除的 Polaris 规格） | 同上 |
 | Console API + OAuth | `/api/console/v1/...`、`/api/catalog/v1/oauth/tokens` | 自有（`docs/console-auth.md`） | 同上（登录端点豁免） |
 | 控制台界面 | `/console/`（SPA 深链回退 `index.html`） | — | 开关 `lakehouse.rest.auth.console.required` |
@@ -151,6 +151,7 @@ python3 scripts/verify-management-contract.py             # 反解文档与规�
 python3 scripts/verify-spark-sql-doc.py                   # Spark SQL 文档 ↔ 语法文件/PermissionDtos/客户端
 python3 scripts/verify-k8s-manifests.py                   # K8s 清单
 python3 scripts/verify-lineage-doc.py                     # 血缘文档 ↔ 控制器映射 / 配置键
+python3 scripts/verify-lance-endpoints.py                  # Lance 面：规格副本 ↔ 控制器 ↔ 授权登记
 ./scripts/gen-mysql-ddl.sh                                # 重生成 sql/schema-mysql.sql
 ```
 
@@ -202,10 +203,13 @@ lakehouse-rest-spring-parent/   服务端世界的父 POM（继承 Boot 4.1.1）
     paimon/support/       Codecs、SchemaSupport、TableDefaults、TableKinds
     ↑ 唯一一个包名比 core / storage / server 多一层 `.paimon` 的模块，理由见第 7 节
 
-  lakehouse-rest-protocol-lance/  Lance 协议面（8 个类）：基址 **`/lance/v1/**`**，不在 `/v1/{prefix}` 下
-    lance/web/          3 个控制器：namespace / table / 未实现 operation 的兜底（恒 406 + code 0）
-    lance/service/      declare / register 两条登记路径、弱存在性检查、storage_options 与凭据下发
-    lance/support/      LanceIds：`delimiter` 拼出的 id 解析（catalog 是第一级）与字符白名单
+  lakehouse-rest-protocol-lance/  Lance 协议面（16 个类）：基址 **`/lance/v1/**`**，不在 `/v1/{prefix}` 下
+    lance/web/          5 个控制器：namespace / table / version / tag / 未实现 operation 的兜底（恒 406 + code 0）
+    lance/service/      declare / register 两条登记路径、弱存在性检查、storage_options 与凭据下发；
+                        LanceVersionService：版本只读 + `managed_versioning=true` 时的版本写；
+                        LanceTagService：标签只读代理（不落库、不校验版本存在、写端点仍 406）
+    lance/support/      LanceIds：`delimiter` 拼出的 id 解析（catalog 是第一级）与字符白名单；
+                        LanceManifest（protobuf，未知字段跳过）+ LanceVersionNaming（V1/V2）+ LanceJsonArrow
     lance/dto/          Lance 契约（snake_case）；错误模型 `LanceErrors` 在 core（22 个 code → 状态码）
     ↑ 不引任何 Lance / 格式库；认证与授权两条拦截器都要登记这个基址，见第 1 节第 10 条
 
@@ -296,7 +300,7 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
 | `semantic-layer-design.md` | 做语义层 / 语义模型 / 给 agent 供语义上下文，或评审该方案——**设计稿，未实现**：参照 Polaris 1.7.0 的 Ossie（OSI）语义模型与它的三条社区批评（drift / 复用 / 只存不消费）——格式跟随 Ossie 不发明、模型挂 catalog 不挂 namespace、**引用校验**（source 必须解析到真实表，字段对 schema，建时 fail-closed 读时标 stale）、描述分层（表/列注释是权威源，模型只存增量）；八类使用场景与 text-to-SQL 的四类错误对照（§3）；**agent 上下文包端点 + 只读 MCP + OpenAPI 三通道**（§6）、ai_context 是数据不是指令的注入对策、语义层 fail-open 与策略层 fail-closed 的方向对比（§5.4）、13 条验收断言；配套原型 `semantic-layer-mockup.html`（六画面：列表 / 详情 / 编辑·校验 / 上下文包 / Agent 接入 / 表详情联动） |
 | `polaris-capabilities-and-design.md` | 对比 Polaris、看整体设计与已知缺口 |
 | `iceberg-rest-catalog-design.md` | 让同一基址、同一份元数据同时服务原生 Iceberg REST 客户端：双协议方案、两套面的差异与代价、catalog 建时区分格式；**已落地的实测记录与与方案不一致的十六处**（§11） |
-| `lance-rest-catalog-design.md` | 支持 Lance（Lance Namespace / REST Catalog 协议面）或评审该方案（**设计稿，未实现**）：规范自己划的「最小集 + 两条降级许可」为什么正好覆盖我们（§1.5）、48 个 operation 的三档取舍、为什么不做 `CreateTable`/数据面/`managed_versioning`（§3）、三种「Lance」的区分（Paimon `lance-table` / 通用表 / 本面，§2）、基址与 id 解析、`catalog_format=LANCE` 加 2 列 0 新表、授权与凭据的落点、P0/P1/P2 需求清单与验收脚本、六个待拍板决策（§8） |
+| `lance-rest-catalog-design.md` | 支持 Lance（Lance Namespace / REST Catalog 协议面）或评审该方案（**P0 + P1 + P2 里能做的都已落地**；未做：`BatchCreateTableVersions`、索引只读、控制台只读）：规范自己划的「最小集 + 两条降级许可」为什么正好覆盖我们（§1.5）、54 个 operation 的三档取舍（19 做 / 35 恒 406）、为什么不做 `CreateTable`/数据面/`managed_versioning`（§3）、三种「Lance」的区分（Paimon `lance-table` / 通用表 / 本面，§2）、基址与 id 解析、`catalog_format=LANCE` 加 3 列 1 张新表、授权与凭据的落点、P0/P1/P2 需求清单与 `verify-lance-endpoints.py`、待拍板决策与实测偏差（§8 / §12） |
 | `lance-table-optimization-design.md` | 给 Lance 表做存储优化（compaction）或评审该方案（**设计稿，未实现**，前置是上一条的 P0）：为什么只有两条维护语句（`OPTIMIZE` / `VACUUM`）→ 三动作变两动作、`orphan` 恒不可用；Daft 那两层参数（`num_partitions`/`concurrency`/`micro_commit_batch_size`）在 Spark 侧不存在；指标是**增量四元组**不是前后快照；`VACUUM` 无干跑的三层补偿；`isIceberg()` 与 `actionsFor()` 两处二元分派不改就静默走 Paimon（§5.1 / §7.2）；`--add-opens` 只能进镜像 ENV（§5.6）；三条抓包门禁与 P0/P1 需求清单 |
 
 ---
@@ -353,7 +357,7 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
 | 层 | 命令 | 抓什么 |
 | --- | --- | --- |
 | 单元/集成 | `mvn -o test`（服务端 473 + Spark 175，共 648；Spark 侧 41 个跳过，其中 38 个是需要真实服务端的六类；optimizer 另有 25 个，`-pl :lakehouse-rest-optimizer` 单独跑） | 行为回归。注意 Spark 模块的 `example/PaimonS3Test` 当前会在 BUILD FAILURE 停下（缺 `spark.sql.extensions`，与 S3 环境无关）；要单独看服务端结果用 `mvn -o test -pl :lakehouse-rest-server` |
-| 端点多面 | `verify-console.py`、`verify-management-contract.py`、`verify-spark-sql-doc.py`、`verify-k8s-manifests.py`、`verify-lineage-doc.py`
+| 端点多面 | `verify-console.py`、`verify-management-contract.py`、`verify-spark-sql-doc.py`、`verify-k8s-manifests.py`、`verify-lineage-doc.py`、`verify-lance-endpoints.py`（后两个不读规格、不需要 PyYAML）
 | 契约（桩） | `ManagementSqlExecutionTests`（真实 SparkSession + 桩服务端） | 扩展真被加载、真执行 |
 | 契约（真服务端） | `./scripts/e2e-spark-sql.sh` | 客户端与服务端的**实际**契约（桩只能证明客户端与自己的假设自洽） |
 | HTTP 冒烟 | `api-sweep.sh` / `management-sweep.sh` / `sweep-console-auth.sh` | 规格端点全覆盖、真实报文与错误码 |
