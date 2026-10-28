@@ -129,85 +129,180 @@ public final class OptimizationOptions {
     //
     // 三项动作的**名字**是格式无关的契约（API、库里的 actions 列、指标前缀都用它），
     // 但每项动作的参数键、默认值与合法取值都是格式各自的——Paimon 的 retain-min 与
-    // Iceberg 的 retain-last 不是同一个东西。下面这组重载是唯一的格式分派点：
-    // 调用方只需把 catalog 的格式传进来，不必知道背后有两套参数表。
+    // Iceberg 的 retain-last 不是同一个东西，Lance 的「目标大小」甚至是行数不是字节。
+    // 下面这组方法是唯一的格式分派点：调用方只需把 catalog 的格式传进来，
+    // 不必知道背后有三套参数表。
+    //
+    // **一律写成穷尽 switch，不写 `x == ICEBERG ? a : b`。** 二元判断对第三种格式返回
+    // false，于是 Lance 的策略会静默按 Paimon 的键表校验（`target-rows-per-fragment`
+    // 被判未知键 → 保存 400）；而穷尽 switch 在加第四种格式时会让编译器把落点全指出来。
+    // 执行侧的表兄弟是 `TableOptimizerJob` 里的 `isIceberg(plan)`，同一条约束。
 
     /** 内置默认值（按格式）。 */
     public static Map<String, String> defaults(CatalogFormat format, Action action) {
-        return isIceberg(format) ? IcebergOptimizationOptions.defaults(action) : defaults(action);
+        return switch (formatOrPaimon(format)) {
+            case PAIMON -> defaults(action);
+            case ICEBERG -> IcebergOptimizationOptions.defaults(action);
+            case LANCE -> LanceOptimizationOptions.defaults(action);
+        };
     }
 
     /** catalog 属性里的默认值（按格式）。 */
     public static Map<String, String> catalogDefaults(Map<String, String> catalogProperties,
                                                       CatalogFormat format, Action action) {
-        return isIceberg(format)
-                ? IcebergOptimizationOptions.catalogDefaults(catalogProperties, action)
-                : catalogDefaults(catalogProperties, action);
+        return switch (formatOrPaimon(format)) {
+            case PAIMON -> catalogDefaults(catalogProperties, action);
+            case ICEBERG -> IcebergOptimizationOptions.catalogDefaults(catalogProperties, action);
+            case LANCE -> LanceOptimizationOptions.catalogDefaults(catalogProperties, action);
+        };
     }
 
-    /** 三层合并（按格式）。 */
+    /**
+     * 三层合并（按格式）。
+     *
+     * <p>三套参数表共用同一段合并逻辑（原先是 Iceberg 手写一遍、Paimon 再写一遍，
+     * 两份几乎逐行相同）：差别只在「用哪套键与默认值」，而那只由 {@link #defaults} 与
+     * {@link #isKnownOption} 决定。合并只写一次，是为了让「加一种格式」等于
+     * 「加一张键表」，而不是「再抄一遍合并规则」。
+     */
     public static Map<String, String> resolve(CatalogFormat format, Action action,
                                               Map<String, String> catalogProperties,
                                               Map<String, String> tableConfig) {
-        if (!isIceberg(format)) {
-            return resolve(action, catalogProperties, tableConfig);
-        }
-        Map<String, String> resolved = IcebergOptimizationOptions.defaults(action);
-        resolved.putAll(IcebergOptimizationOptions.catalogDefaults(catalogProperties, action));
+        Map<String, String> resolved = new LinkedHashMap<>(defaults(format, action));
+        resolved.putAll(catalogDefaults(catalogProperties, format, action));
         if (tableConfig != null) {
             tableConfig.forEach((key, value) -> {
                 if (key != null && value != null && !value.isBlank()
-                        && IcebergOptimizationOptions.isKnownOption(action, key)) {
+                        && isKnownOption(format, action, key)) {
                     resolved.put(key.trim(), value.trim());
                 }
             });
+        }
+        // Lance 的 expire 多一条**相对**下限：保留窗口不得小于 catalog 的最大提交间隔
+        // （VACUUM 不可逆且没有干跑，见 LanceOptimizationOptions#enforceRetentionFloor）。
+        // 放在合并之后、返回之前，是唯一能同时看到两层取值的时刻。
+        if (formatOrPaimon(format) == CatalogFormat.LANCE && action == Action.EXPIRE) {
+            LanceOptimizationOptions.enforceRetentionFloor(resolved, catalogProperties);
         }
         return resolved;
     }
 
     /** 校验（按格式）。 */
     public static void validate(CatalogFormat format, Action action, Map<String, String> config) {
-        if (isIceberg(format)) {
-            IcebergOptimizationOptions.validate(action, config);
-        } else {
-            validate(action, config);
+        if (!isSupported(format, action)) {
+            // 不支持的动作用**空配置**走过是合法的：`OptimizationConfigResolver` 会对三项
+            // 动作都调一次校验（包括它根本不会跑的那一项），空配置表示「没配，无需校验」。
+            // 只有当真的往里写参数时才报错——那才是「用户以为这个动作存在」的证据。
+            if (config != null && !config.isEmpty()) {
+                throw ApiException.badRequest(unsupportedMessage(action));
+            }
+            return;
+        }
+        switch (formatOrPaimon(format)) {
+            case PAIMON -> validate(action, config);
+            case ICEBERG -> IcebergOptimizationOptions.validate(action, config);
+            case LANCE -> LanceOptimizationOptions.validate(action, config);
         }
     }
 
     /** 某个键是不是该项动作认得的（按格式）。 */
     public static boolean isKnownOption(CatalogFormat format, Action action, String key) {
-        return isIceberg(format)
-                ? IcebergOptimizationOptions.isKnownOption(action, key)
-                : isKnownOption(action, key);
+        return switch (formatOrPaimon(format)) {
+            case PAIMON -> isKnownOption(action, key);
+            case ICEBERG -> IcebergOptimizationOptions.isKnownOption(action, key);
+            case LANCE -> LanceOptimizationOptions.isKnownOption(action, key);
+        };
     }
 
     /** 某项动作的合法键集合（按格式），用于报错文案与静态校验。 */
     public static Set<String> knownKeys(CatalogFormat format, Action action) {
-        return isIceberg(format)
-                ? IcebergOptimizationOptions.knownKeys(action)
-                : KNOWN_KEYS.get(action);
+        return switch (formatOrPaimon(format)) {
+            case PAIMON -> KNOWN_KEYS.get(action);
+            case ICEBERG -> IcebergOptimizationOptions.knownKeys(action);
+            case LANCE -> LanceOptimizationOptions.knownKeys(action);
+        };
     }
 
     /** 执行间隔（按格式）。 */
     public static Duration interval(CatalogFormat format, Action action, Map<String, String> effective) {
-        return isIceberg(format)
-                ? IcebergOptimizationOptions.interval(action, effective)
-                : interval(action, effective);
-    }
-
-    private static boolean isIceberg(CatalogFormat format) {
-        return format == CatalogFormat.ICEBERG;
+        return switch (formatOrPaimon(format)) {
+            case PAIMON -> interval(action, effective);
+            case ICEBERG -> IcebergOptimizationOptions.interval(action, effective);
+            case LANCE -> LanceOptimizationOptions.interval(action, effective);
+        };
     }
 
     /**
-     * 新建策略时三项动作的默认开关。
+     * 这一项动作在**这种格式**上存不存在。
      *
-     * <p>孤儿文件清理默认**关闭**：三项动作里只有它会删数据文件，而它删除的依据
-     * （「没被任何快照引用的文件」）是三者中最容易因时钟偏差或提交窗口判断错的。
-     * 让用户为一个会删数据的动作显式按下开关，比让它默认开着再解释「为什么文件少了」要好。
+     * <p>目前唯一的「不存在」是 Lance 的 {@code orphan}：{@code VACUUM} 一步就把过期版本
+     * 与孤儿文件都做了，再暴露第三项只会让同一件事跑两遍（或假装成功）。
+     *
+     * <p>为什么要有这个判断而不是「控制台藏起那张卡」：藏起来的话，API 消费者会看到一个
+     * 可用但一跑就失败的开关，而失败原因是「服务端没实现」——能力边界与 bug 是两件事，
+     * 必须在**同一次响应**里说清（见 {@code ActionPolicy.supported}）。
      */
-    public static boolean defaultEnabled(Action action) {
-        return action != Action.ORPHAN;
+    public static boolean isSupported(CatalogFormat format, Action action) {
+        return switch (formatOrPaimon(format)) {
+            case PAIMON, ICEBERG -> true;
+            case LANCE -> action != Action.ORPHAN;
+        };
+    }
+
+    /** 不支持时的原因文案（供 {@code ActionPolicy.unsupportedReason}；支持时返回 {@code null}）。 */
+    public static String unsupportedReason(CatalogFormat format, Action action) {
+        if (isSupported(format, action)) {
+            return null;
+        }
+        return unsupportedMessage(action);
+    }
+
+    /**
+     * 只允许出现在 **catalog 属性**里、不进表策略也不进控制台表单的键。
+     *
+     * <p>目前只有 Lance 的 {@code optimization.expire.max-commit-interval-hours}：它是
+     * 「这个 catalog 的表最慢多久提交一次」的运维事实，不是某张表的参数。放进表策略会让
+     * 每张表都能自己声明一条本该全局一致的护栏。
+     */
+    public static boolean isCatalogOnlyOption(CatalogFormat format, Action action, String key) {
+        if (key == null) {
+            return false;
+        }
+        return formatOrPaimon(format) == CatalogFormat.LANCE && action == Action.EXPIRE
+                && LanceOptimizationOptions.MAX_COMMIT_INTERVAL_HOURS.equals(key.trim());
+    }
+
+    private static String unsupportedMessage(Action action) {
+        return switch (action) {
+            case ORPHAN -> LanceOptimizationOptions.unsupportedOrphanReason();
+            default -> "storage optimization action " + action.wire() + " is not supported"
+                    + " for this table format";
+        };
+    }
+
+    /** 三套参数表都只认得三种格式；认不出的一方按 Paimon 走（与 {@link CatalogFormat#of} 同向）。 */
+    private static CatalogFormat formatOrPaimon(CatalogFormat format) {
+        return format == null ? CatalogFormat.DEFAULT : format;
+    }
+
+    /**
+     * 新建策略时三项动作的默认开关（按格式）。
+     *
+     * <p>Paimon / Iceberg：孤儿文件清理默认**关闭**——三项里只有它会删数据文件，而它删除的
+     * 依据（「没被任何快照引用的文件」）是三者中最容易因时钟偏差或提交窗口判断错的。
+     *
+     * <p>Lance：{@code compact} 开、{@code expire} **默认为关**。理由同一条但更硬——
+     * {@code VACUUM} 不可逆、没有干跑、且「删版本」与「删文件」是同一步，误判的代价
+     * 比孤儿清理更大。要开它是一次显式决定（{@code docs/lance-table-optimization-design.md} §8 R3）。
+     */
+    public static boolean defaultEnabled(CatalogFormat format, Action action) {
+        if (!isSupported(format, action)) {
+            return false;
+        }
+        return switch (formatOrPaimon(format)) {
+            case PAIMON, ICEBERG -> action != Action.ORPHAN;
+            case LANCE -> action == Action.COMPACT;
+        };
     }
 
     // ---------------------------------------------------------------- 默认值

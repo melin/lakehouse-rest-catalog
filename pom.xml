@@ -119,6 +119,27 @@
 			两个依赖世界不共用父 POM，一致性靠人工守（见 docs/maven-module-design.md §3.2）。
 		-->
 		<iceberg.version>1.11.0</iceberg.version>
+
+		<!--
+			Lance 的 Spark connector 版本（集群世界）。
+
+			只用于 `lakehouse-rest-optimizer` 的**测试与镜像**：任务要在 Lance 表上执行
+			`OPTIMIZE` / `VACUUM`，而这两条是 connector 注册的 parser 级命令，本模块的
+			Java 代码一行都不编译 Lance。
+
+			取的是 **bundle** 构件（`lance-spark-bundle-3.5_2.12`）而不是薄包
+			`lance-spark-3.5_2.12`：后者只含 connector 自己的类，`org.lance.Dataset`、
+			原生库与 arrow 都在 `lance-core` 及其传递依赖里；bundle 把它们全部 shade
+			进来，镜像里只多一个 jar（见 lakehouse-rest-optimizer/pom.xml 的说明）。
+
+			两条版本约束：
+			  1. 组件名里的 `3.5` / `2.12` 与 `spark.version` / `scala.binary.version`
+			     绑定，换 Spark 或 Scala 要跟着换（Spark 4 对应 `lance-spark-bundle-4.1_2.13`）；
+			  2. `TableOptimizerJob` 里写死了 `org.lance.spark.LanceNamespaceSparkCatalog`
+			     这个类名，0.4.0 起才是 `org.lance.*`（0.0.x 是 `com.lancedb.lance.*`），
+			     升到 0.4 以下会让建会话直接失败。
+		-->
+		<lance.version>0.4.0</lance.version>
 	</properties>
 
 	<dependencyManagement>
@@ -226,6 +247,18 @@
 				<groupId>org.apache.iceberg</groupId>
 				<artifactId>iceberg-aws-bundle</artifactId>
 				<version>${iceberg.version}</version>
+			</dependency>
+			<!--
+				Lance 的 Spark bundle，测试与镜像用（见上方 `lance.version` 的说明）。
+
+				与 Iceberg / Paimon 那三份同一个角色：它是「运行时要有的那份 jar」，
+				本模块的代码不编译它。选了 bundle 而不是薄包，是因为薄包缺
+				`org.lance.Dataset` / 原生库 / arrow——补那些等于手工维护一份依赖闭包。
+			-->
+			<dependency>
+				<groupId>org.lance</groupId>
+				<artifactId>lance-spark-bundle-3.5_${scala.binary.version}</artifactId>
+				<version>${lance.version}</version>
 			</dependency>
 			<dependency>
 				<groupId>org.junit.jupiter</groupId>

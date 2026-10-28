@@ -13,7 +13,7 @@
 	<artifactId>lakehouse-rest-optimizer</artifactId>
 	<packaging>jar</packaging>
 	<name>lakehouse-rest-optimizer</name>
-	<description>表存储优化任务：在 k8s 上跑 Spark，按批次对多张 Paimon / Iceberg 表执行合并、快照清理与孤儿文件清理</description>
+	<description>表存储优化任务：在 k8s 上跑 Spark，按批次对多张 Paimon / Iceberg / Lance 表执行合并、快照清理与孤儿文件回收</description>
 
 	<!--
 		Iceberg 的版本由根 POM 的 `iceberg.version` 统一给出（与 lakehouse-rest-spark
@@ -134,6 +134,29 @@
 			<version>${iceberg.version}</version>
 			<scope>test</scope>
 		</dependency>
+
+		<!--
+			Lance 的 Spark **bundle**（不是 lance-spark-3.5_2.12）。
+
+			为什么必须是 bundle：薄包 `lance-spark-3.5_2.12` 只含 connector 自己的类，
+			`org.lance.Dataset` / `CompactionOptions` / 原生库 / arrow 全在 `lance-core`
+			及其传递依赖里。把那些一个个 COPY 进镜像，等于手工复刻一份依赖闭包，
+			而且会与 Spark 发行版自带的 arrow、guava、jackson 撞版本（同名类按 jar 文件名
+			排序加载，`arrow-vector-12.0.1.jar` 恰好排在 `arrow-vector.jar` 前面）。
+			bundle 把这些全部 shade 进去，镜像里只多一个 jar——与 paimon-spark /
+			iceberg-spark-runtime 同一个用法。
+
+			本模块的代码一行都不碰 Lance（语句由 connector 的 parser 扩展解释），
+			所以不是 compile。版本与 `TableOptimizerJob` 里写死的
+			`org.lance.spark.LanceNamespaceSparkCatalog` 类名是配套的：
+			0.0.x 的类名是 `com.lancedb.lance.spark...`，升版本要一起改。
+		-->
+		<dependency>
+			<groupId>org.lance</groupId>
+			<artifactId>lance-spark-bundle-3.5_${scala.binary.version}</artifactId>
+			<version>${lance.version}</version>
+			<scope>test</scope>
+		</dependency>
 	</dependencies>
 
 	<build>
@@ -163,7 +186,7 @@
 						</goals>
 						<configuration>
 							<includeScope>test</includeScope>
-							<includeArtifactIds>paimon-spark-3.5_2.12,paimon-s3,iceberg-spark-runtime-3.5_2.12</includeArtifactIds>
+							<includeArtifactIds>paimon-spark-3.5_2.12,paimon-s3,iceberg-spark-runtime-3.5_2.12,lance-spark-bundle-3.5_2.12</includeArtifactIds>
 							<outputDirectory>${project.build.directory}/jars</outputDirectory>
 							<stripVersion>true</stripVersion>
 							<overWriteReleases>true</overWriteReleases>

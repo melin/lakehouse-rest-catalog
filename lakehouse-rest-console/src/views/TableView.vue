@@ -87,7 +87,19 @@
           <!-- 存储优化同样按表格式伸缩：本页只展示 Paimon 表（Iceberg 表走 IcebergTableView，
                那边挂的是同一个组件、传 format="ICEBERG"）。
                外部 Paimon 表仍会出现这个页签——它由服务端回答「不支持」并说明原因，
-               比「页签凭空消失」更容易理解（见 TableOptimizationPanel） -->
+               比「页签凭空消失」更容易理解（见 TableOptimizationPanel）。
+
+               **`lance-table` 不在此列**，两个理由都不是「还没做」：
+               1. 这里这一种 `options.type=lance-table` 是 Paimon 面给一个 Lance 目录做的
+                  元数据包装（`catalog-api-endpoints.md` 建表一节：能建不能读写），它不在
+                  Lance 的 REST 目录里；而执行侧是通过 `spark.sql.catalog.<c>`（impl=rest，
+                  指向 `<catalogUrl>/lance`）去解析表名的，解析不到 → 每一批都是
+                  「表不存在」。让它进来只会把一张**永远跑不了**的表显示成「可以开」。
+               2. 真正的 Lance 表（`table_type=LANCE`）挂在 LANCE 格式的 catalog 下，而
+                  Lance catalog 的目录浏览与控制台视图还没有落地（`lance-rest-catalog-design.md`
+                  §7「目录浏览整页换成一段说明」），因此它今天根本到不了本页。
+               面板本身已经支持 Lance（`LANCE_ACTIONS`，第三张卡按 `supported` 置灰），
+               等 Lance 表详情页落地时，这里加一个 `|| isLanceTable` 就通了。 -->
           <el-tab-pane v-if="isPaimonTable" label="存储优化" name="optimization" />
         </el-tabs>
 

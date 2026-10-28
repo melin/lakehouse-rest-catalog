@@ -164,9 +164,10 @@ public final class OptimizationApiClient implements AutoCloseable {
     /**
      * 执行清单（对应服务端 {@code OptimizationDtos.Submission}）。
      *
-     * <p>{@code format} 是 {@code PAIMON} / {@code ICEBERG}：它决定会话怎么建、
-     * 动作翻成哪套 procedure。缺字段的老服务端会得到 {@code null}，任务按 Paimon
-     * 处理——那是本特性引入前的唯一格式。
+     * <p>{@code format} 是 {@code PAIMON} / {@code ICEBERG} / {@code LANCE}：它决定会话怎么建、
+     * 动作翻成哪套语句。缺字段的老服务端会得到 {@code null}，任务按 Paimon
+     * 处理——那是本特性引入前的唯一格式；但**给了不认识的取值时要失败**，理由见
+     * {@code TableOptimizerJob.Format#parse}。
      */
     public record Plan(String jobId, String catalog, String format, String triggerType,
                        List<String> actions, List<Table> tables) {

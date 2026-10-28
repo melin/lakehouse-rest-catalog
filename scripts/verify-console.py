@@ -24,10 +24,11 @@ spec/rest-catalog-open-api-iceberg.yaml）。路径写错时前端只表现为�
                   而这类漏写编译、类型检查与单元测试都不会报）
  10. 静态凭据     catalog 自带 AK/SK 这条链路跨「服务端 DTO / 支持的类型 / 能力开关的
                   暴露 / 前端表单」四处，任何一处漏改都表现为「填了没反应」或「填完才 400」
- 11. 优化参数键   存储优化的表单字段名必须与服务端 OptimizationOptions.KNOWN_KEYS（Paimon）
-                  与 IcebergOptimizationOptions.KNOWN_KEYS（Iceberg）各逐字一致
+ 11. 优化参数键   存储优化的表单字段名必须与服务端 OptimizationOptions.KNOWN_KEYS（Paimon）、
+                  IcebergOptimizationOptions.KNOWN_KEYS（Iceberg）与
+                  LanceOptimizationOptions.KNOWN_KEYS（Lance）各逐字一致
                   （键名写错的表现是保存时吃一个 400，只有点进去才会发现；
-                  两套键混用的表现更糟——被收下、然后静默不生效）
+                  三套键混用的表现更糟——被收下、然后静默不生效）
  12. 表格式       catalog 的 PAIMON / ICEBERG / LANCE 跨「服务端枚举 / meta 下发 / 前端兜底 /
                   新建表单 / 列表徽标与筛选 / 三个页面按格式伸缩」六处，且格式**不可变**；
                   清单与判据都不能由前端另抄一份。Lance 另有两处独有：详情页的台账数字
@@ -149,6 +150,7 @@ PERMISSIONS_VIEW = os.path.join(CONSOLE_DIR, "src/views/PermissionsView.vue")
 
 OPTIMIZATION_OPTIONS = os.path.join(SERVER_JAVA, "support/OptimizationOptions.java")
 ICEBERG_OPTIMIZATION_OPTIONS = os.path.join(SERVER_JAVA, "support/IcebergOptimizationOptions.java")
+LANCE_OPTIMIZATION_OPTIONS = os.path.join(SERVER_JAVA, "support/LanceOptimizationOptions.java")
 OPTIMIZATION_UTIL = os.path.join(CONSOLE_DIR, "src/utils/optimization.js")
 
 # 管理规格的 servers[0].url 是 {scheme}://{host}/api/management/v1，路径要去掉基址才可比
@@ -721,12 +723,14 @@ check("管理 API 读路径对存储配置脱敏（withoutSecrets）",
 print("11. 优化参数键（表单字段 ↔ 服务端 KNOWN_KEYS）")
 
 # 存储优化的每一项动作允许出现哪些参数键，由服务端的 OptimizationOptions.KNOWN_KEYS
-# （Paimon）与 IcebergOptimizationOptions.KNOWN_KEYS（Iceberg）定义；键名写错的表现是
-# 保存时吃一个 400「Unknown compact option」——编译器、类型检查与单元测试都不会报，
-# 只有点进去保存一次才发现。因此在这里把两处逐字比一遍。
+# （Paimon）、IcebergOptimizationOptions.KNOWN_KEYS（Iceberg）与
+# LanceOptimizationOptions.KNOWN_KEYS（Lance）定义；键名写错的表现是保存时吃一个
+# 400「Unknown compact option」——编译器、类型检查与单元测试都不会报，
+# 只有点进去保存一次才发现。因此在这里把三处逐字比一遍。
 #
-# **两种格式各一套键**：`retain-min`（Paimon，最少保留几个快照）与 `retain-last`
-# （Iceberg，保留最后几个）是语义相反的一对，键名共用一套的话，保存时会 400，
+# **三种格式各一套键，且两两不重合**：`retain-min`（Paimon，最少保留几个快照）、
+# `retain-last`（Iceberg，保留最后几个）、`target-rows-per-fragment`（Lance，
+# 目标碎片**行数**）是三套口径完全不同的键。共用一套的话，保存时会 400，
 # 或者更糟——互不认识却都被收下，然后静默不生效。因此下面按格式各比一次。
 #
 # 比的是「前端那份字段定义」而不是前端再抄一份名单：字段定义是渲染表单的依据，
@@ -740,7 +744,9 @@ def server_option_keys(source, wire_of):
     解析的是两件东西：`public static final String STRATEGY = "strategy";` 这样的键常量，
     与 `Action.XXX, Set.of(...)` 这样的「动作 → 键集合」映射，两者用动作常量名对上。
     动作常量本身（`COMPACT("compact", "Compaction")`）只在 `OptimizationOptions` 里声明一次，
-    Iceberg 那份用的是同一个枚举，所以 `wire_of` 由调用方传进来、不从本类里找。
+    Iceberg 与 Lance 那两份用的是同一个枚举，所以 `wire_of` 由调用方传进来、不从本类里找。
+    Lance 的 `Action.ORPHAN, Set.of()`（空集）也能被解析出来——`[^)]*` 允许为空，
+    而「空集」正是要断言的东西，不能让它悄悄消失。
     不写死对照表，抄了就会漂移。
     """
     literals = dict(re.findall(r'public static final String (\w+)\s*=\s*"([^"]+)";', source))
@@ -763,8 +769,9 @@ def server_option_keys(source, wire_of):
 def console_field_keys(source, marker):
     """前端某个字段表里的 {动作 wire 名: 排序后的 `key:` 值}。
 
-    `marker` 是那张表的声明（`const PAIMON_FIELDS = {` / `const ICEBERG_FIELDS = {`）：
-    从它起、到下一个顶层声明（顶格 `const` / `export` / `function`）前为止。
+    `marker` 是那张表的声明（`const PAIMON_FIELDS = {` / `const ICEBERG_FIELDS = {` /
+    `const LANCE_FIELDS = {`）：从它起、到下一个顶层声明（顶格 `const` / `export` /
+    `function`）前为止。
     段内的动作块以两格缩进的 `compact: [` 起头——两格是这张表的层级，
     因此不会误吃动作元数据里那些顶格与四格缩进的东西。
     """
@@ -795,13 +802,15 @@ def compare_option_keys(label, server_keys, frontend_keys):
 
 
 optimization_source = read(OPTIMIZATION_OPTIONS)
-# 动作常量名 → wire 名（`COMPACT("compact", "Compaction")`）。两种格式共用这一个枚举，
-# 因此只解析一次，两个参数类都用它。
+# 动作常量名 → wire 名（`COMPACT("compact", "Compaction")`）。三种格式共用这一个枚举，
+# 因此只解析一次，三个参数类都用它。
 action_wire = dict(re.findall(r'(\w+)\("([a-z]+)",\s*"', optimization_source))
 paimon_server_keys = server_option_keys(optimization_source, action_wire)
 iceberg_server_keys = server_option_keys(read(ICEBERG_OPTIMIZATION_OPTIONS), action_wire)
+lance_server_keys = server_option_keys(read(LANCE_OPTIMIZATION_OPTIONS), action_wire)
 paimon_frontend_keys = console_field_keys(opt_util, "const PAIMON_FIELDS = {")
 iceberg_frontend_keys = console_field_keys(opt_util, "const ICEBERG_FIELDS = {")
+lance_frontend_keys = console_field_keys(opt_util, "const LANCE_FIELDS = {")
 
 paimon_differences = compare_option_keys("Paimon", paimon_server_keys, paimon_frontend_keys)
 check(f"{len(paimon_server_keys)} 项动作的 Paimon 参数键与服务端 KNOWN_KEYS 逐字一致",
@@ -816,6 +825,25 @@ check(f"{len(iceberg_server_keys)} 项动作的 Iceberg 参数键与服务端 KN
       and iceberg_frontend_keys != paimon_frontend_keys,
       "\n".join(iceberg_differences) if iceberg_differences
       else "Iceberg 与 Paimon 的参数字段完全相同——Iceberg 那份大概率是复制过来的")
+
+# Lance 那一份的错法与 Iceberg 不同，需要单独钉住：
+#
+#   · **orphan 是空集**。服务端 KNOWN_KEYS 里 `Action.ORPHAN, Set.of()`，前端也必须
+#     是 `orphan: []`——照着 Paimon 那样填上 `older-than-hours` / `dry-run`，症状是
+#     第三张卡上出现两个「填了必然 400」的输入框（VACUUM 不读它们）；
+#   · **与另两份都不重合**。Lance 的「目标大小」是行数不是字节（`target-rows-per-
+#     fragment`），另两套里的 `target-file-size-mb` / `min-input-files` / `retain-*`
+#     在 Lance 上都不存在。三份若能对上同一批键名，说明有人复制粘贴后没改。
+lance_differences = compare_option_keys("Lance", lance_server_keys, lance_frontend_keys)
+check(f"{len(lance_server_keys)} 项动作的 Lance 参数键与服务端 KNOWN_KEYS 逐字一致"
+      "（orphan 是空集）",
+      bool(lance_server_keys) and not lance_differences
+      and lance_frontend_keys.get("orphan") == []
+      and lance_frontend_keys != paimon_frontend_keys
+      and lance_frontend_keys != iceberg_frontend_keys,
+      "\n".join(lance_differences) if lance_differences
+      else "Lance 的字段表要么 orphan 不为空集，要么与 Paimon / Iceberg 的完全相同——"
+      "大概率是复制过来的，而 Lance 的键与另两套没有一处重合")
 
 # ------------------------------------------------------------------ 12. 表格式
 

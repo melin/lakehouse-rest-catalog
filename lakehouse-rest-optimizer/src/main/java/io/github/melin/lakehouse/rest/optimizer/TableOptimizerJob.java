@@ -50,11 +50,65 @@ public final class TableOptimizerJob {
     private static final String ICEBERG_EXTENSION =
             "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions";
 
-    /** 清单里的格式取值，与服务端 {@code CatalogFormat} 的 wire 名逐字一致。 */
-    private static final String ICEBERG = "ICEBERG";
+    /**
+     * Lance 的扩展。它做的是**语法扩展**（{@code OPTIMIZE} / {@code VACUUM} 是 parser 级命令，
+     * 不是 procedure），所以这个扩展比另两个更不可省：缺了它，语句会先落到 Spark 自己的
+     * {@code SqlBase} 解析器上，报的是 {@code PARSE_SYNTAX_ERROR}——一句话都不提 Lance。
+     */
+    private static final String LANCE_EXTENSION =
+            "org.lance.spark.extensions.LanceSparkSessionExtensions";
+
+    /**
+     * Lance 的 catalog 实现类。**对应 connector 0.4.0**：0.0.x 里它是
+     * {@code com.lancedb.lance.spark.LanceNamespaceSparkCatalog}，改过包名。
+     *
+     * <p>类名写错不会被编译发现（它是个字符串），只在建会话时炸，所以钉在这里并写清版本。
+     * 镜像里 {@code lance-spark-bundle-3.5_2.12.jar} 的版本必须在 pom 里跟着一起改。
+     */
+    private static final String LANCE_CATALOG = "org.lance.spark.LanceNamespaceSparkCatalog";
 
     /** Paimon 的「数据文件清单」系统表名，跟着表名用 {@code $} 相连（{@code tbl$files}）。 */
     private static final String PAIMON_FILES_TABLE = "files";
+
+    /**
+     * 批次所属 catalog 的格式。
+     *
+     * <p><b>为什么要有这个枚举，而不是继续用 {@code isIceberg(plan)} 这种布尔。</b>
+     * 二元判断对第三种格式返回 {@code false}，于是 Lance 批次会安静地走进 Paimon 分支：
+     * 会话被配成 {@code org.paimon.spark.SparkCatalog}，去 {@code /v1/{prefix}} 上找表，
+     * 而我们的 Lance catalog 在那个前缀下按设计回「表不存在」——失败信息把人指向权限或
+     * 元数据，表其实是有的。改成穷尽 {@code switch} 之后，加第四种格式时编译器会把
+     * 所有落点指出来。
+     *
+     * <p>取值与服务端 {@code CatalogFormat} 的 wire 名逐字一致，但**不共享那个类**：
+     * 本模块与服务端分属两个依赖世界（另一端是 Spring Boot），为一个三值枚举去引
+     * spring-parent 的 core 包，会把 Spring 的传递依赖带进 Spark 容器的类路径。
+     */
+    enum Format {
+
+        PAIMON, ICEBERG, LANCE;
+
+        /**
+         * 解析清单里的格式。
+         *
+         * <p><b>缺字段回落 Paimon，未知取值失败——这是两件事。</b>缺字段是本特性引入前的
+         * 唯一形状（老服务端没有 {@code format} 字段），回落是兼容；给了 {@code LANCE} 却
+         * 不认识，说明服务端比任务新，凭猜测挑一个分支只会把排查方向指错。
+         */
+        static Format parse(String value) {
+            if (value == null || value.isBlank()) {
+                return PAIMON;
+            }
+            for (Format format : values()) {
+                if (format.name().equalsIgnoreCase(value.trim())) {
+                    return format;
+                }
+            }
+            throw new IllegalArgumentException("unknown catalog format in the execution plan: " + value
+                    + "; this optimizer only knows " + java.util.Arrays.toString(values())
+                    + ", upgrade the optimizer image");
+        }
+    }
 
     private TableOptimizerJob() {
     }
@@ -85,8 +139,17 @@ public final class TableOptimizerJob {
                 log.error("cannot fetch the plan of batch {}: {}", options.jobId(), exception.getMessage());
                 return 1;
             }
+            Format format;
+            try {
+                format = Format.parse(plan.format());
+            } catch (IllegalArgumentException exception) {
+                // 格式不认识就整批不跑：所有表都会走进同一个错误分支，而按 Paimon 猜一个
+                // 只会让每张表以「表不存在」失败、把批次标注成 PARTIAL_SUCCESS
+                log.error("batch {}: {}", plan.jobId(), exception.getMessage());
+                return 1;
+            }
             log.info("batch {}: catalog={}, format={}, actions={}, tables={}",
-                    plan.jobId(), plan.catalog(), plan.format(), plan.actions(), plan.tables().size());
+                    plan.jobId(), plan.catalog(), format, plan.actions(), plan.tables().size());
 
             SparkSession session = null;
             int failed = 0;
@@ -99,9 +162,9 @@ public final class TableOptimizerJob {
                 }
                 try {
                     if (session == null) {
-                        session = spark(plan, options);
+                        session = spark(plan, options, format);
                     }
-                    execute(session, client, plan, table);
+                    execute(session, client, plan, table, format);
                 } catch (RuntimeException exception) {
                     failed++;
                     log.error("table {} failed", table.table(), exception);
@@ -118,7 +181,7 @@ public final class TableOptimizerJob {
 
     // ------------------------------------------------------------------ 单表执行
 
-    /** 一步：动作 wire 名 + 语句。两种格式的步骤在调度上完全同构，只有语句不同。 */
+    /** 一步：动作 wire 名 + 语句。三种格式的步骤在调度上完全同构，只有语句不同。 */
     private record Step(String action, String statement) {
     }
 
@@ -139,13 +202,14 @@ public final class TableOptimizerJob {
     }
 
     /** 按固定顺序执行该表的动作，采集指标，最后上报一次结论。 */
-    private static void execute(SparkSession session, OptimizationApiClient client, Plan plan, Table table) {
+    private static void execute(SparkSession session, OptimizationApiClient client, Plan plan,
+                                Table table, Format format) {
         String within = PaimonProcedures.withinCatalog(plan.catalog(), table.table());
         List<String> actions = PaimonProcedures.normalizeActions(plan.actions());
         // 窗口基准只取一次：三步共用同一个「现在」，否则跨步骤的几分钟会让
         // expire 与 orphan 的窗口起点相差一截（批内可复现，批间不可比）。
         Instant now = Instant.now();
-        List<Step> steps = steps(plan, within, actions, table.options(), now);
+        List<Step> steps = steps(plan, within, actions, table.options(), now, format);
         if (steps.isEmpty()) {
             client.report(plan.jobId(), table.itemId(), "SKIPPED",
                     Map.of("reason", "no enabled action for this table"), null);
@@ -157,9 +221,11 @@ public final class TableOptimizerJob {
             long started = System.currentTimeMillis();
             StepResult result;
             try {
-                result = isIceberg(plan)
-                        ? runIcebergStep(session, step)
-                        : runPaimonStep(session, plan.catalog(), within, step);
+                result = switch (format) {
+                    case PAIMON -> runPaimonStep(session, plan.catalog(), within, step);
+                    case ICEBERG -> runIcebergStep(session, step);
+                    case LANCE -> runLanceStep(session, step);
+                };
             } catch (RuntimeException exception) {
                 // 单独打一行「语句」，而不是只靠上面的栈：栈里那条 CallSite 是 Paimon/Spark 的
                 // 内部帧，日志里按 "statement:" 一搜就能找到本次到底发了什么。
@@ -182,28 +248,38 @@ public final class TableOptimizerJob {
     /**
      * 该表要执行的步骤，按格式翻译。
      *
-     * <p>两种格式的动作顺序与上报结构完全一样（{@code compact → expire → orphan}、
-     * 指标带动作前缀），因此只在「语句怎么生成」这一处分派——把执行流程也拆成两套，
+     * <p>三种格式的动作顺序与上报结构完全一样（{@code compact → expire → orphan}、
+     * 指标带动作前缀），因此只在「语句怎么生成」这一处分派——把执行流程也拆成三套，
      * 只会让「跳过 / 部分成功 / 耗时」这些共同语义各写一遍。
+     *
+     * <p>Lance 的 {@code ORDER} 里只有 {@code compact} 与 {@code expire}：{@code orphan}
+     * 由 {@code VACUUM} 一并包含，服务端也不会把它派下来（{@code ActionPolicy.supported}）。
      */
     private static List<Step> steps(Plan plan, String within, List<String> actions,
-                                    Map<String, Map<String, String>> options, Instant now) {
+                                    Map<String, Map<String, String>> options, Instant now,
+                                    Format format) {
         List<Step> steps = new ArrayList<>();
-        if (isIceberg(plan)) {
-            for (IcebergProcedures.Step step : IcebergProcedures.steps(plan.catalog(), within, actions, options, now)) {
-                steps.add(new Step(step.action(), step.statement()));
+        switch (format) {
+            case PAIMON -> {
+                for (PaimonProcedures.Step step
+                        : PaimonProcedures.steps(plan.catalog(), within, actions, options, now)) {
+                    steps.add(new Step(step.action(), step.statement()));
+                }
             }
-        } else {
-            for (PaimonProcedures.Step step : PaimonProcedures.steps(plan.catalog(), within, actions, options, now)) {
-                steps.add(new Step(step.action(), step.statement()));
+            case ICEBERG -> {
+                for (IcebergProcedures.Step step
+                        : IcebergProcedures.steps(plan.catalog(), within, actions, options, now)) {
+                    steps.add(new Step(step.action(), step.statement()));
+                }
+            }
+            case LANCE -> {
+                for (LanceProcedures.Step step
+                        : LanceProcedures.steps(plan.catalog(), within, actions, options, now)) {
+                    steps.add(new Step(step.action(), step.statement()));
+                }
             }
         }
         return steps;
-    }
-
-    /** 清单里的格式是不是 Iceberg。缺字段（老服务端）按 Paimon 处理，那是本特性引入前的唯一形状。 */
-    private static boolean isIceberg(Plan plan) {
-        return ICEBERG.equalsIgnoreCase(plan.format());
     }
 
     /** 执行一步 Paimon procedure，把输出行转成指标。{@code step.action()} 是动作的 wire 名。 */
@@ -298,6 +374,48 @@ public final class TableOptimizerJob {
 
     private static boolean dryRun(Step step) {
         return step.statement().contains("dry_run => true");
+    }
+
+    /**
+     * 执行一步 Lance 的 {@code OPTIMIZE} / {@code VACUUM}。
+     *
+     * <p><b>指标口径是第三种，这是 Lance 自己给的列决定的。</b>{@code OPTIMIZE} 报的是
+     * 碎片与文件的进出四个数，{@code VACUUM} 报的是「删了多少字节 / 多少个旧版本」。
+     * 键名与另两套刻意**不重叠**（{@code fragments-removed} 这类词在 Paimon / Iceberg 里
+     * 不存在），于是控制台的 {@code metricSummary()} 仍然「只判键存在、不判格式」——
+     * 一个批次里混着三种格式的表时，页面不需要知道每张表是什么格式。
+     *
+     * <p>{@code VACUUM} 不可逆且没有干跑：这里不回「nothing to do 也报 SUCCESS」那种话。
+     * 一个旧版本都没删时 {@code changed=false}，上报的是 {@code SKIPPED}，与另两种格式一致。
+     */
+    private static StepResult runLanceStep(SparkSession session, Step step) {
+        Map<String, String> metrics = new LinkedHashMap<>();
+        switch (step.action()) {
+            case LanceProcedures.COMPACT -> {
+                Row row = session.sql(step.statement()).head();
+                long fragmentsRemoved = asLong(row, "fragments_removed");
+                long fragmentsAdded = asLong(row, "fragments_added");
+                long filesRemoved = asLong(row, "files_removed");
+                long filesAdded = asLong(row, "files_added");
+                metrics.put("fragments-removed", Long.toString(fragmentsRemoved));
+                metrics.put("fragments-added", Long.toString(fragmentsAdded));
+                metrics.put("files-removed", Long.toString(filesRemoved));
+                metrics.put("files-added", Long.toString(filesAdded));
+                long changed = fragmentsRemoved + fragmentsAdded + filesRemoved + filesAdded;
+                return new StepResult(changed > 0, metrics);
+            }
+            case LanceProcedures.EXPIRE -> {
+                Row row = session.sql(step.statement()).head();
+                long versions = asLong(row, "old_versions");
+                long bytes = asLong(row, "bytes_removed");
+                metrics.put("old-versions", Long.toString(versions));
+                // 与 Paimon 的 released-size 同一口径：采集侧就转成人类可读，
+                // 控制台不为了「字节怎么显示」再实现一遍（table-optimization.md §6）
+                metrics.put("bytes-removed", humanSize(bytes));
+                return new StepResult(versions > 0, metrics);
+            }
+            default -> throw new IllegalArgumentException("unsupported lance action: " + step.action());
+        }
     }
 
     /**
@@ -412,7 +530,7 @@ public final class TableOptimizerJob {
     // ------------------------------------------------------------------ Spark 会话
 
     /**
-     * 建会话：把批次所属 catalog 配成 Spark 的一个 namespace，其余交给 Paimon 自己的扩展。
+     * 建会话：把批次所属 catalog 配成 Spark 的一个 namespace，其余交给各格式自己的扩展。
      *
      * <p>{@code warehouse} 传的是 catalog 的 **prefix**（与端到端测试同一套配法）：
      * 客户端会用它换取 catalog 的实际标识，后续所有 {@code /v1/...} 路径都以它开头。
@@ -420,8 +538,21 @@ public final class TableOptimizerJob {
      * <p>{@code data-token.enabled=true} 不能省：catalog 的仓库可能落在对象存储上，
      * 任务自己没有任何密钥——端点和凭据都由服务端下发，这正是 REST catalog 存在的意义。
      * 对本地文件系统仓库无害（服务端仍回一份自包含令牌，本地 FileIO 不读它）。
+     *
+     * <p><b>三套配置互不通用，逐条都踩过或都会踩：</b>
+     *
+     * <ul>
+     *   <li>Paimon 用 {@code metastore=rest} + {@code warehouse=prefix}，令牌走
+     *       {@code token.provider=bear}；</li>
+     *   <li>Iceberg 用 {@code type=rest} + {@code warehouse=prefix}，令牌走
+     *       {@code token} 配 {@code rest.auth.type=oauth2}；</li>
+     *   <li>Lance 这三件都没有：它的 catalog 是 {@code LanceNamespaceSparkCatalog}，
+     *       用 {@code impl=rest} 说「namespace 后端是 REST」，用 {@code parent} 说
+     *       「第一级命名空间是 catalog」，令牌塞进 {@code headers.Authorization}
+     *       （见 {@link #lanceCatalog}）。</li>
+     * </ul>
      */
-    private static SparkSession spark(Plan plan, OptimizerOptions options) {
+    private static SparkSession spark(Plan plan, OptimizerOptions options, Format format) {
         String catalog = plan.catalog();
         org.apache.spark.sql.SparkSession.Builder builder = SparkSession.builder()
                 .appName("lakehouse-rest-optimizer-" + options.jobId())
@@ -429,47 +560,102 @@ public final class TableOptimizerJob {
                 // 所以这里钉 UTC，语句里也按 UTC 格式化。**Paimon 不看这个设置**：expire 走
                 // options 里的 snapshot.time-retained（时长，没有时区），orphan 的 older_than
                 // 按 JVM 默认时区解析（见 PaimonProcedures.windowStart），格式化也用同一时区。
+                // **Lance 也不用**：VACUUM 的 before_timestamp_millis 是 epoch 毫秒。
                 .config("spark.sql.session.timeZone", "UTC");
-        if (isIceberg(plan)) {
-            builder.config("spark.sql.extensions", ICEBERG_EXTENSION)
-                    .config("spark.sql.catalog." + catalog, "org.apache.iceberg.spark.SparkCatalog")
-                    .config("spark.sql.catalog." + catalog + ".type", "rest")
-                    .config("spark.sql.catalog." + catalog + ".uri", options.catalogUrl())
-                    // warehouse 填 prefix（catalog 名），与服务端 /v1/config 的约定一致
-                    .config("spark.sql.catalog." + catalog + ".warehouse", catalog)
-                    // 批内同一张表会被反复读（procedure 会重新加载元数据），缓存反而会读到旧快照
-                    .config("spark.sql.catalog." + catalog + ".cache-enabled", "false")
-                    // 服务端的「不问不给」：带这个头才会在响应里回短期凭据。
-                    // 无对象存储的部署上它只是一个没有被消费的响应字段。
-                    .config("spark.sql.catalog." + catalog
-                            + ".header.X-Iceberg-Access-Delegation", "vended-credentials");
-            if (options.catalogToken() != null) {
-                builder.config("spark.sql.catalog." + catalog + ".token", options.catalogToken())
-                        // 显式声明认证方式：只给 token 时客户端会「猜」成 oauth2 并打一条警告
-                        .config("spark.sql.catalog." + catalog + ".rest.auth.type", "oauth2");
-            } else {
-                log.info("no catalog token provided: connecting to {} without data plane credentials,"
-                        + " which only works on deployments with authentication disabled", options.catalogUrl());
-            }
-        } else {
-            builder.config("spark.sql.extensions", PAIMON_EXTENSION)
-                    .config("spark.sql.catalog." + catalog, "org.apache.paimon.spark.SparkCatalog")
-                    .config("spark.sql.catalog." + catalog + ".metastore", "rest")
-                    .config("spark.sql.catalog." + catalog + ".uri", options.catalogUrl())
-                    .config("spark.sql.catalog." + catalog + ".warehouse", catalog)
-                    .config("spark.sql.catalog." + catalog + ".data-token.enabled", "true");
-            if (options.catalogToken() != null) {
-                builder.config("spark.sql.catalog." + catalog + ".token.provider", "bear")
-                        .config("spark.sql.catalog." + catalog + ".token", options.catalogToken());
-            } else {
-                log.info("no catalog token provided: connecting to {} without data plane credentials,"
-                        + " which only works on deployments with authentication disabled", options.catalogUrl());
-            }
+        switch (format) {
+            case ICEBERG -> icebergCatalog(builder, catalog, options);
+            case PAIMON -> paimonCatalog(builder, catalog, options);
+            case LANCE -> lanceCatalog(builder, catalog, options);
         }
         SparkSession session = builder.getOrCreate();
         session.sparkContext().setLogLevel("WARN");
-        log.info("spark session ready for catalog {} ({})", catalog, plan.format());
+        log.info("spark session ready for catalog {} ({})", catalog, format);
         return session;
+    }
+
+    private static void icebergCatalog(org.apache.spark.sql.SparkSession.Builder builder,
+                                       String catalog, OptimizerOptions options) {
+        builder.config("spark.sql.extensions", ICEBERG_EXTENSION)
+                .config("spark.sql.catalog." + catalog, "org.apache.iceberg.spark.SparkCatalog")
+                .config("spark.sql.catalog." + catalog + ".type", "rest")
+                .config("spark.sql.catalog." + catalog + ".uri", options.catalogUrl())
+                // warehouse 填 prefix（catalog 名），与服务端 /v1/config 的约定一致
+                .config("spark.sql.catalog." + catalog + ".warehouse", catalog)
+                // 批内同一张表会被反复读（procedure 会重新加载元数据），缓存反而会读到旧快照
+                .config("spark.sql.catalog." + catalog + ".cache-enabled", "false")
+                // 服务端的「不问不给」：带这个头才会在响应里回短期凭据。
+                // 无对象存储的部署上它只是一个没有被消费的响应字段。
+                .config("spark.sql.catalog." + catalog
+                        + ".header.X-Iceberg-Access-Delegation", "vended-credentials");
+        if (options.catalogToken() != null) {
+            builder.config("spark.sql.catalog." + catalog + ".token", options.catalogToken())
+                    // 显式声明认证方式：只给 token 时客户端会「猜」成 oauth2 并打一条警告
+                    .config("spark.sql.catalog." + catalog + ".rest.auth.type", "oauth2");
+        } else {
+            log.info("no catalog token provided: connecting to {} without data plane credentials,"
+                    + " which only works on deployments with authentication disabled", options.catalogUrl());
+        }
+    }
+
+    private static void paimonCatalog(org.apache.spark.sql.SparkSession.Builder builder,
+                                      String catalog, OptimizerOptions options) {
+        builder.config("spark.sql.extensions", PAIMON_EXTENSION)
+                .config("spark.sql.catalog." + catalog, "org.apache.paimon.spark.SparkCatalog")
+                .config("spark.sql.catalog." + catalog + ".metastore", "rest")
+                .config("spark.sql.catalog." + catalog + ".uri", options.catalogUrl())
+                .config("spark.sql.catalog." + catalog + ".warehouse", catalog)
+                .config("spark.sql.catalog." + catalog + ".data-token.enabled", "true");
+        if (options.catalogToken() != null) {
+            builder.config("spark.sql.catalog." + catalog + ".token.provider", "bear")
+                    .config("spark.sql.catalog." + catalog + ".token", options.catalogToken());
+        } else {
+            log.info("no catalog token provided: connecting to {} without data plane credentials,"
+                    + " which only works on deployments with authentication disabled", options.catalogUrl());
+        }
+    }
+
+    /**
+     * Lance catalog 的会话配置。
+     *
+     * <p>四件事各自对应的失败形态，写在这里是为了下次只需看这一处：
+     *
+     * <ol>
+     *   <li><b>{@code impl=rest}</b>：不给它，connector 退化成「纯路径模式」（没有 namespace），
+     *       于是 {@code OPTIMIZE demo.sales.orders} 会被当成「在名为 demo 的 catalog 里找
+     *       sales.orders」，而会话里唯一注册的 catalog 就是 {@code demo}；
+     *   <li><b>{@code parent=<catalog>}</b>：REST 面的 id 是 {@code [catalog, schema, table]}，
+     *       第一级就是 catalog 的名字。少了它 connector 会把 {@code sales} 当 catalog，
+     *       于是每张表都以「不存在」失败；
+     *   <li><b>{@code uri = <catalogUrl>/lance}</b>：我们挂的是 {@code /lance/v1/**}，
+     *       而 connector 自己拼 {@code /v1/...}。多写一段（{@code /lance/v1}）的表现是
+     *       每个请求 404，且 body 是我们自己的错误 JSON（路径没匹配到），很容易被读成
+     *       「端点没实现」；
+     *   <li><b>认证走 {@code headers.Authorization}</b>：Lance 没有 Iceberg 那种
+     *       {@code token}/{@code rest.auth.type} 三个配置键，令牌只能塞进请求头。
+     *       这个键名取自设计稿（{@code docs/lance-table-optimization-design.md} §5.2），
+     *       **属该稿 §8 R1 待抓包确认的一项**：若不生效，表现是全部请求 401，
+     *       而服务端日志里能看到没有 {@code Authorization} 头。
+     * </ol>
+     *
+     * <p>对象存储的静态凭据走 {@code spark.sql.catalog.<c>.storage.*}（connector 会把
+     * {@code storage.} 前缀剥掉当 FileIO 选项）——那是 vendor 凭据失效时的兜底，
+     * 默认不配：静态凭据是长命密钥，能不用就不用（设计稿 §6.4）。
+     */
+    private static void lanceCatalog(org.apache.spark.sql.SparkSession.Builder builder,
+                                     String catalog, OptimizerOptions options) {
+        builder.config("spark.sql.extensions", LANCE_EXTENSION)
+                .config("spark.sql.catalog." + catalog, LANCE_CATALOG)
+                .config("spark.sql.catalog." + catalog + ".impl", "rest")
+                .config("spark.sql.catalog." + catalog + ".uri", options.catalogUrl() + "/lance")
+                .config("spark.sql.catalog." + catalog + ".parent", catalog);
+        if (options.catalogToken() != null) {
+            builder.config("spark.sql.catalog." + catalog + ".headers.Authorization",
+                    "Bearer " + options.catalogToken());
+        } else {
+            log.info("no catalog token provided: connecting to {} without data plane credentials,"
+                    + " which only works on deployments with authentication disabled",
+                    options.catalogUrl() + "/lance");
+        }
     }
 
     // ------------------------------------------------------------------ 取值辅助

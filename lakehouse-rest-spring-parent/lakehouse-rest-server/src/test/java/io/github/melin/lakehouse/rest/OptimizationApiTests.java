@@ -39,6 +39,7 @@ import io.github.melin.lakehouse.rest.service.submit.OptimizationJobSubmitter.Su
 import io.github.melin.lakehouse.rest.service.submit.OptimizationJobSubmitter.Submitted;
 import io.github.melin.lakehouse.rest.support.OptimizationStatus.Job;
 import io.github.melin.lakehouse.rest.support.Paging;
+import java.net.URI;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -100,11 +101,20 @@ import tools.jackson.databind.node.JsonNodeFactory;
 class OptimizationApiTests {
 
     private static final String M = "/api/management/v1/optimization";
+    /** 管理 API 的基址（Lance 用例要自己建 catalog）。 */
+    private static final String MANAGEMENT = "/api/management/v1";
     private static final String PREFIX = "paimon";
     private static final String DB = "opt_basic";
     private static final String TABLE = "t1";
     private static final String TABLE2 = "t2";
     private static final String BATCH_DB = "opt_batch";
+
+    /** Lance 用例自己的 catalog / 命名空间 / 表：与 {@code paimon} 互不影响。 */
+    private static final String LANCE_PREFIX = "lance_opt";
+    private static final String LANCE_DB = "sales";
+    private static final String LANCE_TABLE = "orders";
+    private static final String LANCE_WAREHOUSE =
+            "file://" + System.getProperty("java.io.tmpdir") + "/lakehouse-rest-server-tests/lance-opt";
 
     @Autowired
     private MockMvc mockMvc;
@@ -156,7 +166,11 @@ class OptimizationApiTests {
      */
     @BeforeEach
     void ensureExecutionCluster() {
-        CatalogEntity catalog = catalogRepository.findByPrefix(PREFIX).orElseThrow();
+        ensureCluster(catalogRepository.findByPrefix(PREFIX).orElseThrow(), 2, 2);
+    }
+
+    /** 给任意 catalog 写一份可派发的执行集群配置（Lance 用例要给它自己的 catalog 也配一份）。 */
+    private void ensureCluster(CatalogEntity catalog, int maxTables, int maxConcurrent) {
         CatalogExecutionClusterEntity entity = clusterRepository.findByCatalogId(catalog.getId()).orElse(null);
         if (entity == null) {
             entity = new CatalogExecutionClusterEntity();
@@ -172,8 +186,8 @@ class OptimizationApiTests {
         entity.setImage("registry.invalid/lakehouse-rest-optimizer:test");
         entity.setImagePullPolicy("IfNotPresent");
         entity.setCallbackBaseUrl("http://lakehouse-rest-server.optimizer-tests.svc:8080");
-        entity.setMaxTablesPerJob(2);
-        entity.setMaxConcurrentJobs(2);
+        entity.setMaxTablesPerJob(maxTables);
+        entity.setMaxConcurrentJobs(maxConcurrent);
         entity.setJobTimeoutSeconds(7200);
         entity.setProbeStatus(null);
         entity.setProbeReason(null);
@@ -198,6 +212,8 @@ class OptimizationApiTests {
     @AfterEach
     void removeExecutionCluster() {
         catalogRepository.findByPrefix(PREFIX).ifPresent(catalog -> clusterRepository
+                .findByCatalogId(catalog.getId()).ifPresent(clusterRepository::delete));
+        catalogRepository.findByPrefix(LANCE_PREFIX).ifPresent(catalog -> clusterRepository
                 .findByCatalogId(catalog.getId()).ifPresent(clusterRepository::delete));
     }
 
@@ -863,7 +879,177 @@ class OptimizationApiTests {
         assertTrue(lease.tryAcquire(SchedulerLease.CHANNEL_SCAN));
     }
 
+    // ------------------------------------------------------------------ 3. Lance（第三个格式面）
+
+    @Test
+    @Order(20)
+    void lanceUsesItsOwnKeysAndRefusesOrphan() throws Exception {
+        String base = ensureLanceTable();
+        JsonNode policy = json(200, "GET", base + "/policy", null);
+
+        assertEquals("LANCE", policy.get("format").asString());
+        assertTrue(policy.get("supported").asBoolean(), "declare 出来的 Lance 表可优化");
+
+        // 键表是第三套：目标大小按**行**算，且没有「至少几个小文件」这个门槛
+        JsonNode compact = action(policy, "compact");
+        assertTrue(compact.get("supported").asBoolean());
+        assertEquals("1048576", compact.get("effective").get("target-rows-per-fragment").asString());
+        assertTrue(absent(compact.get("effective"), "batch-size"), "batch-size 默认不传（用 connector 默认）");
+        assertTrue(absent(compact.get("effective"), "min-input-files"), "Lance 没有这个门槛");
+        assertTrue(absent(compact.get("effective"), "strategy"), "OPTIMIZE 不做排序合并");
+        // connector 0.4.0 的 WITH 里没有 max_source_fragments（CompactionOptions 有字段但
+        // Spark 侧没接出来），给了也只会被静默忽略，所以这个键根本不提供
+        assertTrue(absent(compact.get("effective"), "max-source-fragments"),
+                "不提供不生效的旋钮");
+        assertEquals(6, compact.get("effective").size(), compact.get("effective").toString());
+
+        // expire = VACUUM：不可逆、没有干跑，因此默认关闭
+        JsonNode expire = action(policy, "expire");
+        assertEquals("72", expire.get("effective").get("retention-hours").asString());
+        assertEquals("7", expire.get("effective").get("interval-days").asString());
+        assertFalse(expire.get("enabled").asBoolean(), "VACUUM 无干跑，默认不自动执行");
+
+        // orphan 存在但不可用：置灰由前端做，服务端给的是「不支持 + 原因」
+        JsonNode orphan = action(policy, "orphan");
+        assertFalse(orphan.get("supported").asBoolean());
+        assertFalse(orphan.get("enabled").asBoolean());
+        assertTrue(orphan.get("unsupportedReason").asString().contains("VACUUM"),
+                orphan.toString());
+        assertEquals(0, orphan.get("effective").size(), "不支持的动作没有参数表");
+
+        // 保存不支持的动作 -> 400，且文案说清是「VACUUM 已包含」而不是「你没开开关」
+        JsonNode rejected = json(400, "PUT", base + "/policy",
+                "{\"actions\":[{\"action\":\"orphan\",\"enabled\":true}]}");
+        assertTrue(rejected.get("message").asString().contains("VACUUM"), rejected.toString());
+        // 立即执行同样拒绝：绕不过去
+        json(400, "POST", base + "/run", "{\"actions\":[\"orphan\"]}");
+
+        // Paimon 的键在这张格式上不存在 -> 400（两套键表混用不会静默生效）
+        json(400, "PUT", base + "/policy",
+                "{\"actions\":[{\"action\":\"compact\",\"config\":{\"min-input-files\":\"5\"}}]}");
+        // 行数上限超界 -> 400
+        json(400, "PUT", base + "/policy",
+                "{\"actions\":[{\"action\":\"compact\",\"config\":{\"target-rows-per-fragment\":\"1000000000\"}}]}");
+        // delete_unverified 恒 false：它是安全属性，不是可调参数
+        json(400, "PUT", base + "/policy",
+                "{\"actions\":[{\"action\":\"expire\",\"config\":{\"delete-unverified\":\"true\"}}]}");
+
+        // 保留窗口的相对下限：catalog 的 max-commit-interval-hours 默认 24，填 12 要拒
+        JsonNode tooShort = json(400, "PUT", base + "/policy",
+                "{\"actions\":[{\"action\":\"expire\",\"config\":{\"retention-hours\":\"12\"}}]}");
+        assertTrue(tooShort.get("message").asString().contains("24"), tooShort.toString());
+
+        JsonNode saved = json(200, "PUT", base + "/policy", """
+                {"enabled":true,
+                 "actions":[
+                   {"action":"compact","config":{"target-rows-per-fragment":"524288","max-rows-per-group":"2048"}},
+                   {"action":"expire","enabled":true,"config":{"retention-hours":"48","interval-days":"3"}}]}
+                """);
+        assertEquals("524288", action(saved, "compact").get("effective").get("target-rows-per-fragment").asString());
+        assertEquals("2048", action(saved, "compact").get("effective").get("max-rows-per-group").asString());
+        assertEquals("0.1", action(saved, "compact").get("effective").get("materialize-deletions-threshold").asString(),
+                "差异之外的键仍来自默认值（合并而不是替换）");
+        assertEquals("48", action(saved, "expire").get("effective").get("retention-hours").asString());
+
+        // catalog 级的「最大提交间隔」可以调高，而它会把低于新下限的表级值拒掉
+        json(200, "PUT", M + "/catalogs/" + LANCE_PREFIX + "/settings",
+                "{\"properties\":{\"optimization.expire.max-commit-interval-hours\":\"96\"}}");
+        json(400, "PUT", base + "/policy",
+                "{\"actions\":[{\"action\":\"expire\",\"config\":{\"retention-hours\":\"48\"}}]}");
+        // 这一条是 catalog-only 的键：写进表策略要拒（它是全局护栏，不是表参数）
+        json(400, "PUT", base + "/policy",
+                "{\"actions\":[{\"action\":\"expire\",\"config\":{\"max-commit-interval-hours\":\"96\"}}]}");
+        json(400, "PUT", M + "/catalogs/" + LANCE_PREFIX + "/settings",
+                "{\"properties\":{\"optimization.compact.target_rows_per_fragment\":\"524288\"}}");
+    }
+
+    @Test
+    @Order(21)
+    void lanceSubmissionCarriesItsOwnFormat() throws Exception {
+        String base = ensureLanceTable();
+        clearActiveJobs();
+        // 先把上一轮（@Order(20) 里调高的）相对下限复位，48 小时才是合法的
+        json(200, "PUT", M + "/catalogs/" + LANCE_PREFIX + "/settings",
+                "{\"properties\":{\"optimization.expire.max-commit-interval-hours\":\"\"}}");
+        json(200, "PUT", base + "/policy", """
+                {"enabled":true,
+                 "actions":[{"action":"compact","config":{"target-rows-per-fragment":"524288"}},
+                            {"action":"expire","enabled":true,"config":{"retention-hours":"48","interval-days":"3"}}]}
+                """);
+        String jobId = json(201, "POST", base + "/run", "{}").get("id").asString();
+
+        StubSubmitter.INSTANCE.reset();
+        dispatcher.submitPending();
+        JsonNode running = job(jobId);
+        assertEquals(Job.RUNNING.name(), running.get("status").asString());
+        JsonNode submission = json(200, "GET", M + "/jobs/" + jobId + "/submission", null,
+                running.get("callbackToken").asString());
+
+        // 清单级格式决定执行侧建哪种会话：缺了它，Lance 批次会静默走 Paimon 分支
+        assertEquals("LANCE", submission.get("format").asString());
+        assertEquals(List.of("compact", "expire"),
+                List.of(submission.get("actions").get(0).asString(), submission.get("actions").get(1).asString()));
+        JsonNode options = submission.get("tables").get(0).get("options");
+        assertEquals("524288", options.get("compact").get("target-rows-per-fragment").asString());
+        // 调度参数与常量都不进语句，但清单里给的是「合并后的全部参数」，它们照样在
+        assertEquals("1", options.get("compact").get("interval-hours").asString());
+        assertEquals("48", options.get("expire").get("retention-hours").asString());
+        assertEquals("false", options.get("expire").get("delete-unverified").asString());
+
+        json(204, "POST", M + "/jobs/" + jobId + "/items/" + running.get("items").get(0).get("id").asString(),
+                "{\"status\":\"SUCCESS\",\"metrics\":{\"compact.fragments-removed\":\"8\","
+                        + "\"compact.files-removed\":\"12\"}}",
+                running.get("callbackToken").asString());
+        assertEquals("8", job(jobId).get("items").get(0).get("metrics")
+                .get("compact.fragments-removed").asString());
+    }
+
     // ------------------------------------------------------------------ 工具
+
+    /**
+     * 造一套 Lance 夹具（catalog + 命名空间 + 一张 declare 出来的表），返回表策略的路径。
+     *
+     * <p>只判 catalog 在不在：它一次性把三件事都建出来，因此「catalog 存在」等价于
+     * 「命名空间与表也存在」。不重复调 {@code declare}——Lance 的 declare 对已存在的表
+     * 是 409（不是幂等的 exist_ok），第二次调用会把用例打红。
+     *
+     * <p>执行集群配置在 {@code @AfterEach} 里被删掉，所以这里每跑一次都要补一份：
+     * 没有它，保存启用策略与立即执行都会被 fail-closed 挡成 400，用例就测了个空。
+     */
+    private String ensureLanceTable() throws Exception {
+        CatalogEntity catalog = catalogRepository.findByPrefix(LANCE_PREFIX).orElse(null);
+        if (catalog == null) {
+            json(201, "POST", MANAGEMENT + "/catalogs", """
+                    {"catalog":{"type":"INTERNAL","name":"%s","catalogFormat":"LANCE","properties":{},
+                     "storageConfigInfo":{"storageType":"FILE","allowedLocations":["%s"]}}}
+                    """.formatted(LANCE_PREFIX, LANCE_WAREHOUSE));
+            catalog = catalogRepository.findByPrefix(LANCE_PREFIX).orElseThrow();
+            String namespaceId = LANCE_PREFIX + "%24" + LANCE_DB;
+            postViaUri(200, "/lance/v1/namespace/" + namespaceId + "/create", "{\"properties\":{}}");
+            postViaUri(200, "/lance/v1/table/" + namespaceId + "%24" + LANCE_TABLE + "/declare",
+                    "{\"properties\":{}}");
+        }
+        ensureCluster(catalog, 2, 2);
+        return M + "/tables/" + LANCE_PREFIX + "/" + LANCE_DB + "/" + LANCE_TABLE;
+    }
+
+    /**
+     * 发一个 POST，路径里的 {@code %24} 原样保留。
+     *
+     * <p>MockMvc 的 {@code post(String)} 会把模板变量再编码一次（{@code %24} → {@code %2524}），
+     * 于是 Lance 的 id 里会多出一层转义、路径压根匹配不上。用 {@link URI} 构造才是原样的
+     * （同一个坑在 {@code LanceVersionApiTests} 里踩过一次）。
+     */
+    private JsonNode postViaUri(int expected, String path, String body) throws Exception {
+        MockHttpServletRequestBuilder request = post(URI.create(path));
+        if (body != null) {
+            request = request.contentType(MediaType.APPLICATION_JSON).content(body);
+        }
+        MvcResult result = mockMvc.perform(request).andReturn();
+        String text = result.getResponse().getContentAsString();
+        assertEquals(expected, result.getResponse().getStatus(), () -> path + " unexpected status, body=" + text);
+        return text == null || text.isBlank() ? JsonNodeFactory.instance.objectNode() : mapper.readTree(text);
+    }
 
     private String policyPath(String database, String table) {
         return M + "/tables/" + PREFIX + "/" + database + "/" + table + "/policy";

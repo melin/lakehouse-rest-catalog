@@ -247,7 +247,8 @@ lakehouse-rest-flink/      Flink SQL 读写 Paimon / Iceberg，一份源码、�
                         lakehouse-rest-flink-1.20/   Flink 1.20.1 + Paimon 2.1.0 + Iceberg 1.11.0
                         lakehouse-rest-flink-2.3/    Flink 2.3.0 + Paimon 2.1.0（2.2 连接器）+ Iceberg 1.12.0
 lakehouse-rest-optimizer/  表优化执行体（被 k8s 提交起来跑，不经服务端 classpath）：
-                        PaimonProcedures、TableOptimizerJob、OptimizerOptions、OptimizationApiClient
+                        PaimonProcedures / IcebergProcedures / LanceProcedures、TableOptimizerJob、
+                        OptimizerOptions、OptimizationApiClient
 deploy/kubernetes/      单文件三文档：configmap / deployment / service（有独立 README；
                         Namespace 由使用方 `kubectl create namespace` 预先创建，不在清单里）
 spec/                   三份 OpenAPI 规格的仓库副本（不随服务端分发）：
@@ -277,7 +278,7 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
 | `management-api-overview.md` | Paimon 官方权限端点与服务端扩展端点落在哪几个控制器、易读错的语义 |
 | `management-api-contract.md` | **存档**（勿手改）：由已移除的 Polaris 管理规格生成的字段与权限枚举；catalog role 与 64 项 privilege 已不存在 |
 | `data-model.md` | 改实体 / 看 27 张表划分、摘要列与审计列的理由、实体与仓储分在哪两个模块、Iceberg 协议面新增的 9 个列（§1.1）、血缘三表（§2.3） |
-| `table-optimization.md` | 改表存储优化：三层配置合并、批次与调度游标、组批与提交、前后指标；**两种表格式共用一套策略表与批次表**，参数键按格式分派（§2.5 是 Iceberg 的对应物，§6.5 是执行侧差异） |
+| `table-optimization.md` | 改表存储优化：三层配置合并、批次与调度游标、组批与提交、前后指标；**三种表格式共用一套策略表与批次表**，参数键与动作能力按格式分派（§2.5 是 Iceberg 的对应物，§6.5 是执行侧差异，Lance 见 `lance-table-optimization-design.md`） |
 | `optimization-multi-instance-design.md` | 多副本部署优化调度 / 排查「同一任务被两台机器发起」（**设计稿，未实现**）：现状审计（出批与提交已有 CAS，收尾、崩溃回收、配额闸门、手动入口四处没有）、三类重复的实际后果、租约表 + 代理（fencing）提交租约 + 终态收尾 CAS、锁顺序与事务拆分、部署七条前提、双实例验收 SQL |
 | `catalog-execution-cluster-design.md` | 给 catalog 配执行集群 / 评审该方案（**已实现**，偏差见其 §15）：配置从 `optimization.*` 下移到 catalog、kubeconfig 逐 context 解析（`exec:` 硬拒）、探活五问与状态机、fabric8 要点（禁 autoConfigure 回落、client 缓存必关、AKS scope 用 AKS 的 audience 而不是管理面） |
 | `event-framework.md` | 加事件 / 接 listener：9 类 33 个领域事件与触发点、与 Polaris 枚举的映射、`audit_event` 表、发布监听链路、按监听器的类别/类型订阅、增量拉取契约（`?since=` / `?category=`）与不发清单 |
@@ -301,7 +302,7 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
 | `polaris-capabilities-and-design.md` | 对比 Polaris、看整体设计与已知缺口 |
 | `iceberg-rest-catalog-design.md` | 让同一基址、同一份元数据同时服务原生 Iceberg REST 客户端：双协议方案、两套面的差异与代价、catalog 建时区分格式；**已落地的实测记录与与方案不一致的十六处**（§11） |
 | `lance-rest-catalog-design.md` | 支持 Lance（Lance Namespace / REST Catalog 协议面）或评审该方案（**P0 + P1 + P2 里能做的都已落地**，含控制台只读；未做：`BatchCreateTableVersions`、索引只读）：规范自己划的「最小集 + 两条降级许可」为什么正好覆盖我们（§1.5）、54 个 operation 的三档取舍（19 做 / 35 恒 406）、为什么不做 `CreateTable`/数据面/`managed_versioning`（§3）、三种「Lance」的区分（Paimon `lance-table` / 通用表 / 本面，§2）、基址与 id 解析、`catalog_format=LANCE` 加 3 列 1 张新表、授权与凭据的落点、P0/P1/P2 需求清单与 `verify-lance-endpoints.py`、待拍板决策与实测偏差（§8 / §12）、控制台三面发现端点的差异（§12.9） |
-| `lance-table-optimization-design.md` | 给 Lance 表做存储优化（compaction）或评审该方案（**设计稿，未实现**，前置是上一条的 P0）：为什么只有两条维护语句（`OPTIMIZE` / `VACUUM`）→ 三动作变两动作、`orphan` 恒不可用；Daft 那两层参数（`num_partitions`/`concurrency`/`micro_commit_batch_size`）在 Spark 侧不存在；指标是**增量四元组**不是前后快照；`VACUUM` 无干跑的三层补偿；`isIceberg()` 与 `actionsFor()` 两处二元分派不改就静默走 Paimon（§5.1 / §7.2）；`--add-opens` 只能进镜像 ENV（§5.6）；三条抓包门禁与 P0/P1 需求清单 |
+| `lance-table-optimization-design.md` | 给 Lance 表做存储优化（compaction）或评审该方案（**已落地**，前置是上一条的 P0）：为什么只有两条维护语句（`OPTIMIZE` / `VACUUM`）→ 三动作变两动作、`orphan` 恒不可用；Daft 那两层参数（`num_partitions`/`concurrency`/`micro_commit_batch_size`）在 Spark 侧不存在；指标是**增量四元组**不是前后快照；`VACUUM` 无干跑的三层补偿；`isIceberg()` 与 `actionsFor()` 两处二元分派不改就静默走 Paimon（§5.1 / §7.2）；`--add-opens` 只能进镜像 ENV（§5.6）；三条抓包门禁与 P0/P1 需求清单 |
 
 ---
 

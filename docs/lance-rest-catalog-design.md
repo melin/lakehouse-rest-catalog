@@ -539,7 +539,7 @@ DescribeTable / DeclareTable 的请求参数 vend_credentials=true
 | catalog 列表 / 详情 | `catalog_format` 徽标加 `LANCE`；「协议与能力」卡片：基址 `/lance/v1/namespace`、**不发 `/v1/config`**、能力清单改成「已实现 19 个 operation / 21 条端点、其余 35 个恒 406」并给出四组分布 | 与 Iceberg 的卡片同形，但 Lance **没有发现端点**——它是三面里唯一不给客户端下发清单的（§12.9） |
 | catalog 详情·页签 | 只有「概览」与「文件列表」；**不出现**「存储」与「配置」 | 存储页的数字全来自快照 / 表元数据统计；配置页编辑的 `table-default.*` 只在建表时合并，而 Lance 面没有 `CreateTable`（存得下、永不生效） |
 | 目录浏览 | Lance catalog 整页换成一段说明（去哪儿看），**不出现**「新建数据库」 | 本页调的是 `/v1/{prefix}/databases/**`；给一个能建库建表的界面是对「我们只做登记」的错误承诺（§12.9） |
-| 表详情 | 只显示「详细信息 / 文件列表 / 血缘」三个页签；**不显示**快照、数据预览、数据策略。启用存储优化后再加「存储优化」页签（见 [`lance-table-optimization-design.md`](lance-table-optimization-design.md) §7.5） | Lance 表没有我们的快照概念；预览需要 Lance reader（§3.3）；行过滤在 Lance 侧无落点 |
+| 表详情 | 只显示「详细信息 / 文件列表 / 血缘」三个页签；**不显示**快照、数据预览、数据策略。「存储优化」页签的**面板已就绪**（[`lance-table-optimization-design.md`](lance-table-optimization-design.md) §7 已落地），但**页签还没加**——Lance catalog 目前没有控制台浏览入口，等表详情页落地时一并加（同文档 §7.5 写了解除条件） | Lance 表没有我们的快照概念；预览需要 Lance reader（§3.3）；行过滤在 Lance 侧无落点 |
 | 建表表单 | **不给 Lance 入口**（与 `lance-table` 的处理一致）；新建 catalog 选 Lance 时给出与 Iceberg 分开的提示 | 建表要写数据集，我们没有写路径 |
 | 文件列表 | 复用现有的对象存储浏览（`_versions/`、`data/` 直接可见） | 这是唯一能看到「表里到底有什么」的地方，成本为零 |
 | 事件 | 复用现有表生命周期事件，payload 增加 `format=LANCE`；**不新增事件类型**（declare / register / deregister / rename 四条都已带） | 事件消费者是按 `category/type` 订阅的，新增类型会让所有 listener 漏事件 |
@@ -590,7 +590,7 @@ DescribeTable / DeclareTable 的请求参数 vend_credentials=true
 | `LanceIdParsingTests`（新增） | §4.2 的五条规则 + 三种分隔符 | 改解析器时 |
 | `scripts/e2e-lance-rest.sh`（新增） | 真服务端 + 真客户端：declare → 写数据集 → describe → deregister | 发版前 |
 | `scripts/verify-console.py` 第 12 组（既有脚本，**新增 2 条 / 13 个子判据**，总数 168 → 170） | 控制台侧的 Lance：详情页基址 `/lance/v1/namespace`、**Lance 下不发 `/v1/config`**、藏掉「存储」与「配置」两个页签、浏览页换成说明且无「新建数据库」、`lance-table` 藏「数据策略」；三个数字（21 / 19 / 35）与 `verify-lance-endpoints.py` 台账**相加**对账 | 改控制台或改台账时 |
-| `npm test`（控制台单测，53 项） | 与 Lance 相关的只有格式色与布局纯函数，不受影响 | 改控制台时 |
+| `npm test`（控制台单测，60 项） | Lance 相关：`tools/optimization-tests` 钉住 `actionsFor('LANCE')` 的三分支、Lance 的两套键与指标口径（格式色与布局纯函数不受影响） | 改控制台时 |
 | `verify-k8s-manifests.py` / `verify-iceberg-endpoints.py` / `verify-lineage-doc.py` / `verify-spark-sql-doc.py`（既有 4 个） | 不受影响 | 每次改动 |
 
 **前置阻塞已解除**：`spec/lance-namespace-rest-openapi.yaml` 已入库（2026-10-28 抓自

@@ -5,10 +5,11 @@
 # 容器里跑的就是这里打出来的东西，容器的退出码就是 Job 的成功/失败依据。
 #
 # 为什么需要一个单独的镜像，而不是让 Job 去拉一个通用 Spark 镜像再挂载 jar：
-# 优化任务要在集群上执行 `CALL sys.compact` 一类的语句，因此镜像里必须有
-# **与目标集群一致的 Paimon Spark 运行时**（paimon-spark bundle + 它依赖的 FileIO 实现）。
-# 把这份运行时钉进镜像，与服务端「Paimon 版本只影响引擎侧」的分工一致：
-# 服务端不需要 Paimon，优化任务只需要 Paimon。
+# 优化任务要在集群上执行 `CALL sys.compact`（Paimon / Iceberg）与
+# `OPTIMIZE` / `VACUUM`（Lance）这类语句，因此镜像里必须有**与目标集群一致的
+# 三种格式的 Spark 运行时**（各自的 bundle + FileIO 实现）。把它们钉进镜像，
+# 与服务端「格式只影响引擎侧」的分工一致：服务端不需要 Paimon / Iceberg / Lance，
+# 优化任务只需要这三份运行时，一个镜像服务三种批次的表。
 #
 # 用法（先在宿主机上打好包；镜像里不装 Maven，与根 Dockerfile 的理由相同）：
 #
@@ -51,7 +52,7 @@ COPY lakehouse-rest-optimizer/target/lakehouse-rest-optimizer-1.0.0.jar /opt/opt
 COPY lakehouse-rest-optimizer/target/jars/paimon-spark-3.5_2.12.jar /opt/spark/jars/
 COPY lakehouse-rest-optimizer/target/jars/paimon-s3.jar /opt/spark/jars/
 
-# Iceberg 的 Spark bundle。一个镜像同时服务两种格式的批次：会话的
+# Iceberg 的 Spark bundle。一个镜像同时服务三种格式的批次：会话的
 # `spark.sql.extensions` 与 catalog 实现由任务按批次格式选，jar 本身一起放着即可。
 #
 # 版本必须与 lakehouse-rest-optimizer/pom.xml 的 iceberg.version 对齐（同样由 pom 决定，
@@ -59,6 +60,27 @@ COPY lakehouse-rest-optimizer/target/jars/paimon-s3.jar /opt/spark/jars/
 # 对象存储是 s3:// 时还需要 org.apache.iceberg:iceberg-aws-bundle（本镜像没有内置，
 # 见 docs/iceberg-storage-optimization.md 的「部署前提」一节）。
 COPY lakehouse-rest-optimizer/target/jars/iceberg-spark-runtime-3.5_2.12.jar /opt/spark/jars/
+
+# Lance 的 Spark bundle（connector + lance-core + 原生库 + arrow，全部 shade 在一个 jar 里）。
+# 一个镜像同时服务三种格式的批次：会话的 `spark.sql.extensions` 与 catalog 实现由任务按
+# 批次格式选，jar 本身一起放着即可——**三个扩展不共存于同一个会话**，只在同一个进程的
+# 类路径上共存，这是安全的（各自注册自己的 parser 规则，不会同时生效）。
+#
+# 为什么是 bundle 而不是 `lance-spark-3.5_2.12`：薄包缺 org.lance.Dataset 与原生库，
+# 补那些要手工复刻一份依赖闭包，还必须挑 arrow 版本（Spark 发行版自带 arrow，
+# 同名类按 jar 文件名排序加载，版本对不上时表现为 NoSuchMethodError）。
+COPY lakehouse-rest-optimizer/target/jars/lance-spark-bundle-3.5_2.12.jar /opt/spark/jars/
+
+# Lance 打开数据集时反射访问 sun.nio.ch（native IO 的一段缓冲区映射），JDK 17 默认关闭。
+#
+# **必须写在 ENV 里，不能靠 SparkSession.builder().config(...)**：
+# `--add-opens` 是 JVM 启动参数，进程起来之后再设没用；`spark.driver.extraJavaOptions`
+# 只对它自己 fork 的 driver 生效，而我们的入口是 spark-submit 在本进程里 local 模式跑，
+# 没有那层 fork。ENV 里对 driver 与将来的 executor JVM 都生效。
+#
+# 症状是运行到「打开数据集」时才抛 InaccessibleObjectException，而栈里没有一句话提到
+# Lance——这也是为什么它值得单独一行注释。
+ENV JAVA_TOOL_OPTIONS="--add-opens=java.base/sun.nio.ch=ALL-UNNAMED"
 
 # 容器就是 driver：整个批次只建一次 Spark 会话，在一张 pod 里以 local 模式跑完所有表。
 #
@@ -71,8 +93,18 @@ COPY lakehouse-rest-optimizer/target/jars/iceberg-spark-runtime-3.5_2.12.jar /op
 # 参数（--job-id / --management-url / --token / --catalog-token）由服务端在创建
 # k8s Job 时追加，见 KubernetesJobSubmitter —— 这里不写默认值：
 # 缺参数时优化任务会以「这个参数由服务端生成」的提示退出（exit 2），比悄悄跑错更好。
+#
+# `spark.driver.extraClassPath` 把 Lance 的 bundle **排到类路径最前面**，这不只是效率问题：
+# bundle 里自带一份未 relocate 的 `org.apache.arrow.*`（connector 编译用的是 arrow 15/18），
+# 而 Spark 发行版的 `arrow-vector-12.0.1.jar` 也在 `/opt/spark/jars` 里。两者的类名完全
+# 相同，谁先被加载取决于 classpath 顺序——按文件名排序时 `arrow-vector-12.0.1.jar`
+# 排在 `lance-spark-bundle-…` 前面，旧版本会赢，症状是 Lance 侧 `NoSuchMethodError`。
+# extraClassPath 的条目在 spark-submit 拼出的 classpath 里是**前置**的，因此这一行
+# 让 bundle 的 arrow 优先。代价是 Spark 自己的 arrow 被遮住——本任务不用 pandas UDF，
+# 也不走 ArrowConverters，这条路径不受影响。
 ENTRYPOINT ["/opt/spark/bin/spark-submit", \
     "--master", "local[*]", \
     "--class", "io.github.melin.lakehouse.rest.optimizer.TableOptimizerJob", \
     "--conf", "spark.ui.enabled=false", \
+    "--conf", "spark.driver.extraClassPath=/opt/spark/jars/lance-spark-bundle-3.5_2.12.jar", \
     "/opt/optimizer/optimizer.jar"]

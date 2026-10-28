@@ -22,13 +22,32 @@ public final class OptimizationDtos {
 
     // ---------------------------------------------------------------- 策略
 
-    /** 一项动作的策略：开关、差异配置、生效配置。 */
+    /**
+     * 一项动作的策略：开关、差异配置、生效配置、以及「这项动作在这种格式上存不存在」。
+     *
+     * <p><b>为什么要动作级的 {@code supported}。</b>表级的 {@code supported} 说的是
+     * 「这张表能不能开优化」，动作级说的是「这一项在這種格式上有没有」。加第三种格式时
+     * 出现了一个具体的不存在：Lance 的 {@code orphan}（{@code VACUUM} 已经把过期版本与
+     * 孤儿文件一起做了）。两个粒度混成一个字段，控制台就得在「表不支持」与「动作不支持」
+     * 之间猜。
+     *
+     * <p>不支持的动作用 {@code supported=false} + 一句原因表达，而不是从 {@code actions}
+     * 里删掉：动作名、执行顺序、历史三块都是格式无关的契约，少一项会让「同一张表在两个
+     * 页面不一样」。控制台据此把那张卡置灰并写下原因。
+     */
     public record ActionPolicy(String action,
                                String displayName,
                                boolean enabled,
                                Map<String, String> config,
                                Map<String, String> effective,
-                               boolean usingDefaults) {
+                               boolean usingDefaults,
+                               /**
+                                * 这项动作在当前格式上能不能用。不支持的动作为 {@code false}，
+                                * 且 {@code enabled} 恒 {@code false}（不开一个跑不了的开关）。
+                                */
+                               boolean supported,
+                               /** 不支持的原因（可直接展示）；支持时为 {@code null}。 */
+                               String unsupportedReason) {
     }
 
     /**
@@ -44,11 +63,12 @@ public final class OptimizationDtos {
                               String database,
                               String table,
                               /**
-                               * 表格式（{@code PAIMON} / {@code ICEBERG}）。
+                               * 表格式（{@code PAIMON} / {@code ICEBERG} / {@code LANCE}）。
                                *
-                               * <p>控制台按它决定参数表单渲染哪一套键：同一张动作卡在两种格式下
-                               * 的字段不同（{@code retain-min} vs {@code retain-last}），
-                               * 靠页面自己判断「这是哪张表」会多一条判别、也会与这里漂移。
+                               * <p>控制台按它决定参数表单渲染哪一套键：同一张动作卡在三种格式下的
+                               * 字段不同（{@code retain-min} vs {@code retain-last} vs
+                               * {@code target-rows-per-fragment}），靠页面自己判断「这是哪张表」
+                               * 会多一条判别、也会与这里漂移。
                                */
                               String format,
                               boolean enabled,

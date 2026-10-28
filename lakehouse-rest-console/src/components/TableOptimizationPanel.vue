@@ -7,8 +7,9 @@
     <TipAlert v-if="loaded && !supported" type="info" class="pc-hint">
       <template #title>{{ unsupportedReason || '这张表不支持存储优化' }}</template>
       <div>
-        三项动作（Compaction / Snapshot Expire / Orphan File Remove）只对 Paimon 与 Iceberg 表
-        可用；外部表也不支持——它的位置不归本服务所有，对它做 compaction 等于在别人的目录里写文件。
+        三项动作（Compaction / Snapshot Expire / Orphan File Remove）只对 Paimon、Iceberg
+        与 Lance 表可用，参数按各格式自己的维护语句给出；外部表也不支持——它的位置不归本服务
+        所有，对它做 compaction 等于在别人的目录里写文件。
       </div>
     </TipAlert>
 
@@ -36,6 +37,16 @@
                   <code class="pc-mono">remove_orphan_files</code>，参数按 Iceberg 的口径
                   （快照保留默认 5 天、目标文件 512 MB、孤儿清理默认干跑）。
                   与同一张 Paimon 表相比，指标读数的含义也不同——它报的是 procedure 实际输出的列。
+                </template>
+                <template v-else-if="isLance">
+                  <br /><br />
+                  这是一张 <strong>Lance</strong> 表：Lance 只有两条维护语句，因此这里只有两项
+                  动作——<code class="pc-mono">OPTIMIZE</code>（合并碎片）与
+                  <code class="pc-mono">VACUUM</code>（删旧版本 + 回收无引用文件）。
+                  它们是 connector 注册进解析器的命令，不是 <code class="pc-mono">CALL</code>
+                  procedure，参数形状也不同。孤儿文件清理<strong>不单独提供</strong>：
+                  <code class="pc-mono">VACUUM</code> 一步就把过期版本与孤儿文件一起清掉了。
+                  另外 <code class="pc-mono">VACUUM</code> 没有干跑，删掉的版本无法恢复。
                 </template>
               </TipNote>
             </div>
@@ -112,111 +123,153 @@
         </template>
       </SectionTitle>
 
-      <PanelCard v-for="spec in actions" :key="spec.action">
+      <PanelCard
+        v-for="spec in actions"
+        :key="spec.action"
+        :class="{ 'pc-opt-absent': !actionSupported(spec) }"
+      >
         <div class="pc-opt-head">
           <el-checkbox
             :model-value="cards[spec.action].enabled"
+            :disabled="!actionSupported(spec)"
             @update:model-value="(value) => { cards[spec.action].enabled = value }"
           />
           <div class="pc-opt-head-text">
-            <div class="pc-opt-title">{{ spec.label }}</div>
+            <div class="pc-opt-title">
+              {{ spec.label }}
+              <el-tag v-if="!actionSupported(spec)" size="small" effect="plain" type="info">
+                不可用
+              </el-tag>
+            </div>
             <div class="pc-dim">{{ spec.summary }}</div>
+            <!-- 原因来自服务端（ActionPolicy.unsupportedReason）：同一句文案在 API 与页面上
+                 只能有一份，否则「置灰卡的说明」与「接口返回的原因」迟早对不上 -->
+            <div v-if="!actionSupported(spec)" class="pc-opt-absent-note">
+              {{ actionReason(spec) }}
+            </div>
           </div>
           <span class="pc-spacer" />
-          <el-radio-group v-model="cards[spec.action].mode" size="small" class="pc-opt-mode">
-            <el-radio-button value="default">默认设置</el-radio-button>
-            <el-radio-button value="custom">自定义</el-radio-button>
-          </el-radio-group>
-          <el-button
-            size="small"
-            type="primary"
-            :loading="cards[spec.action].saving"
-            :disabled="!isDirty(spec)"
-            @click="saveAction(spec)"
-          >
-            保存
-          </el-button>
-        </div>
-
-        <!-- 默认档：只读展示生效值。它可能来自内置默认，也可能来自 catalog 默认设置，
-             两者在页面上不做区分——用户要回答的是「现在会用什么参数」 -->
-        <dl v-if="cards[spec.action].mode === 'default'" class="pc-kv pc-opt-readonly">
-          <template v-for="field in visibleFields(spec)" :key="field.key">
-            <dt>{{ field.label }}</dt>
-            <dd>
-              <span>{{ displayValue(spec, field) }}</span>
-              <span v-if="field.unit && field.type === 'number'" class="pc-dim pc-opt-unit">{{ field.unit }}</span>
-            </dd>
+          <!-- 不支持的动作不给档位与保存按钮：留一个点了就 400 的按钮，
+               比不给按钮更糟（用户会以为是参数填错了） -->
+          <template v-if="actionSupported(spec)">
+            <el-radio-group v-model="cards[spec.action].mode" size="small" class="pc-opt-mode">
+              <el-radio-button value="default">默认设置</el-radio-button>
+              <el-radio-button value="custom">自定义</el-radio-button>
+            </el-radio-group>
+            <el-button
+              size="small"
+              type="primary"
+              :loading="cards[spec.action].saving"
+              :disabled="!isDirty(spec)"
+              @click="saveAction(spec)"
+            >
+              保存
+            </el-button>
           </template>
-        </dl>
-
-        <div v-else class="pc-form pc-form-grid pc-opt-form">
-          <el-form-item v-for="field in visibleFields(spec)" :key="field.key">
-            <template #label>
-              <FieldLabel :label="field.label" :tip="field.tip" />
-            </template>
-            <div class="pc-opt-control">
-              <el-select
-                v-if="field.type === 'select'"
-                v-model="cards[spec.action].values[field.key]"
-                size="small"
-                class="pc-full"
-              >
-                <el-option
-                  v-for="choice in field.choices"
-                  :key="choice.value"
-                  :label="choice.label"
-                  :value="choice.value"
-                />
-              </el-select>
-              <!-- 布尔值在服务端存的是字符串 `true` / `false`（策略是一组字符串键值对），
-                   因此这里用字符串档位而不是布尔档位，提交时不必再多一层转换。
-                   说明文字不放进开关的 active-text：那两句有十几个字，会把开关本身
-                   挤成一条——说在开关旁边更清楚。两件事包在一个 template 里，
-                   避免它们各自成为一个 v-if 分支而把下面那条链断掉 -->
-              <template v-else-if="field.type === 'switch'">
-                <el-switch
-                  v-model="cards[spec.action].values[field.key]"
-                  active-value="true"
-                  inactive-value="false"
-                />
-                <span class="pc-dim pc-opt-unit">
-                  {{ cards[spec.action].values[field.key] === 'true' ? field.on : field.off }}
-                </span>
-              </template>
-              <el-input-number
-                v-else-if="field.type === 'number'"
-                v-model="cards[spec.action].values[field.key]"
-                size="small"
-                class="pc-opt-number"
-                controls-position="right"
-                :min="field.min"
-                :max="field.max"
-              />
-              <el-input
-                v-else
-                v-model="cards[spec.action].values[field.key]"
-                size="small"
-                :placeholder="field.placeholder"
-              />
-              <span v-if="field.unit && field.type === 'number'" class="pc-dim pc-opt-unit">{{ field.unit }}</span>
-            </div>
-          </el-form-item>
         </div>
 
-        <!-- 干跑是三项里唯一「现在不会删东西」的档位，值得单独一句；
-             关掉它的那一刻起，扫描到的东西就被真删了 -->
-        <TipAlert
-          v-if="spec.action === 'orphan' && cards.orphan.values['dry-run'] === 'false'"
-          type="warning"
-          class="pc-hint"
-        >
-          <template #title>干跑预览已关闭：孤儿文件清理会真的删除文件</template>
-          <div>
-            它删除的依据是「没有被任何快照引用」，因此清理窗口必须大于这张表的最大提交间隔。
-            建议先开着干跑跑一轮，核对将要删除的文件之后再关掉。
+        <template v-if="actionSupported(spec)">
+          <!-- 默认档：只读展示生效值。它可能来自内置默认，也可能来自 catalog 默认设置，
+               两者在页面上不做区分——用户要回答的是「现在会用什么参数」 -->
+          <dl v-if="cards[spec.action].mode === 'default'" class="pc-kv pc-opt-readonly">
+            <template v-for="field in visibleFields(spec)" :key="field.key">
+              <dt>{{ field.label }}</dt>
+              <dd>
+                <span>{{ displayValue(spec, field) }}</span>
+                <span v-if="field.unit && field.type === 'number'" class="pc-dim pc-opt-unit">{{ field.unit }}</span>
+              </dd>
+            </template>
+          </dl>
+
+          <div v-else class="pc-form pc-form-grid pc-opt-form">
+            <el-form-item v-for="field in visibleFields(spec)" :key="field.key">
+              <template #label>
+                <FieldLabel :label="field.label" :tip="field.tip" />
+              </template>
+              <div class="pc-opt-control">
+                <el-select
+                  v-if="field.type === 'select'"
+                  v-model="cards[spec.action].values[field.key]"
+                  size="small"
+                  class="pc-full"
+                >
+                  <el-option
+                    v-for="choice in field.choices"
+                    :key="choice.value"
+                    :label="choice.label"
+                    :value="choice.value"
+                  />
+                </el-select>
+                <!-- 布尔值在服务端存的是字符串 `true` / `false`（策略是一组字符串键值对），
+                     因此这里用字符串档位而不是布尔档位，提交时不必再多一层转换。
+                     说明文字不放进开关的 active-text：那两句有十几个字，会把开关本身
+                     挤成一条——说在开关旁边更清楚。两件事包在一个 template 里，
+                     避免它们各自成为一个 v-if 分支而把下面那条链断掉。
+                     `disabled` 给「只接受一个取值」的键（Lance 的 delete-unverified）：
+                     照常显示它当前是什么，但不给一个点了就 400 的把手 -->
+                <template v-else-if="field.type === 'switch'">
+                  <el-switch
+                    v-model="cards[spec.action].values[field.key]"
+                    active-value="true"
+                    inactive-value="false"
+                    :disabled="field.disabled === true"
+                  />
+                  <span class="pc-dim pc-opt-unit">
+                    {{ cards[spec.action].values[field.key] === 'true' ? field.on : field.off }}
+                  </span>
+                </template>
+                <el-input-number
+                  v-else-if="field.type === 'number'"
+                  v-model="cards[spec.action].values[field.key]"
+                  size="small"
+                  class="pc-opt-number"
+                  controls-position="right"
+                  :min="field.min"
+                  :max="field.max"
+                  :step="field.step || 1"
+                  :precision="field.precision"
+                />
+                <el-input
+                  v-else
+                  v-model="cards[spec.action].values[field.key]"
+                  size="small"
+                  :placeholder="field.placeholder"
+                />
+                <span v-if="field.unit && field.type === 'number'" class="pc-dim pc-opt-unit">{{ field.unit }}</span>
+              </div>
+            </el-form-item>
           </div>
-        </TipAlert>
+
+          <!-- 干跑是三项里唯一「现在不会删东西」的档位，值得单独一句；
+               关掉它的那一刻起，扫描到的东西就被真删了。
+               Lance 没有干跑（VACUUM 不可逆、无预览），那条提示在保存前的确认框里 -->
+          <TipAlert
+            v-if="spec.action === 'orphan' && cards.orphan.values['dry-run'] === 'false'"
+            type="warning"
+            class="pc-hint"
+          >
+            <template #title>干跑预览已关闭：孤儿文件清理会真的删除文件</template>
+            <div>
+              它删除的依据是「没有被任何快照引用」，因此清理窗口必须大于这张表的最大提交间隔。
+              建议先开着干跑跑一轮，核对将要删除的文件之后再关掉。
+            </div>
+          </TipAlert>
+
+          <!-- Lance 的 expire（= VACUUM）没有干跑，因此把「不可撤销」提前说到表单上：
+               默认开启这一项时就能看见，而不是等到点「立即优化」才第一次听说 -->
+          <TipAlert
+            v-if="isLance && spec.action === 'expire' && cards.expire.enabled"
+            type="warning"
+            class="pc-hint"
+          >
+            <template #title>VACUUM 不可撤销：删掉的版本无法恢复</template>
+            <div>
+              它删除早于「版本保留时长」的旧版本及其文件，时间旅行的窗口会随之缩短。
+              这张格式上没有干跑预览可核对，因此保留时长要留足余量（默认 72 小时），
+              且不得小于 catalog 的最大提交间隔。
+            </div>
+          </TipAlert>
+        </template>
       </PanelCard>
 
       <!-------------------------------- 执行历史 -------------------------------->
@@ -230,8 +283,11 @@
         </template>
       </SectionTitle>
 
+      <!-- 不支持的动作不给历史表：它永远不会有记录（批次根本不带这一项），
+           一张永远空的表只是噪音。动作卡仍然显示（置灰 + 原因），那是「边界要说得清」；
+           历史表是「回头看跑过什么」，对不存在的动作没有意义 -->
       <PanelCard
-        v-for="spec in actions"
+        v-for="spec in actions.filter((item) => actionSupported(item))"
         :key="`history-${spec.action}`"
         :title="`${spec.label} 历史`"
         :hint="historyHint(spec)"
@@ -317,15 +373,22 @@ import {
 } from '@/utils/optimization.js'
 
 /**
- * 表详情页的「存储优化」页签（Paimon 与 Iceberg 共用）。
+ * 表详情页的「存储优化」页签（Paimon、Iceberg 与 Lance 共用）。
  *
  * <p>三项动作（Compaction / Snapshot Expire / Orphan File Remove）的参数表单由
  * `@/utils/optimization.js` 按格式描述：Paimon 的 `ACTIONS`、Iceberg 的
- * `ICEBERG_ACTIONS`，取用一律走 `actionsFor(format)`（见那里的注释）。
- * 字段定义放在 utils 而不是这里，是因为参数键名必须与服务端的
- * `OptimizationOptions`（Paimon）与 `IcebergOptimizationOptions`（Iceberg）逐字一致，
- * 而键名写错的表现是保存时吃一个 400——`scripts/verify-console.py` 会拿那两份定义
- * 与服务端逐字比对，因此这里只负责渲染，不再自己列一遍字段。
+ * `ICEBERG_ACTIONS`、Lance 的 `LANCE_ACTIONS`，取用一律走 `actionsFor(format)`
+ * （见那里的注释）。字段定义放在 utils 而不是这里，是因为参数键名必须与服务端的
+ * `OptimizationOptions`（Paimon）、`IcebergOptimizationOptions`（Iceberg）与
+ * `LanceOptimizationOptions`（Lance）逐字一致，而键名写错的表现是保存时吃一个 400——
+ * `scripts/verify-console.py` 会拿那三份定义与服务端逐字比对，因此这里只负责渲染，
+ * 不再自己列一遍字段。
+ *
+ * <p><b>动作级的「不可用」与表级的「不支持」是两层。</b>表级的 {@link unsupported}
+ * 说的是「这张表能不能开优化」，动作级说的是「这一项在这种格式上有没有」——
+ * Lance 的 `VACUUM` 已经把过期版本与孤儿文件一起做了，因此 `orphan` 在它上面不存在。
+ * 那一张卡**照常渲染、但置灰并写清原因**，而不是少渲染一张：动作名与执行顺序是
+ * 格式无关的契约，藏起来会让人以为我们漏做了这项能力，去别处找。
  *
  * <p><b>格式从哪儿来。</b>以策略响应里的 `format` 为准（服务端按表的 `table_type` 推的），
  * `format` prop 只用于响应回来之前渲染第一屏——否则首帧会用错格式的字段把表单建起来，
@@ -345,7 +408,7 @@ const props = defineProps({
   database: { type: String, required: true },
   tableName: { type: String, required: true },
   /**
-   * 表格式（`PAIMON` / `ICEBERG`），只作首屏兜底：父组件知道自己渲染的是哪一页，
+   * 表格式（`PAIMON` / `ICEBERG` / `LANCE`），只作首屏兜底：父组件知道自己渲染的是哪一页，
    * 传进来比等策略响应早一帧；响应一到就以响应里的 `format` 为准。
    */
   format: { type: String, default: '' },
@@ -379,6 +442,26 @@ const format = computed(() => policy.data.value?.format || props.format || 'PAIM
 const actions = computed(() => actionsFor(format.value))
 
 const isIceberg = computed(() => format.value === 'ICEBERG')
+const isLance = computed(() => format.value === 'LANCE')
+
+/**
+ * 这项动作在当前格式上存不存在。
+ *
+ * <p>以服务端响应里的 `ActionPolicy.supported` 为准（原因文案也在那边），
+ * 响应还没到的那一帧用字段表里的静态位兜底——否则 Lance 的 `orphan` 卡片会先
+ * 可勾选、等数据到了再变灰，闪一下比一直灰着更费解。
+ */
+function actionSupported(spec) {
+  const action = actionPolicy(spec.action)
+  if (action.supported !== undefined) return action.supported !== false
+  return spec.supported !== false
+}
+
+/** 不可用的原因；服务端没给（旧版本服务端）时给一句不解释错的兜底。 */
+function actionReason(spec) {
+  return actionPolicy(spec.action).unsupportedReason
+    || `${spec.label} 在当前表格式上不单独提供`
+}
 
 // ------------------------------------------------------------------ 总开关
 
@@ -560,17 +643,33 @@ const enabledActions = computed(() => {
   return (data.actions || []).filter((item) => item.enabled).map((item) => item.action)
 })
 
+/**
+ * 这次的「立即优化」里有没有一个删了就回不来的动作。
+ *
+ * <p>只有 Lance 的 `VACUUM` 属于这一类：另两种格式的孤儿清理有干跑、快照过期有
+ * 「最少保留」，而 `VACUUM` 删掉的版本没有恢复路径、也没有预览可核对。因此确认框的
+ * 标题要直接把「不可撤销」说出来——这是整套能力里唯一一个点了就回不去的按钮，
+ * 把它塞进说明段等于让人跳过说明段。
+ */
+const hasIrreversibleStep = computed(() => isLance.value && enabledActions.value.includes('expire'))
+
 async function runNow() {
   const labels = enabledActions.value.map((action) => {
     const spec = actions.value.find((item) => item.action === action)
     return spec ? spec.label : action
   })
+  const window = cards.expire?.values?.['retention-hours']
   const ok = await confirmDanger({
-    title: '立即优化',
+    title: hasIrreversibleStep.value ? '立即优化（含不可撤销的 VACUUM）' : '立即优化',
     target: `对 ${props.tableName} 立即执行 ${labels.join('、')}？`,
-    detail: '会创建一个优化批次，由服务端在下一个提交节拍（默认 10 秒）投到 k8s 执行。'
-      + '批次与本表的历史都会记在「优化任务」页里；不需要了可以取消。',
-    confirmText: '立即优化',
+    detail: hasIrreversibleStep.value
+      ? `不可撤销：将删除早于 ${window || '保留窗口'} 小时前的旧版本及其文件，`
+        + '时间旅行窗口会随之缩短，且无法恢复（Lance 的 VACUUM 没有干跑预览）。'
+        + '批次由服务端在下一个提交节拍（默认 10 秒）投到 k8s 执行，'
+        + '本表的历史会记在「优化任务」页里。'
+      : '会创建一个优化批次，由服务端在下一个提交节拍（默认 10 秒）投到 k8s 执行。'
+        + '批次与本表的历史都会记在「优化任务」页里；不需要了可以取消。',
+    confirmText: hasIrreversibleStep.value ? '确认执行（不可撤销）' : '立即优化',
   })
   if (!ok) return
   running.value = true
@@ -737,6 +836,24 @@ watch(() => policy.data.value, () => {
 .pc-opt-error-text {
   color: var(--el-color-danger);
   overflow-wrap: anywhere;
+}
+
+/* 「不可用」的卡：整张压暗一档。不用 opacity——那会连标题一起糊掉，
+   而标题是用户在找的东西（「为什么这里灰着」）。只压底色与正文色，
+   标题由旁边那个「不可用」标签负责说明 */
+.pc-opt-absent {
+  background: var(--pc-surface-2);
+}
+
+.pc-opt-absent .pc-opt-title {
+  color: var(--pc-text-dim);
+}
+
+.pc-opt-absent-note {
+  margin-top: 6px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--pc-text-dim);
 }
 
 .pc-opt-history-error {

@@ -1,12 +1,13 @@
 # 表存储优化
 
-> 状态：**服务端、优化任务模块与控制台页签均已实现**（P1 + P2 + P3 的 Iceberg 部分）。
+> 状态：**服务端、优化任务模块与控制台页签均已实现**（P1 + P2 + P3 的 Iceberg 部分，以及
+> **第三种格式 Lance**——见 [`lance-table-optimization-design.md`](lance-table-optimization-design.md)）。
 > 两项能力在 P3 之后补齐：**Iceberg 表的存储优化**（§2.5、§6.5）与**权限管理覆盖 Iceberg catalog**
 > （见 `docs/authorization.md` §7）。落地过程中与原方案的偏差都写在对应小节里，
 > 并注明了改动的理由——本文同时是「当时为什么这么设计」的记录。
 >
 > 各节的实现状态：§2 动作映射 ✅（含 §2.5 Iceberg） · §3 执行架构 ✅ · §4 数据模型 ✅（`sql/schema-mysql.sql` 当时是 22 张表，**Iceberg 未新增表**；现为 27 张，后来加了行过滤/列脱敏 2 张、执行集群 1 张与调度通道租约 1 张）·
-> §5 API ✅ · §6 优化任务模块 ✅（`lakehouse-rest-optimizer`）· §7 控制台 ✅（Paimon 与 Iceberg 表详情页共用同一面板）· §8 分期见文末。
+> §5 API ✅ · §6 优化任务模块 ✅（`lakehouse-rest-optimizer`，三个格式分支）· §7 控制台 ✅（三种格式共用同一面板，参数与动作能力按格式分派）· §8 分期见文末。
 >
 > 对标对象：阿里云 DLF 的表存储优化（Compaction / Snapshot Expire / Orphan File Remove 三个子页签）与 AWS Lake Formation 的 Enable optimization（三项勾选 + 默认/自定义配置 + 三块历史）。**产品分层以 AWS 为基准**（总开关 → 三项独立启用 → 默认/自定义 → 历史三块），DLF 的快照详情卡、「立即清理」按钮与中文文案吸收进来。执行链路是本方案的自有部分：DLF 由服务端托管调度，AWS 由托管 optimizer（按 DPU 计费），我们用**先落库、再异步提交 k8s 运行 Spark 任务、多表合并执行**的方式实现。
 
@@ -16,7 +17,7 @@
 
 | 维度 | 阿里云 DLF | AWS Lake Formation | 本方案 |
 | --- | --- | --- | --- |
-| 入口 | 表详情「存储优化」页签，内部分三个子页签 | 表级「Enable optimization」独立页 | 表详情新增「存储优化」页签（Paimon 与 Iceberg 表都有，外部表除外；参数按 catalog 格式分派，见 §2.5） |
+| 入口 | 表详情「存储优化」页签，内部分三个子页签 | 表级「Enable optimization」独立页 | 表详情新增「存储优化」页签（Paimon 与 Iceberg 表都有，外部表除外；参数按 catalog 格式分派，见 §2.5。Lance 表的面板已就绪，入口待其详情页落地——见 `lance-table-optimization-design.md` §7.5） |
 | 开关形态 | 「智能存储优化」总开关 + 三个子页签各自配置 | 三项勾选（Compaction / Snapshot retention / Orphan file deletion） | 总开关 + 三项独立启用（AWS 形态，中文文案取 DLF） |
 | 配置 | 每项一页，字段平铺 | **默认设置 / 自定义设置**两档，默认值来自 Data Catalog settings | 采用 AWS 两档：默认值收敛在 **catalog 级优化设置**，表级只写差异 |
 | 历史 | 各子页签内一份「执行历史」 | 页面底部三块 history（Compaction / Snapshot retention / Orphan file deletion） | 表页签内三块历史（AWS 形态）；跨表视角另设全局「优化任务」页 |
@@ -128,14 +129,14 @@ expire 其实也能用 `older_than` 表达同一件事（我们算好 `now - N �
 
 **指标口径不顺译。** 执行侧报的是 procedure 真实输出的列，不是把 Iceberg 的读数套进 Paimon 的键：
 
-| 动作 | Paimon 指标 | Iceberg 指标 |
-| --- | --- | --- |
-| compact | `files-before` / `files-after` / `size-before` / `size-after` | `rewritten-files` / `added-files` / `rewritten-size`（`rewrite_data_files` 不报「合并后一共几个文件」） |
-| expire | `deleted-snapshots` | `deleted-data-files` / `deleted-manifest-files` / `deleted-manifest-lists`（`+ deleted-statistics-files`，>0 时才报） |
-| orphan | `deleted-files` / `released-size` | `deleted-files`（输出是「一行一个孤儿路径」，取 `count()`；干跑时就是候选条数） |
+| 动作 | Paimon 指标 | Iceberg 指标 | Lance 指标 |
+| --- | --- | --- | --- |
+| compact | `files-before` / `files-after` / `size-before` / `size-after` | `rewritten-files` / `added-files` / `rewritten-size`（`rewrite_data_files` 不报「合并后一共几个文件」） | `fragments-removed` / `fragments-added` / `files-removed` / `files-added`（`OPTIMIZE` 只报增量，没有 before/after） |
+| expire | `deleted-snapshots` | `deleted-data-files` / `deleted-manifest-files` / `deleted-manifest-lists`（`+ deleted-statistics-files`，>0 时才报） | `old-versions` / `bytes-removed`（人类可读，采集侧就转好） |
+| orphan | `deleted-files` / `released-size` | `deleted-files`（输出是「一行一个孤儿路径」，取 `count()`；干跑时就是候选条数） | —（`VACUUM` 已包含，这一项在 Lance 上不存在） |
 
-控制台侧 `metricSummary()` 因此**不判格式、只判键存在**——两套键在同一动作下互不重叠，
-批次页（一批里可能混着两种格式的表）也就不需要知道每张表的格式。
+控制台侧 `metricSummary()` 因此**不判格式、只判键存在**——三套键在同一动作下互不重叠，
+批次页（一批里可能混着三种格式的表）也就不需要知道每张表的格式。
 
 > 备注：`CALL` 在 Iceberg 里由 `IcebergSparkSessionExtensions` 注册成 procedure，
 > 只把 `iceberg-spark-runtime` 放进类路径不够（见 §6.5）。
@@ -412,15 +413,21 @@ Lance 面见 [`lance-table-optimization-design.md`](lance-table-optimization-des
 容易写错的地方：binpack 不传 `strategy`、zorder 走 `sort` + `sort_order`（且**不含** `z_order_columns`
 ——那是别人的参数名）、`expire` / `orphan` 的时间戳是 UTC 字面量。
 
-### 6.5 Iceberg 的差异（同一模块内分派）
+### 6.5 Iceberg 与 Lance 的差异（同一模块内分派）
 
-执行流程（跳过已上报的表、部分成功、耗时、失败上报、重试）两种格式**完全共用**，
+执行流程（跳过已上报的表、部分成功、耗时、失败上报、重试）三种格式**完全共用**，
 只在两处分派，其余一处也不分：
 
-| 分派点 | Paimon | Iceberg |
-| --- | --- | --- |
-| `steps()`：语句怎么生成 | `PaimonProcedures.steps(...)` | `IcebergProcedures.steps(...)` |
-| `spark()`：会话怎么建 | `spark.sql.catalog.<c>.metastore=rest` + `data-token.enabled=true` + Paimon 扩展 | `.type=rest` + `.header.X-Iceberg-Access-Delegation=vended-credentials` + `cache-enabled=false` + Iceberg 扩展 |
+| 分派点 | Paimon | Iceberg | Lance |
+| --- | --- | --- | --- |
+| `steps()`：语句怎么生成 | `PaimonProcedures.steps(...)` | `IcebergProcedures.steps(...)` | `LanceProcedures.steps(...)`（`OPTIMIZE` / `VACUUM`，parser 级命令） |
+| `spark()`：会话怎么建 | `spark.sql.catalog.<c>.metastore=rest` + `data-token.enabled=true` + Paimon 扩展 | `.type=rest` + `.header.X-Iceberg-Access-Delegation=vended-credentials` + `cache-enabled=false` + Iceberg 扩展 | `.impl=rest` + `.uri=<catalogUrl>/lance` + `.parent=<catalog>` + `.headers.Authorization=Bearer <token>` + `LanceSparkSessionExtensions` |
+
+Lance 那一路的完整说明（两条语句的映射、参数键表、`--add-opens` 为什么只能写 `ENV`、
+镜像里的 arrow 类冲突）在 [`lance-table-optimization-design.md`](lance-table-optimization-design.md)，
+这里只记与本节相关的三条：**格式分派改成穷尽 `switch`**（`enum Format`，`isIceberg(plan)`
+已删除——它是「加第三种格式就静默走错分支」的根源）、**动作只有两项**（`orphan` 由 `VACUUM`
+包含）、**指标只有增量**（没有 before/after，见 §4 的指标表）。
 
 - **Iceberg 的 `CALL` 需要 `IcebergSparkSessionExtensions`**：只把 `iceberg-spark-runtime` 放进类路径
   是不够的，procedure 由这个扩展注册。扩展在 `spark()` 里按批次格式设置。
@@ -437,11 +444,16 @@ Lance 面见 [`lance-table-optimization-design.md`](lance-table-optimization-des
 
 ## 7. 控制台
 
-- **表详情新增「存储优化」页签**：Paimon 侧仅 `isPaimonTable` 时渲染（format/object/lance 表没有快照与 compaction 概念，页签隐藏——与「快照/标签/分支」同一条伸缩规则）；按需加载（首次切入才请求策略与历史）。
+- **表详情新增「存储优化」页签**：Paimon 侧仅 `isPaimonTable` 时渲染（format/object 表没有快照与 compaction 概念，页签隐藏——与「快照/标签/分支」同一条伸缩规则）；按需加载（首次切入才请求策略与历史）。
   **Iceberg 表用的是同一个组件**：`IcebergTableView` 挂 `TableOptimizationPanel` 并显式传 `format="ICEBERG"`，
   组件内部按「策略响应的 `format` → prop → `PAIMON`」取格式，再用 `actionsFor(format)` 取那一套参数定义。
-  不另做一个面板的理由与「两种格式共用任务表」一致：动作名、执行顺序、三块历史、批次链接、干跑警示
+  不另做一个面板的理由与「三种格式共用任务表」一致：动作名、执行顺序、三块历史、批次链接、干跑警示
   全都不随格式变，真要分开写，这些会各有一份副本。
+  **Lance 表的面板也已经就绪**（`LANCE_FIELDS` / `actionsFor` 三元 / 第三张卡按服务端的
+  `ActionPolicy.supported` 置灰），但页签的白名单**刻意没有**加 `lance-table`：那种表是 Paimon
+  面给一个 Lance 目录做的元数据包装，执行侧通过 Lance 的 REST 目录解析不到它；而真正的
+  `table_type=LANCE` 表所在的 Lance catalog 还没有控制台浏览入口。理由与解除条件写在
+  `lance-table-optimization-design.md` §7.5 与 `TableView.vue` 那段判断上方的注释里。
 - 页签内布局见效果图：总开关卡（开关 + 调度间隔 + 最近批次 + 下次调度 + 立即优化）→ 三张动作卡（勾选 + **默认/自定义两档**）→ 孤儿清理干跑关闭时的警示条 → 三块历史（Compaction / 快照清理 / 孤儿文件清理，各带批次链接可跳到「优化任务」页）。
   - 「默认设置 / 自定义」不是独立开关，而是「差异为不为空」：自定义档只提交**改动过的键 + 原本就配过的键**（整份回填会把当前默认值抄成差异，运维之后调 catalog 默认值就再也影响不到这张表）。
   - 参数表单的字段定义只有一处取用入口（`utils/optimization.js` 的 `actionsFor(format)`），两套键表分别是

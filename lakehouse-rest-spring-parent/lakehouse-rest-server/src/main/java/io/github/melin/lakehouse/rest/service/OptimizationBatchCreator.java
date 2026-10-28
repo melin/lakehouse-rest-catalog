@@ -122,7 +122,7 @@ public class OptimizationBatchCreator {
         Map<String, List<Action>> enabled = new HashMap<>();
         long windowMillis = 0;
         for (TableOptimizationEntity policy : policies) {
-            List<Action> actions = TableOptimizationService.enabledActions(policy);
+            List<Action> actions = TableOptimizationService.enabledActions(policy, format);
             enabled.put(policy.getId(), actions);
             Map<String, Map<String, String>> resolved = configResolver.resolve(format, catalogProperties,
                     OptimizationConfigResolver.tableConfigs(policy));

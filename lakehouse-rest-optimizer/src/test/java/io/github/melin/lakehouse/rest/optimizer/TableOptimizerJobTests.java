@@ -132,4 +132,27 @@ class TableOptimizerJobTests {
         assertEquals("IllegalStateException: cannot fetch the plan"
                 + " <- RuntimeException: connection refused", reason);
     }
+
+    /**
+     * 清单格式的三种输入，三种结论。
+     *
+     * <p>这三条合起来是「缺字段回落」与「未知取值回落」的分界：前者是本特性引入前的形状
+     * （老服务端没有 {@code format} 字段），回落 Paimon 是兼容；后者说明服务端比任务新，
+     * 猜一个分支去执行只会让每张表以「表不存在」失败，而真正的错因是没人看的那行日志。
+     */
+    @Test
+    void formatParsingSeparatesMissingFromUnknown() {
+        // 缺字段：老服务端，唯一可能的形状就是 Paimon
+        assertEquals(TableOptimizerJob.Format.PAIMON, TableOptimizerJob.Format.parse(null));
+        assertEquals(TableOptimizerJob.Format.PAIMON, TableOptimizerJob.Format.parse("  "));
+        // 大小写不敏感：wire 名由服务端枚举给出，但不该因为大小写差异就失败
+        assertEquals(TableOptimizerJob.Format.LANCE, TableOptimizerJob.Format.parse("lance"));
+        assertEquals(TableOptimizerJob.Format.ICEBERG, TableOptimizerJob.Format.parse("ICEBERG"));
+
+        RuntimeException failure = assertThrows(IllegalArgumentException.class,
+                () -> TableOptimizerJob.Format.parse("HUDI"));
+        // 报错要指名取值与「升级镜像」这条出路
+        assertTrue(failure.getMessage().contains("HUDI"), failure.getMessage());
+        assertTrue(failure.getMessage().contains("upgrade the optimizer image"), failure.getMessage());
+    }
 }

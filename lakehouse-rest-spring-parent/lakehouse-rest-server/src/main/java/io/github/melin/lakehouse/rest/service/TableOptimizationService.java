@@ -25,6 +25,7 @@ import io.github.melin.lakehouse.rest.service.OptimizationJobService.BatchTable;
 import io.github.melin.lakehouse.rest.service.exec.ExecutionClusterService;
 import io.github.melin.lakehouse.rest.support.ApiException;
 import io.github.melin.lakehouse.rest.support.CatalogFormat;
+import io.github.melin.lakehouse.rest.support.LanceOptimizationOptions;
 import io.github.melin.lakehouse.rest.support.OptimizationOptions;
 import io.github.melin.lakehouse.rest.support.OptimizationOptions.Action;
 import io.github.melin.lakehouse.rest.support.OptimizationStatus;
@@ -47,12 +48,16 @@ import org.springframework.transaction.annotation.Transactional;
  * 「现在实际会用什么参数」——两边共用同一份合并结果（{@link OptimizationConfigResolver}），
  * 不各算一遍。
  *
- * <p><b>可优化的表：Paimon 与 Iceberg 两种格式、且不是外部表。</b>三项动作的语义在两边
+ * <p><b>可优化的表：Paimon、Iceberg、Lance 三种格式。</b>三项动作的语义在三种格式上
  * 是一一对应的（小文件合并 / 过期快照清理 / 孤儿文件清理），差别只在参数与执行语句——
  * 参数分派见 {@link OptimizationOptions#defaults(io.github.melin.lakehouse.rest.support.CatalogFormat,
- * OptimizationOptions.Action)}，执行分派在优化任务侧。外部表仍然排除：它的位置不归本服务
- * 所有（{@code register} 登记或建表自带 {@code path}），对它做 compaction 等于在别人的目录里
- * 写文件——这一点与格式无关。
+ * OptimizationOptions.Action)}，执行分派在优化任务侧。
+ *
+ * <p><b>外部表的规则按格式不同</b>（{@link #requireOptimizable}）：Paimon / Iceberg 的
+ * 外部表被拒——它的位置不归本服务所有（{@code register} 登记或建表自带 {@code path}），
+ * 对它做 compaction 等于在别人的目录里写文件。**Lance 是例外**：Lance 的数据全部由客户端
+ * 写入，{@code register} 登记进来的表天然「外部」，照搬这条会让 Lance 表一张也开不了，
+ * 而 400 的文案（「位置不归本服务所有」）还会把人往权限问题上引。
  */
 @Service
 @RequiredArgsConstructor
@@ -86,8 +91,12 @@ public class TableOptimizationService {
     @Transactional
     public TablePolicy policy(String prefix, String databaseName, String tableName) {
         TableRef ref = requireTable(prefix, databaseName, tableName);
+        // 读路径不抛「格式认不出」：一张旧数据或脏数据里的表仍然要能打开策略页，
+        // 页面上写清「不支持，因为表格式是 X」比一个 400 更有用（写路径才硬拒，
+        // 见 requireOptimizable）。format 为 null 时 toPolicy 按 Paimon 渲染但置 supported=false。
+        CatalogFormat format = recognizedFormatOf(ref.table());
         return toPolicy(prefix, ref.database().getName(), ref.table(),
-                policyRepository.findByTableId(ref.table().getId()).orElse(null), formatOf(ref.table()));
+                policyRepository.findByTableId(ref.table().getId()).orElse(null), format);
     }
 
     /**
@@ -109,7 +118,7 @@ public class TableOptimizationService {
         long now = clock.millis();
         TableOptimizationEntity policy = policyRepository.findByTableId(table.getId()).orElse(null);
         if (policy == null) {
-            policy = newPolicy(table, principal, now);
+            policy = newPolicy(table, principal, now, format);
         }
         if (request.enabled() != null) {
             policy.setEnabled(request.enabled());
@@ -132,6 +141,12 @@ public class TableOptimizationService {
                     throw ApiException.badRequest("Unknown optimization action: " + update.action()
                             + ", supported: " + OptimizationOptions.actionNames());
                 }
+                // 不支持的动作在这里就拒掉：允许「存进去」等于让一个一跑就失败的开关存在，
+                // 而它的失败原因会是「服务端没实现」——那是 bug 的说法，不是能力边界
+                // （能力边界由 ActionPolicy.supported 表达，见 toPolicy）。
+                if (!OptimizationOptions.isSupported(format, action)) {
+                    throw ApiException.badRequest(OptimizationOptions.unsupportedReason(format, action));
+                }
                 if (update.enabled() != null) {
                     switch (action) {
                         case COMPACT -> policy.setCompactionEnabled(update.enabled());
@@ -141,6 +156,7 @@ public class TableOptimizationService {
                 }
                 if (update.config() != null) {
                     OptimizationOptions.validate(format, action, update.config());
+                    assertRetentionAboveCommitInterval(format, action, update.config(), table);
                     Map<String, String> config = new LinkedHashMap<>(update.config());
                     switch (action) {
                         case COMPACT -> policy.setCompactionConfig(config);
@@ -252,12 +268,18 @@ public class TableOptimizationService {
         TableRef ref = requireTable(prefix, databaseName, tableName);
         TableEntity table = ref.table();
         requireOptimizable(table);
+        CatalogFormat format = formatOf(table);
         TableOptimizationEntity policy = policyRepository.findByTableId(table.getId()).orElse(null);
-        List<Action> enabled = enabledActions(policy);
+        List<Action> enabled = enabledActions(policy, format);
         List<Action> actions = requestedActions == null || requestedActions.isEmpty()
                 ? enabled
                 : OptimizationOptions.parseActions(requestedActions);
         for (Action action : actions) {
+            // 不支持的动作给出的是「能力边界」而不是「你没开这个开关」：
+            // 「action orphan is not enabled for this table」会让人去策略页找个不存在的开关
+            if (!OptimizationOptions.isSupported(format, action)) {
+                throw ApiException.badRequest(OptimizationOptions.unsupportedReason(format, action));
+            }
             if (!enabled.contains(action)) {
                 throw ApiException.badRequest("action " + action.wire() + " is not enabled for this table");
             }
@@ -284,6 +306,43 @@ public class TableOptimizationService {
     }
 
     // ------------------------------------------------------------------ 内部
+
+    /**
+     * Lance 的 expire 多一条**相对**下限：保留窗口不得小于该 catalog 的最大提交间隔。
+     *
+     * <p>为什么这条是硬校验而不是提示：{@code VACUUM} 不区分「过期」与「还在写」——
+     * 它按时间戳删版本、再回收不被保留版本引用的文件。窗口小于表的提交间隔时，
+     * 一次慢提交的写入文件就会被判定为无引用而删掉，而这件事<b>没有干跑可以兜</b>
+     * （另两种格式的孤儿清理有 {@code dry_run}）。因此口径与 Paimon 的孤儿清理护栏
+     * 相同、强度更高（{@code docs/lance-table-optimization-design.md} §8 R4）。
+     *
+     * <p>只校验「这次提交里真的改 {@code retention-hours} 的请求」：用户只改执行间隔时
+     * 弹一句「你的保留窗口太小」会让人无从下手——那个值不是他这次动的。
+     */
+    private void assertRetentionAboveCommitInterval(CatalogFormat format, Action action,
+                                                    Map<String, String> config, TableEntity table) {
+        if (format != CatalogFormat.LANCE || action != Action.EXPIRE) {
+            return;
+        }
+        String value = config.get(LanceOptimizationOptions.RETENTION_HOURS);
+        if (value == null || value.isBlank()) {
+            return;
+        }
+        int retention;
+        try {
+            retention = Integer.parseInt(value.trim());
+        } catch (NumberFormatException exception) {
+            return; // 非法数字由 OptimizationOptions.validate 报，这里不抢它的错误文案
+        }
+        int floor = LanceOptimizationOptions.maxCommitIntervalHours(
+                configResolver.catalogProperties(table.getCatalogId()));
+        if (retention < floor) {
+            throw ApiException.badRequest(LanceOptimizationOptions.RETENTION_HOURS + " must be at least "
+                    + floor + " hours: it may not be shorter than the max commit interval of this catalog"
+                    + " (optimization.expire." + LanceOptimizationOptions.MAX_COMMIT_INTERVAL_HOURS
+                    + "), otherwise VACUUM can delete files that are still being written");
+        }
+    }
 
     /** 一次表定位的结果：格式从 {@code table.tableType} 推，catalog 留给需要 catalog 级信息的地方。 */
     private record TableRef(DatabaseEntity database, TableEntity table) {
@@ -315,11 +374,14 @@ public class TableOptimizationService {
 
     /** 表的优化能力边界，写操作与立即执行都要过这一关。 */
     public static void requireOptimizable(TableEntity table) {
-        if (!isOptimizableFormat(table.getTableType())) {
-            throw ApiException.badRequest("storage optimization is only available for Paimon and Iceberg"
-                    + " tables, but this table is " + table.getTableType());
+        CatalogFormat format = recognizedFormatOf(table);
+        if (format == null || !isOptimizableFormat(table.getTableType())) {
+            throw ApiException.badRequest("storage optimization is only available for Paimon, Iceberg and"
+                    + " Lance tables, but this table is " + table.getTableType());
         }
-        if (table.isExternal()) {
+        // Lance 例外：它的数据本来就全部由客户端写入，register 登记进来的表天然是「外部」的。
+        // 照搬这条会让 Lance 表一张也开不了，而文案还会把人往权限问题上引。
+        if (format != CatalogFormat.LANCE && table.isExternal()) {
             throw ApiException.badRequest("storage optimization is not available for external tables:"
                     + " their location is not owned by this service");
         }
@@ -328,33 +390,71 @@ public class TableOptimizationService {
     /**
      * 这张表能不能优化（不抛异常的版本，调度扫描用它跳过不该进批的表）。
      *
-     * <p>与 {@link #requireOptimizable} 同一套判据：能优化的格式 + 非外部表。
+     * <p>与 {@link #requireOptimizable} 同一套判据：能优化的格式 + 非外部表（Lance 不看外部）。
      * 调度侧不能抛异常——一条脏策略把整轮扫描打断，代价是「所有 catalog 都停止优化」。
      */
     public static boolean isOptimizable(TableEntity table) {
-        return table != null && isOptimizableFormat(table.getTableType()) && !table.isExternal();
+        if (table == null) {
+            return false;
+        }
+        CatalogFormat format = recognizedFormatOf(table);
+        if (format == null || !isOptimizableFormat(table.getTableType())) {
+            return false;
+        }
+        return format == CatalogFormat.LANCE || !table.isExternal();
     }
 
-    /** 两种可优化格式。放在这里而不是散在各处：加第三种格式时要改的只有这一处。 */
+    /** 三种可优化格式。放在这里而不是散在各处：加第四种格式时要改的只有这一处。 */
     private static boolean isOptimizableFormat(String tableType) {
-        return "PAIMON".equalsIgnoreCase(tableType) || "ICEBERG".equalsIgnoreCase(tableType);
+        return "PAIMON".equalsIgnoreCase(tableType) || "ICEBERG".equalsIgnoreCase(tableType)
+                || "LANCE".equalsIgnoreCase(tableType);
     }
 
-    /** 表的格式。{@code ICEBERG} 是唯一会被认出的非 Paimon 取值，其余回落 Paimon。 */
+    /**
+     * 表的格式，**认不出返回 {@code null}**。
+     *
+     * <p>不用 {@link CatalogFormat#of}：它对认不出的取值回落 Paimon，那在只有两种格式的年代
+     * 是安全的一侧（回落目标就是「唯一可能的另一侧」），加了第三种之后回落的是一个
+     * <b>错误答案</b>——一张 {@code table_type=lance-table} 的旧表会拿到 Paimon 的参数表，
+     * 于是表单里出现 {@code retain-min} 这类它根本不认的键。
+     *
+     * <p>读路径（{@link #policy}）把 {@code null} 表达成「不支持 + 原因」；写路径
+     * （{@link #requireOptimizable}）直接 400 并指名取值。
+     */
+    static CatalogFormat recognizedFormatOf(TableEntity table) {
+        return table == null ? null : CatalogFormat.parse(table.getTableType()).orElse(null);
+    }
+
+    /** 表的格式；认不出时 400（只在已过 {@link #requireOptimizable} 的路径上调用）。 */
     public static CatalogFormat formatOf(TableEntity table) {
-        return CatalogFormat.of(table.getTableType());
+        CatalogFormat format = recognizedFormatOf(table);
+        if (format == null) {
+            throw ApiException.badRequest("storage optimization is not available for table type "
+                    + (table == null ? "null" : table.getTableType()));
+        }
+        return format;
     }
 
-    /** catalog 的格式（catalog 级默认值按它校验）。 */
+    /** catalog 的格式（catalog 级默认值按它校验）。catalog 的格式由创建时选定，不会认不出。 */
     static CatalogFormat formatOf(CatalogEntity catalog) {
         return CatalogFormat.of(catalog.getCatalogFormat());
     }
 
-    /** 表已启用的动作；没有策略行时按三项的默认开关（孤儿文件清理默认关闭）。 */
-    public static List<Action> enabledActions(TableOptimizationEntity policy) {
+    /**
+     * 表已启用的动作（按格式）；没有策略行时按各格式的默认开关。
+     *
+     * <p>结果**不含该格式不支持的动作**：Lance 表上即便库里 {@code orphan_remove_enabled}
+     * 是 {@code true}（历史数据、或有人直接改库），也不会进批——它不会被翻译成语句。
+     * 这一层过滤与 {@link #toPolicy} 里读时算 {@code supported} 是同一条规则的两端：
+     * 一个让页面不显示开关，一个让批次不带这个动作。
+     */
+    public static List<Action> enabledActions(TableOptimizationEntity policy, CatalogFormat format) {
         List<Action> actions = new ArrayList<>();
         for (Action action : Action.values()) {
-            boolean enabled = policy == null ? OptimizationOptions.defaultEnabled(action) : switch (action) {
+            if (!OptimizationOptions.isSupported(format, action)) {
+                continue;
+            }
+            boolean enabled = policy == null ? OptimizationOptions.defaultEnabled(format, action) : switch (action) {
                 case COMPACT -> policy.isCompactionEnabled();
                 case EXPIRE -> policy.isSnapshotExpireEnabled();
                 case ORPHAN -> policy.isOrphanRemoveEnabled();
@@ -366,16 +466,19 @@ public class TableOptimizationService {
         return actions;
     }
 
-    private TableOptimizationEntity newPolicy(TableEntity table, String principal, long now) {
+    private TableOptimizationEntity newPolicy(TableEntity table, String principal, long now,
+                                              CatalogFormat format) {
         TableOptimizationEntity policy = new TableOptimizationEntity();
         policy.setId(Paging.newId());
         policy.setTableId(table.getId());
         policy.setCatalogId(table.getCatalogId());
         policy.setEnabled(false);
         policy.setScheduleIntervalSeconds(DEFAULT_SCHEDULE_SECONDS);
-        policy.setCompactionEnabled(true);
-        policy.setSnapshotExpireEnabled(true);
-        policy.setOrphanRemoveEnabled(false);
+        // 三项默认开关按格式取：Lance 的 expire（= VACUUM，不可逆、无干跑）默认关，
+        // 与另两种格式把 orphan 默认关是同一条理由——会删数据的那一项必须显式按下开关
+        policy.setCompactionEnabled(OptimizationOptions.defaultEnabled(format, Action.COMPACT));
+        policy.setSnapshotExpireEnabled(OptimizationOptions.defaultEnabled(format, Action.EXPIRE));
+        policy.setOrphanRemoveEnabled(OptimizationOptions.defaultEnabled(format, Action.ORPHAN));
         policy.markCreated(principal, now);
         policy.setUpdatedAt(now);
         return policy;
@@ -384,6 +487,9 @@ public class TableOptimizationService {
     private TablePolicy toPolicy(String catalog, String databaseName, TableEntity table,
                                  TableOptimizationEntity policy, CatalogFormat format) {
         Map<String, String> catalogProperties = configResolver.catalogProperties(table.getCatalogId());
+        // 格式认不出时按 Paimon 渲染一份空壳（页面会因 supported=false 整块收起），
+        // 但绝不能因为「不知道该用哪套参数」而让整个策略接口 500
+        CatalogFormat rendering = format == null ? CatalogFormat.DEFAULT : format;
         List<ActionPolicy> actions = new ArrayList<>();
         for (Action action : Action.values()) {
             Map<String, String> config = policy == null ? new LinkedHashMap<>() : switch (action) {
@@ -391,25 +497,35 @@ public class TableOptimizationService {
                 case EXPIRE -> policy.getSnapshotExpireConfig();
                 case ORPHAN -> policy.getOrphanRemoveConfig();
             };
-            boolean enabled = policy == null ? OptimizationOptions.defaultEnabled(action) : switch (action) {
-                case COMPACT -> policy.isCompactionEnabled();
-                case EXPIRE -> policy.isSnapshotExpireEnabled();
-                case ORPHAN -> policy.isOrphanRemoveEnabled();
-            };
+            boolean supported = format != null && OptimizationOptions.isSupported(format, action);
+            // 不支持的动作一律回 enabled=false：库里那一列对 Lance 表是无意义的
+            // （orphan_remove_enabled 落库后换不了格式，格式又不可变），读时算比写时清更可靠
+            boolean enabled = !supported ? false
+                    : policy == null ? OptimizationOptions.defaultEnabled(rendering, action) : switch (action) {
+                        case COMPACT -> policy.isCompactionEnabled();
+                        case EXPIRE -> policy.isSnapshotExpireEnabled();
+                        case ORPHAN -> policy.isOrphanRemoveEnabled();
+                    };
             actions.add(new ActionPolicy(action.wire(), action.displayName(), enabled,
                     config == null ? new LinkedHashMap<>() : new LinkedHashMap<>(config),
-                    configResolver.resolve(format, action, catalogProperties, config),
-                    config == null || config.isEmpty()));
+                    configResolver.resolve(rendering, action, catalogProperties, config),
+                    config == null || config.isEmpty(),
+                    supported,
+                    supported ? null : OptimizationOptions.unsupportedReason(rendering, action)));
         }
         boolean supported = isOptimizable(table);
         String reason = null;
-        if (!isOptimizableFormat(table.getTableType())) {
-            reason = "只有 Paimon 与 Iceberg 表支持存储优化，当前表类型为 " + table.getTableType();
-        } else if (table.isExternal()) {
+        if (format == null) {
+            // 「认不出」与「认得但不支持」要分开说：前者是脏数据或旧格式（改不动），
+            // 后者是能力边界。两句都带格式取值，用户才知道该去改什么
+            reason = "只有 Paimon、Iceberg 与 Lance 表支持存储优化，无法识别的表格式：" + table.getTableType();
+        } else if (!isOptimizableFormat(table.getTableType())) {
+            reason = "只有 Paimon、Iceberg 与 Lance 表支持存储优化，当前表类型为 " + table.getTableType();
+        } else if (format != CatalogFormat.LANCE && table.isExternal()) {
             reason = "外部表的位置不归本服务所有，不支持存储优化";
         }
         return new TablePolicy(catalog, databaseName, table.getName(),
-                format.wireName(),
+                rendering.wireName(),
                 policy != null && policy.isEnabled(),
                 policy == null ? DEFAULT_SCHEDULE_SECONDS : policy.getScheduleIntervalSeconds(),
                 policy == null ? null : policy.getNextRunAt(),
@@ -432,10 +548,13 @@ public class TableOptimizationService {
         for (Action action : Action.values()) {
             Map<String, String> catalogConfig =
                     OptimizationOptions.catalogDefaults(catalog.getProperties(), format, action);
-            policies.add(new ActionPolicy(action.wire(), action.displayName(), true,
+            boolean supported = OptimizationOptions.isSupported(format, action);
+            policies.add(new ActionPolicy(action.wire(), action.displayName(), supported,
                     catalogConfig,
                     configResolver.resolve(format, action, catalog.getProperties(), Map.of()),
-                    catalogConfig.isEmpty()));
+                    catalogConfig.isEmpty(),
+                    supported,
+                    supported ? null : OptimizationOptions.unsupportedReason(format, action)));
         }
         return policies;
     }
@@ -459,7 +578,11 @@ public class TableOptimizationService {
         }
         // 参数名必须是该项动作认得的键，否则它会静默落库、静默不生效。
         // 「认得的键」按 catalog 格式取：Iceberg 的 retain-last 写进 Paimon catalog 是无意义的。
-        if (!OptimizationOptions.isKnownOption(format, action, rest.substring(dot + 1))) {
+        // 另一类例外是**只允许出现在 catalog 属性里**的键（Lance 的
+        // optimization.expire.max-commit-interval-hours）：它是全局护栏，不是表参数。
+        String option = rest.substring(dot + 1);
+        if (!OptimizationOptions.isKnownOption(format, action, option)
+                && !OptimizationOptions.isCatalogOnlyOption(format, action, option)) {
             throw ApiException.badRequest("Unknown optimization option in setting key: " + key);
         }
         return action;
