@@ -19,9 +19,6 @@
     <PanelCard flush>
       <div class="pc-list-head">
         <span class="pc-list-title">主体（{{ total }}）</span>
-        <span class="pc-list-tools">
-          <span class="pc-mono pc-dim">管理 API /principals</span>
-        </span>
       </div>
       <ResourceState
         :loading="loading"

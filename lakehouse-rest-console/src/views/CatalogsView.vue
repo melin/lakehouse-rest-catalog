@@ -43,7 +43,6 @@
               :value="option.value"
             />
           </el-select>
-          <span class="pc-mono pc-dim">管理 API /catalogs</span>
         </span>
       </div>
       <ResourceState
