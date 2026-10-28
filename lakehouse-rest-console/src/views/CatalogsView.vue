@@ -174,10 +174,17 @@
     />
 
     <!-- 新建 / 编辑 -->
+you    <!--
+      宽度 820：表格式是三张并排的选项卡片（Paimon / Iceberg / Lance），
+      每张要放得下「名称 + 一句说明 + 一行路径」。620 时第三张会被挤到下一行，
+      留出半行空白，也让「三选一」看起来像「先二选一、再看情况」。
+      820 = 三张 220 的卡片 + 两道 10px 间距 + 对话框自身 32px 内边距，刚好一行；
+      与 Iceberg 浏览页的建表弹层同宽，站内没有多出第二个尺寸。
+    -->
     <el-dialog
       v-model="dialog.open"
       :title="dialog.mode === 'create' ? '新建 Catalog' : `编辑 Catalog：${dialog.name}`"
-      width="620px"
+      width="820px"
       :close-on-click-modal="false"
       top="6vh"
       destroy-on-close
@@ -196,17 +203,17 @@
           会让人以为「再点点看能不能改」，而这件事在服务端根本不存在。
 
           用选项卡片而不是下拉（效果图见 `outputs/iceberg-rest-catalog/mockup.html`）：
-          两个选项各自的**后果**要能在选之前读完——客户端走哪段路径、控制台能显示什么。
+          每种格式各自的**后果**要能在选之前读完——客户端走哪段路径、控制台能显示什么。
           下拉里塞不下这些，于是它们只能退化成 tooltip，而没人会为了选一个值去点问号。
         -->
         <el-form-item v-if="dialog.mode === 'create'" required>
           <template #label>
             <FieldLabel
               label="表格式（catalogFormat）"
-              tip="决定这个 prefix 服务哪一套 REST 协议：Paimon REST 或 Iceberg REST。创建后不可更改，要换格式请删除重建。"
+              tip="决定这个 prefix 服务哪一套 REST 协议：Paimon / Iceberg / Lance。创建后不可更改，要换格式请删除重建。"
             />
           </template>
-          <div class="pc-pick-grid">
+          <div class="pc-pick-grid pc-pick-grid-three">
             <div
               v-for="option in formatOptions"
               :key="option.value"
@@ -703,6 +710,22 @@ const {
 </script>
 
 <style scoped>
+/* 表格式是「三选一」：Paimon / Iceberg / Lance 三张卡片必须排在同一行。
+ * 全局的 .pc-pick-grid 是 auto-fit（按最小列宽自动折行），620 宽时第三张会被挤到
+ * 下一行，看起来像「先二选一、再看情况」——而这三种格式在服务端是同一级的。
+ * 这里钉死三列，把「一行」变成明确意图，而不是靠对话框宽度凑出来的巧合；
+ * minmax(0, 1fr) 让长路径（/lance/v1/namespace/{id}）在卡片内折行而不是撑破栅格。
+ * 窄窗口（对话框放不下三张卡）退回单列，卡片高度仍由内容决定。 */
+.pc-pick-grid-three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+@media (max-width: 860px) {
+  .pc-pick-grid-three {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* 空态里的成因说明：比 el-empty 的 description 长，因此单独一段并限宽，
  * 不让它把「新建 Catalog」按钮推得很远。 */
 .pc-empty-hint {

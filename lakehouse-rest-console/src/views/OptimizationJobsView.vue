@@ -5,6 +5,52 @@
       subtitle="跨 catalog 的 Spark 优化批次：定时调度与手动触发都会先创建任务记录，再异步提交到 k8s 执行，逐表回调上报结果。一个批次 = 同一 catalog 里同时到期的一组表。"
     >
       <template #actions>
+        <!--
+          画面 6：没配执行集群时这一屏要能自己解释「为什么一条批次都没有」。
+          数据来自 session 里那份 catalog 列表（每行都带 executionCluster 摘要），
+          不额外发请求：这是提示，不是判据——真正的拦截在服务端（策略保存 400、
+          出批跳过），这里只是提前把原因说出来。
+
+          为什么不是一条横幅：这段说明有五行，而它出现的场景恰恰是「列表空着」——
+          横幅把统计卡与空态一起挤到折叠线以下，用户看到的第一屏全是解释。
+          收成页头一颗叹号：图标常驻（异常不会被忽略），文字悬停即现（说明不丢）。
+          用 popover 而不是 tooltip，是因为里面有一个「去 Catalogs 配置」——
+          气泡在指针移入时不关闭，按钮点得到；藏进纯 tooltip 就等于把这个出口丢了。
+        -->
+        <el-popover
+          v-if="blockedCatalogs.length"
+          placement="bottom-end"
+          :width="400"
+          trigger="hover"
+          :show-after="0"
+          :hide-after="120"
+        >
+          <template #reference>
+            <!-- tabindex 让键盘用户也能到这颗图标上：el-popover 的 triggerKeys
+                 （回车/空格）不看 trigger 类型，聚焦后按一下同样能展开 -->
+            <span
+              class="pc-opt-gap"
+              role="note"
+              tabindex="0"
+              :aria-label="`${blockedCatalogs.length} 个 catalog 没有可用的执行集群，悬停查看详情`"
+            >
+              <el-icon :size="15"><WarningFilled /></el-icon>
+            </span>
+          </template>
+          <div class="pc-opt-gap-title">
+            <el-icon class="pc-opt-gap-title-icon"><WarningFilled /></el-icon>
+            <span>{{ blockedCatalogs.length }} 个 catalog 没有可用的执行集群</span>
+          </div>
+          <p class="pc-opt-gap-text">
+            <span class="pc-mono pc-break">{{ blockedCatalogs.join('、') }}</span>
+            的优化任务不会提交：出批时整组跳过，<b>游标不推进</b>——配好执行集群之后的下一拍就会
+            立刻把该跑的表跑掉（错过的调度不补）。已保存的策略不会被删除，但给这些 catalog
+            保存「启用」的策略现在会被拒绝（400）。
+          </p>
+          <el-button size="small" text type="primary" class="pc-opt-gap-go" @click="gotoCatalogs">
+            去 Catalogs 配置
+          </el-button>
+        </el-popover>
         <!-- 定时刷新（开关 + 节拍）在手动刷新左边：两者是同一件事的自动/手动两种模式 -->
         <AutoRefreshControl
           v-model:enabled="autoEnabled"
@@ -20,33 +66,6 @@
         </el-button>
       </template>
     </PageHeader>
-
-    <!--
-      画面 6：没配执行集群时这一屏要能自己解释「为什么一条批次都没有」。
-      数据来自 session 里那份 catalog 列表（每行都带 executionCluster 摘要），
-      不额外发请求：这是横幅，不是判据——真正的拦截在服务端（策略保存 400、
-      出批跳过），这里只是提前把原因说出来。
-    -->
-    <el-alert
-      v-if="blockedCatalogs.length"
-      type="warning"
-      :closable="false"
-      show-icon
-      class="pc-opt-banner"
-      :title="`${blockedCatalogs.length} 个 catalog 没有可用的执行集群`"
-    >
-      <template #default>
-        <div>
-          <span class="pc-mono">{{ blockedCatalogs.join('、') }}</span>
-          的优化任务不会提交：出批时整组跳过，<b>游标不推进</b>——配好执行集群之后的下一拍就会
-          立刻把该跑的表跑掉（错过的调度不补）。已保存的策略不会被删除，但给这些 catalog
-          保存「启用」的策略现在会被拒绝（400）。
-        </div>
-        <el-button size="small" text type="primary" class="pc-opt-banner-action" @click="gotoCatalogs">
-          去 Catalogs 配置
-        </el-button>
-      </template>
-    </el-alert>
 
     <div class="pc-stats">
       <div v-for="item in stats" :key="item.label" class="pc-stat">
@@ -648,14 +667,63 @@ const staleError = computed(() => rowsStaleError.value || statsSource.staleError
 </script>
 
 <style scoped>
-/* 没配执行集群的横幅：它常在列表为空时出现，与下面的空态一起读，
-   因此下边距压得比默认的 el-alert 小一些 */
-.pc-opt-banner {
-  margin-bottom: 12px;
+/* 「没有可用的执行集群」收成页头一颗叹号（见模板注释）。
+   尺寸按页头那颗「刷新」按钮的 32px 对齐，否则它会比旁边的控件矮一截；
+   圆角与底色沿用站内的「一档浅色提示」做法（参考 .pc-db-item.is-active），
+   深色主题下 color-mix 会跟着 --el-color-warning 一起变亮。 */
+.pc-opt-gap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  height: 32px;
+  padding: 0 7px;
+  border-radius: var(--pc-radius);
+  color: var(--el-color-warning);
+  background: color-mix(in srgb, var(--el-color-warning) 12%, transparent);
+  cursor: help;
+  transition: background-color 0.15s;
 }
 
-.pc-opt-banner-action {
-  margin-top: 4px;
+.pc-opt-gap:hover {
+  background: color-mix(in srgb, var(--el-color-warning) 22%, transparent);
+}
+
+/* 键盘走到这颗图标上时要看得见（它没有按钮的默认焦点环） */
+.pc-opt-gap:focus-visible {
+  outline: 2px solid var(--el-color-warning);
+  outline-offset: 1px;
+}
+
+/* 气泡正文：字体与全站提示一致（12.5px / 1.7），标题用语义色而不是通篇红——
+   这一段是「配置没做好」，不是「系统出错了」。
+   外框的内边距用 el-popover 的默认值（12px）：再自定义就得写全局选择器，
+   而 `pc-opt-*` 是这一屏的私有前缀，全局样式里不允许出现（见 verify-console）。 */
+.pc-opt-gap-title {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--el-color-warning);
+}
+
+.pc-opt-gap-title-icon {
+  flex: none;
+}
+
+.pc-opt-gap-text {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--pc-text);
+}
+
+/* 气泡末尾的出口：与正文隔开一点，左侧不留白（和正文左边缘对齐） */
+.pc-opt-gap-go {
+  margin-top: 2px;
+  margin-left: -10px;
 }
 
 /* 过滤器的宽度：四个下拉并排，每个放得下最长的那项（PARTIAL_SUCCESS 的显示名是「部分成功」） */
