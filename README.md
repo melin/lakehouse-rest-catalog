@@ -197,8 +197,8 @@ k8s 资源名（namespace / Deployment / Service / ConfigMap）与镜像同一�
 mysql -h 127.0.0.1 -u root -p < sql/schema-mysql.sql
 ```
 
-`sql/schema-mysql.sql` 由 `scripts/gen-mysql-ddl.sh` 从 JPA 实体生成（27 张表、24 个唯一约束、
-30 个索引），**不要手工修改**——下次生成会覆盖。它会建出 `lakehouse_catalog` 库并切过去，
+`sql/schema-mysql.sql` 由 `scripts/gen-mysql-ddl.sh` 从 JPA 实体生成（28 张表、25 个唯一约束、
+32 个索引），**不要手工修改**——下次生成会覆盖。它会建出 `lakehouse_catalog` 库并切过去，
 库名与 `application.yml` 里的 `spring.datasource.url` 必须一致（用 `DB_NAME=... ` 重新生成可改）。
 
 连接信息默认是 `127.0.0.1:3306`、库 `lakehouse_catalog`、账号 `paimon/paimon`，
@@ -210,7 +210,7 @@ mysql -h 127.0.0.1 -u root -p < sql/schema-mysql.sql
 ### 2.2 构建与运行
 
 ```bash
-# 全量构建（11 个模块；用 install 而不是 package，因为模块之间有内部依赖）
+# 全量构建（16 个模块；用 install 而不是 package，因为模块之间有内部依赖）
 JAVA_HOME=/path/to/jdk-21 mvn -o -DskipTests install
 
 # 只要服务端可执行 jar：-am 会一并构建它依赖的 core / storage / 三个协议面
@@ -233,7 +233,7 @@ java -jar lakehouse-rest-spring-parent/lakehouse-rest-server/target/lakehouse-re
 不 clean 会让 `target/classes/static/console` 累积历次旧产物（jar 里出现多个 `index-*.js`）。
 服务端 POM 已把一次 `clean` 绑到 `initialize` 兜底，所以 `mvn package` 也能干净——但 `-pl` 之外的场景仍建议手写。
 
-构建过程中 `maven-enforcer-plugin` 会校验三条依赖不变量（见第 1 节），
+构建过程中 `maven-enforcer-plugin` 会校验四条依赖不变量（见第 1 节），
 所以「构建成功」本身就包含了一次模块方向检查；它失败时的报错信息是中文的，会指出违反的是哪条。
 
 只需一个即用即丢、不依赖 MySQL 的实例时，用内存 H2：
@@ -340,7 +340,7 @@ lakehouse-rest-spring-parent/
   lakehouse-rest-core/          与格式无关的地基
     web/          两套协议共用的端点：/v1/config、/v1/oauth/tokens、两条同路径 rename
     service/      协议分派（CatalogFormat / CatalogProtocol / CatalogProtocols）、错误形状判定、RBAC 判定
-    domain/       JPA 实体与仓储（27 张表）
+    domain/       JPA 实体与仓储（28 张表）
     dto/          两套规格共用的 DTO 词表、管理 API 与远程控制台契约
     support/      公共设施：JSON 编解码、schema 字段树、分页、路径、错误、存储配置
     config/       服务端配置、Bearer 鉴权、授权拦截器、启动初始化
@@ -420,7 +420,7 @@ lakehouse-rest-flink/        一份源码、两个版本产物（Flink 1.20 与 
 [Paimon 60 个与 Iceberg 30 个端点](docs/catalog-api-endpoints.md)、Management API 的
 [操作概览](docs/management-api-overview.md)（逐字契约见
 [`management-api-contract.md`](docs/management-api-contract.md)）、以及
-[27 张表的数据模型与设计取舍](docs/data-model.md)。
+[表的数据模型与设计取舍](docs/data-model.md)。
 
 ---
 
@@ -1030,7 +1030,7 @@ python3 -m pip install --user PyYAML
 ```
 
 `gen-mysql-ddl.sh` 内部跑 `MysqlDdlGeneratorTests`：DDL 由 Hibernate 依实体元数据生成，
-**不手工维护**——27 张表、24 个唯一约束、31 个索引，手工维护必然漂移。生成器连的是 H2
+**不手工维护**——28 张表、25 个唯一约束、32 个索引，手工维护必然漂移。生成器连的是 H2
 但方言被钉在 MySQL 8.0（`MySql8DialectResolver`），因此生成过程不需要 MySQL，
 产出则已用真实 MySQL 8.0.46 验证过可直接执行。`DB_NAME=...` 可改建库语句里的库名。
 Iceberg 协议面落地的 9 个新列也由它产出（`catalog_format` 是
