@@ -1,47 +1,37 @@
 # LakeHouse Catalog Server（Spring Boot + JPA）
 
-使用 Spring Boot 与 JPA 实现 Apache Paimon 的 **REST Catalog API**（OpenAPI 规格 v1）。
-服务扮演目录（catalog）角色：集中保存 database、表 schema、快照、分支、标签、分区、
-视图与函数的元数据，供 Flink / Spark 等支持 LakeHouse Catalog 协议的引擎通过 HTTP 读写。
+自托管的多协议 **LakeHouse Catalog 服务端**：一个 Spring Boot 进程、一套 MySQL 元数据，同时提供
+**Apache Paimon**、**Apache Iceberg** 与 **Lance** 三套 REST Catalog 协议。Flink / Spark 等引擎通过
+HTTP 读写 database、表 schema、快照、分支、标签、分区、视图与函数，客户端不需要本地 metastore，
+也不需要仓库级的配置文件。
 
-同时实现了 Apache Paimon 的 **REST Management API**（`/api/management/v1`）：
-官方 `permissions` 三个端点 + 服务端扩展的 catalog / principal / principal-role / 存储优化
-与表统计聚合端点，构成完整的 RBAC 管理面，
-既是管理接口，也是 catalog API 上权限判定的依据。
+| 协议面 | 基址 | 规格（副本在仓库根 `spec/`） | 实现范围 |
+| --- | --- | --- | --- |
+| **Paimon REST Catalog** | `/v1/{prefix}` | Paimon `rest-catalog-open-api.yaml`（`spec/rest-catalog-open-api-paimon.yaml`） | 60 个端点、144 个 schema，**全部实现**；清单见 [`docs/catalog-api-endpoints.md`](docs/catalog-api-endpoints.md) |
+| **Iceberg REST Catalog** | `/v1/{prefix}` | Iceberg `rest-catalog-open-api.yaml`（`spec/rest-catalog-open-api-iceberg.yaml`） | 35 个「路径 × 方法」里实现 **30 个**，5 个不声明；设计见 [`docs/iceberg-rest-catalog-design.md`](docs/iceberg-rest-catalog-design.md) |
+| **Lance REST Namespace** | `/lance/v1/**` | Lance Namespace spec（`spec/lance-namespace-rest-openapi.yaml`） | 54 个 operation 里实现 **19 个**，其余恒 `406`；设计见 [`docs/lance-rest-catalog-design.md`](docs/lance-rest-catalog-design.md) |
 
-- 规格来源（两份官方 OpenAPI，副本在仓库根 `spec/`）：
-  - Catalog API：[`docs/static/rest-catalog-open-api.yaml`](https://github.com/apache/paimon/blob/master/docs/static/rest-catalog-open-api.yaml)
-    （副本 `spec/rest-catalog-open-api-paimon.yaml`）
-  - Management API：**Paimon REST Management API**，[`docs/static/rest-management-open-api.yaml`](https://github.com/apache/paimon/blob/master/docs/static/rest-management-open-api.yaml)
-    （副本 `spec/rest-management-open-api.yaml`，**拉取时的快照**：该规格在官方仍标
-    experimental，路径写法会不兼容演进——本仓实现与副本对齐，与 master 可能有差异）
-  - Polaris 的 `polaris-management-service.yml` 已**从仓库移除**：它只是服务端扩展端点的
-    形状来源与历史对照，生成的快照留在 [`docs/management-api-contract.md`](docs/management-api-contract.md)
-- 规格规模：Catalog API **60 个端点、144 个 schema**
-  （端点清单见 [`docs/catalog-api-endpoints.md`](docs/catalog-api-endpoints.md)）；
-  Management API 的 **3 个官方权限端点**（`permissions`）+ 服务端扩展端点（catalog / principal / 角色 / 优化）
-  （概览见 [`docs/management-api-overview.md`](docs/management-api-overview.md)）
-- 元数据存储：**MySQL 8.0**（建表语句由实体生成，见 `sql/schema-mysql.sql`；
-27 张表的划分与设计取舍见 [`docs/data-model.md`](docs/data-model.md)），
-  通过 JPA 访问；另有 H2 内存库与 PostgreSQL 两个 profile 可选
-- 模块：**16 个 Maven 项目**——服务端拆为 `core`（与格式无关的地基）/ `storage`（FileIO）/
-  `protocol-paimon`（Catalog API）/ `protocol-iceberg`（Iceberg REST）/ `protocol-lance`
-  （Lance REST）/ `server`（可执行）六个，
-  Spark SQL 扩展再拆 `common` + `3.5` + `4.1` 三个，另有表存储优化任务、两个父 POM 与根聚合 POM；
-  Web 控制台是 Vite 工程，不走 Maven。目录见第 1 节
-- 表格式：**Paimon 表**与三种不受快照管理的表——**Format 表**（目录里的既有文件）、
-  **Object 表**（对象元数据，列由 Paimon 固定）、**Lance 表**；类型写在
-  `schema.options.type` 里，建表时的归一化与边界见第 6 节第 23 条。后三种的位置就是
-  数据目录本身，可以由建表请求里的 `path` 指定（指向一个已经存在的目录，如对象存储上
-  放图片的前缀），不指定则由目录按模板分配。
-  其中 **Lance 表只登记不读写**（Paimon 2.1.0 未实现，见
-  [`docs/spark-paimon-rest-e2e.md`](docs/spark-paimon-rest-e2e.md) §4.4）：
-  接口照常接受建表请求，控制台的新建表表单不给入口
+一个 catalog 只服务一种格式（`lakehouse_catalog.catalog_format`，创建时定下、**不可变**）：
+Paimon 与 Iceberg 共用 `/v1/{prefix}` 靠这个字段分派；Lance 没有 `/v1/config` 握手，标识符与错误
+报文也自成一套，因此独占 `/lance/v1/**`。三面的路由与分派见第 1 节。
+
+同一进程里还有 **Management API**（`/api/management/v1`）：Paimon 官方 `permissions` 三个端点 +
+服务端扩展的 catalog / principal / principal-role / 存储优化 / 表统计聚合端点，构成完整的 RBAC
+管理面——它既是管理接口，也是 Catalog API 上权限判定的依据（概览
+[`docs/management-api-overview.md`](docs/management-api-overview.md)；Polaris 管理规格已移除，其生成的
+快照存档在 [`docs/management-api-contract.md`](docs/management-api-contract.md)）。
+
+- 元数据存储：**MySQL 8.0**，DDL 由实体生成、见 `sql/schema-mysql.sql`（划分与取舍见
+  [`docs/data-model.md`](docs/data-model.md)），经 JPA 访问；另有 H2 内存库与 PostgreSQL 两个 profile
+- 工程：**16 个 Maven 项目** + 一个 Vite 控制台——服务端拆 `core` / `storage` / `protocol-paimon` /
+  `protocol-iceberg` / `protocol-lance` / `server` 六个，Spark SQL 扩展与 Flink 连接器各按引擎版本拆包，
+  另有表存储优化任务与两个父 POM；目录与依赖不变量见第 1 节
+- 表格式：**Paimon 表**，以及三种不受快照管理的表——**Format 表**（目录里的既有文件）、
+  **Object 表**（对象元数据，列由 Paimon 固定）、**Lance 表**（只登记不读写，Paimon 2.1.0 未实现）。
+  类型写在 `schema.options.type`，位置可由建表请求的 `path` 指定，边界见第 6 节第 23 条
 - 默认表属性：catalog 的 `properties` 里写 `table-default.<属性名>`（如
-  `table-default.deletion-vectors.enabled=true`），新建表时自动带上该属性
-  （去前缀、表级参数优先）；两种格式都支持。控制台入口是 Catalog 详情页的「配置」页签。见
-  [第 6 节第 24 条](#6-实现要点与边界)与
-  [`docs/catalog-api-endpoints.md`](docs/catalog-api-endpoints.md#catalog-级默认表属性table-default)
+  `table-default.deletion-vectors.enabled=true`），新建表时自动带上（去前缀、表级参数优先）；
+  控制台入口在 Catalog 详情页「配置」页签，见第 6 节第 24 条
 
 ---
 
@@ -49,138 +39,45 @@
 
 ```
 paimon-rest/
-├── Dockerfile               服务端镜像（单阶段：装预构建的 jar，见第 8 节）
-├── pom.xml                  根聚合 POM：lakehouse-rest-parent（无父 POM，见「模块划分的取舍」）
-├── lakehouse-rest-spring-parent/     服务端世界的父 POM（继承 Spring Boot 父 POM）
-│   ├── pom.xml                       只有 POM、没有源码；五个服务端模块嵌在它下面
-│   ├── lakehouse-rest-core/          与表格式无关的地基：鉴权、授权、JPA 实体与仓储、协议分派、共享 DTO 词表
-│   ├── lakehouse-rest-storage/       数据目录文件访问与 FileIO 构造（唯一允许依赖 paimon-core 的非协议模块）
+├── lakehouse-rest-spring-parent/        服务端：一份父 POM + 六个模块
+│   ├── lakehouse-rest-core/             与表格式无关的地基：鉴权、授权、实体与仓储、协议分派、共享 DTO
+│   ├── lakehouse-rest-storage/          FileIO 与数据目录访问（唯一允许依赖 paimon-core 的非协议模块）
 │   ├── lakehouse-rest-protocol-paimon/  Paimon 协议面：Catalog API 全部 60 个端点
-│   ├── lakehouse-rest-protocol-iceberg/ Iceberg 协议面：35 个端点里实现的 30 个 + `iceberg-core` 元数据代数
-│   ├── lakehouse-rest-protocol-lance/   Lance 协议面：54 个 operation 里 P0+P1+P2 的 19 个，基址 `/lance/v1/**`
-│   └── lakehouse-rest-server/        可执行服务端：Management API + 控制台 API + 优化调度，最终 jar 在这里
-├── lakehouse-rest-console/     Web 管理控制台（Vue 3 + Vite，产物构建进服务端，见第 9 节）
-├── lakehouse-rest-spark/       Spark SQL 语法扩展：用 SQL 管理主体、角色与授权
-│   ├── shared/                 两个 Spark 版本共用的源码（语法 + Scala 层 + 测试）
-│   ├── lakehouse-rest-spark-common/  REST 客户端：纯 Java，无 Spark 依赖
-│   ├── lakehouse-rest-spark-3.5/     Spark 3.5.9 / Scala 2.12 / ANTLR 4.9.3
-│   └── lakehouse-rest-spark-4.1/     Spark 4.1.2 / Scala 2.13 / ANTLR 4.13.1
-├── lakehouse-rest-flink/       Flink SQL 通过 REST catalog 读写：一份源码、两个版本
-│   ├── shared/                 两个 Flink 版本共用的源码（catalog 选项 + 端到端用例）
-│   ├── lakehouse-rest-flink-1.20/  Flink 1.20.1 + Paimon 2.1.0 + Iceberg 1.11.0
-│   └── lakehouse-rest-flink-2.3/   Flink 2.3.0 + Paimon 2.1.0（2.2 连接器）+ Iceberg 1.12.0
-├── lakehouse-rest-optimizer/   表存储优化任务（Spark，由服务端投到 k8s 运行）
-├── deploy/kubernetes/       Kubernetes 部署清单（单文件三文档，见其目录下的 README）
-├── spec/                    OpenAPI 规格副本（两套协议面各一份）
-├── sql/                     MySQL 建表语句（由实体生成，见第 7 节「代码生成」）
-├── docs/                    设计文档、契约基线与 SQL 语法参考
-└── scripts/                 验收、代码生成、文档校验与镜像构建脚本
+│   ├── lakehouse-rest-protocol-iceberg/ Iceberg 协议面：30 个端点 + `iceberg-core` 元数据代数
+│   ├── lakehouse-rest-protocol-lance/   Lance 协议面：19 个 operation，基址 `/lance/v1/**`
+│   └── lakehouse-rest-server/           可执行服务端：Management API + 控制台 API + 优化调度
+├── lakehouse-rest-console/              Web 控制台（Vue 3 + Vite，产物构建进服务端，见第 9 节）
+├── lakehouse-rest-spark/                Spark SQL 扩展：common / 3.5 / 4.1
+├── lakehouse-rest-flink/                Flink catalog 选项与端到端用例：1.20 / 2.3
+├── lakehouse-rest-optimizer/            表存储优化任务（Spark，由服务端投到 k8s）
+├── deploy/kubernetes/                   k8s 清单（单文件三文档，见其目录下的 README）
+├── spec/  sql/  docs/  scripts/         OpenAPI 副本、DDL 生成物、设计文档（索引见 docs/README.md）、脚本
+├── Dockerfile                           服务端镜像（见第 8 节）
+└── pom.xml                              根聚合 POM
 ```
 
-**三个协议面在同一个进程、同一套元数据库上服务，但基址分成两处。**
-Paimon 与 Iceberg 共用 `/v1/{prefix}` 基址（靠 prefix 查到的 `catalog_format` 分派），
-Lance 走自己的 `/lance/v1/**`——它的标识符合义与错误报文形状都与另两面不同，
-没有 `/v1/config` 握手，因此不可能并进同一个 prefix 路由。
-一个 catalog 只有一种格式（`lakehouse_catalog.catalog_format`，创建时定下、不可变），
-因此「路径 → `{prefix}` → catalog → 格式 → 协议处理链」这条链上唯一需要判断的地方
-就是 core 的协议分派；三个面本身互不认识，也不互相依赖（见第 3 节、
-[`iceberg-rest-catalog-design.md`](docs/iceberg-rest-catalog-design.md) 与
-[`lance-rest-catalog-design.md`](docs/lance-rest-catalog-design.md)）。
+三个协议面跑在**同一个进程、同一套元数据库**上，但基址分两处：Paimon 与 Iceberg 共用
+`/v1/{prefix}`（按 `catalog_format` 分派），Lance 独占 `/lance/v1/**`——它没有 `/v1/config` 握手，
+标识符与错误报文也不同，并进同一个 prefix 路由做不到。一个 catalog 只有一种格式，因此整条链上
+唯一需要判断的地方是 core 的协议分派；三个面互不认识、也不互相依赖（见第 3 节）。
 
-**模块划分的取舍：两个父 POM ＝ 两个依赖世界。**
+模块布局上只有一条硬约束：**两个父 POM ＝ 两个依赖世界**。根 `pom.xml` 是纯聚合器，刻意不继承
+`spring-boot-starter-parent`（否则 Spark 侧的 Jackson / netty / jersey 会被 Boot 抬到别的版本，
+出问题极难定位）；服务端六个模块挂在 `lakehouse-rest-spring-parent` 下，由它继承 Boot 父 POM。
+四条依赖不变量（core 无格式依赖、三面互不依赖、`iceberg-core` 只在 protocol-iceberg、Lance 面不引
+格式库）由 `maven-enforcer-plugin` 在**构建期断言**——构建通过本身就是一次方向检查。
+**不要把 Boot 提为根聚合器的父 POM。** 依赖图、命名与类的落点见
+[`docs/maven-module-design.md`](docs/maven-module-design.md)。
 
-根 `pom.xml`（`lakehouse-rest-parent`）是**纯聚合器**，同时充当 `lakehouse-rest-spark-parent`
-与 `lakehouse-rest-optimizer` 的父 POM，**刻意不继承** `spring-boot-starter-parent`：
-Spark 自带的 Jackson 2.15.2 会被 Boot 的 `dependencyManagement` 抬到 2.21.x，
-netty 与 jersey 也会被替换，导致 Spark 侧出现难以定位的版本冲突。
+Maven 坐标 `io.github.melin:lakehouse-rest-*`，包前缀 `io.github.melin.lakehouse.rest`。两处是
+**对外契约**，改名按 [`docs/maven-module-design.md`](docs/maven-module-design.md) §4 / §10 的判据：
+`spark.sql.extensions` 填的全限定类名（`…rest.spark.ManagementSparkExtensions`）与配置前缀
+`lakehouse.rest.*`。另外同一个前缀不能出现在两个协议面里——两套规格里真冲突的两条
+（`POST /v1/{prefix}/tables/rename`、`…/views/rename`）上移到 core 的 `CatalogRenameController`，
+否则 Spring 会以 `Ambiguous mapping` 拒绝启动。
 
-服务端那五个模块则挂在 **`lakehouse-rest-spring-parent`** 下，由它继承 Spring Boot 父 POM，
-并统一声明 webmvc / data-jpa / validation / lombok 这几个共用 starter。
-两个依赖世界因此互不污染：服务端是 Spring Boot 4 / Jackson 3 / Hibernate 7，
-Spark 侧是 Scala 2.12 / Spark 3.5 / Jackson 2 / ANTLR 4.9.3。
-
-服务端模块**嵌在** `lakehouse-rest-spring-parent/` 目录之下，因此各子模块的 `<parent>`
-**不需要写 `<relativePath>`**——默认的 `../pom.xml` 恰好就是那份父 POM。
-这一点是嵌套布局立下的功劳：若把六个模块放成仓库根下的平级兄弟目录，就必须显式写
-`<relativePath>../lakehouse-rest-spring-parent/pom.xml</relativePath>`，
-因为默认值会解析到根聚合器，那里没有这个 artifactId，Maven 便回退去远程仓库找，
-离线构建会直接失败。**不要把 Boot 提为根聚合器的父 POM。**
-
-四条依赖不变量由 `maven-enforcer-plugin` 守住（`core` 不含任何表格式依赖；三个协议面互不依赖；
-`iceberg-core` 只在 `protocol-iceberg` 里出现；Lance 面不引任何格式库），违反即构建失败——
-这些规则不是文档约定，
-是构建期断言。完整依赖图与规则细节见
-[`maven-module-design.md`](docs/maven-module-design.md)。
-
-Maven 坐标与包名：`groupId` 为 `io.github.melin`，十六个 artifact 是
-`lakehouse-rest-parent`（聚合）、`lakehouse-rest-spring-parent`（服务端父 POM）、
-`lakehouse-rest-core`、`lakehouse-rest-storage`、`lakehouse-rest-protocol-paimon`、
-`lakehouse-rest-protocol-iceberg`、`lakehouse-rest-protocol-lance`、`lakehouse-rest-server`、
-`lakehouse-rest-spark-parent`（Spark 侧聚合）、`lakehouse-rest-spark-common`、
-`lakehouse-rest-spark-3.5`、`lakehouse-rest-spark-4.1`、
-`lakehouse-rest-flink-parent`（Flink 侧聚合）、`lakehouse-rest-flink-1.20`、
-`lakehouse-rest-flink-2.3`、`lakehouse-rest-optimizer`。
-两个 Spark 版本模块都产出「语法扩展 + 客户端」可用的 jar：一个是给 Spark 3.5 的，
-一个是给 Spark 4.1 的，装哪个由集群版本决定（见第 5 节）。Flink 两个版本模块只带
-「catalog 选项 + 端到端用例」，数据面由 Paimon / Iceberg 自己的连接器负责
-（见 [`flink-rest-catalog.md`](docs/flink-rest-catalog.md)）。
-包前缀为 `io.github.melin.lakehouse.rest`（与 artifactId 的 `lakehouse` 对齐），
-各协议面再独占一层格式子包；Spark 模块在其下再用 `.spark` 子包（如
-`io.github.melin.lakehouse.rest.spark.ManagementSparkExtensions`）。
-服务端的 core / storage / server 共用一个包树
-（`io.github.melin.lakehouse.rest.{web,service,domain,dto,support,config}`），
-好处是搬类不需要改任何 `import`、也不需要动 `@ComponentScan`；
-代价是包名不再告诉你类在哪个模块，只能看它在哪个目录。
-**协议面例外**：Paimon 面的类独占 `io.github.melin.lakehouse.rest.paimon.{web,service,dto,support}`
-子树、Iceberg 面同理独占 `…rest.iceberg.*`，两者与 core 的 `rest.{dto,service,support,web}`
-平级而不重合；Lance 面独占 `…rest.lance.*`——协议面互不知道彼此存在，
-删掉或新增一整面不会波及另一面。
-因此**同一个前缀不能出现在两个面里**：两套规格里唯一真冲突的两条
-（`POST /v1/{prefix}/tables/rename`、`…/views/rename`）上移到 core 的
-`CatalogRenameController`，否则 Spring 会以 `Ambiguous mapping` 拒绝启动。
-
-`spark.sql.extensions` 填的是**全限定类名**，所以包名是对外契约——
-**请写** `io.github.melin.lakehouse.rest.spark.ManagementSparkExtensions`。
-其余位置都不是自由名字，判定与现状见
-[`maven-module-design.md`](docs/maven-module-design.md) §4 / §10：配置前缀 `lakehouse.rest.*`；
-k8s 资源名（namespace / Deployment / Service / ConfigMap）与镜像同一个词根
-`lakehouse-rest`——改它要连带改两个 selector 与 Service DNS，
-见 [`deploy/kubernetes/README.md`](deploy/kubernetes/README.md) §2.2；元数据库
-`lakehouse_catalog`、表前缀 `lakehouse_`（表划分见 [`data-model.md`](docs/data-model.md)）。
-
-`docs/` 里二十九份文档的分工：
-
-| 文档 | 读它的时机 |
-| --- | --- |
-| [`catalog-api-endpoints.md`](docs/catalog-api-endpoints.md) | 要查 Catalog API 有哪些端点——Paimon 的 60 个与 Iceberg 的 26 个按资源分组，含基址、前缀与授权映射说明 |
-| [`management-api-overview.md`](docs/management-api-overview.md) | 要读 Management API——Paimon 官方权限端点与服务端扩展端点各落在哪几个控制器上、几处容易读错的语义 |
-| [`management-api-contract.md`](docs/management-api-contract.md) | **存档**：由已移除的 Polaris 管理规格生成的字段与权限枚举（catalog role、64 项 privilege 已不存在）；当前契约看上一行与 [`authorization.md`](docs/authorization.md) |
-| [`data-model.md`](docs/data-model.md) | 要改实体或看表结构——27 张表的划分、摘要列与审计列的设计理由、实体与仓储分在哪两个模块 |
-| [`spark-sql-reference.md`](docs/spark-sql-reference.md) | 要用 SQL 管理主体与授权——语句级参考，含完整示例 |
-| [`spark-sql-extension.md`](docs/spark-sql-extension.md) | 要改这个 Spark 扩展——语法扩展的做法、两个必须知道的约束、测试分层 |
-| [`spark-paimon-rest-e2e.md`](docs/spark-paimon-rest-e2e.md) | 要让 Spark 通过本服务端建 Paimon 表——连接配置、可执行的 SQL、报错对照表 |
-| [`spark-iceberg-rest-e2e.md`](docs/spark-iceberg-rest-e2e.md) | 要让 Spark 通过本服务端建 Iceberg 表——`spark.sql.catalog.*` 配置、可执行的 SQL、与 Paimon 那套的差异对照 |
-| [`flink-rest-catalog.md`](docs/flink-rest-catalog.md) | 要让 Flink SQL 读写 Paimon / Iceberg——两个版本模块的划分、两套 catalog 选项（`metastore=rest` vs `catalog-type=rest`）、实测结论（含主键更新要配 `sequence.field`）、缺 Hadoop / connector / `add-opens` 的报错对照 |
-| [`authorization.md`](docs/authorization.md) | 要理解权限怎么判——实体链、授权映射、失败关闭的取舍 |
-| [`console.md`](docs/console.md) | 要改 Web 控制台或排查「页面空列表」——前端分层、端点契约表、机械校验 |
-| [`console-table-detail.md`](docs/console-table-detail.md) | 要改表详情页——页签随表格式（Paimon / Format / Object / Lance）伸缩的数据来源、为什么授权不在这页、破坏性操作与边界 |
-| [`console-catalog-detail.md`](docs/console-catalog-detail.md) | 要改 Catalog 详情页或仓库文件浏览——四个页签（概览 / 存储 / 文件列表 / 配置）、下钻与路径防护、只读的取舍、「配置」页的默认表属性（`table-default.*`）编辑与并发冲突处理；建表表单里的默认参数预填与为什么不给 Lance 表建表入口 |
-| [`console-auth.md`](docs/console-auth.md) | 要给浏览器访问控制台配登录——三种登录方式、两个开关的边界、令牌与认证链、安全考量 |
-| [`semantic-layer-design.md`](docs/semantic-layer-design.md) | 要做语义层（语义模型 / 指标口径 / 给 AI agent 供上下文）或评审该方案——**设计稿，未实现**：参照 Polaris 1.7.0 的 Ossie 语义模型并把社区批评的三件事补上（引用校验、描述复用、发现与消费）；八类使用场景、text-to-SQL 四类错误的语义对策、agent 三条接入通道（上下文包 / 只读 MCP / OpenAPI）、ai_context 提示注入对策、「语义 fail-open、策略 fail-closed」的方向对比；配套原型 [`semantic-layer-mockup.html`](docs/semantic-layer-mockup.html)（六画面，含上下文包逐表判权与 Agent 工作流的交互演示） |
-| [`polaris-capabilities-and-design.md`](docs/polaris-capabilities-and-design.md) | 要对比 Polaris 或看整体设计——核心能力提取、映射关系、已知缺口 |
-| [`event-framework.md`](docs/event-framework.md) | 要加一种事件、接一个 listener 或理解事件流的边界——9 类 33 个领域事件与触发点、与 Polaris 事件枚举的逐类映射、audit_event 表、发布监听链路、按监听器的类别/类型订阅（`lakehouse.rest.event-listener.*`）、增量拉取契约（`?since=` 游标 + `?category=`）与不发清单 |
-| [`iceberg-rest-catalog-design.md`](docs/iceberg-rest-catalog-design.md) | 要看「同一份元数据同时服务 Paimon 与 Iceberg」怎么做的——双协议方案：创建时区分格式、22 张表复用只加 9 列、路径冲突与错误模型、能力边界与效果图（`outputs/iceberg-rest-catalog/mockup.html`），以及**已落地的实测记录与与方案不一致的几处**（§11） |
-| [`lance-rest-catalog-design.md`](docs/lance-rest-catalog-design.md) | 要支持 Lance、或评审「要不要做 Lance REST Catalog」——**P0 + P1 + P2 里能做的都已落地**（19 个 operation + 未实现 operation 恒 406；未做：`BatchCreateTableVersions`、索引只读代理）：Lance Namespace 规范自己划的推荐最小集与两条降级许可（只做 `Restrict` 删命名空间、`DescribeTable` 只回 `location`）为什么正好覆盖我们、54 个 operation 的三档取舍（19 做 / 35 显式 406）、为什么不做 `CreateTable`、数据面与 `managed_versioning`、为什么标签读得起而索引读不起、三种「Lance」的区分（Paimon `lance-table` / 通用表 / Lance catalog）、`uri=/lance` + catalog 作第一级的基址决策、`catalog_format=LANCE` 加 3 列 1 张新表、授权与凭据下发落点、P0/P1/P2 需求与验收脚本、控制台只读（§7）与它为什么没有 `/v1/config`（§12.9）、待拍板决策 |
-| [`generic-table-design.md`](docs/generic-table-design.md) | 要把 parquet / orc / lance / vortex 目录也纳入目录服务，或评审「通用表」方案——**设计稿，未实现**：Polaris Generic Table 的事实基线、四种格式的能力矩阵、复用 `lakehouse_table` 加 `table_kind` 的三方案对比、4 个端点与权限映射、凭据下发为什么是唯一的数据面控制点、Spark 侧按格式分派（`FileTable` 子类 / `ServiceLoader<TableProvider>`）、影响面与风险 |
-| [`lance-table-optimization-design.md`](docs/lance-table-optimization-design.md) | 要给 Lance 表做 compaction / 快照清理，或评审「Lance 能不能接进现有存储优化」——**已落地**（前置是上面那份的 P0，也已落地）：两条语句覆盖三件动作（`OPTIMIZE` / `VACUUM`）导致 `orphan` 恒不可用、四层参数里 Daft 那两层在 Spark 侧不存在、指标只有增量没有前后快照、`VACUUM` 不可逆且无干跑的三层补偿、`isIceberg()` 与服务端 `isIceberg(format)` 共 11 处二元分派不改就静默走 Paimon、`--add-opens` 只能进镜像 ENV、三条抓包门禁 |
-| [`metrics-design.md`](docs/metrics-design.md) | 要加指标、接 Prometheus 或判断「这个指标该不该打标签」——**设计稿，未实现**：Polaris telemetry 的事实基线（HTTP / API / 持久化 / 缓存四类来源，`realm_id` 基数闸门与「超限即停记」、SLO 显式桶、Iceberg 客户端用量报告与运维指标的区别）、`lakehouse.*` 指标目录与 <1500 的基数预算、标签黑名单与 catalog 折叠成 `__other__`、切面替代逐端点 `@Timed`、管理端口 8081 + ServiceMonitor、告警与看板、`verify-metrics-doc.py` 一致性校验 |
-| [`maven-module-design.md`](docs/maven-module-design.md) | 要改模块布局、加协议面或动对外名字——`lakehouse-rest-*` 命名定案、两个父 POM / 两个依赖世界、四条用 enforcer 守住的依赖不变量、对外名字的持有者清单与改名判据（§4 / §10）、类的实际落点与依赖分工（§8） |
-| [`optimization-multi-instance-design.md`](docs/optimization-multi-instance-design.md) | 要多副本部署、或排查「同一个优化任务被两台机器发起」——**设计稿，未实现**：现状审计（出批的逐表 CAS 与提交的状态 CAS 已有；跟踪收尾、提交崩溃回收、出批配额、手动入口四处没有，其中收尾在多副本下必然重复）、租约 + 代理（fencing）与三条终态 CAS、锁顺序与事务拆分、部署七条前提、双实例验收 |
-| [`table-optimization.md`](docs/table-optimization.md) | 要改表存储优化或排查优化任务——三个动作的语义、批次与并发两道闸门、k8s 提交与状态跟踪、控制台两处页面 |
-| [`catalog-execution-cluster-design.md`](docs/catalog-execution-cluster-design.md) | 要给 catalog 配「优化任务跑在哪个 k8s 集群」或评审该方案——**已实现**（M1–M3 全部落地；M4 文档回填随本次提交完成）：配置从 `application.yml` 下移到 catalog（1:1）、三种集群类型的认证（kubeconfig / EKS 令牌 / AKS 令牌）、kubeconfig 逐 context 解析（`exec:` 是硬拒，不是没支持）、探活五问与状态机、fabric8 落地要点（防回落、客户端缓存、AKS scope 修正）；配套效果图 [`catalog-execution-cluster-mockup.html`](docs/catalog-execution-cluster-mockup.html) |
-| [`lineage-design.md`](docs/lineage-design.md) | 要做 Spark SQL 血缘（表级 / 列级）或评审方案——**三层都已实现**（服务端：三张表 + 5 个端点；控制台：表详情页「血缘」页签；引擎侧：Spark 3.5/4.1 抽取器与上报器；端到端 `scripts/e2e-lineage.sh` 只在 3.5 上能跑，4.1 受 Paimon bundle 限制）：为什么必须在引擎侧抽而不是服务端重解析（五个错法）、为什么是 `analyzed` 而不是 `optimized`、参考实现 `kyuubi-spark-lineage` 的机制拆解（属性集下推、16 行节点规则、`__count__` 等三个占位、表名归一化）与「抄了什么 / 改了 10 处」、归一化模型（`~` 保留前缀、五种列的 `kind`）、上报契约与异步丢弃、run（事件）与边（状态）两张语义不同的表、图查询口径与环、控制台展现（跳数即层号的分层布局、单张 Canvas + 三档 LOD、折叠与按需展开、列级聚合与虚拟列表、性能预算）、前端落地视角（§9.11–9.14：组件清单与 0 新增依赖、表详情页「血缘」页签集成、数据流；效果图 `docs/lineage-mockup.html`）、配置与验收；**只做 Spark，Flink 留位** |
-| [`table-data-preview-design.md`](docs/table-data-preview-design.md) | 要在表详情页加「数据预览」或评审该方案——**两种格式都已实现**（里程碑 M1 / M2 done；M3 / M4 待做）：为什么不能靠外部引擎、四种读法选型（格式自带 reader / `parquet-avro` 直读 / 嵌入式 DuckDB / 复用优化任务执行器——前三者各有「主键表读出幽灵行」之类的否决理由）、`POST /api/console/v1/tables/{tableId}/preview` 契约、三段式过滤（分区 → 裁文件 → 筛行）、**分区默认锁最新**（有序性判定 / 按文件数预算的级联收敛 / 哈希分区不编「最新」/ 空分区回退 / `partition` 与 `filters` 双通道）、无状态游标、采样与限额的口径、TABLE 级 `SELECT` 判权与 `table.previewed` 审计；配套效果图 [`table-data-preview-mockup.html`](docs/table-data-preview-mockup.html)（右上角可切换四种演示状态） |
-| [`row-filter-column-mask-design.md`](docs/row-filter-column-mask-design.md) | 要做**行过滤 / 列脱敏**（类似 Databricks Unity Catalog 的 row filter 与 column mask）或评审该方案——**服务端 P0、Spark 引擎侧与 AST 求值器均已实现**（`DataPolicyApiTests` / `DataPolicyDisabledTests` / `PolicySparkTests`（3.5.9 与 4.1.2 双版本全绿，版本差异的三个实测结论见设计稿 §9.1.1）/ `PolicyExpressionEvaluatorTests` / `PolicyPreviewTests`）；**元数据打码已实现**（§7.3：带 mask 时快照 `statistics` 置空、预览分区回显对被脱敏分区列打码、catalog 级文件下载补上收口）；**§13 的七条 SQL 管理语句已实现**（`PolicySqlTests`，3.5 / 4.1 同一份用例；保留字加了 `ROW` / `FILTER` / `MASK` / `POLICY`，参考文档与 `verify-spark-sql-doc.py` 同步）；**`$principal_roles` 已实现**（行过滤按调用者的 principal role 过滤，服务端折叠成字面量列表、引擎零改动）；**控制台「数据策略」页签已实现**（表详情新页签 + 结构化编辑器 `TablePolicyPanel`，保存即整份替换、409 不自动重试；verify-console 白名单同步）；**控制台三屏已实现**（数据保护总览页 `/policies`、新建策略向导 `/policies/new`——与页签共用 AST 编辑器 `src/utils/policyAst.js`、主体视角试算 `/policies/:c/:d/:t/dryrun`——dry-run 端点按被模拟主体判四态）。至此本设计无未实现项（P2 / P3 另行排期）。设计内容：Spark 3.5 / 4.1 / 4.2 均无原生 API（三个版本的 `spark-catalyst` 实测 + SPARK-59726 指向 5.0）；为什么裸投影不安全、必须自定义逻辑节点；表达式白名单与 `$principal` 占位符；fail-closed 与 60 秒缓存；**预览按策略逐行求值**（行过滤读原值、同层 mask 不链式，用户条件落到被脱敏列指名拒绝）与文件下载 / 分区列举两条维持 403 的口子；「凭据下发后直读文件无法拦截」这条硬边界，三家生产实现的横向对照（Databricks / Kyuubi+Ranger / EMR+Lake Formation）与**强制等级 L0–L3**——结论是升级路径不是等 Spark 5.0，而是加网关或收掉凭据来源；**Spark SQL 管理语句的语法设计**（§13：`SET ROW FILTER` / `SET MASK` / `SHOW POLICY` 等 7 条，表达式走 `parseExpression` 按白名单转 AST，`DROP POLICY` 要会话级确认） |
+`docs/` 的三十份文档按「要做什么」排了一张索引：[`docs/README.md`](docs/README.md)
+（含每份的落地状态、六份配套效果图，以及守文档与代码一致的那几个校验脚本）。
 
 ---
 
