@@ -407,7 +407,7 @@ Lance catalog 打开 `/browse` 时渲染 `LanceBrowseView`：左命名空间右�
 
 | 位置 | 怎么取 | 理由 |
 | --- | --- | --- |
-| 命名空间 | `GET /lance/v1/namespace/{id}/list`，`id` 从 catalog 名起逐级拼 | Lance 的 `id` 是 delimiter 拼的整串（`catalog$schema$table`），没有 `/v1/{prefix}` 那种前缀路径 |
+| 命名空间 | `GET /lance/v1/namespace/{id}/list`，响应是**名字数组**（`["sales"]`），页面自己按 `lanceId(prefix, 名字)` 拼回整串；`id` 从 catalog 名起逐级拼 | Lance 的 `id` 是 delimiter 拼的整串（`catalog$schema$table`），没有 `/v1/{prefix}` 那种前缀路径；规范让 `ListNamespaces` 回**相对名字**（回完整 id 客户端会拼成四段而 400），所以拼的工作在页面这一侧 |
 | 表列表 | `GET /lance/v1/namespace/{id}/table/list`，行里存**完整 id**，界面只显示 `lanceLeaf(id)` | 服务端回的是完整 id 而非短名（照短名拼会得到 `cat$db$cat$db$tbl`）；详情要的也是整串 |
 | 详情 | `POST /lance/v1/table/{id}/describe`，带 `check_declared=true` | 详情抽屉显示 id / 位置 / 版本 / `is_only_declared` / `managed_versioning` / 字段。表只有登记没有数据集时服务端回 code 19，页面把这句翻成「先由客户端写入数据，详细元数据才有内容」，不当错误弹 |
 | 新建命名空间 | `POST /lance/v1/namespace/{id}/create`，`id` 是**新命名空间的完整 id**（`catalog$名字`），body 里同样带 `id` 与 `properties` | 只能建两级（`LanceIds` 把 namespace 类 operation 收窄到 1–2 段，只给 catalog 时服务端回「catalog 级不支持」）。不带 `mode`：缺省 `create`，已存在时 409 原样显示；`exist_ok` / `overwrite` 是给脚本的幂等模式，控制台不提供——「点一下创建却悄悄改了别人的属性」比报一个错更难查 |

@@ -60,6 +60,95 @@ public final class LanceManifestFixture {
         return varintField(99, 12345);
     }
 
+    /**
+     * **现代（4.x）形状**的 manifest：{@code Field} 里没有 {@code type}，顶层用 {@code parent_id = -1}。
+     *
+     * <p>这是真客户端写出来的形状（见 {@code protos/file.proto}：Rust 侧的 {@code Field}
+     * 结构体里压根没有 type）。老解析器照 {@code type} 的缺省值 0（{@code PARENT}）理解，
+     * 会把每个叶子列都当成 struct：schema 不报错，只是变成一张空表。
+     * 这个夹具就是给那条判据留的回归位。
+     */
+    public static byte[] modernManifest(long version, Long timestampSeconds, List<FieldSpec> fields,
+                                        int fragments, long deletedPerFragment) {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        for (FieldSpec spec : fields) {
+            write(out, message(1, modernField(spec)));
+        }
+        for (int i = 0; i < fragments; i++) {
+            write(out, message(2, fragment(i, deletedPerFragment)));
+        }
+        write(out, varintField(3, version));
+        if (timestampSeconds != null) {
+            write(out, message(7, timestamp(timestampSeconds)));
+        }
+        return out.toByteArray();
+    }
+
+    /**
+     * 现代形状的一个 {@code Field}：不写 {@code type}、{@code id = 0} 时省略该键
+     * （protobuf 的默认值不落字节，真实文件也是这么写的）。
+     */
+    private static byte[] modernField(FieldSpec spec) {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        write(out, stringField(2, spec.name()));
+        if (spec.id() != 0) {
+            write(out, varintField(3, spec.id()));
+        }
+        write(out, varintField(4, spec.parentId() <= 0 ? -1 : spec.parentId()));
+        write(out, stringField(5, spec.logicalType()));
+        write(out, varintField(6, spec.nullable() ? 1 : 0));
+        return out.toByteArray();
+    }
+
+    /**
+     * 把裸 manifest 包成 Lance 4.x 的**容器**形状。
+     *
+     * <pre>
+     * [前置段：u32 长度 + prefixBytes 个字节][u32 长度][manifest][footer 16B: 偏移 i64 + major u16 + minor u16 + "LANC"]
+     * </pre>
+     *
+     * <p>{@code prefixBytes} 模拟「manifest 前面还有别的段」——索引段、内联事务段。
+     * 这是真客户端的常态（{@code InsertIntoTable} 第一次写入就带内联事务），
+     * 也是「按 footer 偏移取」与「按第 0 字节取」唯一能分出对错的场景：
+     * 后者会解出一份字段名乱码、却不抛异常的 protobuf。
+     */
+    public static byte[] container(byte[] manifest, int prefixBytes) {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        writePrefix(out, prefixBytes);
+        return finish(out, manifest, out.size());
+    }
+
+    /** 同上，但 footer 里的段偏移由调用方指定——用来造「偏移越界」的坏文件。 */
+    public static byte[] containerWithFooterPosition(byte[] manifest, int prefixBytes, long position) {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        writePrefix(out, prefixBytes);
+        return finish(out, manifest, position);
+    }
+
+    private static void writePrefix(ByteArrayOutputStream out, int prefixBytes) {
+        if (prefixBytes <= 0) {
+            return;
+        }
+        writeLittleEndian(out, prefixBytes, 4);
+        write(out, new byte[prefixBytes]);
+    }
+
+    private static byte[] finish(ByteArrayOutputStream out, byte[] manifest, long position) {
+        writeLittleEndian(out, manifest.length, 4);
+        write(out, manifest);
+        writeLittleEndian(out, position, 8);
+        writeLittleEndian(out, 0, 2);
+        writeLittleEndian(out, 2, 2);
+        write(out, "LANC".getBytes(StandardCharsets.US_ASCII));
+        return out.toByteArray();
+    }
+
+    private static void writeLittleEndian(ByteArrayOutputStream out, long value, int bytes) {
+        for (int i = 0; i < bytes; i++) {
+            out.write((int) ((value >>> (8 * i)) & 0xFF));
+        }
+    }
+
     /** 截断的字节：长度前缀声明的比实际多。 */
     public static byte[] truncated() {
         byte[] payload = new byte[]{1, 2, 3};

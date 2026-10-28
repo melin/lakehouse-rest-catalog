@@ -48,6 +48,52 @@
 			<groupId>org.apache.spark</groupId>
 			<artifactId>spark-catalyst_${scala.binary.version}</artifactId>
 			<scope>provided</scope>
+			<!--
+				把 Spark 自带的 Arrow **从测试类路径上摘掉**，见下面 lance bundle 那条注释。
+
+				spark-catalyst 传递依赖 arrow-vector / arrow-memory-core / arrow-memory-netty
+				12.0.1（Spark 3.5 的版本），而 Lance 的 bundle 里 shade 了另一份 arrow
+				（`org.apache.arrow.*`，未 relocate；0.8.0 里是 15.0.2，0.4.0 也是）。
+				同名类谁加载取决于 jar 顺序——按声明顺序 arrow 12 在前，
+				于是 Lance 打开数据集时走的是 12 的 `MemoryUtil.directBuffer`，报
+				`UnsupportedOperationException: sun.misc.Unsafe or
+				java.nio.DirectByteBuffer.<init>(long, int) not available`，
+				栈里没有一句话提到「类路径上有两份 arrow」。
+
+				排除而不是显式抬版本：抬版本会留下 12 的 `arrow-memory-netty` 与 15 的
+				`arrow-memory-core` 混搭（另一类 NoSuchMethodError）。排除掉 12 之后，
+				第一个命中的就是 bundle 里那份 shade 进来的 arrow——与优化任务镜像的做法一致
+				（那边用 `spark.driver.extraClassPath` 把 bundle 排到最前面，理由相同：
+				本模块的测试不用 Spark 的 pandas UDF / ArrowConverters，遮住 Spark 的 arrow
+				不影响任何现有用例）。
+
+				**「只剩一份」是就加载顺序说的，不是说类路径上只有一个 arrow jar。**
+				`dependency:tree -Dincludes=org.apache.arrow` 实测（0.8.0）：
+				bundle 自己的 POM 以普通依赖带进 `arrow-vector/format/memory-netty/c-data/
+				dataset:18.3.0`，`lance-namespace-core:0.11.1` 又带进
+				`arrow-memory-core:15.0.0`。这些 jar 都排在 bundle 自身**之后**，
+				类加载先命中 shade 进去的 15.0.2，它们只多一次解析、不改变结果
+				——7 个 Lance 用例里写入与 `OPTIMIZE` 都真的走 arrow，全绿。
+				换 connector 版本时要重新跑一遍再下这个结论。
+			-->
+			<exclusions>
+				<exclusion>
+					<groupId>org.apache.arrow</groupId>
+					<artifactId>arrow-vector</artifactId>
+				</exclusion>
+				<exclusion>
+					<groupId>org.apache.arrow</groupId>
+					<artifactId>arrow-format</artifactId>
+				</exclusion>
+				<exclusion>
+					<groupId>org.apache.arrow</groupId>
+					<artifactId>arrow-memory-core</artifactId>
+				</exclusion>
+				<exclusion>
+					<groupId>org.apache.arrow</groupId>
+					<artifactId>arrow-memory-netty</artifactId>
+				</exclusion>
+			</exclusions>
 		</dependency>
 
 		<!--
@@ -81,6 +127,54 @@
 			<scope>test</scope>
 		</dependency>
 
+		<!--
+			Lance 的 Spark bundle：**只用于测试**。
+
+			为什么必须有它：`LanceCatalogLiveTests` 要让真正的 Lance catalog
+			（`org.lance.spark.LanceNamespaceSparkCatalog` + `impl=rest`）连上我们的
+			`/lance/v1/**`，由它自己发 declare / describe / 写数据集。用桩替代就等于
+			把被测对象换掉——而这一面最容易错的地方恰好是**报文的形状**
+			（body 里的 `id` 是数组还是串、列举回来的是名字还是对象），
+			那些只有真客户端会告诉你。
+
+			bundle 而不是薄包 `lance-spark-3.5_2.12`：后者不含 `org.lance.Dataset`、
+			原生库与 arrow（理由与根 POM 里 `lance.version` 那段一致）。
+
+			**两个模块各有一份**（4.1 那份是 `lance-spark-bundle-4.1_2.13`，见根 POM 的
+			`lance.spark.artifact`）：构件名里的 Spark / Scala 版本是死的，不能共用。
+			`LiveSparkSession` 按「类在不在类路径上」决定要不要装 Lance catalog——
+			不是为了兼容没有 bundle 的模块，而是为了**不装 bundle 时**（跑 Paimon /
+			Iceberg 那几批）别把 Lance 的 parser 扩展带进来，见那边的注释。
+
+			**为什么排在 Paimon / Iceberg 两条之前**（这不是随手排的，别把它挪下去）：
+
+			bundle 里 shade 了 arrow（`org/apache/arrow/vector/*` 等），而
+			`iceberg-spark-runtime` 里也有**同一批全限定名**的另一份。同名类谁生效
+			只取决于谁先加载，两份箭头库混用会在同一个会话里各管一半——症状就是上面
+			那条 `MemoryUtil` 的 `UnsupportedOperationException`，栈里一句话都不提
+			「类路径上有两份」。
+
+			0.8.0 之前还有第二处：bundle 自带
+			`org/apache/spark/sql/catalyst/plans/logical/NamedArgument.class`（从 Spark 4.0
+			的 `statements.scala` 拷来的 `(String, Object)`），`iceberg-spark-runtime` 里
+			那份是 `(String, Expression)`，排在 Iceberg 后面就会以
+			`NoSuchMethodError: 'void ...NamedArgument.<init>(java.lang.String, java.lang.Object)'`
+			失败。**0.8.0 起 bundle 不再自带这个类**（3.5 与 4.1 两份 jar 都核对过），
+			这条具体症状随之消失；排序仍然保留，因为 arrow 那半没变。
+
+			这不只是测试期的问题：真集群上两份 jar 都在 `spark/jars`，
+			按文件名字典序 `iceberg-spark-runtime-*` 正好排在 `lance-spark-bundle-*` 之前，
+			症状一模一样。那边的解法是把 bundle 前置到 `spark.driver.extraClassPath`
+			（优化任务镜像就是这么做的，见 `deploy/` 下的 Dockerfile）。
+			测试类路径没有这个开关，只能用声明顺序表达同一件事。
+
+			test scope：发布产物里没有它，本模块运行时也不需要它。
+		-->
+		<dependency>
+			<groupId>org.lance</groupId>
+			<artifactId>${lance.spark.artifact}</artifactId>
+			<scope>test</scope>
+		</dependency>
 		<!--
 			Paimon 的 Spark bundle：**只用于测试**。
 

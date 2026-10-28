@@ -64,6 +64,15 @@
 			class identity 会对不上（本模块当初为此跳过了若干 Paimon 用例）。
 		-->
 		<paimon.spark.artifact>paimon-spark-4.1_2.13</paimon.spark.artifact>
+
+		<!--
+			Lance 的 Spark bundle 在这一版是 `4.1_2.13`（根 POM 的默认值是 3.5 那份）。
+
+			覆盖而不是让根 POM 用 `spark.version` 拼：根 POM 的 `spark.version` 描述的是
+			3.5（那边才是默认构建），本模块的属性块里才改成 4.1.2，所以构件名的
+			Spark / Scala 段在这里必须显式写死。
+		-->
+		<lance.spark.artifact>lance-spark-bundle-4.1_2.13</lance.spark.artifact>
 	</properties>
 
 	<dependencies>
@@ -101,6 +110,37 @@
 		<dependency>
 			<groupId>org.junit.platform</groupId>
 			<artifactId>junit-platform-launcher</artifactId>
+			<scope>test</scope>
+		</dependency>
+
+		<!--
+			Lance 的 Spark bundle：**只用于测试**，与 3.5 模块那条对应（为什么必须是
+			bundle 而不是薄包，见那边的注释）。
+
+			4.1 这一份存在的意义：`LanceCatalogLiveTests` 是同一份共享源码，两个模块
+			都要能用真 connector 跑。构件名里的 Spark / Scala 段是死的
+			（`lance-spark-bundle-4.1_2.13`），由 `lance.spark.artifact` 指过来。
+
+			与 3.5 的两处差别（都是**实测过**的，不是推的）：
+
+			<ul>
+			  <li>**不需要给 `spark-catalyst` 加 arrow 排除**。Spark 4.1.2 自带
+			      arrow 18.3.0（`provided`，本来就排在 bundle 前面），0.8.0 的 bundle
+			      里 shade 的是 15.0.2；两者同场跑过 7 个用例（含写入与 OPTIMIZE，
+			      都真的走 arrow），没有出现 3.5 那边 `MemoryUtil` 的
+			      `UnsupportedOperationException`。既然不炸就不动它——4.1 的
+			      ArrowConverters 仍在用 Spark 自己那份 arrow，摘掉风险更大；</li>
+			  <li>**不涉及 `NamedArgument` 冲突**。Spark 4.1 的 `spark-catalyst` 本身
+			      就有这个类，而 0.8.0 的 bundle 不再自带（3.5 那份也不带了）——
+			      0.4.0 时那处 `NoSuchMethodError` 的来源已经消失。</li>
+			</ul>
+
+			排序仍与 3.5 一致（在 Paimon / Iceberg 之前）：让两个模块的依赖清单保持
+			「逐条对应」的形状，改一处时不会漏另一处。
+		-->
+		<dependency>
+			<groupId>org.lance</groupId>
+			<artifactId>${lance.spark.artifact}</artifactId>
 			<scope>test</scope>
 		</dependency>
 

@@ -1,8 +1,10 @@
 package io.github.melin.lakehouse.rest.lance.support;
 
 import io.github.melin.lakehouse.rest.support.LanceErrors;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Pattern;
+import tools.jackson.databind.JsonNode;
 
 /**
  * Lance 的 {@code id} 解析。
@@ -112,15 +114,62 @@ public final class LanceIds {
      * <p>规范明文要求：两者都出现且不等时必须 400。这不是挑剔——body 里那个值会被
      * 客户端用作「我操作的是谁」，若服务端按路径里的另一个值执行而回 200，
      * 客户端的本地状态就与实际结果不一致了，且这种不一致只在并发改写时才暴露。
+     *
+     * <p>body 的形状**不是一种**：规范定义的是层级数组（{@code ["cat","schema"]}），
+     * 见 {@link #levelsOfBody}；拼接串也照收。两边都归一成层级列表再比，
+     * 而不是比字符串——同一个 id 写成 {@code a$b} 与 {@code ["a","b"]} 是同一个 id。
      */
-    public static void requireSameAsBody(String pathId, String bodyId, String delimiter) {
-        if (bodyId == null || bodyId.isBlank()) {
+    public static void requireSameAsBody(String pathId, JsonNode bodyId, String delimiter) {
+        List<String> body = levelsOfBody(bodyId, delimiter);
+        if (body == null) {
             return;
         }
-        if (!normalize(pathId, delimiter).equals(normalize(bodyId, delimiter))) {
-            throw LanceErrors.invalidInput("id in the request body \"" + bodyId
+        List<String> path = split(pathId, delimiter);
+        if (!path.equals(body)) {
+            throw LanceErrors.invalidInput("id in the request body \"" + String.join(",", body)
                     + "\" does not match the id in the path \"" + pathId + "\"");
         }
+    }
+
+    /**
+     * body 里的 {@code id} → 层级列表；没给（缺键 / {@code null} / 空串）时返回 {@code null}。
+     *
+     * <p>三种形状都要认，因为它们都真实存在：
+     *
+     * <ul>
+     *   <li><b>数组</b>（{@code ["cat","schema"]}）——规范的定义，Lance 自己的客户端
+     *       （Spark connector 的 `RestNamespace`、OpenAPI 生成的 Java 客户端）发的是这个；</li>
+     *   <li><b>拼接串</b>（{@code cat$schema}）——控制台的 {@code /lance/v1} 调用与
+     *       手写脚本发的是这个，历史上的服务端也只认这个；</li>
+     *   <li><b>缺键</b>——规范允许 body 省略 {@code id}，以路径为准。</li>
+     * </ul>
+     *
+     * <p>拼串在这里拆得开，是因为分隔符从请求参数传了进来；DTO 里做不到这件事，
+     * 于是 DTO 只收 {@link JsonNode}，拆分留到这里。
+     */
+    public static List<String> levelsOfBody(JsonNode bodyId, String delimiter) {
+        if (bodyId == null || bodyId.isNull() || bodyId.isMissingNode()) {
+            return null;
+        }
+        if (bodyId.isTextual()) {
+            String raw = bodyId.asString();
+            return raw.isBlank() ? null : split(raw, delimiter);
+        }
+        if (bodyId.isArray()) {
+            List<String> levels = new ArrayList<>(bodyId.size());
+            for (JsonNode level : bodyId) {
+                if (!level.isTextual()) {
+                    throw LanceErrors.invalidInput(
+                            "id in the request body must be an array of strings");
+                }
+                levels.add(level.asString());
+            }
+            if (levels.stream().allMatch(String::isBlank)) {
+                return null;
+            }
+            return levels;
+        }
+        throw LanceErrors.invalidInput("id in the request body must be a string or an array of strings");
     }
 
     // ------------------------------------------------------------------ 内部
@@ -151,9 +200,10 @@ public final class LanceIds {
         return new Id(List.of(parts));
     }
 
-    private static String normalize(String id, String delimiter) {
+    /** 按分隔符切成层级；不校验内容（一致性比对与解析是两件事）。 */
+    private static List<String> split(String raw, String delimiter) {
         String separator = delimiter == null || delimiter.isEmpty() ? DEFAULT_DELIMITER : delimiter;
-        return String.join(separator, id.split(Pattern.quote(separator), -1));
+        return List.of(raw.split(Pattern.quote(separator), -1));
     }
 
     private static String describeLevels(int min, int max) {

@@ -51,12 +51,11 @@ public class LanceCatalogSupport {
     /** 数据集目录的后缀。Lance 生态的惯例，也便于与同目录下的其它产物区分。 */
     private static final String DATASET_SUFFIX = ".lance";
 
-    /** 探测数据集时不带版本号的两种入口：V1 的首个 manifest 与 V2 的版本提示文件。 */
-    private static final List<String> DATASET_MARKERS = List.of(
-            "_versions/1.manifest", "_versions/latest_version_hint.json");
-
     /** 版本目录；manifest 的命名方案见 {@link LanceVersionNaming}。 */
     private static final String VERSIONS = "_versions";
+
+    /** V2 客户端为加速版本发现而写的提示文件；它只是信号，不是判据（见 {@link #hasDataset}）。 */
+    private static final String VERSION_HINT = "latest_version_hint.json";
 
     private final CatalogService catalogService;
     private final DatabaseRepository databaseRepository;
@@ -198,10 +197,18 @@ public class LanceCatalogSupport {
     /**
      * 探测存储里是否已有数据集。
      *
-     * <p><b>这是弱校验，不解析 manifest。</b>{@code _versions/1.manifest}（V1 命名）与
-     * {@code latest_version_hint.json}（V2 用来加速版本发现的提示文件）只要有一个在，
-     * 就认为「有数据集」。它验不出「有 manifest 但数据文件不全」——那种表我们
-     * 打不开，而打开它是客户端的事。
+     * <p><b>这是弱校验，不解析 manifest。</b>{@code _versions/} 下只要有**一个认得出名字的
+     * manifest**（V1 的 {@code 1.manifest}、V2 的 {@code 18446744073709551610.manifest}
+     * 都算，认得出来由 {@link LanceVersionNaming} 判定）就认为「有数据集」；
+     * 另把 {@code latest_version_hint.json} 单独算一个信号。
+     *
+     * <p><b>为什么是列举而不是拼死几个文件名。</b>早先只探
+     * {@code _versions/1.manifest} 与提示文件——那等于同时假设「客户端按 V1 命名」
+     * 与「客户端会写提示文件」。Lance 4.x 的 Spark 客户端两条都不成立：默认写 V2
+     * 命名、也不写提示文件。结果是**表里已经有数据，这里依然回「只有登记」**，
+     * 客户端据此以为要重建表。文件名不是契约，列举结果才是。
+     *
+     * <p>验不出「有 manifest 但数据文件不全」——那种表我们打不开，而打开它是客户端的事。
      *
      * @return {@code true} 有、{@code false} 没有、{@code null} 探测不了（存储不可达）
      */
@@ -209,17 +216,19 @@ public class LanceCatalogSupport {
         if (location == null || location.isBlank()) {
             return Boolean.FALSE;
         }
-        for (String marker : DATASET_MARKERS) {
-            try {
-                if (files.exists(catalog.getId(), Paths.trimTrailingSlash(location) + "/" + marker)) {
+        String dataset = Paths.trimTrailingSlash(location);
+        try {
+            for (FileEntry entry : files.list(catalog.getId(), dataset + "/" + VERSIONS)) {
+                if (!entry.directory() && LanceVersionNaming.versionOf(entry.name()) != null) {
                     return Boolean.TRUE;
                 }
-            } catch (RuntimeException e) {
-                log.debug("could not probe {} under {}", marker, location, e);
-                return null;
             }
+            return files.exists(catalog.getId(), dataset + "/" + VERSION_HINT)
+                    ? Boolean.TRUE : Boolean.FALSE;
+        } catch (RuntimeException e) {
+            log.debug("could not probe {} under {}", VERSIONS, location, e);
+            return null;
         }
-        return Boolean.FALSE;
     }
 
     /**

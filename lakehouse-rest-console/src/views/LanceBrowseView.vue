@@ -309,10 +309,17 @@ const selected = ref('')
 
 const namespaces = useResource(() => lanceApi.listNamespaces(prefix.value), { immediate: false })
 
-/** 命名空间面板的一行：显示末段，`title` 里留完整 id（显示名是有损的）。 */
-const namespaceRows = computed(() => (namespaces.data.value?.namespaces ?? []).map((item) => ({
-  id: item.id,
-  label: lanceLeaf(item.id),
+/**
+ * 命名空间面板的一行。
+ *
+ * <p>`ListNamespaces` 回的是**裸名字**（相对父级的子级名，规范如此），不是完整 id
+ * 也不是对象——id 要按当前 catalog 拼回来。这一页曾经按 `item.id` 读，服务端也曾经
+ * 回对象；两边一起改是因为真客户端（Spark connector）按字符串数组反序列化，
+ * 回对象它连读都读不了。
+ */
+const namespaceRows = computed(() => (namespaces.data.value?.namespaces ?? []).map((name) => ({
+  id: lanceId(prefix.value, name),
+  label: name,
 })))
 
 const filteredNamespaces = computed(() => {

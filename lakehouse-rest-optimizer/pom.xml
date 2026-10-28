@@ -153,7 +153,7 @@
 		-->
 		<dependency>
 			<groupId>org.lance</groupId>
-			<artifactId>lance-spark-bundle-3.5_${scala.binary.version}</artifactId>
+			<artifactId>${lance.spark.artifact}</artifactId>
 			<version>${lance.version}</version>
 			<scope>test</scope>
 		</dependency>

@@ -54,8 +54,10 @@ export const lanceApi = {
   /**
    * 列 catalog 下的命名空间（Lance 只有两级，这里就是全部）。
    *
-   * <p>服务端在 `id` 只有一段（即 catalog）时回它的全部 schema；`properties` 是该 schema
-   * 的 options，控制台只用来显示个数，不解析内容。
+   * <p>响应是 `{namespaces: ['demo', ...], page_token}`——**裸名字**，相对父级
+   * （`id=当前 catalog`）的子级名。规范原话是「child namespaces relative to the parent」，
+   * 真客户端也按字符串数组读，因此这里不能再假设元素是 `{id, properties}`：
+   * 完整 id 要自己用 {@link lanceId} 拼回去，属性要另外调 describe。
    */
   listNamespaces: (catalog, query = {}) => get('lanceListNamespaces', {
     params: { id: catalog, query },

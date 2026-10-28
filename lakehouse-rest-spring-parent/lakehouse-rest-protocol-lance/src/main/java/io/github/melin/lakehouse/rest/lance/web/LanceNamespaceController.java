@@ -75,8 +75,9 @@ public class LanceNamespaceController {
     @PostMapping("/{id}/drop")
     public LanceDtos.EmptyResponse drop(@PathVariable String id,
                                          @RequestParam(required = false) String delimiter,
-                                         @RequestParam(required = false) String mode) {
-        namespaceService.drop(id, delimiter, mode);
+                                         @RequestParam(required = false) String mode,
+                                         @RequestBody(required = false) LanceDtos.DropNamespaceRequest request) {
+        namespaceService.drop(id, delimiter, mode, request == null ? null : request.behavior());
         return new LanceDtos.EmptyResponse();
     }
 

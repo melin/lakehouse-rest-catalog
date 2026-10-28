@@ -122,7 +122,47 @@ object LiveSparkSession {
     private val IcebergExtensionClass = "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions"
 
     /**
-     * `spark.sql.extensions` 的取值：三个扩展都要装。
+     * Lance 自己的扩展类名。它做三件事：把 `OPTIMIZE` / `VACUUM` 注册成 parser 级命令
+     * （这两条不是 `CALL`，是 connector 自带的 ANTLR 语法）、注入 fragment-aware join 规则、
+     * 装 `VACUUM` / `OPTIMIZE` 的物理计划策略。少了它，两条维护语句会在**解析期**失败。
+     */
+    private val LanceExtensionClass = "org.lance.spark.extensions.LanceSparkSessionExtensions"
+
+    /** Lance catalog 的实现类名。 */
+    private val LanceCatalogClass = "org.lance.spark.LanceNamespaceSparkCatalog"
+
+    /**
+     * 类路径上有没有 Lance 的 Spark bundle。
+     *
+     * <p>两个模块的 pom 里都有它（test scope），但**构件不同**：3.5 是
+     * `lance-spark-bundle-3.5_2.12`、4.1 是 `lance-spark-bundle-4.1_2.13`（由根 POM 的
+     * `lance.spark.artifact` 指过来，4.1 模块自己覆盖）。类名两者相同，所以探测一次
+     * 就够；探测而不是写死「一定有」，是为了让这个 object 在不声明 bundle 的模块里
+     * 仍然编得过——那种情况下 {@link #lanceEnabled} 恒为 false，用例整类跳过。
+     */
+    private val lanceOnClasspath: Boolean =
+        try {
+            Class.forName(LanceCatalogClass)
+            true
+        } catch {
+            case _: Throwable => false
+        }
+
+    /**
+     * 要不要把 Lance 装进这次会话。
+     *
+     * <p>**两把锁同时打开才装**（`-De2e.lance.enabled=true` + 类路径上有 bundle），
+     * 而不是「有就装」。理由不是性能：Lance 的 parser 扩展会在 Spark 原生解析器
+     * 抛 `ParseException` 之后**再抛一次自己语法的解析失败**，于是别的用例里
+     * 「这条 SQL 应该报什么错」的报文会换一份——那批用例守的正是报文本身
+     * （管理语句、策略语句）。Lance 的用例在 `scripts/e2e-lance-spark.sh` 里单独跑，
+     * 那次才把开关打开，其余批次完全不受影响。
+     */
+    private[spark] val lanceEnabled: Boolean =
+        System.getProperty("e2e.lance.enabled", "").trim.equalsIgnoreCase("true") && lanceOnClasspath
+
+    /**
+     * `spark.sql.extensions` 的取值：三个扩展都要装（Lance 按需追加在最后）。
      *
      * <p>顺序上本项目的扩展在前——它先用自己的解析器识别管理语句，
      * 识别不了就原样交回 Spark 原生解析器，与另外两个注入的规则不重叠。
@@ -136,7 +176,7 @@ object LiveSparkSession {
      * 而失败信息是通用的语法错误，与「少装了一个扩展」看不出关系。
      */
     val extensions = PaimonRestManagement.EXTENSION_CLASS + "," + PaimonExtensionClass +
-        "," + IcebergExtensionClass
+        "," + IcebergExtensionClass + (if (lanceEnabled) "," + LanceExtensionClass else "")
 
     /**
      * 测试用的 catalog 标识，既是 `spark.sql.catalog.<name>` 的后缀，
@@ -210,6 +250,107 @@ object LiveSparkSession {
         icebergCatalogReady = true
     }
 
+    /**
+     * Lance 侧的 catalog 名：同样是「`spark.sql.catalog.<name>` 的后缀」，
+     * 但它**不是**服务端的 prefix——见 {@link #lanceEnsureCatalog}。
+     */
+    val lanceCatalog: String = "lance_catalog"
+
+    /**
+     * Lance catalog 的仓库根，只在首次建 catalog 时用一次（同 Iceberg 的临时目录理由）。
+     *
+     * <p>服务端按它判定 `allowedLocations`：`declare` 时客户端不给 `location` 就由服务端
+     * 按路径模板分配（`<warehouse>/<schema>.db/<table>.lance`），那个路径必须落在白名单里。
+     */
+    lazy val lanceWarehouse: String =
+        "file://" + Files.createTempDirectory("lakehouse-rest-lance-live-warehouse").toString
+
+    /** 建 catalog 是「一次就好」的副作用。 */
+    private var lanceCatalogReady = false
+
+    /**
+     * 确保服务端上有一个 LANCE 格式的 {@link #lanceCatalog}。
+     *
+     * <p><b>这一步不能省，也没法靠客户端撞出来。</b>另两面都有一个连接阶段的握手
+     * （`/v1/config`），服务端会在那时按默认格式自动登记 catalog；Lance 面**没有这个端点**
+     * （`docs/lance-rest-catalog-design.md` §12.9），客户端第一个请求就是
+     * `GET /lance/v1/namespace/{id}/list`，prefix 不存在时只会得到 404——
+     * 看起来像「客户端配错了 base uri」，其实是服务端还没有这个 catalog。
+     *
+     * <p>幂等：已存在（409）时不再建，但仍要核对格式——同名 prefix 若是别的格式，
+     * 后面每个请求都是 404/400，错因与表面现象无关。
+     */
+    def lanceEnsureCatalog(): Unit = synchronized {
+        if (lanceCatalogReady) {
+            return
+        }
+        require(lanceEnabled,
+            "Lance 的 e2e 需要 -De2e.lance.enabled=true 且类路径上有 lance-spark-bundle，"
+                + "见 scripts/e2e-lance-spark.sh")
+        val body = ("""{"catalog":{"type":"INTERNAL","name":"%s","catalogFormat":"LANCE",""" +
+            """"properties":{},"storageConfigInfo":{"storageType":"FILE","allowedLocations":["%s"]}}}""")
+            .format(lanceCatalog, lanceWarehouse)
+        val response = send(HttpRequest.newBuilder(URI.create(managementUrl + "/catalogs"))
+            .header("Content-Type", "application/json")
+            .header("Authorization", "Bearer " + token)
+            .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
+            .build())
+        val code = response.statusCode()
+        require(code == 201 || code == 409,
+            s"创建 LANCE catalog 失败：POST /catalogs -> $code ${response.body()}")
+
+        val actual = catalogFormatOf(lanceCatalog)
+        require(actual == "LANCE",
+            s"prefix $lanceCatalog 已存在且格式是 $actual，不是 LANCE。"
+                + "同一个 prefix 不能同时承载两种格式，请换一个名字（或删掉重建）。")
+        lanceCatalogReady = true
+    }
+
+    /**
+     * Lance catalog 的 Spark 配置（为空表示这次不装）。
+     *
+     * <p>四个要点，每个都对应一处「配错就一条语句都不通」：
+     *
+     * <ul>
+     *   <li>{@code impl=rest}——namespace 实现名。不给它，catalog 会退化成**纯路径模式**
+     *       （`pathBasedOnly`），`SHOW NAMESPACES` 一类直接 `IllegalStateException`；</li>
+     *   <li>{@code uri=<catalogUrl>/lance}——服务端把 Lance 面挂在 `/lance` 前缀下，
+     *       而客户端自己会拼 `/v1/namespace/...`，所以这里要给到 `/lance` 为止；</li>
+     *   <li>{@code delimiter=$}——与服务端 {@code LanceIds.DEFAULT_DELIMITER} 一致。
+     *       id 是**拼接串**（`cat$schema$table`），两边分隔符不一致时每个请求都会
+     *       解析成别的东西；</li>
+     *   <li>{@code parent=lance_catalog}——把 SQL 里的三段名
+     *       `lance_catalog.ns.tbl` 的第一段补进 id：客户端拿到的 namespace 只有
+     *       `ns`（服务端回的是相对名字），没有这一项它会拼出 `ns$tbl` 两段 id，
+     *       而表类 operation 要求恰好三段。反过来，`SHOW NAMESPACES` 也只显示
+     *       `ns` 而不是 `lance_catalog.ns`——这正是我们要的。</li>
+     * </ul>
+     *
+     * <p>认证走 `header.Authorization`：Lance 的 REST namespace 把 `header.*` 前缀的
+     * 属性直接铺成 HTTP 头，没有 Iceberg 那套 oauth2 协商。
+     */
+    private def lanceConfigs: Seq[(String, String)] = {
+        if (!lanceEnabled) {
+            return Seq.empty
+        }
+        val prefix = "spark.sql.catalog." + lanceCatalog
+        Seq(
+            prefix -> LanceCatalogClass,
+            (prefix + ".impl") -> "rest",
+            (prefix + ".uri") -> (catalogUrl + "/lance"),
+            (prefix + ".delimiter") -> "$",
+            (prefix + ".parent") -> lanceCatalog,
+            // 显式关掉「单层命名空间」。不写这一项时 connector 会自己探一次：
+            // `impl=rest` 时它拿一个**不带 id** 的 ListNamespaces 去试，探不通就认为
+            // 后端是扁平的，于是给每个 namespace 套一个虚拟的 `default` 前缀——
+            // `SHOW NAMESPACES` 会显示成 `default.<ns>`，看着像服务端多了一层。
+            // 我们这一面本来就没有「列根」这个入口（id 的第一段永远是 catalog，
+            // 全库扫描既慢又越权），所以探测必然失败、必然误判。
+            (prefix + ".single_level_ns") -> "false",
+            (prefix + ".header.Authorization") -> ("Bearer " + token)
+        )
+    }
+
     /** 读一个 catalog 的格式；读不到时返回空串（调用方负责把它变成一句能照做的提示）。 */
     private def catalogFormatOf(prefix: String): String = {
         val response = send(HttpRequest.newBuilder(URI.create(managementUrl + "/catalogs/" + prefix))
@@ -257,6 +398,13 @@ object LiveSparkSession {
         require(session.conf.get("spark.sql.catalog." + catalog + ".token") == identity
                 && session.conf.get("spark.sql.catalog." + icebergCatalog + ".token") == identity,
             "子会话没能覆盖 catalog 令牌，身份不会生效")
+        // Lance 面的身份不叫 `.token`，而是 `header.Authorization`——它的 REST namespace
+        // 把 `header.*` 直接铺成 HTTP 头，没有 Paimon / Iceberg 那套令牌属性。
+        // 只在装了 Lance 时改：没装的时候写这个 key 只会多一行没人读的配置。
+        if (lanceEnabled) {
+            session.conf.set("spark.sql.catalog." + lanceCatalog + ".header.Authorization",
+                "Bearer " + identity)
+        }
         session
     }
 
@@ -265,7 +413,9 @@ object LiveSparkSession {
         // 同上：JDK 24+ 下 Spark 建会话必失败，提前换成一句能照做的提示
         SparkJdkRequirement.requireHadoopCompatibleJdk()
         val warehouse = Files.createTempDirectory("paimon-rest-live-warehouse")
-        val session = SparkSession.builder()
+        // 注意末尾**不再** `.getOrCreate()`：Lance 那几项配置是可选的，
+        // 要追加在链尾（见下方 `lanceConfigs.foldLeft`）
+        val base = SparkSession.builder()
             .master("local[1]")
             .appName("paimon-rest-live")
             .config("spark.ui.enabled", "false")
@@ -327,7 +477,12 @@ object LiveSparkSession {
             // 上报间隔压到 200ms：用例要在几秒内看到结果，而不是等默认的 2 秒一批
             .config(LineageSettings.FLUSH_INTERVAL_MS,
                 if (lineageEnabled) "200" else LineageSettings.DEFAULT_FLUSH_INTERVAL_MS.toString)
-            .getOrCreate()
+
+        // Lance 的这几项**追加**而不是并入上面那条链：它是可选的（见 `lanceEnabled`），
+        // 而整条链是一串 `.config(...)`，中间插条件只能拆开写。折叠进来而不是
+        // `if` 里再写一份 builder：两处 builder 的差异会在下一次改配置时悄悄分叉。
+        val builder = lanceConfigs.foldLeft(base) { case (acc, (key, value)) => acc.config(key, value) }
+        val session = builder.getOrCreate()
 
         // 守住会话复用这个坑：若本进程里已经有别的 SparkSession（例如用桩服务端的
         // ManagementSqlExecutionTests），getOrCreate 会**直接返回那一个**，

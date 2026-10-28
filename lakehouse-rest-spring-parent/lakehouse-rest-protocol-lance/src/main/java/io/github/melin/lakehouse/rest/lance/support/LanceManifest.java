@@ -33,6 +33,11 @@ import java.util.List;
  * message DeletionFile { ... uint64 num_deleted_rows = 4; }
  * </pre>
  *
+ * <p><b>但 {@code Field.type} 不能信。</b>4.x 的写入方已经不写这个字段了（Rust 侧的结构体里
+ * 它已经不存在），树形改由 {@code logical_type} 表达；未写出的字段读出来是枚举 0，
+ * 而 0 是 {@code PARENT}——照它理解会把每个叶子列都当成 struct。角色的判定见
+ * {@link #role}，那是本解析器唯一一处「字段号对了、语义已经变了」的地方。
+ *
  * <p><b>读不出就抛 {@link Unreadable}。</b>调用方的处置是**降级**（不回 schema，
  * 只回 location），因此解析失败必须是「能被接住的一种异常」而不是随便一个
  * {@code RuntimeException}——否则调用方只能捕一大片，把真正的 bug 也一起吞掉。
@@ -93,17 +98,96 @@ public final class LanceManifest {
 
     // ------------------------------------------------------------------ 解析
 
+    /**
+     * 解析一个 {@code _versions/*.manifest} 文件的字节。
+     *
+     * <p><b>两种文件形状都要认</b>，判别只看尾部 4 字节的魔数：
+     *
+     * <ul>
+     *   <li><b>裸 protobuf</b>（没有 {@code LANC} 魔数）：{@code Manifest} 直接从第 0 字节开始。
+     *       这是手工构造的 manifest（测试夹具、以及一些早期写入路径）的形状；</li>
+     *   <li><b>4.x 的容器</b>（以 {@code LANC} 结尾）：见 {@link #payload}。</li>
+     * </ul>
+     */
     public static Manifest parse(byte[] bytes) {
         if (bytes == null || bytes.length == 0) {
             throw new Unreadable("manifest is empty");
         }
         try {
-            return readManifest(new Cursor(bytes));
+            return readManifest(new Cursor(payload(bytes)));
         } catch (Unreadable e) {
             throw e;
         } catch (RuntimeException e) {
             throw new Unreadable("cannot read the lance manifest: " + e.getMessage(), e);
         }
+    }
+
+    /** 尾部 footer：{@code manifest 段偏移(i64)} + {@code major(u16)} + {@code minor(u16)} + {@code 魔数}。 */
+    private static final int FOOTER_LENGTH = 16;
+
+    /** 容器格式的魔数，落在文件最后 4 字节。 */
+    private static final byte[] MAGIC = {'L', 'A', 'N', 'C'};
+
+    /**
+     * 从容器里取出 {@code Manifest} 那一段。
+     *
+     * <p><b>容器长什么样</b>（抄自 Lance 的 {@code lance-table/src/io/manifest.rs}，
+     * 写入方是 {@code do_write_manifest}）：
+     *
+     * <pre>
+     * [索引段]        [u32 长度][IndexSection protobuf]      ← 有索引才有
+     * [内联事务段]    [u32 长度][Transaction protobuf]       ← 有事务才有
+     * [manifest 段]   [u32 长度][Manifest protobuf]          ← 我们只要这一段
+     * [footer 16B]    [段偏移 i64][major u16][minor u16][LANC]
+     * </pre>
+     *
+     * <p><b>不能假设「manifest 在第 0 字节」</b>：只有不带索引、不带内联事务的 manifest
+     * 才恰好从 0 开始。客户端的 {@code InsertIntoTable} 第一次写入就带内联事务，
+     * 那时第 0 字节是事务段——按 0 去解会得到一份「字段全是垃圾」的 protobuf：
+     * 不报错、字段名乱码、schema 悄悄错。所以按 footer 里的偏移取，且严格校验
+     * 长度不越界，越界就报 {@link Unreadable} 让调用方降级。
+     *
+     * <p>footer 里的 major / minor 我们不用，也不校验：它们描述的是**文件格式代数**，
+     * 而 manifest 的 protobuf 字段号只增不改——这与整份解析器「不认识就跳过」的
+     * 策略一致。
+     */
+    private static byte[] payload(byte[] bytes) {
+        if (!container(bytes)) {
+            return bytes;
+        }
+        int footer = bytes.length - FOOTER_LENGTH;
+        long position = 0;
+        for (int i = 0; i < 8; i++) {
+            position |= (long) (bytes[footer + i] & 0xFF) << (8 * i);
+        }
+        if (position < 0 || position + 4 > footer) {
+            throw new Unreadable("manifest footer points at offset " + position
+                    + ", outside the " + footer + " bytes it precedes");
+        }
+        int start = (int) position;
+        long length = (bytes[start] & 0xFFL)
+                | (bytes[start + 1] & 0xFFL) << 8
+                | (bytes[start + 2] & 0xFFL) << 16
+                | (bytes[start + 3] & 0xFFL) << 24;
+        if (start + 4 + length > footer) {
+            throw new Unreadable("manifest section at offset " + start + " declares " + length
+                    + " bytes, which overruns the file (" + footer + " bytes before the footer)");
+        }
+        byte[] slice = new byte[(int) length];
+        System.arraycopy(bytes, start + 4, slice, 0, (int) length);
+        return slice;
+    }
+
+    private static boolean container(byte[] bytes) {
+        if (bytes.length < FOOTER_LENGTH) {
+            return false;
+        }
+        for (int i = 0; i < MAGIC.length; i++) {
+            if (bytes[bytes.length - MAGIC.length + i] != MAGIC[i]) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static Manifest readManifest(Cursor cursor) {
@@ -130,7 +214,7 @@ public final class LanceManifest {
 
     private static Field readField(byte[] bytes) {
         Cursor cursor = new Cursor(bytes);
-        int type = 0;
+        int declaredType = 0;
         String name = "";
         int id = 0;
         int parentId = 0;
@@ -138,7 +222,7 @@ public final class LanceManifest {
         boolean nullable = false;
         while (cursor.next()) {
             switch (cursor.field()) {
-                case 1 -> type = (int) cursor.varint();
+                case 1 -> declaredType = (int) cursor.varint();
                 case 2 -> name = cursor.string();
                 case 3 -> id = (int) cursor.varint();
                 case 4 -> parentId = (int) cursor.varint();
@@ -147,8 +231,39 @@ public final class LanceManifest {
                 default -> cursor.skip();
             }
         }
-        return new Field(type, name, id, parentId, logicalType, nullable);
+        return new Field(role(declaredType, logicalType), name, id, parentId, logicalType, nullable);
     }
+
+    /**
+     * 字段角色：**以 {@code logical_type} 为准**，{@code type} 只作兜底。
+     *
+     * <p>这一条是被真客户端纠正的。Lance 4.x 的 {@code Field} 里**不再写 {@code type}**
+     * （Rust 侧的结构体里这个字段已经没有了）：树形完全由 {@code logical_type} 决定——
+     * {@code struct} 是父节点，{@code list} / {@code large_list} /
+     * {@code fixed_size_list:...} / {@code list.struct} 是可重复节点，其余是叶子。
+     * protobuf 对未写出的字段读出来是枚举的 0，而 0 恰好是 {@code PARENT}，
+     * 于是照 {@code type} 解释会把**每一个叶子列都当成 struct**：
+     * schema 不报错，只是变成一张空表（父节点没有成员）。
+     *
+     * <p>{@code logical_type} 也给不出结论时才回头看 {@code type}——老版本会显式写它，
+     * 两者本来就一致，所以这不算是两套真相。
+     */
+    private static int role(int declaredType, String logicalType) {
+        String logical = logicalType == null ? "" : logicalType.trim().toLowerCase(java.util.Locale.ROOT);
+        if (logical.isEmpty()) {
+            return declaredType;
+        }
+        if (logical.equals("struct") || logical.startsWith("map")) {
+            return TYPE_PARENT;
+        }
+        if (logical.equals("list") || logical.equals("large_list")
+                || logical.startsWith("list.") || logical.startsWith("large_list.")
+                || logical.startsWith("fixed_size_list")) {
+            return TYPE_REPEATED;
+        }
+        return TYPE_LEAF;
+    }
+
 
     /**
      * 读一个 fragment，只取 {@code deletion_file.num_deleted_rows}。

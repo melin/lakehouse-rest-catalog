@@ -838,6 +838,14 @@ BASE=http://127.0.0.1:8080 ./scripts/management-sweep.sh
 # SparkSqlAuthorizationTests + SparkSqlDocExamplesTests、收尾停服务端
 ./scripts/e2e-spark-sql.sh
 
+# Lance 协议面（Spark → /lance/v1/**）：同样自带服务端（h2 + 令牌 root/limited）、
+# 先跑 verify-lance-endpoints.py 的 13 项台账校验，再跑 LanceCatalogLiveTests 的 7 个用例
+# （建命名空间 / 建表写入读回 / SHOW TABLES 的完整 id / OPTIMIZE 与 VACUUM / 报错面 /
+# 只读令牌被拒 / declare 只有登记），收尾停服务端。
+# **Spark 3.5 与 4.1 各跑一遍**（SPARK_VERSIONS=4.1 可只跑一版）。
+# 见 docs/spark-lance-rest-e2e.md
+./scripts/e2e-lance-spark.sh
+
 # 控制台登录（HTTP 层）：登录引导、用户名密码登录、令牌端点的错误码、凭据校验、
 # 签发令牌、静态令牌、静态资源深链——63 项。需以 --lakehouse.rest.auth.enabled=true 启动，
 # 凭据取自启动日志里「created bootstrap principal」那行（仅在开了授权时才有；
@@ -861,8 +869,9 @@ CLIENT_ID=<引导主体 clientId> CLIENT_SECRET=<明文密钥> \
 `<标记>[实际状态码/期望状态码] 说明 响应片段`，末尾汇总通过 / 失败项数，
 存在失败时以非 0 退出；请求体形状与规格字段名一致，可直接作为接口调用示例。
 
-`e2e-spark-sql.sh` 是唯一会启动服务端的脚本，也是验证「客户端与服务端契约一致」的那一层：
-前几层测试用的是桩，只能证明客户端与自己的假设自洽。它一次跑六个类——
+`e2e-spark-sql.sh` 与 `e2e-lance-spark.sh` 会自己启动服务端，也是验证「客户端与服务端
+契约一致」的那一层：前几层测试用的是桩，只能证明客户端与自己的假设自洽。
+`e2e-spark-sql.sh` 一次跑六个类——
 `ManagementSqlLiveServerTests`（管理 API 契约）、`PaimonTableDdlTests`（用 Spark SQL 建 Paimon 表）、
 `NonPaimonTableSqlTests`（Format / Object / Lance 三种非 Paimon 表的读写边界）、
 `IcebergTableDdlTests`（用 Spark SQL 建 Iceberg 表，走 Iceberg 协议面）、
@@ -871,6 +880,15 @@ CLIENT_ID=<引导主体 clientId> CLIENT_SECRET=<明文密钥> \
 因此它们共用同一个会话（会话里同时注册了 Paimon 与 Iceberg 两个 catalog）；
 把用桩的 `ManagementSqlExecutionTests` 拉进同一批会让端点与扩展错位，
 `LiveSparkSession` 会就此直接报错，而不是静默跑错。
+
+`e2e-lance-spark.sh` 单独一批，不并进上面那条：Lance 的 parser 扩展会在原生解析器失败后
+**再抛一次自己语法的解析失败**，上面那批判例守的正是报文本身，同批跑等于让两条互不相干的
+约束互相污染。它跑 `LanceCatalogLiveTests` 七个用例，用的是**真的** Lance Spark connector
+（`lance-spark-bundle-3.5_2.12:0.8.0` 与 `lance-spark-bundle-4.1_2.13:0.8.0`，**两个 Spark
+版本各跑一遍**，用例源码在 `shared/` 里共用），因此这一面第一次跑起来就抓到三处「只做
+MockMvc 永远看不见」的报文错位（请求体 `id` 是数组、`ListNamespaces` 回名字数组、
+`DropNamespace` 的 `behavior` 在 body 里）——契约与部署清单见
+[`docs/spark-lance-rest-e2e.md`](docs/spark-lance-rest-e2e.md)。
 
 `sweep-console-auth.sh` 与 `npm run check:login` 是登录链路的另外两层，都对着运行中的实例跑：
 

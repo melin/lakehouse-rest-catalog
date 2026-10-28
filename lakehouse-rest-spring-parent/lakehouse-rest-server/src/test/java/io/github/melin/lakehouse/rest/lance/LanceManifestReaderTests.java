@@ -79,7 +79,90 @@ class LanceManifestReaderTests {
         assertThrows(LanceManifest.Unreadable.class, () -> LanceManifest.parse(null));
     }
 
+    // ------------------------------------------------------------------ 容器格式（Lance 4.x）
+
+    /**
+     * 真客户端写的 manifest 不是裸 protobuf，而是带 footer 的容器。
+     *
+     * <p>这里前面塞一段「索引段」，于是 footer 里的偏移**不是 0**——正是这个偏移
+     * 把「按 footer 取」和「按第 0 字节取」区分开。按第 0 字节取不会抛异常，
+     * 它会解出一份字段名乱码的 protobuf：schema 悄悄错，比报错难查得多。
+     */
+    @Test
+    void readsTheManifestSectionThroughTheFooterOffset() {
+        byte[] bare = LanceManifestFixture.manifest(4L, 1_700_000_000L, nested(), 2, 1);
+        LanceManifest.Manifest manifest = LanceManifest.parse(LanceManifestFixture.container(bare, 12));
+
+        assertEquals(4L, manifest.version());
+        assertEquals(1_700_000_000_000L, manifest.timestampMillis());
+        assertEquals(5, manifest.fields().size());
+        assertEquals(2, manifest.fragmentCount());
+        assertEquals(2L, manifest.deletedRows());
+    }
+
+    /** 没有前置段时偏移是 0，也要认——否则「第一版就是最新版」的表会读不出 schema。 */
+    @Test
+    void readsTheContainerWithoutAnyPrefixSection() {
+        byte[] bare = LanceManifestFixture.manifest(1L, 1L,
+                List.of(LanceManifestFixture.leaf("a", 1, 0, "int32")), 0, 0);
+        LanceManifest.Manifest manifest = LanceManifest.parse(LanceManifestFixture.container(bare, 0));
+        assertEquals(1L, manifest.version());
+        assertEquals(1, manifest.fields().size());
+    }
+
+    /**
+     * footer 指向文件外、或段长度声明得比文件还大：一律 {@link LanceManifest.Unreadable}。
+     *
+     * <p>两种都是「文件坏了」，而坏文件的处置必须是**降级**（只回 location），
+     * 不是猜一份元数据。因此这里不允许「尽力读出来」。
+     */
+    @Test
+    void brokenContainerFootersAreUnreadable() {
+        byte[] bare = LanceManifestFixture.manifest(2L, 1L, nested(), 1, 0);
+
+        byte[] outside = LanceManifestFixture.containerWithFooterPosition(bare, 0, 9_999);
+        assertThrows(LanceManifest.Unreadable.class, () -> LanceManifest.parse(outside));
+
+        byte[] overrun = LanceManifestFixture.container(bare, 0);
+        overrun[0] = (byte) 0xFF;
+        overrun[1] = (byte) 0xFF;
+        assertThrows(LanceManifest.Unreadable.class, () -> LanceManifest.parse(overrun));
+    }
+
     // ------------------------------------------------------------------ JSON Arrow
+
+    /**
+     * 现代形状（无 {@code type}、顶层 {@code parent_id = -1}）也要还原出**同一个树**。
+     *
+     * <p>这条是被真客户端逼出来的：4.x 不再写 {@code type}，而 protobuf 把「没写」
+     * 读成枚举 0 = {@code PARENT}。照它理解，`a: int32` 就成了一个没有成员的 struct——
+     * schema 变成一张**空表**，而且整个过程不报错。所以这里断言的不只是「不抛异常」，
+     * 是「顶层真的是两列、且 a 是 int」。
+     */
+    @Test
+    void modernManifestWithoutTypeStillBuildsTheSameTree() {
+        byte[] bytes = LanceManifestFixture.modernManifest(2L, 1L, nested(), 1, 0);
+        LanceManifest.Manifest manifest = LanceManifest.parse(bytes);
+
+        assertEquals(2L, manifest.version());
+        assertEquals(5, manifest.fields().size());
+        // 角色由 logical_type 决定，而不是那个缺省的枚举值
+        assertEquals(LanceManifest.TYPE_LEAF, manifest.fields().get(0).type(), "a 是叶子列");
+        assertEquals(LanceManifest.TYPE_PARENT, manifest.fields().get(1).type(), "b 是 struct");
+        assertEquals(LanceManifest.TYPE_REPEATED, manifest.fields().get(2).type(), "b.c 是 list");
+        assertEquals(-1, manifest.fields().get(0).parentId(), "顶层的 parent_id 是 -1");
+
+        Map<String, Object> schema = LanceJsonArrow.schema(manifest);
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> fields = (List<Map<String, Object>>) schema.get("fields");
+        assertEquals(2, fields.size(), "顶层应是 a 与 b，实际: " + fields);
+        assertEquals("a", fields.get(0).get("name"));
+        assertEquals("b", fields.get(1).get("name"));
+        @SuppressWarnings("unchecked")
+        Map<String, Object> a = (Map<String, Object>) fields.get(0).get("type");
+        assertEquals("int", a.get("type"));
+        assertEquals(32, a.get("bitWidth"));
+    }
 
     @Test
     void schemaKeepsTheNestingAndMapsLogicalTypes() {

@@ -115,6 +115,13 @@ class LanceRestCatalogApiTests {
         assertTrue(node.has("instance"), "instance 填请求路径: " + node);
     }
 
+    /** 字符串数组节点 → {@code List<String>}（响应里的 id / namespaces 都是这个形状）。 */
+    private static List<String> textList(JsonNode node) {
+        List<String> values = new ArrayList<>();
+        node.forEach(item -> values.add(item.asString()));
+        return values;
+    }
+
     // ------------------------------------------------------------------ 装配
 
     @Test
@@ -149,11 +156,59 @@ class LanceRestCatalogApiTests {
         assertEquals(CATALOG + "$" + SCHEMA, described.get("id").asString());
         call(200, postAt("/lance/v1/namespace/" + NS_ID + "/exists"));
 
-        // list：新 schema 出现在直接子级里
+        // list：新 schema 出现在直接子级里——**裸名字**，不是 `catalog$schema` 也不是对象。
+        // 客户端（Spark connector）拿它拼回 `catalog$schema`，回完整 id 会拼成四段而 400；
+        // 回对象则连反序列化都过不了（`namespaces` 在规范里是字符串数组）。
         JsonNode listed = getJson(200, "/lance/v1/namespace/" + CATALOG + "/list");
-        List<String> ids = new ArrayList<>();
-        listed.get("namespaces").forEach(node -> ids.add(node.get("id").asString()));
-        assertTrue(ids.contains(CATALOG + "$" + SCHEMA), "namespaces=" + ids);
+        List<String> names = new ArrayList<>();
+        listed.get("namespaces").forEach(node -> names.add(node.asString()));
+        assertTrue(names.contains(SCHEMA), "namespaces=" + names);
+        assertFalse(names.contains(CATALOG + "$" + SCHEMA), "回的是相对父级的名字: " + names);
+
+        // 第二级之下没有子级：空列表，而不是把 `lance` 当前缀去匹配
+        assertEquals(0, getJson(200, "/lance/v1/namespace/" + NS_ID + "/list")
+                .get("namespaces").size());
+    }
+
+    /**
+     * body 里的 {@code id} 两种形状都收：层级数组（规范/真客户端）与拼接串（控制台）。
+     *
+     * <p>这一条是 Spark 端到端验收逼出来的：Lance 的客户端一律发数组，早先按
+     * {@code String} 绑定，于是建命名空间、declare、register 全部
+     * {@code 400 Malformed request}，整条链路一个请求都进不来。
+     */
+    @Test
+    @Order(8)
+    void bodyIdAcceptsBothArrayAndJoinedString() throws Exception {
+        // 数组形态 + 路径一致 → 建成功
+        JsonNode created = json(200, "POST", "/lance/v1/namespace/" + CATALOG + "%24array_id/create",
+                "{\"id\":[\"" + CATALOG + "\",\"array_id\"],\"properties\":{}}");
+        assertEquals(CATALOG + "$array_id", created.get("id").asString());
+
+        // 拼接串形态 → 同样认
+        JsonNode joined = json(200, "POST", "/lance/v1/namespace/" + CATALOG + "%24string_id/create",
+                "{\"id\":\"" + CATALOG + "$string_id\"}");
+        assertEquals(CATALOG + "$string_id", joined.get("id").asString());
+
+        // 数组形态但内容与路径不一致 → 400 / code 13
+        assertLanceError(json(400, "POST", "/lance/v1/namespace/" + CATALOG + "%24array_id/create?mode=exist_ok",
+                "{\"id\":[\"" + CATALOG + "\",\"other\"]}"), 13);
+        // 数组里混了非字符串 → 400，而不是当成空 id 放过去
+        assertLanceError(json(400, "POST", "/lance/v1/namespace/" + CATALOG + "%24array_id/create?mode=exist_ok",
+                "{\"id\":[\"" + CATALOG + "\",1]}"), 13);
+
+        // declare 的 body 也是数组（Spark 建表走这条）
+        JsonNode declared = json(200, "POST", "/lance/v1/table/" + CATALOG + "%24array_id%24t/declare",
+                "{\"id\":[\"" + CATALOG + "\",\"array_id\",\"t\"],\"properties\":{}}");
+        assertTrue(declared.get("location").asString().endsWith("/t.lance"),
+                "location=" + declared.get("location").asString());
+
+        // 收尾：deregister（id 在响应里是**数组**，与规范的 DeregisterTableResponse 一致）
+        JsonNode removed = json(200, "POST", "/lance/v1/table/" + CATALOG + "%24array_id%24t/deregister", null);
+        assertEquals(List.of(CATALOG, "array_id", "t"), textList(removed.get("id")));
+
+        json(200, "POST", "/lance/v1/namespace/" + CATALOG + "%24array_id/drop", null);
+        json(200, "POST", "/lance/v1/namespace/" + CATALOG + "%24string_id/drop", null);
     }
 
     @Test
@@ -166,9 +221,12 @@ class LanceRestCatalogApiTests {
         // 第一级（catalog）上的写操作：406，Lance API 不建 catalog（决策 D2）
         assertLanceError(json(406, "POST", "/lance/v1/namespace/" + CATALOG + "/create",
                 "{\"properties\":{}}"), 0);
-        // Cascade 删除：406
+        // Cascade 删除：406 —— query 与 body 两种写法都要拦住。
+        // 只认 query 时，真客户端（body 里的 `behavior: "Cascade"`）会悄悄退化成 restrict。
         assertLanceError(json(406, "POST",
                 "/lance/v1/namespace/" + NS_ID + "/drop?mode=cascade", null), 0);
+        assertLanceError(json(406, "POST", "/lance/v1/namespace/" + NS_ID + "/drop",
+                "{\"behavior\":\"Cascade\"}"), 0);
         // 非法 id：400 / code 13
         assertLanceError(json(400, "POST",
                 "/lance/v1/namespace/" + CATALOG + "%24/describe", null), 13);

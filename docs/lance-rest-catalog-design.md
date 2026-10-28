@@ -431,7 +431,7 @@ DescribeTable / DeclareTable 的请求参数 vend_credentials=true
 | `POST /lance/v1/namespace/{id}/create` | `mode`：`create`（默认，已存在则 409）/ `exist_ok`（已存在返回 200）/ `overwrite`（**清属性但不清数据**，见下） | 1 父不存在、2 已存在、13 参数非法 |
 | `GET /lance/v1/namespace/{id}/list` | 列直接子节点；`page_token` / `limit` | 1 |
 | `POST /lance/v1/namespace/{id}/describe` | 返回 `properties`（我们的 `options` + `comment`） | 1 |
-| `POST /lance/v1/namespace/{id}/drop` | **只支持 `Restrict`**：非空回 `3 NamespaceNotEmpty`；`Cascade` 回 `406 Unsupported` | 1、3、0 |
+| `POST /lance/v1/namespace/{id}/drop` | **只支持 `Restrict`**：非空回 `3 NamespaceNotEmpty`；`Cascade` 回 `406 Unsupported`。`behavior` 从**请求体**读（`{"behavior":"Cascade"}`），query 的 `mode` 也认 | 1、3、0 |
 | `POST /lance/v1/namespace/{id}/exists` | 存在 200（空 body），不存在 404 | 1 |
 
 两条要展开：
@@ -472,12 +472,14 @@ DescribeTable / DeclareTable 的请求参数 vend_credentials=true
 | 参数 | 默认 | 我们的行为 |
 | --- | --- | --- |
 | `load_detailed_metadata` | `false` | `false`：只回 `location`/`properties`/`storage_options`。`true`：**P1 已打开**——读最新 manifest 补 `schema`/`version`/`stats`/`table`/`namespace`；只登记过的表（还没有 manifest）回 `409 + code 19`，manifest 读不出则**降级**（这几项不给，但 `location` 照回） |
-| `check_declared` | `false` | `true`：探测 `_versions/` 是否存在，填 `is_only_declared`；一次 LIST，成本可接受 |
+| `check_declared` | `false` | `true`：列举 `_versions/`，认出任意一个 manifest（V1 / V2 命名都算）就算「有数据集」，填 `is_only_declared`；一次 LIST，成本可接受 |
 | `with_table_uri` | `false` | `true`：把 `location` 规范化成合法 URI 填进 `table_uri`（`file:` 补 scheme、`s3://` 原样） |
 
 `load_detailed_metadata=true` 在 P0 回 406 必须有**明确的文案**，告诉调用方「传 `false` 或省略」。因为这是客户端最可能踩的一脚（§8 风险 1）。
 
 **c. `is_only_declared` 的三态。** `true` = 登记了但存储里没有数据集；`false` = 有；`null` = 没检查。默认返回 `null`（不探测），只有 `check_declared=true` 时才给真值。三态不能拍平成两态——「不知道」和「没有」对客户端是不同的决策。
+
+判据是**列举**而不是拼死几个文件名：`_versions/` 下任一个认得出的 manifest 名都算有数据集（V1 的 `1.manifest`、V2 的 `18446744073709551614.manifest` 同样对待）。早先只探 `_versions/1.manifest` 与 `latest_version_hint.json`，等于同时假设「客户端按 V1 命名」与「客户端会写提示文件」——4.x 两条都不成立，于是表里已有数据仍回「只有登记」（§12.10）。
 
 **d. `register` 与 `declare` 的 `mode`。** `create`（默认，已存在 409）/ `overwrite`（覆盖登记，**不动数据**）。`overwrite` 不删旧数据这一点同 §5.1（2）。
 
@@ -513,7 +515,7 @@ DescribeTable / DeclareTable 的请求参数 vend_credentials=true
 | 编号 | 需求 | 验收标准 | 状态 / 依据 |
 | --- | --- | --- | --- |
 | L1-1 | `load_detailed_metadata=true` | 返回 `schema`（JSON Arrow）、`version`、`table`、`namespace`；`stats` 可空 | ✅ 已实现；只登记过的表回 `409 + code 19`，manifest 读不出则降级 |
-| L1-2 | manifest 读取器 | 纯 Java protobuf 解析 `_versions/` 最新 manifest：支持 V1（`{version}.manifest`）与 V2（`u64::MAX-version` 补零 20 位）两种命名 | ✅ `LanceManifest` + `LanceVersionNaming`；**没有**用 `latest_version_hint.json`（§12.7） |
+| L1-2 | manifest 读取器 | 纯 Java protobuf 解析 `_versions/` 最新 manifest：支持 V1（`{version}.manifest`）与 V2（`u64::MAX-version` 补零 20 位）两种命名 | ✅ `LanceManifest` + `LanceVersionNaming`；**没有**用 `latest_version_hint.json`（§12.7）；4.x 的**容器**（footer 偏移 + `LANC`）与「`Field` 无 `type`」见 §12.10 |
 | L1-3 | `ListTableVersions` / `DescribeTableVersion` | 列版本号与时间；`descending` / `limit` / `page_token` 生效；`GET` 与 `POST` 两种方法都接 | ✅ 已实现；版本来自**存储与库两个来源的并集**（§12.7） |
 | L1-4 | 版本缓存 | `table_version` 列只做展示缓存，**不参与任何判定**；manifest 读失败时降级为「不回 schema」并记 `warn` | ✅ 已实现；缓存写失败只记 debug，不让读失败 |
 
@@ -726,9 +728,9 @@ P0 落地时与本文口径不一致、或本文没写到但实现必须决定�
 规范里 `latest_version_hint.json` 明说是 **hint**：写漏、写旧都不算错，旧版 Lance 根本不写。
 拿它当「最新版本号」会得到比实际小的答案，而且错得很安静。
 
-所以实现只做一件事：**LIST `_versions/` 一次，按 version 排序取最大**。hint 文件只在 `register`
-的弱存在性检查里被当作「这里像个数据集」的信号之一（与 `_versions/1.manifest` 二选一即可），
-**不参与版本发现**。
+所以实现只做一件事：**LIST `_versions/` 一次，按 version 排序取最大**。hint 文件只在
+`register` / `check_declared` 的弱存在性检查里被当作「这里像个数据集」的信号之一
+（与「列举出来的任意一个 manifest 名」二选一即可），**不参与版本发现**。
 
 命名有两套，混用是错的：
 
@@ -834,6 +836,26 @@ L2-2 的两半在同一份规范里待遇不同，值得单独记一笔，因为
 行过滤 / 列脱敏是 Spark 侧按 `PolicyRelation` 注入执行的，Lance 的读取路径不经过那一层；
 保留那一页等于给人一个「存得下、永不生效」的编辑器。Format / Object 表不受影响——
 它们仍可能被 Spark 读到，策略对它们是真生效的。
+
+### 12.10 真客户端跑出来的六处（`LanceCatalogLiveTests`）
+
+前 9 小节都是 MockMvc 阶段回填的。这一节的六处**只有拿真的 Lance Spark connector
+（`lance-spark-bundle-3.5_2.12:0.4.0`）打进来才看得见**——MockMvc 断言的是「我们按自己的
+理解回了一份规范的报文」，而错位恰好发生在规范理解与客户端实际发送之间。跑法与部署清单见
+[`spark-lance-rest-e2e.md`](spark-lance-rest-e2e.md)。
+
+| # | 症状 | 真因 | 修法 |
+| --- | --- | --- | --- |
+| 1 | 建库 / 建表**每个**请求都 `400 Malformed request`（code 13），服务端日志里连业务代码都没进 | 请求体里的 `id` 规范定义为**层级数组**（`["cat","schema"]`），DTO 按 `String` 绑定，反序列化直接失败 | 请求体的 `id` 一律收 `JsonNode`，由 `LanceIds.levelsOfBody` 认「数组 / 拼接串 / 缺键」三态 |
+| 2 | 客户端连反序列化都过不了 | `ListNamespaces` 的响应规范是**字符串数组**（相对名字），我们回的是 `[{id, properties}]` | 回 `["sales"]`；`ListTables` 仍回完整 id（那是另一条规范：full identifier in string form） |
+| 3 | `DropNamespace` 的级联永远 406，无论怎么传参 | `behavior` 在**请求体**里（`{"behavior":"Cascade"}`），我们只看 query 的 `mode` | 两者都认 |
+| 4 | 写数据后 `is_only_declared` 仍是 `true`（表里明明有数据） | 探测拼死 `_versions/1.manifest` 与 `latest_version_hint.json`；4.x 客户端写 V2 命名、也不写提示文件 | 改成列举 `_versions/`，认出任意一个 manifest 名即算有数据集（§5.2 c） |
+| 5 | `load_detailed_metadata=true` 一直「降级」，schema 与版本号都不给 | manifest 是**容器**：`[索引段][内联事务段][u32 长度][Manifest][16B footer][LANC]`。manifest 段不一定从第 0 字节开始（第一次 `INSERT` 就带内联事务），按 0 解会得到一份字段名乱码、却不抛异常的 protobuf | 按尾部 footer 里的段偏移取，越界报 `Unreadable` → 降级（§12.7 的处置不变） |
+| 6 | 修完 5 之后 schema 回来了，但 `fields` 是**空数组** | 4.x 的 `Field` **不再写 `type`**（Rust 侧结构体里已没有这个字段），树形改由 `logical_type` 表达；而 protobuf 读未写出的枚举是 0 = `PARENT`，于是每个叶子列都被当成 struct。顶层 `parent_id` 也从 `0` 改成了 `-1` | 角色由 `logical_type` 判定（`struct` / list 系 / 其余），顶层判定改成「这个 `parent_id` 在不在已知 id 里」 |
+
+第 5、6 两处的共同教训：**这一面的「契约」有两层**。一层是 HTTP 报文（规范里有），
+另一层是仓库里的字节（规范只给了 protobuf 定义，而写入方会漂移）。我们手写解析器是为了
+抗漂移（未知字段跳过），但「字段号没变、语义变了」这种情况它扛不住——只能靠真客户端跑一遍。
 
 ## 附：参考
 

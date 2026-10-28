@@ -3,6 +3,7 @@ package io.github.melin.lakehouse.rest.lance.dto;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import java.util.List;
 import java.util.Map;
+import tools.jackson.databind.JsonNode;
 
 /**
  * Lance Namespace / REST Catalog 的报文契约。
@@ -12,10 +13,15 @@ import java.util.Map;
  * 客户端（Python SDK / Java OpenAPI 生成代码 / Spark connector），它按规范拼字段名；
  * 「与规范一致」在这里比「与工程内其它 DTO 的驼峰一致」重要。
  *
- * <p><b>{@code id} 在本面一律是**字符串**（{@code cat$schema$table}），不是数组。</b>
- * 规范两层模型（Client spec 与 REST spec）里，抽象那一层把 id 写成层级列表，
- * 而 REST 那一层把它挪进路径、拼成一个串。我们实现的是后者，因此契约里
- * 不存在「数组形态的 id」——请求体里若出现，由 {@code LanceIds} 判一致性时拒绝。
+ * <p><b>请求体里的 {@code id} 用 {@link JsonNode}：规范写的是层级数组
+ * （{@code ["cat","schema"]}），而本面（与控制台）用拼接串（{@code cat$schema}）。</b>
+ * 两种形状都收，由 {@code LanceIds.levelsOfBody} 归一成层级列表再比。
+ * 这条不是「宽容」而是兼容性事实：Lance 自己的客户端（Spark connector 的
+ * `RestNamespace`、OpenAPI 生成的 Java 客户端）一律发数组。早先按 {@code String}
+ * 绑定时，只要 body 带 {@code id} 就是 {@code 400 Malformed request}——
+ * 建命名空间、declare、register 全靠 body，于是整条 Spark 链路一个请求都发不进来。
+ * 反过来控制台发的是拼接串，也不能只认数组。**在 DTO 里拼不成串**：分隔符是
+ * 请求参数（{@code ?delimiter=}），DTO 看不到它。
  *
  * <p><b>{@code managed_versioning} 只在为 {@code true} 时出现</b>（P2 起它是表级开关）。
  * 规范里它的缺省是 {@code false}，因此「不出现该键」与「{@code false}」同义；
@@ -50,7 +56,7 @@ public final class LanceDtos {
      *
      * <p>{@code id} 可空：空表示「以路径里的 id 为准」——规范允许 body 省略它。
      */
-    public record CreateNamespaceRequest(@JsonProperty("id") String id,
+    public record CreateNamespaceRequest(@JsonProperty("id") JsonNode id,
                                          @JsonProperty("properties") Map<String, String> properties) {
     }
 
@@ -58,12 +64,16 @@ public final class LanceDtos {
                                           @JsonProperty("properties") Map<String, String> properties) {
     }
 
-    /** 列举结果里的一个命名空间（id + 属性）。 */
-    public record NamespaceRef(@JsonProperty("id") String id,
-                               @JsonProperty("properties") Map<String, String> properties) {
-    }
-
-    public record ListNamespacesResponse(@JsonProperty("namespaces") List<NamespaceRef> namespaces,
+    /**
+     * {@code GET .../namespace/{id}/list} 的响应。
+     *
+     * <p><b>{@code namespaces} 是**字符串数组**，元素是相对父级 {@code id} 的子级名字
+     * （父级是 catalog 时就是 schema 名），不是对象。</b>规范原文如此，客户端也照这个读：
+     * Spark connector 的 {@code listNamespaces()} 直接 `for (String ns : response.getNamespaces())`。
+     * 这里曾经回 {@code [{id, properties}]}（想顺带把属性带上），后果是客户端反序列化就炸——
+     * 属性在 {@code DescribeNamespace} 里取，不在列举里。
+     */
+    public record ListNamespacesResponse(@JsonProperty("namespaces") List<String> namespaces,
                                          @JsonProperty("page_token") String pageToken) {
     }
 
@@ -73,7 +83,17 @@ public final class LanceDtos {
     }
 
     /**
-     * {@code POST .../drop} 的响应：规范里是个空对象。
+     * {@code POST .../drop} 的请求体。
+     *
+     * <p>规范把「怎么删」放在 {@code behavior}（{@code Restrict} / {@code Cascade}），
+     * 而且**在 body 里**，不在 query 上。只认 query 的 {@code mode} 会让
+     * {@code DROP NAMESPACE ... CASCADE} 这类调用悄悄退化成 restrict——
+     * 真客户端（Spark connector）发的就是这个字段。
+     */
+    public record DropNamespaceRequest(@JsonProperty("behavior") String behavior) {
+    }
+
+    /** {@code POST .../drop} 的响应：规范里是个空对象。
      *
      * <p>显式返回一个空 record 而不是 {@code ResponseEntity<Void>}，是为了让响应体是
      * {@code {}} 而不是空串——OpenAPI 生成的客户端会把空串当成反序列化失败。
@@ -93,7 +113,7 @@ public final class LanceDtos {
      * <p><b>{@code location} 可空。</b>不给时由服务端按仓库模板分配；
      * 给了要过 catalog 的 {@code allowedLocations} 白名单。
      */
-    public record DeclareTableRequest(@JsonProperty("id") String id,
+    public record DeclareTableRequest(@JsonProperty("id") JsonNode id,
                                       @JsonProperty("location") String location,
                                       @JsonProperty("properties") Map<String, String> properties) {
     }
@@ -104,7 +124,7 @@ public final class LanceDtos {
      * <p>与 declare 的差别只在校验强度：register 会探测 {@code _versions/} 下有没有
      * manifest，declare 不碰存储。
      */
-    public record RegisterTableRequest(@JsonProperty("id") String id,
+    public record RegisterTableRequest(@JsonProperty("id") JsonNode id,
                                        @JsonProperty("location") String location,
                                        @JsonProperty("properties") Map<String, String> properties) {
     }
@@ -144,8 +164,13 @@ public final class LanceDtos {
                               @JsonProperty("num_deleted_rows") long numDeletedRows) {
     }
 
-    /** {@code POST .../deregister} 的响应：带回 location 与属性，便于调用方自己清理目录。 */
-    public record DeregisterTableResponse(@JsonProperty("id") String id,
+    /**
+     * {@code POST .../deregister} 的响应：带回 location 与属性，便于调用方自己清理目录。
+     *
+     * <p>{@code id} 是**层级数组**（规范里这一处没跟本面其它响应的拼接串一致）；
+     * 按字符串给会让严格的反序列化客户端在读这一条时失败。
+     */
+    public record DeregisterTableResponse(@JsonProperty("id") List<String> id,
                                           @JsonProperty("location") String location,
                                           @JsonProperty("properties") Map<String, String> properties) {
     }
@@ -157,7 +182,7 @@ public final class LanceDtos {
      * <p>跨 catalog 一律 400：本服务端的 rename 是 catalog 内操作，
      * 跨 catalog 涉及两行不同的 catalog_id，不是一次改名的语义。
      */
-    public record RenameTableRequest(@JsonProperty("id") String id,
+    public record RenameTableRequest(@JsonProperty("id") JsonNode id,
                                      @JsonProperty("new_name") String newName) {
     }
 
@@ -183,7 +208,7 @@ public final class LanceDtos {
     }
 
     /** {@code POST .../version/describe}：只带版本号（id 在路径里）。 */
-    public record DescribeTableVersionRequest(@JsonProperty("id") String id,
+    public record DescribeTableVersionRequest(@JsonProperty("id") JsonNode id,
                                                @JsonProperty("version") Long version) {
     }
 
@@ -197,7 +222,7 @@ public final class LanceDtos {
      * 服务端的职责是「记下这个号」并在重复时拒绝。若换成服务端分配，
      * 客户端按自己算的下一个版本重试时就永远对不上。
      */
-    public record CreateTableVersionRequest(@JsonProperty("id") String id,
+    public record CreateTableVersionRequest(@JsonProperty("id") JsonNode id,
                                              @JsonProperty("version") Long version,
                                              @JsonProperty("manifest_path") String manifestPath,
                                              @JsonProperty("manifest_size") Long manifestSize,
@@ -218,7 +243,7 @@ public final class LanceDtos {
                                 @JsonProperty("end_version") Long endVersion) {
     }
 
-    public record BatchDeleteTableVersionsRequest(@JsonProperty("id") String id,
+    public record BatchDeleteTableVersionsRequest(@JsonProperty("id") JsonNode id,
                                                    @JsonProperty("ranges") List<VersionRange> ranges) {
     }
 
@@ -250,7 +275,7 @@ public final class LanceDtos {
     }
 
     /** {@code POST .../tags/version}：只需要标签名（id 在路径里）。 */
-    public record GetTableTagVersionRequest(@JsonProperty("id") String id,
+    public record GetTableTagVersionRequest(@JsonProperty("id") JsonNode id,
                                             @JsonProperty("tag") String tag) {
     }
 

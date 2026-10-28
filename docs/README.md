@@ -19,6 +19,7 @@
 | [`spark-sql-extension.md`](spark-sql-extension.md) | 要改这个 Spark 扩展——语法扩展的做法、两个必须知道的约束、测试分层 |
 | [`spark-paimon-rest-e2e.md`](spark-paimon-rest-e2e.md) | 要让 Spark 通过本服务端建 Paimon 表——连接配置、可执行的 SQL、报错对照表 |
 | [`spark-iceberg-rest-e2e.md`](spark-iceberg-rest-e2e.md) | 要让 Spark 通过本服务端建 Iceberg 表——`spark.sql.catalog.*` 配置、可执行的 SQL、与 Paimon 那套的差异对照 |
+| [`spark-lance-rest-e2e.md`](spark-lance-rest-e2e.md) | 要让 Spark 通过本服务端读写 Lance 表——`impl=rest` 的七个配置项、能跑哪些语句（含 `OPTIMIZE` / `VACUUM`）、**哪里跑不了**（这一面无服务端建表、无 `DROP TABLE`）、manifest 容器格式与两侧的版本账。**Spark 3.5 与 4.1 各实测一遍**（connector 0.8.0，两个 bundle 构件分属 `3.5_2.12` / `4.1_2.13`），类路径两个坑的形态两版一致 |
 | [`flink-rest-catalog.md`](flink-rest-catalog.md) | 要让 Flink SQL 读写 Paimon / Iceberg——两个版本模块的划分、两套 catalog 选项（`metastore=rest` vs `catalog-type=rest`）、实测结论（含主键更新要配 `sequence.field`）、缺 Hadoop / connector / `add-opens` 的报错对照 |
 | [`authorization.md`](authorization.md) | 要理解权限怎么判——实体链、授权映射、失败关闭的取舍 |
 | [`console.md`](console.md) | 要改 Web 控制台或排查「页面空列表」——前端分层、端点契约表、机械校验 |

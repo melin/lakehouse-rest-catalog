@@ -123,23 +123,35 @@
 		<!--
 			Lance 的 Spark connector 版本（集群世界）。
 
-			只用于 `lakehouse-rest-optimizer` 的**测试与镜像**：任务要在 Lance 表上执行
-			`OPTIMIZE` / `VACUUM`，而这两条是 connector 注册的 parser 级命令，本模块的
-			Java 代码一行都不编译 Lance。
+			三处用它：`lakehouse-rest-optimizer`（测试 + 镜像，任务要在 Lance 表上跑
+			`OPTIMIZE` / `VACUUM`）、`lakehouse-rest-spark-3.5` 与 `-4.1`（端到端验收）。
+			本仓库的 Java 代码一行都不编译 Lance——它只在「真客户端」那一层出现。
 
-			取的是 **bundle** 构件（`lance-spark-bundle-3.5_2.12`）而不是薄包
-			`lance-spark-3.5_2.12`：后者只含 connector 自己的类，`org.lance.Dataset`、
-			原生库与 arrow 都在 `lance-core` 及其传递依赖里；bundle 把它们全部 shade
-			进来，镜像里只多一个 jar（见 lakehouse-rest-optimizer/pom.xml 的说明）。
+			**0.8.0 的动因是 Spark 4.1**：`lance-spark-bundle-4.1_2.13` 从 0.8.0 起才
+			跟着 4.1 的 catalyst 一起发（更早的 4.1 构件对的是 4.0 的 API 面，
+			`OPTIMIZE` 一类命令在 4.1.2 上装不起来）。升上来之后 3.5 与 4.1 用**同一个
+			connector 版本**，「客户端写什么 / 服务端读什么」只有一份契约要守。
+
+			取的是 **bundle** 构件而不是薄包（`lance-spark-3.5_2.12`）：后者只含 connector
+			自己的类，`org.lance.Dataset`、原生库与 arrow 都在 `lance-core` 及其传递依赖里；
+			bundle 把它们全部 shade 进来，镜像里只多一个 jar（见 optimizer POM 的说明）。
 
 			两条版本约束：
-			  1. 组件名里的 `3.5` / `2.12` 与 `spark.version` / `scala.binary.version`
-			     绑定，换 Spark 或 Scala 要跟着换（Spark 4 对应 `lance-spark-bundle-4.1_2.13`）；
+			  1. 构件名里的 Spark / Scala 版本是死的，由 `lance.spark.artifact` 表达：
+			     3.5 那边是 `lance-spark-bundle-3.5_2.12`（根 POM 的默认值），
+			     4.1 模块在**自己的** `<properties>` 里覆盖成 `lance-spark-bundle-4.1_2.13`
+			     （那里的 Scala 是 2.13）。跟着 `spark.version` / `scala.binary.version`
+			     走的话，根 POM 的这两个值只描述 3.5，4.1 模块自己又各有一份，会打架；
 			  2. `TableOptimizerJob` 里写死了 `org.lance.spark.LanceNamespaceSparkCatalog`
 			     这个类名，0.4.0 起才是 `org.lance.*`（0.0.x 是 `com.lancedb.lance.*`），
 			     升到 0.4 以下会让建会话直接失败。
 		-->
-		<lance.version>0.4.0</lance.version>
+		<lance.version>0.8.0</lance.version>
+		<!--
+			用哪个 Spark 版本的 bundle。默认值给 3.5 模块与 optimizer（都跑在 3.5 上），
+			`lakehouse-rest-spark-4.1` 覆盖成 `lance-spark-bundle-4.1_2.13`。
+		-->
+		<lance.spark.artifact>lance-spark-bundle-3.5_${scala.binary.version}</lance.spark.artifact>
 	</properties>
 
 	<dependencyManagement>
@@ -251,13 +263,16 @@
 			<!--
 				Lance 的 Spark bundle，测试与镜像用（见上方 `lance.version` 的说明）。
 
-				与 Iceberg / Paimon 那三份同一个角色：它是「运行时要有的那份 jar」，
-				本模块的代码不编译它。选了 bundle 而不是薄包，是因为薄包缺
+				与 Iceberg / Paimon 那几份同一个角色：它是「运行时要有的那份 jar」，
+				本仓库的代码不编译它。选了 bundle 而不是薄包，是因为薄包缺
 				`org.lance.Dataset` / 原生库 / arrow——补那些等于手工维护一份依赖闭包。
+
+				构件名走 `lance.spark.artifact`：3.5 与 4.1 的构件名里 Spark / Scala
+				版本都是死的，两个模块各要自己那一份。
 			-->
 			<dependency>
 				<groupId>org.lance</groupId>
-				<artifactId>lance-spark-bundle-3.5_${scala.binary.version}</artifactId>
+				<artifactId>${lance.spark.artifact}</artifactId>
 				<version>${lance.version}</version>
 			</dependency>
 			<dependency>

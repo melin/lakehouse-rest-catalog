@@ -3,10 +3,12 @@ package io.github.melin.lakehouse.rest.lance.support;
 import io.github.melin.lakehouse.rest.lance.support.LanceManifest.Field;
 import io.github.melin.lakehouse.rest.lance.support.LanceManifest.Manifest;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 把 manifest 里的 {@code fields} 翻成规范要的 **JSON Arrow**（{@code DescribeTableResponse.schema}）。
@@ -20,7 +22,8 @@ import java.util.Map;
  * 而我们猜一个类型会让它按错误的布局去读数据。
  *
  * <p><b>嵌套靠 {@code parent_id} 还原。</b>manifest 的 {@code fields} 是深度优先的
- * 扁平列表，父子关系在 {@code parent_id} 里（0 = 顶层列）。{@code PARENT} 是 struct、
+ * 扁平列表，父子关系在 {@code parent_id} 里（顶层列的写法有两套：老的是 {@code 0}、
+ * 4.x 起是 {@code -1}，见 {@link #parentIdIsRoot}）。{@code PARENT} 是 struct、
  * {@code REPEATED} 是 list，二者的子字段就是它的成员 / 元素。
  */
 public final class LanceJsonArrow {
@@ -32,8 +35,13 @@ public final class LanceJsonArrow {
     public static Map<String, Object> schema(Manifest manifest) {
         Map<Integer, List<Field>> children = new LinkedHashMap<>();
         List<Field> roots = new ArrayList<>();
+        Set<Integer> ids = new HashSet<>();
         for (Field field : manifest.fields()) {
-            if (field.parentId() == 0) {
+            ids.add(field.id());
+        }
+        for (Field field : manifest.fields()) {
+            // 顶层的判定有**两套约定**，都要认（见 `parentIdIsRoot`）。
+            if (parentIdIsRoot(field, ids)) {
                 roots.add(field);
             } else {
                 children.computeIfAbsent(field.parentId(), key -> new ArrayList<>()).add(field);
@@ -46,6 +54,22 @@ public final class LanceJsonArrow {
         }
         schema.put("fields", jsonFields);
         return schema;
+    }
+
+    /**
+     * 这个字段是不是顶层列。
+     *
+     * <p>两套约定并存，原因还是 Lance 换了主子：老版本用 {@code parent_id = 0} 表示顶层
+     * （字段 id 从 1 开始，0 空着正好当哨兵）；4.x 起字段 id 从 0 开始，
+     * 0 不再是空位，于是换成 {@code parent_id = -1}。
+     *
+     * <p>只认 0 或只认 -1 都会出事：只认 0 时 4.x 的字段全被挂到 id 为 0 的列下面，
+     * 顶层变成空表；只认 -1 时老 manifest 的每一列都成了别人的子节点，同样空表。
+     * 因此按「这个 parent_id 在不在已知 id 里」判断——**没有哪个字段是这个 id，
+     * 就说明它不是父引用**。这条判据对两套约定都成立，也顺带容忍了父节点被删过的坏数据。
+     */
+    private static boolean parentIdIsRoot(Field field, Set<Integer> ids) {
+        return field.parentId() <= 0 || !ids.contains(field.parentId());
     }
 
     private static Map<String, Object> jsonField(Field field, Map<Integer, List<Field>> children) {

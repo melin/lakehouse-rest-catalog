@@ -326,7 +326,7 @@ public class LanceTableService {
         DatabaseEntity database = support.requireDatabase(catalog, parsee, delimiter);
         TableEntity table = support.requireTable(catalog, database, parsee, delimiter);
         LanceDtos.DeregisterTableResponse response = new LanceDtos.DeregisterTableResponse(
-                parsee.join(sep(delimiter)), table.getPath(), propertiesOf(table));
+                parsee.levels(), table.getPath(), propertiesOf(table));
         // 版本账跟着登记走：deregister 之后这一行表都不存在了，留着的行会变成
         // 没有主人的孤儿（且 ListTableVersions 会去查一张已经不存在的表）
         versions.deleteVersionsOfTable(table.getId());

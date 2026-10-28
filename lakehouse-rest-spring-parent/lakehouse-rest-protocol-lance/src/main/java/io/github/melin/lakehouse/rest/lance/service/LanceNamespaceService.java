@@ -103,6 +103,11 @@ public class LanceNamespaceService {
     /**
      * {@code GET /lance/v1/namespace/{id}/list}。
      *
+     * <p><b>回的是子级名字，不是完整 id，也不是对象。</b>规范那句
+     * 「child namespaces relative to the parent namespace {@code id}」就是字面意思：
+     * 父级是 catalog 时给 schema 名，客户端自己拼回路径（Spark 靠
+     * {@code spark.sql.catalog.<c>.parent} 把 catalog 补回去）。
+     *
      * <p>第二级（schema）之下没有子命名空间，因此 {@code id} 有两段时回空列表，
      * 而不是「把它当前缀去匹配」——后者会把 {@code sales} 与 {@code sales_eu} 混在一起。
      */
@@ -110,17 +115,14 @@ public class LanceNamespaceService {
     public LanceDtos.ListNamespacesResponse list(String id, String delimiter, Integer limit, String pageToken) {
         LanceIds.Id parsee = LanceIds.namespace(id, delimiter);
         CatalogEntity catalog = support.requireCatalog(parsee.catalog());
-        List<LanceDtos.NamespaceRef> namespaces = new ArrayList<>();
+        List<String> namespaces = new ArrayList<>();
         if (parsee.levels().size() == 1) {
             for (DatabaseEntity database : databaseRepository.findAllByCatalogIdOrderByNameAsc(catalog.getId())) {
-                namespaces.add(new LanceDtos.NamespaceRef(
-                        parsee.catalog() + delimiterOr(delimiter) + database.getName(),
-                        optionsOf(database)));
+                namespaces.add(database.getName());
             }
         }
         int size = Paging.pageSize(limit, 100, 1000);
-        Paging.Slice<LanceDtos.NamespaceRef> slice =
-                Paging.slice(namespaces, Paging.offset(pageToken), size);
+        Paging.Slice<String> slice = Paging.slice(namespaces, Paging.offset(pageToken), size);
         return new LanceDtos.ListNamespacesResponse(slice.items(), slice.nextPageToken());
     }
 
@@ -151,14 +153,17 @@ public class LanceNamespaceService {
      * <p><b>{@code overwrite} 之外的两个模式只清我们这层的元数据。</b>
      * 命名空间属性（location、comment）只是我们 DB 里的字段，
      * 调 {@code overwrite} 成功不代表数据集被动过——这一点客户端最容易误解。
+     *
+     * @param mode     query 上的 {@code ?mode=}（控制台/脚本用）
+     * @param behavior body 里的 {@code behavior}（规范定义的位置，Spark connector 用）
      */
     @Transactional
-    public void drop(String id, String delimiter, String mode) {
+    public void drop(String id, String delimiter, String mode, String behavior) {
         LanceIds.Id parsee = LanceIds.namespace(id, delimiter);
         if (parsee.levels().size() == 1) {
             throw LanceErrors.unsupported("DropNamespace at the catalog level");
         }
-        if ("cascade".equals(normalizeMode(mode))) {
+        if ("cascade".equals(normalizeMode(mode)) || "cascade".equals(normalizeMode(behavior))) {
             throw LanceErrors.unsupported("DropNamespace with mode=cascade");
         }
         CatalogEntity catalog = support.requireCatalog(parsee.catalog());
