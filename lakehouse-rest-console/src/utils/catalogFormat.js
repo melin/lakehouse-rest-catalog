@@ -60,7 +60,8 @@ export const CATALOG_FORMAT_NOTES = {
     'Lance REST 协议面：客户端走 /lance/v1/namespace/{id} 与 /lance/v1/table/{id}，'
     + '基址不含 /v1/{prefix}，也没有 /v1/config 握手（客户端直接按 id 打）。服务端只做元数据：'
     + 'declare / register 两条登记路径，加版本与标签的只读；manifest 由客户端写进仓库。'
-    + '控制台只读浏览它的命名空间与表（没有建表 / 删除入口），表详情页与「数据策略」不给。',
+    + '控制台的目录浏览可以建命名空间，但不能建表（表由客户端 declare / register），'
+    + '也没有表详情页与「数据策略」。',
 }
 
 /**

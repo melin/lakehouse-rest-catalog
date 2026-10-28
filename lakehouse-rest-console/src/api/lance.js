@@ -1,7 +1,7 @@
 import { get, post } from './client.js'
 
 /**
- * Lance Namespace REST（`/lance/v1/**`）的调用面——只读三件事。
+ * Lance Namespace REST（`/lance/v1/**`）的调用面——三条读、一条写。
  *
  * <p>与另外两个协议面不是同一套东西，三处差别都在这里吸收，不要上浮到视图：
  *
@@ -15,13 +15,23 @@ import { get, post } from './client.js'
  *    因此列表页不伪造这些列，把它们放进按需打开的详情抽屉（Paimon 面的
  *    `table-details` 一次给全，Lance 面没有对应端点——这是两面的真实差距，不是没写）。
  *
- * <p><b>只登记只读端点。</b>declare / register / deregister / create / drop 都是客户端
- * （Spark、Lance SDK）的活；控制台出现这些按钮，等于承诺「这里能建表」，而这台服务端
- * 对 Lance 没有写入路径（`docs/lance-rest-catalog-design.md` §3.2）。
+ * <p><b>写只有一条：建命名空间。</b>命名空间是纯元数据登记（服务端
+ * `LanceNamespaceService.create` 只落一行 database 记录），与「建表」不是一回事：
+ * 表那一侧的 declare / register / deregister / rename / drop 一个都不登记——这台服务端
+ * 对 Lance 没有建立数据的路径（`docs/lance-rest-catalog-design.md` §3.2），
+ * 控制台给那些按钮等于承诺「这里能建表」。
  */
 
 /** 默认分隔符。与服务端 `LanceIds` 的缺省一致；控制台不允许改（客户端才需要）。 */
 export const LANCE_DELIMITER = '$'
+
+/**
+ * 命名空间名允许的字符。**与「id 段白名单」是同一个集合，且不含 `$`**。
+ *
+ * 服务端 `LanceIds.LEVEL` 是 `[A-Za-z0-9_.-]+`，超集会被 400 挡掉（`code 13`）；
+ * `$` 尤其不能放过去——它是 id 的分隔符，放进去等于在名字里开了一个层级。
+ */
+export const LANCE_NAME_PATTERN = /^[A-Za-z0-9_.-]+$/
 
 /** 拼接 id：丢掉空段，避免拼出 `cat$$tbl` 这种服务端解不出来的形状。 */
 export function lanceId(...parts) {
@@ -67,5 +77,24 @@ export const lanceApi = {
    */
   describeTable: (tableId, { detailed = false } = {}) => post('lanceDescribeTable', {
     params: { id: tableId, query: { check_declared: true, load_detailed_metadata: detailed } },
+  }),
+
+  /**
+   * 建命名空间（`POST /lance/v1/namespace/{id}/create`）。
+   *
+   * <p>`namespaceId` 是**新命名空间的完整 id**（`catalog$schema`），路径与 body 里
+   * 都要有，且必须一致——只给路径不给 body 上的 `id` 服务端也收（`id` 可空表示以路径
+   * 为准），但两边都给能让「路径与 body 不一致就 400」这条规范要求自然成立。
+   *
+   * <p>**只能建两级。**`LanceIds` 把 namespace 类 operation 收窄到 1–2 段，
+   * 只给 catalog（一段）时服务端回「catalog 级不支持」，所以这里永远是 `catalog$名字`。
+   *
+   * <p>不带 `mode`：缺省是 `create`，已存在时 409（页面把那句话原样显示）。
+   * `exist_ok` / `overwrite` 是给脚本用的幂等模式，控制台不提供——「点一下创建却
+   * 悄悄改了别人的属性」比报一个错更难查。
+   */
+  createNamespace: (namespaceId, properties = {}) => post('lanceCreateNamespace', {
+    params: { id: namespaceId },
+    body: { id: namespaceId, properties },
   }),
 }

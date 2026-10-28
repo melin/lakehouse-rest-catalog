@@ -16,7 +16,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { buildPath } from '../../src/api/client.js'
-import { LANCE_DELIMITER, lanceId, lanceLeaf } from '../../src/api/lance.js'
+import { LANCE_DELIMITER, LANCE_NAME_PATTERN, lanceId, lanceLeaf } from '../../src/api/lance.js'
 
 test('id 用 $ 拼接，且丢掉空段', () => {
   assert.equal(LANCE_DELIMITER, '$')
@@ -50,4 +50,22 @@ test('命名空间列举与 describe 的路径落在 /lance/v1 下', () => {
     buildPath('lanceDescribeTable', { id: 'catalog$demo$events' }),
     '/lance/v1/table/catalog%24demo%24events/describe',
   )
+})
+
+test('建命名空间的路径是 namespace/{id}/create，且 id 编码成 %24', () => {
+  assert.equal(
+    buildPath('lanceCreateNamespace', { id: lanceId('catalog', 'ods') }),
+    '/lance/v1/namespace/catalog%24ods/create',
+  )
+})
+
+test('名称白名单与 id 段一致：允许 _ - .，但不许 $（那是分隔符）', () => {
+  // 服务端 LanceIds.LEVEL 是 [A-Za-z0-9_.-]+，两边必须是同一个集合：
+  // 松了会在提交时才吃 400，紧了会挡掉服务端本来接受的名字。
+  for (const ok of ['ods', 'sales_eu', 'sales-eu', 'v1.2', 'A1']) {
+    assert.equal(LANCE_NAME_PATTERN.test(ok), true, ok)
+  }
+  for (const bad of ['', 'sales eu', 'sales/eu', 'cat$db', '账务']) {
+    assert.equal(LANCE_NAME_PATTERN.test(bad), false, bad)
+  }
 })

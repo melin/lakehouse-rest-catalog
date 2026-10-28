@@ -2,12 +2,16 @@
   <div class="pc-page pc-browse">
     <PageHeader
       title="Catalog"
-      :subtitle="`浏览 Lance catalog「${prefix || '未选择'}」下的命名空间与表。读的是 Lance Namespace REST（/lance/v1/namespace/{id}），与客户端看到的是同一份登记。本页只读：建表与写数据都在客户端。`"
+      :subtitle="`浏览 Lance catalog「${prefix || '未选择'}」下的命名空间与表。读的是 Lance Namespace REST（/lance/v1/namespace/{id}），与客户端看到的是同一份登记。命名空间可以在这里建，表与数据仍在客户端。`"
     >
       <template #actions>
         <el-button size="small" :loading="namespaces.loading.value || tables.loading.value" @click="reloadAll">
           <el-icon><Refresh /></el-icon>
           <span class="pc-btn-text">刷新</span>
+        </el-button>
+        <el-button size="small" type="primary" :disabled="!prefix" @click="openCreateNamespace">
+          <el-icon><Plus /></el-icon>
+          <span class="pc-btn-text">新建命名空间</span>
         </el-button>
       </template>
     </PageHeader>
@@ -44,7 +48,13 @@
             :description="nsFilter.trim()
               ? `没有匹配「${nsFilter.trim()}」的命名空间`
               : '这个 catalog 下还没有命名空间'"
-          />
+          >
+            <!-- 空态就是最需要建的时候：过滤中没有这个入口（那时用户找的是已有项，不是新建） -->
+            <el-button v-if="!nsFilter.trim()" size="small" type="primary" @click="openCreateNamespace">
+              <el-icon><Plus /></el-icon>
+              <span class="pc-btn-text">新建命名空间</span>
+            </el-button>
+          </el-empty>
           <template v-else>
             <div
               v-for="row in filteredNamespaces"
@@ -206,6 +216,53 @@
         </template>
       </div>
     </el-drawer>
+
+    <!-- 新建命名空间：本页唯一的写操作（表与数据仍在客户端） -->
+    <el-dialog
+      v-model="nsDialog.open"
+      title="新建命名空间"
+      width="520px"
+      :close-on-click-modal="false"
+      destroy-on-close
+    >
+      <el-form label-position="top" size="small" class="pc-form">
+        <el-form-item required>
+          <template #label>
+            <FieldLabel label="名称">
+              Lance 的命名空间只有两级（catalog 下再一层），所以这里填的就是那一层，
+              通常叫 schema。同一个 catalog 下重名会被服务端拒掉（409）。
+            </FieldLabel>
+          </template>
+          <el-input
+            v-model="nsDialog.name"
+            placeholder="例如 ods"
+            @keyup.enter="saveNamespace"
+          />
+          <!-- 拼出来的 id 必须**看得见**：它是客户端要用的那个字符串，
+               藏进气泡里等于让人建完再去别处拼一遍 -->
+          <div class="pc-lance-name-hint">
+            <span class="pc-mono">id：{{ createPreview }}</span>
+            <span class="pc-dim">
+              只能是字母、数字、下划线、连字符与点号；<code class="pc-mono">$</code> 是 id 的分隔符，不能出现
+            </span>
+          </div>
+        </el-form-item>
+      </el-form>
+
+      <TipAlert type="info" class="pc-hint" title="只登记命名空间：不建存储目录，也不建表">
+        这一下调的是 <code class="pc-mono">POST /lance/v1/namespace/{id}/create</code>，
+        服务端只落一行 database 记录（带一个按 <code class="pc-mono">path-template</code>
+        算出来的预计位置），盘上什么都不会多出来。表仍然由客户端 declare / register。
+      </TipAlert>
+
+      <SectionTitle title="属性（properties）" />
+      <PropertiesEditor v-model="nsDialog.properties" hint="例如 owner；留空即可" />
+
+      <template #footer>
+        <el-button @click="nsDialog.open = false">取消</el-button>
+        <el-button type="primary" :loading="nsDialog.saving" @click="saveNamespace">创建</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -214,27 +271,31 @@ import { computed, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
 import JsonBlock from '@/components/JsonBlock.vue'
+import FieldLabel from '@/components/FieldLabel.vue'
 import PageHeader from '@/components/PageHeader.vue'
 import PanelCard from '@/components/PanelCard.vue'
+import PropertiesEditor from '@/components/PropertiesEditor.vue'
 import SectionTitle from '@/components/SectionTitle.vue'
 import TipAlert from '@/components/TipAlert.vue'
 import TipNote from '@/components/TipNote.vue'
-import { lanceApi, lanceLeaf } from '@/api/lance.js'
+import { LANCE_NAME_PATTERN, lanceApi, lanceId, lanceLeaf } from '@/api/lance.js'
 import { describeError } from '@/api/client.js'
-import { onConsoleRefresh, useResource } from '@/composables/index.js'
+import { notifyError, notifySuccess, onConsoleRefresh, useResource } from '@/composables/index.js'
 import { session } from '@/store/session.js'
 
 /**
- * Lance catalog 的目录浏览（**只读**）。
+ * Lance catalog 的目录浏览：命名空间 + 表 + 详情抽屉，**唯一的写操作是建命名空间**。
  *
  * <p>为什么与 Paimon / Iceberg 两页都不共用一个组件：Lance 的 id 是拼接串
  * （`catalog$schema$table`）、列举只回名字、没有 `/v1/config` 握手。这些差异
  * 不是参数级的，硬塞进一个组件会让每处都是 `v-if`。
  *
- * <p>为什么页面除了「刷新」没有任何按钮：这台服务端对 Lance 没有写入路径
- * （不建表、不写数据集，见 `docs/lance-rest-catalog-design.md` §3.2）。declare /
- * register / deregister 都由客户端发起；页面给出这些入口，等于让人以为
- * 「在这里建的表」和「盘上的数据集」是一回事，而它们的错位要几个小时后才显形。
+ * <p>为什么能建命名空间、却不能建表：命名空间是**纯元数据登记**（服务端
+ * `LanceNamespaceService.create` 落一行 database 记录，带一个预计位置，不碰存储），
+ * 而建表要写数据集——这台服务端对 Lance 没有那条路径，declare / register /
+ * deregister 都由客户端发起（`docs/lance-rest-catalog-design.md` §3.2）。页面若给出
+ * 「新建表」，会让人以为「在这里建的表」和「盘上的数据集」是一回事，而它们的错位
+ * 要几个小时后才在客户端查询里显形。
  */
 
 const route = useRoute()
@@ -373,11 +434,62 @@ async function loadDetailed() {
   }
 }
 
+// ------------------------------------------------------------------ 新建命名空间
+
+const nsDialog = ref({ open: false, name: '', properties: {}, saving: false })
+
+/** 弹窗里那句「id 会是什么」：让「名字会被拼成 cat$name」这件事在提交前就看见。 */
+const createPreview = computed(() => `${lanceId(prefix.value, nsDialog.value.name.trim() || '<名称>')}`)
+
+function openCreateNamespace() {
+  nsDialog.value = { open: true, name: '', properties: {}, saving: false }
+}
+
+/**
+ * 建命名空间。
+ *
+ * <p>名称先本地挡两道：空、以及字符集。字符集不是洁癖——服务端 `LanceIds` 的白名单是
+ * `[A-Za-z0-9_.-]+`，超了回 `code 13`；而 `$` 尤其要挡在本地，它是 id 的分隔符，
+ * 放过去等于在名字里开了一层，客户端拿到的 id 与你填的名字就不是一回事了。
+ *
+ * <p>不带 `mode`（缺省 `create`）：已存在时服务端 409，界面把那句话原样显示。
+ * 用 `overwrite` 让人「点创建却改掉了别人的属性」更难查。
+ */
+async function saveNamespace() {
+  const name = nsDialog.value.name.trim()
+  if (!name) {
+    notifyError(new Error('请填写命名空间名称'))
+    return
+  }
+  if (!LANCE_NAME_PATTERN.test(name)) {
+    notifyError(new Error('名称只能用字母、数字、下划线、连字符与点号（$ 是 id 的分隔符）'))
+    return
+  }
+  if (namespaceRows.value.some((row) => row.label === name)) {
+    notifyError(new Error(`命名空间「${name}」已经在了`))
+    return
+  }
+  const id = lanceId(prefix.value, name)
+  nsDialog.value.saving = true
+  try {
+    await lanceApi.createNamespace(id, nsDialog.value.properties)
+    notifySuccess(`已创建命名空间 ${name}`)
+    nsDialog.value.open = false
+    await namespaces.load()
+    selected.value = id
+  } catch (cause) {
+    notifyError(cause)
+  } finally {
+    nsDialog.value.saving = false
+  }
+}
+
 function reloadAll() {
   if (!prefix.value) return
   namespaces.load()
   if (selected.value) tables.load()
-  if (detail.value.open && detail.value.name) openDetail(detail.value.name)
+  // 用 id 重读：`detail.name` 是末段显示名，拿它去 describe 会拼出一个解不出来的 id
+  if (detail.value.open && detail.value.id) openDetail(detail.value.id)
 }
 
 onConsoleRefresh(reloadAll)
@@ -449,5 +561,15 @@ onConsoleRefresh(reloadAll)
 
 .pc-lance-gap {
   margin-bottom: 10px;
+}
+
+/* 名称下方那两行：拼出来的 id 与字符集。挤在一行会折行成两句半，分两行读起来清楚 */
+.pc-lance-name-hint {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 5px;
+  font-size: 12px;
+  line-height: 1.6;
 }
 </style>

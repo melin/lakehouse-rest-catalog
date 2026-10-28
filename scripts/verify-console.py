@@ -151,9 +151,9 @@ CATALOG_FORMAT_UTIL = os.path.join(CONSOLE_DIR, "src/utils/catalogFormat.js")
 CATALOG_FORMAT_ENUM = os.path.join(CORE_JAVA, "support/CatalogFormat.java")
 CATALOG_DETAIL_VIEW = os.path.join(CONSOLE_DIR, "src/views/CatalogDetailView.vue")
 BROWSE_VIEW = os.path.join(CONSOLE_DIR, "src/views/BrowseView.vue")
-# Lance 面的只读浏览：组件本身、以及它唯一的调用面（`api/lance.js`）。
-# 两者要一起看——「页面只读」这件事一半由端点表保证（没有写端点可调），
-# 一半由组件保证（不引 confirmDanger / notifySuccess，就没有写动作）。
+# Lance 面的浏览页（可建命名空间）：组件本身、以及它唯一的调用面（`api/lance.js`）。
+# 两者要一起看——「页面能做什么」一半由端点表保证（写端点只登记了 create），
+# 一半由组件保证（没有 confirmDanger 这类删除确认，就发不出删除）。
 LANCE_BROWSE_VIEW = os.path.join(CONSOLE_DIR, "src/views/LanceBrowseView.vue")
 LANCE_API = os.path.join(CONSOLE_DIR, "src/api/lance.js")
 TABLE_VIEW = os.path.join(CONSOLE_DIR, "src/views/TableView.vue")
@@ -967,6 +967,17 @@ check("三个页面都按 catalog 格式伸缩（且在 loader 里挡请求，�
       all(page_wiring.values()),
       "\n".join(name for name, ok in page_wiring.items() if not ok))
 
+# 换页这一下还有一个只有量出来才看得见的坑：两个子视图本身就是**整页**（自己渲染
+# PageHeader 与 .pc-page），若把它们塞进 BrowseView 的 .pc-page 里，padding 会叠加两遍——
+# 标题右移 26px、整页下移 24px，于是 Iceberg / Lance 看着比 Paimon 窄一圈。
+# 两种写法在源码里都「像正常的样子」，所以钉结构：两个子视图必须在 v-else 的 .pc-page 之前。
+browse_shell = '<div v-else class="pc-page pc-browse">'
+check("目录浏览：Iceberg / Lance 子视图并到根层，不与 .pc-page 嵌套（padding 只生效一次）",
+      0 <= browse_view.find('<IcebergBrowseView v-if="icebergCatalog" />') < browse_view.find(browse_shell)
+      and 0 <= browse_view.find('<LanceBrowseView v-else-if="lanceCatalog" />') < browse_view.find(browse_shell)
+      and '<div class="pc-page pc-browse">' not in browse_view,
+      "BrowseView 应形如「两个子视图 → v-else 的 .pc-page」；任何一层都不能再套 .pc-page")
+
 # --- 12.4.1 「配置」页签的内容（两种格式同一套） ----------------------------
 # 这个页签曾经只在 Paimon 侧出现，后来改成「两边都有但内容不同」：Paimon 编辑
 # `table-default.*`，Iceberg 只读展示 `/v1/config`。现在两边统一成同一套设计——
@@ -1051,12 +1062,16 @@ lance_wiring = {
     "Lance 下藏掉「存储」页签": 'v-if="!isLance" name="storage"' in detail_view,
     "Lance 下藏掉「配置」页签": 'v-if="!isLance" name="config"' in detail_view,
     "目录浏览：Lance 换成独立组件（不是 Paimon 的列表）": '<LanceBrowseView v-else-if="lanceCatalog" />' in browse_view,
-    "目录浏览：Lance 组件只调三条读端点（列举 / 列表 / 描述）": all(
+    "目录浏览：Lance 组件只调四条端点（列举 / 列表 / 描述 / 建命名空间）": all(
         name in lance_api
-        for name in ('lanceListNamespaces', 'lanceListTables', 'lanceDescribeTable'))
+        for name in ('lanceListNamespaces', 'lanceListTables', 'lanceDescribeTable',
+                     'lanceCreateNamespace'))
         and 'lanceApi.' in lance_browse_view,
-    "目录浏览：Lance 组件没有任何写动作（不引 confirmDanger / notifySuccess）":
-        'confirmDanger' not in lance_browse_view and 'notifySuccess' not in lance_browse_view,
+    # 写动作**只有建命名空间**一处：表侧的 declare / register / deregister / rename / drop
+    # 一条都不给（没有建表的写入路径）。因此这里同时钉两件事——有 notifySuccess（建完要回话），
+    # 以及没有 confirmDanger（那是删除类动作的确认框，页面上不该出现）。
+    "目录浏览：Lance 的写动作只有建命名空间（有 notifySuccess、没有 confirmDanger）":
+        'notifySuccess' in lance_browse_view and 'confirmDanger' not in lance_browse_view,
     "目录浏览：describe 带 check_declared（否则「有没有数据集」恒为未探测）":
         'check_declared: true' in lance_api,
     "新建表单给出 Lance 的提示（与 Iceberg 那条分开）": "isLanceCatalog(dialog.catalogFormat)" in catalogs_view,
@@ -1066,13 +1081,24 @@ check("Lance catalog 的三个页面都按格式收敛（基址、发现请求�
       all(lance_wiring.values()),
       "\n".join(name for name, ok in lance_wiring.items() if not ok))
 
-# 端点表是「页面能做什么」的上界：只要没有写端点可调，页面上出现一个写按钮也发不出请求。
+# 端点表是「页面能做什么」的上界：写端点一个没登记，页面上出现写按钮也发不出请求。
 # 反过来，有人日后把 declare 加进 endpoints.js 并接上按钮，这一条会先响。
+# 允许的写端点**只有 CreateNamespace**——命名空间是纯元数据登记，服务端真的实现了；
+# 表侧的 declare / register / deregister / rename / drop 都不该出现（没有建表路径）。
 lance_write_endpoints = re.findall(
     r"lance(?:Declare|Register|Deregister|Rename|Create|Drop)\w*:", endpoints_source)
-check("端点表里没有 Lance 面的写端点（declare / register / deregister / rename / create / drop）",
-      not lance_write_endpoints,
-      "、".join(lance_write_endpoints))
+check("端点表里 Lance 的写端点只有 create（建命名空间），表侧一个都没有",
+      lance_write_endpoints == ["lanceCreateNamespace:"],
+      "、".join(lance_write_endpoints) or "一条写端点都没有")
+
+# 名称白名单必须与 id 段白名单同一个集合，且**不含 `$`**：`$` 是 id 的分隔符，
+# 放进名字等于在名字里开了一层，客户端拿到的 id 与用户填的名字不是一回事。
+# 松了（放过 `$` 或中文）的表现是提交时才吃 400；紧了（挡掉 `.`）会拒绝服务端本来接受的
+# 名字（`v1.2`）——两者都不会在编译或类型检查时报错。
+check("建命名空间的名字校验与服务端 id 段白名单一致，且挡住 $",
+      "export const LANCE_NAME_PATTERN = /^[A-Za-z0-9_.-]+$/" in lance_api
+      and "LANCE_NAME_PATTERN.test(name)" in lance_browse_view,
+      "api/lance.js 里应有不含 $ 的 LANCE_NAME_PATTERN，LanceBrowseView 提交前用它校验")
 
 endpoints_front = re.search(r"const LANCE_ENDPOINTS = (\d+)", detail_view)
 operations_front = re.search(r"const LANCE_OPERATIONS = (\d+)", detail_view)

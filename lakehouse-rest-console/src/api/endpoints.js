@@ -168,19 +168,22 @@ export const ENDPOINTS = {
   icebergListFunctions: { method: 'GET', path: '/v1/{prefix}/namespaces/{namespace}/functions' },
   icebergLoadFunction: { method: 'GET', path: '/v1/{prefix}/namespaces/{namespace}/functions/{function}' },
 
-  // ------------------------------------------------------------------ Lance 协议面：只读浏览
+  // ------------------------------------------------------------------ Lance 协议面：浏览 + 建命名空间
   // 第三个协议面，**不在 `/v1/{prefix}` 下**：资源树是 `/lance/v1/namespace/{id}` 与
   // `/lance/v1/table/{id}`，`{id}` 是 `catalog$schema$table` 这样的拼接串（一段路径，
-  // 不是三段）。因此这三条路径里的占位符叫 `id` 而不是 `prefix` / `namespace`。
+  // 不是三段）。因此这几条路径里的占位符叫 `id` 而不是 `prefix` / `namespace`。
   //
   // 路径与 `spec/lance-namespace-rest-openapi.yaml` 逐字一致（规格写的是 `/v1/...`，
   // 服务端把它挂在 `/lance` 前缀下；`verify-console.py` 第 1 组按这个前缀换算后比对）。
   //
-  // 只登记这三条：declare / register / deregister / create / drop 都是客户端的写路径，
-  // 控制台对 Lance 面**只读**（`docs/lance-rest-catalog-design.md` §3.2、§7）。
+  // **写端点只有一条：`create`（建命名空间）。**表那一侧的 declare / register /
+  // deregister / rename / drop 一个都不登记——这台服务端对 Lance 没有建立数据的路径
+  // （`docs/lance-rest-catalog-design.md` §3.2、§7），而命名空间是纯元数据登记，
+  // 服务端确实实现了它（19 个 operation 里的 `CreateNamespace`）。
   lanceListNamespaces: { method: 'GET', path: '/lance/v1/namespace/{id}/list' },
   lanceListTables: { method: 'GET', path: '/lance/v1/namespace/{id}/table/list' },
   lanceDescribeTable: { method: 'POST', path: '/lance/v1/table/{id}/describe' },
+  lanceCreateNamespace: { method: 'POST', path: '/lance/v1/namespace/{id}/create' },
 
   // ------------------------------------------------------------------ 管理 API：catalog
   listCatalogs: { method: 'GET', path: '/api/management/v1/catalogs' },

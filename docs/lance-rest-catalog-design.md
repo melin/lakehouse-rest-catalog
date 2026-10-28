@@ -7,8 +7,8 @@
 > （`LanceRestCatalogApiTests` / `LanceVersionApiTests` / `LanceTagApiTests` /
 > `LanceManifestReaderTests` / `LanceIdParsingTests` / `LanceEndpointAuthorizationTests`
 > + `verify-lance-endpoints.py`）。
-> 控制台只读（§7）也已落地：catalog 详情给出 Lance 的基址与台账、不发 `/v1/config`、
-> 藏掉「存储」与「配置」两个页签，目录浏览对它换成一个**只读**的 `LanceBrowseView`，`lance-table` 的
+> 控制台浏览面（§7）也已落地：catalog 详情给出 Lance 的基址与台账、不发 `/v1/config`、
+> 藏掉「存储」与「配置」两个页签，目录浏览对它换成一个 `LanceBrowseView`（**除建命名空间外只读**），`lance-table` 的
 > 「数据策略」页签也藏掉（`verify-console.py` 第 12 组 13 项）。
 > **仍未做的两处**：`BatchCreateTableVersions`（路径不带表标识 → 授权层无法定位资源，
 > 理由见 §12.6）、索引的只读代理（规范没定义 `_indices/` 的盘上格式，§12.8）。
@@ -20,7 +20,7 @@
 > （branches 三个、materialized_view 两个、`update_field_metadata` 一个，全部落在「不做」一栏），
 > 逐条见 [§12.5](#125-规范副本是-54-个-operation-不是-48)。
 > 范围：服务端新增第三个协议面 `/lance/v1/**`（13 个 operation 必达、2 个可选）、
-> `catalog_format=LANCE`、凭据下发、控制台只读；**不做数据面**，也不写仓库里的任何文件。
+> `catalog_format=LANCE`、凭据下发、控制台浏览（含建命名空间）；**不做数据面**，也不写仓库里的任何文件。
 > 一句话结论：**能支持，而且比 Iceberg 那一面更省事——因为 Lance 的规范自己就把「catalog 只做登记处」写成了推荐实现。**
 > 但有一条必须先说清：Lance 的「表」不是一个 schema 文档，而是一个带版本目录的数据集，
 > 所以这一面能承诺的是**「表在哪、叫什么、谁能用」**，不是「表长什么样」。
@@ -44,7 +44,7 @@
 | 仓库里的物化产物 | **一个字节都不写**。与 Paimon（写 schema 文件）、Iceberg（写 metadata.json）相反 |
 | 权限 | 复用现有 12 个 access 词与 8 个资源类型，新增一张 `LanceAccessRules` 映射表，**失败关闭** |
 | 凭据 | 复用 `StorageCredentialManager`，把 `token` 摊进 `storage_options`，并补 `expires_at_millis` |
-| 控制台 | 只读：catalog 格式徽标、表详情三个页签（详细信息 / 文件列表 / 血缘），**不给建表入口** |
+| 控制台 | 浏览 + 建命名空间：catalog 格式徽标、目录浏览（命名空间 / 表 / 详情抽屉，可建命名空间），**不给建表入口** |
 
 ---
 
@@ -505,7 +505,7 @@ DescribeTable / DeclareTable 的请求参数 vend_credentials=true
 | L0-6 | 错误模型 | 每个 `code` 到 HTTP 的映射逐条有测试（`LanceErrorModelTests`）；`/lance/**` 下 404/405/校验失败/未捕获异常都返回四字段 | L0-3 |
 | L0-7 | 授权 | `/lance/**` 进认证拦截器；`LanceAccessRules` 覆盖 13 个端点；未登记即 403；`LanceEndpointAuthorizationTests` 全绿 | L0-5 |
 | L0-8 | 凭据下发 | `vend_credentials=true` 时 `storage_options` 含临时凭据与 `expires_at_millis`；`false` 时不含任何密钥；`ttlSeconds` 与 `expires_at_millis` 由同一个值算出 | L0-5 |
-| L0-9 | 控制台只读 | catalog 列表出现 `LANCE` 徽标；详情页基址与台账正确、不发 `/v1/config`；表详情只显示「详细信息 / 文件列表 / 血缘」；无建表入口；`verify-console` 加 2 条 | L0-5 · **已完成** |
+| L0-9 | 控制台浏览 | catalog 列表出现 `LANCE` 徽标；详情页基址与台账正确、不发 `/v1/config`；表详情只显示「详细信息 / 文件列表 / 血缘」；无建表入口；`verify-console` 加 2 条（此后补了只读浏览页与「新建命名空间」，见 §7） | L0-5 · **已完成** |
 | L0-10 | 端到端 | `scripts/e2e-lance-rest.sh`：起服务端 → 建 LANCE catalog → 用真客户端建 schema → `declare` → 客户端写一个最小数据集 → `describe` 能读回 location → `deregister` → 数据仍在 | L0-9 |
 
 ### 6.2 P1：把「表长什么样」补上一半（**已落地**）
@@ -550,7 +550,7 @@ DescribeTable / DeclareTable 的请求参数 vend_credentials=true
 | --- | --- | --- |
 | catalog 列表 / 详情 | `catalog_format` 徽标加 `LANCE`；「协议与能力」卡片：基址 `/lance/v1/namespace`、**不发 `/v1/config`**、能力清单改成「已实现 19 个 operation / 21 条端点、其余 35 个恒 406」并给出四组分布 | 与 Iceberg 的卡片同形，但 Lance **没有发现端点**——它是三面里唯一不给客户端下发清单的（§12.9） |
 | catalog 详情·页签 | 只有「概览」与「文件列表」；**不出现**「存储」与「配置」 | 存储页的数字全来自快照 / 表元数据统计；配置页编辑的 `table-default.*` 只在建表时合并，而 Lance 面没有 `CreateTable`（存得下、永不生效） |
-| 目录浏览 | Lance catalog 挂独立组件 `LanceBrowseView`：左列命名空间（`GET /lance/v1/namespace/{id}/list`）、右列表（`GET …/table/list`）、点行开抽屉（`POST /lance/v1/table/{id}/describe`，带 `check_declared=true`；版本与 schema 再点一次读 `load_detailed_metadata`）。**只读**：没有建库 / 建表 / declare 入口，端点表里也没有任何 Lance 写端点 | 本页调的是 `/v1/{prefix}/databases/**`，而 Lance 的 id 是拼接串、列举只回名字——契约不同所以是另一个组件。一期曾整页不做，那是把**浏览**与**建表**混成了一件事：只读列举本来就在 19 个 operation 里（§12.9） |
+| 目录浏览 | Lance catalog 挂独立组件 `LanceBrowseView`：左列命名空间（`GET /lance/v1/namespace/{id}/list`）、右列表（`GET …/table/list`）、点行开抽屉（`POST /lance/v1/table/{id}/describe`，带 `check_declared=true`；版本与 schema 再点一次读 `load_detailed_metadata`）。**写只有一条**：建命名空间（`POST …/namespace/{id}/create`，纯元数据登记）；没有建表 / declare / 删除入口，端点表里也只登记了这一条写端点 | 本页调的是 `/v1/{prefix}/databases/**`，而 Lance 的 id 是拼接串、列举只回名字——契约不同所以是另一个组件。一期曾整页不做，那是把**浏览**与**建表**混成了一件事：只读列举本来就在 19 个 operation 里（§12.9） |
 | 表详情 | 只显示「详细信息 / 文件列表 / 血缘」三个页签；**不显示**快照、数据预览、数据策略。「存储优化」页签的**面板已就绪**（[`lance-table-optimization-design.md`](lance-table-optimization-design.md) §7 已落地），但**页签还没加**——Lance 表目前只有浏览页里那个只读抽屉（`LanceBrowseView`），没有表详情页；等表详情页落地时一并加（同文档 §7.5 写了解除条件） | Lance 表没有我们的快照概念；预览需要 Lance reader（§3.3）；行过滤在 Lance 侧无落点 |
 | 建表表单 | **不给 Lance 入口**（与 `lance-table` 的处理一致）；新建 catalog 选 Lance 时给出与 Iceberg 分开的提示 | 建表要写数据集，我们没有写路径 |
 | 文件列表 | 复用现有的对象存储浏览（`_versions/`、`data/` 直接可见） | 这是唯一能看到「表里到底有什么」的地方，成本为零 |
@@ -652,7 +652,7 @@ P0 落地时与本文口径不一致、或本文没写到但实现必须决定�
 | P2 的 3 个版本写端点 | 做了 2 个（`CreateTableVersion` / `BatchDeleteTableVersions`）；`BatchCreateTableVersions` **不做**（§12.6） |
 | P2 的标签只读 2 个 | 已实现（`LanceTagController` + `LanceTagService` + `LanceTagFiles`）；索引只读**不做**（§12.8） |
 | 其余 35 个 operation | `LanceUnsupportedController`（最低优先级兜底）恒回 **406 + code 0** |
-| 控制台只读（§7） | 已实现：详情页基址 `/lance/v1/namespace`、不发 `/v1/config`、台账 19 / 21 / 35、藏「存储」与「配置」；浏览页只读（命名空间 + 表列表 + describe 抽屉，无任何写入入口）；`lance-table` 藏「数据策略」（§12.9） |
+| 控制台浏览（§7） | 已实现：详情页基址 `/lance/v1/namespace`、不发 `/v1/config`、台账 19 / 21 / 35、藏「存储」与「配置」；浏览页（命名空间 + 表列表 + describe 抽屉）**可建命名空间**，除此之外没有写入入口；`lance-table` 藏「数据策略」（§12.9） |
 | `properties_json` / `table_version` / `managed_versioning` | 三列都已加（`lakehouse_table`） |
 | `lakehouse_lance_table_version`（版本账） | 已加；唯一约束 `(table_id, version)` |
 
@@ -821,8 +821,11 @@ L2-2 的两半在同一份规范里待遇不同，值得单独记一笔，因为
   `CreateTable`，数据集由客户端写进仓库，我们只 declare / register），给一个能建库建表的界面
   会让人以为「控制台建的表」和「盘上的数据集」是一回事。后来拆开看：**浏览**与**建表**是
   两件事——`ListNamespaces` / `ListTables` / `DescribeTable` 都在已实现的 19 个 operation 里，
-  只读浏览因此可以提供（`LanceBrowseView`）。**写仍然不给**：页面一个写按钮都没有，
-  `endpoints.js` 里也没有任何 Lance 写端点。两处各有机械校验（`verify-console.py` 第 12 组）。
+  只读浏览因此可以提供（`LanceBrowseView`）。**表侧的写仍然不给**：declare / register /
+  deregister / rename / drop 一条都没登记，页面也没有对应按钮。命名空间那一条是例外——
+  `CreateNamespace` 同样在 19 个 operation 里，而且它是纯元数据登记（只落一行 database
+  记录，不碰存储），所以页面上给了「新建命名空间」。两件事各有机械校验（`verify-console.py`
+  第 12 组：写端点只允许 create、表侧一个都不许有）。
 - **「存储」与「配置」两个页签不出现。** 存储页的数字全部来自快照 / 表元数据的 `summary`，
   Lance 没有快照概念，那些格子只会是「还没有快照」——把「没有这个概念」显示成「还没发生」；
   配置页编辑的 `table-default.*` 只在**建表时**合并，而这里根本没有建表，配了永远不会被读到。

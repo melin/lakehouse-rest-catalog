@@ -1,10 +1,11 @@
 <template>
-  <div class="pc-page pc-browse">
-    <!-- Iceberg / Lance 两个分支整页换成各自组件，本页的页头与对话框都不该再出现：
-         页头里的动作（刷新 / 新建数据库）是 Paimon 语义的，留下只会出现
-         「同一屏两个页头、两套按钮」。两个子组件自带页头与对话框。 -->
+  <!-- 两个子视图是**整页**：它们自己渲染 `PageHeader` 与 `.pc-page` 容器。
+       所以这里必须并到根层，不能塞进下面那个 `.pc-page` 里——嵌套会让 padding
+       生效两次（标题右移 26px、整页下移 24px），Iceberg / Lance 看起来比 Paimon 窄一圈。 -->
+  <IcebergBrowseView v-if="icebergCatalog" />
+  <LanceBrowseView v-else-if="lanceCatalog" />
+  <div v-else class="pc-page pc-browse">
     <PageHeader
-      v-if="!icebergCatalog && !lanceCatalog"
       title="Catalog"
       :subtitle="`浏览 catalog「${prefix || '未选择'}」下的库与对象。这里看到的元数据与引擎客户端读到的是同一份，改动会立刻反映到它们的查询上。`"
     >
@@ -34,15 +35,13 @@
       因此是另一个组件而不是本页里的一串 v-if；本页剩下一件事——
       **别把 Paimon 的请求发出去**，那由下面 loader 里的守卫保证。
     -->
-    <IcebergBrowseView v-if="icebergCatalog" />
 
     <!--
-      Lance catalog：只读浏览（`LanceBrowseView`）。
+      Lance catalog：浏览 + 建命名空间（`LanceBrowseView`）。
       与 Iceberg 一样是另一个组件而不是本页的一串 v-if——id 是 `catalog$schema$table`
       这样的拼接串、列举只回 id（位置与版本要逐表 describe），契约差异不是参数级的。
       这里仍然不给任何写入口：建表与 declare 是客户端的活，本服务端对 Lance 没有写入路径。
     -->
-    <LanceBrowseView v-else-if="lanceCatalog" />
 
     <div v-else class="pc-browse-body">
       <!-- 左：数据库 -->
@@ -704,8 +703,9 @@ const icebergCatalog = computed(() => isIcebergCatalog(session.catalogByName(pre
  *
  * <p>Lance 与 Iceberg 的共同点是「本页一条路径都不适用」，两页都换成独立组件：
  * Iceberg 走 `namespaces/**`，Lance 走 `/lance/v1/**`（`LanceBrowseView`）。
- * Lance 那一页**只读**——这台服务端对 Lance 只做元数据登记，没有 CreateTable、
- * 也不写数据集，因此它连一个写按钮都不给。
+ * Lance 那一页只能建命名空间：`CreateNamespace` 是纯元数据登记（落一行 database 记录，
+ * 不碰存储），而建表与写数据集都不存在——没有 `CreateTable`，数据集由客户端写进仓库。
+ * 因此它给出「新建命名空间」一个写入口，表侧一个都没有。
  *
  * <p>同样要**在 loader 里再挡一道**：`refresh` 与 watch 都会绕过模板直接调 load()。
  */
@@ -1502,20 +1502,6 @@ defineExpose({ loadCurrentList })
 </script>
 
 <style scoped>
-/* Lance 那一页的两段内容：一个「能去哪儿看」的列表 + 两个跳转按钮。
-   它只在本页出现，因此留在 scoped 里；页面骨架仍走 styles/index.css 的通用基元。 */
-.pc-lance-points {
-  margin: 0 0 16px;
-  padding-left: 20px;
-  line-height: 1.9;
-}
-
-.pc-lance-actions {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
 /* 页面骨架（左列表 + 右对象面板）在 styles/index.css 里：Iceberg 浏览页共用同一套，
    放在任一个组件的 scoped 里另一页就用不上。这里只剩 Paimon 建表表单独有的部分。 */
 

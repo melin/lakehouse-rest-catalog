@@ -197,6 +197,13 @@ function messageOf(payload, status) {
   if (payload?.error_description) {
     return payload.error ? `${payload.error}：${payload.error_description}` : payload.error_description
   }
+  // Lance 面的失败形状是 `{error, code, detail, instance}`，`error` 本身就是一句话
+  // （`Namespace "x" already exists`）。不认它的话，建命名空间撞车只会显示
+  // 「请求失败（HTTP 409）」——把「已经存在」这条唯一的处置信息丢掉。
+  // 只取字符串：Iceberg 的 `error` 是对象，拼进提示里会变成 `[object Object]`。
+  if (typeof payload?.error === 'string' && payload.error) {
+    return payload.error
+  }
   if (status === 401) {
     return '未通过鉴权：请在「连接设置」里填写访问令牌'
   }
