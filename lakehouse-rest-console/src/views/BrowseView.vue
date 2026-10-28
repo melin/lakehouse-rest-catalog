@@ -13,7 +13,7 @@
           <el-icon><Refresh /></el-icon>
           <span class="pc-btn-text">刷新</span>
         </el-button>
-        <el-button size="small" type="primary" :disabled="icebergCatalog" @click="openCreateDatabase">
+        <el-button v-if="!lanceCatalog" size="small" type="primary" :disabled="icebergCatalog" @click="openCreateDatabase">
           <el-icon><Plus /></el-icon>
           <span class="pc-btn-text">新建数据库</span>
         </el-button>
@@ -35,6 +35,55 @@
       **别把 Paimon 的请求发出去**，那由下面 loader 里的守卫保证。
     -->
     <IcebergBrowseView v-if="icebergCatalog" />
+
+    <!--
+      Lance catalog：本页不浏览。
+      Lance 的 namespace / 表走 `/lance/v1/**`（不在 `/v1/{prefix}` 下），而这台服务端
+      对 Lance 只做**元数据登记**（declare / register），没有 CreateTable、也不写数据集。
+      因此这里不给一个「看起来能建库建表」的界面——建出来的东西与盘上的数据集对不上。
+      能看的是仓库里的物理目录（`_versions/` 与 `data/`），在 catalog 详情的「文件列表」。
+    -->
+    <div v-else-if="lanceCatalog" class="pc-browse-body">
+      <PanelCard>
+        <SectionTitle title="Lance catalog 不在控制台浏览">
+          <template #tip>
+            <TipNote>
+              控制台的目录浏览调的是 <code>/v1/{prefix}/databases/**</code>（Paimon 协议面），
+              而 Lance 的资源树在 <code>/lance/v1/namespace/{id}</code> 与
+              <code>/lance/v1/table/{id}</code>，两者不是参数级的差别。
+              一期不做 Lance 的浏览页，是为了不给一个「看起来能建库建表」的入口——
+              这台服务端对 Lance 没有写入路径。
+            </TipNote>
+          </template>
+        </SectionTitle>
+        <ul class="pc-lance-points">
+          <li>
+            看「表里到底有什么」：回到 catalog 详情的<b>文件列表</b>，从仓库根往下钻，
+            <code class="pc-mono">_versions/</code> 里是 manifest、
+            <code class="pc-mono">data/</code> 里是数据文件。
+          </li>
+          <li>
+            看元数据：用 Lance 客户端连 <code class="pc-mono">/lance/v1</code>，
+            或在服务端直接调 <code class="pc-mono">ListTableVersions</code> /
+            <code class="pc-mono">ListTableTags</code>（这两个 operation 已实现）。
+          </li>
+          <li>
+            这次登记的库与表仍在服务端的元数据里：<b>事件页</b>能看到 declare / register /
+            deregister 的完整记录（payload 带 <code class="pc-mono">format=LANCE</code>）。
+          </li>
+        </ul>
+        <div class="pc-lance-actions">
+          <el-button size="small" @click="$router.push({ name: 'catalogDetail', params: { catalogName: prefix } })">
+            <el-icon><Back /></el-icon>
+            <span class="pc-btn-text">去 catalog 详情看文件列表</span>
+          </el-button>
+          <el-button size="small" @click="$router.push({ name: 'events' })">
+            <el-icon><Files /></el-icon>
+            <span class="pc-btn-text">看事件流</span>
+          </el-button>
+        </div>
+      </PanelCard>
+    </div>
 
     <div v-else class="pc-browse-body">
       <!-- 左：数据库 -->
@@ -592,6 +641,7 @@ import FieldLabel from '@/components/FieldLabel.vue'
 import IconAction from '@/components/IconAction.vue'
 import JsonBlock from '@/components/JsonBlock.vue'
 import PageHeader from '@/components/PageHeader.vue'
+import PanelCard from '@/components/PanelCard.vue'
 import PropertiesEditor from '@/components/PropertiesEditor.vue'
 import ResourceState from '@/components/ResourceState.vue'
 import SectionTitle from '@/components/SectionTitle.vue'
@@ -602,7 +652,7 @@ import IcebergBrowseView from '@/views/IcebergBrowseView.vue'
 import { catalogApi } from '@/api/catalog.js'
 import { confirmDanger, notifyError, notifySuccess, useRemotePaging, useResource } from '@/composables/index.js'
 import { session } from '@/store/session.js'
-import { isIcebergCatalog } from '@/utils/catalogFormat.js'
+import { isIcebergCatalog, isLanceCatalog } from '@/utils/catalogFormat.js'
 import { formatTime, orPlaceholder, prettyJson } from '@/utils/format.js'
 import { tableKindLabel } from '@/utils/tableKind.js'
 import { tableDefaultsOf } from '@/utils/tableDefaults.js'
@@ -690,6 +740,17 @@ const database = computed(() => route.query.database || '')
 const icebergCatalog = computed(() => isIcebergCatalog(session.catalogByName(prefix.value)))
 
 /**
+ * 这个 catalog 是不是 Lance 协议面。
+ *
+ * <p>Lance 与 Iceberg 的共同点是「本页一条路径都不适用」，差别是：Iceberg 换一个组件
+ * （`IcebergBrowseView` 走 `namespaces/**`），Lance 换成一段说明——这台服务端对 Lance
+ * 只做元数据登记，没有 CreateTable、也不写数据集，给一个能建库建表的界面是错误的承诺。
+ *
+ * <p>同样要**在 loader 里再挡一道**：`refresh` 与 watch 都会绕过模板直接调 load()。
+ */
+const lanceCatalog = computed(() => isLanceCatalog(session.catalogByName(prefix.value)))
+
+/**
  * 首屏可能来不及：`catalogsLoaded` 之前读格式只会得到「不是 Iceberg」，
  * 于是会对着一个 Iceberg catalog 发出注定 404 的请求。等它一次。
  *
@@ -710,7 +771,7 @@ const databaseResource = useResource(async () => {
   if (!prefix.value) return []
   // 这一层守卫是必要的（而不是只靠 watch 里的那一处）：refresh 与「重试」
   // 都会直接调 load()，绕过 watch。守卫写在 loader 里，任何入口都盖得住。
-  if (icebergCatalog.value) return []
+  if (icebergCatalog.value || lanceCatalog.value) return []
   // 侧栏一次取满（服务端 max-page-size）：它是个窄栏，塞页码没有意义
   const payload = await catalogApi.listDatabases(prefix.value, {
     maxResults: session.state.meta?.service?.maxPageSize || 1000,
@@ -760,7 +821,7 @@ function tableNamePattern() {
  * 刷新、「重试」都盖得住。
  */
 async function fetchObjects(field, call, { page, pageSize }) {
-  if (!prefix.value || !database.value || icebergCatalog.value) {
+  if (!prefix.value || !database.value || icebergCatalog.value || lanceCatalog.value) {
     return { items: [], total: 0 }
   }
   const payload = await call(prefix.value, database.value, {
@@ -1480,6 +1541,20 @@ defineExpose({ loadCurrentList })
 </script>
 
 <style scoped>
+/* Lance 那一页的两段内容：一个「能去哪儿看」的列表 + 两个跳转按钮。
+   它只在本页出现，因此留在 scoped 里；页面骨架仍走 styles/index.css 的通用基元。 */
+.pc-lance-points {
+  margin: 0 0 16px;
+  padding-left: 20px;
+  line-height: 1.9;
+}
+
+.pc-lance-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 /* 页面骨架（左列表 + 右对象面板）在 styles/index.css 里：Iceberg 浏览页共用同一套，
    放在任一个组件的 scoped 里另一页就用不上。这里只剩 Paimon 建表表单独有的部分。 */
 

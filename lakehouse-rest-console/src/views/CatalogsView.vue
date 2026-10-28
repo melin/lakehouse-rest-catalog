@@ -220,6 +220,18 @@
           >
             创建后可以在 catalog 详情查看协议与能力，表数据请通过 Spark 等 Iceberg REST 客户端访问。
           </TipAlert>
+          <!-- Lance 的提示与 Iceberg 那条分开写：Iceberg 是「控制台一期没做」，
+               Lance 是「这台服务端本来就不写数据集」——前者以后会补，后者是设计如此。 -->
+          <TipAlert
+            v-if="isLanceCatalog(dialog.catalogFormat)"
+            class="pc-form-alert"
+            type="warning"
+            title="控制台不提供 Lance catalog 的库表浏览"
+          >
+            Lance 数据集由客户端写进仓库，服务端只做登记（declare / register）。创建后可以在
+            catalog 详情看协议与能力、在「文件列表」里看 <code class="pc-mono">_versions/</code> 与
+            <code class="pc-mono">data/</code>；库与表请用 Lance 客户端访问。
+          </TipAlert>
         </el-form-item>
 
         <el-form-item v-if="dialog.mode === 'edit'">
@@ -338,6 +350,7 @@ import {
   catalogFormatTagType,
   ICEBERG,
   isIcebergCatalog,
+  isLanceCatalog,
   PAIMON,
 } from '@/utils/catalogFormat.js'
 import { clusterCell } from '@/utils/executionCluster.js'

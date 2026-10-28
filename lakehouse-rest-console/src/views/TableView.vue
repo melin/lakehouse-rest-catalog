@@ -78,9 +78,12 @@
           <el-tab-pane v-if="isPaimonTable" label="分支" name="branches" />
           <el-tab-pane label="文件列表" name="files" />
           <el-tab-pane v-if="isPaimonTable" label="数据访问" name="access" />
-          <!-- 数据策略（行过滤 / 列脱敏）不按表格式伸缩：策略按三段名挂在任何表上，
-               Format / Object 表同样可能被引擎读到、同样值得保护（与「文件列表」同一条规则） -->
-          <el-tab-pane label="数据策略" name="policy" />
+          <!-- 数据策略（行过滤 / 列脱敏）在 Format / Object 表上保留：策略按三段名挂在任何表上，
+               它们同样可能被引擎读到、同样值得保护（与「文件列表」同一条规则）。
+               **Lance 表例外**：行过滤 / 列脱敏是在 Spark 侧按 PolicyRelation 注入执行的，
+               而 Lance 的读取路径不经过那一层（见 docs/lance-rest-catalog-design.md §7），
+               给一个存得下、永远不生效的策略编辑器比不给更糟。 -->
+          <el-tab-pane v-if="!isLanceTable" label="数据策略" name="policy" />
           <!-- 存储优化同样按表格式伸缩：本页只展示 Paimon 表（Iceberg 表走 IcebergTableView，
                那边挂的是同一个组件、传 format="ICEBERG"）。
                外部 Paimon 表仍会出现这个页签——它由服务端回答「不支持」并说明原因，
@@ -814,6 +817,14 @@ const latest = computed(() => overview.data.value?.snapshot?.snapshot || null)
 const tableKind = computed(() => tableKindOf(table0.value))
 const kindLabel = computed(() => tableKindLabel(table0.value))
 const isPaimonTable = computed(() => isSnapshotManaged(table0.value))
+/**
+ * 是不是 Lance 表（`options.type=lance-table`）。
+ *
+ * <p>它与「不是快照托管」不是一回事：Format / Object 表同样不是快照托管的，
+ * 但它们仍可能被 Spark 读到，因此保留「数据策略」页签；Lance 的读取路径不经过
+ * 策略注入层，那一页对它只能是「存得下、永不生效」（设计文档 §7）。
+ */
+const isLanceTable = computed(() => tableKind.value === 'lance-table')
 
 /**
  * 数据预览的列名来源：全量 schema。
@@ -832,10 +843,22 @@ const policyColumns = computed(() =>
   (table0.value?.schema?.fields || []).map((field) => ({ name: field.name, type: field.type })),
 )
 
-/** 少了几个页签的原因写在页面上，免得看起来像加载失败。 */
-const kindNote = computed(() => (isPaimonTable.value
-  ? ''
-  : `${kindLabel.value}（type=${tableKind.value}）不受快照管理：没有快照、标签与分支，也没有提交累计出来的文件统计，因此这里只保留「详细信息」与「文件列表」。`))
+/**
+ * 少了几个页签的原因写在页面上，免得看起来像加载失败。
+ *
+ * <p>Lance 表单独一句：它少的页签里多一个「数据策略」，理由与快照无关
+ * （读取路径不经过策略注入层），笼统归到「不受快照管理」会解释错。
+ */
+const kindNote = computed(() => {
+  if (isPaimonTable.value) return ''
+  const base = `${kindLabel.value}（type=${tableKind.value}）不受快照管理：没有快照、标签与分支，`
+    + '也没有提交累计出来的文件统计'
+  if (isLanceTable.value) {
+    return `${base}；Lance 的行过滤 / 列脱敏没有落点，因此也没有「数据策略」。'
+      + '这里保留「详细信息」「文件列表」「血缘」三页，数据本身用 Lance 客户端读。`
+  }
+  return `${base}，因此这里只保留「详细信息」「文件列表」「数据策略」与「血缘」。`
+})
 
 /**
  * 快照缺文件统计：那不是「0 个文件」，而是服务端没收到过统计——

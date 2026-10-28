@@ -28,9 +28,11 @@ spec/rest-catalog-open-api-iceberg.yaml）。路径写错时前端只表现为�
                   与 IcebergOptimizationOptions.KNOWN_KEYS（Iceberg）各逐字一致
                   （键名写错的表现是保存时吃一个 400，只有点进去才会发现；
                   两套键混用的表现更糟——被收下、然后静默不生效）
- 12. 表格式       catalog 的 PAIMON / ICEBERG 跨「服务端枚举 / meta 下发 / 前端兜底 /
+ 12. 表格式       catalog 的 PAIMON / ICEBERG / LANCE 跨「服务端枚举 / meta 下发 / 前端兜底 /
                   新建表单 / 列表徽标与筛选 / 三个页面按格式伸缩」六处，且格式**不可变**；
-                  清单与判据都不能由前端另抄一份
+                  清单与判据都不能由前端另抄一份。Lance 另有两处独有：详情页的台账数字
+                  （端点 / operation / 恒 406）要与 verify-lance-endpoints.py 相加一致，
+                  以及它**没有 /v1/config**，因此那条发现请求一行都不能发
  13. Iceberg 浏览   Iceberg catalog 的目录浏览走 namespaces/** 而不是 databases/**。
                   这一组钉「契约形状」：endpoints 逐条对 Iceberg 规格、参数名是 pageSize
                   而不是 maxResults、namespace 段用 0x1F、建表体是 Iceberg 的 schema/spec；
@@ -910,8 +912,10 @@ page_wiring = {
     "表详情：模板给出说明而不是空页": "!icebergCatalog" in table_view,
     "目录浏览：Iceberg catalog 换成 Iceberg 协议面的浏览页":
         '<IcebergBrowseView v-if="icebergCatalog" />' in browse_view,
-    "目录浏览：Paimon 的库列表 loader 在 Iceberg 下仍挡请求": "if (icebergCatalog.value) return []" in browse_view,
-    "目录浏览：Paimon 的四个对象列表 loader 一并挡掉": "|| icebergCatalog.value) {" in browse_view,
+    "目录浏览：Paimon 的库列表 loader 在 Iceberg / Lance 下仍挡请求":
+        "if (icebergCatalog.value || lanceCatalog.value) return []" in browse_view,
+    "目录浏览：Paimon 的四个对象列表 loader 一并挡掉":
+        "|| icebergCatalog.value || lanceCatalog.value) {" in browse_view,
     "catalog 详情：「配置」页签两种格式都在，table-default 编辑器对两者都开放":
         'name="config"' in detail_view and 'v-if="!isIceberg"' not in detail_view,
 }
@@ -976,6 +980,61 @@ check("详情页「不声明支持」的条数与 verify-iceberg-endpoints.py �
       not_declared_total is not None and int(not_declared_total.group(1)) == len(not_implemented),
       f"CatalogDetailView 写的是 {not_declared_total.group(1) if not_declared_total else '未找到 NOT_DECLARED_TOTAL'}，"
       f"verify-iceberg-endpoints.py 登记了 {len(not_implemented)} 条")
+
+# --- 12.6.1 Lance：台账数字要对得上，且不许发 /v1/config --------------------
+# Lance 这一面与前两面的三处不同都落在这一页上，三处错了都不报错：
+#  · 它**没有** `/v1/config`（规范里就没这一步），发了只会拿到 404，而 404 会以
+#    「读不到（…）」出现在概览上——看起来像服务端坏了；
+#  · 基址不是 `/v1/{prefix}`，写错了人拿它去连会 404，而页面上看不出哪儿不对；
+#  · 「能力清单」对它是**我们实现了多少**（服务端不下发任何清单），那三个数字
+#    （端点 / operation / 恒 406）只能与 `verify-lance-endpoints.py` 的台账对账——
+#    这一页是唯一把它们摆在人眼前的地方，漂了不会报错，只会让人对着过期的数字排障。
+lance_script = read(os.path.join(ROOT, "scripts/verify-lance-endpoints.py"))
+# 注意：路径里本身就带 `}`（`{id}`），因此只能按「行首的 `}`」切，不能按字符切
+implemented_block = lance_script.split("IMPLEMENTED = {", 1)[1].split("\n}", 1)[0]
+implemented_endpoints = len(re.findall(r'"(?:GET|POST|PUT|DELETE) /v1', implemented_block))
+extra_block = lance_script.split("EXTRA_ENDPOINTS = {", 1)[1].split("\n}", 1)[0]
+extra_endpoints = len(re.findall(r'"(?:GET|POST|PUT|DELETE) /v1[^"]+"\s*:', extra_block))
+not_implemented_operations = re.search(
+    r"NOT_IMPLEMENTED_OPERATIONS = (\d+)", lance_script).group(1)
+
+lance_wiring = {
+    "详情页有 Lance 分支（isLance）": "const isLance = computed(" in detail_view,
+    "基址换成 /lance/v1/namespace": "'/lance/v1/namespace'" in detail_view,
+    "Lance 下不发 /v1/config（守卫在 loader 里）": "if (isLance.value) return null" in detail_view,
+    "Lance 下藏掉「存储」页签": 'v-if="!isLance" name="storage"' in detail_view,
+    "Lance 下藏掉「配置」页签": 'v-if="!isLance" name="config"' in detail_view,
+    "目录浏览：Lance 换成一段说明而不是 Paimon 的列表": 'v-else-if="lanceCatalog"' in browse_view,
+    "目录浏览：Lance 下不出现「新建数据库」": 'v-if="!lanceCatalog"' in browse_view,
+    "新建表单给出 Lance 的提示（与 Iceberg 那条分开）": "isLanceCatalog(dialog.catalogFormat)" in catalogs_view,
+    "表详情：lance-table 藏掉「数据策略」": 'v-if="!isLanceTable" label="数据策略"' in table_view,
+}
+check("Lance catalog 的三个页面都按格式收敛（基址、发现请求、两个页签、浏览入口）",
+      all(lance_wiring.values()),
+      "\n".join(name for name, ok in lance_wiring.items() if not ok))
+
+endpoints_front = re.search(r"const LANCE_ENDPOINTS = (\d+)", detail_view)
+operations_front = re.search(r"const LANCE_OPERATIONS = (\d+)", detail_view)
+pending_front = re.search(r"const LANCE_NOT_IMPLEMENTED = (\d+)", detail_view)
+groups_block = detail_view.split("const LANCE_GROUPS = [", 1)[-1].split("]", 1)[0]
+group_counts = [int(n) for n in re.findall(r"（(\d+)）", groups_block)]
+
+ledger_wiring = {
+    f"端点条数（前端 {endpoints_front.group(1) if endpoints_front else '?'} / 台账 {implemented_endpoints}）":
+        endpoints_front is not None and int(endpoints_front.group(1)) == implemented_endpoints,
+    f"operation 条数（前端 {operations_front.group(1) if operations_front else '?'} / 台账 "
+    f"{implemented_endpoints - extra_endpoints}）":
+        operations_front is not None
+        and int(operations_front.group(1)) == implemented_endpoints - extra_endpoints,
+    f"恒 406 的条数（前端 {pending_front.group(1) if pending_front else '?'} / 台账 "
+    f"{not_implemented_operations}）":
+        pending_front is not None and int(pending_front.group(1)) == int(not_implemented_operations),
+    f"分组条数之和 == 端点数（{group_counts} → {sum(group_counts)}）":
+        bool(group_counts) and sum(group_counts) == implemented_endpoints,
+}
+check("详情页的 Lance 台账与 verify-lance-endpoints.py 一致（端点 / operation / 恒 406 / 分组和）",
+      all(ledger_wiring.values()),
+      "\n".join(name for name, ok in ledger_wiring.items() if not ok))
 
 # --- 12.7 权限页：候选来源按格式分派 --------------------------------------
 # 「权限管理」页的中间那一层在两种格式里名字与来源都不同：Paimon 是扁平库名

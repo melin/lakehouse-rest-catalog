@@ -28,15 +28,25 @@
           <el-tab-pane name="overview">
             <template #label>
               概览
-              <TipNote>
+              <TipNote v-if="!isLance">
                 这一页只读。属性与存储配置的修改走管理 API
                 （<code>PUT /api/management/v1/catalogs/{{ catalogName }}</code>）：
                 「配置」页签能改其中的 <code>table-default.*</code>（此后新建表的默认属性），
                 其余属性与控制台的编辑弹窗在「Catalogs」页。
               </TipNote>
+              <TipNote v-else>
+                这一页只读。Lance catalog 没有「配置」与「存储」两个页签
+                （理由见这一页顶部的说明），属性与控制台的编辑弹窗在「Catalogs」页。
+              </TipNote>
             </template>
           </el-tab-pane>
-          <el-tab-pane name="storage">
+          <!--
+            「存储」页签对 Lance 不出现：这一页的全部数字都来自快照 / 表元数据的
+            `summary`（文件数、大小、小文件占比），而 Lance 的版本由客户端写在
+            `_versions/` 里，服务端只登记位置、不记账——一张 Lance 表在这里只能是
+            「还没有快照」，那不是信息，是把「没有这个概念」显示成了「还没发生」。
+          -->
+          <el-tab-pane v-if="!isLance" name="storage">
             <template #label>
               存储
               <TipNote>
@@ -67,8 +77,13 @@
             - Iceberg 额外只读展示客户端连上来实际读到的 `/v1/config`
               （defaults / overrides）——那是**连接参数**，与表属性是两件事。
             catalog 自身的属性（warehouse 等）两种格式都在「Catalogs」页的编辑弹窗里改。
+
+            Lance 例外：`table-default.*` 是**建表时合并**的默认属性，而 Lance 面没有
+            `CreateTable`（数据集由客户端写进仓库，我们只做 declare / register），
+            因此在这里配任何 `table-default.*` 都不会被读到——那是「存得下、永远不生效」，
+            比不显示更糟。
           -->
-          <el-tab-pane name="config">
+          <el-tab-pane v-if="!isLance" name="config">
             <template #label>
               配置
               <TipNote>
@@ -85,6 +100,27 @@
         <div class="pc-tab-body">
           <!------------------------------ 概览 ------------------------------------>
           <template v-if="tab === 'overview'">
+            <!--
+              Lance 的两条「这里没有」要说在明处：藏掉页签而不解释，读起来像功能坏了。
+              两句话各对应一个具体原因（不是「暂未支持」那种含糊说法）：
+              存储页的数字全部来自快照 / 表元数据统计，Lance 没有快照概念；
+              配置页的 table-default.* 只在建表时合并，而 Lance 面没有 CreateTable。
+            -->
+            <TipAlert v-if="isLance" type="info" class="pc-hint">
+              <template #title>这个 catalog 只有「概览」与「文件列表」两个页签</template>
+              <div>
+                没有<strong>存储</strong>页：它的文件数 / 大小 / 小文件占比都来自快照与表元数据统计，
+                而 Lance 的版本由客户端写进仓库的 <code class="pc-mono">_versions/</code>，服务端只登记位置。
+                <br />
+                没有<strong>配置</strong>页：那一页编辑的 <code class="pc-mono">table-default.*</code>
+                只在建表时合并，而 Lance 面没有 <code class="pc-mono">CreateTable</code>
+                （数据集由客户端写入，我们只做 declare / register），配了也永远不会被读到。
+                <br />
+                想看「表里到底有什么」走<strong>文件列表</strong>（<code class="pc-mono">_versions/</code>、
+                <code class="pc-mono">data/</code> 直接可见），或用 Lance 客户端连
+                <code class="pc-mono">/lance/v1</code>。
+              </div>
+            </TipAlert>
             <div class="pc-detail-grid">
               <dl class="pc-kv">
                 <dt>名称（prefix）</dt>
@@ -136,10 +172,16 @@
             -->
             <SectionTitle title="协议与能力">
               <template #tip>
-                <TipNote>
+                <TipNote v-if="!isLance">
                   这一块读的是 <code>GET /v1/config?warehouse={{ catalogName }}</code>，
                   也就是客户端连接时第一个调的发现端点。这里显示的是服务端<strong>实际下发</strong>的内容，
                   不是文档里抄来的清单。
+                </TipNote>
+                <TipNote v-else>
+                  Lance 协议面<strong>没有发现端点</strong>——规范里没有 <code>/v1/config</code> 这一步，
+                  客户端拿配置里的 id 前缀直接调 <code>/lance/v1/**</code>。因此这一栏的条数不是
+                  「服务端下发了什么」，而是本服务端<strong>实现了哪些 operation</strong>：
+                  未实现的一律回 <span class="pc-mono">406 + code 0</span>，不是 404、不是 500。
                 </TipNote>
               </template>
             </SectionTitle>
@@ -167,7 +209,20 @@
                 <dd class="pc-break">{{ credentialNote }}</dd>
                 <dt>能力清单</dt>
                 <dd>
-                  <template v-if="isIceberg">
+                  <!--
+                    Lance 放第一位：它既不是「下发了多少」，也不是「不下发、按规格调」，
+                    而是第三件事——**我们实现了规范里的哪些 operation**。三句都要说清，
+                    混用任何一句都会让人以为某一批端点是「临时没响应」。
+                  -->
+                  <template v-if="isLance">
+                    已实现 <strong>{{ LANCE_IMPLEMENTED }}</strong> 个 operation
+                    （<strong>{{ LANCE_ENDPOINTS }}</strong> 条端点）
+                    <span class="pc-dim">
+                      ；其余 {{ LANCE_NOT_IMPLEMENTED }} 个恒 <span class="pc-mono">406 + code 0</span>
+                      （Unsupported），规范里一共 {{ LANCE_IMPLEMENTED + LANCE_NOT_IMPLEMENTED }} 个
+                    </span>
+                  </template>
+                  <template v-else-if="isIceberg">
                     <template v-if="capabilities.error.value">
                       <span class="pc-dim">读不到（{{ capabilities.error.value }}）</span>
                     </template>
@@ -215,6 +270,30 @@
                     </div>
                   </div>
                 </template>
+                <!-- Lance：没有可下发的清单（没有 /v1/config），能给的是「这个面实现了哪几组」。
+                     分组条数之和必须等于上面的端点数，由 scripts/verify-console.py 相加比对 -->
+                <div v-else-if="isLance" class="pc-endpoints">
+                  <div class="pc-endpoints-head">
+                    Lance 面的分组（{{ LANCE_ENDPOINTS }} 条端点）
+                    <span class="pc-dim">一条 operation 可能挂两种 HTTP 形态</span>
+                  </div>
+                  <ul class="pc-endpoints-list">
+                    <li v-for="group in LANCE_GROUPS" :key="group.label">
+                      <span class="pc-mono">{{ group.label }}</span>
+                      <span class="pc-dim">　{{ group.detail }}</span>
+                    </li>
+                  </ul>
+                  <div class="pc-endpoints-foot">
+                    <div class="pc-foot-title">
+                      不实现的 {{ LANCE_NOT_IMPLEMENTED }} 个
+                      <span class="pc-dim">全部回 406 + code 0</span>
+                    </div>
+                    <div class="pc-dim pc-foot-note">
+                      数据面（insert / query / update）、所有索引、写标签、分支、物化视图都在这 {{ LANCE_NOT_IMPLEMENTED }} 个里；
+                      逐条与理由见 <code>docs/lance-rest-catalog-design.md</code> §3.1 与 §12。
+                    </div>
+                  </div>
+                </div>
                 <JsonBlock
                   v-else
                   :value="configDefaults"
@@ -503,6 +582,7 @@ import {
   catalogFormatNote,
   catalogFormatTagType,
   isIcebergCatalog,
+  isLanceCatalog,
 } from '@/utils/catalogFormat.js'
 import { formatBytes, inlineMap } from '@/utils/format.js'
 import { composeProperties, isTableDefaultKey, tableDefaultsOf } from '@/utils/tableDefaults.js'
@@ -538,7 +618,7 @@ const warehouse = computed(() => {
 })
 
 /**
- * 表格式：`catalogFormat`（PAIMON / ICEBERG），**创建后不可更改**。
+ * 表格式：`catalogFormat`（PAIMON / ICEBERG / LANCE），**创建后不可更改**。
  *
  * <p>它决定这个页面上的三件事：协议面那一栏怎么读、「配置」页签里要不要多一段
  * （`table-default.*` 编辑器两格式都有，Iceberg 另附 `/v1/config` 的只读展示）、
@@ -548,10 +628,54 @@ const warehouse = computed(() => {
  * 一个字段再发一次管理 API 请求——见 `session.catalogByName` 的说明。
  */
 const isIceberg = computed(() => isIcebergCatalog(catalog0.value))
-const protocolName = computed(() => (isIceberg.value ? 'Iceberg REST Catalog' : 'Paimon REST Catalog'))
+/**
+ * 是不是 Lance 协议面。
+ *
+ * <p>与 Iceberg 的差别在于**连发现端点都没有**：规范里没有 `/v1/config`，
+ * 客户端直接按 id 前缀打 `/lance/v1/**`。因此这一页对它要多做三件事——
+ * 不发那条注定 404 的 `/v1/config`、基址换成 `/lance/v1/namespace`、
+ * 以及把「能力清单」从「服务端下发了什么」改成「我们实现了哪些 operation」。
+ */
+const isLance = computed(() => isLanceCatalog(catalog0.value))
 
-/** 客户端基址：`/v1/{prefix}`，而 prefix 就是 catalog 名（创建后不可改名）。 */
-const clientBase = computed(() => `/v1/${catalogName.value}`)
+const protocolName = computed(() => {
+  if (isLance.value) return 'Lance REST Catalog'
+  return isIceberg.value ? 'Iceberg REST Catalog' : 'Paimon REST Catalog'
+})
+
+/**
+ * Lance 面的台账：端点条数、operation 条数与「恒 406」的条数。
+ *
+ * <p>三处数字都由 `scripts/verify-console.py` 与 `scripts/verify-lance-endpoints.py`
+ * 的 `IMPLEMENTED` / `NOT_IMPLEMENTED_OPERATIONS` 相加比对——这一页是唯一会把
+ * 「还剩多少没做」摆在人眼前的地方，它漂了不会报错，只会让人对着一个过期的数字排障。
+ *
+ * <p>`LANCE_OPERATIONS` 比 `LANCE_ENDPOINTS` 少 2：规格里没有、但参考实现会调的两条
+ * 兼容形态（见该脚本的 `EXTRA_ENDPOINTS`），一条 operation 挂了两种 HTTP 形态。
+ */
+const LANCE_ENDPOINTS = 21
+const LANCE_OPERATIONS = 19
+const LANCE_NOT_IMPLEMENTED = 35
+
+/** 分组只给「哪几类」与条数，不列路径——路径的权威在规范副本里，前端列了就会过期。 */
+const LANCE_GROUPS = [
+  { label: 'namespace', detail: 'create / list / describe / exists / drop、以及其下 table/list（6）' },
+  { label: 'table', detail: 'describe / exists / declare / register / deregister / rename、两条列举（8）' },
+  { label: 'version', detail: 'list / describe（P1）、create / delete（P2），含兼容的 GET 形态（5）' },
+  { label: 'tag', detail: 'list / version 只读代理（2）' },
+]
+
+/**
+ * 客户端基址。
+ *
+ * <p>Paimon / Iceberg 是 `/v1/{prefix}`（prefix 就是 catalog 名，创建后不可改名）；
+ * Lance **不在 `/v1/**` 下**——它的资源树是 `/lance/v1/namespace/{id}` 与
+ * `/lance/v1/table/{id}`，id 由 `delimiter` 拼成、catalog 名是第一级。
+ * 这里给的是客户端要填的那半截，具体 id 由客户端按自己的库表名拼。
+ */
+const clientBase = computed(() => (isLance.value
+  ? '/lance/v1/namespace'
+  : `/v1/${catalogName.value}`))
 
 /**
  * 目录发现端点（`GET /v1/config?warehouse={prefix}`）。
@@ -568,8 +692,15 @@ const clientBase = computed(() => `/v1/${catalogName.value}`)
  * <p>这个端点**不需要授权**（见服务端 `CatalogAccessRules.isPublic`），
  * 但可能因为服务端未启动/令牌失效而失败，因此错误照常显示在这一栏里，
  * 不让整页挂掉。
+ *
+ * <p><b>Lance 不发这条请求</b>：规范里没有 `/v1/config`，服务端也没有这个握手，
+ * 发出去只会拿到 404，而 404 会以「读不到（…）」出现在概览上——看起来像服务端坏了。
+ * 守卫写在 loader 里而不是模板里：`reloadAll` / 顶栏刷新都会直接调它。
  */
-const capabilities = useResource(() => catalogApi.config(catalogName.value))
+const capabilities = useResource(() => {
+  if (isLance.value) return null
+  return catalogApi.config(catalogName.value)
+})
 const declaredEndpoints = computed(() => capabilities.data.value?.endpoints || [])
 const configDefaults = computed(() => capabilities.data.value?.defaults || {})
 /**

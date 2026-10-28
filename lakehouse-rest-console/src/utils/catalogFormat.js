@@ -58,8 +58,9 @@ export const CATALOG_FORMAT_NOTES = {
     + '控制台一期不浏览 Iceberg 表，库里与仓库里的文件仍可在详情页看到。',
   [LANCE]:
     'Lance REST 协议面：客户端走 /lance/v1/namespace/{id} 与 /lance/v1/table/{id}，'
-    + '基址不含 /v1/{prefix}，也没有 /v1/config 握手。服务端只做元数据（'
-    + 'declare / register 两条登记路径），manifest 由客户端写进仓库。',
+    + '基址不含 /v1/{prefix}，也没有 /v1/config 握手（客户端直接按 id 打）。服务端只做元数据：'
+    + 'declare / register 两条登记路径，加版本与标签的只读；manifest 由客户端写进仓库。'
+    + '控制台一期只给「概览」与「文件列表」，不浏览 Lance 的库表。',
 }
 
 /**
@@ -120,8 +121,8 @@ export const CATALOG_FORMAT_OPTIONS = {
   },
   [LANCE]: {
     label: 'Lance',
-    desc: 'Lance REST Catalog（规格 48 个 operation，P0 实现 13 个）：namespace 与表的登记，'
-      + '无 /v1/config 握手，id 由 delimiter 拼成。',
+    desc: 'Lance REST Catalog（规范 54 个 operation，已实现 19 个）：namespace 与表的登记、'
+      + '版本账与标签只读；无 /v1/config 握手，id 由 delimiter 拼成。',
     path: '/lance/v1/namespace/{id}',
   },
 }
