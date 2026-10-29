@@ -35,8 +35,13 @@ build/
 ### macOS ###
 .DS_Store
 
-lakehouse-rest-spring-parent/lakehouse-rest-server/src/main/resources/static/console
-
+# 控制台的构建产物（lakehouse-rest-spring-parent/.../static/console）**不在这里**。
+# 它随源码入库：构建服务端 jar 因此不需要 Node，而这个仓库的部署路径是
+# 「宿主机构建 jar → 镜像只装 jar」（见 scripts/build-image.sh），
+# 新克隆的仓库必须能直接 mvn package 出一个带 /console 的可执行物。
+# 曾被误加进本文件，结果四处文档说「产物已提交」、实际一个文件都没跟踪，
+# 新克隆的仓库跑 ConsoleApiTests 时「产物自洽」那条直接失败。
+# 是否被误加由 scripts/verify-console.py 第 6 组机械检查。
 # 语法文件的生成物。正常构建把它们写到 target/generated-sources/antlr4/（包名由
 # 目录结构推出）；手工跑 antlr4 CLI 容易把它们落在语法文件旁边，这里挡一下，
 # 免得「两份同名的 Lexer/Parser」被误提交。

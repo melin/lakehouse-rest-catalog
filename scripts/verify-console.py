@@ -17,7 +17,9 @@ spec/rest-catalog-open-api-iceberg.yaml）。路径写错时前端只表现为�
   4. 无死条目     endpoints.js 里声明的端点都在 src/ 中被调用过
   5. 基址一致     vite 的 base、路由的 base、构建输出目录、服务端静态资源目录四处指向同一处；
                   以及控制台契约表里的令牌端点路径与服务端下发的 tokenEndpoint 是否一致
-  6. 产物完整     已提交的入口页存在，且它引用的每个 assets 文件都存在
+  6. 产物完整     已提交的入口页存在，它引用的每个 assets 文件都存在，且产物**确实在版本库里**
+                  （目录没被 .gitignore 排除、入口页已被跟踪——文件在磁盘上而索引里没有，
+                  `git status` 是一片干净，只有新克隆的仓库会露馅）
   7. 产物新鲜     构建产物不比控制台源码旧（改了源码没重新构建会在这里暴露）
   8. 对话框       每个 el-dialog 都声明 destroy-on-close（否则编辑时会残留上一次的状态）
   9. 下拉选项     每个 el-select 都声明了候选来源（漏写 el-option 时点开只有「无数据」，
@@ -84,6 +86,8 @@ PYTHON=... 给本脚本。
 """
 import os
 import re
+import shutil
+import subprocess
 import sys
 
 try:
@@ -498,6 +502,44 @@ if exists:
     check(f"入口页引用的 {len(referenced)} 个资源都存在",
           not missing_assets,
           "\n".join(missing_assets))
+
+# 产物在磁盘上存在，不等于它在版本库里。这两条挡的是另一种「看不见」的缺件：
+# 文件都在，`git status` 一片干净，但一个都没被跟踪——新克隆的仓库构建出的 jar
+# 里没有 /console，ConsoleApiTests 的「产物自洽」也直接失败。
+#
+# 事情真发生过：`.gitignore` 里有一行 `static/console`，而 docs/console.md §1、
+# README 的「三条约束」、server/pom.xml 的模块说明、build-console.sh 结尾的提示
+# 五处都写着「产物随源码入库」。五处陈述、零处执行，靠读代码是发现不了的。
+#
+# 前一条查「目录没被排除」，后一条查「入口页确实进了版本库」——只查前者会漏掉
+# `git rm -r --cached` 这种把目录留在磁盘上、又从索引里摘掉的做法。
+def git(*args):
+    """跑一次 git，返回退出码；git 不可用或 ROOT 不在仓库里时返回 None。"""
+    if not shutil.which("git"):
+        return None
+    try:
+        done = subprocess.run(["git", "-C", ROOT, *args],
+                              capture_output=True, text=True, check=False)
+    except OSError:
+        return None
+    if done.returncode == 128 and "not a git repository" in done.stderr:
+        return None
+    return done.returncode
+
+
+if git("rev-parse", "--git-dir") is None:
+    print("  [SKIP] 不在 git 仓库里（或没有 git），跳过「产物是否入库」两条")
+else:
+    assets_rel = os.path.relpath(CONSOLE_ASSETS, ROOT)
+    check("产物目录没有被 .gitignore 排除",
+          git("check-ignore", "-q", "--", assets_rel) == 1,
+          f"{assets_rel} 被忽略：产物进不了版本库，新克隆的仓库 mvn package 出来的 jar "
+          "没有 /console，而 docs/console.md、README、POM 注释都写着「产物随源码入库」")
+    check("入口页已被版本库跟踪",
+          git("ls-files", "--error-unmatch", "--",
+              os.path.join(assets_rel, "index.html")) == 0,
+          f"{assets_rel}/index.html 未被跟踪：文件在磁盘上、索引里没有，"
+          "`git status` 看不出来（被忽略或曾 `git rm --cached`）")
 
 # ------------------------------------------------------------------ 7. 产物新鲜度
 

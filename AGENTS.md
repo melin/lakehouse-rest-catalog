@@ -465,9 +465,13 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
 
 ## 8. 陷阱清单（都实测踩过）
 
-1. **控制台产物目录被 `.gitignore` 忽略，但文档说它应当被跟踪**（`docs/console.md` §8.2、
-   `README.md` §9 都写着「产物提交在仓库里」）→ **fresh clone + `docker build` 会得到
-   一个没有控制台的服务端 jar**。这个不一致修掉之前，别假定干净检出里有控制台产物。
+1. ~~**控制台产物目录被 `.gitignore` 忽略，但文档说它应当被跟踪**~~ **已修（2026-10-30）**：
+   `.gitignore` 那一行删了，产物已入库，并由 `verify-console.py` 第 6 组两条断言守着
+   （「目录没被忽略」+「`index.html` 已被跟踪」）。**为什么它值得入库**：本仓库的部署路径是
+   「宿主机构建 jar → 镜像只装 jar」，`ConsoleApiTests` 里那条「产物自洽」也直接读
+   `static/console/index.html`——产物不入库，干净检出既打包不出带 `/console` 的 jar，
+   也跑不过服务端测试。**它怎么会发生**：五处文档写着「已提交」，零处执行，
+   而文件本来就在磁盘上，`git status` 一片干净，谁也看不出来。
 2. **改了控制台源码没重建** → 打包的是上一版控制台，**不报错**，只是安静地少一个按钮。
    `verify-console.py` 第 7 组查产物新鲜度，但要有人跑它。判是否干净：
    `ls lakehouse-rest-spring-parent/lakehouse-rest-server/target/classes/static/console/assets | wc -l` 应与源码目录一致。

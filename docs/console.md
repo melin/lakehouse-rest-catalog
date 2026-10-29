@@ -667,7 +667,7 @@ python3 scripts/verify-console.py      # 退出码 0 通过 / 1 不一致 / 2 �
 PYTHON=/path/to/python3 scripts/verify-console.py   # 多解释器时指定装了 PyYAML 的那个
 ```
 
-它**不构建前端、不启动服务端**，只做静态比对，因此可以放进提交前的检查。25 组 180 项：
+它**不构建前端、不启动服务端**，只做静态比对，因此可以放进提交前的检查。25 组 182 项：
 
 | 组 | 校验内容 |
 | --- | --- |
@@ -676,7 +676,7 @@ PYTHON=/path/to/python3 scripts/verify-console.py   # 多解释器时指定装�
 | 3. 端点引用 | `src/` 里按名字调用的端点都在 `endpoints.js` 中声明 |
 | 4. 无死条目 | `endpoints.js` 里声明的端点都在 `src/` 中被调用过 |
 | 5. 基址一致 | vite `base`、路由 `base`、构建输出目录、服务端静态资源位置、client 默认基址五处指向同一处；令牌端点路径与服务端下发的 `tokenEndpoint` 一致；`buildPath` 拒收既非路径参数也非 `query` 的 `params` 键（静默丢弃会变成无参请求，服务端只回一个缺参 400） |
-| 6. 产物完整 | 入口页存在，且它引用的每个 assets 文件都存在 |
+| 6. 产物完整 | 入口页存在，且它引用的每个 assets 文件都存在；**产物确实在版本库里**（`static/console` 没被 `.gitignore` 排除、`index.html` 已被跟踪）。后两条挡的是「文件都在磁盘上、一个都没被跟踪」——`git status` 一片干净，只有新克隆的仓库跑 `mvn package` 时才会发现 jar 里没有 `/console` |
 | 7. 产物新鲜 | 构建产物不比控制台源码旧（改了源码没重新构建会在这里暴露） |
 | 8. 对话框状态 | 每个 `el-dialog` 都声明了 `destroy-on-close`（否则编辑时会残留上一次的状态） |
 | 9. 下拉候选来源 | 每个 `el-select` 都声明了候选来源（`el-option` / `:options` 等）；确属自由输入的要在源码里写 `el-select-free-input` 标记显式豁免（否则「下拉是空的」这类 bug 只有打开页面才看得到） |
@@ -929,6 +929,13 @@ jar，连 Maven 都不跑，更不涉及 Node），Java 侧构建路径上完全
 
 - 改了控制台源码却没重新构建并提交产物 → 服务端打包出来的是上一版控制台；
 - `verify-console.py` 第 7 组会查出产物比源码旧（但只在有人跑它的时候）。
+
+**「属于被跟踪的内容」这句话曾经是假的**：仓库根的 `.gitignore` 里有一行
+`static/console`，把所有产物挡在版本库外，而本文 §1、`README.md` 和 `server/pom.xml`
+的模块说明三处都写着「已提交」。文件本来就在磁盘上，`git status` 一片干净，
+所以一直没人发现——直到有人从干净检出构建，才发现 jar 里没有 `/console`。
+现在由 `verify-console.py` 第 6 组两条断言守着（目录没被忽略 + 入口页已被跟踪），
+`.gitignore` 里那一行换成了说明为什么**不能**忽略它。
 
 `.dockerignore` 排除了 `lakehouse-rest-console/node_modules/`（几十万个文件，
 纯粹的上下文体积），保留源码——镜像不需要它，但留着便于在容器内排查。
