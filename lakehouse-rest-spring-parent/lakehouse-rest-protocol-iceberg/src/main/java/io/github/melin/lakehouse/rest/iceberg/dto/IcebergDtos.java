@@ -168,7 +168,27 @@ public final class IcebergDtos {
             @JsonProperty("table-changes") List<UpdateTableRequest> tableChanges) {
     }
 
-    public record LoadCredentialsResponse(@JsonProperty("storage-credentials") List<StorageCredential> storageCredentials) {
+    /**
+     * {@code LoadCredentialsResponse}：{@code GET .../tables/{t}/credentials} 的响应体。
+     *
+     * <p><b>同一份内容出现在两个字段名下，是刻意的兼容。</b>规格副本写
+     * {@code storage-credentials}；而 iceberg-java 1.10/1.11 的
+     * {@code LoadCredentialsResponse} 方法名是 {@code credentials()}，**没有**
+     * {@code @JsonProperty}，因此按字段名反序列化。两种客户端都在野，
+     * 只发其中一个就会出现「刷新请求解析出空列表」，客户端据此抛
+     * {@code Invalid S3 Credentials: empty}——一个不含任何凭据线索的错误。
+     *
+     * <p>代价是报文里多了几十个字符；换来的是不必按客户端版本分叉，
+     * 也不必在服务端猜「对面是哪个世代」。
+     */
+    public record LoadCredentialsResponse(
+            @JsonProperty("storage-credentials") List<StorageCredential> storageCredentials,
+            @JsonProperty("credentials") List<StorageCredential> credentials) {
+
+        /** 兼容构造器：只给一个列表时两个字段同源。 */
+        public LoadCredentialsResponse(List<StorageCredential> storageCredentials) {
+            this(storageCredentials, storageCredentials);
+        }
     }
 
     // ------------------------------------------------------------------ view

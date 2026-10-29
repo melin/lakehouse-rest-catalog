@@ -50,7 +50,8 @@ class StorageCredentialResolutionTests {
 
     private final CredentialCipher cipher = configuredCipher(properties);
 
-    private final DefaultStorageCredentialManager manager = new DefaultStorageCredentialManager(properties, cipher);
+    private final DefaultStorageCredentialManager manager =
+            new DefaultStorageCredentialManager(properties, cipher, List.of());
 
     /**
      * 配好密钥的 cipher。

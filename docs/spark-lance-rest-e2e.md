@@ -207,6 +207,21 @@ curl -X POST http://host:18081/lance/v1/table/lance_catalog%24sales%24orders/der
 [`lance-rest-catalog-design.md`](lance-rest-catalog-design.md) §3.1。索引只读、标签只读
 这两条也记在那儿。
 
+### 3.1 凭据：`storage_options` 只被读一次，长作业会过期
+
+服务端在 `describe?vend_credentials=true` 时把凭据摊进 `storage_options` 并给 `expires_at_millis`。
+但 connector **0.8.0 的 `BaseLanceNamespaceSparkCatalog` 只读一次**：它把
+`DescribeTableResponse.getStorageOptions()` 存成 `LanceSparkReadOptions` 里的静态 map，整个查询
+生命周期不再换。0.4.0 时 `LanceSparkReadOptions` / `LanceRuntime` 还引用
+`LanceNamespaceStorageOptionsProvider`（`StorageOptionsProvider`，实现 `fetchStorageOptions()`
+供 Lance 内核回调），0.8.0 这条线没有接到 Spark 侧。
+
+**因此：作业时长一旦超过 `lakehouse.rest.credential.ttl-seconds`（默认 3600 秒），后半程会以
+`InvalidToken` / 403 失败，而且报错指向存储、与 catalog 无关。** 三条现状对策：把 TTL 配到作业
+时长之上（代价是泄露窗口同样变长）、把长作业分片、或者干脆在会话里配静态 AK/SK（就是 §1.2 里
+那四行——它们今天仍然必要）。完整分析见
+[`credential-vending-design.md`](credential-vending-design.md) §7.4。
+
 ## 4. 两侧各自往存储里写了什么
 
 ### 4.1 版本账：V2 命名

@@ -183,11 +183,16 @@ public class LanceCatalogSupport {
         }
         Map<String, String> options = new LinkedHashMap<>();
         if (vendCredentials) {
-            options.putAll(credential.token());
-            options.put("expires_at_millis",
-                    Long.toString(System.currentTimeMillis() + credential.ttlSeconds() * 1000L));
+            // 换键名：凭据层发的是 s3.*（Paimon / Iceberg 的 Java FileIO 认），
+            // Lance 的 Rust 侧只认 aws_*，原样透传等于没下发（G12）。
+            options.putAll(LanceStorageOptions.fromS3(credential.token()));
+            // 到期时刻优先用凭据自己的寿命：STS 的票可能比配置的 ttl 短
+            // （角色 MaxSessionDuration 更小时），声明得更久会让客户端在过期后继续用。
+            options.put("expires_at_millis", Long.toString(credential.shortLived()
+                    ? credential.expireTimeInMs()
+                    : System.currentTimeMillis() + credential.ttlSeconds() * 1000L));
         } else if (!credential.hasSecrets()) {
-            options.putAll(credential.token());
+            options.putAll(LanceStorageOptions.fromS3(credential.token()));
         }
         return options;
     }

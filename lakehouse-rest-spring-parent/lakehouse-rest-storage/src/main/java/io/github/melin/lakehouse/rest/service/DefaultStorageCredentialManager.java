@@ -1,6 +1,8 @@
 package io.github.melin.lakehouse.rest.service;
 
+import io.github.melin.lakehouse.rest.config.RequestContext;
 import io.github.melin.lakehouse.rest.config.RestServerProperties;
+import io.github.melin.lakehouse.rest.dto.ManagementEnums;
 import io.github.melin.lakehouse.rest.dto.StorageDtos.AliyunOssStorageConfigInfo;
 import io.github.melin.lakehouse.rest.dto.StorageDtos.AwsStorageConfigInfo;
 import io.github.melin.lakehouse.rest.dto.StorageDtos.AzureStorageConfigInfo;
@@ -16,13 +18,13 @@ import io.github.melin.lakehouse.rest.support.VendedStorageCredential;
 import java.security.SecureRandom;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -68,7 +70,6 @@ import org.springframework.stereotype.Component;
  * 而密钥无法解开的真实原因（配置变更）会因此被掩盖成「权限不对」。
  */
 @Component
-@RequiredArgsConstructor
 public class DefaultStorageCredentialManager implements StorageCredentialManager {
 
     private static final Logger log = LoggerFactory.getLogger(DefaultStorageCredentialManager.class);
@@ -143,7 +144,67 @@ public class DefaultStorageCredentialManager implements StorageCredentialManager
 
     private final CredentialCipher cipher;
 
+    /**
+     * 已启用的签发 provider 链，按配置里的顺序。
+     *
+     * <p><b>默认为空。</b>空链意味着这一层的行为与引入 provider 之前逐字节相同——
+     * 这是设计稿 P0-1 的验收条件，也是「能力先具备、默认不启用」的落法：
+     * 一个会在读表路径上引入远程调用的能力，不该靠「默认打开、需要时再关」发布。
+     *
+     * <p>链里只有「真签发」的实现；静态转发不是一个 provider，而是本类的默认分支。
+     * 之所以不把转发也做成 provider，是因为那样默认链里就必然有一个条目，
+     * 「默认空」这个性质会用一个表达式去模拟，读代码的人要绕一圈才知道
+     * 「默认什么也没启用」。
+     */
+    private final List<CredentialProvider> providers;
+
     private final SecureRandom random = new SecureRandom();
+
+    public DefaultStorageCredentialManager(RestServerProperties properties,
+                                           CredentialCipher cipher,
+                                           List<CredentialProvider> availableProviders) {
+        this.properties = properties;
+        this.cipher = cipher;
+        this.providers = selectProviders(availableProviders, properties.getCredential().getProviders());
+    }
+
+    /**
+     * 按配置名挑出 provider，顺序照配置里的顺序。
+     *
+     * <p>写了不认识的名字直接失败（启动期），与 {@code credential-manager.type}
+     * 的处置一致：一个拼错的 provider 名若被静默忽略，表现是「明明配了 STS、
+     * 出来的还是长期密钥」——功能看起来在跑，其实没生效，正是本文档反复出现的
+     * 那一类故障。
+     *
+     * <p>{@code relay} 是允许出现的名字但不映射到任何 bean：它是本类的默认分支，
+     * 写成显式的 {@code relay} 只是让人能读懂「这里就是不走 STS」。
+     */
+    private static List<CredentialProvider> selectProviders(List<CredentialProvider> available,
+                                                            List<String> enabled) {
+        if (enabled == null || enabled.isEmpty()) {
+            return List.of();
+        }
+        Map<String, CredentialProvider> byName = new LinkedHashMap<>();
+        for (CredentialProvider provider : available) {
+            byName.put(provider.name(), provider);
+        }
+        List<CredentialProvider> chain = new ArrayList<>();
+        for (String raw : enabled) {
+            String name = raw == null ? "" : raw.trim();
+            if (name.isEmpty() || VendedStorageCredential.PROVIDER_RELAY.equals(name)) {
+                continue;
+            }
+            CredentialProvider provider = byName.get(name);
+            if (provider == null) {
+                throw new IllegalArgumentException(
+                        "lakehouse.rest.credential.providers contains unknown provider '" + name
+                                + "'; available providers: " + byName.keySet()
+                                + " (relay is always implicit)");
+            }
+            chain.add(provider);
+        }
+        return List.copyOf(chain);
+    }
 
     @Override
     public CredentialManagerType type() {
@@ -156,18 +217,30 @@ public class DefaultStorageCredentialManager implements StorageCredentialManager
             throw new ApiException(500, null, null,
                     "catalog has no storage configuration; cannot vend data access credentials");
         }
-        Map<String, String> token = new LinkedHashMap<>();
-        String source = switch (storage.storageType()) {
-            case S3 -> s3((AwsStorageConfigInfo) storage, token);
-            case AZURE -> azure((AzureStorageConfigInfo) storage, token);
-            case GCS -> gcs((GcpStorageConfigInfo) storage, token);
-            case OBS -> obs((HuaweiObsStorageConfigInfo) storage, token);
-            case OSS -> oss((AliyunOssStorageConfigInfo) storage, token);
-            case FILE -> file((FileStorageConfigInfo) storage, tableId, tablePath, token);
-        };
-        VendedStorageCredential vended =
-                new VendedStorageCredential(token, ttlSeconds(storage), storage.storageType(), source);
-        log.debug("vended {} credentials for table {} from {}", storage.storageType(), tableId, source);
+        VendedStorageCredential vended;
+        if (storage.storageType() == ManagementEnums.StorageType.S3) {
+            // 只有 S3 分支可能走到 provider 链上（会调云），因此它自己返回完整结果，
+            // 其余分支仍是「填 token 映射 + 报一个来源」的老形状。
+            vended = s3((AwsStorageConfigInfo) storage, tableId, tablePath);
+        } else {
+            Map<String, String> token = new LinkedHashMap<>();
+            String source = switch (storage.storageType()) {
+                case AZURE -> azure((AzureStorageConfigInfo) storage, token);
+                case GCS -> gcs((GcpStorageConfigInfo) storage, token);
+                case OBS -> obs((HuaweiObsStorageConfigInfo) storage, token);
+                case OSS -> oss((AliyunOssStorageConfigInfo) storage, token);
+                case FILE -> file((FileStorageConfigInfo) storage, tableId, tablePath, token);
+                case S3 -> throw new IllegalStateException("S3 is handled before the switch");
+            };
+            vended = new VendedStorageCredential(token, ttlSeconds(storage), storage.storageType(), source);
+        }
+        if (log.isDebugEnabled()) {
+            // provider 与 source 是两个维度，排障时都要看：
+            // provider=s3-token 但 source=configuration 意味着链没生效、退回了转发。
+            log.debug("vended {} credentials for table {} provider={} source={} expiresIn={}",
+                    storage.storageType(), tableId, vended.provider(), vended.source(),
+                    vended.shortLived() ? vended.remainingMillis(System.currentTimeMillis()) + "ms" : "none");
+        }
         return vended;
     }
 
@@ -178,7 +251,21 @@ public class DefaultStorageCredentialManager implements StorageCredentialManager
     // ------------------------------------------------------------------ S3
 
     /**
-     * S3：四级密钥来源，优先级为 catalog 静态凭据 → 具名存储 → 默认配置 → 环境凭据链。
+     * 写入 S3 密钥：规格键名与引擎键名一起给。
+     *
+     * <p>集中在一处是为了不出现「某一个分支忘了给引擎键名」的情况——
+     * 这类遗漏不会报错，只会让那一条凭据来源在引擎侧静默失效。
+     * 两套名字的由来见 {@link #KEY_S3_ACCESS_ENGINE}。
+     */
+    private static void putS3Secrets(Map<String, String> token, String accessKey, String secretKey) {
+        token.put(KEY_S3_ACCESS, accessKey);
+        token.put(KEY_S3_SECRET, secretKey);
+        token.put(KEY_S3_ACCESS_ENGINE, accessKey);
+        token.put(KEY_S3_SECRET_ENGINE, secretKey);
+    }
+
+    /**
+     * S3：密钥来源有四级，优先级为 catalog 静态凭据 → STS 签发 → 具名存储 → 默认配置 → 环境凭据链。
      *
      * <p>具名存储优先于默认配置是必须的：catalog 显式写了 {@code storageName}，
      * 说明它要的是那一组密钥，而不是服务端的默认密钥。
@@ -194,22 +281,13 @@ public class DefaultStorageCredentialManager implements StorageCredentialManager
      * （MinIO / Ceph / Ozone / FlashBlade）通常没有 STS，配置里会照惯例写上
      * {@code stsUnavailable: true}，于是「填了密钥却收不到密钥」——
      * 一个看起来像功能坏了的静默行为。
-     */
-    /**
-     * 写入 S3 密钥：规格键名与引擎键名一起给。
      *
-     * <p>集中在一处是为了不出现「某一个分支忘了给引擎键名」的情况——
-     * 这类遗漏不会报错，只会让那一条凭据来源在引擎侧静默失效。
-     * 两套名字的由来见 {@link #KEY_S3_ACCESS_ENGINE}。
+     * <p><b>STS 签发排在静态两档之后、配置三档之前</b>，理由是这三档表达的是三种不同意图：
+     * 「用这把钥匙」「不要票」「拿服务身份去换票」。前两者是调用方的明确决定，
+     * 后者是服务端的默认策略，策略不能覆盖决定。
      */
-    private static void putS3Secrets(Map<String, String> token, String accessKey, String secretKey) {
-        token.put(KEY_S3_ACCESS, accessKey);
-        token.put(KEY_S3_SECRET, secretKey);
-        token.put(KEY_S3_ACCESS_ENGINE, accessKey);
-        token.put(KEY_S3_SECRET_ENGINE, secretKey);
-    }
-
-    private String s3(AwsStorageConfigInfo s3, Map<String, String> token) {
+    private VendedStorageCredential s3(AwsStorageConfigInfo s3, String tableId, String tablePath) {
+        Map<String, String> token = new LinkedHashMap<>();
         // 定位配置与密钥有无无关：即使不下发密钥，引擎也需要知道该连哪里
         putIfPresent(token, "s3.region", s3.region());
         putIfPresent(token, "s3.endpoint", s3.endpoint());
@@ -219,23 +297,60 @@ public class DefaultStorageCredentialManager implements StorageCredentialManager
         StorageConfigs.StaticCredentials own = StorageConfigs.staticCredentials(s3, cipher);
         if (own != null) {
             putS3Secrets(token, own.accessKeyId(), own.secretAccessKey());
-            return VendedStorageCredential.SOURCE_STATIC_CREDENTIALS;
+            return vended(s3, token, VendedStorageCredential.SOURCE_STATIC_CREDENTIALS);
         }
         if (Boolean.TRUE.equals(s3.stsUnavailable())) {
-            return VendedStorageCredential.SOURCE_STS_UNAVAILABLE;
+            return vended(s3, token, VendedStorageCredential.SOURCE_STS_UNAVAILABLE);
+        }
+
+        // 真签发的插入点，必须落在这里：上面两条是「显式指定了钥匙」与「明说不要票」，
+        // 它们与「拿服务身份去换票」是互斥的三种意图，顺序反了就是覆盖调用方的决定。
+        VendedStorageCredential signed = assumeRole(s3, tableId, tablePath);
+        if (signed != null) {
+            return signed;
         }
 
         RestServerProperties.Storage.Aws aws = properties.getStorage().getAws();
         RestServerProperties.Storage.Keys named = namedKeys(aws.getStorages(), s3.storageName(), "aws");
         if (named != null) {
             putS3Secrets(token, named.getAccessKey(), named.getSecretKey());
-            return VendedStorageCredential.SOURCE_NAMED_STORAGE_PREFIX + s3.storageName();
+            return vended(s3, token,
+                    VendedStorageCredential.SOURCE_NAMED_STORAGE_PREFIX + s3.storageName());
         }
         if (configured(aws.getAccessKey(), aws.getSecretKey())) {
             putS3Secrets(token, aws.getAccessKey(), aws.getSecretKey());
-            return VendedStorageCredential.SOURCE_CONFIGURATION;
+            return vended(s3, token, VendedStorageCredential.SOURCE_CONFIGURATION);
         }
-        return VendedStorageCredential.SOURCE_ENVIRONMENT;
+        return vended(s3, token, VendedStorageCredential.SOURCE_ENVIRONMENT);
+    }
+
+    /**
+     * 走一遍已启用的 provider 链，第一个接手的说了算。
+     *
+     * <p>返回 {@code null} 表示「这一档没人接」，调用方继续走静态转发。
+     * 链为空是默认情形——那时本方法只做一次空循环，不产生任何副作用，
+     * 也不会有远程调用。
+     */
+    private VendedStorageCredential assumeRole(AwsStorageConfigInfo s3, String tableId, String tablePath) {
+        if (providers.isEmpty()) {
+            return null;
+        }
+        CredentialContext context = new CredentialContext(s3, tableId, tablePath,
+                RequestContext.principal(), false);
+        for (CredentialProvider provider : providers) {
+            var vended = provider.vend(context);
+            if (vended.isPresent()) {
+                return vended.get();
+            }
+        }
+        return null;
+    }
+
+    /** 用一次性的 token 映射与本 catalog 的 TTL 组装结果。 */
+    private VendedStorageCredential vended(AwsStorageConfigInfo storage,
+                                           Map<String, String> token,
+                                           String source) {
+        return new VendedStorageCredential(token, ttlSeconds(storage), storage.storageType(), source);
     }
 
     // ------------------------------------------------------------------ OBS / OSS

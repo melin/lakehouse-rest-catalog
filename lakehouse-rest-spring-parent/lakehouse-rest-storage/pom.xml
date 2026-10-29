@@ -65,6 +65,40 @@
 			<artifactId>paimon-core</artifactId>
 			<optional>true</optional>
 		</dependency>
+		<!--
+			S3 的『真签发』：拿服务身份去 STS AssumeRole，换一张只覆盖这张表的票。
+
+			为什么依赖落在这个模块而不是 server：凭据的签发与转发是同一件事的两档，
+			拆到两个模块就会出现「键名族在一处、过期时刻在另一处」的割裂，
+			而这正是本特性最容易写错的地方（两处各算一个 ttl，客户端就被骗了）。
+
+			**只加 sts，不加全套 SDK**：sts 会带进 aws-core / auth / regions / protocol-core，
+			这正是构造一次 AssumeRole 调用所需的最小集合。同目录下两个排除项的理由：
+			根 POM 从 auth 里排掉了 apache-client（避免与 Spring 的 HttpClient 抢线程池），
+			这里再排一次是防止它顺着 sts 的依赖树重新进来——它一旦在场，
+			SDK 会优先选它当 HTTP 实现，于是「谁在管理连接池」变得不可预期。
+
+			url-connection-client 是必须显式声明的：SDK 只提供 SPI，不捆绑实现，
+			缺了它的报错是 `Unable to load an HTTP implementation`，
+			而这个错只在**第一次真正调 STS** 时出现——默认不启用 STS 的部署
+			永远看不到它，等于把问题推迟到有人打开开关的那一刻。
+		-->
+		<dependency>
+			<groupId>software.amazon.awssdk</groupId>
+			<artifactId>sts</artifactId>
+			<version>${awssdk.version}</version>
+			<exclusions>
+				<exclusion>
+					<groupId>software.amazon.awssdk</groupId>
+					<artifactId>apache-client</artifactId>
+				</exclusion>
+			</exclusions>
+		</dependency>
+		<dependency>
+			<groupId>software.amazon.awssdk</groupId>
+			<artifactId>url-connection-client</artifactId>
+			<version>${awssdk.version}</version>
+		</dependency>
 	</dependencies>
 
 	<build>

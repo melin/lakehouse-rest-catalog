@@ -76,7 +76,7 @@ Maven 坐标 `io.github.melin:lakehouse-rest-*`，包前缀 `io.github.melin.lak
 （`POST /v1/{prefix}/tables/rename`、`…/views/rename`）上移到 core 的 `CatalogRenameController`，
 否则 Spring 会以 `Ambiguous mapping` 拒绝启动。
 
-`docs/` 的三十份文档按「要做什么」排了一张索引：[`docs/README.md`](docs/README.md)
+`docs/` 的三十一份文档按「要做什么」排了一张索引：[`docs/README.md`](docs/README.md)
 （含每份的落地状态、六份配套效果图，以及守文档与代码一致的那几个校验脚本）。
 
 ---

@@ -156,10 +156,31 @@ public class IcebergTableService {
         CatalogEntity catalog = resolve(prefix);
         TableEntity table = requireIcebergTable(catalog, levels, tableName);
         TableMetadata metadata = readMetadata(table);
-        List<IcebergDtos.StorageCredential> credentials =
+        return loadResponse(prefix, levels, tableName, table.getMetadataLocation(),
+                metadataNode(table, metadata, snapshotsMode), catalog, table, delegation);
+    }
+
+    /**
+     * 三条返回「加载结果」的路径共用的组装：元数据 + 凭据 + 续期地址。
+     *
+     * <p>收敛到一处是因为这三段（{@code load} / {@code create} / {@code register}）
+     * 的报文字段必须完全一致：客户端在建表之后立刻写数据、在 load 之后立刻读数据，
+     * 任何一条漏了 {@code config} 或 {@code storage-credentials}，
+     * 表现都是「同一个 catalog，建表能用、读表 403」这种极难归因的差异。
+     */
+    private IcebergDtos.LoadTableResponse loadResponse(String prefix, List<String> levels,
+                                                       String tableName, String metadataLocation,
+                                                       JsonNode metadata, CatalogEntity catalog,
+                                                       TableEntity table, String delegation) {
+        List<IcebergDtos.StorageCredential> credentials = null;
+        Map<String, String> config = null;
+        IcebergCredentialService.Delegated delegated =
                 credentialService.delegated(catalog, table, delegation);
-        return new IcebergDtos.LoadTableResponse(table.getMetadataLocation(),
-                metadataNode(table, metadata, snapshotsMode), null, credentials);
+        if (delegated != null) {
+            credentials = delegated.credentials();
+            config = credentialService.refreshConfig(prefix, levels, tableName, delegated);
+        }
+        return new IcebergDtos.LoadTableResponse(metadataLocation, metadata, config, credentials);
     }
 
     /** {@code HEAD .../tables/{table}}：存在即返回（204），不存在抛 404。 */
@@ -257,8 +278,8 @@ public class IcebergTableService {
         events.publish(CatalogEventType.TABLE_CREATED, prefix, CatalogEvent.TARGET_TABLE,
                 NamespacePaths.toStorageName(levels) + "." + tableName, Map.of("format", "ICEBERG"));
 
-        return new IcebergDtos.LoadTableResponse(metadataLocation, Json.readTree(document), null,
-                credentialService.delegated(catalog, table, delegation));
+        return loadResponse(prefix, levels, tableName, metadataLocation, Json.readTree(document),
+                catalog, table, delegation);
     }
 
     // ------------------------------------------------------------------ 提交
@@ -599,8 +620,8 @@ public class IcebergTableService {
                 NamespacePaths.toStorageName(levels) + "." + tableName,
                 Map.of("format", "ICEBERG"));
 
-        return new IcebergDtos.LoadTableResponse(metadataLocation, Json.readTree(document), null,
-                credentialService.delegated(catalog, table, delegation));
+        return loadResponse(prefix, levels, tableName, metadataLocation, Json.readTree(document),
+                catalog, table, delegation);
     }
 
     // ------------------------------------------------------------------ 凭据

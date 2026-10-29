@@ -467,7 +467,39 @@ public class RestServerProperties {
     @Getter
     @Setter
     public static class Credential {
+
+        /**
+         * 下发凭据的有效期（秒）。接上 STS 之后它同时是**密钥寿命**，
+         * 不再只是「建议多久后重取」——两者分为两个值就会出现
+         * 「签名 15 分钟、声明 1 小时」的错配。
+         */
         private long ttlSeconds = 3600;
+
+        /**
+         * 启用的签发 provider 名，默认**空**（等价于只有 {@code relay}）。
+         *
+         * <p>为什么默认空而不是默认全开：{@code s3-token} 会在读表的路径上引入一次
+         * 远程调用（有配额、会超时、会因 IAM 配错而失败）。默认打开等于把
+         * 「今天能正常读表」的部署升级成一个可能读不了的部署，而且失败信息来自
+         * 另一个系统。要启用请显式写 {@code lakehouse.rest.credential.providers: s3-token}。
+         *
+         * <p>写了不存在的名字启动即失败，与 {@code credential-manager.type} 同一取舍：
+         * 一个拼错的 provider 名若被静默忽略，表现是「明明配了 STS，出来的还是长期密钥」。
+         */
+        private List<String> providers = new ArrayList<>();
+
+        /**
+         * 短期凭据在缓存里保留的比例，默认 {@code 0.15}。
+         *
+         * <p>含义是「缓存只留票寿命的这一部分」，即 1 小时的票在缓存里留 9 分钟。
+         * 与 Gravitino 的 {@code credential-cache-expire-ratio} 同名同值同义。
+         * 取满 TTL 的代价是把风险转嫁给引擎：客户端在票快过期时拿到手，
+         * 用几秒就 403，而它没有任何理由预期这件事。
+         *
+         * <p>**只对短期凭据生效**：静态凭据没有「快过期」这回事，按比例缩短
+         * 只会让转发档每次读表都重新解析一遍配置，换不到任何安全收益。
+         */
+        private double cacheExpireRatio = 0.15;
     }
 
     /** 启动时预置的 catalog 与 database。 */
