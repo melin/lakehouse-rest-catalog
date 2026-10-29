@@ -102,8 +102,8 @@ public class RestServerProperties {
     @Setter
     public static class DataPolicy {
 
-        /** 是否允许创建 / 修改 / 删除策略（PUT / DELETE）。默认 false。 */
-        private boolean enabled = false;
+        /** 是否允许创建 / 修改 / 删除策略（PUT / DELETE）。默认 true。 */
+        private boolean enabled = true;
     }
 
     /** Bearer 鉴权开关。关闭时所有请求以 {@code principal} 身份通过。 */
@@ -944,7 +944,7 @@ public class RestServerProperties {
     public static class Lineage {
 
         /** 是否接受 {@code POST /api/management/v1/lineage/runs}。 */
-        private boolean enabled = false;
+        private boolean enabled = true;
 
         /**
          * {@code lineage_run} 的保留天数。
