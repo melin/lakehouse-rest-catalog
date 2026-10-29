@@ -102,8 +102,16 @@ public class RestServerProperties {
     @Setter
     public static class DataPolicy {
 
-        /** 是否允许创建 / 修改 / 删除策略（PUT / DELETE）。默认 true。 */
-        private boolean enabled = true;
+        /**
+         * 是否允许创建 / 修改 / 删除策略（PUT / DELETE）。<b>默认 false。</b>
+         *
+         * <p>默认关的理由与血缘同一条：这些写入口一上线就是「任何人都能改脱敏规则」，
+         * 而「默认打开、需要时再关」意味着每个部署都得先知道有这个开关。
+         * 读侧不受它限制（{@code /resolve}、策略详情照常），否则「功能没开」
+         * 和「本来就没策略」就混成一件事了，引擎侧的 fail-closed 无法区分故障与空态。
+         * 要开的部署用启动参数显式打开：{@code --lakehouse.rest.policy.enabled=true}。
+         */
+        private boolean enabled = false;
     }
 
     /** Bearer 鉴权开关。关闭时所有请求以 {@code principal} 身份通过。 */
@@ -943,8 +951,14 @@ public class RestServerProperties {
     @Setter
     public static class Lineage {
 
-        /** 是否接受 {@code POST /api/management/v1/lineage/runs}。 */
-        private boolean enabled = true;
+        /**
+         * 是否接受 {@code POST /api/management/v1/lineage/runs}。<b>默认 false。</b>
+         *
+         * <p>采集器一上线就会被 Spark 任务按批调用，而「上线才发现每个作业都在往一张新表里
+         * 写」不该是默认结果。读端点不跟着关——图是只读的，关掉它只会让「开关忘了打开」
+         * 表现为「页签一直空着」，而空态无法区分这两种情况。
+         */
+        private boolean enabled = false;
 
         /**
          * {@code lineage_run} 的保留天数。

@@ -1,11 +1,13 @@
 package io.github.melin.lakehouse.rest;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 
+import io.github.melin.lakehouse.rest.config.RestServerProperties;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -64,5 +66,15 @@ class DataPolicyDisabledTests {
         assertEquals("NONE",
                 mapper.readTree(resolve.getResponse().getContentAsString())
                         .get("policies").get(0).get("status").asString());
+    }
+
+    /**
+     * 代码里的缺省值本身也要盯住（理由与 {@code LineageDisabledTests#codeDefaultIsOff} 相同）：
+     * yml 里也写着 false，上面那条用例因此验的是「生效值」，挡不住「缺省值被改成 true」。
+     */
+    @Test
+    void codeDefaultIsOff() {
+        assertFalse(new RestServerProperties().getPolicy().isEnabled(),
+                "DataPolicy.enabled 的缺省值必须是 false：要开放的部署用启动参数显式打开");
     }
 }

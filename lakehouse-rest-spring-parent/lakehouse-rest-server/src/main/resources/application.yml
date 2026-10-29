@@ -340,12 +340,12 @@ lakehouse:
     # 回收路径只有「删表时级联删边」，量级要先在测试环境跑准。
     # -----------------------------------------------------------------------
     lineage:
-      # 是否接受血缘上报（POST /lineage/runs）。默认 true（与 RestServerProperties 的
+      # 是否接受血缘上报（POST /lineage/runs）。默认 false（与 RestServerProperties 的
       # 代码默认一致——yml 里写非默认值会盖掉「缺省关闭」的语义，测试与安全基线都按
       # 默认关来验）。要采集的部署用启动参数显式打开：
       #   --lakehouse.rest.lineage.enabled=true
       # 读端点不受它限制：关掉采集的部署仍然查得到已有的边与运行历史。
-      enabled: true
+      enabled: false
       # lineage_run 表的保留天数（清理只删 run，不清边；边的 last_seen 自带「最近一次」）。
       # 默认 90。
       run-retention-days: 90
@@ -382,8 +382,8 @@ lakehouse:
     # 要开的部署用启动参数显式打开：--lakehouse.rest.policy.enabled=true
     # -----------------------------------------------------------------------
     policy:
-      # 是否允许创建 / 修改 / 删除策略（PUT / DELETE）。默认 true。
-      enabled: true
+      # 是否允许创建 / 修改 / 删除策略（PUT / DELETE）。默认 false。
+      enabled: false
 
 # ===========================================================================
 # 接口文档（knife4j-next，Boot 4 线：springdoc 3.x）
