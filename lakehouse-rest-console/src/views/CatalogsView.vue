@@ -29,6 +29,13 @@
           已登记的 catalog（{{ total }}<template v-if="formatFilter"> / {{ unfilteredTotal }}</template>）
         </span>
         <span class="pc-list-tools">
+          <!-- 判定接口失败时只弱化这一列，不让整个列表跟着报错：
+               catalog 列表本身是好的，缺的只是「凭据从哪来」这一个标注 -->
+          <span
+            v-if="credentialSourceError"
+            class="cred-source-warn"
+            :title="credentialSourceError"
+          >凭据来源暂不可用</span>
           <!--
             格式筛选。放在清单表头而不是页头：它只影响这张表的内容，
             跟着表格走才不会被读成「换一个全局的当前格式」。
@@ -119,6 +126,24 @@
               </el-tag>
             </template>
           </el-table-column>
+          <!--
+            凭据来源。这一列的存在理由只有一条：**后两档在客户端配置上完全一样**
+            （转发长期密钥 / 短期签发都不用改 Spark 配置），差别全在服务端发的是哪把钥匙。
+            如果只在详情的折叠区里写，所有人的认知都会停在默认值上
+            （docs/credential-vending-design.md §10.1）。
+          -->
+          <el-table-column label="凭据来源" width="188">
+            <template #default="{ row }">
+              <div class="cred-cell">
+                <el-tooltip :content="credCell(row).hint" placement="top" :show-after="300">
+                  <el-tag size="small" effect="plain" :type="credCell(row).tag">
+                    {{ credCell(row).label }}
+                  </el-tag>
+                </el-tooltip>
+                <span class="cred-meta" :title="credCell(row).detail">{{ credCell(row).detail }}</span>
+              </div>
+            </template>
+          </el-table-column>
           <el-table-column label="仓库位置" min-width="230">
             <template #default="{ row }">
               <span class="pc-mono pc-break">{{ warehouseOf(row) }}</span>
@@ -174,7 +199,7 @@
     />
 
     <!-- 新建 / 编辑 -->
-you    <!--
+    <!--
       宽度 820：表格式是三张并排的选项卡片（Paimon / Iceberg / Lance），
       每张要放得下「名称 + 一句说明 + 一行路径」。620 时第三张会被挤到下一行，
       留出半行空白，也让「三选一」看起来像「先二选一、再看情况」。
@@ -352,6 +377,7 @@ import ResourceState from '@/components/ResourceState.vue'
 import StorageConfigFields from '@/components/StorageConfigFields.vue'
 import TablePager from '@/components/TablePager.vue'
 import TimeText from '@/components/TimeText.vue'
+import { consoleApi } from '@/api/console.js'
 import { managementApi } from '@/api/management.js'
 import {
   confirmDanger,
@@ -376,6 +402,7 @@ import {
   PAIMON,
 } from '@/utils/catalogFormat.js'
 import { clusterCell } from '@/utils/executionCluster.js'
+import { credentialSourceCell, indexCredentialSources } from '@/utils/credentialSource.js'
 
 /**
  * catalog 表走远程分页。格式筛选**下推服务端**（`?format=`）：
@@ -529,6 +556,42 @@ function warehouseOf(row) {
 function execCell(row) {
   return clusterCell(row.executionCluster)
 }
+
+/**
+ * 「凭据来源」那一列。
+ *
+ * <p>判定不在这里做，只在 `utils/credentialSource.js` 里翻译：判据要读服务端配置
+ * （具名存储、默认凭据、启用的 provider），前端拿不到；而把优先级抄进 JS 一定会
+ * 与凭据管理器漂移，漂移的表现是「界面说在签发、实际在转发」。
+ */
+const credentialSources = ref({})
+
+/** 判定接口失败时的原因。**不能让它把列表带下水**：catalog 列表本身是好的。 */
+const credentialSourceError = ref('')
+
+async function loadCredentialSources() {
+  try {
+    credentialSources.value = indexCredentialSources(await consoleApi.credentialSources())
+    credentialSourceError.value = ''
+  } catch (err) {
+    // 保留上一次的结果：行还在，旧判定比空白更接近事实（配置变化本来就不频繁）
+    credentialSourceError.value = err?.message || '凭据来源判定接口不可用'
+  }
+}
+
+function credCell(row) {
+  return credentialSourceCell(credentialSources.value[row.name])
+}
+
+// 每次列表拿到新的一页就跟一次判定：这件事不访问存储、不调云，
+// 但它的结果会随「刚保存了 roleArn / 刚换了具名存储」而变，缓存久了就成假话。
+// 手动刷新与定时刷新都走 reload()/load()（见文件末尾的 onConsoleRefresh），
+// 因此这里只需要盯着 rows 的替换，不必再挂一次刷新回调。
+watch(rows, (list) => {
+  if (list?.length) {
+    loadCredentialSources()
+  }
+})
 
 /**
  * 执行集群抽屉的状态。
@@ -756,5 +819,34 @@ const {
 /* 未配置时的副行用主色而不是灰：这一行的优化永远不会跑，是待办而不是「没有信息」 */
 .exec-meta.is-missing {
   color: var(--el-color-primary);
+}
+
+/* 凭据来源那一格：与执行集群同一套两行结构（chip 在上、分支说明在下）。
+ * 副行限两行：说明可能很长（「转发具名存储 xxx 的密钥…」），
+ * 三行会把行高撑到跟别的行不齐，完整内容留给 tooltip。 */
+.cred-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  align-items: flex-start;
+}
+
+.cred-meta {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--pc-text-dim);
+  overflow-wrap: anywhere;
+}
+
+/* 判定接口不可用：只在表头出现一小行灰字。列表本身是好的，
+ * 因此不用 TipAlert、不用红色——那会把「一个标注缺失」读成「整页出错」。 */
+.cred-source-warn {
+  font-size: 12px;
+  color: var(--pc-text-dim);
+  cursor: help;
 }
 </style>

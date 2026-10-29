@@ -67,7 +67,11 @@ spec/rest-catalog-open-api-iceberg.yaml）。路径写错时前端只表现为�
                   每一拍走静默路径（不出遮罩、失败不清空表格）、后台标签页暂停、卸载清定时器。
                   这些错法都不报错——页面看起来在跑，数据其实停在几分钟前，
                   或者反过来：表格每 5 秒闪一次空
- 24. 文档计数     文档里写的「N 组 M 项」与脚本实际一致——加校验组的人要顺手改文档，
+ 24. 凭据来源     每个 catalog「引擎拿到的钥匙从哪来」（短期签发 / 转发长期密钥 / 不下发 /
+                  配置有误）只有服务端一个判据，控制台只翻译；四档取值与服务端 Mode
+                  枚举逐字对应。前端自己算来源时界面会与凭据管理器漂移——
+                  表现是「列表说在签发、实际在转发」，只在出事那天才被发现
+ 25. 文档计数     文档里写的「N 组 M 项」与脚本实际一致——加校验组的人要顺手改文档，
                   而这条约定此前没人执行（真漂过一次：docs/console.md 37、实际 38）
 
 用法：
@@ -171,6 +175,13 @@ CONSOLE_BASE = "/console/"
 # 规格之外的扩展端点。每一条都要有理由，且必须在控制台里真的被调用——否则就是过期条目。
 EXTENSION_ENDPOINTS = {
     ("GET", "/api/console/v1/meta"): "控制台元数据（枚举取值与服务配置摘要），非 Polaris 规格",
+    # 每个可见 catalog 的凭据来源（短期签发 / 转发长期密钥 / 不下发 / 配置有误）。
+    # 判定必须在服务端做：判据要读 lakehouse.rest.storage.*（具名存储、默认凭据）
+    # 与 credential.providers（有没有启用签发），前端拿不到这两份配置；
+    # 把优先级抄进 JS 一定与 DefaultStorageCredentialManager 漂移，
+    # 而漂移的表现是「界面说在签发、实际在转发」——只在出事那天才被发现。
+    # 批量返回（一次全部可见 catalog），因此它是一个端点而不是逐 catalog 一条。
+    ("GET", "/api/console/v1/catalog-credential-sources"): "控制台：每个 catalog 的凭据来源判定（只读，服务端推算）",
     # 仓库文件浏览：列 catalog 仓库里某个目录的一层内容（`?path=` 相对仓库根）。
     # 与 meta 一样是控制台扩展端点，服务端实现见 ConsoleFileController；
     # 它读的是物理目录（表目录下有哪些文件、有没有残留），两份规格都不涉及文件系统，
@@ -2415,10 +2426,56 @@ check("优化任务页连展开中的批次明细一起刷，且同样静默",
       "loadItems(id, { silent: true })" in read(OPTIMIZATION_JOBS_VIEW),
       "展开行停在打开那一刻：用户盯着「跑到哪张表」看的正是这一块")
 
-# ------------------------------------------------------------------ 24. 文档计数
+# ------------------------------------------------------------------ 24. 凭据来源
 
 print()
-print("24. 文档计数（文档写的「N 组 M 项」必须与脚本实际一致）")
+print("24. 凭据来源（三档标签；判定在服务端，控制台只负责翻译）")
+
+# 这一组钉的是**分层**，不是像素：
+#
+#   · 判定必须在服务端（CatalogCredentialSource）。判据是「DefaultStorageCredentialManager
+#     走哪条分支」，要读 lakehouse.rest.storage.* 与 credential.providers——
+#     前端拿不到这两份配置。抄一份到 JS 就一定漂移，而漂移的表现是
+#     「界面说在签发、实际在转发」，只在出事那天才被发现。
+#   · 控制台只把 mode 翻成标签/颜色/一句说明。因此这里反向断言翻译层里
+#     **不出现判据本身**（roleArn / stsUnavailable）：出现就说明有人开始在前端算。
+#   · 四档的取值必须与服务端的 Mode 枚举逐字对应，否则界面会把一个新取值
+#     显示成「—」，而人不会去看它是不是新加的档。
+credential_util = read(os.path.join(CONSOLE_DIR, "src/utils/credentialSource.js"))
+credential_java = read(os.path.join(
+    ROOT, "lakehouse-rest-spring-parent/lakehouse-rest-storage/src/main/java/io/github/melin/"
+          "lakehouse/rest/service/CatalogCredentialSource.java"))
+credential_detail = read(os.path.join(CONSOLE_DIR, "src/views/CatalogDetailView.vue"))
+
+credential_modes = ("STS", "RELAY", "NONE", "INVALID")
+missing_in_java = [mode for mode in credential_modes
+                   if not re.search(rf"^\s*{mode},?\s*$", credential_java, re.M)]
+missing_in_js = [mode for mode in credential_modes if f"{mode}: {{" not in credential_util]
+check("控制台的四档与后端 CatalogCredentialSource.Mode 一一对应",
+      not missing_in_java and not missing_in_js,
+      "Java 侧缺：{}；JS 侧缺：{}".format(missing_in_java or "无", missing_in_js or "无"))
+
+# 注释里解释判据（「服务端用 catalog 的 roleArn 现签」）是应该留的——那句话本身
+# 就是给人看的说明。要拦的是**读取**这些字段去算，因此剥掉注释后只找属性访问。
+credential_util_code = re.sub(r"/\*[\s\S]*?\*/", "", credential_util)
+credential_util_code = re.sub(r"//.*", "", credential_util_code)
+check("凭据来源只在服务端判定（翻译层不读 roleArn / stsUnavailable / providers）",
+      not re.search(r"\.(roleArn|stsUnavailable|providers)\b", credential_util_code),
+      "utils/credentialSource.js 里出现了判据字段的读取：说明前端开始自己算来源，"
+      "那份逻辑会与 DefaultStorageCredentialManager 漂移")
+
+check("列表页与详情页共用同一份翻译，且列表页的失败不影响表格",
+      "credentialSourceCell" in read(CATALOGS_VIEW)
+      and "indexCredentialSources" in read(CATALOGS_VIEW)
+      and "credentialSourceCell" in credential_detail
+      and "credentialSourceError" in read(CATALOGS_VIEW),
+      "两个页面各写一份标签/颜色就会「列表说转发、详情说签发」；"
+      "判定接口失败时也不该把 catalog 列表带下水")
+
+# ------------------------------------------------------------------ 25. 文档计数
+
+print()
+print("25. 文档计数（文档写的「N 组 M 项」必须与脚本实际一致）")
 
 # 这一组是**元校验**，起因是一次真实的漂移：docs/console.md 写「12 组 37 项」、
 # README 写「12 组 38 项」，而脚本实际是 38——两个数字都没人核对，因为脚本此前

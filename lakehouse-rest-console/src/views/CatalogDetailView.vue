@@ -164,6 +164,48 @@
             </div>
 
             <!--
+              「凭据来源」。
+              为什么值得单独一段：三档里「转发长期密钥」与「短期签发」在客户端配置上
+              **完全一样**（Spark / Flink 一行都不用改），差别全在服务端发的是哪把钥匙。
+              不把它摆在详情页，唯一能区分它们的地方就只剩下出事之后的日志
+              （docs/credential-vending-design.md §10.1）。
+              判定在服务端算（`/api/console/v1/catalog-credential-sources`）：
+              判据要读 lakehouse.rest.storage.* 与 credential.providers，前端拿不到。
+            -->
+            <SectionTitle title="凭据来源">
+              <template #tip>
+                <TipNote>
+                  引擎读这张表时拿到的密钥从哪来。服务端按本 catalog 的存储配置与部署配置
+                  <strong>推断</strong>分支，不签发、不调云——因此「短期签发」只说明
+                  <strong>会去签</strong>，签不签得成要到读表那一刻才知道。
+                </TipNote>
+              </template>
+            </SectionTitle>
+
+            <div class="pc-detail-grid">
+              <dl class="pc-kv">
+                <dt>来源</dt>
+                <dd>
+                  <el-tag size="small" effect="plain" :type="credentialSource.tag">
+                    {{ credentialSource.label }}
+                  </el-tag>
+                  <span v-if="credentialSourceError" class="pc-dim pc-format-note">
+                    判定接口不可用，下面是兜底文案
+                  </span>
+                </dd>
+                <dt>走哪条分支</dt>
+                <dd>{{ credentialSource.detail || '—' }}</dd>
+                <dt>能否续期</dt>
+                <dd>{{ credentialRenewNote }}</dd>
+                <dt>取票要的权限</dt>
+                <dd class="pc-mono pc-break">{{ credentialAccessNote }}</dd>
+              </dl>
+              <div class="pc-side">
+                <p class="pc-dim pc-cred-hint">{{ credentialSource.hint }}</p>
+              </div>
+            </div>
+
+            <!--
               「协议与能力」卡片。它的作用不是展示配置，而是回答排障时的第一个问题：
               **这个 prefix 到底服务哪一套协议、客户端能调哪些端点。**
               Iceberg 侧的答案就在 `GET /v1/config` 的 `endpoints` 里——那份清单是
@@ -556,7 +598,7 @@
 </template>
 
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
 import { consoleApi } from '@/api/console.js'
@@ -584,6 +626,7 @@ import {
   isIcebergCatalog,
   isLanceCatalog,
 } from '@/utils/catalogFormat.js'
+import { credentialSourceCell, indexCredentialSources } from '@/utils/credentialSource.js'
 import { formatBytes, inlineMap } from '@/utils/format.js'
 import { composeProperties, isTableDefaultKey, tableDefaultsOf } from '@/utils/tableDefaults.js'
 
@@ -616,6 +659,56 @@ const warehouse = computed(() => {
   const info = catalog0.value?.storageConfigInfo
   return info?.allowedLocations?.[0] || catalog0.value?.properties?.warehouse || '—'
 })
+
+/**
+ * 这个 catalog 的凭据来源（服务端判定，见 `utils/credentialSource.js` 的说明）。
+ *
+ * <p>判定是一个**批量**端点（列表页一屏几十行都靠它），详情页取同一条：
+ * 单独为它再开一个逐 catalog 的端点，会让同一件事有两份实现、两处可能漂移。
+ */
+const credentialSourceEntry = ref(null)
+const credentialSourceError = ref('')
+
+async function loadCredentialSource() {
+  try {
+    credentialSourceEntry.value = indexCredentialSources(
+      await consoleApi.credentialSources(),
+    )[catalogName.value] || null
+    credentialSourceError.value = ''
+  } catch (error) {
+    // 保留上一次的结果：判定失败不该让整个概览报错（概览本身是好的）
+    credentialSourceError.value = describeError(error)
+  }
+}
+
+onMounted(loadCredentialSource)
+
+const credentialSource = computed(() => credentialSourceCell(credentialSourceEntry.value))
+
+/** 续期一句话：只有短期票有「换一张」这回事，另外两档没有。 */
+const credentialRenewNote = computed(() => {
+  switch (credentialSource.value.mode) {
+    case 'STS':
+      return '能：票到期前客户端会再换一张（Paimon 的 data-token、Iceberg 的 /credentials）'
+    case 'RELAY':
+      return '不能：长期密钥不会过期，也没有换票这一步——轮换只能在服务端改配置'
+    case 'NONE':
+      return '不需要：服务端不发票，引擎用的是自己的身份'
+    default:
+      return '—'
+  }
+})
+
+/**
+ * 取票要的权限点。
+ *
+ * <p>这一行是 P1-7 之后用户最常踩的坑：升级之前「能读表」就够了，
+ * 升级之后取票另要 `USE_CREDENTIAL`，而转发档还要 `USE_SECRET`。
+ * 写在页面里比写在文档里有用——报 403 的人第一时间是在这一页。
+ */
+const credentialAccessNote = computed(() => (credentialSource.value.mode === 'RELAY'
+  ? 'USE_CREDENTIAL + USE_SECRET（票里含目录存的长期密钥对）'
+  : 'USE_CREDENTIAL'))
 
 /**
  * 表格式：`catalogFormat`（PAIMON / ICEBERG / LANCE），**创建后不可更改**。
@@ -867,6 +960,7 @@ function onTabChange(name) {
 function reloadAll() {
   overview.load()
   capabilities.load()
+  loadCredentialSource()
   if (tab.value === 'files') {
     loadFiles()
   }
@@ -1152,6 +1246,15 @@ async function saveDefaults() {
 
 .pc-prefix-input {
   width: 240px;
+}
+
+/* 凭据来源那一段右侧的说明。保留换行（词表里的 hint 用 \n\n 分成两段：
+ * 一段讲这一档的通性、一段讲这个 catalog 的具体分支）。 */
+.pc-cred-hint {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.8;
+  white-space: pre-line;
 }
 
 @media (max-width: 1100px) {

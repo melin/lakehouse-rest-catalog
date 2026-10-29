@@ -1,6 +1,6 @@
 # 存储凭据下发（Credential Vending）：现状、缺口与七种存储的落地设计
 
-> **状态：P0 已实现、P1 部分实现（P1-8 打码与哨兵、P1-9 服务端取票、P1-12 COS 落地已做；P1-13 经核查作废，见 v6/v7/v8 修订块与 §8）。** 本文回答三个问题：① Gravitino 与 Polaris 都做了 Credential
+> **状态：P0 已实现、P1 部分实现（P1-7 两个权限点、P1-8 打码与哨兵、P1-9 服务端取票、P1-12 COS 落地、P1-6 的「控制台标记」一半已做；P1-13 经核查作废，见 v6/v7/v8 修订块与 §8、§10.8）。** 本文回答三个问题：① Gravitino 与 Polaris 都做了 Credential
 > Vending，**本工程有没有考虑、还差哪些功能**；② AWS / Azure / GCS / 阿里云 OSS / 华为云 OBS /
 > 腾讯云 COS 与 S3 兼容存储**分别怎么落地**；③ Spark 访问 Catalog 时**能不能不把 AK/SK 写进配置**。
 > §10 另外回答第四个：**控制台上怎么配**（附交互原型）。
@@ -1279,7 +1279,7 @@ object_store 认的是 `aws_access_key_id` / `aws_secret_access_key` / `aws_sess
 | P1-3 | OBS `CreateTemporaryAccessKeyByAgency` + `policy` 收窄 | 一个 IAM 委托（agency） |
 | P1-4 | GCS downscoped token（`CredentialAccessBoundary`） | 服务账号 + `serviceAccountTokenCreator` |
 | P1-5 | 审计归因：`RoleSessionName` / session tags | 无 |
-| P1-6 | 控制台：创建页三态来源 + 参数 + 引擎片段；catalog 列表与详情标出「长期凭据 / 短期凭据 / 不下发」 | 见 §10 与原型 `credential-vending-mockup.html` |
+| ◑ P1-6 | 控制台：创建页三态来源 + 参数 + 引擎片段；catalog 列表与详情标出「长期凭据 / 短期凭据 / 不下发」 | **已落地「标记」这一半**：判定在服务端（`CatalogCredentialSource`，四档 `STS` / `RELAY` / `NONE` / `INVALID`），经批量端点 `GET /api/console/v1/catalog-credential-sources` 下发；catalog 列表多一列、详情页多一段（含「取票要哪个权限点」与「能否续期」）。**与 §10 的偏差**：原型里那三个**每 catalog 的新字段**（`credentialProviders` / `credentialTtlSeconds` / `credentialReadOnly`）P0 没有采用——来源是由现有 `storageConfigInfo` + 全局 `credential.providers` 推断出来的，因此不需要新字段、也不需要接口形状变更。**未做**：创建页的三态选择器、`stsUnavailable` 冲突框、五面引擎片段（§10.2–§10.6），理由是三态选择器会与「存储配置本身就能表达来源」重复（见 §10.8） |
 | ✅ P1-7 | **判权拆两个权限点**：`CATALOG:USE_CREDENTIAL` 与 `CATALOG:USE_SECRET`（§3.4.3） | 落地形态：`/token` 与 `/credentials` 改判 `USE_CREDENTIAL`（`/auth`、`/plan` 仍是 `SELECT`），票里含长期密钥对时再判 `USE_SECRET`；`VendedStorageCredential#carriesLongTermKeyPair()` 是唯一判据。用例：`CredentialAccessSplitTests` 五条（只有取票权→403 点名 `USE_SECRET`；两个都有→照常下发；只有 `USE_SECRET`→403 点名 `USE_CREDENTIAL`；都没有→403；判据只看载荷不看存储类型）+ `LanceCredentialAccessTests` 四条（Lance 面的两道判定、短期票免 `USE_SECRET`、不带参数不判权也不带密钥）+ `CatalogEndpointAuthorizationTests` 的映射与作用域断言。**行为变更**：细粒度 `SELECT` 授权升级后需补 `USE_CREDENTIAL`，`ALL` 不受影响 |
 | P1-8 | ✅ **AK ID 打码 + 打码回写哨兵**（§3.4.4）：`withoutSecrets` 一个出口打码，`mergeStaticCredentials` 认哨兵；`******` + 空密钥 = 两个都不动，`******` + 新密钥 = 只换密钥，库里没有原值或把哨兵当密钥则 400 | 用例：`StaticCredentialApiTests` 的 `maskedAccessKeyIdSurvivesARenameOnlyUpdate`（设计稿点名的验收）、`maskedAccessKeyIdWithOmittedSecretKeepsBoth`、`maskedAccessKeyIdWithANewSecretRotatesOnlyTheSecret`、`maskedAccessKeyIdOnANewCatalogIsRejected`、`maskedValueAsSecretIsRejected`；范围仅 catalog 的 `storageConfigInfo`，执行集群那套凭据仍回显 |
 | ✅ P1-9 | **服务端自身 FileIO 走独立取票**（§5.7），作用域是 catalog 的允许位置，不复用任何用户的表级票 | 两类作用域分开（`vend` vs `vendForCatalog`）、写权限显式传、缓存键不撞 → `ServerSideCredentialTests`（9 例）；「只配 `roleArn` 的 catalog 上优化任务跑通」**需真实 S3，未跑** |
@@ -1472,6 +1472,34 @@ Hadoop 配置）、Lance 面得换成 S3 兼容（§6.3.2）。用户看到的�
 
 原型里刻意保留了两处「做不到」的演示：OBS 选 AK-SK 会**自动退回转发**（那家没有 AK 换票的接口），
 Lance 在签发档仍会标注「只读一次、长作业会过期」。这两条不是为了好看，是为了让评审时先看见边界。
+
+### 10.8 落地偏差：不新增每 catalog 的凭据字段（P1-6 第一半）
+
+原型里那三个新字段——`credentialProviders` / `credentialTtlSeconds` / `credentialReadOnly`——
+**P0 没有采用，P1-6 也没有补**，这不是遗漏，是两条理由：
+
+1. **来源本来就可推断。** `StorageConfigInfo` 已经有 `roleArn` / `stsUnavailable` /
+   `storageName` / 静态凭据，`credential.providers` 在服务端全局。把它们合起来走一遍
+   凭据管理器同一条优先级，就能得出三档（实现见 `CatalogCredentialSource`）。
+   再加一个「来源」字段，等于把同一件事写两遍——而两份写法一旦不一致，
+   以哪一份为准就没人说得清。
+2. **第三个字段会与「谁能用」打架。** `credentialReadOnly` 的语义是「这张表只发只读票」，
+   而读写分离今天由 session policy 按**调用上下文**（`allowWrite`）决定，
+   不是 catalog 的属性。放进 catalog 就成了「同一张表在两条路径上权限不同」，
+   与 §5.5 的作用域规则冲突。
+
+于是落地形态改成：**服务端算、控制台只翻译**，端点
+`GET /api/console/v1/catalog-credential-sources`（批量、只读、可见性照抄管理 API）。
+四档里多出的 `INVALID` 是原型没有的：它覆盖两种**配置错误**——引用了不存在的具名存储、
+COS 配了 `sessionToken`（COSN 没有令牌位）——这两种在原型里都只能等到取票 500 才暴露。
+
+**还没有做的部分是「创建页的三态选择器」。** 它现在也不需要：三档的选择在表单上
+已经由现有字段表达（填静态凭据 / 填 `roleArn` / 勾 `stsUnavailable` / 留空走环境链），
+再造一个三选一去改同一批字段，会出现「选了转发但静态凭据是空的」这类新状态。
+真要做，正确的顺序是先把「填了 `roleArn` 而 `s3-token` 没启用」这条**行内提示**补上
+（现在这条只在列表页的判定里说出来），再谈选择器。引擎片段（§10.4）同理：
+它的内容取决于面（Spark / Flink × Paimon / Iceberg / Lance），更适合放进文档与
+`docs/spark-sql-reference.md`，而不是塞进一个会随界面版本漂移的弹层。
 
 ---
 

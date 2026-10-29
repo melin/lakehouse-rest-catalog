@@ -424,4 +424,32 @@ public final class ConsoleDtos {
             String target,
             Map<String, Object> attributes) {
     }
+
+    /**
+     * {@code GET /api/console/v1/catalog-credential-sources} 的响应：每个 catalog 的凭据从哪来。
+     *
+     * <p>为什么单开一个端点而不是塞进 catalog 列表：catalog 列表走的是官方管理 API 的形状
+     * （{@code Catalog} 是规格 DTO），往里加本工程的字段就等于改造规格响应；
+     * 而这件事又必须**批量**拿——列表页一次要标几十行，逐行请求会变成 N+1。
+     *
+     * <p>{@code credentialProviders} 一起回：它决定「签发」这一档在本部署是否可用，
+     * 详情页要据此解释「填了 roleArn 为什么仍显示不下发」。不带这个信息时，
+     * 用户只能靠猜或者去翻服务端配置。
+     */
+    public record CatalogCredentialSources(List<Entry> sources, List<String> credentialProviders) {
+
+        /**
+         * 一个 catalog 的判定结果。
+         *
+         * @param catalog catalog 名（即 prefix）
+         * @param mode    {@code STS} / {@code RELAY} / {@code NONE} / {@code INVALID}，
+         *                与 {@code CatalogCredentialSource.Mode} 一一对应；
+         *                取字符串而不是枚举，是为了让「前端不认识的新取值」降级成一行文字，
+                 *                而不是整个响应反序列化失败
+         * @param detail  走的是哪条分支（catalog 静态凭据 / 具名存储 / 服务端默认 / 环境链…），
+         *                直接显示在界面上
+         */
+        public record Entry(String catalog, String mode, String detail) {
+        }
+    }
 }

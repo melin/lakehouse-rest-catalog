@@ -146,7 +146,7 @@ lakehouse-rest-console/
 | `/` | 控制台概览 | 统计块（三个数量）、服务端配置摘要、**连接自检**、catalog 清单、`GET /v1/config` 展示 |
 | `/browse` | 目录浏览 | 按选中 catalog 的**表格式**换一套实现：Paimon catalog 是「左库右对象、三页签（表/视图/函数；语义视图的 4 条端点仍在服务端，控制台不再暴露）」；Iceberg catalog 换成 `IcebergBrowseView`（左命名空间右表/视图，见 §4.6）；Lance catalog 换成 `LanceBrowseView`（左命名空间右表，**可建命名空间**；建表与删除都不给，见 §4.6.1）。Paimon 侧能力：建库、建表（Paimon 表 / Format 表 / Object 表三种表格式，Lance 表留在选项里但禁用，见 [console-catalog-detail.md](console-catalog-detail.md) §3.5）、注册表、按表 ID 定位、重命名、删除、详情抽屉。表页签列出表名 / 表格式 / 表类型（Managed 或外部表）/ 创建时间 / 元数据更新时间 / 操作六列，数据取自 `table-details`（只回表名的 `/tables` 给不出这几列）；「元数据更新时间」是服务端这条表记录的最后改动时间，快照提交与回滚也会推动它。表页签的过滤为空时说明「没有匹配 ×××」，与「库里没有表」区分开。**建表入口在「表」页签工具条的右侧**（页头只留刷新与新建数据库）：三类对象的工具条都写在 `ResourceState` 之外——那个组件命中空态时只渲染 `el-empty`、默认插槽整个不渲染，工具条若在里面，「这个库还是空的」这一刻就正好没有新建按钮 |
 | `/tables/:prefix/:database/:table` | [表详情](console-table-detail.md) | 十页签：详细信息 / **血缘** / 数据预览 / 快照 / 标签 / 分支 / **文件列表** / 数据访问 / **数据策略** / **存储优化**（血缘与数据预览、数据策略都不随表格式伸缩：页签自己判空，见 [console-table-detail.md](console-table-detail.md) §1.1）；含快照与标签的**回滚**。**没有「变更」页签**：改表结构走 HTTP 或 Spark SQL，理由见该文档 §2。详细信息首屏的四张统计卡片取自 `getTableSnapshot`（三个文件统计的来路与「什么时候会空」见该文档 §2.1），内含**字段列表 / 分区列表**二级页签（名称过滤 + 分页：字段表在浏览器里切片，分区列表走远程分页且前缀过滤下推，分区按需加载）。文件列表按表目录物理内容列一层（根是表目录，出不了表外），目录名可点下钻、文件可下载、前缀过滤与页码都下推服务端。存储优化页签承载表级策略与执行历史（见 [table-optimization.md](table-optimization.md) §7）。血缘页签给三视图（图 / 邻接表 / 列映射），图是 Canvas 与「跳数即层号」的纯函数布局（见 [lineage-design.md](lineage-design.md) §9）。授权不在这张表上做——表级权限统一到「权限管理」页 |
-| `/catalogs` | Catalogs | 列出 / 创建 / 详情 / 更新（带版本）/ 删除。名称链到详情页；操作列另有「浏览库与对象」直达 `/browse`。页头带**定时刷新**开关与节拍（默认开启、5 秒，偏好存 localStorage；见 §4.9） |
+| `/catalogs` | Catalogs | 列出 / 创建 / 详情 / 更新（带版本）/ 删除。名称链到详情页；操作列另有「浏览库与对象」直达 `/browse`。页头带**定时刷新**开关与节拍（默认开启、5 秒，偏好存 localStorage；见 §4.9）。表里有一列**凭据来源**（短期签发 / 转发长期密钥 / 不下发 / 配置有误，见 §4.10） |
 | `/catalogs/:catalogName` | [Catalog 详情](console-catalog-detail.md) | 四页签：概览 / 存储 / 文件列表 / 配置。**存储**页回答「哪些表该做 compaction」：文件数、存储、平均文件大小、小文件占比（按库聚合），两种格式都支持，口径参考 AWS《Monitoring Iceberg workloads》但取数只用已有端点，见 [console-catalog-detail.md §3.2](console-catalog-detail.md)。文件列表按仓库物理目录列一层，目录名可点下钻、带面包屑与「返回上级」；只读，不提供删除与建目录。**配置页签**两种格式是同一套设计：都编辑「表默认参数」（`table-default.*`，见 [catalog-api-endpoints.md](catalog-api-endpoints.md#catalog-级默认表属性table-default)），Iceberg 另附只读的 `/v1/config` `defaults` / `overrides`（连接参数，非表属性）；其余 catalog 属性不在此页重复展示（概览已有） |
 | `/principals` | 主体 | 列出 / 创建 / 更新 / 删除 / rotate / reset；授予与撤销角色。创建、轮换、重置后的凭据弹窗可一键导出 JSON 文件（`{principal, clientId, clientSecret}`，文件名 `<主体>-credentials.json`），密钥仍只在弹窗期间可见 |
 | `/principal-roles` | 角色 | 列出 / 创建 / 更新 / 删除；查看成员（授予成员要按主体操作，在「主体」页做）。角色是**纯分组**，自身不携带权限；管理规格里的 `federated` 字段控制台不暴露——本服务不接入外部 IdP，勾了只存一个标记，且 PUT 不接受该字段，勾错改不回来 |
@@ -582,6 +582,40 @@ Lance 是 `POST /lance/v1/table/{id}/describe` 且 `id` 是拼接串），合在
 手动「刷新」与它并存：两者是同一件事的自动与手动两种模式，所以控件就摆在刷新按钮左边。
 顶栏的全局刷新广播（`onConsoleRefresh`）仍走可见路径——那是用户明确按下去的。
 
+### 4.10 「凭据来源」：三档标记
+
+catalog 列表多一列、详情页多一段，说的都是同一件事：**引擎读这张表时拿到的钥匙从哪来**。
+
+三档的定义与风险见 [credential-vending-design.md](credential-vending-design.md) §10.1；控制台这一侧的关键是
+**「转发长期密钥」与「短期签发」在客户端配置上完全一样**（Spark / Flink 一行都不用改），
+差别全在服务端发的是哪把钥匙。也就是说：配置看起来一样，安全性差一个量级，
+唯一能区分它们的地方就是界面上的这个标记——因此它必须在列表页出现，不能只藏在详情的折叠区里。
+
+判定**只在服务端做**（`CatalogCredentialSource`）：判据是「凭据管理器走哪条分支」，
+要读 `lakehouse.rest.storage.*`（具名存储、默认凭据）与 `lakehouse.rest.credential.providers`
+（本部署有没有启用签发），这两份东西前端拿不到；把优先级抄进 JS 必然与
+`DefaultStorageCredentialManager` 漂移，而漂移的表现是「界面说在签发、实际在转发」。
+
+| 档 | 界面标签 | 什么时候出现 |
+| --- | --- | --- |
+| `STS` | 短期签发 | S3 + 填了 `roleArn` + 本部署启用了 `s3-token` |
+| `RELAY` | 转发长期密钥 | catalog 自带静态凭据 / 具名存储 / 服务端默认凭据（GCS 是配置的访问令牌） |
+| `NONE` | 不下发 | `stsUnavailable=true`、没有配任何密钥、Azure（只发定位元数据）、文件系统 |
+| `INVALID` | 配置有误 | 引用了不存在的具名存储、COS 配了 `sessionToken`（COSN 没有令牌位，取票会 500） |
+
+四条实现约定：
+
+- **它是推断，不是运行时事实。**「短期签发」只说明**会去签**，签不签得成（角色不存在、
+  信任关系错）要到读表那一刻才知道。详情页把这句话写在问号里，不假装能预检。
+- **批量端点**（`GET /api/console/v1/catalog-credential-sources`）一次回全部可见 catalog：
+  列表页一屏几十行，逐行请求就是 N+1，而这件事本身不访问存储、不调云。
+  可见性照抄管理 API（未开授权或服务管理员看全部，其余人只看自己持有一条赋权的 catalog）——
+  否则它就成了「用分类信息探测 catalog 是否存在」的旁路。
+- **判定失败只弱化这一列**，不让整个列表报错：catalog 列表本身是好的，缺的只是一个标注。
+  表格里显示「—」而不是「不下发」——把「没问到」显示成「不下发」是在替服务端下一个它没下的结论。
+- **详情页顺带说明取票要哪个权限点**（`USE_CREDENTIAL`，转发档还要 `USE_SECRET`）。
+  升级到「两个权限点」之后最常踩的就是这一条，而报 403 的人第一眼看的正是这一页。
+
 ---
 
 ## 5. 契约表与机械校验
@@ -592,7 +626,8 @@ Lance 是 `POST /lance/v1/table/{id}/describe` 且 `id` 是拼接串），合在
 `spec/rest-catalog-open-api-paimon.yaml`，管理面的官方部分是 Paimon REST Management API，
 见 `spec/rest-management-open-api.yaml`；catalog / principal 等扩展端点的形状源自已移除的
 Polaris 规格）。路径写错时前端的表现是
-「404 空列表」，看不出是前端拼错了还是服务端改了——而这批路径有 85 条，
+「404 空列表」，看不出是前端拼错了还是服务端改了——而这批路径有一百多条
+（准确条数由脚本第 1 组打印，这里不写死：写死的数字只会悄悄过期）
 靠人工比对不现实。
 
 因此所有路径收在 `src/api/endpoints.js` 一张表里，视图层不手写 URL 字符串，
@@ -620,7 +655,7 @@ python3 scripts/verify-console.py      # 退出码 0 通过 / 1 不一致 / 2 �
 PYTHON=/path/to/python3 scripts/verify-console.py   # 多解释器时指定装了 PyYAML 的那个
 ```
 
-它**不构建前端、不启动服务端**，只做静态比对，因此可以放进提交前的检查。24 组 175 项：
+它**不构建前端、不启动服务端**，只做静态比对，因此可以放进提交前的检查。25 组 178 项：
 
 | 组 | 校验内容 |
 | --- | --- |
@@ -647,7 +682,8 @@ PYTHON=/path/to/python3 scripts/verify-console.py   # 多解释器时指定装�
 | 21. 血缘 | 表详情页的「血缘」页签：两个详情页都用异步组件挂 `LineagePanel`（同步 import 会让每张表的详情页为一块多数人不看的图付下载与解析成本）、页签名与正文条件一致、页签登记为「自带数据」（面板挂载即查，父组件替它发请求就是两次）、图与绘制层**不 import element-plus**（否则布局逻辑只能靠 Vue 运行时才测得到）、三个格式色只读 CSS 变量且变量定义在全局样式里（画布、图例、目录页徽标三处同源）、布局是纯函数（不读 DOM、无随机数与时钟——否则刷新一次位置全变）、LOD 阈值只有一处带滞回的实现（两处阈值不同会在临界点上闪）、**拖单张卡片只叠加视图位移**（偏移不进 `layout()`——写回布局就等于「同一份数据两次出不同坐标」，刷新一次位置全变；换根时整份清掉）、边按「颜色 + 线宽」分组后用 `Path2D` 批量描边（1500 条边逐条 stroke 会掉帧）、面板只经 `lineageApi` 取数、**控制台不声明血缘的写入口**（手工上报等于让人写一条假依赖）、列映射切到「列」视图才发第二次请求、节点超过 500 自动落邻接表且留「仍要看图」的出口、两个表格用 `el-table-v2`（虚拟滚动，也是 Canvas 的无障碍替代）、抽屉打开时画布让位、五个端点在服务端都有实现、图端点处理 `If-None-Match` 回 304（`no-cache` 而不是 `no-store`）、表被删除时级联清边（否则图上留下查不到也清不掉的节点） |
 | 22. 执行集群 | catalog 级执行集群（优化任务提交到哪个 k8s、用什么身份）。这一组钉的是**多集群这件事的形状**，因为它的错法全都不报错：五个端点都必须挂在 `catalogs/{catalogName}/execution-cluster` 下（不引入一级资源——没有「列出全部执行集群」的需求，也没有「不属于任何 catalog 的执行集群」）、控制器类级路由与端点前缀逐字一致且六个动词映射齐全、三种集群类型（`SELF_HOSTED` / `EKS` / `AKS`）在服务端 `ClusterType` 与前端 `CLUSTER_TYPES` 两处取值完全相同、五种状态（`NOT_CONFIGURED` / `DISABLED` / `UNVERIFIED` / `HEALTHY` / `FAILING`）同样两处一致、**前端代码里不出现 `configHash` / `probeConfigHash`**（状态只由服务端算；两边各算一份的漂移表现是「列表说正常、点进去说待验证」，而那一屏最难解释）、`Catalog` DTO 带摘要且 `list()` 用批量 `summaries(...)` 而不是逐行 `summaryOf(...)`（列表是打开最频繁的页，N+1 在这里等于「catalog 越多越慢」）、列表有那一列并走 `clusterCell` 翻译、未配置的行按钮是主色（那一刻它是待办）、**读模型不含任何凭据明文**（`kubeconfig` 只回摘要、秘密只回 `has*`）、秘密字段有显式的 `clearCredentials` / `clearCatalogToken`（留空＝不改，清空要单独说）、`application.yml` 的 `optimization` 段只剩三个节拍键且 12 个提交参数一个不剩、`RestServerProperties.Optimization` 与之对齐（就三个字段）、fail-closed 的两个落点都在（保存策略与「立即优化」各一次 `assertDispatchable`）、出批侧在造批次之前判「可派发」、旧的两种提交器已删除、fabric8 客户端禁用 `autoConfigure` 回落并断言 master URL（缺了它，填错 apiServer 的 catalog 会静默把 Job 提交到服务端自己所在的集群）、`sql/schema-mysql.sql` 里真有这张表（实体加了没重新生成 DDL，部署时会因 `ddl-auto=validate` 起不来） |
 | 23. 定时刷新 | Catalog 与优化任务列表的定时刷新（§4.9）。这一组钉的是它的**静默性**与**唯一实现**，因为错法全都不报错：默认值（开启 + 5 秒）只在 `utils/autoRefresh.js` 定义一次、节拍档位只有一份且控件按它 `v-for` 渲染、两个列表页都真的接了 `useAutoRefresh` 且偏好键不重名、**每一拍只走 `silentLoad`**（定时器实参块里不出现 `load()` / `reload()`——它们会置 `loading`，症状是表格每 5 秒闪一次遮罩）、静默失败时保留上一份数据（`rows.value = []` 在整个 composables 里只能出现在非静默分支一次）、失败原因有地方显示、后台标签页跳过并在切回时补一拍、上一拍没回来不发下一拍、离开页面清掉定时器、优化任务页连展开中的批次明细一起刷 |
-| 24. 文档计数 | 本节这张表上方的「N 组 M 项」与脚本实际一致（`docs/console.md` 与 `README.md` 各一条）。期望值由脚本自身推出——组数是源码里分组标题的条数，项数是本次校验的总条数——因此加/删校验项时这里不用改，但**文档必须跟着改** |
+| 24. 凭据来源 | catalog 列表与详情页的「凭据来源」（三档：短期签发 / 转发长期密钥 / 不下发，外加「配置有误」）。这一组钉的是**分层**而不是像素：判定只有服务端一份（`CatalogCredentialSource`，判据是 `DefaultStorageCredentialManager` 走哪条分支，要读 `lakehouse.rest.storage.*` 与 `credential.providers`）、四档取值与控制台的词表逐字对应、**翻译层里不读判据字段**（`roleArn` / `stsUnavailable` / `providers` 一旦出现在代码里，就说明有人开始在前端算来源——那份逻辑会与凭据管理器漂移，症状是「列表说在签发、实际在转发」）、列表页与详情页共用同一份翻译且判定失败不影响表格本身（catalog 列表是好的，缺的只是一个标注） |
+| 25. 文档计数 | 本节这张表上方的「N 组 M 项」与脚本实际一致（`docs/console.md` 与 `README.md` 各一条）。期望值由脚本自身推出——组数是源码里分组标题的条数，项数是本次校验的总条数——因此加/删校验项时这里不用改，但**文档必须跟着改** |
 
 第 7 组是这套机制里最实用的一条：**产物过期不会让任何东西报错**，
 它只是安静地少一个按钮。

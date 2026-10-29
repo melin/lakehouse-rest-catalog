@@ -66,4 +66,16 @@ export const consoleApi = {
    * @param {number} [query.limit] 页大小，默认 100、上限 1000
    */
   listEvents: (query = {}) => get('listEvents', { params: { query } }),
+
+  /**
+   * 每个可见 catalog 的凭据从哪来：`{ sources: [{ catalog, mode, detail }], credentialProviders }`。
+   *
+   * <p>三档（短期签发 / 转发长期密钥 / 不下发）在后两档上客户端配置完全一样，
+   * 界面上这一处标记是唯一能区分它们的地方（设计稿 §10.1）。判定在服务端做：
+   * 判据要读 `lakehouse.rest.storage.*` 与 `credential.providers`，前端拿不到。
+   *
+   * <p>批量拿（一次回全部可见 catalog）而不是逐行：列表页一屏几十行，
+   * 逐行就是 N+1，而这件事本身不访问存储、不调云。
+   */
+  credentialSources: () => get('credentialSources'),
 }

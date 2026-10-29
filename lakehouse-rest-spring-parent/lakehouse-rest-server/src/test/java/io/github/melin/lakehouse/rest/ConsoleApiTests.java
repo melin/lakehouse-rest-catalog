@@ -59,6 +59,12 @@ class ConsoleApiTests {
 
     private static final String AUTH = "/api/console/v1/auth";
 
+    /** 每个可见 catalog 的凭据来源（三档 + 配置有误）。 */
+    private static final String CREDENTIAL_SOURCES = "/api/console/v1/catalog-credential-sources";
+
+    /** 可见性必须与这条列表一致：来源端点照抄它的规则，条数也要对得上。 */
+    private static final String MANAGEMENT_CATALOGS = "/api/management/v1/catalogs";
+
     private static final String TOKEN = "console-api-test-token";
 
     private static final String CONSOLE_ENTRY = "static/console/index.html";
@@ -233,6 +239,49 @@ class ConsoleApiTests {
     @Test
     void authAdvertisesThePolarisCompatibleTokenEndpoint() throws Exception {
         assertEquals("/api/catalog/v1/oauth/tokens", getJson(AUTH, 200).get("tokenEndpoint").asString());
+    }
+
+    // ------------------------------------------------------------------ 凭据来源
+
+    /**
+     * 「凭据来源」必须覆盖**当前可见的每个** catalog，且取值落在四档之内。
+     *
+     * <p>为什么钉「条数一致」而不是只钉 200：控制台拿这一份去标列表的每一行，
+     * 少一条的表现是那一行显示「—」（`credentialSourceCell` 的兜底），
+     * 而人多半会把它读成「这个 catalog 不下发凭据」——一个错误的结论，
+     * 却没有任何报错。条数与管理 API 的可见列表相等，是这条契约最省事的判据。
+     *
+     * <p>测试 profile 的仓库是本地文件系统，因此至少有一条 `NONE`，且 detail 里
+     * 应当说的是「没有密钥可发」而不是别的原因。
+     */
+    @Test
+    void credentialSourcesCoverEveryVisibleCatalog() throws Exception {
+        JsonNode body = getJson(CREDENTIAL_SOURCES, 200);
+        JsonNode sources = body.get("sources");
+        assertNotNull(sources, "sources is missing");
+        assertTrue(sources.isArray(), "sources should be an array");
+
+        // credentialProviders 一起回：它决定「签发」这一档在本部署是否可用，
+        // 详情页要据此解释「填了 roleArn 为什么仍显示不下发」
+        assertNotNull(body.get("credentialProviders"), "credentialProviders is missing");
+
+        Set<String> modes = Set.of("STS", "RELAY", "NONE", "INVALID");
+        for (JsonNode entry : sources) {
+            assertFalse(entry.get("catalog").asString().isBlank(), "catalog is blank");
+            assertTrue(modes.contains(entry.get("mode").asString()),
+                    () -> "unexpected mode: " + entry.get("mode").asString());
+            assertFalse(entry.get("detail").asString().isBlank(),
+                    "detail must say which branch was taken, otherwise the badge is unexplained");
+        }
+
+        JsonNode catalogs = getJson(MANAGEMENT_CATALOGS, 200).get("catalogs");
+        assertEquals(catalogs.size(), sources.size(),
+                "凭据来源必须覆盖可见的每个 catalog：少一条时那一行显示「—」，会被读成「不下发」");
+
+        assertTrue(sources.size() > 0, "测试 profile 至少有一个预置 catalog");
+        // 预置 catalog 的仓库是 file://（见 application-test.yml），文件系统没有密钥可发
+        assertEquals("NONE", sources.get(0).get("mode").asString(),
+                "file:// 仓库的凭据来源应当是「不下发」");
     }
 
     // ------------------------------------------------------------------ 单页应用回退
