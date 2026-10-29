@@ -278,7 +278,7 @@ import PropertiesEditor from '@/components/PropertiesEditor.vue'
 import SectionTitle from '@/components/SectionTitle.vue'
 import TipAlert from '@/components/TipAlert.vue'
 import TipNote from '@/components/TipNote.vue'
-import { LANCE_NAME_PATTERN, lanceApi, lanceId, lanceLeaf } from '@/api/lance.js'
+import { LANCE_NAME_PATTERN, lanceApi, lanceFullIdOf, lanceId, lanceLeaf, lanceNameOf } from '@/api/lance.js'
 import { describeError } from '@/api/client.js'
 import { notifyError, notifySuccess, onConsoleRefresh, useResource } from '@/composables/index.js'
 import { session } from '@/store/session.js'
@@ -316,11 +316,20 @@ const namespaces = useResource(() => lanceApi.listNamespaces(prefix.value), { im
  * 也不是对象——id 要按当前 catalog 拼回来。这一页曾经按 `item.id` 读，服务端也曾经
  * 回对象；两边一起改是因为真客户端（Spark connector）按字符串数组反序列化，
  * 回对象它连读都读不了。
+ *
+ * <p>{@link lanceNameOf} 是**兜底归一**，不是因为规范里元素可以是对象：跑在本页的
+ * 服务端可能是更早的版本（那时回 `[{id, properties}]`）。不归一的话，对象会被 Vue
+ * 渲染成 `[object Object]`，再拼进 id 发给服务端，报出来的是
+ * `namespace id level "[object Object]" contains characters outside [A-Za-z0-9_.-]`
+ * ——像「id 里有非法字符」，其实是「拿对象当字符串用了」。
  */
-const namespaceRows = computed(() => (namespaces.data.value?.namespaces ?? []).map((name) => ({
-  id: lanceId(prefix.value, name),
-  label: name,
-})))
+const namespaceRows = computed(() => (namespaces.data.value?.namespaces ?? [])
+  .map(lanceNameOf)
+  .filter(Boolean)
+  .map((name) => ({
+    id: lanceId(prefix.value, name),
+    label: name,
+  })))
 
 const filteredNamespaces = computed(() => {
   const keyword = nsFilter.value.trim().toLowerCase()
@@ -340,11 +349,17 @@ const tables = useResource(
  * 与服务端 `LanceTableService.list` 的实现一致。名字仍然是**末段**，完整 id 放在
  * `title` 与 describe 的入参里：直接拿显示名去调 describe 会拼出
  * `cat$db$cat$db$tbl` 这种解不出来的 id。
+ *
+ * <p>与命名空间那一侧同理，`lanceFullIdOf` 兜住「元素是对象」的旧服务端；这里要的是
+ * 完整 id（describe 的入参），所以不能只取末段。
  */
-const tableRows = computed(() => (tables.data.value?.tables ?? []).map((id) => ({
-  id,
-  label: lanceLeaf(id),
-})))
+const tableRows = computed(() => (tables.data.value?.tables ?? [])
+  .map(lanceFullIdOf)
+  .filter(Boolean)
+  .map((id) => ({
+    id,
+    label: lanceLeaf(id),
+  })))
 const filteredTables = computed(() => {
   const keyword = tableFilter.value.trim().toLowerCase()
   if (!keyword) return tableRows.value

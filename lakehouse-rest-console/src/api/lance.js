@@ -50,6 +50,48 @@ export function lanceLeaf(id) {
   return text ? text.split(LANCE_DELIMITER).pop() : ''
 }
 
+/**
+ * 把「列举结果里的一个元素」归一到**完整 id 字符串**。
+ *
+ * <p>规范说 `ListNamespaces` / `ListTables` 的元素是字符串，我们按这个实现。但把这条
+ * 假设直接写进视图会很难受：**一旦对端是别的实现（或本服务端是早于这次修正的版本），
+ * 元素就是 `{id: ...}`**，而 Vue 把对象插进模板会渲染成 `[object Object]`——接着这个
+ * 字符串被拼进 id、发给服务端，得到的是
+ * `namespace id level "[object Object]" contains characters outside [A-Za-z0-9_.-]`。
+ * 那条报文说的是「id 里有非法字符」，而真正的问题是**上游把对象当字符串用了**，
+ * 两者隔着好几层，很难一眼看出来。
+ *
+ * <p>所以这里统一吸收三种形状，视图只认字符串：
+ *
+ * <ul>
+ *   <li>字符串：原样返回（`demo` / `cat$demo` / `cat$demo$orders`）；</li>
+ *   <li>数组：`['cat', 'orders']`——规范里 body 的 `id` 是层级数组，列举结果被某个
+ *       实现写成数组也不奇怪，按分隔符拼回来；</li>
+ *   <li>对象：`{id}` / `{name}` / `{namespace}`——取那个字段再递归。</li>
+ * </ul>
+ */
+export function lanceFullIdOf(item) {
+  if (item === undefined || item === null) return ''
+  if (Array.isArray(item)) {
+    return item
+      .filter((part) => part !== undefined && part !== null && part !== '')
+      .map((part) => String(part).trim())
+      .join(LANCE_DELIMITER)
+  }
+  if (typeof item === 'object') {
+    return lanceFullIdOf(item.id ?? item.name ?? item.namespace)
+  }
+  return String(item).trim()
+}
+
+/**
+ * 列举元素的**名字**（末段）。取末段是安全的：名字本身不允许含 `$`
+ * （见 {@link LANCE_NAME_PATTERN}），所以末段就是相对父级的那个名字。
+ */
+export function lanceNameOf(item) {
+  return lanceLeaf(lanceFullIdOf(item))
+}
+
 export const lanceApi = {
   /**
    * 列 catalog 下的命名空间（Lance 只有两级，这里就是全部）。

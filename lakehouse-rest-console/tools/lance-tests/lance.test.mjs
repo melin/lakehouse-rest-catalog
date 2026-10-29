@@ -16,7 +16,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { buildPath } from '../../src/api/client.js'
-import { LANCE_DELIMITER, LANCE_NAME_PATTERN, lanceId, lanceLeaf } from '../../src/api/lance.js'
+import { LANCE_DELIMITER, LANCE_NAME_PATTERN, lanceFullIdOf, lanceId, lanceLeaf, lanceNameOf } from '../../src/api/lance.js'
 
 test('id 用 $ 拼接，且丢掉空段', () => {
   assert.equal(LANCE_DELIMITER, '$')
@@ -68,4 +68,30 @@ test('名称白名单与 id 段一致：允许 _ - .，但不许 $（那是分�
   for (const bad of ['', 'sales eu', 'sales/eu', 'cat$db', '账务']) {
     assert.equal(LANCE_NAME_PATTERN.test(bad), false, bad)
   }
+})
+
+test('列举元素归一到名字：字符串 / 对象 / 数组都认', () => {
+  // 规范是字符串数组，我们按它实现；下面三种是**兜底**——
+  // 跑在更早的服务端（回 [{id, properties}]）或别的实现上时不至于把
+  // `[object Object]` 拼进 id 再吃一条「id 里有非法字符」的 400。
+  assert.equal(lanceNameOf('demo'), 'demo')
+  assert.equal(lanceNameOf('catalog$demo'), 'demo')
+  assert.equal(lanceNameOf({ id: 'catalog$demo' }), 'demo')
+  assert.equal(lanceNameOf({ id: ['catalog', 'demo'] }), 'demo')
+  assert.equal(lanceNameOf({ name: 'demo' }), 'demo')
+  assert.equal(lanceNameOf(['catalog', 'demo']), 'demo')
+  // 空值不能变成 'undefined' / 'null' / '[object Object]'
+  assert.equal(lanceNameOf(undefined), '')
+  assert.equal(lanceNameOf(null), '')
+  assert.equal(lanceNameOf(''), '')
+  assert.equal(lanceNameOf({}), '')
+})
+
+test('表清单要的是完整 id（describe 的入参），不能只留末段', () => {
+  assert.equal(lanceFullIdOf('catalog$demo$orders'), 'catalog$demo$orders')
+  assert.equal(lanceFullIdOf({ id: 'catalog$demo$orders' }), 'catalog$demo$orders')
+  assert.equal(lanceFullIdOf(['catalog', 'demo', 'orders']), 'catalog$demo$orders')
+  assert.equal(lanceFullIdOf({}), '')
+  // 显示名仍然是末段
+  assert.equal(lanceLeaf(lanceFullIdOf({ id: 'catalog$demo$orders' })), 'orders')
 })
