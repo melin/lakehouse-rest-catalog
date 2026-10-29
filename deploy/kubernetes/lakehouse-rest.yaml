@@ -206,8 +206,6 @@ data:
               users:
                 admin: admin
               # 用户名 → 主体名；未配置的用户名即主体名。用于让「开门的账号」与
-              # 「授权链路里的主体」叫不同名字，例如把 admin 映射到已有的服务管理员主体
-              principals: {}
               # 「授权链路里的主体」叫不同名字，例如把 admin 映射到已有的服务管理员主体。
               #
               # 这里配了 admin → root，是为了让本机起服务后能直接看到数据：root 既是
@@ -484,6 +482,7 @@ data:
         - group: management
           display-name: 公共 / 管理与控制台
           packages-to-scan: io.github.melin.lakehouse.rest.web
+
 
 ---
 # ---------------------------------------------------------------------------

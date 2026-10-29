@@ -184,6 +184,16 @@ export const ENDPOINTS = {
   lanceListTables: { method: 'GET', path: '/lance/v1/namespace/{id}/table/list' },
   lanceDescribeTable: { method: 'POST', path: '/lance/v1/table/{id}/describe' },
   lanceCreateNamespace: { method: 'POST', path: '/lance/v1/namespace/{id}/create' },
+  // 详情页的「版本」与「标签」两个页签。**两条都按 POST 登记**：规格里这两个
+  // operation 定义的请求形态就是 POST（表标识在路径里，body 可空），服务端另外
+  // 接了 `ListTableVersions` 的 GET 形态作为兼容扩展，但控制台不往扩展上靠——
+  // 走规格里的那一条，换一个实现也用得上。
+  //
+  // 版本写路径（`version/create`、`version/delete`）与标签写路径一个都不登记：
+  // 控制台对 Lance 是只读的（见 `api/lance.js` 的类注释），登记了就有死条目
+  // （`verify-console.py` 第 4 组会响）。
+  lanceListVersions: { method: 'POST', path: '/lance/v1/table/{id}/version/list' },
+  lanceListTags: { method: 'POST', path: '/lance/v1/table/{id}/tags/list' },
 
   // ------------------------------------------------------------------ 管理 API：catalog
   listCatalogs: { method: 'GET', path: '/api/management/v1/catalogs' },

@@ -1062,7 +1062,7 @@ lance_wiring = {
     "Lance 下藏掉「存储」页签": 'v-if="!isLance" name="storage"' in detail_view,
     "Lance 下藏掉「配置」页签": 'v-if="!isLance" name="config"' in detail_view,
     "目录浏览：Lance 换成独立组件（不是 Paimon 的列表）": '<LanceBrowseView v-else-if="lanceCatalog" />' in browse_view,
-    "目录浏览：Lance 组件只调四条端点（列举 / 列表 / 描述 / 建命名空间）": all(
+    "目录浏览：Lance 组件用到的端点都在端点表里（列举 / 列表 / 描述 / 建命名空间 / 版本 / 标签）": all(
         name in lance_api
         for name in ('lanceListNamespaces', 'lanceListTables', 'lanceDescribeTable',
                      'lanceCreateNamespace'))
@@ -1099,6 +1099,33 @@ check("建命名空间的名字校验与服务端 id 段白名单一致，且挡
       "export const LANCE_NAME_PATTERN = /^[A-Za-z0-9_.-]+$/" in lance_api
       and "LANCE_NAME_PATTERN.test(name)" in lance_browse_view,
       "api/lance.js 里应有不含 $ 的 LANCE_NAME_PATTERN，LanceBrowseView 提交前用它校验")
+
+# --- 12.6.2 Lance 表详情页 --------------------------------------------------
+# 这一页是三个详情页里唯一「按 id 拼接串取数」的那个，因此最容易漂的不是某个字段，
+# 而是**同一串 id 被三处各自拼**。四件事错了都不报错：
+#  · 路由名对不上 → 浏览页点表名静默不动（router.push 到不存在的 name 只打一条 warning）；
+#  · id 各自拼 → 命名空间那一段用了叶子名还是整串，只有请求发出去才知道，而 404 会被
+#    渲染成「这张表不存在」，表明明在列表里；
+#  · 存储优化面板不传 format → 面板按 Paimon 的键名渲染，Lance 表上每一项都点不动；
+#  · 补一个「数据预览」或「数据策略」页签 → 前者没有 PreviewFactory 实现（点了 500），
+#    后者在 Lance 读取路径上根本没有落点。
+LANCE_TABLE_VIEW = os.path.join(CONSOLE_DIR, "src/views/LanceTableView.vue")
+ROUTER_SOURCE = read(os.path.join(CONSOLE_DIR, "src/router/index.js"))
+lance_table_view = read(LANCE_TABLE_VIEW)
+lance_table_wiring = {
+    "浏览页跳的是它，且路由里真有这个名字（路由名写错只会静默不动）":
+        "name: 'lanceTable'" in ROUTER_SOURCE and "name: 'lanceTable'" in lance_browse_view,
+    "整串 id 只拼一处（lanceId(prefix, namespace, 表名)，别处一律读 fullId）":
+        re.search(r"lanceId\(prefix\.value, namespace\.value, table", lance_table_view) is not None
+        and lance_table_view.count("lanceId(") == 1,
+    "存储优化面板显式传 format=\"LANCE\"（缺省会落回 Paimon 的键名）":
+        'format="LANCE"' in lance_table_view,
+    "不给「数据预览」「数据策略」页签（前者无 PreviewFactory 实现，后者无落点）":
+        'label="数据预览"' not in lance_table_view and 'label="数据策略"' not in lance_table_view,
+}
+check("Lance 表详情页自成一个页面（路由 / id 拼接 / 优化面板格式 / 不给的页签）",
+      all(lance_table_wiring.values()),
+      "\n".join(name for name, ok in lance_table_wiring.items() if not ok))
 
 endpoints_front = re.search(r"const LANCE_ENDPOINTS = (\d+)", detail_view)
 operations_front = re.search(r"const LANCE_OPERATIONS = (\d+)", detail_view)

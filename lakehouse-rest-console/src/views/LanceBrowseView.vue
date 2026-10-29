@@ -71,151 +71,72 @@
         </div>
       </aside>
 
-      <!-- 右：表清单。ListTables 只回 id、不回位置与版本，那些在抽屉里按需读（见 api/lance.js 的注释） -->
-      <PanelCard class="pc-obj-pane" flush>
+      <!-- 右：表清单。结构与 Paimon / Iceberg 两页**同一套**（卡片头 → 过滤条 → 表格 → 翻页），
+           只是数据少：`ListTables` 只回 id，位置与版本都在详情页按需读 -->
+      <section class="pc-obj-pane pc-card">
         <div class="pc-pane-head">
-          <span class="pc-pane-title">表</span>
-          <span class="pc-dim">{{ tableRows.length }}</span>
-          <el-input
-            v-model="tableFilter"
-            size="small"
-            placeholder="过滤表名"
-            clearable
-            class="pc-lance-filter"
-          >
-            <template #prefix><el-icon><Search /></el-icon></template>
-          </el-input>
+          <span class="pc-pane-title">{{ selectedLabel || '未选择命名空间' }}</span>
+          <el-tag size="small" effect="plain" type="success">Lance</el-tag>
         </div>
 
-        <div v-loading="tables.loading.value" class="pc-lance-tables">
-          <el-alert
-            v-if="tables.error.value"
-            type="error"
-            :closable="false"
-            show-icon
-            :title="tables.error.value"
-          />
-          <el-empty
-            v-else-if="!filteredTables.length"
-            :image-size="70"
-            :description="emptyText"
-          >
-            <div class="pc-lance-empty-note">
-              表由客户端登记（<code class="pc-mono">declare</code> / <code class="pc-mono">register</code>），
-              本服务端不写数据集，因此这里没有「新建表」。
-              想知道盘上有什么，去 catalog 详情的「文件列表」看 <code class="pc-mono">_versions/</code> 与
-              <code class="pc-mono">data/</code>。
-            </div>
-          </el-empty>
-          <template v-else>
-            <div
-              v-for="row in filteredTables"
-              :key="row.id"
-              class="pc-lance-table"
-              :title="row.id"
-              @click="openDetail(row.id)"
+        <div class="pc-obj-body">
+          <div class="pc-tools-row">
+            <el-input
+              v-model="tableFilter"
+              size="small"
+              placeholder="在当前页过滤表名"
+              clearable
+              class="pc-filter"
             >
-              <el-icon class="pc-lance-table-icon"><Grid /></el-icon>
-              <span class="pc-db-name">{{ row.label }}</span>
-              <span class="pc-dim pc-lance-table-more">详情</span>
-            </div>
-          </template>
-        </div>
-      </PanelCard>
-    </div>
+              <template #prefix><el-icon><Search /></el-icon></template>
+            </el-input>
+            <span class="pc-spacer" />
+            <span class="pc-dim">
+              表由客户端登记（<code class="pc-mono">declare</code> / <code class="pc-mono">register</code>），
+              本页不提供「新建表」
+            </span>
+          </div>
 
-    <!-- 详情抽屉：先读一次便宜的 describe（位置 / 属性 / 是否只有登记），
-         manifest 里的版本与 schema 要用户点了才读 -->
-    <el-drawer
-      v-model="detail.open"
-      :title="detail.name ? `表：${detail.name}` : '表详情'"
-      size="620px"
-      destroy-on-close
-    >
-      <div v-loading="detail.loading" class="pc-lance-detail">
-        <el-alert
-          v-if="detail.error"
-          type="error"
-          :closable="false"
-          show-icon
-          :title="detail.error"
-        />
-        <template v-else-if="detail.data">
-          <el-descriptions :column="1" border size="small">
-            <el-descriptions-item label="id">
-              <span class="pc-mono">{{ detail.data.id }}</span>
-            </el-descriptions-item>
-            <el-descriptions-item label="位置">
-              <span class="pc-mono">{{ detail.data.location || '—' }}</span>
-            </el-descriptions-item>
-            <el-descriptions-item label="状态">
-              <el-tag v-if="detail.data.is_only_declared" type="info" size="small">只登记，存储里还没有数据集</el-tag>
-              <el-tag v-else-if="detail.data.is_only_declared === false" type="success" size="small">
-                存储里已有数据集
-              </el-tag>
-              <span v-else class="pc-dim">未探测</span>
-            </el-descriptions-item>
-            <el-descriptions-item v-if="detail.data.managed_versioning" label="托管版本">
-              是（版本由服务端记账，见「版本」页）
-            </el-descriptions-item>
-          </el-descriptions>
-
-          <SectionTitle title="属性（properties）">
-            <template #tip>
-              <TipNote>
-                登记时客户端给的透传属性，原样存在元数据里。控制台不解析、也不校验它们。
-              </TipNote>
-            </template>
-          </SectionTitle>
-          <el-table v-if="propertyRows.length" :data="propertyRows" size="small" border>
-            <el-table-column prop="key" label="键" min-width="160" />
-            <el-table-column prop="value" label="值" min-width="220" show-overflow-tooltip />
-          </el-table>
-          <div v-else class="pc-dim pc-lance-none">没有属性。</div>
-
-          <SectionTitle title="版本与 schema">
-            <template #tip>
-              <TipNote>
-                这两项要读仓库里的最新 manifest（<code>load_detailed_metadata=true</code>），
-                一次请求换一次读盘，所以默认不做。只登记过、还没有数据集的表会失败——
-                那是规范允许的结果，不是页面出错。
-              </TipNote>
-            </template>
-          </SectionTitle>
-
-          <el-button
-            v-if="!detail.detailed && !detail.detailedError"
-            size="small"
-            :loading="detail.detailedLoading"
-            @click="loadDetailed"
+          <!-- 过滤是本地做的（服务端只给 id，没有可下推的过滤条件）：
+               先过滤再切页，翻页只切已经过滤好的那一份，页码由 useEmbeddedPaging 兜住 -->
+          <ResourceState
+            :loading="tables.loading.value"
+            :error="tables.error.value"
+            :empty="!paged.rows.value.length"
+            :empty-text="emptyText"
           >
-            <el-icon><Refresh /></el-icon>
-            <span class="pc-btn-text">读取详细元数据</span>
-          </el-button>
+            <el-table :data="paged.rows.value" size="small">
+              <el-table-column label="表名" min-width="200">
+                <template #default="{ row }">
+                  <a class="pc-link pc-mono" @click.prevent="openTable(row)">{{ row.label }}</a>
+                </template>
+              </el-table-column>
+              <!-- 完整 id 单独一列而不是塞进 title：它是**客户端要用的那个字符串**
+                   （`catalog$schema$table`），复制给 Spark / lance-java 时要用它，
+                   藏在悬停提示里等于让人记住再手打一遍 -->
+              <el-table-column label="id（客户端用的完整串）" min-width="300">
+                <template #default="{ row }">
+                  <span class="pc-mono pc-dim pc-break">{{ row.id }}</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="操作" width="76" align="right" fixed="right">
+                <template #default="{ row }">
+                  <IconAction icon="View" label="详情" @click="openTable(row)" />
+                </template>
+              </el-table-column>
+            </el-table>
 
-          <el-alert
-            v-if="detail.detailedError"
-            type="info"
-            :closable="false"
-            show-icon
-            :title="detail.detailedError"
-          />
-
-          <template v-if="detail.detailed">
-            <el-descriptions :column="2" border size="small" class="pc-lance-gap">
-              <el-descriptions-item label="版本">
-                {{ detail.detailed.version ?? '—' }}
-              </el-descriptions-item>
-              <el-descriptions-item label="分片 / 删除行">
-                {{ detail.detailed.stats?.num_fragments ?? '—' }} /
-                {{ detail.detailed.stats?.num_deleted_rows ?? '—' }}
-              </el-descriptions-item>
-            </el-descriptions>
-            <JsonBlock :value="detail.detailed.schema" label="schema" empty-text="manifest 里没有 schema" />
-          </template>
-        </template>
-      </div>
-    </el-drawer>
+            <TablePager
+              :total="paged.total.value"
+              :page="paged.page.value"
+              :page-size="paged.pageSize.value"
+              @page-change="paged.onPageChange"
+              @size-change="paged.onSizeChange"
+            />
+          </ResourceState>
+        </div>
+      </section>
+    </div>
 
     <!-- 新建命名空间：本页唯一的写操作（表与数据仍在客户端） -->
     <el-dialog
@@ -268,27 +189,28 @@
 
 <script setup>
 import { computed, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 
-import JsonBlock from '@/components/JsonBlock.vue'
 import FieldLabel from '@/components/FieldLabel.vue'
+import IconAction from '@/components/IconAction.vue'
 import PageHeader from '@/components/PageHeader.vue'
-import PanelCard from '@/components/PanelCard.vue'
 import PropertiesEditor from '@/components/PropertiesEditor.vue'
+import ResourceState from '@/components/ResourceState.vue'
 import SectionTitle from '@/components/SectionTitle.vue'
+import TablePager from '@/components/TablePager.vue'
 import TipAlert from '@/components/TipAlert.vue'
-import TipNote from '@/components/TipNote.vue'
 import { LANCE_NAME_PATTERN, lanceApi, lanceFullIdOf, lanceId, lanceLeaf, lanceNameOf } from '@/api/lance.js'
-import { describeError } from '@/api/client.js'
-import { notifyError, notifySuccess, onConsoleRefresh, useResource } from '@/composables/index.js'
+import { notifyError, notifySuccess, onConsoleRefresh, useEmbeddedPaging, useResource } from '@/composables/index.js'
 import { session } from '@/store/session.js'
 
 /**
- * Lance catalog 的目录浏览：命名空间 + 表 + 详情抽屉，**唯一的写操作是建命名空间**。
+ * Lance catalog 的目录浏览：命名空间 + 表清单，**唯一的写操作是建命名空间**。
  *
  * <p>为什么与 Paimon / Iceberg 两页都不共用一个组件：Lance 的 id 是拼接串
  * （`catalog$schema$table`）、列举只回名字、没有 `/v1/config` 握手。这些差异
- * 不是参数级的，硬塞进一个组件会让每处都是 `v-if`。
+ * 不是参数级的，硬塞进一个组件会让每处都是 `v-if`。但**版式是同一套**——
+ * 左栏命名空间、右栏卡片里的表清单、过滤框、表格、翻页器都照 Iceberg 那一页，
+ * 三页看起来才是同一个控制台。
  *
  * <p>为什么能建命名空间、却不能建表：命名空间是**纯元数据登记**（服务端
  * `LanceNamespaceService.create` 落一行 database 记录，带一个预计位置，不碰存储），
@@ -296,9 +218,14 @@ import { session } from '@/store/session.js'
  * deregister 都由客户端发起（`docs/lance-rest-catalog-design.md` §3.2）。页面若给出
  * 「新建表」，会让人以为「在这里建的表」和「盘上的数据集」是一回事，而它们的错位
  * 要几个小时后才在客户端查询里显形。
+ *
+ * <p>表详情去独立页（`LanceTableView`）：版本、标签、文件、存储优化这些页签需要
+ * 一个整页的舞台，而且它们的加载时机各不相同（版本要读 `_versions/`、存储优化要
+ * 走管理 API）——塞进抽屉会让「打开一张表」变成一次拉齐所有东西。
  */
 
 const route = useRoute()
+const router = useRouter()
 
 /** 与 Paimon / Iceberg 两页同一个取法：URL 上的 catalog 优先，其次是顶栏选中的。 */
 const prefix = computed(() => route.query.catalog || session.state.selectedCatalog || '')
@@ -337,6 +264,12 @@ const filteredNamespaces = computed(() => {
   return namespaceRows.value.filter((row) => row.label.toLowerCase().includes(keyword))
 })
 
+/** 选中的命名空间的显示名（右栏卡片头）。 */
+const selectedLabel = computed(() => {
+  const row = namespaceRows.value.find((item) => item.id === selected.value)
+  return row ? row.label : ''
+})
+
 const tables = useResource(
   () => (selected.value ? lanceApi.listTables(selected.value) : Promise.resolve({ tables: [] })),
   { immediate: false },
@@ -347,7 +280,7 @@ const tables = useResource(
  *
  * <p><b>`ListTables` 回的是完整 id</b>（`catalog$schema$table`），不是短名——
  * 与服务端 `LanceTableService.list` 的实现一致。名字仍然是**末段**，完整 id 放在
- * `title` 与 describe 的入参里：直接拿显示名去调 describe 会拼出
+ * 单独一列与 describe 的入参里：直接拿显示名去调 describe 会拼出
  * `cat$db$cat$db$tbl` 这种解不出来的 id。
  *
  * <p>与命名空间那一侧同理，`lanceFullIdOf` 兜住「元素是对象」的旧服务端；这里要的是
@@ -360,17 +293,41 @@ const tableRows = computed(() => (tables.data.value?.tables ?? [])
     id,
     label: lanceLeaf(id),
   })))
+
 const filteredTables = computed(() => {
   const keyword = tableFilter.value.trim().toLowerCase()
   if (!keyword) return tableRows.value
   return tableRows.value.filter((row) => row.label.toLowerCase().includes(keyword))
 })
 
+/**
+ * 分页在浏览器里切。
+ *
+ * <p>服务端的 `ListTables` 有 `limit` / `page_token`，但**没有 `total`**——
+ * 页码模式需要总数（Paimon 与 Iceberg 那两个面有），Lance 这一面没有。
+ * 拿一个假的「还有下一页吗」当前缀去凑，表现是「翻到最后一页才看出到底有多少张表」，
+ * 而命名空间下的表通常只有几十张：一次拉全量、本地过滤、本地切片更好读，
+ * 也不必在两套翻页口径之间做区分。
+ */
+const paged = useEmbeddedPaging(filteredTables, { pageSize: 20 })
+
 const emptyText = computed(() => {
   if (tableFilter.value.trim()) return `没有匹配「${tableFilter.value.trim()}」的表`
   if (!selected.value) return '先在左边选一个命名空间'
   return '这个命名空间下还没有登记表'
 })
+
+/** 进 Lance 版表详情页。路由用两段**叶子名**，与优化接口的 database / table 同口径。 */
+function openTable(row) {
+  router.push({
+    name: 'lanceTable',
+    params: {
+      prefix: prefix.value,
+      namespace: lanceLeaf(selected.value),
+      table: row.label,
+    },
+  })
+}
 
 // 切换 catalog：清掉选择，重新拉命名空间
 watch(prefix, (value) => {
@@ -385,76 +342,11 @@ watch(namespaceRows, (rows) => {
   }
 }, { immediate: true })
 
-// 切换命名空间：重新拉表清单
+// 切换命名空间：重新拉表清单，并把过滤框清空（旧关键词在新命名空间里通常没有意义）
 watch(selected, (value) => {
+  tableFilter.value = ''
   if (value) tables.load()
 })
-
-const detail = ref({
-  open: false,
-  name: '',
-  id: '',
-  loading: false,
-  error: '',
-  data: null,
-  detailed: null,
-  detailedLoading: false,
-  detailedError: '',
-})
-
-const propertyRows = computed(() => Object.entries(detail.value.data?.properties ?? {})
-  .map(([key, value]) => ({ key, value: String(value) })))
-
-/**
- * 打开详情：先发一次便宜的 describe。
- *
- * <p>带 `check_declared=true`——抽屉要回答的第一个问题就是「表到底建出来没有」，
- * 这个判断要探一下存储；不带的话服务端回 `is_only_declared: null`，界面上就成了
- * 「未探测」，等于把问题原样还给用户。
- */
-async function openDetail(tableId) {
-  detail.value = {
-    open: true,
-    name: lanceLeaf(tableId),
-    id: tableId,
-    loading: true,
-    error: '',
-    data: null,
-    detailed: null,
-    detailedLoading: false,
-    detailedError: '',
-  }
-  try {
-    detail.value.data = await lanceApi.describeTable(tableId)
-  } catch (cause) {
-    detail.value.error = describeError(cause)
-  } finally {
-    detail.value.loading = false
-  }
-}
-
-/**
- * 读 manifest 换版本 / schema / 统计。
- *
- * <p>「只登记过」导致的失败是**预期结果**（规范允许 detailed 对 declared-only 失败），
- * 因此这里不当错误展示，而是把那句话写进提示里——用户看到的应该是
- * 「这张表还没有数据集」，不是「读取失败」。
- */
-async function loadDetailed() {
-  detail.value.detailedLoading = true
-  detail.value.detailedError = ''
-  try {
-    const described = await lanceApi.describeTable(detail.value.id, { detailed: true })
-    detail.value.detailed = described
-  } catch (cause) {
-    const onlyDeclared = cause?.payload?.code === 19
-    detail.value.detailedError = onlyDeclared
-      ? '这张表只有登记、还没有数据集：先由客户端写入数据，详细元数据才有内容。'
-      : describeError(cause)
-  } finally {
-    detail.value.detailedLoading = false
-  }
-}
 
 // ------------------------------------------------------------------ 新建命名空间
 
@@ -510,81 +402,12 @@ function reloadAll() {
   if (!prefix.value) return
   namespaces.load()
   if (selected.value) tables.load()
-  // 用 id 重读：`detail.name` 是末段显示名，拿它去 describe 会拼出一个解不出来的 id
-  if (detail.value.open && detail.value.id) openDetail(detail.value.id)
 }
 
 onConsoleRefresh(reloadAll)
 </script>
 
 <style scoped>
-/* 右侧表清单：一个名字一行的列表，不是表格——`ListTables` 只回名字，
- * 用 el-table 会立刻出现四五列空占位（那是「还没加载」的假象）。 */
-.pc-lance-filter {
-  width: 180px;
-  margin-left: auto;
-}
-
-/* 右侧与左侧同高：两栏都在一屏内，一张只有两行的卡片浮在半空会显得没做完。
- * 高度口径直接抄 `.pc-db-pane`（calc(100vh - 190px)），列表区自己滚。 */
-.pc-obj-pane {
-  display: flex;
-  flex-direction: column;
-  height: calc(100vh - 190px);
-  overflow: hidden;
-}
-
-.pc-lance-tables {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  padding: 8px 12px 14px;
-}
-
-.pc-lance-table {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
-  border-radius: var(--pc-radius);
-  font-size: 12.5px;
-  cursor: pointer;
-}
-
-.pc-lance-table:hover {
-  background: var(--pc-surface-2);
-}
-
-.pc-lance-table-icon {
-  font-size: 13px;
-  opacity: 0.75;
-}
-
-.pc-lance-table-more {
-  font-size: 12px;
-}
-
-.pc-lance-empty-note {
-  max-width: 460px;
-  margin-top: 6px;
-  font-size: 12px;
-  line-height: 1.7;
-  color: var(--pc-text-dim);
-}
-
-.pc-lance-detail {
-  min-height: 200px;
-}
-
-.pc-lance-none {
-  padding: 6px 2px 10px;
-  font-size: 12.5px;
-}
-
-.pc-lance-gap {
-  margin-bottom: 10px;
-}
-
 /* 名称下方那两行：拼出来的 id 与字符集。挤在一行会折行成两句半，分两行读起来清楚 */
 .pc-lance-name-hint {
   display: flex;

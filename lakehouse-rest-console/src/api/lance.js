@@ -1,7 +1,7 @@
 import { get, post } from './client.js'
 
 /**
- * Lance Namespace REST（`/lance/v1/**`）的调用面——三条读、一条写。
+ * Lance Namespace REST（`/lance/v1/**`）的调用面——五条读、一条写。
  *
  * <p>与另外两个协议面不是同一套东西，三处差别都在这里吸收，不要上浮到视图：
  *
@@ -12,14 +12,18 @@ import { get, post } from './client.js'
  * 3. **列举只回 id**：`ListTables` 的 `tables` 是字符串数组，元素是**完整 id**
  *    （`catalog$schema$table`，服务端 `LanceTableService.list` 的写法），没有位置、
  *    没有版本、也没有「存储里有没有数据集」。这些只在单表的 `DescribeTable` 里，
- *    因此列表页不伪造这些列，把它们放进按需打开的详情抽屉（Paimon 面的
- *    `table-details` 一次给全，Lance 面没有对应端点——这是两面的真实差距，不是没写）。
+ *    因此**列表页只有表名与 id 两列**，位置 / 版本 / 是否只有登记都在详情页按需读
+ *    （Paimon 面的 `table-details` 一次给全，Lance 面没有对应端点——这是两面的真实差距）。
  *
  * <p><b>写只有一条：建命名空间。</b>命名空间是纯元数据登记（服务端
  * `LanceNamespaceService.create` 只落一行 database 记录），与「建表」不是一回事：
  * 表那一侧的 declare / register / deregister / rename / drop 一个都不登记——这台服务端
  * 对 Lance 没有建立数据的路径（`docs/lance-rest-catalog-design.md` §3.2），
  * 控制台给那些按钮等于承诺「这里能建表」。
+ *
+ * <p>版本与标签都**只读**：`version/create`、`version/delete`、`tags` 的写路径
+ * 都没接。写版本要理解 manifest 的盘上布局，而控制台不该成为第二个写入方——
+ * 那条路径属于 Lance 客户端（Spark connector / lance-java），见设计稿 §7。
  */
 
 /** 默认分隔符。与服务端 `LanceIds` 的缺省一致；控制台不允许改（客户端才需要）。 */
@@ -117,10 +121,36 @@ export const lanceApi = {
    *
    * <p>`detailed: true` 才去读最新 manifest（版本 / schema / 统计）；默认那一次只回
    * 位置与属性，便宜。**只有登记、没有数据集**的表在 detailed 下会失败（规范允许），
-   * 因此列表上不调它，抽屉里单独给一个按钮，失败原因原样显示而不是当成「页面出错」。
+   * 因此列表上不调它，详情页里单独给一个按钮，失败原因原样显示而不是当成「页面出错」。
    */
   describeTable: (tableId, { detailed = false } = {}) => post('lanceDescribeTable', {
     params: { id: tableId, query: { check_declared: true, load_detailed_metadata: detailed } },
+  }),
+
+  /**
+   * 列举版本（`POST /lance/v1/table/{id}/version/list`）。
+   *
+   * <p>响应是 `{versions: [{version, manifest_path, manifest_size, e_tag,
+   * timestamp_millis, metadata}], page_token}`。**默认倒序**：进这一页的人几乎总在找
+   * 最近一次提交，正序要把列表翻到底才能看到它。
+   *
+   * <p>`limit` 默认 100：一张高频写入的表版本数可以上千，一次拉全量对这个页面没有
+   * 意义（这里没有按版本号的过滤器，翻到第 200 个版本的人其实是在看盘上的
+   * `_versions/` 目录，那是「文件列表」页签的事）。
+   */
+  listVersions: (tableId, { descending = true, limit = 100 } = {}) => post('lanceListVersions', {
+    params: { id: tableId, query: { descending, limit } },
+  }),
+
+  /**
+   * 列举标签（`POST /lance/v1/table/{id}/tags/list`）。
+   *
+   * <p>响应里的 `tags` 是 **map**（标签名 → `{branch, version, manifestSize}`），
+   * 不是数组——`manifestSize` 还是唯一一处驼峰（服务端 DTO 照盘上的 JSON 字段名）。
+   * 标签目录不存在时回空 map 而**不是 404**：没有标签是正常状态，不是这张表坏了。
+   */
+  listTags: (tableId, { limit = 100 } = {}) => post('lanceListTags', {
+    params: { id: tableId, query: { limit } },
   }),
 
   /**

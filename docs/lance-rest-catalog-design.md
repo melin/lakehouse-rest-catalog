@@ -552,16 +552,16 @@ DescribeTable / DeclareTable 的请求参数 vend_credentials=true
 | --- | --- | --- |
 | catalog 列表 / 详情 | `catalog_format` 徽标加 `LANCE`；「协议与能力」卡片：基址 `/lance/v1/namespace`、**不发 `/v1/config`**、能力清单改成「已实现 19 个 operation / 21 条端点、其余 35 个恒 406」并给出四组分布 | 与 Iceberg 的卡片同形，但 Lance **没有发现端点**——它是三面里唯一不给客户端下发清单的（§12.9） |
 | catalog 详情·页签 | 只有「概览」与「文件列表」；**不出现**「存储」与「配置」 | 存储页的数字全来自快照 / 表元数据统计；配置页编辑的 `table-default.*` 只在建表时合并，而 Lance 面没有 `CreateTable`（存得下、永不生效） |
-| 目录浏览 | Lance catalog 挂独立组件 `LanceBrowseView`：左列命名空间（`GET /lance/v1/namespace/{id}/list`）、右列表（`GET …/table/list`）、点行开抽屉（`POST /lance/v1/table/{id}/describe`，带 `check_declared=true`；版本与 schema 再点一次读 `load_detailed_metadata`）。**写只有一条**：建命名空间（`POST …/namespace/{id}/create`，纯元数据登记）；没有建表 / declare / 删除入口，端点表里也只登记了这一条写端点 | 本页调的是 `/v1/{prefix}/databases/**`，而 Lance 的 id 是拼接串、列举只回名字——契约不同所以是另一个组件。一期曾整页不做，那是把**浏览**与**建表**混成了一件事：只读列举本来就在 19 个 operation 里（§12.9） |
-| 表详情 | 只显示「详细信息 / 文件列表 / 血缘」三个页签；**不显示**快照、数据预览、数据策略。「存储优化」页签的**面板已就绪**（[`lance-table-optimization-design.md`](lance-table-optimization-design.md) §7 已落地），但**页签还没加**——Lance 表目前只有浏览页里那个只读抽屉（`LanceBrowseView`），没有表详情页；等表详情页落地时一并加（同文档 §7.5 写了解除条件） | Lance 表没有我们的快照概念；预览需要 Lance reader（§3.3）；行过滤在 Lance 侧无落点 |
+| 目录浏览 | Lance catalog 挂独立组件 `LanceBrowseView`，**版式与 Paimon / Iceberg 两个浏览页同一套**（左命名空间树 + 右卡片：工具条里的过滤框、`el-table`、`TablePager`）：左列命名空间（`GET /lance/v1/namespace/{id}/list`）、右表两列（`lanceLeaf(id)` 与整串 id），点表名进独立详情页。**翻页在浏览器里切**（`useEmbeddedPaging`）——`ListTables` 有 `limit` / `page_token` 但不回 `total`，远程分页的控件画不出合法页数。**写只有一条**：建命名空间（`POST …/namespace/{id}/create`，纯元数据登记）；没有建表 / declare / 删除入口，端点表里也只登记了这一条写端点 | 本页调的是 `/v1/{prefix}/databases/**`，而 Lance 的 id 是拼接串、列举只回名字——契约不同所以是另一个组件。一期曾整页不做，那是把**浏览**与**建表**混成了一件事：只读列举本来就在 19 个 operation 里（§12.9） |
+| 表详情 | 独立页 `LanceTableView`（路由 `/lance-tables/:prefix/:namespace/:table`），六个页签：详细信息 / 版本 / 标签 / 文件列表 / 血缘 / **存储优化**（`TableOptimizationPanel` 显式传 `format="LANCE"`，只有 `OPTIMIZE` 与 `VACUUM` 两项，`orphan` 恒不可用）。**不给**「数据预览」（`TablePreviewFactory` 没有 Lance 实现）与「数据策略」（Lance 读取路径不经过 `PolicyRelation` 注入层）。整串 id 在一处拼（`lanceId`），`describe` 带 `check_declared=true`，`code 19` 翻成「先由客户端写入数据」当提示而不是错误 | 与 Paimon / Iceberg 两个详情页平行而不是同页按格式分支：三面的取数原语互不重叠（`databases/**` / 一次 `loadTable` / 按拼接 id 的 `describe`），合一后每个页签都要写三层 `if`。版本与标签**只读**：写版本要走 `BatchCreateTableVersions`（多版本一次提交），拆成一条一条写等于半个事务 |
 | 建表表单 | **不给 Lance 入口**（与 `lance-table` 的处理一致）；新建 catalog 选 Lance 时给出与 Iceberg 分开的提示 | 建表要写数据集，我们没有写路径 |
 | 文件列表 | 复用现有的对象存储浏览（`_versions/`、`data/` 直接可见） | 这是唯一能看到「表里到底有什么」的地方，成本为零 |
 | 事件 | 复用现有表生命周期事件，payload 增加 `format=LANCE`；**不新增事件类型**（declare / register / deregister / rename 四条都已带） | 事件消费者是按 `category/type` 订阅的，新增类型会让所有 listener 漏事件 |
 
 `scripts/verify-console.py` 第 12 组把这页钉住（见 `docs/console.md` §5.2）：基址、不发
-`/v1/config`、两个页签藏起来、浏览页是独立组件且**只调三条读端点**（另有一条断言端点表里
-没有 Lance 写端点）、以及**三个数字与 `verify-lance-endpoints.py` 台账相加对账**
-（21 = 6+8+5+2、19 = 21 − 2、35 = `NOT_IMPLEMENTED_OPERATIONS`）。
+`/v1/config`、两个页签藏起来、浏览页是独立组件、**表详情页自成一路**（路由名、整串 id 只拼一处、
+优化面板的 `format="LANCE"`、不给的两栏），端点表里**没有** Lance 表侧写端点，以及**三个数字与
+`verify-lance-endpoints.py` 台账相加对账**（21 = 6+8+5+2、19 = 21 − 2、35 = `NOT_IMPLEMENTED_OPERATIONS`）。
 
 ---
 

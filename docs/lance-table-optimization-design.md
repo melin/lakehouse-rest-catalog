@@ -17,8 +17,8 @@
 >
 > **落地阶段更正了三处设计稿的事实错误**，正文里就地改掉并注明原因，不另开勘误表：
 > `max_source_fragments`（connector 0.4.0 的 Spark 侧没接出来，§3.1 / §4.1）、
-> compact 的键数（8 → 7，§0 / §4.1）、以及控制台「存储优化页签对 Lance 表放开」这一条
-> 的边界（§7.5——真正的 Lance 表今天到不了表详情页）。
+> compact 的键数（8 → 7，§0 / §4.1）、以及控制台入口这一条（§7.5——不是去放开
+> `TableView` 的白名单，而是 Lance 表另有自己的详情页 `LanceTableView`）。
 
 ---
 
@@ -594,10 +594,12 @@ Paimon/Iceberg 的孤儿清理有「干跑预览 → 确认」两步。Lance 没
 
 与另两种格式的展示**不同构**（那边是「12 → 4」），这是数据本身决定的，不是忘了对齐（§1.3）。函数本身仍是「不判格式、只判键存在」——三套键在同一动作下互不重叠，一批里混着三种格式的表也不需要知道每张表是什么格式。
 
-### 7.5 表详情页签的渲染条件（已落地其一，另一条**有意不做**）
+### 7.5 表详情页签的渲染条件（已落地：入口在 Lance 自己的详情页）
 
 - **独立页签还是并进详情页**：独立页签。面板本身（三张卡 + 三块历史）与详情页不是一个量级。
-- **白名单**：`TableView` 的「存储优化」页签仍然只对 Paimon 表打开（Iceberg 表走 `IcebergTableView`、显式传 `format="ICEBERG"`），**没有**把 `lance-table` 加进去。这不是遗漏，两个理由：
+- **入口：`LanceTableView` 的「存储优化」页签**（路由 `/lance-tables/:prefix/:namespace/:table`，
+  `lance-rest-catalog-design.md` §7），显式传 `format="LANCE"`。`TableView` 的「存储优化」页签
+  **仍然**只对 Paimon 表打开，**没有**把 `lance-table` 加进去。这不是遗漏，两个理由：
 
   1. `options.type=lance-table` 是 Paimon 面给一个 Lance 目录做的**元数据包装**
      （`catalog-api-endpoints.md` 建表一节：「能建不能读写」），它不在 Lance 的 REST
@@ -605,13 +607,14 @@ Paimon/Iceberg 的孤儿清理有「干跑预览 → 确认」两步。Lance 没
      `<catalogUrl>/lance`）解析表名的。让它进来只会把一张**永远跑不了**的表显示成
      「可以开」——比不给页签更糟。
   2. 真正的 Lance 表（`table_type=LANCE`，由 `LanceTableService` 登记）挂在 LANCE 格式的
-     catalog 下。Lance 的目录浏览已经落地（`LanceBrowseView`，除建命名空间外只读，
-     `lance-rest-catalog-design.md` §7），但它点开的是**详情抽屉**而不是表详情页——
-     `table_type=LANCE` 的表今天没有 `TableView` 路由，因此到不了「存储优化」页签。
+     catalog 下，走的是 Lance 自己的详情页——`table_type=LANCE` 的表从来没有 `TableView` 路由，
+     所以「在 `TableView` 那一行加 `|| isLanceTable`」这件事**从一开始就是错的方向**
+     （`TableView.vue` 里那段注释已改成这个说法）。
 
   面板本身对 Lance 已经完全就绪（`LANCE_ACTIONS` + 第三张卡置灰 + 指标口径），
-  等 Lance 表详情页落地时，那一行加上 `|| isLanceTable` 就通了——`TableView.vue` 里
-  这段判断上方的注释记着同一件事。
+  这次只是把它挂到了正确的父组件上。`verify-console.py` 第 12 组新加的一条会盯住
+  「`LanceTableView` 传的是 `format="LANCE"`」——漏了它面板会按 Paimon 的键名渲染，
+  十项里每一项都点不动，而页面看起来完全正常。
 - 页签上「当前版本数」这类信息仍靠 `ListTableVersions`（`lance-rest-catalog-design.md`
   P1 已落地），与 §6.5 是同一个依赖。
 
@@ -735,7 +738,7 @@ Volcengine 那篇把这类问题归到「Head OOM」，并提醒一件事：**�
 | L-OPT-4 | `LanceProcedures`（语句翻译） | `LanceProceduresTests` 用真 lexer/parser 断言形状 | ✅ 10 条 |
 | L-OPT-5 | `TableOptimizerJob` 三处二元分派改穷尽 switch + `spark()` 的 Lance 分支 | `Format.parse` 的两类失败分开；三处 `switch` 穷尽 | ✅ |
 | L-OPT-6 | 镜像加 connector + `JAVA_TOOL_OPTIONS` | 容器里能建 Lance 会话 | ⚠️ 镜像已改（bundle + `extraClassPath` 前置 + `ENV JAVA_TOOL_OPTIONS`），**未在真集群上验证** |
-| L-OPT-7 | 控制台 `LANCE_FIELDS` + `actionsFor` 三元 + 置灰卡 | 三张卡在 LANCE 下渲染正确；保存往返一致 | ✅（面板就绪，入口见 §7.5） |
+| L-OPT-7 | 控制台 `LANCE_FIELDS` + `actionsFor` 三元 + 置灰卡 | 三张卡在 LANCE 下渲染正确；保存往返一致 | ✅（面板 + 入口都已落地：`LanceTableView` 的「存储优化」页签，见 §7.5） |
 | L-OPT-8 | `ActionPolicy` 加 `supported` / `unsupportedReason` | Lance 的 `orphan` 返回 `supported=false` 且带原因；另两种格式恒 `true` | ✅ |
 
 ### P1：把「不可逆」这件事做扎实

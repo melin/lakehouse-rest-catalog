@@ -59,6 +59,18 @@ const routes = [
     meta: { title: '表详情（Iceberg）', group: '目录（Catalog API）', parent: 'browse' },
   },
   {
+    // Lance 表详情。与 `/tables/...`、`/iceberg-tables/...` 三页平行，理由与 Iceberg 那一页
+    // 同源：三个协议面的数据来源、可读字段、按需加载的单位都不同（Lance 连 `/v1/config`
+    // 握手都没有，id 是 `catalog$schema$table` 的拼接串）。
+    //
+    // `namespace` 段是**叶子名**（不是 `catalog$schema` 整串）：存储优化接口要的是
+    // `lakehouse_database.name`，Lance 的命名空间只有一级，叶子名就是它。
+    path: '/lance-tables/:prefix/:namespace/:table',
+    name: 'lanceTable',
+    component: () => import('@/views/LanceTableView.vue'),
+    meta: { title: '表详情（Lance）', group: '目录（Catalog API）', parent: 'browse' },
+  },
+  {
     path: '/catalogs',
     name: 'catalogs',
     component: () => import('@/views/CatalogsView.vue'),
