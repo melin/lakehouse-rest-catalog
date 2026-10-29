@@ -42,6 +42,7 @@ build/
 # 曾被误加进本文件，结果四处文档说「产物已提交」、实际一个文件都没跟踪，
 # 新克隆的仓库跑 ConsoleApiTests 时「产物自洽」那条直接失败。
 # 是否被误加由 scripts/verify-console.py 第 6 组机械检查。
+
 # 语法文件的生成物。正常构建把它们写到 target/generated-sources/antlr4/（包名由
 # 目录结构推出）；手工跑 antlr4 CLI 容易把它们落在语法文件旁边，这里挡一下，
 # 免得「两份同名的 Lexer/Parser」被误提交。

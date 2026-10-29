@@ -396,6 +396,19 @@ public class RestServerProperties {
              */
             private String redirectUri;
 
+            /**
+             * 登出后回到哪里，例如 {@code http://localhost:8080/console/login}。
+             *
+             * <p>同样必须在 IdP 侧登记过（RP-initiated logout 的
+             * {@code post_logout_redirect_uri}），而且它与 {@link #redirectUri}
+             * **不是同一个地址**：那个带 {@code /auth/callback}，是授权码的落点。
+             *
+             * <p>留空则登出时不下发这个参数，浏览器停在 IdP 自己的「已退出」页面，
+             * 需要用户自己走回来。这不是缺陷：IdP 会逐字比对登记过的地址，
+             * 服务端擅自拼一个只会换来它页面上一句语焉不详的拒绝，比停在登出页更难排查。
+             */
+            private String postLogoutRedirectUri;
+
             private String scope = "openid profile email";
 
             /**

@@ -156,6 +156,66 @@ export function clearPending() {
   sessionStorage.removeItem(RETURN_TO_KEY)
 }
 
+/**
+ * RP-initiated logout 的跳转地址；不适用时返回空串。
+ *
+ * <p><b>它解决的是「登出只清了本机」。</b>令牌是自包含的，服务端没有会话可删，
+ * 因此本机登出之后 IdP 那边的 SSO 会话仍然存在——下一个人在同一台机器上点「登录」
+ * 会直接又进来，中间没有一次密码。这不是本服务的令牌的问题，是浏览器与 IdP
+ * 之间的那层没被碰过。把浏览器送到 IdP 的 {@code end_session_endpoint} 才能结束它。
+ *
+ * <p><b>只在 {@code source === 'oidc'} 时跳。</b>用用户名密码、客户端凭据或静态令牌
+ * 登录的人，在 IdP 那边压根没有会话；把本机的 JWT 当作 {@code id_token_hint}
+ * 递过去，IdP 会当成一个不属于自己的令牌。轻则报错页，重则该 IdP 恰好也认
+ * 这个 issuer 时把别人登出——两种都不是我们想要的。
+ *
+ * <p><b>{@code id_token_hint} 只在它真的是 JWT 时才带。</b>见到「换成令牌」那一步：
+ * 优先 id_token，但在 IdP 只发不透明 access_token 时也会退而用它。不透明的串
+ * 塞进 {@code id_token_hint} 违反规格，部分 IdP 直接拒绝整个请求。
+ * 不带它也行——{@code client_id} 就够多数 IdP 定位客户端，只是它们会多问一句
+ * 「确定要退出吗」。
+ *
+ * @param {object} oidc  `/api/console/v1/auth` 下发的 `oidc` 字段
+ * @param {{token?: string, source?: string}} session 当前令牌与它的来源
+ * @returns {string} 要整页跳转的地址；空串表示「只清本机令牌」
+ */
+export function logoutRedirectUrl(oidc, { token = '', source = '' } = {}) {
+  const endpoint = (oidc?.endSessionEndpoint || '').trim()
+  if (!endpoint || source !== 'oidc') {
+    return ''
+  }
+  let url
+  try {
+    url = new URL(endpoint)
+  } catch {
+    // IdP 给了一个不合法的地址。此时登出还得继续，只是不去 IdP——
+    // 抛异常会让「退出登录」这个按钮先失败，比不结束 SSO 会话更糟
+    return ''
+  }
+  if (token && looksLikeJwt(token)) {
+    url.searchParams.set('id_token_hint', token)
+  }
+  if (oidc.clientId) {
+    url.searchParams.set('client_id', oidc.clientId)
+  }
+  const postLogout = (oidc.postLogoutRedirectUri || '').trim()
+  if (postLogout) {
+    url.searchParams.set('post_logout_redirect_uri', postLogout)
+  }
+  return url.toString()
+}
+
+/**
+ * 粗判一个串是不是 JWT（三段、都是 base64url 字符）。
+ *
+ * <p>不做解析、不验签：这里只用来决定「能不能把它当 id_token_hint 递出去」，
+ * 而 IdP 自己会验。判错的代价不对称——把不透明串递过去，IdP 可能拒绝整个登出请求；
+ * 少递一次，IdP 只是多问一句。
+ */
+function looksLikeJwt(value) {
+  return /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(value)
+}
+
 /** S256 挑战 = base64url(SHA-256(verifier))。 */
 async function codeChallenge(verifier) {
   if (!window.crypto?.subtle) {

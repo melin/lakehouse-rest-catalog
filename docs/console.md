@@ -667,7 +667,7 @@ python3 scripts/verify-console.py      # 退出码 0 通过 / 1 不一致 / 2 �
 PYTHON=/path/to/python3 scripts/verify-console.py   # 多解释器时指定装了 PyYAML 的那个
 ```
 
-它**不构建前端、不启动服务端**，只做静态比对，因此可以放进提交前的检查。25 组 182 项：
+它**不构建前端、不启动服务端**，只做静态比对，因此可以放进提交前的检查。26 组 186 项：
 
 | 组 | 校验内容 |
 | --- | --- |
@@ -695,7 +695,8 @@ PYTHON=/path/to/python3 scripts/verify-console.py   # 多解释器时指定装�
 | 22. 执行集群 | catalog 级执行集群（优化任务提交到哪个 k8s、用什么身份）。这一组钉的是**多集群这件事的形状**，因为它的错法全都不报错：五个端点都必须挂在 `catalogs/{catalogName}/execution-cluster` 下（不引入一级资源——没有「列出全部执行集群」的需求，也没有「不属于任何 catalog 的执行集群」）、控制器类级路由与端点前缀逐字一致且六个动词映射齐全、三种集群类型（`SELF_HOSTED` / `EKS` / `AKS`）在服务端 `ClusterType` 与前端 `CLUSTER_TYPES` 两处取值完全相同、五种状态（`NOT_CONFIGURED` / `DISABLED` / `UNVERIFIED` / `HEALTHY` / `FAILING`）同样两处一致、**前端代码里不出现 `configHash` / `probeConfigHash`**（状态只由服务端算；两边各算一份的漂移表现是「列表说正常、点进去说待验证」，而那一屏最难解释）、`Catalog` DTO 带摘要且 `list()` 用批量 `summaries(...)` 而不是逐行 `summaryOf(...)`（列表是打开最频繁的页，N+1 在这里等于「catalog 越多越慢」）、列表有那一列并走 `clusterCell` 翻译、未配置的行按钮是主色（那一刻它是待办）、**读模型不含任何凭据明文**（`kubeconfig` 只回摘要、秘密只回 `has*`）、秘密字段有显式的 `clearCredentials` / `clearCatalogToken`（留空＝不改，清空要单独说）、`application.yml` 的 `optimization` 段只剩三个节拍键且 12 个提交参数一个不剩、`RestServerProperties.Optimization` 与之对齐（就三个字段）、fail-closed 的两个落点都在（保存策略与「立即优化」各一次 `assertDispatchable`）、出批侧在造批次之前判「可派发」、旧的两种提交器已删除、fabric8 客户端禁用 `autoConfigure` 回落并断言 master URL（缺了它，填错 apiServer 的 catalog 会静默把 Job 提交到服务端自己所在的集群）、`sql/schema-mysql.sql` 里真有这张表（实体加了没重新生成 DDL，部署时会因 `ddl-auto=validate` 起不来） |
 | 23. 定时刷新 | Catalog 与优化任务列表的定时刷新（§4.9）。这一组钉的是它的**静默性**与**唯一实现**，因为错法全都不报错：默认值（开启 + 5 秒）只在 `utils/autoRefresh.js` 定义一次、节拍档位只有一份且控件按它 `v-for` 渲染、两个列表页都真的接了 `useAutoRefresh` 且偏好键不重名、**每一拍只走 `silentLoad`**（定时器实参块里不出现 `load()` / `reload()`——它们会置 `loading`，症状是表格每 5 秒闪一次遮罩）、静默失败时保留上一份数据（`rows.value = []` 在整个 composables 里只能出现在非静默分支一次）、失败原因有地方显示、后台标签页跳过并在切回时补一拍、上一拍没回来不发下一拍、离开页面清掉定时器、优化任务页连展开中的批次明细一起刷 |
 | 24. 凭据来源 | catalog 列表与详情页的「凭据来源」（三档：短期签发 / 转发长期密钥 / 不下发，外加「配置有误」）。这一组钉的是**分层**而不是像素：判定只有服务端一份（`CatalogCredentialSource`，判据是 `DefaultStorageCredentialManager` 走哪条分支，要读 `lakehouse.rest.storage.*` 与 `credential.providers`）、四档取值与控制台的词表逐字对应、**翻译层里不读判据字段**（`roleArn` / `stsUnavailable` / `providers` 一旦出现在代码里，就说明有人开始在前端算来源——那份逻辑会与凭据管理器漂移，症状是「列表说在签发、实际在转发」）、列表页与详情页共用同一份翻译且判定失败不影响表格本身（catalog 列表是好的，缺的只是一个标注） |
-| 25. 文档计数 | 本节这张表上方的「N 组 M 项」与脚本实际一致（`docs/console.md` 与 `README.md` 各一条）。期望值由脚本自身推出——组数是源码里分组标题的条数，项数是本次校验的总条数——因此加/删校验项时这里不用改，但**文档必须跟着改** |
+| 25. 登出 | 「退出登录」什么时候要离开本应用去 IdP 结束 SSO 会话（RP-initiated logout）。三条判据都不报错：必须只在 **IdP 发过票** 时跳（否则把口令登录的人扔到别人的登录页上，本机令牌却已清）、地址只能来自服务端下发的 `end_session_endpoint`（`issuer + "/logout"` 在 Keycloak 上碰巧对，在 Auth0 / Azure 上是另一条路径，拼错就是一个 404 页面）、且必须在清令牌**之前**算（它要读令牌与来源，顺序反了就永远算不出地址，现象是登出悄悄退回「只清本机」） |
+| 26. 文档计数 | 本节这张表上方的「N 组 M 项」与脚本实际一致（`docs/console.md` 与 `README.md` 各一条）。期望值由脚本自身推出——组数是源码里分组标题的条数，项数是本次校验的总条数——因此加/删校验项时这里不用改，但**文档必须跟着改** |
 
 第 7 组是这套机制里最实用的一条：**产物过期不会让任何东西报错**，
 它只是安静地少一个按钮。
@@ -852,13 +853,30 @@ OIDC 登录期间还会在 `sessionStorage` 里放三个短命键
 `baseUrl` 默认空串即同源——生产构建后控制台与服务端同端口，不填就是对的；
 只有把控制台部署到别处（例如独立的静态站点托管）时才需要覆盖。
 
-### 6.1 登出只是忘掉本机令牌
+### 6.1 登出：清本机令牌，SSO 时连 IdP 的会话一起结束
 
 服务端**没有会话表**：令牌是自包含的 JWT，签出去之后在
 `lakehouse.rest.auth.access-token.ttl`（默认 1 小时）内一直有效，没有可以作废它的接口。
 因此 `auth.logout()` 不通知服务端，只清掉本机那份令牌。
 
-这一点在界面上如实说明（顶栏按钮的提示、设置页的说明文字），
+**用 SSO 登录时还有第二层要结束。** 浏览器与 IdP 之间那份会话不归本机管：清了令牌之后
+那个人在浏览器里仍是登录状态，换个人点「登录」会直接进来，中间没有一次密码。
+因此 `auth.logout()` 会先把一件东西算出来——**去 IdP 登出的地址**——再清令牌，然后把地址
+交给调用方整页跳转（`window.location.assign`）：
+
+| 情况 | 登出后浏览器去哪儿 |
+| --- | --- |
+| 令牌是 IdP 发的（`session.source === 'oidc'`）且发现文档给了 `end_session_endpoint` | IdP 的登出端点；配了 `oidc.post-logout-redirect-uri` 才会自动回到 `/console/login`，否则停在 IdP 自己的「已退出」页 |
+| 其余情况（口令 / 客户端凭据 / 静态令牌，或 IdP 没有那个端点） | 停在控制台，按服务端是否要求登录决定跳不跳登录页 |
+
+三个判据都不能松：**只在 IdP 发过票时跳**（否则把口令登录的人扔到一个与他无关的
+IdP 页面上，而本机令牌已经清了）、**地址只来自服务端下发的 `end_session_endpoint`**
+（`issuer + "/logout"` 在 Keycloak 上碰巧对，在 Auth0 / Azure 上是另一条路径）、
+**地址在清令牌之前算**（它要读令牌本身与来源，顺序反了就永远算不出，现象是登出悄悄
+退回「只清本机」）。三条都由 `verify-console.py` 第 25 组钉住，前端纯函数
+`logoutRedirectUrl` 另有一组 node 用例（`tools/oidc-tests/`）。
+
+这一点在界面上如实说明（顶栏按钮的提示会随来源变化、设置页的说明文字），
 否则会给人「已经把自己踢下线了」的错觉。
 
 ### 6.2 路由守卫
@@ -1063,8 +1081,10 @@ npm run test:auto-refresh                      # 只跑定时刷新的判定（7
 - **登出无法作废服务端令牌。** 令牌是自包含的 JWT，服务端没有会话表。
   要立刻失效只能轮换签名密钥（会作废所有人的令牌）。详见
   [`console-auth.md` §12](console-auth.md#12-已知边界)。
-- **OIDC 不做单点登出。** IdP 的 `end_session_endpoint` 已发现但未接：
-  控制台登出后，IdP 那边的会话仍然存在。
+- **SSO 的单点登出只在 IdP 提供端点时成立。** 登出会把浏览器送到
+  `end_session_endpoint`（§6.1）；IdP 没给这个端点、或本次登录不是 SSO 时，
+  退回「只清本机令牌」，IdP 那边的会话仍然存在。回跳地址要单独配
+  （`oidc.post-logout-redirect-uri`），不配就停在 IdP 的「已退出」页。
 - **无审计视图。** 服务端记录了操作日志，但控制台目前没有对应的展示页；
   需要时按 §5.3 的清单加。
 - **文件浏览只读，且可关。** `/api/console/v1/catalogs/{catalogName}/files` 与

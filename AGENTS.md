@@ -506,6 +506,10 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
   保存静态凭据返回 400，而**不是**明文落库。
 - 控制台的 `admin/admin` 默认口令在启动时会有告警；不要把默认口令写进示例截图或文档正文
   （`docs/console-auth.md` 是成文例外，它本来就讲这个）。
+- **SSO 登出必须真的结束 IdP 那边的会话**（`auth.logout()` 返回的地址要整页跳过去）。
+  只清本机令牌不算登出：同一台机器上换个人点「登录」会直接进来，中间没有一次密码——
+  而这在界面上看不出任何异常。三个判据见 `docs/console.md` §6.1，
+  由 `verify-console.py` 第 25 组守着。
 
 ---
 

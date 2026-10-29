@@ -115,6 +115,12 @@ h2 profile（两个开关显式关闭）必然触发这条告警，这是有意�
 而多实例互认与重启不掉线是每天都在发生的事。这个取舍必须写进运维认知里，
 因此登录页与设置页都会明确提示「退出登录只是忘掉本机令牌」。
 
+**这个取舍只覆盖本服务的令牌，不覆盖 IdP 的会话。** 用 SSO 登录时，浏览器与身份提供方
+之间另有一层会话，本机清令牌碰不到它——清了之后那个人在浏览器里仍然是登录状态，
+换个人点「登录」会直接进来，中间没有一次密码。因此登出会先算出 IdP 的登出地址
+（`end_session_endpoint`）再清令牌，由调用方整页跳转过去。见
+[`console.md`](console.md) §6.1 的判据表。
+
 ---
 
 ## 3. 对标 Polaris Console 的哪几点
@@ -545,6 +551,8 @@ lakehouse:
           issuer-uri: "https://keycloak.example.com/realms/EXTERNAL"
           client-id: "paimon-console"
           redirect-uri: "http://localhost:8080/console/auth/callback"
+          # 登出后回到哪里；也要在 IdP 侧登记过，留空则停在 IdP 的「已退出」页
+          post-logout-redirect-uri: "http://localhost:8080/console/login"
           scope: openid profile email
           principal-claim: sub
           audience: "paimon-console" # 建议填 client-id；留空不校验受众
@@ -608,7 +616,13 @@ lakehouse:
 加一种登录方式不需要动它。
 
 `auth.logout()` **不通知服务端**，因为服务端不知道这件事（没有会话表可删）。
-它的语义就是「忘掉本机这份令牌」。
+本机这一侧它的语义就是「忘掉这份令牌」。
+
+**但 IdP 那边的会话它管得到。** 于是 `logout()` 返回一个可选的跳转地址：SSO 登录时是
+IdP 的登出端点（RP-initiated logout），其余情况是空串。地址必须在**清令牌之前**算，
+因为它要读令牌本身（`id_token_hint`）与来源（这张票是不是 IdP 发的）；顺序反了就永远
+算不出地址，而这不报错——只是登出又退回「只清本机」。两个登出入口
+（`ConsoleLayout` 顶栏、`SettingsView`）都拿这个返回值做整页跳转。
 
 ### 怎么验
 
@@ -653,8 +667,11 @@ curl -s -X POST http://localhost:8080/api/management/v1/principals \
 - **无法即时撤销令牌。** 只能等 TTL 过期，或轮换 `access-token.signing-key`
   （作废所有人的令牌）。要做单点撤销需要引入令牌黑名单，那会让「服务端不保存状态」
   这条性质失效，因此没有做。
-- **OIDC 的 RP-initiated logout 未实现。** IdP 的 `end_session_endpoint` 已经发现出来了，
-  但没下发到前端，也没接。目前登出是纯本地行为，IdP 那边的会话仍然存在。
+- **OIDC 的 RP-initiated logout 只在 IdP 提供端点时成立。** `end_session_endpoint`
+  来自发现文档，OIDC 不强制它存在；没有它（或本次登录不是 SSO）时登出退回纯本地行为，
+  IdP 那边的会话仍然存在。另外**回跳地址要单独配**（`oidc.post-logout-redirect-uri`，
+  在 IdP 侧登记过的那个）：不配也能登出，只是浏览器停在 IdP 自己的「已退出」页面，
+  需要用户自己走回来——服务端不替用户拼这个地址，未登记的地址会被 IdP 拒绝。
 - **不做刷新令牌（refresh token）。** 过期就重新登录。控制台是低频使用的运维界面，
   引入刷新流程会带来「刷新令牌怎么存、怎么撤销」一整串问题，收益不抵。
 - **`scope` 只有 `PRINCIPAL_ROLE:ALL`。** 见 [§5.3](#53-scope-只接受-principal_roleall)。

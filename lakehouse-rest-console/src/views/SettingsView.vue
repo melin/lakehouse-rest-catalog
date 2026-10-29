@@ -121,11 +121,14 @@
              已经清楚的人不必每来一次都重读一遍。 -->
         <TipNote>
           <p>
-            <strong>退出登录只是忘掉本机保存的令牌。</strong>
+            <strong>退出登录会忘掉本机保存的令牌；SSO 登录时还会结束 IdP 那边的会话。</strong>
             服务端不保存登录状态——令牌是自包含的 JWT，签出去之后在有效期
             （<code>lakehouse.rest.auth.access-token.ttl</code>）内一直有效，
             没有可以作废它的接口；要立刻让某人的令牌失效只能轮换
             <code>access-token.signing-key</code>，而那会作废所有人的令牌。
+            用外部身份提供方登录时，浏览器与 IdP 之间另有一层会话，本机清令牌动不到它，
+            因此登出会把浏览器送到 IdP 的登出端点（配了
+            <code>oidc.post-logout-redirect-uri</code> 才会自动回到本控制台）。
           </p>
           <p>
             <strong>控制台门禁不是安全边界。</strong>
@@ -275,10 +278,16 @@ function goLogin() {
 }
 
 async function doLogout() {
-  await auth.logout()
+  const redirectUrl = await auth.logout()
   session.reset()
   form.token = ''
   probes.value = []
+  // SSO 登录时浏览器要离开本应用去 IdP 登出（那里还有一份会话没结束），
+  // 此时本页的清理已经做完，直接跳走；否则留在原地回登录页
+  if (redirectUrl) {
+    window.location.assign(redirectUrl)
+    return
+  }
   if (auth.loginRequired()) {
     router.replace({ name: 'login' })
   }

@@ -149,13 +149,24 @@ public class ConsoleAuthController {
 
     private ConsoleDtos.OidcClientConfig oidcClientConfig(OidcService.Metadata metadata) {
         RestServerProperties.Auth.Oidc oidcProperties = properties.getAuth().getConsole().getOidc();
+        // 入参顺序就是 record 的字段顺序：登出端点与回跳地址挨着 redirectUri，
+        // scope 在最后。写错顺序不会报错（六个字段都是 String），只会让前端拿到
+        // 一个像 scope 的「登出地址」——ConsoleAuthOidcConfigTests 钉的就是这个
         return new ConsoleDtos.OidcClientConfig(
                 metadata.issuer(),
                 metadata.authorizationEndpoint(),
                 metadata.tokenEndpoint(),
                 oidcProperties.getClientId(),
                 oidcProperties.getRedirectUri(),
+                // 登出端点只来自发现文档：IdP 不给就如实下发 null，让前端退回「只清本机令牌」
+                blankToNull(metadata.endSessionEndpoint()),
+                blankToNull(oidcProperties.getPostLogoutRedirectUri()),
                 oidcProperties.getScope());
+    }
+
+    /** 空串与 null 在这里是同一个意思：没配。前端只看「有没有值」。 */
+    private static String blankToNull(String value) {
+        return value == null || value.isBlank() ? null : value;
     }
 
     /**

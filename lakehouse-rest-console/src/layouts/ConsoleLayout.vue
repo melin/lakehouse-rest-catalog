@@ -78,15 +78,14 @@
 
         <!-- 服务端认可手上的令牌时才显示「你是谁」。
              令牌来自哪条路径（客户端凭据 / SSO / 手填的静态令牌）放在提示里：
-             「退出登录」只是忘掉本机这份令牌，说清楚来源才不至于让人以为
-             自己注销了某个服务端会话（服务端并没有会话） -->
+             服务端不保存会话，说清楚来源才不至于让人以为注销了某个服务端会话 -->
         <div v-if="auth.state.authenticated" class="pc-header-user">
           <span class="pc-header-divider" />
           <el-tooltip :content="`令牌来源：${auth.state.sourceLabel}`" placement="bottom">
             <el-icon class="pc-header-user-icon"><UserFilled /></el-icon>
           </el-tooltip>
           <span class="pc-header-user-name">{{ auth.state.principal }}</span>
-          <el-tooltip content="退出登录（忘掉本机保存的令牌）" placement="bottom">
+          <el-tooltip :content="logoutHint" placement="bottom">
             <el-button size="small" text circle @click="logout">
               <el-icon><SwitchButton /></el-icon>
             </el-button>
@@ -121,6 +120,21 @@ const groups = navGroups()
 function isActive(item) {
   return route.name === item.name || route.meta?.parent === item.name
 }
+
+/**
+ * 退出按钮的提示语。
+ *
+ * <p>两种情况要做的事不同，提示也不能一样：SSO 登录时会连 IdP 的会话一起结束
+ * （浏览器会离开本应用），其余情况只是忘掉本机令牌。写成一句「忘掉本机保存的令牌」
+ * 会让 SSO 用户以为点完还留在原地，而实际浏览器已经跳走了；反过来写「已退出登录」
+ * 则是句假话——令牌在有效期内仍然有效。
+ */
+const logoutHint = computed(() => {
+  const endsSsoSession = Boolean(auth.state.oidc?.endSessionEndpoint) && auth.state.source === 'oidc'
+  return endsSsoSession
+    ? '退出登录（同时结束身份提供方的会话）'
+    : '退出登录（忘掉本机保存的令牌）'
+})
 
 /**
  * 面包屑。分组名不进链接——分组本身不是页面，写成链接会指向 404。
@@ -185,16 +199,24 @@ function refresh() {
  * <p>会话与「当前目录、服务端元数据」这些缓存一起清掉：它们是在上一个身份的
  * 权限下取回来的，留着会让下一个登录者看到不属于自己的列表。
  *
- * <p><b>它只是忘掉本机令牌</b>——服务端不保存登录状态（令牌是自包含的 JWT），
- * 没有可以作废的东西。令牌在自身的有效期内仍然有效，这一点写在按钮提示里，
- * 不让人误以为已经把自己踢下线了。
+ * <p><b>本机这一侧只是忘掉令牌</b>——服务端不保存登录状态（令牌是自包含的 JWT），
+ * 没有可以作废的东西。令牌在自身的有效期内仍然有效。
+ *
+ * <p><b>SSO 登录时会先离开本应用。</b>IdP 那边的会话不归本机管：清掉令牌之后
+ * 那个人在浏览器里仍是登录状态，下一个人点「登录」会直接进来。所以登出要把
+ * 浏览器送到 IdP 的登出端点（地址由 {@link auth.logout} 算出来）。这一步是整页跳转
+ * 而不是路由跳转——目标是另一个域。
  *
  * <p>登出后是否跳登录页取决于服务端：不需要令牌的部署里，登出只是清掉本机令牌，
  * 把人赶到登录页反而奇怪（那里会告诉他「服务端未要求登录」）。
  */
 async function logout() {
-  await auth.logout()
+  const redirectUrl = await auth.logout()
   session.reset()
+  if (redirectUrl) {
+    window.location.assign(redirectUrl)
+    return
+  }
   if (auth.loginRequired()) {
     router.replace({ name: 'login' })
     return

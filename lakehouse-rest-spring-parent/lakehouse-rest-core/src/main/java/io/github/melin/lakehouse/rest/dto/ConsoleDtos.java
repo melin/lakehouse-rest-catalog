@@ -237,6 +237,20 @@ public final class ConsoleDtos {
             String clientId,
             /** 必须在 IdP 侧登记过的回调地址。 */
             String redirectUri,
+            /**
+             * 登出端点（发现文档的 {@code end_session_endpoint}）。
+             *
+             * <p>{@code null} 表示 IdP 没提供（OIDC 不强制它存在）。下发而不是让前端
+             * 拿 issuer 去拼：那个地址同样来自发现文档，拼错了只会得到一个 404 页面，
+             * 而这时用户已经清掉本机令牌了，连「回到控制台」都要自己输地址。
+             */
+            String endSessionEndpoint,
+            /**
+             * 登出后回到哪里；{@code null} 表示没配，登出时就停在 IdP 自己的页面上。
+             *
+             * <p>与 {@code redirectUri} 是两个地址，不能互相顶替：IdP 逐字比对登记值。
+             */
+            String postLogoutRedirectUri,
             String scope) {
     }
 

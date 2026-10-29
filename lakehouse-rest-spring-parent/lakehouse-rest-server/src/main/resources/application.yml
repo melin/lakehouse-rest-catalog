@@ -194,6 +194,11 @@ lakehouse:
           # 必须在 IdP 侧登记过的回调地址，例如
           # http://localhost:8080/console/auth/callback
           redirect-uri: ""
+          # 登出后回到哪里，同样必须在 IdP 侧登记过（RP-initiated logout 的
+          # post_logout_redirect_uri），例如 http://localhost:8080/console/login。
+          # 注意它与上面的回调地址不是同一个：那个带 /auth/callback，是授权码的落点。
+          # 留空则登出时浏览器停在 IdP 自己的「已退出」页面，需要用户自己走回来。
+          post-logout-redirect-uri: ""
           scope: openid profile email
           # 从哪个 claim 取主体名。取到的值需要与 lakehouse_principal.name 或
           # authorization.service-admins 里的名字对得上，否则登录成功但什么也看不到

@@ -73,7 +73,11 @@ spec/rest-catalog-open-api-iceberg.yaml）。路径写错时前端只表现为�
                   配置有误）只有服务端一个判据，控制台只翻译；四档取值与服务端 Mode
                   枚举逐字对应。前端自己算来源时界面会与凭据管理器漂移——
                   表现是「列表说在签发、实际在转发」，只在出事那天才被发现
- 25. 文档计数     文档里写的「N 组 M 项」与脚本实际一致——加校验组的人要顺手改文档，
+ 25. 登出         「退出登录」什么时候要离开本应用去 IdP 结束 SSO 会话：判据只有
+                  「这张票是 IdP 发的」、地址只来自服务端下发的 end_session_endpoint、
+                  且必须在清令牌之前算。三处任一处判错都不报错——要么把口令登录者
+                  扔到别人的 IdP 页面上，要么登出悄悄退回「只清本机」
+ 26. 文档计数     文档里写的「N 组 M 项」与脚本实际一致——加校验组的人要顺手改文档，
                   而这条约定此前没人执行（真漂过一次：docs/console.md 37、实际 38）
 
 用法：
@@ -2541,10 +2545,56 @@ check("表单预览的输入是提交体（modelValue），不是表单内部状
       "预览要么没接上，要么拿 form 当输入：form 里有 removeCredentials 这类不提交的字段，"
       "预览出来的结论会与真正保存的那份配置不符")
 
-# ------------------------------------------------------------------ 25. 文档计数
+# ------------------------------------------------------------------ 25. 登出
 
 print()
-print("25. 文档计数（文档写的「N 组 M 项」必须与脚本实际一致）")
+print("25. 登出（SSO 会话要一起结束：只在 IdP 发过票时跳，且必须在清令牌之前算地址）")
+
+OIDC_API = os.path.join(CONSOLE_DIR, "src/api/oidc.js")
+AUTH_STORE = os.path.join(CONSOLE_DIR, "src/store/auth.js")
+CONSOLE_LAYOUT = os.path.join(CONSOLE_DIR, "src/layouts/ConsoleLayout.vue")
+SETTINGS_VIEW = os.path.join(CONSOLE_DIR, "src/views/SettingsView.vue")
+
+oidc_api = read(OIDC_API)
+auth_store = read(AUTH_STORE)
+
+# 「退出登录」这条链路上有三个判据，每一个判错都不报错：
+#   1. 该不该去 IdP —— 只该在「这张票是 IdP 发的」时候去。放开成无条件跳，
+#      用口令登录的人会被送到一个与他无关的 IdP 页面上，而本机令牌已经清掉了；
+#   2. 什么算地址 —— 只能来自服务端下发的 endSessionEndpoint。issuer + "/logout"
+#      在 Keycloak 上碰巧对，在 Auth0 / Azure 上是另一个路径，拼错就是 404 页面，
+#      而那时用户已经没有本机令牌可以回去；
+#   3. 什么时候算 —— 必须在清令牌**之前**，因为要读令牌本身（id_token_hint）
+#      与它的来源。顺序反了就永远算不出地址，现象是「登出又退回只清本机」，同样不报错。
+check("跳转只在「这张票是 IdP 发的」时成立",
+      "source !== 'oidc'" in oidc_api,
+      "判据没了 → 用口令或静态令牌登录的人也会被送到 IdP：本机令牌已清，人却停在一个"
+      "与他无关的登录页上")
+
+check("登出地址取自服务端下发的 endSessionEndpoint，不由 issuer 拼",
+      "oidc?.endSessionEndpoint" in oidc_api,
+      "地址只来自发现文档：issuer + 某条路径在 Keycloak / Auth0 / Azure 上各不相同，"
+      "拼错的表现是 IdP 上一个 404，而那时本机令牌已经清掉了")
+
+# 只在 logout() 的函数体里比先后：整个文件里第一处 credentials.saveToken('')
+# 在别的路径上（adopt 失败时不写盘），拿它当基准会得出相反的结论。
+logout_body = auth_store.split("async function logout(", 1)[-1]
+check("登出地址在清令牌之前算（顺序反了就永远算不出）",
+      0 <= logout_body.find("logoutRedirectUrl(state.oidc")
+      < logout_body.find("credentials.saveToken('')"),
+      "store/auth.js 的 logout() 里 logoutRedirectUrl(...) 必须出现在 saveToken('') 之前："
+      "它要读令牌本身（id_token_hint）与来源（这张票是不是 IdP 发的）")
+
+check("两个登出入口都是整页跳转（不是路由跳转）",
+      "window.location.assign(redirectUrl)" in read(CONSOLE_LAYOUT)
+      and "window.location.assign(redirectUrl)" in read(SETTINGS_VIEW),
+      "登出目标是另一个域，vue-router 跳不过去；顶栏与设置页任一入口漏掉，"
+      "从那个入口登出的 SSO 会话就结束不了")
+
+# ------------------------------------------------------------------ 26. 文档计数
+
+print()
+print("26. 文档计数（文档写的「N 组 M 项」必须与脚本实际一致）")
 
 # 这一组是**元校验**，起因是一次真实的漂移：docs/console.md 写「12 组 37 项」、
 # README 写「12 组 38 项」，而脚本实际是 38——两个数字都没人核对，因为脚本此前

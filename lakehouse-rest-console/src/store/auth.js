@@ -2,6 +2,7 @@ import { reactive } from 'vue'
 
 import { ApiError } from '@/api/client.js'
 import { consoleAuthApi } from '@/api/console-auth.js'
+import { logoutRedirectUrl } from '@/api/oidc.js'
 import { credentials } from '@/store/credentials.js'
 
 /**
@@ -24,6 +25,10 @@ import { credentials } from '@/store/credentials.js'
  * 直接的后果是 <b>登出只是忘掉本机令牌</b>：令牌在有效期内仍然有效，
  * 要真正作废只能轮换签名密钥（那会作废所有人的令牌）。这是自包含令牌的固有代价，
  * 换取的是多实例互认、重启不掉线。
+ *
+ * <p>唯一的例外在 IdP 那一侧：用 SSO 登录时，浏览器与身份提供方之间还有一层会话，
+ * 本机清令牌碰不到它。因此 {@link logout} 会返回一个要去 IdP 登出的地址，
+ * 把那一层也结束掉——否则下一个人点「登录」会直接进来，中间没有一次密码。
  */
 
 /** 认证方式取值，与服务端 `ConsoleDtos.AuthMethod` 一一对应。 */
@@ -303,14 +308,28 @@ function loginWithStaticToken(token) {
  * <p><b>不通知服务端，因为服务端不知道这件事。</b>令牌是自包含的 JWT，
  * 服务端没有会话表可以删；这个请求发出去也无处可发（上一版有
  * {@code /api/console/v1/logout}，它删的是内存里的会话，而现在没有那份内存了）。
- * 于是登出的语义就是「忘掉本机这份令牌」——它仍然在有效期内有效，
+ * 于是本机的语义就是「忘掉这份令牌」——它仍然在有效期内有效，
  * 这一点必须如实写出来，否则会给人「已经踢下线了」的错觉。
+ *
+ * <p><b>但 IdP 那边的会话可以结束。</b>用 SSO 登录时，浏览器与 IdP 之间还有一个
+ * 我们看不见的会话：本机清了令牌，那个会话还在，下一个人点「登录」会直接又进来，
+ * 中间没有一次密码。因此这条路径返回一个要整页跳转的地址（RP-initiated logout），
+ * 由调用方导航过去；不适用时返回空串，调用方照旧跳到登录页。
+ *
+ * <p>地址必须在清令牌**之前**算：它要读令牌本身（{@code id_token_hint}）
+ * 与来源（这张票是不是 IdP 发的）。顺序反过来就永远算不出地址，
+ * 而这不会报错——只是登出又退回「只清本机」。
  */
-function logout() {
+async function logout() {
+  const redirectUrl = logoutRedirectUrl(state.oidc, {
+    token: credentials.token,
+    source: state.source,
+  })
   credentials.saveToken('')
   resetSession()
   state.checked = false
-  return refresh()
+  await refresh()
+  return redirectUrl
 }
 
 export const auth = {
