@@ -241,11 +241,21 @@
   COSN 的 FileIO 不认临时凭据，见 `credential-vending-design.md` §6.3.4。
 - `S3` / `OBS` / `OSS` / `COS` 四种类型另各带一对 `accessKeyId` / `secretAccessKey`，
   让 catalog 直接指定访问对象存储的长期密钥（规格里没有这个位置，密钥只能来自服务端配置）。
-  三点与其他字段不同：**`secretAccessKey` 只写不读**，落库前用 AES-GCM 加密，
-  任何响应都不回显，因此 `PUT` 省略它表示保持原值——这是上面「整体替换」的**唯一例外**，
-  要清除需显式提交一对空串；`accessKeyId` 可读可写，与 `storageName` 互斥（同时给返回 400），
-  只有密钥没有 ID 或反之也返回 400。加密密钥由 `lakehouse.rest.storage.credential-secret-key`
-  提供，未配置时保存这类凭据返回 400（fail-closed，不明文落库）。
+  四点与其他字段不同：
+  1. **`secretAccessKey` 只写不读**，落库前用 AES-GCM 加密，任何响应都不回显，
+     因此 `PUT` 省略它表示保持原值——这是上面「整体替换」的**唯一例外**；要清除需显式提交一对空串。
+  2. **`accessKeyId` 回显为 `******`**（打码，不是省略）。省略了就分不清「没配凭据」与
+     「配了但看不到」，而这两种在 `PUT` 里含义不同：前者什么都不给，后者要回一个哨兵。
+  3. **`******` 是「未修改」哨兵**：写入口收到它就沿用库里那份。
+     `******` + 省略/空密钥 = 两个字段都不动（「只改个名字」的保存走这条）；
+     `******` + 新密钥 = 沿用库里的 ID、只换密钥；库里没有原值却给了 `******` 返回 400
+     （没有可指向的钥匙），`******` 出现在 `secretAccessKey` 位同样 400。
+     **它不等于空串**：打码是「有值但不告诉你」，空串是「这里不要值了」，混用会静默删凭据。
+  4. 与 `storageName` 互斥（同时给返回 400），只有密钥没有 ID 或反之也返回 400。
+
+  加密密钥由 `lakehouse.rest.storage.credential-secret-key` 提供，未配置时保存这类凭据
+  返回 400（fail-closed，不明文落库）。打码只覆盖 catalog 的 `storageConfigInfo`；
+  执行集群那套凭据（`ExecutionClusterDtos`）的 `accessKeyId` 仍回显，是另一条契约。
 
 `ConnectionConfigInfo` 仍只按 Iceberg REST 形态处理。
 

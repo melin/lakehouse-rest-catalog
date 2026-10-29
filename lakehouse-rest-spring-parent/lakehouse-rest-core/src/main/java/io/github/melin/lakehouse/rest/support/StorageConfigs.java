@@ -35,14 +35,31 @@ import java.util.List;
  * <p><b>静态凭据的三个入口在这里收口。</b>规格没有「用户填 AK/SK」的位置，
  * 这对字段是本工程的扩展（见 {@code StorageDtos}），因此它的读写规则也由本类承担：
  * 写路径 {@link #mergeStaticCredentials}（保持/设置/清除）、对外响应
- * {@link #withoutSecrets}（抹掉密文）、内部下发 {@link #staticCredentials}
+ * {@link #withoutSecrets}（打码 + 抹掉密文）、内部下发 {@link #staticCredentials}
  * （解密后交给凭据管理器）。加解密本身在 {@link CredentialCipher}，
  * 本类只决定「什么时候该调用它」——这样规则可以脱离 Spring 上下文单测。
+ *
+ * <p><b>打码（{@link #MASKED}）与它的回写哨兵是一对，必须同时成立。</b>对外那份把
+ * {@code accessKeyId} 也换成 {@code ******}，于是「读-改-写」的调用方必然把
+ * {@code ******} 原样送回来。{@link #mergeStaticCredentials} 若不认这个值，
+ * 第一次「只改个名字」的保存就会把库里的 AK ID 写成六个星号，而密钥仍是旧的那把——
+ * 密钥对错位，错误现场在存储侧（{@code InvalidAccessKeyId}），与「我刚改了什么」
+ * 完全联系不上。所以这里只允许一种组合：<b>打码在 {@link #withoutSecrets} 一处产生，
+ * 哨兵在 {@link #mergeStaticCredentials} 一处消费</b>。
  */
 public final class StorageConfigs {
 
     private StorageConfigs() {
     }
+
+    /**
+     * 对外响应里 {@code accessKeyId} 的占位值，同时是写路径的「未修改」哨兵。
+     *
+     * <p>六个星号而不是「前四位 + 星号」这类半遮蔽：半遮蔽会让人把它当成真值抄回去，
+     * 而它必须一眼看出「这不是给你用的」。与 Gravitino #13539 的取值一致，
+     * 客户端 SDK 只要照抄那个实现就能对上。
+     */
+    public static final String MASKED = "******";
 
     /**
      * 按 {@code storageType} 校验类型专属的必填字段。
@@ -255,26 +272,46 @@ public final class StorageConfigs {
      * <p>解密在这里发生，而不是在 DTO 装配时：DTO 是要发给客户端的，而凭据只在
      * 服务端内部消费。把解密收在唯一的读取点上，就不会出现「某个响应顺手把明文带出去」。
      *
-     * @throws ApiException 500 密文无法用当前密钥解开
+     * <p><b>拿到打码值就在这里失败</b>，而不是把它当 AK 发出去。这说明有一处代码把
+     * 对外那份（{@link #withoutSecrets} 的结果）当成了内部那份——打码值配上真实密钥
+     * 只会在存储侧报 {@code InvalidAccessKeyId}，与本意完全脱钩；报错在这里则一眼能看出
+     * 是「传错了一份配置」。这条断言是打码引入的新错法的唯一护栏。
+     *
+     * @throws ApiException 500 密文无法用当前密钥解开，或传入的是打码后的对外配置
      */
     public static StaticCredentials staticCredentials(StorageConfigInfo info, CredentialCipher cipher) {
         if (!hasStaticCredentials(info)) {
             return null;
         }
+        if (isMasked(accessKeyIdOf(info))) {
+            throw new ApiException(500, null, null,
+                    "refusing to vend credentials: the config carries the masking placeholder \""
+                            + MASKED + "\" instead of a real accessKeyId, so it is the masked copy"
+                            + " meant for API responses, not the stored one");
+        }
         return new StaticCredentials(accessKeyIdOf(info), cipher.reveal(secretAccessKeyOf(info)));
     }
 
     /**
-     * 抹掉密文，供对外响应使用。
+     * 抹掉密文、给 {@code accessKeyId} 打码，供对外响应使用。
      *
-     * <p>{@code accessKeyId} 保留：它不是秘密，且管理台要显示「这个 catalog 配的是哪把钥匙」。
-     * 密钥本身一律不回显——它一旦能被读出来，加密落库就只剩「防备份外泄」这一层意义了。
+     * <p><b>这是唯一一处打码。</b>列表与详情都走这里（{@code ManagementCatalogService#toDto}
+     * 只有一个出口），因此两边不会出现「列表给六个星号、详情给真值」这种
+     * 让人以为是 bug 的不一致；反过来，任何新加的响应路径也必须经过本方法，
+     * 否则打码就漏在那个路径上。
+     *
+     * <p>打码而不是省略：省略了调用方就分不清「没配静态凭据」与「配了但看不到」，
+     * 而这两种情况在 {@code PUT} 里的含义不同（前者什么都不给，后者要回一个哨兵）。
+     * 取值见 {@link #MASKED}——它是 {@link #mergeStaticCredentials} 认的「未修改」。
+     *
+     * <p>密钥本身一律不回显：它一旦能被读出来，加密落库就只剩「防备份外泄」这一层意义了。
      */
     public static StorageConfigInfo withoutSecrets(StorageConfigInfo info) {
         if (!supportsStaticCredentials(info)) {
             return info;
         }
-        return withCredentials(info, accessKeyIdOf(info), null);
+        String id = accessKeyIdOf(info);
+        return withCredentials(info, isBlank(id) ? id : MASKED, null);
     }
 
     /**
@@ -290,12 +327,21 @@ public final class StorageConfigs {
      *
      * <ul>
      *   <li>两个字段都没给（{@code null}）→ 保持库中原值；
+     *   <li>{@code accessKeyId} 是打码值 {@link #MASKED} → 视为「未修改」：库里有就用库里的
+     *       （同时给了密钥则只换密钥，见下一条）；库里没有则 400，因为此时
+     *       {@code ******} 没有可指向的原值，「保持」无从谈起；
      *   <li>两个字段都给了且都非空 → 换新（{@code accessKeyId} 与旧值相同也照换，
      *       此时 {@code secretAccessKey} 必须一起给，避免「只换 id 不换密钥」的半份配置）；
      *   <li>两个字段都给了且都是空串 → 清除静态凭据，回到服务端配置的取密钥路径；
      *   <li>只给一个 → 400。读-改-写回显旧 {@code accessKeyId} 是唯一的例外：
-     *       它与库中一致时不要求同时给密钥。
+     *       它与库中一致时不要求同时给密钥（掩码上线前发出的报文仍按这个口径收）。
      * </ul>
+     *
+     * <p><b>{@code MASKED} 与「空串」的区别要守住。</b>打码是「这个值有、但我不告诉你」，
+     * 空串是「这里不要值了」。因此 {@code ******} + 空密钥不按清除处理（两个字段各自都
+     * 表示「不变」，组合起来只能读成保持）；要清除必须显式提交一对空串——控制台的
+     * 「移除已保存的静态凭据」正是这么发的。若把两者混为一谈，「用户把表单里的密钥
+     * 留空」就会静默删掉一份还能用的凭据。
      *
      * <p>存储类型换了（例如 S3 → GCS）时凭据不迁移：AK/SK 是签发到具体云厂商与
      * 具体密钥空间的，跨类型沿用只会让另一家云的密钥留在配置里。
@@ -311,10 +357,28 @@ public final class StorageConfigs {
         }
         String givenId = accessKeyIdOf(requested);
         String givenSecret = secretAccessKeyOf(requested);
-        String storedId = existing != null && requested.storageType() == existing.storageType()
-                ? accessKeyIdOf(existing) : null;
-        String storedSecret = existing != null && requested.storageType() == existing.storageType()
-                ? secretAccessKeyOf(existing) : null;
+        boolean sameType = existing != null && requested.storageType() == existing.storageType();
+        String storedId = sameType ? accessKeyIdOf(existing) : null;
+        String storedSecret = sameType ? secretAccessKeyOf(existing) : null;
+
+        if (isMasked(givenId)) {
+            // 送到这里的 ****** 必须能在库里找到对应的那一把钥匙，否则存下去就是
+            // 「AK 是六个星号、SK 还是旧的」——错位要到引擎第一次签名才暴露
+            if (isBlank(storedId)) {
+                throw ApiException.badRequest("storageConfigInfo.accessKeyId is \"" + MASKED
+                        + "\", the placeholder the API returns for a stored key, but this catalog"
+                        + " has no stored static credentials of that storage type; supply the real"
+                        + " accessKeyId");
+            }
+            if (MASKED.equals(givenSecret == null ? null : givenSecret.trim())) {
+                throw ApiException.badRequest("storageConfigInfo.secretAccessKey must not be the"
+                        + " masking placeholder: it is never returned by the API, so it must be"
+                        + " re-supplied whenever the key changes");
+            }
+            // 密钥留空 = 连密钥一起保持；给了新密钥 = 只换密钥、沿用库里的 AK ID
+            String secret = isBlank(givenSecret) ? storedSecret : cipher.seal(givenSecret.trim());
+            return withCredentials(requested, storedId, secret);
+        }
 
         if (givenId == null && givenSecret == null) {
             return withCredentials(requested, storedId, storedSecret);
@@ -337,6 +401,11 @@ public final class StorageConfigs {
         throw ApiException.badRequest("storageConfigInfo.secretAccessKey is required when accessKeyId"
                 + " is set or changed; it is never returned by the API, so it must be re-supplied"
                 + " whenever the key changes");
+    }
+
+    /** 是否为对外那份发出的打码值（容忍首尾空白：调用方常把整个值 {@code trim()} 后再回传）。 */
+    private static boolean isMasked(String value) {
+        return value != null && MASKED.equals(value.trim());
     }
 
     private static String accessKeyIdOf(StorageConfigInfo info) {

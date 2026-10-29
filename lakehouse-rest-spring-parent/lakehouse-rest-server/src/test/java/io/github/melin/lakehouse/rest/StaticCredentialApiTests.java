@@ -41,10 +41,12 @@ import tools.jackson.databind.node.JsonNodeFactory;
  * 而是三条只有走完整链路才看得见的约定：
  *
  * <ol>
- *   <li><b>密钥永不回显。</b>创建、读取、列表三处响应里都不出现明文，
+ *   <li><b>两个字段都不回显真值。</b>创建、读取、列表三处响应里都不出现明文密钥，
+ *       也不出现真实的 {@code accessKeyId}（那个位置固定是 {@link StorageConfigs#MASKED}）；
  *       库里存的也不是明文（能解开的密文才算数）；
- *   <li><b>密钥省略即保持。</b>{@code PUT} 对其余字段是整体替换，唯独只写不读的密钥
- *       不能被替换掉——否则「改个 endpoint」会顺手清掉密钥，而失败会推迟到引擎读写数据时；
+ *   <li><b>密钥省略即保持，打码值回传也即保持。</b>{@code PUT} 对其余字段是整体替换，
+ *       唯独只写不读的凭据不能被替换掉——否则「改个 endpoint」会顺手清掉密钥，
+ *       而「把回显的 {@code ******} 当真值存回去」会把密钥对弄错位（G14）；
  *   <li><b>它真的被下发。</b>读表凭据接口回来的必须是 catalog 里那把钥匙，
  *       而不是服务端配置的默认凭据。
  * </ol>
@@ -105,16 +107,21 @@ class StaticCredentialApiTests {
 
         JsonNode storage = created.get("storageConfigInfo");
         assertEquals("S3", storage.get("storageType").asString());
-        assertEquals(ACCESS_KEY_ID, storage.get("accessKeyId").asString(), "accessKeyId 不是秘密，用于显示");
+        assertEquals(StorageConfigs.MASKED, storage.get("accessKeyId").asString(),
+                "accessKeyId 也要打码：它一旦能被读出来，就成了「这把钥匙是谁的」的旁路标识");
+        assertFalse(created.toString().contains(ACCESS_KEY_ID), "响应体任何位置都不应出现真实 AK ID");
         assertFalse(storage.has("secretAccessKey"), "响应里不应出现 secretAccessKey: " + storage);
         assertFalse(created.toString().contains(SECRET), "响应体任何位置都不应出现明文密钥");
 
         // 重新读取与列表：同样不回显
         JsonNode fetched = json(200, "GET", M + "/catalogs/" + prefix, null);
         assertFalse(fetched.toString().contains(SECRET), "单查也不应回显明文密钥");
+        assertFalse(fetched.toString().contains(ACCESS_KEY_ID), "单查也不应回显 AK ID");
         assertFalse(fetched.get("storageConfigInfo").has("secretAccessKey"));
         assertFalse(json(200, "GET", M + "/catalogs", null).toString().contains(SECRET),
                 "列表更不应该回显明文密钥");
+        assertFalse(json(200, "GET", M + "/catalogs", null).toString().contains(ACCESS_KEY_ID),
+                "列表同样打码——两处走的是同一个出口，不该一边星号一边真值");
 
         // 库里存的是密文，且能解开
         StorageConfigInfo stored = storedConfig(prefix);
@@ -145,19 +152,19 @@ class StaticCredentialApiTests {
     // ------------------------------------------------------------------ 更新语义
 
     /**
-     * 省略密钥即保持（{@code PUT} 整体替换的唯一例外）。
+     * 打码值的正常回程：{@code ******} 原样带回 + 省略密钥 = 两样都不动。
      *
-     * <p>用「再下发一次凭据」验证，而不是只读回响应：响应里本来就没有密钥，
+     * <p>用「再下发一次凭据」验证，而不是只读回响应：响应里本来就没有明文，
      * 只断言响应等于没断言。
      */
     @Test
-    void omittedSecretKeepsTheStoredOneAcrossUpdates() throws Exception {
+    void maskedAccessKeyIdWithOmittedSecretKeepsBoth() throws Exception {
         String prefix = "static-s3-keep";
         JsonNode created = createCatalog(prefix, staticS3Config());
         seedTable(prefix);
         int version = created.get("entityVersion").asInt();
 
-        // 只改端点，并原样回显 accessKeyId（读-改-写的常见形态）
+        // 只改端点，把详情里那个打码值原样送回来——控制台与 SDK 读-改-写的默认形态
         JsonNode updated = json(200, "PUT", M + "/catalogs/" + prefix, """
                 {"currentEntityVersion":%d,
                  "storageConfigInfo":{"storageType":"S3",
@@ -166,16 +173,127 @@ class StaticCredentialApiTests {
                                       "endpoint":"http://minio2.internal:9000",
                                       "pathStyleAccess":true,
                                       "accessKeyId":"%s"}}
-                """.formatted(version, ACCESS_KEY_ID));
+                """.formatted(version, StorageConfigs.MASKED));
 
         assertEquals("eu-west-1", updated.get("storageConfigInfo").get("region").asString());
         assertFalse(updated.toString().contains(SECRET), "更新响应也不应回显明文密钥");
+        assertEquals(StorageConfigs.MASKED, updated.get("storageConfigInfo").get("accessKeyId").asString(),
+                "响应照旧打码，不该因为这次写就把真值放出来");
 
         JsonNode token = json(200, "GET", tokenPath(prefix), null).get("token");
         assertEquals(ACCESS_KEY_ID, token.get("s3.access-key-id").asString());
         assertEquals(SECRET, token.get("s3.secret-access-key").asString(),
                 "省略 secretAccessKey 应保持库中原值");
         assertEquals("http://minio2.internal:9000", token.get("s3.endpoint").asString());
+    }
+
+    /**
+     * 设计稿 §8 P1-8 的验收：打码之后「只改个名字」的保存不改变库里的 AK ID。
+     *
+     * <p>这是 G14 那个坑的正面形态。没有哨兵分支时，一次「只改属性」的保存会把
+     * {@code ******} 当成新 AK ID 落库，而密钥沿用旧值——**密钥对错位**，
+     * 失败现场在存储侧（{@code InvalidAccessKeyId}），与「我刚改了什么」完全联系不上。
+     *
+     * <p>与上一条的区别：这条模拟控制台的完整提交（属性 + 整份 storageConfigInfo），
+     * 上一条模拟「客户端只改一个字段」。两者都必须让库里的 AK ID 保持原样。
+     */
+    @Test
+    void maskedAccessKeyIdSurvivesARenameOnlyUpdate() throws Exception {
+        String prefix = "static-s3-rename";
+        JsonNode created = createCatalog(prefix, staticS3Config());
+        seedTable(prefix);
+        int version = created.get("entityVersion").asInt();
+
+        JsonNode updated = json(200, "PUT", M + "/catalogs/" + prefix, """
+                {"currentEntityVersion":%d,
+                 "properties":{"lakehouse.display-name":"订单仓库"},
+                 "storageConfigInfo":{"storageType":"S3",
+                                      "allowedLocations":["s3://analytics-bucket/warehouse/"],
+                                      "region":"us-east-1",
+                                      "endpoint":"http://minio.internal:9000",
+                                      "pathStyleAccess":true,
+                                      "accessKeyId":"%s"}}
+                """.formatted(version, StorageConfigs.MASKED));
+
+        assertEquals("订单仓库", updated.get("properties").get("lakehouse.display-name").asString());
+
+        // 库里那把钥匙一个字符都没变，密钥也还是旧的（能解开、且是同一份明文）
+        StorageConfigs.StaticCredentials stored =
+                StorageConfigs.staticCredentials(storedConfig(prefix), cipher);
+        assertEquals(ACCESS_KEY_ID, stored.accessKeyId(), "「只改名字」不该动 AK ID");
+        assertEquals(SECRET, stored.secretAccessKey());
+
+        JsonNode token = json(200, "GET", tokenPath(prefix), null).get("token");
+        assertEquals(ACCESS_KEY_ID, token.get("s3.access-key-id").asString());
+        assertEquals(SECRET, token.get("s3.secret-access-key").asString());
+    }
+
+    /**
+     * 只换密钥、AK ID 不动：{@code ******} + 新密钥，是唯一能表达这件事的组合。
+     *
+     * <p>省略 AK ID 会变成「有密钥没 ID」而被拒（下一条），所以哨兵不是可选的便利，
+     * 而是这条轮换路径成立的前提。
+     */
+    @Test
+    void maskedAccessKeyIdWithANewSecretRotatesOnlyTheSecret() throws Exception {
+        String prefix = "static-s3-rotate-secret";
+        JsonNode created = createCatalog(prefix, staticS3Config());
+        seedTable(prefix);
+        int version = created.get("entityVersion").asInt();
+
+        json(200, "PUT", M + "/catalogs/" + prefix, """
+                {"currentEntityVersion":%d,
+                 "storageConfigInfo":{"storageType":"S3",
+                                      "allowedLocations":["s3://analytics-bucket/warehouse/"],
+                                      "region":"us-east-1",
+                                      "endpoint":"http://minio.internal:9000",
+                                      "pathStyleAccess":true,
+                                      "accessKeyId":"%s",
+                                      "secretAccessKey":"ROTATED-SECRET"}}
+                """.formatted(version, StorageConfigs.MASKED));
+
+        JsonNode token = json(200, "GET", tokenPath(prefix), null).get("token");
+        assertEquals(ACCESS_KEY_ID, token.get("s3.access-key-id").asString(), "AK ID 应沿用库里的");
+        assertEquals("ROTATED-SECRET", token.get("s3.secret-access-key").asString());
+    }
+
+    /**
+     * 库里没有可指向的钥匙时，{@code ******} 无意义，必须拒绝。
+     *
+     * <p>这个值的意思是「沿用你库里那份」。新建 catalog 时没有那份，静默存下去就等于
+     * 存了一把叫六个星号的钥匙；而它永远签不了名，问题要到第一次读写数据才暴露。
+     */
+    @Test
+    void maskedAccessKeyIdOnANewCatalogIsRejected() throws Exception {
+        JsonNode error = json(400, "POST", M + "/catalogs", """
+                {"catalog":{"type":"INTERNAL","name":"static-masked-new","properties":{},
+                 "storageConfigInfo":{"storageType":"S3",
+                                      "allowedLocations":["s3://bucket/warehouse/"],
+                                      "accessKeyId":"%s","secretAccessKey":"some-secret"}}}
+                """.formatted(StorageConfigs.MASKED));
+
+        assertEquals(400, error.get("code").asInt());
+        assertTrue(error.get("message").asString().contains("accessKeyId"),
+                "错误信息应点出是哪个字段: " + error);
+    }
+
+    /** 六个星号出现在密钥位上同样拒绝：它不是密钥，存进去只会在签名时失败。 */
+    @Test
+    void maskedValueAsSecretIsRejected() throws Exception {
+        String prefix = "static-s3-bad-secret";
+        JsonNode created = createCatalog(prefix, staticS3Config());
+        int version = created.get("entityVersion").asInt();
+
+        JsonNode error = json(400, "PUT", M + "/catalogs/" + prefix, """
+                {"currentEntityVersion":%d,
+                 "storageConfigInfo":{"storageType":"S3",
+                                      "allowedLocations":["s3://analytics-bucket/warehouse/"],
+                                      "endpoint":"http://minio.internal:9000",
+                                      "accessKeyId":"%s","secretAccessKey":"%s"}}
+                """.formatted(version, StorageConfigs.MASKED, StorageConfigs.MASKED));
+
+        assertEquals(400, error.get("code").asInt());
+        assertTrue(error.get("message").asString().contains("secretAccessKey"), error.toString());
     }
 
     /** 换端点、换区域都不该动密钥；换 accessKeyId 则必须连密钥一起给（见下一条）。 */
@@ -319,19 +437,21 @@ class StaticCredentialApiTests {
                 """);
 
         JsonNode obs = json(200, "GET", M + "/catalogs/static-obs", null).get("storageConfigInfo");
-        assertEquals("OBS-AK", obs.get("accessKeyId").asString());
+        assertEquals(StorageConfigs.MASKED, obs.get("accessKeyId").asString(), "打码对所有带凭据的类型生效");
         assertFalse(obs.has("secretAccessKey"));
         HuaweiObsStorageConfigInfo storedObs = (HuaweiObsStorageConfigInfo) storedConfig("static-obs");
+        assertEquals("OBS-AK", storedObs.accessKeyId(), "库里仍是真值，打码只发生在出口");
         assertTrue(CredentialCipher.sealed(storedObs.secretAccessKey()));
 
         JsonNode oss = json(200, "GET", M + "/catalogs/static-oss", null).get("storageConfigInfo");
-        assertEquals("OSS-AK", oss.get("accessKeyId").asString());
+        assertEquals(StorageConfigs.MASKED, oss.get("accessKeyId").asString());
         assertFalse(oss.has("secretAccessKey"));
 
         JsonNode cos = json(200, "GET", M + "/catalogs/static-cos", null).get("storageConfigInfo");
-        assertEquals("COS-AK", cos.get("accessKeyId").asString());
+        assertEquals(StorageConfigs.MASKED, cos.get("accessKeyId").asString());
         assertFalse(cos.has("secretAccessKey"), "COS 的密钥同样只写不读: " + cos);
         TencentCosStorageConfigInfo storedCos = (TencentCosStorageConfigInfo) storedConfig("static-cos");
+        assertEquals("COS-AK", storedCos.accessKeyId());
         assertTrue(CredentialCipher.sealed(storedCos.secretAccessKey()),
                 "COS 的密钥也必须以密文落库，而不是明文直存");
     }

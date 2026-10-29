@@ -346,6 +346,15 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
   **只写不读**（AES-GCM 加密落库，响应永不回显）→ `PUT` 省略它表示**保持**，这是规格
   「整体替换」语义的**唯一例外**；清除要显式提交一对空串；与 `storageName` 互斥；
   下发优先级**高于一切服务端来源，且排在 `stsUnavailable` 判断之前**。
+- **`accessKeyId` 打码成 `******`，且这个值同时是回写哨兵**（P1-8）。两条**必须同时成立**，
+  少一条就会静默改坏配置：只打码不认哨兵 → 「只改个名字」的保存把 AK ID 写成六个星号、
+  SK 还是旧的，错误现场在存储侧（`InvalidAccessKeyId`），与「我刚改了什么」联系不上。
+  打码只在 `StorageConfigs#withoutSecrets` 一处产生（列表与详情共用
+  `ManagementCatalogService#toDto` 这个出口，新加的响应路径也必须走它）；哨兵只在
+  `mergeStaticCredentials` 一处消费。`******` + 空密钥 = 两个都不动、`******` + 新密钥 =
+  只换密钥、库里没有原值却给 `******` → 400。**`******` 不等于空串**（那是「清除」），
+  混用会静默删掉还能用的凭据。范围只到 catalog 的 `storageConfigInfo`；
+  执行集群那套凭据的 `accessKeyId` 仍回显，是另一条契约。
 - **schema 与快照都要物化进仓库**（`TableMetadataService`）：`RESTCatalog.supportsVersionManagement()`
   恒返回 `true`，客户端因此走 `CatalogSnapshotCommit`（把快照 POST 给服务端），**自己那份写
   `snapshot-<n>` 的代码根本不会被实例化**；服务端必须替它写 `snapshot-<id>` + `LATEST`
@@ -464,8 +473,10 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
   `application.yml` 的 `spring.datasource` 里带着一套可直接连的 MySQL 地址与明文口令
   （本地调试配置，已被 git 跟踪）。演示配置就写占位符
   （`jdbc:mysql://127.0.0.1:3306/lakehouse_catalog`、`paimon/paimon`），不要复制原值，也不要贴进回复。
-- **静态凭据（`secretAccessKey`）只写**：任何响应、日志、控制台展示都不许回显明文；
-  读路径一律走 `StorageConfigs.withoutSecrets(...)`。新增读路径时检查这条。
+- **静态凭据的两个字段都不许回显真值**：`secretAccessKey` 连键都不出现，`accessKeyId`
+  固定是 `StorageConfigs.MASKED`（`******`）。任何响应、日志、控制台展示都不许给原文；
+  读路径一律走 `StorageConfigs.withoutSecrets(...)`。新增读路径时检查这条——
+  绕过它的写法不会报错，只会让打码「漏一格」。
 - **未配置 `lakehouse.rest.storage.credential-secret-key` 时必须 fail-closed**：
   保存静态凭据返回 400，而**不是**明文落库。
 - 控制台的 `admin/admin` 默认口令在启动时会有告警；不要把默认口令写进示例截图或文档正文

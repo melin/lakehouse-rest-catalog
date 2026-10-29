@@ -302,21 +302,49 @@ class StorageCredentialResolutionTests {
         assertEquals(500, assertThrows(ApiException.class, () -> manager.vend(config, "t1", null)).getStatus());
     }
 
-    /** 取凭据的读取点与脱敏点分工：对外那份必须丢掉密钥，内部那份才解得出明文。 */
+    /**
+     * 取凭据的读取点与脱敏点分工：对外那份两个字段都不给真值，内部那份才解得出明文。
+     *
+     * <p>AK ID 也从「原样保留」改成了打码（P1-8）。理由不是它本身保密，而是它一旦回显，
+     * 「这个 catalog 用哪把钥匙」就多了一条不需要凭据的读取路径；而它与 SK 是成对的，
+     * 打一半等于给了一套可以用来猜另一半的线索。
+     */
     @Test
-    void maskingKeepsTheKeyIdAndDropsTheSecret() {
+    void maskingReplacesTheKeyIdAndDropsTheSecret() {
         AwsStorageConfigInfo config = s3("s3://bucket-a/prefix", null,
                 "AKIA-CATALOG", cipher.seal("SECRET-CATALOG"));
 
         AwsStorageConfigInfo masked = (AwsStorageConfigInfo) StorageConfigs.withoutSecrets(config);
 
-        assertEquals("AKIA-CATALOG", masked.accessKeyId(), "accessKeyId 不是秘密，保留给控制台显示");
+        assertEquals(StorageConfigs.MASKED, masked.accessKeyId(),
+                "对外那份的 accessKeyId 必须是打码值，且它就是回写哨兵");
         assertNull(masked.secretAccessKey(), "对外那份不应带出密文");
         assertEquals(List.of("s3://bucket-a/prefix"), masked.allowedLocations(), "脱敏不应动其他字段");
-        // 内部那份（库中原样）才解得出明文
+        // 内部那份（库中原样）才拿得到真值
         assertEquals("SECRET-CATALOG",
                 StorageConfigs.staticCredentials(config, cipher).secretAccessKey());
         assertEquals("AKIA-CATALOG", StorageConfigs.staticCredentials(config, cipher).accessKeyId());
+        // 打码不影响「有没有配凭据」的判断：否则写路径会把已配的当成没配
+        assertTrue(StorageConfigs.hasStaticCredentials(masked));
+    }
+
+    /**
+     * 打码那份配置不许进下发通道。
+     *
+     * <p>它只会出现在一种情况下：某处代码把「对外响应」当成了「内部配置」。放过去的表现是
+     * 引擎拿 {@code ******} 当 AK 去签名，报错落在存储侧的认证失败上，与真正的原因
+     * （传错了哪一份）完全脱钩；在这里失败则一眼看出。
+     */
+    @Test
+    void vendingAMaskedConfigFailsLoudly() {
+        AwsStorageConfigInfo masked = (AwsStorageConfigInfo) StorageConfigs.withoutSecrets(
+                s3("s3://bucket-a/prefix", null, "AKIA-CATALOG", cipher.seal("SECRET-CATALOG")));
+
+        ApiException failure = assertThrows(ApiException.class,
+                () -> StorageConfigs.staticCredentials(masked, cipher));
+
+        assertEquals(500, failure.getStatus());
+        assertTrue(failure.getMessage().contains("masking placeholder"), failure.getMessage());
     }
 
     // ------------------------------------------------------------------ Azure

@@ -167,8 +167,12 @@ Polaris 规格的 `AwsStorageConfigInfo` 里**没有** per-catalog 的 `accessKe
 
 | 字段 | 读写 | 说明 |
 | --- | --- | --- |
-| `accessKeyId` | 可读可写 | 不是秘密；回显它是为了让控制台显示「配的是哪把钥匙」，也是判断「有没有配凭据」的依据 |
+| `accessKeyId` | 可读可写，**读出时是打码值 `******`** | 打码而不是省略：省略了分不清「没配凭据」与「配了但看不到」。这个值同时是写入口的「未修改」哨兵（见下） |
 | `secretAccessKey` | **只写不读** | 落库前加密，任何响应都不回显 |
+
+`******` 是打码与回写的**同一个值**，两条必须同时成立：只打码不认哨兵，「只改个名字」的保存
+就会把 AK ID 写成六个星号而密钥仍是旧的——密钥对错位，报错落在存储侧，与「我刚改了什么」
+完全联系不上。规则细节与用例见 [`credential-vending-design.md`](credential-vending-design.md) §3.4.4。
 
 几个刻意的取舍：
 
@@ -182,8 +186,9 @@ Polaris 规格的 `AwsStorageConfigInfo` 里**没有** per-catalog 的 `accessKe
   而不是明文落库；取值非法则启动即失败。密文形态带 `v1:` 前缀，
   兼作「这是密文还是别人手工塞进来的明文」的判别依据——明文当作密文传入会明确 500。
 - **与 `storageName` 互斥。** 两者都在回答「用哪组密钥」，同时出现返回 400，
-  而不是定义一条谁压过谁。只给 `secretAccessKey` 不给 `accessKeyId`（或反之、
+  而不是定义一条谁压过谁。只给**真实的** `secretAccessKey` 而 `accessKeyId` 留空（或反之、
   以及换 ID 却不带新密钥）同样返回 400：无法区分是笔误还是有意为之。
+  唯一能「只给密钥」的形态是 `accessKeyId: "******"`——它明说什么都不换、只有密钥是新的。
 - **优先级最高且与 `stsUnavailable` 正交**，理由见第 3 点。
 
 代价同样是 `storageConfigInfo` 的字段集合超出规格。影响面比 OBS / OSS 更小：

@@ -461,8 +461,14 @@ COS 这条链上没有能消费临时令牌的凭据提供器（见下）。
 与 `stsUnavailable` 的「服务端不去向云申请临时凭据」是两件事，
 因此**静态凭据排在 `stsUnavailable` 之前**，两者同时出现不冲突。
 
-- `accessKeyId` 可读可写。它不是秘密，保留下来是为了让控制台能显示「配的是哪把钥匙」，
-  也是判断这个 catalog「有没有配凭据」的依据。
+- `accessKeyId` 可读可写，但**响应里是打码值 `******`**（六个星号），不是原文。
+  打码而不是省略：省略了就分不清「没配凭据」与「配了但看不到」，而这两种在 `PUT` 里含义不同。
+  真实 ID 只在库内与下发通道里出现。
+- `******` 同时是**「未修改」哨兵**：写入口收到它就沿用库里那份。三种组合各有确定语义——
+  `******` + 省略/空密钥 = 两个字段都不动（「只改个名字」的保存走这条，控制台每次提交都是这个形态）；
+  `******` + 新密钥 = 沿用库里的 ID、只换密钥（**唯一**能表达「只轮换密钥」的组合）；
+  库里没有原值却给了 `******` → 400（没有可指向的钥匙），`******` 出现在 `secretAccessKey` 位同样 400。
+  **它不等于空串**：打码是「有值但不告诉你」，空串是「这里不要值了」，混用会静默删掉还能用的凭据。
 - `secretAccessKey` **只写不读**。落库前用 AES-GCM（AES-256）加密，任何响应都不回显，
   因此 `PUT` 省略它表示**保持原值**而不是清空——这是规格 `PUT`「整体替换」语义的唯一例外，
   否则每次改 `endpoint` 都得重新贴一遍密钥。
@@ -790,8 +796,8 @@ JAVA_HOME=/path/to/jdk-21 mvn test
 | `StorageConfigApiTests` | `storageConfigInfo` 七种存储类型的建 / 读 / 改往返、`AZURE` 缺 `tenantId` 与空位置的 400、换存储后新库位置随之改变、OBS↔OSS 换类型时端点一起替换、`COS` 的地域 / `appId` / `useHttps` 三项往返且 `appId` 与桶名后缀对不上时 400 |
 | `StorageConfigDtosTests` | 判别联合的绑定位形：子类型注册名与枚举一致、判别字段只出现一次、跨类型字段不串、落库路径（`Json`）往返、静态凭据字段随实体往返 |
 | `StorageCredentialApiTests` | 按存储类型下发凭据的 HTTP 链路：S3 的密钥来源（默认配置与具名存储）与不下发 `endpointInternal` / `stsEndpoint`、`stsUnavailable` 时不给密钥、Azure 只给定位元数据、GCS 的 `lifespan` 收窄 `expiresAt`、OBS / OSS / COS 各自走对键族且不串族、FILE 保留自包含令牌、未过期凭据被复用（比对 `expiresAt` 而非密钥） |
-| `StorageCredentialResolutionTests` | 凭据解析与缓存的单元行为：具名存储优先且找不到时明确失败而非退回默认凭据、服务端专用字段不泄露、Azure 账户名只在已知端点后缀上解析、GCS `lifespan` 与 `ttl` 取小、OBS / OSS 的键名族与临时凭据令牌（含两家不同拼写）、两家的凭据互不可见、LRU 淘汰与过期失效、两个策略枚举的取值校验与错误信息；**catalog 静态凭据压过一切服务端来源、在 `stsUnavailable` 下仍然下发、OBS / OSS / COS 各走自己的键族、密文解不开或不是密文时明确失败而非静默退回**；COS 另有三条自己的约束被钉住——`secretId` / `secretKey` 两个键的**大小写必须原样**（Hadoop 会小写化，靠 COSN 的两项白名单还原）、`useHttps` 缺省发 `true`（COSN 自己的缺省是 `false` = 明文）、以及**配了 `sessionToken` 就明确失败**而不是发一个没人读的键 |
-| `StaticCredentialApiTests` | catalog 静态凭据的 HTTP 语义（配了加密密钥）：创建响应不回显密钥而库内是密文且能解回原值、凭据下发优先用 catalog 这一份、`PUT` 省略密钥表示保持、完全不带凭据字段也表示保持、提交一对空串即清除并退回服务端配置、只给密钥 / 换 ID 不带新密钥 / 空 ID 配非空密钥各自 400、与 `storageName` 互斥 400、OBS / OSS / COS 同样支持、meta 报告 `staticCredentialsEnabled` |
+| `StorageCredentialResolutionTests` | 凭据解析与缓存的单元行为：具名存储优先且找不到时明确失败而非退回默认凭据、服务端专用字段不泄露、Azure 账户名只在已知端点后缀上解析、GCS `lifespan` 与 `ttl` 取小、OBS / OSS 的键名族与临时凭据令牌（含两家不同拼写）、两家的凭据互不可见、LRU 淘汰与过期失效、两个策略枚举的取值校验与错误信息；**catalog 静态凭据压过一切服务端来源、在 `stsUnavailable` 下仍然下发、OBS / OSS / COS 各走自己的键族、密文解不开或不是密文时明确失败而非静默退回**；COS 另有三条自己的约束被钉住——`secretId` / `secretKey` 两个键的**大小写必须原样**（Hadoop 会小写化，靠 COSN 的两项白名单还原）、`useHttps` 缺省发 `true`（COSN 自己的缺省是 `false` = 明文）、以及**配了 `sessionToken` 就明确失败**而不是发一个没人读的键；对外那份**两个字段都不给真值**（`accessKeyId` 换成 `******`、密钥为 null），而 `hasStaticCredentials` 仍判得出来（否则写路径会把已配的当成没配）、打码那份若误入下发通道则 `staticCredentials` 直接 500 而不是把六个星号当 AK 发出去 |
+| `StaticCredentialApiTests` | catalog 静态凭据的 HTTP 语义（配了加密密钥）：创建 / 单查 / 列表三处响应都**不给真值**（`accessKeyId` 是 `******`、密钥根本不出现、响应体任何位置都没有真实 AK ID）而库内仍是可解开的密文、凭据下发优先用 catalog 这一份；**打码回写**——`******` + 省略密钥 = 两个都不动且「只改名字」的保存不改库里的 AK ID、`******` + 新密钥 = 只换密钥、新建就给 `******` 或把 `******` 当密钥各自 400；`PUT` 省略密钥表示保持、完全不带凭据字段也表示保持、提交一对空串即清除并退回服务端配置、只给密钥 / 换 ID 不带新密钥 / 空 ID 配非空密钥各自 400、与 `storageName` 互斥 400、OBS / OSS / COS 同样打码同样支持、meta 报告 `staticCredentialsEnabled` |
 | `StaticCredentialDisabledApiTests` | 未配 `credential-secret-key` 时的 fail-closed（`test` profile 里显式把该键置空——`application.yml` 那份是给人手工起实例用的）：保存静态凭据返回 400 且错误信息点明配置项与 `openssl rand -base64 32`、**不带凭据的 catalog 照常可建**（对照组，防「顺手把整个存储配置关掉」）、meta 报告能力已关闭 |
 | `CredentialCipherTests` | 落库加解密单元行为：往返、同一明文两次密文不同（随机 IV）、空值保持空、未配密钥时拒绝加密、换密钥后解不开、密文被篡改时认证失败、明文当密文传入被拒、密文载荷畸形被拒、密钥不是 Base64 或解码后不是 32 字节时启动即失败、留空的密钥视为关闭 |
 | `StoragePolicyApiTests` | `file-io.type=s3` 时拒绝 Azure / GCS / OBS / OSS / COS catalog 并在报错里点明原因、接受 S3 与 FILE；`credential-manager.type=noop` 时凭据下发返回 501（`file-io.type=cosn` 只放开 COS 与 FILE 的那条映射在 `StorageCredentialResolutionTests` 里） |

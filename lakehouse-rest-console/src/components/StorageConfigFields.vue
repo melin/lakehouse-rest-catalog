@@ -109,13 +109,13 @@
           <template #label>
             <FieldLabel
               label="accessKeyId"
-              tip="该 catalog 访问对象存储用的长期密钥 ID。与具名存储（storageName）互斥：两者都在回答「用哪把钥匙」。"
+              tip="该 catalog 访问对象存储用的长期密钥 ID。与具名存储（storageName）互斥：两者都在回答「用哪把钥匙」。已保存时服务端只返回 ******，留空即沿用那把钥匙。"
             />
           </template>
           <el-input
             v-model="form.accessKeyId"
             :disabled="!staticCredentialsEnabled"
-            placeholder="例如 minioadmin"
+            :placeholder="accessKeyPlaceholder"
           />
         </el-form-item>
 
@@ -140,7 +140,7 @@
              只提示、不拦截：前端比服务端更严，会让一份服务端认可的配置在控制台里存不回去。
              之所以仍要说一句，是因为 roleArn 收进折叠区后，用户更难自己发现。 -->
         <p v-if="credentialConflict" class="pc-field-note pc-field-note-warn">
-          已同时填写 <code>accessKeyId</code> 与「存储高级参数」里的 <code>roleArn</code>。
+          已同时配置 <code>accessKeyId</code>（含已保存的静态凭据）与「存储高级参数」里的 <code>roleArn</code>。
           两者是两条并存的取密钥路径（直接用它 / 由服务端 assume 角色），建议只保留一种。
         </p>
         <!-- 能力关着时给出可操作的出路：字段被禁用只是一半，
@@ -292,6 +292,15 @@ const COMMON_KEYS = ['storageType', 'allowedLocations', 'storageName']
  * 的通用规则——对它来说「空」的含义是「保持不变」，见 `build()` 的说明。
  */
 const STATIC_CREDENTIAL_KEYS = ['accessKeyId', 'secretAccessKey']
+
+/**
+ * 与服务端 {@code StorageConfigs.MASKED} 必须逐字相同的哨兵值。
+ *
+ * <p>两边各写一份字面量而不是共用常量：这个仓库没有跨 Java/JS 的构建期常量通道，
+ * 而它出现在**协议**上（对外响应里就是这个字符串，客户端照抄即对），
+ * 所以它更像一个 wire 值，不是内部枚举。改的时候两边一起改，用例会盯着服务端那一侧。
+ */
+const MASKED_ACCESS_KEY_ID = '******'
 
 const STATIC_CREDENTIAL_TYPES = ['S3', 'OBS', 'OSS', 'COS']
 
@@ -448,7 +457,12 @@ const emit = defineEmits(['update:modelValue'])
 /** 表单不认识、但要原样带回服务端的字段。 */
 const carried = ref({})
 
-/** 服务端返回的 accessKeyId，用来判断「已保存了静态凭据」与是否更换了密钥 ID。 */
+/**
+ * 服务端返回的 accessKeyId：**已保存时它是打码值 {@code ******}**，不是真值。
+ *
+ * <p>因此它只用来回答两个问题——「有没有已保存的凭据」与「保存时要不要发哨兵」，
+ * 绝不能当作用户可以编辑的值（灌进输入框那一步已经在做区分）。
+ */
 const storedAccessKeyId = ref('')
 
 const form = reactive({
@@ -468,6 +482,17 @@ const supportsStaticCredentials = computed(() => STATIC_CREDENTIAL_TYPES.include
 const secretPlaceholder = computed(() => (storedAccessKeyId.value
   ? '已保存密钥，留空即保持不变'
   : '仅填写时不回显，请确认无误'))
+
+/**
+ * accessKeyId 的占位提示。
+ *
+ * <p>已保存时服务端只回 {@code ******}，因此输入框里**不放星号**：放了用户会以为那就是真值，
+ * 编辑时很容易把星号改成「星号加一个字符」，服务端不认、报错又说不清。
+ * 留空 + 明确说「沿用已保存的」才是同一件事的正确表达。
+ */
+const accessKeyPlaceholder = computed(() => (storedAccessKeyId.value
+  ? '已保存（******），留空即保持不变'
+  : '例如 minioadmin'))
 
 /** 表单覆盖的键集合（按类型不同）。两张字段表都要算进来，否则分层会让字段被当成「不认识」。 */
 function knownKeys(type) {
@@ -533,13 +558,15 @@ function adopt(source) {
   form.allowedLocations = [...(next.allowedLocations || [])]
   form.storageName = next.storageName || ''
   form.extras = collectExtras(next, type)
-  // 密钥只写不读，服务端不会回显：这里能拿到的只有 accessKeyId。
-  // 每次灌入都把它当成「当前已保存的值」，并清空输入框与移除标记。
+  // 两个字段都不回显真值：AK ID 回来的是打码值 ******，密钥则根本不出现。
+  // 已保存的那一份记在 storedAccessKeyId（只用来回答「有/无」并给 build() 提供哨兵），
+  // 输入框一律留空——把星号灌进去会被当成真值继续编辑，而服务端只认「原样回传的星号」，
+  // 改一个字符就变成一把不存在的钥匙。
   const credentialTypes = STATIC_CREDENTIAL_TYPES.includes(type)
-  form.accessKeyId = credentialTypes ? (next.accessKeyId || '') : ''
+  storedAccessKeyId.value = credentialTypes ? (next.accessKeyId || '') : ''
+  form.accessKeyId = ''
   form.secretAccessKey = ''
   form.removeCredentials = false
-  storedAccessKeyId.value = form.accessKeyId
   carried.value = splitCarried(next, type)
   // 换了一份配置（打开对话框、切到另一个 catalog）就回到收起态：
   // 这是「默认收起」在组件不重建时也能成立的地方。它不监听 form 自身的变化，
@@ -624,7 +651,10 @@ const advancedBadge = computed(() => (filledAdvancedKeys.value.length
  */
 const credentialConflict = computed(() => {
   if (!supportsStaticCredentials.value || form.removeCredentials) return false
-  return Boolean(String(form.accessKeyId || '').trim() && String(form.extras.roleArn || '').trim())
+  // 打码之后「已配了凭据」不再等于「输入框里有字」：编辑一份已保存的配置时输入框是空的，
+  // 只看 form.accessKeyId 会让这条提示永远不出现，而它要提醒的正是这组合并存
+  const hasCredential = Boolean(String(form.accessKeyId || '').trim() || storedAccessKeyId.value)
+  return Boolean(hasCredential && String(form.extras.roleArn || '').trim())
 })
 
 const carriedKeys = computed(() => Object.keys(carried.value))
@@ -705,8 +735,14 @@ function build() {
   }
 
   if (supportsStaticCredentials.value) {
-    const accessKeyId = (form.accessKeyId || '').trim()
+    const typedId = (form.accessKeyId || '').trim()
     const secretAccessKey = (form.secretAccessKey || '').trim()
+    // 输入框留空但库里有凭据时回传哨兵，而不是把 accessKeyId 整个省掉。
+    // 省略只能表达「两个字段都不改」；用户只想换密钥（ID 不动）时，省略会变成
+    // 「有密钥没 ID」，服务端只能拒。哨兵是唯一能表达「ID 沿用库里的、密钥换新的」的值。
+    const accessKeyId = form.removeCredentials
+      ? ''
+      : (typedId || (storedAccessKeyId.value ? MASKED_ACCESS_KEY_ID : ''))
     if (form.removeCredentials) {
       config.accessKeyId = ''
       config.secretAccessKey = ''
@@ -786,22 +822,31 @@ function validate() {
 /**
  * 静态凭据的前置校验。
  *
- * <p>两条规则与服务端一致，提前在这里拦一次是因为它们的可发现性太差：
- * 密钥只写不读，用户看不到「服务端手上是什么」；而 storageName 与静态凭据
- * 在表单里相隔很远，「保存失败」时用户很难把两者联系起来。
+ * <p>与服务端规则一致，提前在这里拦一次是因为它们的可发现性太差：
+ * 两个字段都不回显真值（AK ID 是 {@code ******}、密钥根本不出现），
+ * 用户看不到「服务端手上是什么」；而 storageName 与静态凭据在表单里相隔很远，
+ * 「保存失败」时很难把两者联系到一起。
+ *
+ * <p>判断「有没有凭据」要同时看输入框与 {@link storedAccessKeyId}：
+ * 打码之后，编辑一个已配好的 catalog 时输入框本来就是空的，
+ * 只看输入框会把「已存在的凭据」判成「没有」。
  */
 function validateCredentials() {
   if (!supportsStaticCredentials.value || form.removeCredentials) return ''
   const accessKeyId = (form.accessKeyId || '').trim()
   const secretAccessKey = (form.secretAccessKey || '').trim()
-  if (secretAccessKey && !accessKeyId) {
+  const hasCredential = Boolean(accessKeyId || storedAccessKeyId.value)
+  // 已保存的那一份能补上 ID，因此「只填密钥」是合法的（换密钥、ID 不动）
+  if (secretAccessKey && !hasCredential) {
     return '填写了 secretAccessKey，但 accessKeyId 为空'
   }
-  if (accessKeyId && !secretAccessKey && accessKeyId !== storedAccessKeyId.value) {
+  // 打了新 ID 就必须同时给密钥：服务端拿不到旧密钥，无法凑成一对
+  if (accessKeyId && !secretAccessKey) {
     return '更换 accessKeyId 时必须同时填写 secretAccessKey（服务端不回显密钥，无法沿用）'
   }
-  if (accessKeyId && String(form.storageName || '').trim()) {
-    return '静态凭据与具名存储（storageName）互斥：两者都在指定用哪一组密钥，请只保留一种'
+  if (hasCredential && String(form.storageName || '').trim()) {
+    return '静态凭据与具名存储（storageName）互斥：两者都在指定用哪一组密钥，请只保留一种；'
+      + '要改用具名存储请先「移除已保存的静态凭据」'
   }
   if (accessKeyId && !props.staticCredentialsEnabled) {
     return '本部署未开启静态凭据（服务端未配置 lakehouse.rest.storage.credential-secret-key），'

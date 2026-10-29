@@ -1,6 +1,6 @@
 # 存储凭据下发（Credential Vending）：现状、缺口与七种存储的落地设计
 
-> **状态：P0 已实现、P1 部分实现（P1-9 服务端取票、P1-12 COS 落地已做；P1-13 经核查作废，见 v6/v7 修订块与 §8）。** 本文回答三个问题：① Gravitino 与 Polaris 都做了 Credential
+> **状态：P0 已实现、P1 部分实现（P1-8 打码与哨兵、P1-9 服务端取票、P1-12 COS 落地已做；P1-13 经核查作废，见 v6/v7/v8 修订块与 §8）。** 本文回答三个问题：① Gravitino 与 Polaris 都做了 Credential
 > Vending，**本工程有没有考虑、还差哪些功能**；② AWS / Azure / GCS / 阿里云 OSS / 华为云 OBS /
 > 腾讯云 COS 与 S3 兼容存储**分别怎么落地**；③ Spark 访问 Catalog 时**能不能不把 AK/SK 写进配置**。
 > §10 另外回答第四个：**控制台上怎么配**（附交互原型）。
@@ -76,10 +76,11 @@
 > 6. **Lance 面**：`storage_options` 由 `s3.*` 译成 `aws_access_key_id` /
 >    `aws_secret_access_key` / `aws_session_token` / `aws_region` / `aws_endpoint`（G12），
 >    `expires_at_millis` 优先取凭据自己的寿命。
-> 7. **未做的（仍是 P1）**：Azure SAS / OSS / OBS / GCS 的签发、两个权限点、AK ID 打码、
+> 7. **未做的（仍是 P1）**：Azure SAS / OSS / OBS / GCS 的签发、两个权限点、
 >    服务端自身 FileIO 独立取票、COS 落地。§8 的 P0 行已标 ✅，P1 行保持原状。
->    （**v6 补上「服务端自身 FileIO 独立取票 / P1-9」、v7 补上「COS 落地 / P1-12」，
->    P1-13 经核查作废——COS 的 FileIO 没有临时凭据入口**，其余仍按原状。）
+>    （**v6 补上「服务端自身 FileIO 独立取票 / P1-9」、v7 补上「COS 落地 / P1-12」、
+>    v8 补上「AK ID 打码与回写哨兵 / P1-8」；P1-13 经核查作废——COS 的 FileIO
+>    没有临时凭据入口**，其余仍按原状。）
 >
 > **本次修订（v6）：P1-9 落地——服务端自己也按「catalog 的允许位置」取票。**
 >
@@ -145,6 +146,31 @@
 >    HTTP 语义、`ConsoleApiTests` 同步取值集合。
 > 5. **未验**：`cosn://` 的端到端（「不配 AK 也能读」需要真实 COS 账号）。键名这一层已由用例
 >    钉住，端到端这一层没有——与 P0-8 同类的偏差，别把它当「已验完」。
+
+> **本次修订（v8）：AK ID 打码 + 回写哨兵（P1-8），G14 关闭。**
+>
+> 1. **打码只有一个出口**：`StorageConfigs#withoutSecrets` 把 `accessKeyId` 换成
+>    `StorageConfigs.MASKED`（六个星号）。列表与详情都经 `ManagementCatalogService#toDto`
+>    这同一处，所以不会出现「列表星号、详情真值」；以后新加的响应路径也必须走它，
+>    绕过去的写法会静默漏一个。
+> 2. **回写认哨兵**：`mergeStaticCredentials` 见到 `******` 按「沿用库里那份」处理。
+>    规则表见 §3.4.4，四条里有两条是新语义（「只改名字」与「只换密钥」），
+>    另两条是把旧的错法挡在门外（库里没有原值时 400；把星号当密钥 400）。
+> 3. **打码那份进不了下发通道**：`staticCredentials` 见到 `******` 直接 500。它只会在
+>    「把对外响应当成内部配置」时出现——放过去的表现是引擎拿六个星号签名，
+>    报错落在存储侧认证失败上，与真正的原因完全脱钩。
+> 4. **`******` 与空串不是一回事**，这条守不住就会静默删凭据：打码是「有值但不告诉你」，
+>    空串是「这里不要值了」。因此 `******` + 空密钥按「两个都不变」处理，
+>    清除必须显式提交一对空串（控制台的「移除已保存的静态凭据」正是这么发的）。
+> 5. **范围**：只覆盖 catalog 的 `storageConfigInfo`。执行集群（`ExecutionClusterDtos`）
+>    的 `accessKeyId` 仍回显，那是另一套凭据（kubeconfig / EKS）、另一条契约，
+>    它的注释与用例都明确写着「AK ID 不保密、用于认钥匙」。**两处口径不同是有意的**，
+>    别照着一边去改另一边——真要统一，得先动那条契约。
+> 6. **用例**：`StaticCredentialApiTests` 新增 5 例（打码回传 + 省略密钥 / 只改名字 /
+>    只换密钥 / 新建就给哨兵 400 / 把哨兵当密钥 400），并把原有三处
+>    「AK ID 回显」断言改成断言打码；`StorageCredentialResolutionTests` 的脱敏单测
+>    同步改名改断言（`maskingReplacesTheKeyIdAndDropsTheSecret`），并加一条
+>    `vendingAMaskedConfigFailsLoudly` 盯住上面第 3 条护栏。
 
 
 ---
@@ -453,13 +479,34 @@ Gravitino 对关系型 catalog **不要求**显式写 `credential-providers`，�
 #13539 顺手修了一个坑：缩短敏感关键字表会让**已经打码好的** `******` 解不出来
 （原文是 "strand masked values"）。对我们更直接，也更难发现：
 
-`StorageConfigFields.vue` 靠 `storedAccessKeyId` 判断「已保存了什么」——所以 `accessKeyId` 是**回显**的。
-一旦照 Gravitino 把它打码成 `******`，而保存路径没有「收到 `******` 视为未修改」这个分支，
+`StorageConfigFields.vue` 原本靠 `storedAccessKeyId` 判断「已保存了什么」，而这个值来自**回显的**
+`accessKeyId`。一旦照 Gravitino 把它打码成 `******`，而保存路径没有「收到 `******` 视为未修改」这个分支，
 第一次「只改个名字」的保存就会把库里的 AK ID 写成六个星号，SK 却仍是旧的——
 **密钥对错位，错误现场在存储侧**，报 `InvalidAccessKeyId`，与「我刚改了什么」完全联系不上。
 
 所以打码要同时满足两条（G14）：**只在一个出口打**（详情报文，不要列表与详情各写一遍）；
 **回写要认打码值**（与现有 `secretAccessKey` 的「空串 = 保持」同一个思路，只是多一个哨兵值）。
+
+**v8 已实现（P1-8）。** 打码在 `StorageConfigs#withoutSecrets` 一处产生，哨兵在
+`StorageConfigs#mergeStaticCredentials` 一处消费，取值统一为 `StorageConfigs.MASKED`。
+写路径的完整规则：
+
+| 请求里的 `accessKeyId` / `secretAccessKey` | 结果 | 说明 |
+| --- | --- | --- |
+| `******` / 省略或空 | 两个字段都沿用库里那份 | 「只改个名字」的保存走这条，也是控制台每次提交的默认形态 |
+| `******` / 新密钥 | 沿用库里的 AK ID，只换密钥 | **唯一**能表达「只轮换密钥」的组合：省略 AK ID 会变成「有密钥没 ID」而被拒 |
+| `******` / 库里没有原值 | 400 | 这个值的意思是「沿用你库里那份」，新建 catalog 时没有那份；静默存下去等于存了一把叫六个星号的钥匙 |
+| 真值 / 真值 | 换新 | 与原行为一致 |
+| `""` / `""` | 清除 | 显式清除；`******` 不能当清除用（见上） |
+| `******` 出现在 `secretAccessKey` 位 | 400 | 它不是密钥，存进去只会在签名时失败 |
+
+`******` 与「空串」必须分开，这条守不住就会静默删凭据：打码是「有值但不告诉你」，
+空串是「这里不要值了」。因此 `******` + 空密钥按「两个都不变」处理，清除只能靠一对空串——
+控制台的「移除已保存的静态凭据」正是这么发的。
+
+控制台跟着改了两处：**AK 输入框不再预填星号**（预填会被当成真值继续编辑，改一个字符就变成
+一把不存在的钥匙），改为留空 + 占位提示「已保存（******），留空即保持不变」；
+`build()` 在「输入框空但库里有」时回传哨兵，而不是省略字段——省略只能表达「两个都不改」。
 
 ### 3.5 第二批：Polaris 全量与 Gravitino `page=2`，仍是「改哪一条」
 
@@ -589,7 +636,7 @@ catalog 显式配了 AK/SK 且用户选了那档时才发生，二者**正交**�
 | G11 | 服务端自身是静态身份 | 服务端访问仓库也走同一套凭据；没有「能 AssumeRole 但不能读写」的双层 role | 服务被攻破即以仓库权限暴露 | 中 |
 | G12 | **Lance 键名口径对不上** | Lance 的 `storage_options` 发的是 `s3.*` 族，而 Lance Rust 侧 object_store 认 `aws_access_key_id` / `aws_secret_access_key` / `aws_session_token` / `expires_at_millis`（Gravitino #10895 的 `CredentialPropertyUtils` 就是这么转的） | **已证**：下发了但客户端没认。表现为仍要手写 §7.2 那些 `aws_*` 配置。修一半在服务端（换键名），另一半在客户端（connector 只读一次、长作业不续，服务端救不了） | 高 |
 | G13 | **判权只有一个粒度** | 能读 catalog 元数据的人就能调三条下发通道；没有「取凭据」与「取密钥」之分（对照 §3.4.3 的两个权限点） | 等于「看得到表」= 「拿得到钥匙」，而这正是要分开的两个风险 | 高 |
-| G14 | **AK ID 明文回显、且没有打码回写的哨兵** | `accessKeyId` 在详情报文里原文返回（`StorageConfigFields` 的 `storedAccessKeyId` 就靠它）；保存路径只有「空串 = 保持」一条规则 | 打码之后第一次保存会把 AK ID 写成 `******` 而 SK 未变 → 密钥对错位，错误现场在存储侧（§3.4.4） | 中 |
+| ~~G14~~ | **AK ID 明文回显、且没有打码回写的哨兵（v8 已关闭）** | 原状：`accessKeyId` 在详情报文里原文返回，保存路径只有「空串 = 保持」一条规则。现为：出口打码成 `******`、写入口认这个哨兵，两条同时成立（§3.4.4） | 打码而不认哨兵时的后果仍要记住：第一次保存就会把 AK ID 写成六个星号而 SK 未变 → 密钥对错位（§3.4.4 的规则表就是为堵这条） | ~~中~~ 已闭环 |
 | G15 | **服务端自身 FileIO 没有独立取票通道** | 优化任务、数据预览、元数据读走的都是 `StorageRuntimePolicy` 选出的同一个 manager，用的是部署配置里的身份（细化 G11） | 服务进程被攻破即以仓库权限暴露；「只能 AssumeRole、不能读写」的双层身份无法表达 | 中 |
 | G16 | **Flink 面没验过** | Paimon 面靠 `data-token.enabled` 与 Spark 共用 `RESTTokenFileIO`；Iceberg 面在 Flink 只有 REST 一种走法（不存在 #14032 的非 REST 问题）；但两条都没跑过 e2e | 文档若照抄 Spark 的说法，会给一个没验过的承诺 | 低（待验） |
 | G17 | **联邦时 header 不转发、refresh 端点不回写** | 我们目前没有做联邦/多级 catalog，一旦做，`loadTable` 的 delegation 头与远端 refresh 地址都要处理（对照 #12950） | 近端日志写着「vending: true」，远端收到的是「啥也没要」，引擎第一次读数据才失败 | 低（尚未涉及） |
@@ -1211,7 +1258,7 @@ object_store 认的是 `aws_access_key_id` / `aws_secret_access_key` / `aws_sess
 | P1-5 | 审计归因：`RoleSessionName` / session tags | 无 |
 | P1-6 | 控制台：创建页三态来源 + 参数 + 引擎片段；catalog 列表与详情标出「长期凭据 / 短期凭据 / 不下发」 | 见 §10 与原型 `credential-vending-mockup.html` |
 | P1-7 | **判权拆两个权限点**：`CATALOG:USE_CREDENTIAL` 与 `CATALOG:USE_SECRET`（§3.4.3） | 对照 `CatalogAccessRules` 现有写法；两个点号权限各一条用例 |
-| P1-8 | **AK ID 打码 + 打码回写哨兵**（§3.4.4）：详情报文返回 `******`，保存时收到 `******` 视为未修改 | 用例：打码后「只改名字」的保存不改变库里的 AK ID |
+| P1-8 | ✅ **AK ID 打码 + 打码回写哨兵**（§3.4.4）：`withoutSecrets` 一个出口打码，`mergeStaticCredentials` 认哨兵；`******` + 空密钥 = 两个都不动，`******` + 新密钥 = 只换密钥，库里没有原值或把哨兵当密钥则 400 | 用例：`StaticCredentialApiTests` 的 `maskedAccessKeyIdSurvivesARenameOnlyUpdate`（设计稿点名的验收）、`maskedAccessKeyIdWithOmittedSecretKeepsBoth`、`maskedAccessKeyIdWithANewSecretRotatesOnlyTheSecret`、`maskedAccessKeyIdOnANewCatalogIsRejected`、`maskedValueAsSecretIsRejected`；范围仅 catalog 的 `storageConfigInfo`，执行集群那套凭据仍回显 |
 | ✅ P1-9 | **服务端自身 FileIO 走独立取票**（§5.7），作用域是 catalog 的允许位置，不复用任何用户的表级票 | 两类作用域分开（`vend` vs `vendForCatalog`）、写权限显式传、缓存键不撞 → `ServerSideCredentialTests`（9 例）；「只配 `roleArn` 的 catalog 上优化任务跑通」**需真实 S3，未跑** |
 | P1-10 | **联邦/多级 catalog 的 header 透传与 refresh 端点回写**（G17，对照 #12950） | 现在没有联邦，留位；做的时候按 #12950 的两条断言写用例 |
 | P1-11 | **S3 兼容存储的 `noInlinePolicy` 选项**（§3.5.3）：为 true 时省略 inline session policy，界面明说「此存储下无法按表收窄」 | VAST 等 STS 不接受 policy 的存储跑通；默认不带 policy |
