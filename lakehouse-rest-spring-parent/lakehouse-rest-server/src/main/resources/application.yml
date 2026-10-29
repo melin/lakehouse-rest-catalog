@@ -345,7 +345,7 @@ lakehouse:
       # 默认关来验）。要采集的部署用启动参数显式打开：
       #   --lakehouse.rest.lineage.enabled=true
       # 读端点不受它限制：关掉采集的部署仍然查得到已有的边与运行历史。
-      enabled: true
+      enabled: false
       # lineage_run 表的保留天数（清理只删 run，不清边；边的 last_seen 自带「最近一次」）。
       # 默认 90。
       run-retention-days: 90
@@ -378,12 +378,12 @@ lakehouse:
     # 必须分得开，否则引擎侧的 fail-closed 无法区分故障与空态。
     #
     # 这里写 false（与代码默认一致）：yml 里写非默认值会盖掉「缺省关闭」的语义，
-    # DataPolicyDisabledTests 按默认关来验（血缘的 LineageDisabledTests 就是这么红的）。
+    # DataPolicyDisabledTests / LineageDisabledTests 验的就是这个缺省值。
     # 要开的部署用启动参数显式打开：--lakehouse.rest.policy.enabled=true
     # -----------------------------------------------------------------------
     policy:
       # 是否允许创建 / 修改 / 删除策略（PUT / DELETE）。默认 false。
-      enabled: true
+      enabled: false
 
 # ===========================================================================
 # 接口文档（knife4j-next，Boot 4 线：springdoc 3.x）
