@@ -1,4 +1,4 @@
-import { download, get } from './client.js'
+import { download, get, post } from './client.js'
 
 /**
  * 控制台扩展端点（`/api/console/v1/**`）里除登录之外的那些。
@@ -78,4 +78,19 @@ export const consoleApi = {
    * 逐行就是 N+1，而这件事本身不访问存储、不调云。
    */
   credentialSources: () => get('credentialSources'),
+
+  /**
+   * 判定**表单里还没保存**的那份存储配置：`{ mode, detail }`，与
+   * {@link credentialSources} 同一个词表、同一段服务端代码。
+   *
+   * <p>为什么表单在填的时候就需要它：`roleArn` 填了、但本部署没启用 `s3-token` 时，
+   * 结果与什么都没填一模一样（都退回环境凭据链）。这件事从字段上看不出来，
+   * 保存后要回列表页才看得见——而那时用户已经在另一步上了。
+   *
+   * <p>传的是表单的提交体（`build()` 的产物，可能含打码的 `accessKeyId`）：
+   * 判定只问「配没配」，不读密钥本身，打码值不影响结论。
+   */
+  previewCredentialSource: (storageConfigInfo) => post('credentialSourcePreview', {
+    body: storageConfigInfo,
+  }),
 }

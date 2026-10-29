@@ -367,6 +367,15 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
   Iceberg 各有一个凭据端点（端点级那道进映射表）；Lance 的取票是 `describe` /
   `rename` 上的 `vend_credentials=true`（query 参数，路径不进映射表），两道都在
   `LanceCatalogSupport#requireVending` 里判，失败姿势是 403（那个参数本身就是「我要凭据」）。
+- **「凭据从哪来」只有一处判定**（`CatalogCredentialSource`，P1-6）：控制台的列表列、
+  详情段、新建/编辑表单里的预览读的都是它的结论。三个入口形状不同——批量
+  `GET /catalog-credential-sources`、单条草稿 `POST /catalog-credential-source`、
+  以及不存在的第三个——但判定是同一段代码，因此不会出现「表单说会签发、建完显示转发」。
+  前端**只翻译**（`utils/credentialSource.js` 出标签与颜色、`composables/credentialPreview.js`
+  出去抖与过期响应丢弃）：这两个文件里出现 `roleArn` / `stsUnavailable` / `providers`
+  或 `'STS'` 这类档位字面量，`verify-console.py` 第 24 组就红。
+  这条护栏不是形式主义——`roleArn` 就在表单组件里手边，「顺手推断一下」比发一次请求便宜，
+  而那正是漂移的起点。判据是「凭据管理器走哪条分支」，不是「配了哪个字段」。
 - **schema 与快照都要物化进仓库**（`TableMetadataService`）：`RESTCatalog.supportsVersionManagement()`
   恒返回 `true`，客户端因此走 `CatalogSnapshotCommit`（把快照 POST 给服务端），**自己那份写
   `snapshot-<n>` 的代码根本不会被实例化**；服务端必须替它写 `snapshot-<id>` + `LATEST`

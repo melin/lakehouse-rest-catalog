@@ -1,9 +1,12 @@
 package io.github.melin.lakehouse.rest.web;
 
 import io.github.melin.lakehouse.rest.dto.ConsoleDtos;
+import io.github.melin.lakehouse.rest.dto.StorageDtos.StorageConfigInfo;
 import io.github.melin.lakehouse.rest.service.ConsoleCredentialSourceService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -30,5 +33,21 @@ public class ConsoleCredentialSourceController {
     @GetMapping("/catalog-credential-sources")
     public ConsoleDtos.CatalogCredentialSources list() {
         return service.list();
+    }
+
+    /**
+     * {@code POST /api/console/v1/catalog-credential-source}：判定表单**还没保存**的那份配置。
+     *
+     * <p>用 POST 而不是 GET：输入是一整份 {@code storageConfigInfo}，而且这份配置
+     * 可以带打码的 {@code accessKeyId}——把它塞进查询串会进访问日志，而日志是
+     * 比请求体更容易被顺手分享出去的地方（密钥本身不在里面，但这个习惯不该养）。
+     *
+     * <p>请求体就是管理 API 里那一份 {@code StorageConfigInfo}（同一套多态反序列化），
+     * 因此控制台不需要为预览另拼一种形状；反序列化不了（{@code storageType} 缺失或
+     * 不认得）时是 400，控制台把预览藏起来——表单本身会先拦住这种情况。
+     */
+    @PostMapping("/catalog-credential-source")
+    public ConsoleDtos.CredentialSourcePreview preview(@RequestBody StorageConfigInfo draft) {
+        return service.preview(draft);
     }
 }

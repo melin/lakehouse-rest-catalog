@@ -28,6 +28,7 @@
         </el-select>
       </el-form-item>
 
+
       <el-form-item required>
         <template #label>
           <FieldLabel
@@ -52,6 +53,25 @@
           </el-button>
         </div>
       </el-form-item>
+
+      <!--
+        「保存后凭据从哪来」的预览。位置刻意在「允许位置」之后：它要等填了位置才出现，
+        放在上面就会在用户正在输入时把输入框顶下去。而它又必须靠前——
+        它描述的是**整份配置**的后果，roleArn 藏在下面的折叠区里，改完那一项
+        要立刻看见结论，不该再往下翻。
+
+        三档里后两档（转发长期密钥 / 不下发）在客户端配置上完全一样，差别只在服务端发哪把
+        钥匙；而「填了 roleArn 但没部署签发」这一种，结果与「什么都没填」也一样。
+        这句话只有服务端算得准，因此这里显示的是它的判定原文，前端只负责配色与措辞。
+      -->
+      <div
+        v-if="credentialPreview"
+        class="pc-cred-preview"
+        :class="`is-${credentialPreview.mode.toLowerCase()}`"
+      >
+        <span class="pc-cred-label">保存后凭据来源：{{ credentialPreview.label }}</span>
+        <span class="pc-cred-detail">{{ credentialPreview.detail }}</span>
+      </div>
 
       <!-- COS 的三面差异必须在这里说清楚：把三个面当成一样，等于让两个面静默失败。
            Paimon 用 COSN 原生（凭据能下发、长作业能续）；
@@ -256,6 +276,8 @@ import { computed, reactive, ref, watch } from 'vue'
 import TipAlert from '@/components/TipAlert.vue'
 import FieldLabel from '@/components/FieldLabel.vue'
 import SectionTitle from '@/components/SectionTitle.vue'
+import { useCredentialPreview } from '@/composables/credentialPreview.js'
+import { credentialSourceInfo } from '@/utils/credentialSource.js'
 
 /**
  * `StorageConfigInfo` 的表单。
@@ -478,6 +500,28 @@ const form = reactive({
 
 /** 当前类型是否承载静态凭据。 */
 const supportsStaticCredentials = computed(() => STATIC_CREDENTIAL_TYPES.includes(form.storageType))
+
+/**
+ * 「按现在这样填，保存后凭据从哪来」——问服务端，前端不算。
+ *
+ * <p>输入用 `props.modelValue`（也就是 `build()` 已经发出去的那一份），而不是再调一次
+ * `build()`：两者应当相同，而一旦不同，说明「预览的输入」与「真正提交的东西」
+ * 是两条路——那正是这类预览最容易出的错。
+ */
+const { preview: credentialDraft } = useCredentialPreview(() => props.modelValue)
+
+/**
+ * 把服务端的判定翻成标签与一句说明。`null` 表示「没有可靠的判定」——那时整条不显示，
+ * 而不是显示一个「不下发」：把「不知道」写成某一档，是在替服务端下一个它没下的结论。
+ */
+const credentialPreview = computed(() => {
+  if (!credentialDraft.value?.mode) return null
+  return {
+    ...credentialSourceInfo(credentialDraft.value.mode),
+    mode: credentialDraft.value.mode,
+    detail: credentialDraft.value.detail || '',
+  }
+})
 
 const secretPlaceholder = computed(() => (storedAccessKeyId.value
   ? '已保存密钥，留空即保持不变'
@@ -864,6 +908,49 @@ defineExpose({ validate, build })
 
 .pc-storage-carry {
   margin-top: 4px;
+}
+
+/* 「保存后凭据来源」预览。故意做得比 `.pc-field-note` 重一点、比 `el-alert` 轻得多：
+ * 它回答的是「我这样填会怎样」，是这一页最该被看见的一句话，但不是一个需要处理的告警。
+ * 左侧竖线按四档上色，与列表页那一列的颜色同源（都取自 `credentialSource.js` 的 tag）。 */
+.pc-cred-preview {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  align-items: baseline;
+  margin: -4px 0 14px;
+  padding: 6px 10px;
+  font-size: 12.5px;
+  line-height: 1.65;
+  background: var(--pc-surface-2);
+  border-left: 2px solid var(--pc-text-dim);
+  border-radius: var(--pc-radius);
+}
+
+.pc-cred-label {
+  font-weight: 600;
+  color: var(--pc-text);
+}
+
+.pc-cred-detail {
+  flex: 1 1 260px;
+  color: var(--pc-text-dim);
+}
+
+.pc-cred-preview.is-sts {
+  border-left-color: var(--el-color-success);
+}
+
+.pc-cred-preview.is-relay {
+  border-left-color: var(--el-color-warning);
+}
+
+.pc-cred-preview.is-invalid {
+  border-left-color: var(--el-color-danger);
+}
+
+.pc-cred-preview.is-invalid .pc-cred-label {
+  color: var(--el-color-danger);
 }
 
 .pc-static-disabled-hint {

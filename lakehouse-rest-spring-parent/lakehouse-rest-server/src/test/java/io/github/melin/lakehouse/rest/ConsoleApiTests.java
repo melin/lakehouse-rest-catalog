@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -13,6 +14,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -25,6 +27,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
@@ -61,6 +64,9 @@ class ConsoleApiTests {
 
     /** 每个可见 catalog 的凭据来源（三档 + 配置有误）。 */
     private static final String CREDENTIAL_SOURCES = "/api/console/v1/catalog-credential-sources";
+
+    /** 表单里**还没保存**的那份配置的凭据来源（单个，POST 一份 storageConfigInfo）。 */
+    private static final String CREDENTIAL_SOURCE = "/api/console/v1/catalog-credential-source";
 
     /** 可见性必须与这条列表一致：来源端点照抄它的规则，条数也要对得上。 */
     private static final String MANAGEMENT_CATALOGS = "/api/management/v1/catalogs";
@@ -282,6 +288,82 @@ class ConsoleApiTests {
         // 预置 catalog 的仓库是 file://（见 application-test.yml），文件系统没有密钥可发
         assertEquals("NONE", sources.get(0).get("mode").asString(),
                 "file:// 仓库的凭据来源应当是「不下发」");
+    }
+
+    /**
+     * 表单草稿的判定：这一条是「保存前就要看得见」的那部分。
+     *
+     * <p>逐条钉住的是**同一个判定在不同输入下的结论**，而不是 HTTP 行为：
+     * 这个端点的价值全在 detail 那句话上——它要说清走的是哪条分支，
+     * 否则界面上仍是一个需要用户自己猜的标签。
+     */
+    @Test
+    void credentialSourcePreviewJudgesTheDraftBeforeItIsSaved() throws Exception {
+        // ① 填了 roleArn、但本部署没启用 s3-token（测试 profile 的 providers 是空的）。
+        //    这是整件事的由头：它与「什么都没填」的结果一模一样，字段上看不出来，
+        //    保存后要回列表页才看得见——而那时用户已经在另一步上了
+        JsonNode orphanRole = previewDraft(Map.of(
+                "storageType", "S3",
+                "allowedLocations", List.of("s3://bucket/warehouse"),
+                "roleArn", "arn:aws:iam::123456789012:role/lakehouse"));
+        assertEquals("NONE", orphanRole.get("mode").asString());
+        assertTrue(orphanRole.get("detail").asString().contains("s3-token"),
+                () -> "detail 必须点名要开的配置项，否则用户不知道去改什么："
+                        + orphanRole.get("detail").asString());
+
+        // ② catalog 自带静态凭据 → 转发档。它同时是「填了 roleArn 也不会签发」的另一种情形：
+        //    静态凭据是调用方的明确决定，STS 只是服务端的默认策略，策略不覆盖决定
+        JsonNode relay = previewDraft(Map.of(
+                "storageType", "S3",
+                "allowedLocations", List.of("s3://bucket/warehouse"),
+                "accessKeyId", "AKIAEXAMPLE",
+                "secretAccessKey", "s3cr3t"));
+        assertEquals("RELAY", relay.get("mode").asString());
+
+        // ③ 打码值不影响结论：编辑一份已保存的配置时，表单拿到的 accessKeyId 是 ******，
+        //    它与真值得判出同一档——否则「打开编辑框」这个动作本身就会改变界面上显示的档位
+        JsonNode masked = previewDraft(Map.of(
+                "storageType", "S3",
+                "allowedLocations", List.of("s3://bucket/warehouse"),
+                "accessKeyId", "******"));
+        assertEquals("RELAY", masked.get("mode").asString(),
+                "对外那份（已打码）与库里那份必须判出同一档");
+
+        // ④ 引用了不存在的具名存储 → 配置有误。保存时它不报错，取票时才 500，
+        //    因此这是唯一能在保存前说出来的一档
+        JsonNode invalid = previewDraft(Map.of(
+                "storageType", "S3",
+                "allowedLocations", List.of("s3://bucket/warehouse"),
+                "storageName", "no-such-storage"));
+        assertEquals("INVALID", invalid.get("mode").asString());
+
+        // ⑤ 本地文件系统：没有密钥可发
+        JsonNode file = previewDraft(Map.of(
+                "storageType", "FILE",
+                "allowedLocations", List.of("file:///data/warehouse")));
+        assertEquals("NONE", file.get("mode").asString());
+
+        // ⑥ 控制台不认识的存储类型：400，前端据此把预览藏起来（表单自己会先拦住这种情况）。
+        //    这里断言的是「解析失败不要变成 500」——500 会让控制台弹出全局错误提示，
+        //    而用户只是还没选完类型
+        MvcResult bad = mockMvc.perform(post(CREDENTIAL_SOURCE)
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + TOKEN)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"storageType\":\"NOPE\",\"allowedLocations\":[\"nope://x/y\"]}"))
+                .andReturn();
+        String badBody = bad.getResponse().getContentAsString();
+        assertEquals(400, bad.getResponse().getStatus(), () -> "body=" + badBody);
+    }
+
+    private JsonNode previewDraft(Map<String, Object> draft) throws Exception {
+        MvcResult result = mockMvc.perform(post(CREDENTIAL_SOURCE)
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + TOKEN)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(mapper.writeValueAsString(draft)))
+                .andReturn();
+        String body = result.getResponse().getContentAsString();
+        assertEquals(200, result.getResponse().getStatus(), () -> "body=" + body);
+        return mapper.readTree(body);
     }
 
     // ------------------------------------------------------------------ 单页应用回退

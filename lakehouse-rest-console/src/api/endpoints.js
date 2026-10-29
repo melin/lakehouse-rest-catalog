@@ -25,6 +25,12 @@ export const ENDPOINTS = {
   // 前端拿不到这两份配置；而把优先级抄进 JS 一定与凭据管理器漂移。
   // 批量而不是逐个：列表页一次要标几十行。
   credentialSources: { method: 'GET', path: '/api/console/v1/catalog-credential-sources' },
+  // 同一套判定，输入换成**表单还没保存的那份配置**：POST 一个 storageConfigInfo，
+  // 回 `{ mode, detail }`。用 POST 而不是 GET，是因为要传一整份配置，
+  // 而它可能带打码的 accessKeyId——塞进查询串会进访问日志。
+  // 它与上一条答的不是同一个问题：那边是「这个 catalog 现在会怎样」（库里查得到），
+  // 这边是「我这样填完保存会怎样」（库里还没有）。
+  credentialSourcePreview: { method: 'POST', path: '/api/console/v1/catalog-credential-source' },
   // 仓库文件浏览：列出 catalog 仓库里某个目录的一层内容（`?path=` 给相对仓库根的路径）。
   // 与 meta 一样是本工程的扩展端点，服务端实现见 ConsoleFileController；
   // 它读的是物理目录（表目录里有哪些文件、有没有残留），不是元数据。

@@ -4,6 +4,7 @@ import io.github.melin.lakehouse.rest.config.RequestContext;
 import io.github.melin.lakehouse.rest.config.RestServerProperties;
 import io.github.melin.lakehouse.rest.dto.ConsoleDtos;
 import io.github.melin.lakehouse.rest.dto.ManagementDtos.Catalog;
+import io.github.melin.lakehouse.rest.dto.StorageDtos.StorageConfigInfo;
 import java.util.ArrayList;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
@@ -57,5 +58,20 @@ public class ConsoleCredentialSourceService {
         return !authorization.enabled()
                 || authorization.isServiceAdmin(RequestContext.principal())
                 || authorization.hasAnyGrant(RequestContext.principal(), catalog);
+    }
+
+    /**
+     * {@code POST /api/console/v1/catalog-credential-source}：判定一份**表单草稿**。
+     *
+     * <p>与 {@link #list()} 共用 {@link CatalogCredentialSource}，因此不会出现
+     * 「表单里说会签发、建完在列表里显示转发」这种两处各算一遍的错位。
+     *
+     * <p>不做 {@link #visible} 检查——不查库、不遍历 catalog，只回答调用方自己刚提交的
+     * 那份配置。它唯一可能透露的部署信息是「某个具名存储存在与否」与「签发是否启用」，
+     * 前者保存时本来就会在错误里说出来，后者已经在批量端点里明文返回。
+     */
+    public ConsoleDtos.CredentialSourcePreview preview(StorageConfigInfo draft) {
+        CatalogCredentialSource.Source source = CatalogCredentialSource.of(draft, properties);
+        return new ConsoleDtos.CredentialSourcePreview(source.mode().name(), source.detail());
     }
 }

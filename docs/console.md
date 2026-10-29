@@ -146,7 +146,7 @@ lakehouse-rest-console/
 | `/` | 控制台概览 | 统计块（三个数量）、服务端配置摘要、**连接自检**、catalog 清单、`GET /v1/config` 展示 |
 | `/browse` | 目录浏览 | 按选中 catalog 的**表格式**换一套实现：Paimon catalog 是「左库右对象、三页签（表/视图/函数；语义视图的 4 条端点仍在服务端，控制台不再暴露）」；Iceberg catalog 换成 `IcebergBrowseView`（左命名空间右表/视图，见 §4.6）；Lance catalog 换成 `LanceBrowseView`（左命名空间右表，**可建命名空间**；建表与删除都不给，见 §4.6.1）。Paimon 侧能力：建库、建表（Paimon 表 / Format 表 / Object 表三种表格式，Lance 表留在选项里但禁用，见 [console-catalog-detail.md](console-catalog-detail.md) §3.5）、注册表、按表 ID 定位、重命名、删除、详情抽屉。表页签列出表名 / 表格式 / 表类型（Managed 或外部表）/ 创建时间 / 元数据更新时间 / 操作六列，数据取自 `table-details`（只回表名的 `/tables` 给不出这几列）；「元数据更新时间」是服务端这条表记录的最后改动时间，快照提交与回滚也会推动它。表页签的过滤为空时说明「没有匹配 ×××」，与「库里没有表」区分开。**建表入口在「表」页签工具条的右侧**（页头只留刷新与新建数据库）：三类对象的工具条都写在 `ResourceState` 之外——那个组件命中空态时只渲染 `el-empty`、默认插槽整个不渲染，工具条若在里面，「这个库还是空的」这一刻就正好没有新建按钮 |
 | `/tables/:prefix/:database/:table` | [表详情](console-table-detail.md) | 十页签：详细信息 / **血缘** / 数据预览 / 快照 / 标签 / 分支 / **文件列表** / 数据访问 / **数据策略** / **存储优化**（血缘与数据预览、数据策略都不随表格式伸缩：页签自己判空，见 [console-table-detail.md](console-table-detail.md) §1.1）；含快照与标签的**回滚**。**没有「变更」页签**：改表结构走 HTTP 或 Spark SQL，理由见该文档 §2。详细信息首屏的四张统计卡片取自 `getTableSnapshot`（三个文件统计的来路与「什么时候会空」见该文档 §2.1），内含**字段列表 / 分区列表**二级页签（名称过滤 + 分页：字段表在浏览器里切片，分区列表走远程分页且前缀过滤下推，分区按需加载）。文件列表按表目录物理内容列一层（根是表目录，出不了表外），目录名可点下钻、文件可下载、前缀过滤与页码都下推服务端。存储优化页签承载表级策略与执行历史（见 [table-optimization.md](table-optimization.md) §7）。血缘页签给三视图（图 / 邻接表 / 列映射），图是 Canvas 与「跳数即层号」的纯函数布局（见 [lineage-design.md](lineage-design.md) §9）。授权不在这张表上做——表级权限统一到「权限管理」页 |
-| `/catalogs` | Catalogs | 列出 / 创建 / 详情 / 更新（带版本）/ 删除。名称链到详情页；操作列另有「浏览库与对象」直达 `/browse`。页头带**定时刷新**开关与节拍（默认开启、5 秒，偏好存 localStorage；见 §4.9）。表里有一列**凭据来源**（短期签发 / 转发长期密钥 / 不下发 / 配置有误，见 §4.10） |
+| `/catalogs` | Catalogs | 列出 / 创建 / 详情 / 更新（带版本）/ 删除。名称链到详情页；操作列另有「浏览库与对象」直达 `/browse`。页头带**定时刷新**开关与节拍（默认开启、5 秒，偏好存 localStorage；见 §4.9）。表里有一列**凭据来源**（短期签发 / 转发长期密钥 / 不下发 / 配置有误，见 §4.10）；新建 / 编辑对话框里的存储表单也有一份实时预览（同一判定，输入是还没保存的草稿） |
 | `/catalogs/:catalogName` | [Catalog 详情](console-catalog-detail.md) | 四页签：概览 / 存储 / 文件列表 / 配置。**存储**页回答「哪些表该做 compaction」：文件数、存储、平均文件大小、小文件占比（按库聚合），两种格式都支持，口径参考 AWS《Monitoring Iceberg workloads》但取数只用已有端点，见 [console-catalog-detail.md §3.2](console-catalog-detail.md)。文件列表按仓库物理目录列一层，目录名可点下钻、带面包屑与「返回上级」；只读，不提供删除与建目录。**配置页签**两种格式是同一套设计：都编辑「表默认参数」（`table-default.*`，见 [catalog-api-endpoints.md](catalog-api-endpoints.md#catalog-级默认表属性table-default)），Iceberg 另附只读的 `/v1/config` `defaults` / `overrides`（连接参数，非表属性）；其余 catalog 属性不在此页重复展示（概览已有） |
 | `/principals` | 主体 | 列出 / 创建 / 更新 / 删除 / rotate / reset；授予与撤销角色。创建、轮换、重置后的凭据弹窗可一键导出 JSON 文件（`{principal, clientId, clientSecret}`，文件名 `<主体>-credentials.json`），密钥仍只在弹窗期间可见 |
 | `/principal-roles` | 角色 | 列出 / 创建 / 更新 / 删除；查看成员（授予成员要按主体操作，在「主体」页做）。角色是**纯分组**，自身不携带权限；管理规格里的 `federated` 字段控制台不暴露——本服务不接入外部 IdP，勾了只存一个标记，且 PUT 不接受该字段，勾错改不回来 |
@@ -615,6 +615,18 @@ catalog 列表多一列、详情页多一段，说的都是同一件事：**引�
   表格里显示「—」而不是「不下发」——把「没问到」显示成「不下发」是在替服务端下一个它没下的结论。
 - **详情页顺带说明取票要哪个权限点**（`USE_CREDENTIAL`，转发档还要 `USE_SECRET`）。
   升级到「两个权限点」之后最常踩的就是这一条，而报 403 的人第一眼看的正是这一页。
+- **表单里有一份预览**（`POST /api/console/v1/catalog-credential-source`，紧跟在「存储类型」
+  下面）：把这一份**还没保存的**配置发给服务端，回来的是与列表页同一个判定的
+  `{ mode, detail }`。它治的是一个具体的坑——`roleArn` 填了、但本部署没启用 `s3-token` 时，
+  结果与「什么都没填」完全一样（都退回环境凭据链），字段上看不出来，保存后要回列表页
+  才看得见，而那时用户已经在另一步上了。
+  三个细节：改用 POST 是因为要传一整份配置（它可能带打码的 `accessKeyId`，
+  塞进查询串会进访问日志）；判定失败就把这一条**整根藏起来**，不保留上一次的结论
+  （旧结论配上新表单是一句假话）；草稿还没有「允许位置」时不问——那时还谈不上保存，
+  答出来的「不下发」只是一句与下一步无关的噪音。
+  `utils/credentialSource.js` 只负责翻译，`composables/credentialPreview.js` 只负责去抖、
+  发请求与丢弃过期响应，**两者都不许自己推断档位**（脚本第 24 组反向断言：
+  不读判据字段、不出现档位字面量）。
 
 ---
 
@@ -655,7 +667,7 @@ python3 scripts/verify-console.py      # 退出码 0 通过 / 1 不一致 / 2 �
 PYTHON=/path/to/python3 scripts/verify-console.py   # 多解释器时指定装了 PyYAML 的那个
 ```
 
-它**不构建前端、不启动服务端**，只做静态比对，因此可以放进提交前的检查。25 组 178 项：
+它**不构建前端、不启动服务端**，只做静态比对，因此可以放进提交前的检查。25 组 180 项：
 
 | 组 | 校验内容 |
 | --- | --- |

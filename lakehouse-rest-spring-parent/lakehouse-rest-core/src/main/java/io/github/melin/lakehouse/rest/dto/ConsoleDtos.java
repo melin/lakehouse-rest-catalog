@@ -452,4 +452,25 @@ public final class ConsoleDtos {
         public record Entry(String catalog, String mode, String detail) {
         }
     }
+
+    /**
+     * {@code POST /api/console/v1/catalog-credential-source} 的响应：**一份还没保存的**
+     * 存储配置的凭据来源判定。
+     *
+     * <p>与 {@link CatalogCredentialSources} 同一套判定、同一个 {@code mode} 词表，
+     * 区别只在于输入：那里查的是库里已有的 catalog，这里查的是表单此刻的草稿。
+     * 分成两个端点而不是给批量那个加一个「草稿」参数，是因为两者的生命周期与可见性规则
+     * 完全不同——草稿还没有 catalog 可言，无从谈「这个主体能不能看见它」。
+     *
+     * <p>为什么值得一个端点：{@code roleArn} 填了、但本部署没启用 {@code s3-token} 时，
+     * 结果与「什么都没填」一模一样（都退回环境凭据链）。这件事在保存前不可能从字段上看出来，
+     * 保存后要回到列表页才看得见，而那时用户已经在另一步上了。
+     *
+     * @param mode   {@code STS} / {@code RELAY} / {@code NONE} / {@code INVALID}，
+     *               与 {@code CatalogCredentialSource.Mode} 一一对应；同样用字符串，
+     *               理由同 {@link CatalogCredentialSources.Entry}
+     * @param detail 走的是哪条分支，直接显示在表单里
+     */
+    public record CredentialSourcePreview(String mode, String detail) {
+    }
 }

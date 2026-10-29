@@ -1,6 +1,6 @@
 # 存储凭据下发（Credential Vending）：现状、缺口与七种存储的落地设计
 
-> **状态：P0 已实现、P1 部分实现（P1-7 两个权限点、P1-8 打码与哨兵、P1-9 服务端取票、P1-12 COS 落地、P1-6 的「控制台标记」一半已做；P1-13 经核查作废，见 v6/v7/v8 修订块与 §8、§10.8）。** 本文回答三个问题：① Gravitino 与 Polaris 都做了 Credential
+> **状态：P0 已实现、P1 部分实现（P1-7 两个权限点、P1-8 打码与哨兵、P1-9 服务端取票、P1-12 COS 落地、P1-6 控制台标记（列表 / 详情 / 表单预览）已做；P1-13 经核查作废，见 v6/v7/v8 修订块与 §8、§10.8）。** 本文回答三个问题：① Gravitino 与 Polaris 都做了 Credential
 > Vending，**本工程有没有考虑、还差哪些功能**；② AWS / Azure / GCS / 阿里云 OSS / 华为云 OBS /
 > 腾讯云 COS 与 S3 兼容存储**分别怎么落地**；③ Spark 访问 Catalog 时**能不能不把 AK/SK 写进配置**。
 > §10 另外回答第四个：**控制台上怎么配**（附交互原型）。
@@ -1279,7 +1279,7 @@ object_store 认的是 `aws_access_key_id` / `aws_secret_access_key` / `aws_sess
 | P1-3 | OBS `CreateTemporaryAccessKeyByAgency` + `policy` 收窄 | 一个 IAM 委托（agency） |
 | P1-4 | GCS downscoped token（`CredentialAccessBoundary`） | 服务账号 + `serviceAccountTokenCreator` |
 | P1-5 | 审计归因：`RoleSessionName` / session tags | 无 |
-| ◑ P1-6 | 控制台：创建页三态来源 + 参数 + 引擎片段；catalog 列表与详情标出「长期凭据 / 短期凭据 / 不下发」 | **已落地「标记」这一半**：判定在服务端（`CatalogCredentialSource`，四档 `STS` / `RELAY` / `NONE` / `INVALID`），经批量端点 `GET /api/console/v1/catalog-credential-sources` 下发；catalog 列表多一列、详情页多一段（含「取票要哪个权限点」与「能否续期」）。**与 §10 的偏差**：原型里那三个**每 catalog 的新字段**（`credentialProviders` / `credentialTtlSeconds` / `credentialReadOnly`）P0 没有采用——来源是由现有 `storageConfigInfo` + 全局 `credential.providers` 推断出来的，因此不需要新字段、也不需要接口形状变更。**未做**：创建页的三态选择器、`stsUnavailable` 冲突框、五面引擎片段（§10.2–§10.6），理由是三态选择器会与「存储配置本身就能表达来源」重复（见 §10.8） |
+| ◑ P1-6 | 控制台：创建页三态来源 + 参数 + 引擎片段；catalog 列表与详情标出「长期凭据 / 短期凭据 / 不下发」 | **已落地「标记」这一半**：判定在服务端（`CatalogCredentialSource`，四档 `STS` / `RELAY` / `NONE` / `INVALID`），经批量端点 `GET /api/console/v1/catalog-credential-sources` 下发；catalog 列表多一列、详情页多一段（含「取票要哪个权限点」与「能否续期」）。**与 §10 的偏差**：原型里那三个**每 catalog 的新字段**（`credentialProviders` / `credentialTtlSeconds` / `credentialReadOnly`）P0 没有采用——来源是由现有 `storageConfigInfo` + 全局 `credential.providers` 推断出来的，因此不需要新字段、也不需要接口形状变更。**已补**：新建 / 编辑表单里的实时预览（`POST /api/console/v1/catalog-credential-source`，输入是还没保存的草稿，服务端用同一个判定）——它替掉了原型的「行内提示」，因为要说的不止 `roleArn` 一条（见 §10.9）。**未做**：创建页的三态选择器、`stsUnavailable` 冲突框、五面引擎片段（§10.2–§10.6），理由是选择器会与「存储配置本身就能表达来源」重复（见 §10.8 / §10.9） |
 | ✅ P1-7 | **判权拆两个权限点**：`CATALOG:USE_CREDENTIAL` 与 `CATALOG:USE_SECRET`（§3.4.3） | 落地形态：`/token` 与 `/credentials` 改判 `USE_CREDENTIAL`（`/auth`、`/plan` 仍是 `SELECT`），票里含长期密钥对时再判 `USE_SECRET`；`VendedStorageCredential#carriesLongTermKeyPair()` 是唯一判据。用例：`CredentialAccessSplitTests` 五条（只有取票权→403 点名 `USE_SECRET`；两个都有→照常下发；只有 `USE_SECRET`→403 点名 `USE_CREDENTIAL`；都没有→403；判据只看载荷不看存储类型）+ `LanceCredentialAccessTests` 四条（Lance 面的两道判定、短期票免 `USE_SECRET`、不带参数不判权也不带密钥）+ `CatalogEndpointAuthorizationTests` 的映射与作用域断言。**行为变更**：细粒度 `SELECT` 授权升级后需补 `USE_CREDENTIAL`，`ALL` 不受影响 |
 | P1-8 | ✅ **AK ID 打码 + 打码回写哨兵**（§3.4.4）：`withoutSecrets` 一个出口打码，`mergeStaticCredentials` 认哨兵；`******` + 空密钥 = 两个都不动，`******` + 新密钥 = 只换密钥，库里没有原值或把哨兵当密钥则 400 | 用例：`StaticCredentialApiTests` 的 `maskedAccessKeyIdSurvivesARenameOnlyUpdate`（设计稿点名的验收）、`maskedAccessKeyIdWithOmittedSecretKeepsBoth`、`maskedAccessKeyIdWithANewSecretRotatesOnlyTheSecret`、`maskedAccessKeyIdOnANewCatalogIsRejected`、`maskedValueAsSecretIsRejected`；范围仅 catalog 的 `storageConfigInfo`，执行集群那套凭据仍回显 |
 | ✅ P1-9 | **服务端自身 FileIO 走独立取票**（§5.7），作用域是 catalog 的允许位置，不复用任何用户的表级票 | 两类作用域分开（`vend` vs `vendForCatalog`）、写权限显式传、缓存键不撞 → `ServerSideCredentialTests`（9 例）；「只配 `roleArn` 的 catalog 上优化任务跑通」**需真实 S3，未跑** |
@@ -1493,12 +1493,33 @@ Lance 在签发档仍会标注「只读一次、长作业会过期」。这两�
 四档里多出的 `INVALID` 是原型没有的：它覆盖两种**配置错误**——引用了不存在的具名存储、
 COS 配了 `sessionToken`（COSN 没有令牌位）——这两种在原型里都只能等到取票 500 才暴露。
 
-**还没有做的部分是「创建页的三态选择器」。** 它现在也不需要：三档的选择在表单上
-已经由现有字段表达（填静态凭据 / 填 `roleArn` / 勾 `stsUnavailable` / 留空走环境链），
-再造一个三选一去改同一批字段，会出现「选了转发但静态凭据是空的」这类新状态。
-真要做，正确的顺序是先把「填了 `roleArn` 而 `s3-token` 没启用」这条**行内提示**补上
-（现在这条只在列表页的判定里说出来），再谈选择器。引擎片段（§10.4）同理：
-它的内容取决于面（Spark / Flink × Paimon / Iceberg / Lance），更适合放进文档与
+### 10.9 落地偏差：表单预览用「草稿判定」，不做三态选择器（P1-6 第二半）
+
+原型的创建页是一个三选一（签发 / 转发 / 不下发）+ 每档的参数 + 引擎片段。落地只做了
+第一件事的一半：**一个只读预览**，紧跟在「存储类型」下面，内容是那句
+「保存后凭据来源：<标签> —— <走的是哪条分支>」。
+
+它不是选择器，因为三档的选择在表单上**已经由现有字段表达**（填静态凭据 / 填 `roleArn` /
+勾 `stsUnavailable` / 留空走环境链）；再造一个三选一去改同一批字段，会生出
+「选了转发但静态凭据是空的」这类只在界面上存在的状态，而服务端并不认识它。
+
+实现上刻意与列表页共用同一个判定：
+
+- 端点 `POST /api/console/v1/catalog-credential-source`，请求体就是管理 API 里那一份
+  `storageConfigInfo`（同一套多态反序列化），服务端调同一个 `CatalogCredentialSource.of`
+  ——因此不会出现「表单里说会签发、建完在列表里显示转发」这种两处各算一遍的错位。
+- 用 POST 而不是给批量端点加草稿参数：两者答的问题不同。批量那条是「这个 catalog
+  现在会怎样」（库里查得到，还要按可见性过滤），这条是「我这样填完保存会怎样」
+  （库里还没有，无从谈可见性）。附带的好处是草稿可能带打码的 `accessKeyId`，
+  放在请求体里不会进访问日志。
+- 前端只有一个组合函数（`composables/credentialPreview.js`）：去抖 400ms、丢弃过期响应、
+  失败就把整条藏起来。它**不认识任何判据字段，也不出现档位字面量**——
+  脚本第 24 组对它与翻译层用同一套反向断言。这条护栏不是形式主义：这个组件里
+  `roleArn` / `storageName` / 静态凭据全都在手边，「顺手 if 一下就能推断档位」
+  看起来比发一次请求便宜，而那正是漂移的起点。
+
+**三态选择器与五面引擎片段仍然不做**，理由同上。引擎片段（§10.4）的内容取决于面
+（Spark / Flink × Paimon / Iceberg / Lance），更适合放进文档与
 `docs/spark-sql-reference.md`，而不是塞进一个会随界面版本漂移的弹层。
 
 ---

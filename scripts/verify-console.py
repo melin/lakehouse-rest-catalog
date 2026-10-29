@@ -182,6 +182,12 @@ EXTENSION_ENDPOINTS = {
     # 而漂移的表现是「界面说在签发、实际在转发」——只在出事那天才被发现。
     # 批量返回（一次全部可见 catalog），因此它是一个端点而不是逐 catalog 一条。
     ("GET", "/api/console/v1/catalog-credential-sources"): "控制台：每个 catalog 的凭据来源判定（只读，服务端推算）",
+    # 同一套判定，输入换成**表单还没保存的那份配置**（POST 一份 storageConfigInfo）。
+    # 单独一条而不是给上一条加草稿参数：两者答的问题不同——那边是「这个 catalog 现在
+    # 会怎样」（库里查得到，还要按可见性过滤），这边是「我这样填完保存会怎样」
+    # （库里还没有，无从谈可见性）。roleArn 填了但没启用 s3-token 时，结果与什么都
+    # 没填一模一样（都退回环境凭据链），这句话只有保存前说才有用。
+    ("POST", "/api/console/v1/catalog-credential-source"): "控制台：表单草稿的凭据来源判定（只读，不发凭据）",
     # 仓库文件浏览：列 catalog 仓库里某个目录的一层内容（`?path=` 相对仓库根）。
     # 与 meta 一样是控制台扩展端点，服务端实现见 ConsoleFileController；
     # 它读的是物理目录（表目录下有哪些文件、有没有残留），两份规格都不涉及文件系统，
@@ -2441,6 +2447,8 @@ print("24. 凭据来源（三档标签；判定在服务端，控制台只负责
 #     **不出现判据本身**（roleArn / stsUnavailable）：出现就说明有人开始在前端算。
 #   · 四档的取值必须与服务端的 Mode 枚举逐字对应，否则界面会把一个新取值
 #     显示成「—」，而人不会去看它是不是新加的档。
+#   · 同一套断言也要罩住**表单预览**（composables/credentialPreview.js）：
+#     它离判据字段最近（roleArn 就在同一个组件里），最容易被写成「顺手推断一下」。
 credential_util = read(os.path.join(CONSOLE_DIR, "src/utils/credentialSource.js"))
 credential_java = read(os.path.join(
     ROOT, "lakehouse-rest-spring-parent/lakehouse-rest-storage/src/main/java/io/github/melin/"
@@ -2471,6 +2479,25 @@ check("列表页与详情页共用同一份翻译，且列表页的失败不影�
       and "credentialSourceError" in read(CATALOGS_VIEW),
       "两个页面各写一份标签/颜色就会「列表说转发、详情说签发」；"
       "判定接口失败时也不该把 catalog 列表带下水")
+
+# 表单里的预览（`composables/credentialPreview.js`）是同一件事的第三个落点。
+# 它的诱惑比前两个大：表单里正好有 roleArn / storageName / 静态凭据这几项，
+# 「顺手 if 一下就推断出档位」看起来比发一次请求便宜——而那正是漂移的起点。
+# 因此这里对它用与翻译层同一套反向断言：只许发请求，不许读判据、不许自带档位取值。
+credential_preview_js = read(os.path.join(CONSOLE_DIR, "src/composables/credentialPreview.js"))
+credential_preview_code = re.sub(r"/\*[\s\S]*?\*/", "", credential_preview_js)
+credential_preview_code = re.sub(r"//.*", "", credential_preview_code)
+check("表单预览只发请求，不自己推断档位（不读判据字段、不出现档位字面量）",
+      not re.search(r"\.(roleArn|stsUnavailable|providers)\b", credential_preview_code)
+      and not re.search(r"['\"](STS|RELAY|NONE|INVALID)['\"]", credential_preview_code),
+      "composables/credentialPreview.js 里出现了判据或档位字面量：预览会与列表页各算一遍，"
+      "而两处算出来的档位一旦不同，用户会以为自己填错了")
+
+check("表单预览的输入是提交体（modelValue），不是表单内部状态",
+      "useCredentialPreview(() => props.modelValue)" in read(STORAGE_CONFIG_FIELDS)
+      and 'v-if="credentialPreview"' in read(STORAGE_CONFIG_FIELDS),
+      "预览要么没接上，要么拿 form 当输入：form 里有 removeCredentials 这类不提交的字段，"
+      "预览出来的结论会与真正保存的那份配置不符")
 
 # ------------------------------------------------------------------ 25. 文档计数
 
