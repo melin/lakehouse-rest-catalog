@@ -29,6 +29,12 @@ import java.util.Locale;
  *
  * <p><b>{@code delimiter}</b>：{@code id} 的分隔符默认是 {@code $}，但客户端可以换
  * （{@code ?delimiter=::}），因此它由调用方从 query 里取来传进来，本类不假设。
+ *
+ * <p><b>凭据的两个权限点不在这张表里。</b>那一面的取票不是端点，而是 {@code describe}
+ * 上的 {@code vend_credentials=true}——路径相同、只是多个参数，而本类的 {@code resolve}
+ * 看不到 query。所以 {@code USE_CREDENTIAL} / {@code USE_SECRET} 由
+ * {@code LanceCatalogSupport#requireVending} 在唯一的下发点判。别为了「统一」把
+ * query 参数塞进来：那会让「同一路径两种判权」变成判权层的隐患。
  */
 public final class LanceAccessRules {
 

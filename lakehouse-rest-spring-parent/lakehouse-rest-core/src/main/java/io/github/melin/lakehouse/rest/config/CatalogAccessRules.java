@@ -12,10 +12,18 @@ import java.util.Locale;
 /**
  * catalog API（{@code /v1/**}）端点 → 所需 access 的映射表。
  *
- * <p>取词表来自 Paimon REST Management API 的 12 项 access，资源类型用它的 8 个
- * {@code PermissionResource.type}。每个端点归到「在哪个资源上行使哪项 access」，
- * 交给 {@link io.github.melin.lakehouse.rest.service.AuthorizationService} 用
+ * <p>取词表来自 Paimon REST Management API 的 12 项 access 加上本工程的两个扩展词
+ * （{@code USE_CREDENTIAL} / {@code USE_SECRET}，见 {@code PermissionDtos.Access}），
+ * 资源类型用它的 8 个 {@code PermissionResource.type}。每个端点归到「在哪个资源上行使
+ * 哪项 access」，交给 {@link io.github.melin.lakehouse.rest.service.AuthorizationService} 用
  * {@code permission_assignment} 判定——不再有 Polaris 的 64 项权限。
+ *
+ * <p><b>这张表答不了的只有一条：{@code USE_SECRET}。</b>「这次要发的凭据里有没有长期密钥对」
+ * 取决于签发结果（provider 是 {@code relay} 还是现签 STS），不是路径；路径相同的
+ * {@code /token} 可能发短期票、也可能发目录里存的那对密钥。因此它不能登记在这里，
+ * 而是由两个协议面的凭据服务在拿到凭据之后判定（见 {@code VendedStorageCredential
+ * #carriesLongTermKeyPair()}）。**这也是本表唯一一处「同一端点两种要求」的分叉**，
+ * 新增凭据类端点时别把这条规则再写一遍。
  *
  * <p><b>两类目标的区分。</b>官方把 {@code CATALOG} 与 {@code CATALOG_ALL}、
  * {@code DATABASE} 与 {@code DATABASE_ALL} 定义成不同作用域：
@@ -255,7 +263,12 @@ public final class CatalogAccessRules {
         Access required = switch (sub) {
             case "commit", "rollback" -> Access.UPDATE;
             case "rollback-schema" -> Access.ALTER;
-            case "token", "auth" -> Access.SELECT;
+            // 取票走 USE_CREDENTIAL 而不是 SELECT：SELECT 是「能读这张表」，
+            // 取票是「能被发一张通往存储的票」。合成一个词就意味着「能跑查询」与
+            // 「能拿走目录里存的长期密钥」是同一件事（设计稿 §3.4.3）；
+            // 而 /auth 只回行过滤与脱敏规则、不签发任何凭据，仍归 SELECT。
+            case "token" -> Access.USE_CREDENTIAL;
+            case "auth" -> Access.SELECT;
             case "partitions" -> partitionAccess(path.size() > 5 ? path.get(5) : "", method, read);
             case "consumers" -> read ? Access.DESCRIBE : Access.ALTER;
             default -> null; // snapshot / snapshots / branches / tags
@@ -444,8 +457,10 @@ public final class CatalogAccessRules {
         Access required = switch (sub) {
             // 上报统计属于「改这张表的数据状态」，与 Paimon 的 consumers 归到同一档
             case "metrics", "tasks" -> Access.UPDATE;
-            // 凭据下发与 Paimon 的 token / auth 是同一件事
-            case "credentials", "plan" -> Access.SELECT;
+            // 凭据下发与 Paimon 的 /token 是同一件事，因此同一个词（USE_CREDENTIAL）。
+            // plan 只回扫描计划、不带任何密钥，仍按数据读权限 SELECT。
+            case "credentials" -> Access.USE_CREDENTIAL;
+            case "plan" -> Access.SELECT;
             case "unregister" -> Access.DROP;
             case "sign" -> Access.DESCRIBE;
             default -> null;

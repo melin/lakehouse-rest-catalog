@@ -286,7 +286,8 @@ class VendingCredentialProviderTests {
 
     @Test
     void refreshEndpointIsAdvertisedOnlyForShortLivedCredentials() {
-        IcebergCredentialService service = new IcebergCredentialService(null, null);
+        // 三个依赖都不参与 refreshConfig 的路径拼装，传 null 即可
+        IcebergCredentialService service = new IcebergCredentialService(null, null, null);
         List<IcebergDtos.StorageCredential> entries =
                 List.of(new IcebergDtos.StorageCredential("s3://wh/db/t", Map.of("s3.region", "us-east-1")));
 
@@ -305,7 +306,8 @@ class VendingCredentialProviderTests {
 
     @Test
     void multiLevelNamespaceIsEncodedWithTheSpecSeparator() {
-        IcebergCredentialService service = new IcebergCredentialService(null, null);
+        // 三个依赖都不参与 refreshConfig 的路径拼装，传 null 即可
+        IcebergCredentialService service = new IcebergCredentialService(null, null, null);
         IcebergCredentialService.Delegated delegated = new IcebergCredentialService.Delegated(
                 List.of(new IcebergDtos.StorageCredential("s3://wh/db/t", Map.of())), true);
 

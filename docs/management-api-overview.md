@@ -25,7 +25,7 @@ labels 与 policies 本服务端未实现；权限那 3 个是**当前唯一的�
 | 想知道什么 | 看哪份 |
 | --- | --- |
 | 有哪些端点、分成几类 | 本文 |
-| 权限怎么判定、12 项 access 怎么落 | [`authorization.md`](authorization.md) |
+| 权限怎么判定、14 项 access（官方 12 + 两个凭据扩展词）怎么落 | [`authorization.md`](authorization.md) |
 | 用 SQL 而不是 HTTP 调这套接口 | [`spark-sql-reference.md`](spark-sql-reference.md) |
 | catalog API 的 60 个端点 | [`catalog-api-endpoints.md`](catalog-api-endpoints.md) |
 

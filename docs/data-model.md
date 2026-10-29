@@ -91,7 +91,7 @@
 | `lakehouse_principal` | principal | 主体；只保存密钥摘要，明文仅在创建 / 轮换时返回一次 |
 | `lakehouse_principal_role` | principal role | 纯分组，自己不携带任何权限 |
 | `lakehouse_principal_role_grant` | 主体 ↔ principal role | 多对多关联 |
-| `lakehouse_permission_assignment` | **唯一的授权表** | 官方三元组 `(resource, access, principal)`：8 种资源定位符 + 12 项 access + principal 原文 + 过期时间 + 列范围 |
+| `lakehouse_permission_assignment` | **唯一的授权表** | 官方三元组 `(resource, access, principal)`：8 种资源定位符 + 14 项 access（官方 12 + 两个凭据扩展词）+ principal 原文 + 过期时间 + 列范围 |
 
 **改造前这里有 7 张表**（另含 `lakehouse_catalog_role` / `lakehouse_catalog_role_grant` /
 `lakehouse_resource_grant`，即 Polaris 的 RBAC 链），已随 catalog role 整层移除。

@@ -51,7 +51,8 @@ import org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandl
  *
  * <p><b>授权只有一条路径。</b>catalog role 已整体移除，本类不再需要「catalog role →
  * principal role → principal」三段装配，一条
- * {@code POST /v1/{prefix}/permissions/grant} 就够；access 用的是官方那 12 项。
+ * {@code POST /v1/{prefix}/permissions/grant} 就够；access 用的是官方那 12 项
+ * 加本工程的两个凭据扩展词（{@code USE_CREDENTIAL} / {@code USE_SECRET}）。
  *
  * <p>使用独立的 H2 库，避免与其它测试类共享内存库导致状态互相污染。
  * {@code test} profile 负责把数据源从默认的 MySQL 换成内存 H2
@@ -283,7 +284,7 @@ class CatalogEndpointAuthorizationTests {
         // 拒绝：创建表（要求 DATABASE 上的 CREATETABLE）
         assertEquals(403, status(READER, "POST",
                 "/v1/" + CATALOG + "/databases/" + NAMESPACE_A + "/tables"));
-        // 拒绝：取数据令牌（要求 TABLE 上的 SELECT，LIST 不含它）
+        // 拒绝：取数据令牌（要求 TABLE 上的 USE_CREDENTIAL，LIST 不含它）
         assertEquals(403, status(READER, "GET",
                 "/v1/" + CATALOG + "/databases/" + NAMESPACE_A + "/tables/authz_probe/token"));
         // 拒绝：读语义视图（按 VIEW 资源判定，要求 DESCRIBE）
@@ -295,9 +296,9 @@ class CatalogEndpointAuthorizationTests {
     void databaseScopedGrantOnlyCoversItsOwnSubtree() throws Exception {
         createPrincipal(SCOPED);
         // DATABASE_ALL 是官方的「显式后代作用域」：覆盖该库及其下全部对象。
-        // 选 SELECT 而不是 DESCRIBE 是因为官方对照表里 DATABASE_ALL 没有 DESCRIBE，
-        // 而 SELECT 恰好能在 token 端点上观察到——那正是「读数据」的入口。
-        grant(SCOPED, "{\"type\":\"DATABASE_ALL\",\"database\":\"" + NAMESPACE_A + "\"}", "SELECT");
+        // 选 USE_CREDENTIAL 是因为它能直接在 token 端点上观察到——那正是「取票」的入口；
+        // 官方词表里的 SELECT 已不再是这个端点的判据（见 CatalogAccessRules 的注释）。
+        grant(SCOPED, "{\"type\":\"DATABASE_ALL\",\"database\":\"" + NAMESPACE_A + "\"}", "USE_CREDENTIAL");
 
         // 被授权命名空间内：通过授权检查，继而因表不存在返回 404
         int insideStatus = status(SCOPED, "GET",
@@ -309,12 +310,21 @@ class CatalogEndpointAuthorizationTests {
                 "/v1/" + CATALOG + "/databases/" + NAMESPACE_B + "/tables/authz_probe/token"));
 
         // 服务层判定与之一致
-        assertAllowed(SCOPED, ResourceType.TABLE, List.of(NAMESPACE_A), "authz_probe", Access.SELECT);
-        assertForbidden(SCOPED, ResourceType.TABLE, List.of(NAMESPACE_B), "authz_probe", Access.SELECT);
+        assertAllowed(SCOPED, ResourceType.TABLE, List.of(NAMESPACE_A), "authz_probe",
+                Access.USE_CREDENTIAL);
+        assertForbidden(SCOPED, ResourceType.TABLE, List.of(NAMESPACE_B), "authz_probe",
+                Access.USE_CREDENTIAL);
         // 前缀必须落在点号边界上：`authz_ns_a` 不能覆盖 `authz_ns_a2`
-        assertForbidden(SCOPED, ResourceType.TABLE, List.of(NAMESPACE_A + "2"), "authz_probe", Access.SELECT);
-        // SELECT 不放大成 DESCRIBE / UPDATE
-        assertForbidden(SCOPED, ResourceType.TABLE, List.of(NAMESPACE_A), "authz_probe", Access.UPDATE);
+        assertForbidden(SCOPED, ResourceType.TABLE, List.of(NAMESPACE_A + "2"), "authz_probe",
+                Access.USE_CREDENTIAL);
+        // 两个凭据点之间没有蕴含：只授了「能取票」不等于「能拿走存的密钥」
+        assertForbidden(SCOPED, ResourceType.TABLE, List.of(NAMESPACE_A), "authz_probe",
+                Access.USE_SECRET);
+        // 也不放大成 SELECT / DESCRIBE / UPDATE
+        assertForbidden(SCOPED, ResourceType.TABLE, List.of(NAMESPACE_A), "authz_probe",
+                Access.SELECT);
+        assertForbidden(SCOPED, ResourceType.TABLE, List.of(NAMESPACE_A), "authz_probe",
+                Access.UPDATE);
     }
 
     // ------------------------------------------------------------------ 映射表自身的单元校验
@@ -352,9 +362,18 @@ class CatalogEndpointAuthorizationTests {
         // commit 走数据写权限
         assertEquals(Access.UPDATE,
                 CatalogAccessRules.resolve("/v1/paimon/databases/db/tables/t/commit", "POST").access());
-        // token 走数据读权限
-        assertEquals(Access.SELECT,
+        // token 走「能取票」那一项，而不是 SELECT——两者是两个风险，见设计稿 §3.4.3
+        assertEquals(Access.USE_CREDENTIAL,
                 CatalogAccessRules.resolve("/v1/paimon/databases/db/tables/t/token", "GET").access());
+        // 同一个表下的 /auth 只回行过滤与脱敏规则、不签发任何凭据，仍归 SELECT
+        assertEquals(Access.SELECT,
+                CatalogAccessRules.resolve("/v1/paimon/databases/db/tables/t/auth", "POST").access());
+        // Iceberg 面的 /credentials 与 Paimon 的 /token 是同一件事，同一个词
+        assertEquals(Access.USE_CREDENTIAL, CatalogAccessRules
+                .resolve("/v1/iceberg/namespaces/db/tables/t/credentials", "GET").access());
+        // 而 /plan 只回扫描计划、不带密钥
+        assertEquals(Access.SELECT,
+                CatalogAccessRules.resolve("/v1/iceberg/namespaces/db/tables/t/plan", "POST").access());
         // 分区列表是读，分区 drop 是写
         assertEquals(Access.SELECT, CatalogAccessRules
                 .resolve("/v1/paimon/databases/db/tables/t/partitions/list-by-names", "POST").access());

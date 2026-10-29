@@ -474,6 +474,29 @@ Gravitino 对关系型 catalog **不要求**显式写 `credential-providers`，�
 前者是**日常**，后者是**一次就够**。对我们，`CatalogAccessRules` 是按 `<对象>:<动作>` 拼路径判权的，
 加两个点号权限即可（`CATALOG:USE_CREDENTIAL` / `CATALOG:USE_SECRET`），不需要新机制（G13）。
 
+**落地（P1-7）分两处判，因为同一个端点可能发两种东西：**
+
+| 步骤 | 判什么 | 在哪判 |
+| --- | --- | --- |
+| 1 | `USE_CREDENTIAL` | `CatalogAccessRules`：`/token` 与 `/credentials` 从 `TABLE:SELECT` 改为它 |
+| 2 | `USE_SECRET`（仅当票里含长期密钥对） | 两个协议面的凭据服务，拿到凭据之后；Iceberg 的 `loadTable` 委派同样先判 `USE_CREDENTIAL`，只「不给」不报错 |
+| 1+2 | 同两项 | **Lance 面**：`vend_credentials=true` 是 query 参数、路径不进映射表，两道都在 `LanceCatalogSupport#requireVending` 里判 |
+
+第二步进不了映射表，是因为判据是**签发结果**而不是路径：同一个 `/token`，`relay` 发的是
+catalog 里存的 AK/SK，`s3-token` 发的是现签的短期票；用配置反推就会造出「开关说走 STS、
+其实退回了转发」——正是 §3.4.1 否掉 mode 开关的同一条理由。判据落在
+`VendedStorageCredential#carriesLongTermKeyPair()`（`hasSecrets() && !shortLived()`），
+于是「什么算长期密钥」只有一个定义，两个协议面不会漂移。
+
+两处失败姿势有意不同：`/token` 与 `/credentials` 唯一的用途就是签发，静默回空会让引擎
+拿着空配置去读数据，所以 403 并点名缺的 access；`loadTable` 的
+`X-Iceberg-Access-Delegation` 同时承载元数据读取，规格允许服务端一个机制都不选，
+所以那里只「不带凭据」+ WARN，不 403。
+
+`USE_SECRET` **不含** `USE_CREDENTIAL`：只有它时取不到票。这抄的是官方对这两个点的
+互斥描述（`USE_SECRET` 不能调 `getCredentials()`），也与本工程「除 `ALL` 外不做蕴含推断」
+的一贯口径一致。
+
 #### 3.4.4 打码值不能回写
 
 #13539 顺手修了一个坑：缩短敏感关键字表会让**已经打码好的** `******` 解不出来
@@ -1257,7 +1280,7 @@ object_store 认的是 `aws_access_key_id` / `aws_secret_access_key` / `aws_sess
 | P1-4 | GCS downscoped token（`CredentialAccessBoundary`） | 服务账号 + `serviceAccountTokenCreator` |
 | P1-5 | 审计归因：`RoleSessionName` / session tags | 无 |
 | P1-6 | 控制台：创建页三态来源 + 参数 + 引擎片段；catalog 列表与详情标出「长期凭据 / 短期凭据 / 不下发」 | 见 §10 与原型 `credential-vending-mockup.html` |
-| P1-7 | **判权拆两个权限点**：`CATALOG:USE_CREDENTIAL` 与 `CATALOG:USE_SECRET`（§3.4.3） | 对照 `CatalogAccessRules` 现有写法；两个点号权限各一条用例 |
+| ✅ P1-7 | **判权拆两个权限点**：`CATALOG:USE_CREDENTIAL` 与 `CATALOG:USE_SECRET`（§3.4.3） | 落地形态：`/token` 与 `/credentials` 改判 `USE_CREDENTIAL`（`/auth`、`/plan` 仍是 `SELECT`），票里含长期密钥对时再判 `USE_SECRET`；`VendedStorageCredential#carriesLongTermKeyPair()` 是唯一判据。用例：`CredentialAccessSplitTests` 五条（只有取票权→403 点名 `USE_SECRET`；两个都有→照常下发；只有 `USE_SECRET`→403 点名 `USE_CREDENTIAL`；都没有→403；判据只看载荷不看存储类型）+ `LanceCredentialAccessTests` 四条（Lance 面的两道判定、短期票免 `USE_SECRET`、不带参数不判权也不带密钥）+ `CatalogEndpointAuthorizationTests` 的映射与作用域断言。**行为变更**：细粒度 `SELECT` 授权升级后需补 `USE_CREDENTIAL`，`ALL` 不受影响 |
 | P1-8 | ✅ **AK ID 打码 + 打码回写哨兵**（§3.4.4）：`withoutSecrets` 一个出口打码，`mergeStaticCredentials` 认哨兵；`******` + 空密钥 = 两个都不动，`******` + 新密钥 = 只换密钥，库里没有原值或把哨兵当密钥则 400 | 用例：`StaticCredentialApiTests` 的 `maskedAccessKeyIdSurvivesARenameOnlyUpdate`（设计稿点名的验收）、`maskedAccessKeyIdWithOmittedSecretKeepsBoth`、`maskedAccessKeyIdWithANewSecretRotatesOnlyTheSecret`、`maskedAccessKeyIdOnANewCatalogIsRejected`、`maskedValueAsSecretIsRejected`；范围仅 catalog 的 `storageConfigInfo`，执行集群那套凭据仍回显 |
 | ✅ P1-9 | **服务端自身 FileIO 走独立取票**（§5.7），作用域是 catalog 的允许位置，不复用任何用户的表级票 | 两类作用域分开（`vend` vs `vendForCatalog`）、写权限显式传、缓存键不撞 → `ServerSideCredentialTests`（9 例）；「只配 `roleArn` 的 catalog 上优化任务跑通」**需真实 S3，未跑** |
 | P1-10 | **联邦/多级 catalog 的 header 透传与 refresh 端点回写**（G17，对照 #12950） | 现在没有联邦，留位；做的时候按 #12950 的两条断言写用例 |

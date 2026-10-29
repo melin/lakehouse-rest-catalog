@@ -409,22 +409,27 @@ ManagementSqlException: table grants require a qualified name of the form
 <database>.<name>, got 'orders'
 ```
 
-### 7.4 access 词表（12 项）
+### 7.4 access 词表（14 项）
 
 一项 access 在不同资源类型上的可用性不同，**`ON` 后面写哪种资源就按哪个类型校验**：
 
 | 资源类型 | 允许授予的 access |
 | --- | --- |
 | `CATALOG` | `ALL`、`ALTER`、`DROP`、`GRANT`、`CREATEDATABASE` |
-| `CATALOG_ALL` | `ALL`、`DESCRIBE`、`ALTER`、`DROP`、`GRANT`、`CREATETABLE`、`CREATEVIEW`、`CREATEFUNCTION`、`LIST`、`SELECT`、`UPDATE` |
+| `CATALOG_ALL` | `ALL`、`DESCRIBE`、`ALTER`、`DROP`、`GRANT`、`CREATETABLE`、`CREATEVIEW`、`CREATEFUNCTION`、`LIST`、`SELECT`、`UPDATE`、`USE_CREDENTIAL`、`USE_SECRET` |
 | `DATABASE` | `ALL`、`DESCRIBE`、`ALTER`、`DROP`、`GRANT`、`CREATETABLE`、`CREATEVIEW`、`CREATEFUNCTION`、`LIST` |
-| `DATABASE_ALL` | `ALL`、`SELECT`、`UPDATE`、`ALTER`、`DROP`、`GRANT` |
-| `TABLE` | `ALL`、`SELECT`、`UPDATE`、`ALTER`、`DROP`、`GRANT`、`DESCRIBE` |
+| `DATABASE_ALL` | `ALL`、`SELECT`、`UPDATE`、`ALTER`、`DROP`、`GRANT`、`USE_CREDENTIAL`、`USE_SECRET` |
+| `TABLE` | `ALL`、`SELECT`、`UPDATE`、`ALTER`、`DROP`、`GRANT`、`DESCRIBE`、`USE_CREDENTIAL`、`USE_SECRET` |
 | `VIEW` | `ALL`、`SELECT`、`ALTER`、`DROP`、`GRANT`、`DESCRIBE` |
 | `FUNCTION` | `ALL`、`SELECT`、`ALTER`、`DROP`、`GRANT`、`DESCRIBE` |
 | `COLUMN` | `SELECT` |
 
 `ALL` 是该资源类型允许的全部 access 的并集。
+
+其中 `USE_CREDENTIAL` / `USE_SECRET` 是本服务端的两个扩展词（官方 12 项 + 2）：
+前者是「能取票」，后者是「票里可以含目录里存的长期密钥」，两者并列、互不蕴含。
+引擎读一张表要的是前者；`SELECT` 已经不再是取票的判据。详见
+[`authorization.md` §3.7](authorization.md)。
 `CREATETABLE` / `CREATEVIEW` / `CREATEFUNCTION` / `CREATEDATABASE` 就是官方词表里的
 **不带下划线**的写法，不是 `CREATE_TABLE`。
 

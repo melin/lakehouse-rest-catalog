@@ -229,7 +229,19 @@
                 <el-checkbox v-model="tablePerms.DESCRIBE" size="small">Describe</el-checkbox>
                 <el-checkbox v-model="tablePerms.ALTER" size="small">Alter</el-checkbox>
                 <el-checkbox v-model="tablePerms.DROP" size="small">Drop</el-checkbox>
+                <!-- 凭据的两个点：官方 12 项里没有，是本服务端为「能读表」与
+                     「能拿走目录里存的长期密钥」加的分界。两个并列，不互相包含。 -->
+                <el-checkbox v-model="tablePerms.USE_CREDENTIAL" size="small">
+                  Use credential
+                </el-checkbox>
+                <el-checkbox v-model="tablePerms.USE_SECRET" size="small">
+                  Use stored key
+                </el-checkbox>
               </template>
+            </div>
+            <div v-if="form.scope === 'table'" class="pc-scope-kind pc-field-hint">
+              Use credential 是「能取票」，引擎读这张表就要它；Use stored key 是「票里可以含
+              目录里存的那对长期密钥」——只有它取不到票，两个都勾才是「能跑查询、也能拿走钥匙」。
             </div>
           </el-form-item>
 
@@ -318,8 +330,11 @@ import { formatDate, formatTime } from '@/utils/format.js'
  * 那个层级的名字就叫 namespace，写成 database 会让人以为要填的是 Paimon 的库。
  *
  * <p>表单按用户要求做了简化——权限只暴露
- * database 四项 / table 六项 / view 四项，Insert 与 Delete 在官方词表里同为 UPDATE，
+ * database 四项 / table 八项 / view 四项，Insert 与 Delete 在官方词表里同为 UPDATE，
  * 提交前去重；视图没有写数据权限，所以视图那一组没有 Insert / Delete。
+ * table 的那八项里有两项是本服务端加的（Use credential / Use stored key）：
+ * 官方 12 项里没有「能取票」与「能拿走目录里存的长期密钥」的分界，而合成一个词意味着
+ * 任何能读表的人都能把没有时限的那对密钥拷走。
  *
  * <p>表单收在弹窗里（页头「添加授权」按钮打开）：页面主体只留授权清单，
  * 授权是低频离散动作，不需要长期占据首屏。
@@ -531,7 +546,16 @@ const dialogOpen = ref(false)
 /** catalog 级的四项：官方词表里 CATALOG 只接受 ALTER / DROP / GRANT / CREATEDATABASE。 */
 const catalogPerms = reactive({ CREATEDATABASE: false, ALTER: false, DROP: false, GRANT: false })
 const dbPerms = reactive({ CREATETABLE: false, ALTER: false, DROP: false, DESCRIBE: false })
-const tablePerms = reactive({ SELECT: false, INSERT: false, DELETE: false, DESCRIBE: false, ALTER: false, DROP: false })
+const tablePerms = reactive({
+  SELECT: false,
+  INSERT: false,
+  DELETE: false,
+  DESCRIBE: false,
+  ALTER: false,
+  DROP: false,
+  USE_CREDENTIAL: false,
+  USE_SECRET: false,
+})
 /** 视图没有 Insert / Delete：官方词表里 VIEW 只接受 SELECT/ALTER/DROP/GRANT/DESCRIBE。 */
 const viewPerms = reactive({ SELECT: false, DESCRIBE: false, ALTER: false, DROP: false })
 
@@ -574,6 +598,10 @@ const selectedAccesses = computed(() => {
     if (tablePerms.DESCRIBE) accesses.add('DESCRIBE')
     if (tablePerms.ALTER) accesses.add('ALTER')
     if (tablePerms.DROP) accesses.add('DROP')
+    // 两个凭据点各自成条，不是同义词：前者是「能取票」，后者是「票里可以含
+    // 目录里存的那对长期密钥」。服务端不做蕴含推断，因此这里也不替用户折叠。
+    if (tablePerms.USE_CREDENTIAL) accesses.add('USE_CREDENTIAL')
+    if (tablePerms.USE_SECRET) accesses.add('USE_SECRET')
   }
   return [...accesses]
 })
@@ -717,6 +745,8 @@ const ACCESS_LABELS = {
   SELECT: 'Select',
   UPDATE: 'Insert / Delete',
   GRANT: 'Grant',
+  USE_CREDENTIAL: 'Use credential',
+  USE_SECRET: 'Use stored key',
 }
 
 function accessLabel(access) {

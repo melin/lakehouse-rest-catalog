@@ -10,7 +10,7 @@
 > **只有一套权限模型。** Polaris 的 64 项 privilege、catalog role、
 > `lakehouse_resource_grant` 已全部移除。授权唯一的落库形态是
 > `lakehouse_permission_assignment` 上的三元组 `(resource, access, principal)`，
-> access 取值就是官方那 12 项。
+> access 取官方那 12 项，另加本工程的两个凭据扩展词（`USE_CREDENTIAL` / `USE_SECRET`）。
 
 ---
 
@@ -66,14 +66,28 @@
 | | 改造前（Polaris） | 现在（官方） |
 | --- | --- | --- |
 | 授权表 | catalog role 授权 + 资源授权（3 张表） | `lakehouse_permission_assignment`（1 张） |
-| 权限词表 | 64 项 privilege + 蕴含展开 | 12 项 access + 只认 `ALL` |
+| 权限词表 | 64 项 privilege + 蕴含展开 | 14 项 access（官方 12 + 两个凭据词）+ 只认 `ALL` |
 | 主体解析 | principal → principal role → catalog role | principal → 裸名 / `user:` / `role:` |
 | 判定 | 展开后再比 | 相等，或授予的是 `ALL` |
 
-### 2.2 12 项 access
+### 2.2 14 项 access：官方的 12 项 + 两个凭据扩展词
 
 `ALL / CREATEDATABASE / DESCRIBE / ALTER / DROP / CREATETABLE / CREATEFUNCTION /
 CREATEVIEW / LIST / SELECT / UPDATE / GRANT`
+——以上 12 项是官方词表，逐字一致。
+
+`USE_CREDENTIAL / USE_SECRET` 是**本工程加的两个词**，官方没有：
+
+| 词 | 能做什么 | 不能做什么 |
+| --- | --- | --- |
+| `USE_CREDENTIAL` | 调 `/token`、`/credentials` 取票；让 `loadTable` 的委派带回凭据 | 票里不能含目录里存的长期密钥对 |
+| `USE_SECRET` | 票里**可以**含那对长期密钥 | **取不到票**——它不含 `USE_CREDENTIAL` |
+
+为什么不能合成一个词：合成之后「能跑查询」和「能拿走长期密钥」就是同一件事，
+而前者是每个分析师的日常、后者一次就够（拿到的那对密钥没有时限、也没有 policy 收窄到表，
+等于该身份在这台存储上能做的一切）。官方在 Java 侧靠两个方法区分
+（`getCredentials()` / `getSecrets()`），本工程的协议面各只有一个端点，区分只能落在
+**这次要发什么**上。两个词是**并列**关系，判定层不做蕴含推断——见 §3.7。
 
 创建类权限用**不带下划线**的持久化名（`CREATETABLE`，不是 `CREATE_TABLE`），与官方逐字一致。
 
@@ -112,6 +126,9 @@ and function descendants of one database），其余类型只覆盖自身：
 
 各类型允许授予的 access 来自官方对照表（`PermissionDtos.Access.allowedFor`），
 服务端按它做入参校验：`CREATETABLE` 授到 `TABLE` 上会得到 400。
+两个凭据扩展词只挂在能**定位到表**的三种类型上（`TABLE` 与两个 `_ALL` 后代作用域）；
+`DATABASE` 刻意不给——它的覆盖规则不含库里的具体表，授上去会看起来成功、实际对表级判定
+毫无作用，而一个能被授出却不生效的权限点比没有它更坏。
 
 ### 2.4 主体解析
 
@@ -187,7 +204,8 @@ catalog API 的「路径 → 所需 access」映射集中在 `CatalogAccessRules
 | `DELETE .../tables/{t}` | `TABLE` | `DROP` |
 | `.../tables/{t}/commit`、`/rollback` | `TABLE` | `UPDATE` |
 | `.../tables/{t}/rollback-schema` | `TABLE` | `ALTER` |
-| `.../tables/{t}/token`、`/auth` | `TABLE` | `SELECT` |
+| `.../tables/{t}/token` | `TABLE` | `USE_CREDENTIAL`（取票，见 §3.7） |
+| `.../tables/{t}/auth` | `TABLE` | `SELECT`（只回行过滤与脱敏规则，不签发凭据） |
 | `.../partitions/list*`、`/mark*` | `TABLE` | `SELECT` |
 | `.../partitions/drop` 等写操作 | `TABLE` | `UPDATE` |
 | `.../branches`、`.../tags`、`.../snapshot(s)`、`.../consumers` | `TABLE` | 读 `DESCRIBE` / 写 `ALTER` |
@@ -228,7 +246,8 @@ catalog API 的「路径 → 所需 access」映射集中在 `CatalogAccessRules
 | `POST .../tables/{t}` | `TABLE` | `ALTER` |
 | `DELETE .../tables/{t}`、`.../unregister` | `TABLE` | `DROP` |
 | `POST .../tables/{t}/metrics`、`/tasks` | `TABLE` | `UPDATE`（上报统计＝改这张表的数据状态） |
-| `GET .../tables/{t}/credentials`、`/plan` | `TABLE` | `SELECT`（与 Paimon 的 `/token` 同一件事） |
+| `GET .../tables/{t}/credentials` | `TABLE` | `USE_CREDENTIAL`（与 Paimon 的 `/token` 同一件事） |
+| `POST .../tables/{t}/plan` | `TABLE` | `SELECT`（只回扫描计划，不带密钥） |
 | `GET .../tables/{t}/sign` | `TABLE` | `DESCRIBE` |
 | `.../namespaces/{ns}/views/**` | `VIEW` | 同 Paimon 视图 |
 
@@ -268,6 +287,47 @@ CREATEDATABASE`，**没有任何读权限**，而「能读这个 catalog 里的�
 判定在 catalog 不存在时**先行放行**，让后续流程返回 404。理由是：如果把「资源不存在」
 也判成 403，调用者将无法区分「我没有权限」和「这个 catalog 根本不存在」。
 catalog 存在但主体无权时仍返回 403。
+
+### 3.7 凭据的两个权限点：端点判一个，载荷再判一个
+
+凭据下发是唯一**同一条路径可能有两种要求**的地方，因此它的判定分两步：
+
+| 步骤 | 判什么 | 在哪判 | 不通过时 |
+| --- | --- | --- | --- |
+| 1 | `USE_CREDENTIAL` | Paimon `/token`、Iceberg `/credentials`：拦截器按 §3.1 / §3.2 的映射表 | 403 |
+| 1 | `USE_CREDENTIAL` | Iceberg `loadTable` 的委派：`IcebergCredentialService#mayVend`；Lance 的 `vend_credentials=true`：`LanceCatalogSupport#requireVending` | 委派：**不带凭据** + WARN；Lance：403 |
+| 2 | `USE_SECRET`（仅当票里含长期密钥对） | 三个协议面的凭据服务，拿到凭据之后 | 同上（与步骤 1 同一条路径的姿势） |
+
+**第二步为什么不能进映射表。** 判据是「这次到底发了什么」，而同一个 `/token` 发短期票
+（STS 现签）还是发目录里存的 AK/SK，取决于 provider 的**签发结果**，不取决于路径或配置。
+用配置反推（「配了 `s3-token` 就是短期」）会造出「开关说走 STS、其实退回了转发」这类错位，
+而那正是设计稿 §5.8 否掉 mode 开关的理由。判据落在
+`VendedStorageCredential#carriesLongTermKeyPair()`：**真的发了密钥**（`hasSecrets()`）
+且**它没有时限**（`!shortLived()`）。只发定位元数据（Azure）、`sts-unavailable`、
+交给引擎自己的环境凭据链，三种都不要求 `USE_SECRET`。
+
+**两处失败姿势不同，是有意的。** `/token` 与 `/credentials` 存在的唯一目的就是签发凭据，
+静默回一个空响应会让引擎拿着空配置去读数据，错误现场离原因很远；而 `loadTable` 同时承载
+元数据读取，Iceberg 规格明确允许服务端对 `X-Iceberg-Access-Delegation` 一个机制都不选，
+所以那里只能「不给」，不能 403——否则「看表结构」会跟着失败。
+
+**Lance 面是第三个落点，且两道都在服务层。** 那一面的取票不是一个端点，而是
+`describe` / `rename` 上的 `vend_credentials=true`——路径完全相同，`LanceAccessRules`
+只拿得到路径与 `delimiter`，看不到 query 参数。因此两道判定都落在
+`LanceCatalogSupport#requireVending`，姿势取「抛 403」：这个参数本身就是
+客户端在说「我要凭据」，与 `/token` 同性质，静默返回空的直接后果是客户端拿着没有密钥的
+`storage_options` 去开数据集。不带这个参数时不取票、不判权，`storage_options` 里只有定位信息。
+
+**只有 `USE_SECRET` 不给票。** 两个词并列，判定层不做蕴含推断（§2.2）。让「授少了一条」
+成为一个看起来正常、实则可用的状态，就等于把安全决定交给直觉。
+
+> **升级注意（一次有意的行为变更）。** `.../tables/{t}/token` 与 `.../tables/{t}/credentials`
+> 的判据从 `TABLE:SELECT` 换成了 `TABLE:USE_CREDENTIAL`，且长期密钥还要 `TABLE:USE_SECRET`。
+> 持有 `ALL` 的主体（含引导角色 `service_admin`）不受影响；**只授了细粒度 `SELECT` 的部署
+> 会在升级后于取票处收到 403**，需要补一条 `USE_CREDENTIAL`（若走转发档还要
+> `USE_SECRET`），或者把 catalog 切到短期签发 provider 从而只需前者。这是这次拆分的
+> 全部意义所在——旧行为下，「能读这张表」的每个分析师都握着一份没有时限、
+> 不受 policy 约束的云凭据。
 
 ---
 
@@ -319,16 +379,23 @@ curl -s -X POST -H "$AUTH" -H "$J" \
 curl -s -X PUT -H "$AUTH" -H "$J" \
   -d '{"principalRole":{"name":"etl_reader"}}' "$M/principals/etl/principal-roles"
 
-# 3) 授权：给 role:etl_reader 授「default 库下全部后代可读」
+# 3) 授权：给 role:etl_reader 授「default 库下全部后代可读」，外加取票权
 curl -s -X POST -H "$AUTH" -H "$J" \
   -d '{"resource":{"type":"DATABASE_ALL","database":"default"},
        "access":"SELECT","principal":"role:etl_reader"}' \
+  "http://127.0.0.1:8080/v1/paimon/permissions/grant"
+# 取票单独一个词（§3.7）：仓库自带的 default catalog 是本地文件系统、没有密钥可发，
+# 因此只需要 USE_CREDENTIAL；对象存储的转发档还要 USE_SECRET，否则 /token 会 403
+curl -s -X POST -H "$AUTH" -H "$J" \
+  -d '{"resource":{"type":"DATABASE_ALL","database":"default"},
+       "access":"USE_CREDENTIAL","principal":"role:etl_reader"}' \
   "http://127.0.0.1:8080/v1/paimon/permissions/grant"
 
 # 4) 核对
 curl -s -H "$AUTH" "http://127.0.0.1:8080/v1/paimon/permissions?principal=role:etl_reader"
 
-# 5) 用该主体访问 catalog API（取数据令牌要 TABLE:SELECT）
+# 5) 用该主体访问 catalog API（取数据令牌要 TABLE:USE_CREDENTIAL，
+#    票里含长期密钥时还要 TABLE:USE_SECRET）
 TOKEN=$(curl -s -X POST http://127.0.0.1:8080/api/catalog/v1/oauth/tokens \
   -d grant_type=client_credentials \
   -d client_id="$CLIENT_ID" -d client_secret="$CLIENT_SECRET" | jq -r .access_token)
@@ -344,7 +411,8 @@ curl -s -X POST -H "$AUTH" -H "$J" \
 ```
 
 同一件事在 Spark SQL 里也有对应语句
-（`GRANT SELECT ON DATABASE_ALL default TO ROLE etl_reader`，
+（`GRANT SELECT ON DATABASE_ALL default TO ROLE etl_reader`，取票再补一条
+`GRANT USE_CREDENTIAL ON DATABASE_ALL default TO ROLE etl_reader`，
 见 [`spark-sql-reference.md`](spark-sql-reference.md) 第 7 节）——
 页面、curl、SQL 打的是同一批端点，没有翻译层。
 
@@ -391,6 +459,7 @@ curl -s -X POST -H "$AUTH" -H "$J" \
    必须额外授 `CATALOG:*` / `DATABASE:*`。
 4. **没有 access 蕴含关系。** 只有 `ALL` 是聚合值。因此 `ALTER` 不给 `SELECT`、
    `DESCRIBE` 不给 `SELECT`——这是官方词表的形状，不是漏写。
+   两个凭据扩展词同样并列：`USE_SECRET` 不给 `USE_CREDENTIAL`（§2.2、§3.7）。
 5. **行过滤与列脱敏策略未实现。** `auth` 端点返回空的过滤表达式与脱敏映射，只做列存在性校验。
 6. **授权不校验被授权对象是否存在。** 可以对尚未创建的表授予 `SELECT`。
 7. **审计列里超过 255 字符的主体名记的是摘要。** 判定用的是原始主体名（长度不限），

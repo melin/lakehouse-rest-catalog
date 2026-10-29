@@ -355,6 +355,18 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
   只换密钥、库里没有原值却给 `******` → 400。**`******` 不等于空串**（那是「清除」），
   混用会静默删掉还能用的凭据。范围只到 catalog 的 `storageConfigInfo`；
   执行集群那套凭据的 `accessKeyId` 仍回显，是另一条契约。
+- **凭据判权是两个点，不是一个**（P1-7）：`USE_CREDENTIAL`（能取票，`/token` 与
+  `/credentials` 的端点判据，已**替换**原来的 `TABLE:SELECT`）与 `USE_SECRET`
+  （票里可以含目录里存的那对长期密钥）。第二个**不能**进 `CatalogAccessRules`——判据是
+  签发结果（`relay` 发长期密钥、`s3-token` 发现签短期票），不是路径，两个协议面的凭据服务
+  在拿到凭据后判。唯一判据是 `VendedStorageCredential#carriesLongTermKeyPair()`
+  （`hasSecrets() && !shortLived()`），别在别处重写「什么算长期密钥」。失败姿势两处不同：
+  `/token`、`/credentials` → 403 并点名缺的 access；`loadTable` 的
+  `X-Iceberg-Access-Delegation` → 不带凭据 + WARN（那里同时承载元数据读取）。
+  两个词**并列**：只有 `USE_SECRET` 取不到票。**三个协议面都有这道判定**：Paimon 与
+  Iceberg 各有一个凭据端点（端点级那道进映射表）；Lance 的取票是 `describe` /
+  `rename` 上的 `vend_credentials=true`（query 参数，路径不进映射表），两道都在
+  `LanceCatalogSupport#requireVending` 里判，失败姿势是 403（那个参数本身就是「我要凭据」）。
 - **schema 与快照都要物化进仓库**（`TableMetadataService`）：`RESTCatalog.supportsVersionManagement()`
   恒返回 `true`，客户端因此走 `CatalogSnapshotCommit`（把快照 POST 给服务端），**自己那份写
   `snapshot-<n>` 的代码根本不会被实例化**；服务端必须替它写 `snapshot-<id>` + `LATEST`

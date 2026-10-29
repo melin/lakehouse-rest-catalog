@@ -131,6 +131,24 @@ public record VendedStorageCredential(Map<String, String> token,
     }
 
     /**
+     * 这份凭据里是否有**没有时限的那对长期密钥**——也就是 {@code USE_SECRET} 的判据。
+     *
+     * <p>两个条件缺一不可：{@link #hasSecrets()} 说「真的发了密钥」（Azure 那种只发
+     * 定位元数据的、以及 {@code sts-unavailable} 的空响应都不算），{@link #shortLived()}
+     * 说「这对密钥有时限」。短期票是现签的、policy 收窄到这张表、到点作废，发给任何能读表
+     * 的人都是设计意图；而长期那一对没有时限也没有收窄，拿到就等于拿到该身份在这台存储上
+     * 的全部权限——它必须单独授权。
+     *
+     * <p><b>判据放在这里而不是让两个协议面各写一遍。</b>Paimon 的 {@code /token} 与
+     * Iceberg 的 {@code /credentials} 是两个类，但它们拿到的是同一种
+     * {@code VendedStorageCredential}；规则只要落在这个类型的派生方法上，
+     * 两处就只能是同一个答案。写成两份时，最先漂移的一定是「新加一种存储类型」那一次。
+     */
+    public boolean carriesLongTermKeyPair() {
+        return hasSecrets() && !shortLived();
+    }
+
+    /**
      * 相对 {@code now} 还剩多少毫秒；非短期凭据返回 {@link Long#MAX_VALUE}。
      *
      * <p>诊断用。静态凭据没有「剩余寿命」这个概念，返回 {@code MAX_VALUE} 而不是 {@code 0}，

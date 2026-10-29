@@ -63,16 +63,24 @@ public final class PermissionDtos {
     }
 
     /**
-     * 内建 access 词表。
+     * 内建 access 词表：官方的 12 项 + 本工程的 2 项扩展。
      *
-     * <p>取值与官方文档逐字一致——创建类权限特意用**不带下划线**的持久化名
+     * <p>官方那 12 项取值与官方文档逐字一致——创建类权限特意用**不带下划线**的持久化名
      * （{@code CREATETABLE}，不是 {@code CREATE_TABLE}）。各资源类型允许的取值
      * 来自文档的 Access/Resource 对照表，服务端按它做入参校验。
      *
-     * <p><b>与官方词表的一处刻意偏差：</b>官方对照表里 TABLE 层没有 {@code DESCRIBE}
-     * （官方把它定义为「读 database 元数据」）。本服务端允许在 TABLE 上授予
-     * DESCRIBE 并映射到 TABLE_READ_PROPERTIES——控制台的表级授权要提供
-     * 「Describe」这一项，而它在本工程的授权判定里有明确对应，不存在歧义。
+     * <p><b>两处刻意的偏差：</b>
+     *
+     * <ol>
+     *   <li>官方对照表里 TABLE 层没有 {@code DESCRIBE}（官方把它定义为「读 database 元数据」）。
+     *       本服务端允许在 TABLE 上授予 DESCRIBE 并映射到 TABLE_READ_PROPERTIES——控制台的
+     *       表级授权要提供「Describe」这一项，而它在本工程的授权判定里有明确对应，无歧义。</li>
+     *   <li>{@link #USE_CREDENTIAL} 与 {@link #USE_SECRET} 是**本工程新增的两个词**，
+     *       官方 12 项里没有。理由与取值见这两个常量的注释：官方把「取凭据」和「取存的密钥」
+     *       放在两个 Java 方法上（{@code getCredentials()} / {@code getSecrets()}），
+     *       而本工程的协议面各只有一个端点，两者的区分只能落在**这次要发什么**上。
+     *       合成一个词就意味着「能跑查询」和「能拿走长期密钥」是同一件事（设计稿 §3.4.3）。</li>
+     * </ol>
      */
     public enum Access {
         ALL,
@@ -86,7 +94,29 @@ public final class PermissionDtos {
         LIST,
         SELECT,
         UPDATE,
-        GRANT;
+        GRANT,
+        /**
+         * 能取票：可以调 {@code .../tables/{t}/token}（Paimon 面）与
+         * {@code .../tables/{t}/credentials}（Iceberg 面），也可以让 {@code loadTable}
+         * 在 {@code vended-credentials} 委派里带回一份凭据。
+         *
+         * <p>它管的是「能不能拿到一张票」，不管票里有什么——那是一乘
+         * {@link #USE_SECRET} 的事。分开的理由是两者风险不同：前者是日常
+         * （引擎每次读表都要一次），后者一次就够（拿到的是没有时限的那对密钥）。
+         */
+        USE_CREDENTIAL,
+        /**
+         * 能拿走目录里存的长期密钥对：票里可以含 {@code accessKeyId} / 密钥本体。
+         *
+         * <p>只给 {@link #USE_CREDENTIAL} 时，短期凭据（STS 现签、有 TTL、policy 收窄到表）
+         * 照常下发——那本来就是要发给引擎的东西；但**长期密钥对会被拒**，因为那对密钥
+         * 没有时限、也没有作用域收窄，拿到就等于拿到了这台存储上该身份能做的一切。
+         *
+         * <p>两个词是**并列**而不是包含：只有 {@code USE_SECRET} 不能取票。官方对这两个点的
+         * 描述就是互相排斥的（{@code USE_SECRET} 不能调 {@code getCredentials()}），
+         * 本工程照抄这个方向——省掉一半授权就不会因为「反正是更宽的那个」而蒙对。
+         */
+        USE_SECRET;
 
         public static java.util.Optional<Access> parse(String value) {
             if (value == null || value.isBlank()) {
@@ -99,16 +129,24 @@ public final class PermissionDtos {
 
         /**
          * 资源类型 → 允许授予的 access 集合，对应官方文档的 Access/Resource 对照表。
+         *
+         * <p>两个扩展词只挂在能**定位到表**的三种类型上（{@code TABLE} 与两个 {@code _ALL}
+         * 后代作用域）。{@code DATABASE} 刻意不给：它的覆盖规则是「该库本身 + 库的集合操作」，
+         * 不覆盖库里的具体表，授上去会看起来成功、实际对表级判定毫无作用——
+         * 一个能被授出却不生效的权限点比没有它更坏。
          */
         public static Set<Access> allowedFor(ResourceType type) {
             return switch (type) {
                 case CATALOG -> set(ALL, ALTER, DROP, GRANT, CREATEDATABASE);
                 case CATALOG_ALL -> set(ALL, DESCRIBE, ALTER, DROP, GRANT,
-                        CREATETABLE, CREATEVIEW, CREATEFUNCTION, LIST, SELECT, UPDATE);
+                        CREATETABLE, CREATEVIEW, CREATEFUNCTION, LIST, SELECT, UPDATE,
+                        USE_CREDENTIAL, USE_SECRET);
                 case DATABASE -> set(ALL, DESCRIBE, ALTER, DROP, GRANT,
                         CREATETABLE, CREATEVIEW, CREATEFUNCTION, LIST);
-                case DATABASE_ALL -> set(ALL, SELECT, UPDATE, ALTER, DROP, GRANT);
-                case TABLE -> set(ALL, SELECT, UPDATE, ALTER, DROP, GRANT, DESCRIBE);
+                case DATABASE_ALL -> set(ALL, SELECT, UPDATE, ALTER, DROP, GRANT,
+                        USE_CREDENTIAL, USE_SECRET);
+                case TABLE -> set(ALL, SELECT, UPDATE, ALTER, DROP, GRANT, DESCRIBE,
+                        USE_CREDENTIAL, USE_SECRET);
                 case COLUMN -> set(SELECT);
                 case VIEW -> set(ALL, SELECT, ALTER, DROP, GRANT, DESCRIBE);
                 case FUNCTION -> set(ALL, SELECT, ALTER, DROP, GRANT, DESCRIBE);

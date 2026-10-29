@@ -13,6 +13,9 @@ import io.github.melin.lakehouse.rest.service.CatalogService;
 import io.github.melin.lakehouse.rest.service.StorageRuntimePolicy;
 import io.github.melin.lakehouse.rest.service.StorageFileAccess;
 import io.github.melin.lakehouse.rest.config.RestServerProperties;
+import io.github.melin.lakehouse.rest.dto.PermissionDtos;
+import io.github.melin.lakehouse.rest.dto.PermissionDtos.Access;
+import io.github.melin.lakehouse.rest.service.AuthorizationService;
 import io.github.melin.lakehouse.rest.support.ApiException;
 import io.github.melin.lakehouse.rest.support.CatalogFormat;
 import io.github.melin.lakehouse.rest.support.FileEntry;
@@ -67,6 +70,13 @@ public class LanceCatalogSupport {
      * 直接按类型注入会在启动期以 NoUniqueBeanDefinitionException 失败。
      */
     private final StorageRuntimePolicy runtimePolicy;
+
+    /**
+     * 凭据的两个权限点在这里判。Lance 面没有「凭据端点」——取票是
+     * {@code describe / rename} 的一个 query 参数（{@code vend_credentials=true}），
+     * 路径和参数都不进 {@code LanceAccessRules}，所以两个点只能在下发凭据的那一处判。
+     */
+    private final AuthorizationService authorization;
     private final StorageFileAccess files;
     private final RestServerProperties properties;
 
@@ -162,12 +172,18 @@ public class LanceCatalogSupport {
      * 分开算会出现「签名 15 分钟有效、声明 1 小时有效」的错配，而它的表现是
      * 客户端在凭据过期后继续用、拿到一个不含任何 Lance 信息的 403。
      *
+     * <p><b>取票要两个权限点，与另外两个协议面同一套语义</b>（{@link #requireVending}）。
+     * 差别只在判的位置：Paimon 与 Iceberg 各有一个凭据端点，端点级那道由
+     * {@code CatalogAccessRules} 判；这里取票是 {@code vend_credentials=true} 这个
+     * **query 参数**，路径不进 {@code LanceAccessRules}，因此两道都在本方法里判。
+     *
      * <p><b>不要求凭据时也返回 {@code storage_options}</b>：里面放定位信息（不含密钥）。
      * 客户端不传这个参数不代表它不需要知道 endpoint。但**绝不**在这种情况下塞长命密钥：
      * 只有 {@code hasSecrets()} 为假（文件系统、无密钥的环境凭据）时才原样下发。
      */
     public Map<String, String> storageOptions(CatalogEntity catalog, String tableId,
-                                              String location, boolean vendCredentials) {
+                                              String location, List<String> namespace, String table,
+                                              boolean vendCredentials) {
         VendedStorageCredential credential;
         try {
             credential = runtimePolicy.credentialManager().vend(catalog.getStorageConfig(), tableId, location);
@@ -180,6 +196,9 @@ public class LanceCatalogSupport {
             }
             log.debug("credential vending failed for {}; answering without storage credentials", tableId, e);
             return Map.of();
+        }
+        if (vendCredentials) {
+            requireVending(catalog, namespace, table, credential);
         }
         Map<String, String> options = new LinkedHashMap<>();
         if (vendCredentials) {
@@ -195,6 +214,33 @@ public class LanceCatalogSupport {
             options.putAll(LanceStorageOptions.fromS3(credential.token()));
         }
         return options;
+    }
+
+    /**
+     * 取票的两个权限点：先 {@code USE_CREDENTIAL}（能取票），票里若含**没有时限的那对
+     * 长期密钥**再要 {@code USE_SECRET}（能拿走存着的钥匙）。
+     *
+     * <p>为什么 Lance 面和另外两面不同、要在这里判：那边「能取票」是路径本身
+     * （{@code /token}、{@code /credentials}），映射表能表达；这边是一个 query 参数，
+     * {@code LanceAccessRules.resolve} 只拿到路径与 {@code delimiter}，看不到它。
+     * 与其把 query 参数塞进映射表（那会让「同一路径两种判权」变成判权层的隐患），
+     * 不如在唯一的下发点判——它与 Iceberg 委派那条路径是同一种形态。
+     *
+     * <p><b>这里选择抛 403 而不是「不带」。</b>Iceberg 的 {@code loadTable} 委派之所以
+     * 只静默跳过，是因为那个请求同时承载元数据读取；而 {@code vend_credentials=true}
+     * 是客户端**明确要凭据**，与 {@code /token} 同性质，静默返回空的直接后果是客户端拿着
+     * 没有密钥的 {@code storage_options} 去开数据集，报一个指向存储的错。
+     */
+    private void requireVending(CatalogEntity catalog, List<String> namespace, String table,
+                                VendedStorageCredential credential) {
+        authorization.require(catalog.getPrefix(), PermissionDtos.ResourceType.TABLE, namespace, table,
+                Access.USE_CREDENTIAL, "receive vended storage credentials for table " + table);
+        if (credential.carriesLongTermKeyPair()) {
+            authorization.require(catalog.getPrefix(), PermissionDtos.ResourceType.TABLE, namespace, table,
+                    Access.USE_SECRET, "receive the long-term access key stored in catalog "
+                            + catalog.getPrefix() + " (grant USE_SECRET on this table, or switch the"
+                            + " catalog to a short-lived credential provider)");
+        }
     }
 
     // ------------------------------------------------------------------ 声明态

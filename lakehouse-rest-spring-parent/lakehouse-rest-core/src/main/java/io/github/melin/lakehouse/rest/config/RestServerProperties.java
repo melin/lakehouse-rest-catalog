@@ -453,7 +453,7 @@ public class RestServerProperties {
         /**
          * 服务管理员主体名。
          *
-         * <p>官方管理 API 把主体、catalog 的生命周期明确归给服务端，12 项 access
+         * <p>官方管理 API 把主体、catalog 的生命周期明确归给服务端，官方 12 项 access
          * 里没有对应取值，因此这里用名单表达。名单内的主体可以管理 principal 与
          * principal role，并在任意 catalog 上放行全部授权判定（含 {@code GRANT}）。
          */

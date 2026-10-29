@@ -175,7 +175,7 @@ public class IcebergTableService {
         List<IcebergDtos.StorageCredential> credentials = null;
         Map<String, String> config = null;
         IcebergCredentialService.Delegated delegated =
-                credentialService.delegated(catalog, table, delegation);
+                credentialService.delegated(catalog, table, levels, delegation);
         if (delegated != null) {
             credentials = delegated.credentials();
             config = credentialService.refreshConfig(prefix, levels, tableName, delegated);
@@ -639,7 +639,7 @@ public class IcebergTableService {
                                                           String tableName) {
         CatalogEntity catalog = resolve(prefix);
         TableEntity table = requireIcebergTable(catalog, levels, tableName);
-        return credentialService.credentials(catalog, table);
+        return credentialService.credentials(catalog, table, levels);
     }
 
     // ------------------------------------------------------------------ metrics

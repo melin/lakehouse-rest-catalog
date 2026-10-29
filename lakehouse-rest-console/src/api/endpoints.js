@@ -99,7 +99,8 @@ export const ENDPOINTS = {
   listPartitions: { method: 'GET', path: '/v1/{prefix}/databases/{database}/tables/{table}/partitions' },
 
   // ------------------------------------------------------------------ catalog API：权限（Paimon 官方 management API）
-  // 授权只有这一套模型：三元组 `(resource, access, principal)`，access 取官方 12 项。
+  // 授权只有这一套模型：三元组 `(resource, access, principal)`，access 取官方 12 项
+  // 加服务端的两个凭据扩展词（USE_CREDENTIAL / USE_SECRET）。
   // grant / revoke 的资源定位在请求体里，因此不做成路径参数。
   listPermissions: { method: 'GET', path: '/v1/{prefix}/permissions' },
   // 控制台授权清单的一页：**已按「主体 × 作用范围」折叠**（一条赋权一处、一组一行），

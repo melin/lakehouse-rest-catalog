@@ -225,7 +225,7 @@ Micrometer 里用点分层，Prometheus 导出自动转下划线：
 
 | Micrometer 名                        | 类型      | 标签                                                                       | 用途              |
 | ----------------------------------- | ------- | ------------------------------------------------------------------------ | --------------- |
-| `lakehouse.authorization.decisions` | Counter | `resource_type`（8 种）`access`（12 项）`result`（`allowed`/`denied`）           | 拒绝率突增＝权限配错或有人在扫 |
+| `lakehouse.authorization.decisions` | Counter | `resource_type`（8 种）`access`（14 项）`result`（`allowed`/`denied`）           | 拒绝率突增＝权限配错或有人在扫 |
 | `lakehouse.authentication.failures` | Counter | `reason`（`missing_token`/`invalid_token`/`expired`/`insufficient_scope`） | 令牌问题分类          |
 
 > `resource_type` × `access` 理论上 96 组合，实际合法组合约 30（`Access.allowedFor` 已限死），  

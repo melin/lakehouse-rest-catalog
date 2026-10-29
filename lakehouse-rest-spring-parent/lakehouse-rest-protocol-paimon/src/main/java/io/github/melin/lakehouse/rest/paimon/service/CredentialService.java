@@ -3,10 +3,13 @@ package io.github.melin.lakehouse.rest.paimon.service;
 import io.github.melin.lakehouse.rest.domain.entity.CatalogEntity;
 import io.github.melin.lakehouse.rest.domain.entity.TableEntity;
 import io.github.melin.lakehouse.rest.domain.repo.CatalogRepository;
+import io.github.melin.lakehouse.rest.dto.PermissionDtos;
+import io.github.melin.lakehouse.rest.dto.PermissionDtos.Access;
 import io.github.melin.lakehouse.rest.dto.StorageDtos.StorageConfigInfo;
 import io.github.melin.lakehouse.rest.dto.TypeDtos;
 import io.github.melin.lakehouse.rest.paimon.dto.TableDtos;
 import io.github.melin.lakehouse.rest.paimon.support.Codecs;
+import io.github.melin.lakehouse.rest.service.AuthorizationService;
 import io.github.melin.lakehouse.rest.service.StorageCredentialCache;
 import io.github.melin.lakehouse.rest.service.StorageCredentialManager;
 import io.github.melin.lakehouse.rest.service.StorageRuntimePolicy;
@@ -37,6 +40,11 @@ import org.springframework.transaction.annotation.Transactional;
  * <p><b>过期时刻来自缓存。</b>同一份凭据在有效期内被反复请求时，返回的是同一个
  * 过期时刻，而不是「当前时间 + TTL」。差异在这里很实际：后者会让调用方以为
  * 每次拿到的都是一份全新的、完整时长的凭据，而实际上密钥没变。
+ *
+ * <p><b>鉴权分两步。</b>「能调这个端点」是拦截器按 {@code CatalogAccessRules} 判的
+ * {@code USE_CREDENTIAL}；「票里能不能含库里存的那对长期密钥」在这里再判一次
+ * {@code USE_SECRET}。第二步必须留在这里：它取决于**签发结果**而不是路径，
+ * 同一个端点可能发短期票、也可能发库里的 AK/SK。
  */
 @Service
 @RequiredArgsConstructor
@@ -46,6 +54,7 @@ public class CredentialService {
     private final CatalogRepository catalogRepository;
     private final StorageRuntimePolicy storagePolicy;
     private final StorageCredentialCache cache;
+    private final AuthorizationService authorization;
 
     /** {@code GET .../tables/{table}/token}：签发数据访问凭据。 */
     @Transactional(readOnly = true)
@@ -59,6 +68,19 @@ public class CredentialService {
         long now = System.currentTimeMillis();
         StorageCredentialCache.Cached cached = cache.get(key).orElseGet(() -> cache.put(key,
                 storagePolicy.credentialManager().vend(storage, target.getId(), target.getPath()), now));
+
+        // 端点本身要求 USE_CREDENTIAL（能取票）；票里若有**没有时限的那对长期密钥**，
+        // 还要 USE_SECRET（能拿走存着的钥匙）。判据在凭据自己身上，所以只能在这之后判：
+        // 路径上区分不出来——同一个 /token，relay 发的是库里的 AK/SK，s3-token 发的是
+        // 现签的短期票，用配置反推就会造出「配了 STS 但其实没签」这类错位（设计稿 §5.8）。
+        if (cached.credential().carriesLongTermKeyPair()) {
+            // 本文件里的 ResourceType 是 support 包那个（ApiException 的定位符），
+            // 权限判定要的是 PermissionDtos 里那个同名的枚举——两者不是一回事，写全限定名
+            authorization.require(prefix, PermissionDtos.ResourceType.TABLE, List.of(database), table,
+                    Access.USE_SECRET, "receive the long-term access key stored in catalog " + prefix
+                            + " (grant USE_SECRET on this table, or switch the catalog to a"
+                            + " short-lived credential provider)");
+        }
 
         // 同一个时刻回两个名字：规格写的是 expiresAt，Paimon 客户端读的是 expiresAtMillis。
         // 理由与后果见 GetTableDataTokenResponse 的注释。

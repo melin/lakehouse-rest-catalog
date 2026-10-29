@@ -133,7 +133,8 @@ public class LanceTableService {
         return new LanceDtos.DescribeTableResponse(parsee.join(sep(delimiter)),
                 table.getPath(),
                 propertiesOf(table),
-                support.storageOptions(catalog, table.getId(), table.getPath(), vendCredentials),
+                support.storageOptions(catalog, table.getId(), table.getPath(),
+                        List.of(parsee.schema()), parsee.table(), vendCredentials),
                 withTableUri ? tableUri(table.getPath()) : null,
                 onlyDeclared,
                 tableName,
@@ -383,7 +384,9 @@ public class LanceTableService {
                 newName, Map.of("format", "LANCE", "from", oldName));
         return new LanceDtos.TableRef(parsee.catalog() + sep(delimiter) + newSchema + sep(delimiter) + newName,
                 table.getPath(), propertiesOf(table),
-                support.storageOptions(catalog, table.getId(), table.getPath(), vendCredentials));
+                // 判权用**改名前的身份**：赋权挂在名字上，调用方手里那条授权就是旧名上的
+                support.storageOptions(catalog, table.getId(), table.getPath(),
+                        List.of(parsee.schema()), oldName, vendCredentials));
     }
 
     // ------------------------------------------------------------------ 内部
@@ -391,7 +394,8 @@ public class LanceTableService {
     private LanceDtos.TableRef ref(LanceIds.Id parsee, TableEntity table, String delimiter,
                                     CatalogEntity catalog, boolean vendCredentials) {
         return new LanceDtos.TableRef(parsee.join(delimiter), table.getPath(), propertiesOf(table),
-                support.storageOptions(catalog, table.getId(), table.getPath(), vendCredentials));
+                support.storageOptions(catalog, table.getId(), table.getPath(),
+                        List.of(parsee.schema()), parsee.table(), vendCredentials));
     }
 
     private static LanceDtos.ListTablesResponse page(List<String> tables, Integer limit, String pageToken) {

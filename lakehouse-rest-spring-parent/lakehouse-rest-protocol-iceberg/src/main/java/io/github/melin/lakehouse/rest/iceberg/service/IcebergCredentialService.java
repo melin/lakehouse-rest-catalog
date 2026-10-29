@@ -1,13 +1,18 @@
 package io.github.melin.lakehouse.rest.iceberg.service;
 
+import io.github.melin.lakehouse.rest.config.RequestContext;
 import io.github.melin.lakehouse.rest.domain.entity.CatalogEntity;
 import io.github.melin.lakehouse.rest.domain.entity.TableEntity;
+import io.github.melin.lakehouse.rest.dto.PermissionDtos.Access;
+import io.github.melin.lakehouse.rest.dto.PermissionDtos.ResourceType;
 import io.github.melin.lakehouse.rest.dto.StorageDtos.StorageConfigInfo;
 import io.github.melin.lakehouse.rest.iceberg.dto.IcebergDtos;
+import io.github.melin.lakehouse.rest.service.AuthorizationService;
 import io.github.melin.lakehouse.rest.service.StorageCredentialCache;
 import io.github.melin.lakehouse.rest.service.StorageRuntimePolicy;
 import io.github.melin.lakehouse.rest.support.NamespacePaths;
 import io.github.melin.lakehouse.rest.support.StorageConfigs;
+import io.github.melin.lakehouse.rest.support.VendedStorageCredential;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -39,6 +44,12 @@ import org.springframework.transaction.annotation.Transactional;
  * 是一句承诺：客户端到点会去那里换票。转发档没有可续的东西，广告它等于让客户端
  * 在 TTL 之后拿着「换不到新票」的地址去请求，最终表现成一组与权限无关的 400。
  * 判据就是凭据自己的 {@code expireTimeInMs}——不为零才广告。
+ *
+ * <p><b>鉴权分两步，与 Paimon 面逐条对齐。</b>「能调这个端点」是拦截器按
+ * {@code CatalogAccessRules} 判的 {@code USE_CREDENTIAL}；「票里能不能含库里存的那对
+ * 长期密钥」在拿到凭据之后再判 {@code USE_SECRET}——它取决于签发结果而不是路径。
+ * 两处失败姿势不同：{@link #credentials} 抛 403（这个端点只为签发而存在），
+ * {@link #delegated} 安静地不带（它挂在 {@code loadTable} 上，403 会连坐元数据读取）。
  */
 @Service
 @RequiredArgsConstructor
@@ -54,6 +65,7 @@ public class IcebergCredentialService {
 
     private final StorageRuntimePolicy storagePolicy;
     private final StorageCredentialCache cache;
+    private final AuthorizationService authorization;
 
     /**
      * 一次委托的结果：凭据条目 + 它能不能续期。
@@ -79,10 +91,20 @@ public class IcebergCredentialService {
      * 后者是「给了，但一个都不适用」。序列化成 JSON 时前者是字段不存在，后者是
      * {@code []}，而客户端对两者的日志不同。
      *
+     * <p><b>缺权限时「不给」，不报 403。</b>这条路径是 {@code loadTable}——它同时承载
+     * 元数据读取，而 {@code X-Iceberg-Access-Delegation} 只是「顺便把凭据也带上」的请求。
+     * 规格明确写了服务端可以从所列机制里任选、也可以一个都不给，所以「没权限就不带」既合规
+     * 又不连坐；打成 403 会让「看表结构」也跟着失败，而失败的还是元数据请求。
+     * 代价是错误现场会推迟到引擎真正读数据时，因此这里留一条 WARN，把缺的 access 写清楚。
+     *
+     * <p>同一个判断在 {@link #credentials} 里是**抛 403**：那个端点存在的唯一目的就是签发
+     * 凭据，静默回一个空响应等于让引擎拿着空配置去读数据。
+     *
      * @param delegation {@code X-Iceberg-Access-Delegation} 的原值，可为 {@code null}
      */
     @Transactional(readOnly = true)
-    public Delegated delegated(CatalogEntity catalog, TableEntity table, String delegation) {
+    public Delegated delegated(CatalogEntity catalog, TableEntity table, List<String> levels,
+                               String delegation) {
         if (delegation == null || delegation.isBlank()) {
             return null;
         }
@@ -93,6 +115,13 @@ public class IcebergCredentialService {
             return null;
         }
         StorageCredentialCache.Cached cached = cached(catalog, table);
+        if (!mayVend(catalog.getPrefix(), levels, table, cached.credential())) {
+            // 完整信息在 mayVend 的 WARN 里，这里只说明「所以这次没带」
+            log.warn("not vending credentials for {}.{} to this caller even though loadTable asked"
+                    + " for them; the client will have to use its own credentials for data access",
+                    table.getDatabaseId(), table.getName());
+            return null;
+        }
         return new Delegated(List.of(new IcebergDtos.StorageCredential(table.getPath(),
                 cached.credential().token())), cached.credential().shortLived());
     }
@@ -114,11 +143,57 @@ public class IcebergCredentialService {
      * 同一份内容发两遍的代价是两个 map 的重复字符，换的是不必猜客户端版本。
      */
     @Transactional(readOnly = true)
-    public IcebergDtos.LoadCredentialsResponse credentials(CatalogEntity catalog, TableEntity table) {
+    public IcebergDtos.LoadCredentialsResponse credentials(CatalogEntity catalog, TableEntity table,
+                                                          List<String> levels) {
+        StorageCredentialCache.Cached cached = cached(catalog, table);
+        // 与 Paimon 面 /token 同一道判定：票里有长期密钥对就要 USE_SECRET。
+        // 端点本身（USE_CREDENTIAL）已由拦截器按 CatalogAccessRules 判过。
+        if (cached.credential().carriesLongTermKeyPair()) {
+            authorization.require(catalog.getPrefix(), ResourceType.TABLE, levels, table.getName(),
+                    Access.USE_SECRET, "receive the long-term access key stored in catalog "
+                            + catalog.getPrefix() + " (grant USE_SECRET on this table, or switch the"
+                            + " catalog to a short-lived credential provider)");
+        }
         IcebergDtos.StorageCredential entry = new IcebergDtos.StorageCredential(table.getPath(),
-                cached(catalog, table).credential().token());
+                cached.credential().token());
         List<IcebergDtos.StorageCredential> single = List.of(entry);
         return new IcebergDtos.LoadCredentialsResponse(single, single);
+    }
+
+    /**
+     * 这次能不能把凭据带进 {@code loadTable}；不能时留一条点名 access 的 WARN。
+     *
+     * <p>两道与另外两个协议面一致：先 {@code USE_CREDENTIAL}（能取票），票里若含**没有时限
+     * 的那对长期密钥**再要 {@code USE_SECRET}。缺 {@code USE_CREDENTIAL} 也要拦——否则
+     * 「能读元数据」（{@code DESCRIBE}）会顺带把一张通往存储的票带走，而那正是拆分之前的状态。
+     *
+     * <p>失败姿势与 {@link #credentials} 相反：这里只「不给」，不抛。那条路径同时承载元数据
+     * 读取，而 {@code X-Iceberg-Access-Delegation} 只是「顺便带上凭据」的请求，规格允许服务端
+     * 一个机制都不选。把「抛不抛」写成两个独立的分支函数而不是一个参数，是因为两个调用点的
+     * **语义**不同：一个必须报错，一个必须安静地不给。
+     */
+    private boolean mayVend(String catalogName, List<String> levels, TableEntity table,
+                            VendedStorageCredential credential) {
+        String target = String.join(".", levels) + "." + table.getName();
+        if (!authorization.allows(catalogName, ResourceType.TABLE, levels, table.getName(),
+                Access.USE_CREDENTIAL)) {
+            log.warn("not embedding credentials for TABLE {} in catalog {} into loadTable: principal {}"
+                            + " lacks USE_CREDENTIAL (metadata reads stay available; the client will"
+                            + " have to use its own credentials for data access)",
+                    target, catalogName, RequestContext.principal());
+            return false;
+        }
+        if (!credential.carriesLongTermKeyPair()
+                || authorization.allows(catalogName, ResourceType.TABLE, levels, table.getName(),
+                        Access.USE_SECRET)) {
+            return true;
+        }
+        // 只记名字不记密钥：这条日志的目的就是让人知道该补哪一条授权
+        log.warn("refusing to embed the long-term access key stored in catalog {} into loadTable:"
+                        + " principal {} lacks USE_SECRET on TABLE {} (USE_CREDENTIAL is not enough;"
+                        + " switch the catalog to a short-lived provider to drop this requirement)",
+                catalogName, RequestContext.principal(), target);
+        return false;
     }
 
     /**

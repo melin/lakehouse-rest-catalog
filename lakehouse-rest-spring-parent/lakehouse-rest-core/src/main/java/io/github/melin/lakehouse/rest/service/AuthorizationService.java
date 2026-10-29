@@ -29,9 +29,11 @@ import org.springframework.transaction.annotation.Transactional;
  *
  * <p><b>只有一套权限模型。</b>全部授权都落在 {@code lakehouse_permission_assignment} 上，
  * 形状是 Paimon REST Management API 的三元组 {@code (resource, access, principal)}，
- * access 取值就是官方那 12 项（{@code ALL / CREATEDATABASE / DESCRIBE / ALTER / DROP /
- * CREATETABLE / CREATEFUNCTION / CREATEVIEW / LIST / SELECT / UPDATE / GRANT}）。
- * 不再有 Polaris 的 64 项权限、catalog role 与资源授权表——判定层因此只剩一个真相源。
+ * access 取值是官方那 12 项（{@code ALL / CREATEDATABASE / DESCRIBE / ALTER / DROP /
+ * CREATETABLE / CREATEFUNCTION / CREATEVIEW / LIST / SELECT / UPDATE / GRANT}）
+ * 加上本工程的两个扩展词 {@code USE_CREDENTIAL / USE_SECRET}（取票 / 拿走存着的长期密钥，
+ * 见 {@code PermissionDtos.Access}）。不再有 Polaris 的 64 项权限、catalog role 与资源授权表
+ * ——判定层因此只剩一个真相源。
  *
  * <p><b>主体解析。</b>{@code principal} 在官方语义里是不透明字符串，解析归服务端。
  * 本服务的约定是三条候选串：裸名 {@code alice}、{@code user:alice}，以及主体通过
@@ -61,9 +63,13 @@ import org.springframework.transaction.annotation.Transactional;
  * 「相等，或授予的是 {@code ALL}」，不做任何自定义的包含推断——那会造出
  * 规格里并不存在的授权语义。
  *
+ * <p>两个扩展词之间同样没有蕴含：只有 {@code USE_SECRET} 的人**取不到票**
+ * （官方对这两个点的描述就是互相排斥的），要「取票且能拿到存着的密钥」就得两个都授。
+ * 宁可让人多授一条，也不让「反正是更宽的那个」这种直觉替人做安全决定。
+ *
  * <p><b>开关与管理员。</b>{@code lakehouse.rest.authorization.enabled} 为假时全部放行；
  * 服务管理员名单（{@code …service-admins}）直接放行，用于主体/角色/目录这类
- * 管理面操作——官方把这些生命周期明确归给服务端，不在 12 项 access 的表达范围内。
+ * 管理面操作——官方把这些生命周期明确归给服务端，不在官方 12 项 access 的表达范围内。
  */
 @Service
 @RequiredArgsConstructor
@@ -136,23 +142,40 @@ public class AuthorizationService {
     @Transactional(readOnly = true)
     public void require(String catalogName, ResourceType resourceType, List<String> namespace,
                         String objectName, Access required, String action) {
-        if (!enabled()) {
-            return;
-        }
-        String principal = RequestContext.principal();
-        if (isServiceAdmin(principal)) {
-            return;
-        }
-        Optional<String> catalogId = catalogIdOf(catalogName);
-        if (catalogId.isEmpty()) {
-            return;
-        }
-        if (!satisfies(principal, catalogId.get(), resourceType, namespace, objectName, required)) {
+        if (!allows(catalogName, resourceType, namespace, objectName, required)) {
             throw ApiException.forbidden("The caller does not have permission to " + action
-                    + ": principal " + principal + " lacks " + required
+                    + ": principal " + RequestContext.principal() + " lacks " + required
                     + " on " + describe(resourceType, namespace, objectName)
                     + " in catalog " + catalogName);
         }
+    }
+
+    /**
+     * {@link #require} 的布尔形态：判定但不抛。
+     *
+     * <p>给「有权就给、没权就不给」这类端点用——Iceberg 的 {@code loadTable} 在
+     * {@code X-Iceberg-Access-Delegation} 里被要求带凭据时，缺权限的正确处置是
+     * **不带**（规格明确允许服务端一个都不给），而不是把整个读表请求打成 403：
+     * 那条路径同时承载元数据读取，403 会让「看表结构」也一起失败。
+     *
+     * <p>与 {@link #require} 共用同一套「没开启放行 / 管理员放行 / catalog 不存在不判定」
+     * 的前置，因此两处不可能给出不同答案。
+     */
+    @Transactional(readOnly = true)
+    public boolean allows(String catalogName, ResourceType resourceType, List<String> namespace,
+                          String objectName, Access required) {
+        if (!enabled()) {
+            return true;
+        }
+        String principal = RequestContext.principal();
+        if (isServiceAdmin(principal)) {
+            return true;
+        }
+        Optional<String> catalogId = catalogIdOf(catalogName);
+        if (catalogId.isEmpty()) {
+            return true;
+        }
+        return satisfies(principal, catalogId.get(), resourceType, namespace, objectName, required);
     }
 
     /**

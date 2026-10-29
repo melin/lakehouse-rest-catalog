@@ -16,7 +16,7 @@ import lombok.Setter;
  * Paimon 权限模型的落库形态：「某 principal 在某资源上拥有某 access」。
  *
  * <p><b>这是唯一的授权表。</b>形状与官方 REST Management API 的三元组
- * {@code (resource, access, principal)} 一致，access 取值就是官方那 12 项。
+ * {@code (resource, access, principal)} 一致，access 取官方那 12 项，另加两个凭据扩展词。
  * 原先并存的 {@code lakehouse_catalog_role} 与 {@code lakehouse_resource_grant}
  * （Polaris 的 RBAC 链）已整体移除，判定层因此只剩这一个真相源。
  *
