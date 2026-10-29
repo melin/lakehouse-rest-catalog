@@ -4,6 +4,7 @@ import io.github.melin.lakehouse.rest.dto.StorageDtos.StorageConfigInfo;
 import io.github.melin.lakehouse.rest.support.ApiException;
 import io.github.melin.lakehouse.rest.support.CredentialManagerType;
 import io.github.melin.lakehouse.rest.support.VendedStorageCredential;
+import java.util.List;
 import org.springframework.stereotype.Component;
 
 /**
@@ -27,7 +28,23 @@ public class NoopStorageCredentialManager implements StorageCredentialManager {
     }
 
     @Override
-    public VendedStorageCredential vend(StorageConfigInfo storage, String tableId, String tablePath) {
+    public VendedStorageCredential vend(StorageConfigInfo storage, String tableId, String tablePath,
+                                        boolean allowWrite) {
+        throw new ApiException(501, null, null,
+                "storage credential vending is disabled: lakehouse.rest.credential-manager.type=noop");
+    }
+
+    /**
+     * 服务端自己的票同样不提供。
+     *
+     * <p>这一档的语义是「引擎自带云凭据」，而服务端自己**没有**引擎那份凭据可借——
+     * 它若也要访问仓库，只能靠部署环境（实例角色 / 挂载的配置文件）而不是这里。
+     * 所以这里保持一致地报 501，而不是悄悄回一份空凭据：空凭据会让 FileIO
+     * 退回环境链，表现是「预览能看、写元数据失败」，比直接报错难查得多。
+     */
+    @Override
+    public VendedStorageCredential vendForCatalog(StorageConfigInfo storage, String catalogId,
+                                                  List<String> allowedLocations, boolean allowWrite) {
         throw new ApiException(501, null, null,
                 "storage credential vending is disabled: lakehouse.rest.credential-manager.type=noop");
     }

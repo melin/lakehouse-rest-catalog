@@ -388,7 +388,9 @@ public class TableMetadataService {
                 .orElseThrow(() -> ApiException.managementNotExist(ResourceType.CATALOG, table.getCatalogId()));
         return fileIoFactory.open(
                 new Path(table.getPath()),
-                fileIoFactory.optionsFor(catalog, table.getId(), table.getPath()));
+                // 这条链路只做一件事：把 schema / snapshot 写进表目录。
+                // 因此要写权限，且作用域就是这张表——比 catalog 级票窄，不该放大。
+                fileIoFactory.optionsFor(catalog, table.getId(), table.getPath(), true));
     }
 
     // ------------------------------------------------------------------ 辅助

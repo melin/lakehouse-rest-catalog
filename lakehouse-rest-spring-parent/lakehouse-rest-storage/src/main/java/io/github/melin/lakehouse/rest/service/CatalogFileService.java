@@ -460,10 +460,12 @@ public class CatalogFileService {
         return raw;
     }
 
-    private FileIO open(CatalogEntity catalog, Path target) {        try {
-            // 作用域标识用 catalog id：凭据管理器按它记账与缓存，与表元数据那条链路
-            // 传 table id 是同一个约定（见 StorageCredentialManager#vend）
-            return fileIoFactory.open(target, fileIoFactory.optionsFor(catalog, catalog.getId(), target.toString()));
+    private FileIO open(CatalogEntity catalog, Path target) {
+        try {
+            // 浏览仓库是按「任意路径」读，不是按某张表读：用 catalog 级的票
+            // （作用域是 allowedLocations），复用表级票会漏掉仓库根这类路径。
+            // 只读——这条链路从不写。
+            return fileIoFactory.open(target, fileIoFactory.catalogOptionsFor(catalog, false));
         } catch (IOException e) {
             throw listFailure(catalog.getPrefix(), "", e);
         }

@@ -9,6 +9,7 @@ import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.ServiceConfigurationError;
 import java.util.ServiceLoader;
 import java.util.concurrent.ConcurrentHashMap;
@@ -43,6 +44,10 @@ import org.springframework.stereotype.Component;
  * catalog 凭据之后，服务端还在用旧钥匙」——那种问题会在下次操作时才炸。
  * {@code loaders} 缓存的是**实现类**而不是实例：按 scheme 加载类这件事与配置无关，
  * 而 {@link FileIO} 实例本身仍然每次新建，理由同上。
+ *
+ * <p>唯一缓存的是 {@link #catalogOptionsFor} 里的**短期票**（不是 FileIO 实例）：
+ * 它的键里含整份存储配置，换钥匙即换键；而且不缓存就等于「浏览一次目录签十几次票」。
+ * 静态转发档不缓存，仍然每次解析配置。
  */
 @Component
 @RequiredArgsConstructor
@@ -51,6 +56,8 @@ public class StorageFileIoFactory {
     private static final Logger log = LoggerFactory.getLogger(StorageFileIoFactory.class);
 
     private final StorageRuntimePolicy storagePolicy;
+
+    private final StorageCredentialCache credentialCache;
 
     /** scheme → FileIO 实现，来自 {@code META-INF/services/org.apache.paimon.fs.FileIOLoader}。 */
     private final Map<String, FileIOLoader> loaders = new ConcurrentHashMap<>();
@@ -97,17 +104,81 @@ public class StorageFileIoFactory {
      * @param scopePath 被访问的路径，可为 {@code null}
      */
     public Map<String, String> optionsFor(CatalogEntity catalog, String scopeId, String scopePath) {
+        return optionsFor(catalog, scopeId, scopePath, false);
+    }
+
+    /**
+     * 同上，但显式声明要不要写权限。
+     *
+     * <p><b>写权限必须显式要，不能靠「反正服务端有全权」的假设。</b>
+     * STS 的票是收窄过的，服务端自己写元数据时若拿的是只读票，
+     * 失败点是 {@code PutObject} 403——它会出现在「建表之后引擎读不到 schema」这种
+     * 离凭据很远的现象里。
+     *
+     * @param allowWrite 这次是否要写（物化元数据）
+     */
+    public Map<String, String> optionsFor(CatalogEntity catalog, String scopeId, String scopePath,
+                                          boolean allowWrite) {
         Map<String, String> options = new LinkedHashMap<>();
         StorageConfigInfo storage = StorageConfigs.of(catalog);
         if (storage != null) {
-            VendedStorageCredential vended =
-                    storagePolicy.credentialManager().vend(storage, scopeId, scopePath);
+            VendedStorageCredential vended = storagePolicy.credentialManager()
+                    .vend(storage, scopeId, scopePath, allowWrite);
             options.putAll(vended.token());
         }
+        putWarehouse(options, catalog);
+        return options;
+    }
+
+    /**
+     * 服务端自己按「catalog 的允许位置」取票。
+     *
+     * <p><b>为什么要单独一个入口。</b>浏览目录、删一张表的整个目录、按快照清单核对文件，
+     * 这些动作的共同点是「手里只有一个路径，而它可能在任何地方」——用表级票去覆盖它们，
+     * 结果就是列目录 403，而报错指向存储、与 catalog 无关。这里把作用域换成整份
+     * {@code allowedLocations}，并用独立的缓存键与用户的表级票分开（见
+     * {@code StorageCredentialCache#catalogKey}）。
+     *
+     * <p><b>只缓存短期票。</b>静态转发档不缓存，理由与「FileIO 每次重新构造」相同：
+     * 管理 API 换过 catalog 凭据之后，服务端不该还拿着旧钥匙。短期票反过来必须缓存——
+     * 浏览一次目录会连开十几个文件，不缓存就是十几次 STS 调用，而云侧配额是单账号
+     * 数百 TPS 量级。它的键里已经含整份存储配置，改了配置键就变，所以换钥匙也立刻生效。
+     *
+     * @param allowWrite 这次是否要写（删目录、写元数据）
+     */
+    public Map<String, String> catalogOptionsFor(CatalogEntity catalog, boolean allowWrite) {
+        Map<String, String> options = new LinkedHashMap<>();
+        StorageConfigInfo storage = StorageConfigs.of(catalog);
+        if (storage != null) {
+            options.putAll(catalogCredential(catalog, storage, allowWrite).token());
+        }
+        putWarehouse(options, catalog);
+        return options;
+    }
+
+    private VendedStorageCredential catalogCredential(CatalogEntity catalog, StorageConfigInfo storage,
+                                                      boolean allowWrite) {
+        String key = StorageCredentialCache.catalogKey(catalog.getId(), storage, allowWrite);
+        Optional<StorageCredentialCache.Cached> cached = credentialCache.get(key);
+        if (cached.isPresent()) {
+            return cached.get().credential();
+        }
+        VendedStorageCredential vended = storagePolicy.credentialManager()
+                .vendForCatalog(storage, catalog.getId(), storage.allowedLocations(), allowWrite);
+        if (vended.shortLived()) {
+            credentialCache.put(key, vended, System.currentTimeMillis());
+        }
+        return vended;
+    }
+
+    /**
+     * 仓库位置也要给：对象存储的 FileIO 在缺少定位信息时会退回默认凭据链与默认区域，
+     * 报出来的错与真正的原因隔着一层。
+     */
+    private static void putWarehouse(Map<String, String> options, CatalogEntity catalog) {
         if (catalog.getWarehouse() != null && !catalog.getWarehouse().isBlank()) {
             options.put(CatalogOptions.WAREHOUSE.key(), catalog.getWarehouse());
         }
-        return options;
     }
 
     /** 路径的 scheme；无 scheme（本地相对/绝对路径）时返回 {@code null}。 */

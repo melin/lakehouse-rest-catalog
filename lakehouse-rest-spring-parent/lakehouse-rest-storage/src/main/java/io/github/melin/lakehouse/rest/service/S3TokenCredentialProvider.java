@@ -5,6 +5,7 @@ import io.github.melin.lakehouse.rest.support.VendedStorageCredential;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import lombok.RequiredArgsConstructor;
@@ -68,20 +69,21 @@ public class S3TokenCredentialProvider implements CredentialProvider {
                 || context.storage().roleArn().isBlank()) {
             return Optional.empty();
         }
-        CredentialScope scope = context.scope();
-        if (scope == null) {
-            // 表路径认不出来：不签。整桶凭据比不签更糟——它看起来生效了，
+        List<CredentialScope> scopes = context.scopes();
+        if (scopes.isEmpty()) {
+            // 一个位置都认不出来：不签。整桶凭据比不签更糟——它看起来生效了，
             // 实际把收窄整个跳过，而日志里只有一行正常。
-            log.warn("cannot derive a credential scope from table path \"{}\" for table {};"
-                    + " refusing to sign an unscoped session", context.tablePath(), context.tableId());
+            log.warn("cannot derive a credential scope from {} for {}; refusing to sign an"
+                            + " unscoped session",
+                    context.scopePaths(), context.scopeId());
             return Optional.empty();
         }
-        if (scope.bucketRoot()) {
-            log.warn("table {} sits at the bucket root; the session policy can only be scoped to the"
-                    + " whole bucket", context.tableId());
+        if (scopes.stream().anyMatch(CredentialScope::bucketRoot)) {
+            log.warn("{} sits at a bucket root; the session policy can only be scoped to the"
+                    + " whole bucket: {}", context.scopeId(), scopes);
         }
         Duration ttl = Duration.ofSeconds(properties.getCredential().getTtlSeconds());
-        String policy = S3SessionPolicy.build(scope);
+        String policy = S3SessionPolicy.build(scopes);
         StsSession session = assumeRoleClient.assumeRole(new AssumeRoleCommand(
                 context.storage().roleArn(),
                 context.storage().externalId(),
@@ -103,8 +105,8 @@ public class S3TokenCredentialProvider implements CredentialProvider {
         // 下发的 ttl 与票的寿命同源：分成两个值就会出现「签名 15 分钟、声明 1 小时」，
         // 客户端于是在第 16 分钟拿着过期票继续用，拿到一个没有凭据线索的 403。
         long ttlSeconds = ttlSecondsOf(session);
-        log.info("vended provider={} credentials for table {} (role {}, session {}, expiresIn={}s)",
-                name(), context.tableId(), context.storage().roleArn(),
+        log.info("vended provider={} credentials for {} (role {}, session {}, expiresIn={}s)",
+                name(), context.scopeId(), context.storage().roleArn(),
                 context.roleSessionName(), ttlSeconds);
         return Optional.of(new VendedStorageCredential(token, ttlSeconds,
                 context.storage().storageType(), VendedStorageCredential.SOURCE_STS_SESSION,

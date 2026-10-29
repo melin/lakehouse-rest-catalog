@@ -1,9 +1,11 @@
 package io.github.melin.lakehouse.rest.service;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 /**
  * 一次凭据签发的作用域：这张表在对象存储里到底占哪几个前缀。
@@ -77,6 +79,42 @@ public record CredentialScope(String bucket,
         List<String> list = List.of(prefix.isEmpty() ? "*" : prefix, prefix.isEmpty() ? "*" : prefix + "/*");
         List<String> write = allowWrite ? List.of(prefix) : List.of();
         return new CredentialScope(bucket, read, distinct(list), write);
+    }
+
+    /**
+     * 从一组位置派生作用域（catalog 级票用）。
+     *
+     * <p><b>为什么服务端自己取票要按一组位置而不是一张表。</b>表级票只覆盖
+     * {@code s3://wh/db/t} 这一个前缀，而服务端要做的动作天然跨表：浏览仓库目录、
+     * 删一张表的整个目录、按快照清单校验文件是否存在。给这些动作签表级票的表现是
+     * 「列目录 403」，而报错指向存储、与 catalog 无关。
+     *
+     * <p><b>认不出来的位置直接跳过，不报错。</b>{@code allowedLocations} 是用户填的，
+     * 里面可能混着 {@code file:///...}（本地测试）或写错的 scheme；一个认不出的条目
+     * 不该让整张票签不出来。但**全都认不出时返回空列表**，由调用方决定拒绝签发——
+     * 空作用域等于「不收窄」，静默放行比报错危险。
+     *
+     * <p>同一个桶下的多个前缀会合并进同一条语句（见 {@link S3SessionPolicy}），
+     * 这里只负责按 {@code bucket + prefix} 去重，不去动 bucket 的数量：
+     * 跨桶的 catalog 合法，S3 策略也能表达，别在解析阶段就把它判掉。
+     *
+     * @param locations  位置列表，可为 {@code null}
+     * @param allowWrite 这次是否需要写权限
+     */
+    public static List<CredentialScope> resolveAll(List<String> locations, boolean allowWrite) {
+        if (locations == null || locations.isEmpty()) {
+            return List.of();
+        }
+        Map<String, CredentialScope> byPrefix = new LinkedHashMap<>();
+        for (String location : locations) {
+            CredentialScope scope = resolve(location, allowWrite);
+            if (scope == null) {
+                continue;
+            }
+            // 用 \u0000 当分隔符：合法 URI 里不会出现它，而 '|' 会
+            byPrefix.putIfAbsent(scope.bucket() + '\u0000' + scope.readPrefixes().get(0), scope);
+        }
+        return List.copyOf(byPrefix.values());
     }
 
     /** 是否落在桶根（前缀为空）。桶根无法用前缀收窄，签发方要说清楚。 */

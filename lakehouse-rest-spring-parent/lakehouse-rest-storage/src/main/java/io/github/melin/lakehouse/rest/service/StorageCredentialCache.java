@@ -125,14 +125,36 @@ public class StorageCredentialCache {
     }
 
     /**
-     * 组装缓存键。
+     * 组装缓存键（表级票）。
      *
      * <p>存储配置用 JSON 文本参与键，而不是重写一遍各字段：新增字段时
      * 这里不用跟着改，漏改的代价是缓存命中率下降而非结果错误——
      * 这个失效方向是可以接受的。
+     *
+     * <p>读写也要进键：同一张表的只读票与可写票是两份不同的授权，
+     * 共用一条缓存会把「刚才只读」的票发给要写的那次调用，表现是写元数据 403。
      */
     public static String key(String catalogId, StorageConfigInfo storage, String tablePath) {
-        return catalogId + "|" + Json.write(storage) + "|" + (tablePath == null ? "" : tablePath);
+        return key(catalogId, storage, tablePath, false);
+    }
+
+    public static String key(String catalogId, StorageConfigInfo storage, String tablePath,
+                             boolean allowWrite) {
+        return catalogId + "|" + Json.write(storage) + "|"
+                + (tablePath == null ? "" : tablePath) + "|" + (allowWrite ? "rw" : "r");
+    }
+
+    /**
+     * 组装缓存键（服务端自己的 catalog 级票）。
+     *
+     * <p><b>必须与 {@link #key} 不同名。</b>两类票的作用域不同（一张表 vs 整份
+     * {@code allowedLocations}），若共用一个键，先发生的那次会决定后一次拿到什么：
+     * 用户先读表、服务端随后删目录，服务端就拿到一张只覆盖表的票，
+     * 删到一半 403；反过来则是服务端把一张能跨表写的票留在缓存里等用户来取。
+     * 前缀 {@code catalog|} 让两者不可能撞上——表路径是 URI，不会以它开头。
+     */
+    public static String catalogKey(String catalogId, StorageConfigInfo storage, boolean allowWrite) {
+        return "catalog|" + catalogId + "|" + Json.write(storage) + "|" + (allowWrite ? "rw" : "r");
     }
 
     /**

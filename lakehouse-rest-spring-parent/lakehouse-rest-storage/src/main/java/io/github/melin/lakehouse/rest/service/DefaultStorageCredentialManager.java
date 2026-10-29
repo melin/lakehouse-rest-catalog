@@ -212,36 +212,87 @@ public class DefaultStorageCredentialManager implements StorageCredentialManager
     }
 
     @Override
-    public VendedStorageCredential vend(StorageConfigInfo storage, String tableId, String tablePath) {
-        if (storage == null) {
-            throw new ApiException(500, null, null,
-                    "catalog has no storage configuration; cannot vend data access credentials");
-        }
+    public VendedStorageCredential vend(StorageConfigInfo storage, String tableId, String tablePath,
+                                        boolean allowWrite) {
+        requireStorage(storage);
         VendedStorageCredential vended;
         if (storage.storageType() == ManagementEnums.StorageType.S3) {
             // 只有 S3 分支可能走到 provider 链上（会调云），因此它自己返回完整结果，
             // 其余分支仍是「填 token 映射 + 报一个来源」的老形状。
-            vended = s3((AwsStorageConfigInfo) storage, tableId, tablePath);
+            AwsStorageConfigInfo s3 = (AwsStorageConfigInfo) storage;
+            vended = s3(s3, new CredentialContext(s3, tableId, tablePath,
+                    RequestContext.principal(), allowWrite));
         } else {
             Map<String, String> token = new LinkedHashMap<>();
-            String source = switch (storage.storageType()) {
-                case AZURE -> azure((AzureStorageConfigInfo) storage, token);
-                case GCS -> gcs((GcpStorageConfigInfo) storage, token);
-                case OBS -> obs((HuaweiObsStorageConfigInfo) storage, token);
-                case OSS -> oss((AliyunOssStorageConfigInfo) storage, token);
-                case FILE -> file((FileStorageConfigInfo) storage, tableId, tablePath, token);
-                case S3 -> throw new IllegalStateException("S3 is handled before the switch");
-            };
+            String source = otherSource(storage, tableId, tablePath, token);
             vended = new VendedStorageCredential(token, ttlSeconds(storage), storage.storageType(), source);
         }
-        if (log.isDebugEnabled()) {
-            // provider 与 source 是两个维度，排障时都要看：
-            // provider=s3-token 但 source=configuration 意味着链没生效、退回了转发。
-            log.debug("vended {} credentials for table {} provider={} source={} expiresIn={}",
-                    storage.storageType(), tableId, vended.provider(), vended.source(),
-                    vended.shortLived() ? vended.remainingMillis(System.currentTimeMillis()) + "ms" : "none");
-        }
+        logVended(storage, tableId, vended);
         return vended;
+    }
+
+    /**
+     * 服务端自己访问仓库的票：作用域是 catalog 的允许位置，与用户的表级票分开。
+     *
+     * <p>实现上它与 {@link #vend} 走同一条 S3 分支（同样的四级优先级、
+     * 同样的 provider 链），差别只在 {@link CredentialContext}：这里带的是
+     * {@code allowedLocations} 一份列表，而不是一张表的路径。因此静态转发档、
+     * {@code stsUnavailable} 档的行为与引擎那张票完全一致——「服务端能不能访问」
+     * 与「引擎能不能访问」仍是同一个答案。
+     *
+     * <p>非 S3 存储暂无 catalog 级收窄（它们本来就不按路径签），沿用与原实现
+     * 相同的转发策略。
+     */
+    @Override
+    public VendedStorageCredential vendForCatalog(StorageConfigInfo storage, String catalogId,
+                                                 List<String> allowedLocations, boolean allowWrite) {
+        requireStorage(storage);
+        VendedStorageCredential vended;
+        if (storage.storageType() == ManagementEnums.StorageType.S3) {
+            vended = s3((AwsStorageConfigInfo) storage,
+                    CredentialContext.forCatalog((AwsStorageConfigInfo) storage, catalogId,
+                            allowedLocations, RequestContext.principal(), allowWrite));
+        } else {
+            Map<String, String> token = new LinkedHashMap<>();
+            String source = otherSource(storage, null, null, token);
+            vended = new VendedStorageCredential(token, ttlSeconds(storage), storage.storageType(), source);
+        }
+        logVended(storage, "catalog:" + catalogId, vended);
+        return vended;
+    }
+
+    /** 非 S3 的六个分支；返回来源标识，键写进 {@code token}。 */
+    private String otherSource(StorageConfigInfo storage, String tableId, String tablePath,
+                               Map<String, String> token) {
+        return switch (storage.storageType()) {
+            case AZURE -> azure((AzureStorageConfigInfo) storage, token);
+            case GCS -> gcs((GcpStorageConfigInfo) storage, token);
+            case OBS -> obs((HuaweiObsStorageConfigInfo) storage, token);
+            case OSS -> oss((AliyunOssStorageConfigInfo) storage, token);
+            case FILE -> file((FileStorageConfigInfo) storage, tableId, tablePath, token);
+            case S3 -> throw new IllegalStateException("S3 is handled before the switch");
+        };
+    }
+
+    private static void requireStorage(StorageConfigInfo storage) {
+        if (storage == null) {
+            throw new ApiException(500, null, null,
+                    "catalog has no storage configuration; cannot vend data access credentials");
+        }
+    }
+
+    /**
+     * 一行 debug：{@code provider} 与 {@code source} 是两个维度，排障时都要看——
+     * {@code provider=s3-token} 但 {@code source=configuration} 意味着链没生效、退回了转发。
+     */
+    private static void logVended(StorageConfigInfo storage, String scopeId,
+                                  VendedStorageCredential vended) {
+        if (log.isDebugEnabled()) {
+            log.debug("vended {} credentials for {} provider={} source={} expiresIn={}",
+                    storage.storageType(), scopeId, vended.provider(), vended.source(),
+                    vended.shortLived()
+                            ? vended.remainingMillis(System.currentTimeMillis()) + "ms" : "none");
+        }
     }
 
     /** 一个对象存储 FileIO 的凭据键名族。四个键里只有前三个是密钥，最后一个只是定位。 */
@@ -286,7 +337,7 @@ public class DefaultStorageCredentialManager implements StorageCredentialManager
      * 「用这把钥匙」「不要票」「拿服务身份去换票」。前两者是调用方的明确决定，
      * 后者是服务端的默认策略，策略不能覆盖决定。
      */
-    private VendedStorageCredential s3(AwsStorageConfigInfo s3, String tableId, String tablePath) {
+    private VendedStorageCredential s3(AwsStorageConfigInfo s3, CredentialContext context) {
         Map<String, String> token = new LinkedHashMap<>();
         // 定位配置与密钥有无无关：即使不下发密钥，引擎也需要知道该连哪里
         putIfPresent(token, "s3.region", s3.region());
@@ -305,7 +356,7 @@ public class DefaultStorageCredentialManager implements StorageCredentialManager
 
         // 真签发的插入点，必须落在这里：上面两条是「显式指定了钥匙」与「明说不要票」，
         // 它们与「拿服务身份去换票」是互斥的三种意图，顺序反了就是覆盖调用方的决定。
-        VendedStorageCredential signed = assumeRole(s3, tableId, tablePath);
+        VendedStorageCredential signed = assumeRole(context);
         if (signed != null) {
             return signed;
         }
@@ -331,12 +382,10 @@ public class DefaultStorageCredentialManager implements StorageCredentialManager
      * 链为空是默认情形——那时本方法只做一次空循环，不产生任何副作用，
      * 也不会有远程调用。
      */
-    private VendedStorageCredential assumeRole(AwsStorageConfigInfo s3, String tableId, String tablePath) {
+    private VendedStorageCredential assumeRole(CredentialContext context) {
         if (providers.isEmpty()) {
             return null;
         }
-        CredentialContext context = new CredentialContext(s3, tableId, tablePath,
-                RequestContext.principal(), false);
         for (CredentialProvider provider : providers) {
             var vended = provider.vend(context);
             if (vended.isPresent()) {
@@ -525,7 +574,8 @@ public class DefaultStorageCredentialManager implements StorageCredentialManager
      */
     private String file(FileStorageConfigInfo file, String tableId, String tablePath, Map<String, String> token) {
         long expiresAt = System.currentTimeMillis() + ttlSeconds(file) * 1000L;
-        token.put("accessKeyId", "PAIMON-" + tableId);
+        // catalog 级取票没有表 id；这里给一个可读的别名，避免出现 "PAIMON-null"
+        token.put("accessKeyId", "PAIMON-" + (tableId == null ? "catalog" : tableId));
         token.put("accessKeySecret", randomSecret(24));
         token.put("securityToken", randomSecret(48));
         token.put("expiration", Instant.ofEpochMilli(expiresAt).toString());

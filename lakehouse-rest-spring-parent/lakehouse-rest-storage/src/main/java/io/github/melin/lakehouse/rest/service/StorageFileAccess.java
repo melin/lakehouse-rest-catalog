@@ -40,6 +40,11 @@ import org.springframework.stereotype.Service;
  * <p><b>每次调用都重新打开 FileIO</b>，与 {@link StorageFileIoFactory} 的理由相同：
  * 缓存凭据的代价是「管理 API 换过 catalog 凭据之后，服务端还在用旧钥匙写」，
  * 而那种问题要到下次写文件时才炸，报错只说认证失败。写路径是低频操作，不值得为此冒险。
+ * （短期票本身会经 {@link StorageCredentialCache} 复用，那是「票」不是 FileIO 实例，
+ * 且键里含整份存储配置，换钥匙即换键——两者不矛盾。）
+ *
+ * <p><b>读与写用两种票</b>（{@code fileIO} / {@code writableFileIO}）：STS 的票是收窄过的，
+ * 只读票在 {@code PutObject} / {@code DeleteObject} 上会 403，而失败点离「凭据」很远。
  *
  * <p><b>写入是原子的</b>（{@code tryToWriteAtomic}）。这一点对 Iceberg 尤其要紧：
  * 元数据文件一旦被读到一半，客户端会解析失败并把整张表判成损坏。对象存储侧的
@@ -95,7 +100,7 @@ public class StorageFileAccess {
      */
     public void write(String catalogId, String location, String content) {
         try {
-            FileIO fileIO = fileIO(catalogId, location);
+            FileIO fileIO = writableFileIO(catalogId, location);
             Path path = new Path(location);
             byte[] bytes = content.getBytes(StandardCharsets.UTF_8);
             if (fileIO.tryToWriteAtomic(path, content)) {
@@ -265,7 +270,7 @@ public class StorageFileAccess {
     /** 删一个文件；文件不存在时返回 {@code false} 而不是报错。 */
     public boolean delete(String catalogId, String location) {
         try {
-            FileIO fileIO = fileIO(catalogId, location);
+            FileIO fileIO = writableFileIO(catalogId, location);
             Path path = new Path(location);
             if (!fileIO.exists(path)) {
                 return false;
@@ -280,7 +285,7 @@ public class StorageFileAccess {
     /** 递归删一个目录；不存在时返回 {@code false}。 */
     public boolean deleteDirectory(String catalogId, String location) {
         try {
-            FileIO fileIO = fileIO(catalogId, location);
+            FileIO fileIO = writableFileIO(catalogId, location);
             Path path = new Path(location);
             if (!fileIO.exists(path)) {
                 return false;
@@ -292,12 +297,30 @@ public class StorageFileAccess {
         }
     }
 
-    /** 按 catalog 当前的存储配置打开 FileIO。 */
+    /**
+     * 按 catalog 当前的存储配置打开 FileIO。
+     *
+     * <p><b>用 catalog 级票而不是表级票。</b>本类拿到的只是「一个路径」，它可能是一张表的
+     * 目录、也可能在仓库里任何位置（删表目录要连父目录一起处理）；服务端自己这些动作的票
+     * 按 catalog 的允许位置签，才不会出现「读单个文件正常、列目录 403」。
+     *
+     * <p>{@code write} 必须如实传：只读票写不出东西，而失败点是 {@code PutObject} 403，
+     * 出现在离凭据很远的地方。
+     */
+    /** 只读：读文件、列目录、判存在。 */
     private FileIO fileIO(String catalogId, String location) throws IOException {
+        return openFileIO(catalogId, location, false);
+    }
+
+    /** 要写：写元数据、删文件、删目录。只读票在这些动作上会被 S3 以 403 拒掉。 */
+    private FileIO writableFileIO(String catalogId, String location) throws IOException {
+        return openFileIO(catalogId, location, true);
+    }
+
+    private FileIO openFileIO(String catalogId, String location, boolean write) throws IOException {
         CatalogEntity catalog = catalogRepository.findById(catalogId)
                 .orElseThrow(() -> ApiException.managementNotExist(ResourceType.CATALOG, catalogId));
-        return fileIoFactory.open(new Path(location),
-                fileIoFactory.optionsFor(catalog, catalogId, location));
+        return fileIoFactory.open(new Path(location), fileIoFactory.catalogOptionsFor(catalog, write));
     }
 
     /**

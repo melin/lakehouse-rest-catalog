@@ -1,6 +1,6 @@
 # 存储凭据下发（Credential Vending）：现状、缺口与七种存储的落地设计
 
-> **状态：P0 已实现、P1 未实现（见 v5 修订块与 §8）。** 本文回答三个问题：① Gravitino 与 Polaris 都做了 Credential
+> **状态：P0 已实现、P1 部分实现（P1-9 服务端取票已落地，见 v6 修订块与 §8）。** 本文回答三个问题：① Gravitino 与 Polaris 都做了 Credential
 > Vending，**本工程有没有考虑、还差哪些功能**；② AWS / Azure / GCS / 阿里云 OSS / 华为云 OBS /
 > 腾讯云 COS 与 S3 兼容存储**分别怎么落地**；③ Spark 访问 Catalog 时**能不能不把 AK/SK 写进配置**。
 > §10 另外回答第四个：**控制台上怎么配**（附交互原型）。
@@ -78,6 +78,32 @@
 >    `expires_at_millis` 优先取凭据自己的寿命。
 > 7. **未做的（仍是 P1）**：Azure SAS / OSS / OBS / GCS 的签发、两个权限点、AK ID 打码、
 >    服务端自身 FileIO 独立取票、COS 落地。§8 的 P0 行已标 ✅，P1 行保持原状。
+>    （**v6 已补上「服务端自身 FileIO 独立取票 / P1-9」**，其余仍按原状。）
+>
+> **本次修订（v6）：P1-9 落地——服务端自己也按「catalog 的允许位置」取票。**
+>
+> 起因是 §5.7 那条「服务端也是凭据消费者」：`StorageFileIoFactory` 虽然自己取票（没复用用户的票），
+> 但作用域是**被访问的那个路径**，而且 `allowWrite` 恒为 `false`。接上 STS 之后的两个后果分别是
+> 「列目录 / 删表目录 403」与「写元数据 403」，两者都报在存储层、与 catalog 无关。
+>
+> 1. **作用域分两类，判据是「谁在用」**：引擎的票按「用户 + 表」签（`vend`）；服务端自己的票按
+>    catalog 的整份 `allowedLocations` 签（`vendForCatalog`）。`CredentialContext` 因此从「一个路径」
+>    变成「一组位置」，`CredentialScope.resolveAll` 按 `bucket + prefix` 去重，跨桶合法（S3 策略能表达）。
+> 2. **`S3SessionPolicy` 支持多作用域，但单作用域的输出逐字节不变**：多个位置合成一条语句
+>    （`Resource` 与 `s3:prefix` 都接受数组），理由是 policy 有 2048 字符内联上限，
+>    逐个位置叠语句会先撞 `PolicyTooLarge`。
+> 3. **写权限显式传**：`StorageFileAccess` 的 `write` / `delete` / `deleteDirectory` 走可写票，
+>    其余读；`TableMetadataService`（物化 schema / snapshot）用**表级可写票**，不放大到 catalog 级。
+> 4. **缓存键必须分开**：`StorageCredentialCache.catalogKey` 带 `catalog|` 前缀，且读写各一份。
+>    共用的后果是「用户先读表、服务端随后删目录，服务端拿到只覆盖表的票」——删到一半 403。
+> 5. **只缓存短期票**：静态转发档仍每次重解析配置（换钥匙立刻生效），短期票必须缓存，
+>    否则浏览一次目录就是十几次 STS 调用。
+>
+> 用例：`ServerSideCredentialTests`（9 例：作用域覆盖 / 跨桶 / 写语句 / 会话名 / 认不出位置时拒绝签 /
+> 空位置 / 默认链不签 / 缓存键不撞 / 短期缓存且静态不缓存）。
+>
+> **仍未验的还是那一半**：`AssumeRole` 真实调用与「只配 `roleArn` 的 catalog 上优化任务能跑通」
+> 需要真实 S3，用例只断言了传下去的命令与缓存行为（同 P0-8 的偏差）。
 
 
 ---
@@ -707,6 +733,25 @@ Gravitino #11853 就是在补这件事：把 vended credentials 也注入**服�
 `sts:AssumeRole` 一条权限）——这条属于运维配置，代码侧只需保证「读配置里的 roleArn 去 assume，
 而不是拿配置里的 AK/SK 直接当访问凭据」。
 
+#### 5.7.1 已落地：两类作用域，两个入口
+
+| 谁在用 | 入口 | 作用域 | 写权限 |
+| --- | --- | --- | --- |
+| 引擎（Paimon `/token`、Iceberg `/credentials`、Lance `storage_options`） | `vend(storage, tableId, tablePath[, allowWrite])` | **一张表**的 location | 目前恒 `false`：协议上读写分不开，先收紧 |
+| 服务端自己（浏览目录、删表目录、按快照核对文件） | `vendForCatalog(storage, catalogId, allowedLocations, allowWrite)` | catalog 的整份 `allowedLocations` | 按动作如实传 |
+| 服务端写元数据（Paimon schema / snapshot） | `vend(..., allowWrite=true)` | **一张表**（不放大到 catalog 级） | `true` |
+
+三条实现约束：
+
+1. **`ListBucket` 的 `Resource` 仍是桶，前缀仍走 `s3:prefix`**——多个位置合成一条语句
+   （两个数组都接受多值），不是每个位置一条语句：policy 有 2048 字符的内联上限，
+   叠语句会先撞 `PolicyTooLarge`。
+2. **缓存键必须分开**（`StorageCredentialCache.catalogKey` 带 `catalog|` 前缀，读写各一份）。
+   共用的后果是「用户先读表、服务端随后删目录，服务端拿到只覆盖表的票」——删到一半 403，
+   而日志里一切正常。
+3. **只缓存短期票**。静态转发档每次重解析配置（管理 API 换了钥匙立刻生效）；短期票必须缓存，
+   否则浏览一次目录就是十几次 STS 调用，而云侧配额是单账号数百 TPS 量级。
+
 ### 5.8 没有 STS 时怎么退化
 
 判据用现有的 `stsUnavailable`（规格里就有，语义正好）。**注意这里不再有「mode」这个变量**——
@@ -1094,7 +1139,7 @@ object_store 认的是 `aws_access_key_id` / `aws_secret_access_key` / `aws_sess
 | P1-6 | 控制台：创建页三态来源 + 参数 + 引擎片段；catalog 列表与详情标出「长期凭据 / 短期凭据 / 不下发」 | 见 §10 与原型 `credential-vending-mockup.html` |
 | P1-7 | **判权拆两个权限点**：`CATALOG:USE_CREDENTIAL` 与 `CATALOG:USE_SECRET`（§3.4.3） | 对照 `CatalogAccessRules` 现有写法；两个点号权限各一条用例 |
 | P1-8 | **AK ID 打码 + 打码回写哨兵**（§3.4.4）：详情报文返回 `******`，保存时收到 `******` 视为未修改 | 用例：打码后「只改名字」的保存不改变库里的 AK ID |
-| P1-9 | **服务端自身 FileIO 走独立取票**（§5.7），作用域是 catalog 的允许位置，不复用任何用户的表级票 | 优化任务在只配了 `roleArn`（没有静态 AK）的 catalog 上跑通 |
+| ✅ P1-9 | **服务端自身 FileIO 走独立取票**（§5.7），作用域是 catalog 的允许位置，不复用任何用户的表级票 | 两类作用域分开（`vend` vs `vendForCatalog`）、写权限显式传、缓存键不撞 → `ServerSideCredentialTests`（9 例）；「只配 `roleArn` 的 catalog 上优化任务跑通」**需真实 S3，未跑** |
 | P1-10 | **联邦/多级 catalog 的 header 透传与 refresh 端点回写**（G17，对照 #12950） | 现在没有联邦，留位；做的时候按 #12950 的两条断言写用例 |
 | P1-11 | **S3 兼容存储的 `noInlinePolicy` 选项**（§3.5.3）：为 true 时省略 inline session policy，界面明说「此存储下无法按表收窄」 | VAST 等 STS 不接受 policy 的存储跑通；默认不带 policy |
 | P1-12 | **腾讯云 COS 落地**（§6.3.5 六处）：`StorageType.COS` / `TencentCosStorageConfigInfo` / `FileIoType.COS("cosn")` / `COS_KEYS` / `Storage.Cos` / `paimon-cosn` 依赖 | Paimon 面用 `cosn://` 端到端跑一次：下发 `fs.cosn.*` 后引擎不配 AK 也能读 |
