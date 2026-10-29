@@ -14,7 +14,7 @@ class PaimonS3Test {
       -d client_id="230698be-b91b-4262-b208-179cc530e54c" -d client_secret="nUmM_Y2nvcCLNxqBP7U-TM9uA3bENYFW1_Io2Cjumss" \
       -d scope=PRINCIPAL_ROLE:ALL | jq -r .access_token
    */
-  val token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJwYWltb24tcmVzdCIsInN1YiI6InJlZ3Jlc3MtcHJpbmNpcGFsIiwiaWF0IjoxNzkxNTk1ODI2LCJleHAiOjE3OTE1OTk0MjYsImp0aSI6Ijg3MmVlYWUwLTQxYzctNDE2Ni04OGI3LTAzNDgwMWMxNjcyMCIsInNjb3BlIjoiUFJJTkNJUEFMX1JPTEU6QUxMIn0.OonQtdHvb-scEg2zk2ijGKiZDFEyXAdauDXM06FsXG8"
+  val token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJwYWltb24tcmVzdCIsInN1YiI6InJvb3QiLCJpYXQiOjE3OTMyNDA0NjUsImV4cCI6MTc5MzI0NDA2NSwianRpIjoiMzJlZTBmMmEtYWQ0NC00MWI2LWFhYjgtZDU5NDE0YWRjNzhjIiwic2NvcGUiOiJQUklOQ0lQQUxfUk9MRTpBTEwifQ.XvNcAjzsJzxclcM0ZM5jcPH9eLTdnHCH4Lpn96N9zfg"
 
   @org.junit.jupiter.api.Test
   def test(): Unit = {
