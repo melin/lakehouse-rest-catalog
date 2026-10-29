@@ -284,6 +284,23 @@
 				<artifactId>paimon-s3</artifactId>
 				<version>${paimon.version}</version>
 			</dependency>
+			<!--
+				腾讯云 COS 的 FileIO 插件（scheme 为 cosn）。与 paimon-s3 同一类：
+				运行时必须有，否则 cosn:// 的仓库会以「不支持的 scheme」收场。
+
+				**它有 99MB，体积全在插件目录里。**构件本身只是个
+				`COSNLoader`（约 2KB），而 jar 内嵌了 `paimon-plugin-cosn/` 整个子目录
+				（shaded 的 hadoop-common + 腾讯 cos SDK + cos_api，三万个条目）。
+				PluginLoader 解析的是「类路径上的一个目录资源」，所以这就是它的正常形态，
+				剥不掉。真要瘦身，只能把它挪出默认产物（换 provided + 部署时投放），
+				代价是 `file-io.type=default` 里那个 COS 又一次变成「接受却跑不了」——
+				那正是 FileIoType 这层要防的事，故不默认这么做。
+			-->
+			<dependency>
+				<groupId>org.apache.paimon</groupId>
+				<artifactId>paimon-cosn</artifactId>
+				<version>${paimon.version}</version>
+			</dependency>
 
 			<!--
 				接口文档 UI（knife4j-next）。只声明在 lakehouse-rest-server：

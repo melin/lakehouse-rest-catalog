@@ -74,13 +74,15 @@ labels 与 policies 本服务端未实现；权限那 3 个是**当前唯一的�
   官方那 3 个端点只给平铺的逐条赋权。
 - **catalog 详情的读权限落在 `CATALOG_ALL:DESCRIBE`**：官方对照表里 `CATALOG` 只有
   `ALL / ALTER / DROP / GRANT / CREATEDATABASE`，没有任何读权限。
-- **存储配置支持六种类型**。`storageConfigInfo` 是按 `storageType` 判别的联合，
-  Java 侧也按子类型建模（`S3` / `AZURE` / `GCS` / `OBS` / `OSS` / `FILE` 各有自己的字段集合），
+- **存储配置支持七种类型**。`storageConfigInfo` 是按 `storageType` 判别的联合，
+  Java 侧也按子类型建模（`S3` / `AZURE` / `GCS` / `OBS` / `OSS` / `COS` / `FILE` 各有自己的字段集合），
   非法组合在类型层面就不成立。`AZURE` 的 `tenantId` 按 `required` 校验（缺失返回 400）；
   `S3` 的废弃字段 `currentKmsKey` / `allowedKmsKeys` 不接收也不返回。
   其中 `OBS`（华为云）与 `OSS`（阿里云）是本工程的扩展：规格把这两家云归入
   「兼容 S3 协议的对象存储」，单列它们是为了让凭据下发能产出厂商原生的
   `fs.obs.*` / `fs.oss.*` 键族。
+  `COS`（腾讯云）也是扩展，但它**不走 S3 兼容层**而是 COSN（`cosn://` + `fs.cosn.*`），
+  因此字段里多了 `bucketRegion` / `appId` / `useHttps`，且 `appId` 会与位置里的桶名比对。
   落库时整份配置存进一列 JSON，`storage_type` 与 `allowed_locations_json` 是它的投影列。
   `allowedLocations` 的首项即该 catalog 的仓库位置，表路径由它推导。
 

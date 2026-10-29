@@ -244,6 +244,67 @@ class StorageConfigApiTests {
         assertFalse(after.has("roleArn"), "换类型后不该混入 S3 字段: " + after);
     }
 
+    /**
+     * COS 的往返：三个定位字段（端点、地域、appId）与一个开关（`useHttps`）都要活下来。
+     *
+     * <p>单独一条而不是并进 OBS / OSS 那条，是因为它的字段集合不同：
+     * OBS 与 OSS 只有 {@code endpoint} 一项定位，COS 有四项，且 {@code useHttps} 是唯一一个
+     * **布尔**——布尔字段最容易在「省略即默认」这条路上丢（缺省序列化时被吞掉，
+     * 读回来变成 {@code null}，再下发时就成了 COSN 自己的缺省值 false，即明文）。
+     * 这里显式给 {@code false} 并断言读回也是 {@code false}，钉住的是「值能往返」，
+     * 「服务端默认是 true」由 {@code StorageCredentialResolutionTests} 那条覆盖。
+     */
+    @Test
+    void cosCatalogKeepsRegionAppIdAndHttpsFlag() throws Exception {
+        JsonNode created = createCatalog("cos-catalog", """
+                {"storageType":"COS",
+                 "allowedLocations":["cosn://analytics-1250000000/warehouse/"],
+                 "endpoint":"cos.ap-guangzhou.myqcloud.com",
+                 "bucketRegion":"ap-guangzhou",
+                 "appId":"1250000000",
+                 "useHttps":false}
+                """);
+
+        JsonNode storage = created.get("storageConfigInfo");
+        assertEquals("COS", storage.get("storageType").asString());
+        assertEquals("cos.ap-guangzhou.myqcloud.com", storage.get("endpoint").asString());
+        assertEquals("ap-guangzhou", storage.get("bucketRegion").asString());
+        assertEquals("1250000000", storage.get("appId").asString());
+        assertFalse(storage.get("useHttps").asBoolean(true), "useHttps=false 必须原样读回: " + storage);
+        assertEquals(List.of("cosn://analytics-1250000000/warehouse/"),
+                strings(storage.get("allowedLocations")));
+        // 不带上别家的字段：COS 没有 roleArn，也没有任何临时凭据字段
+        assertFalse(storage.has("roleArn"), "COS 配置不应带出 S3 字段: " + storage);
+        assertFalse(storage.has("sessionToken"), "COS 没有临时凭据字段: " + storage);
+
+        // 读一次（走 GET 而不是建时的回显），确认落库后仍然完整
+        JsonNode fetched = json(200, "GET", M + "/catalogs/cos-catalog", null);
+        JsonNode reread = fetched.get("storageConfigInfo");
+        assertEquals("ap-guangzhou", reread.get("bucketRegion").asString());
+        assertEquals("1250000000", reread.get("appId").asString());
+    }
+
+    /**
+     * {@code appId} 与桶名后缀对不上时必须拒。
+     *
+     * <p>放行的代价很隐蔽：COS 的桶名就是 {@code <bucket>-<appid>}，appId 填错时
+     * 访问的是一个不存在的桶，COS 回 404，引擎把它说成「文件不存在」，
+     * 排查的人会先去怀疑路径或密钥，而不是这串数字。
+     */
+    @Test
+    void cosAppIdMustMatchTheBucketNameSuffix() throws Exception {
+        JsonNode error = json(400, "POST", M + "/catalogs", """
+                {"catalog":{"type":"INTERNAL","name":"cos-bad","properties":{},
+                 "storageConfigInfo":{"storageType":"COS",
+                                      "allowedLocations":["cosn://analytics-1250000000/warehouse/"],
+                                      "appId":"9999999999"}}}
+                """);
+        assertEquals(400, error.get("code").asInt());
+        String message = error.get("message").asString();
+        assertTrue(message.contains("9999999999"), "错误信息应点出 appId，实际: " + message);
+        assertTrue(message.contains("analytics-1250000000"), "错误信息应点出桶名，实际: " + message);
+    }
+
     // ------------------------------------------------------------------ 按类型校验
 
     /** {@code tenantId} 是规格里唯一一处 {@code required}，缺了必须拒。 */

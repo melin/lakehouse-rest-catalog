@@ -209,14 +209,14 @@
 （`ICEBERG_REST` / `HADOOP` / `HIVE` / `BIGQUERY`）。
 
 上表 `StorageConfigInfo` 一行的 `enum` 是**规格原文**，只列规格声明的四个取值。
-本实现另外支持 `OBS`（华为云）与 `OSS`（阿里云），它们是扩展而非规格内容，
+本实现另外支持 `OBS`（华为云）、`OSS`（阿里云）与 `COS`（腾讯云），它们是扩展而非规格内容，
 因此不混进那一行——表格与规格保持可机械核对的一致，差异集中记在下方取舍里。
-同理，`S3` / `OBS` / `OSS` 各自的字段列表也是规格原文；本工程给这三种类型加的
-`accessKeyId` / `secretAccessKey` 同样不进表格，只记在下方取舍里。
+同理，`S3` / `OBS` / `OSS` / `COS` 各自的字段列表也是规格原文（`COS` 除外，它整套是本工程定义的）；
+本工程给这四种类型加的 `accessKeyId` / `secretAccessKey` 同样不进表格，只记在下方取舍里。
 
-**六种存储配置均已实现**：`S3` / `AZURE` / `GCS` 的类型专属字段会原样保存并回读，
+**七种存储配置均已实现**：`S3` / `AZURE` / `GCS` 的类型专属字段会原样保存并回读，
 `AZURE` 的 `tenantId` 按其 `required` 校验（缺失返回 400）。
-五点实现取舍：
+六点实现取舍：
 
 - `AwsStorageConfigInfo` 中已废弃的 `currentKmsKey` / `allowedKmsKeys` 不接收也不返回，
   统一用 `encryptionKeys` / `decryptionKeys`；传入会被静默忽略。
@@ -224,14 +224,22 @@
   而不是报 400——全站都依赖 Spring 默认的宽松绑定，单独收紧会造成行为不一致。
 - `PUT /catalogs/{catalogName}` 的 `storageConfigInfo` 是**整体替换**：
   请求里未出现的类型专属字段会被清空，不是「保持不变」。
-- `OBS` / `OSS` 两个取值超出规格的 `enum`，是本工程为华为云 OBS 与阿里云 OSS 加的扩展。
+- `OBS` / `OSS` 两个取值超出规格的 `enum`，是本工程为华为云 OBS 与阿里云 OSS 加的扩展
+  （`COS` 是第三个，见下一条）。
   规格把这两家云归入「兼容 S3 协议的对象存储」，靠自定义 `endpoint` 接入；
   单列它们是为了让凭据下发产出厂商原生的 `fs.obs.*` / `fs.oss.*` 键族——这两套键与 `s3.*`
   互不通用，混用会静默失效。**影响面仅限管理 API 的按类型分派逻辑**：引擎只是把
   `storageConfigInfo` 原样透传，不解析 `storageType`，因此 REST Catalog 协议不受影响。
   两个子类型的 `endpoint` 都不是必填项：判断依据是引擎侧是否已在 `core-site.xml` 里
   配好对应端点，服务端无从得知，硬判会把合法配置拒之门外。
-- `S3` / `OBS` / `OSS` 三种类型另各带一对 `accessKeyId` / `secretAccessKey`，
+- `COS` 是本工程为腾讯云加的扩展类型，与 `OBS` / `OSS` 有一处本质差别：**它不靠 S3 兼容层**，
+  而是 COSN（`cosn://` + `fs.cosn.*`）。字段是 `allowedLocations` / `storageName` / `endpoint`
+  （COSN 的 `endpoint_suffix`，不是 S3 端点）/ `bucketRegion` / `appId` / `useHttps` /
+  `stsUnavailable` / `accessKeyId` / `secretAccessKey`。两处特有校验：`appId` 与位置里的桶名
+  必须对得上（桶名是 `<bucket>-<appid>`），否则建 catalog 成功、第一次读表才 404；
+  `useHttps` 缺省按 `true` 处理（COSN 自己的缺省是明文）。**没有 `sessionToken` 字段**：
+  COSN 的 FileIO 不认临时凭据，见 `credential-vending-design.md` §6.3.4。
+- `S3` / `OBS` / `OSS` / `COS` 四种类型另各带一对 `accessKeyId` / `secretAccessKey`，
   让 catalog 直接指定访问对象存储的长期密钥（规格里没有这个位置，密钥只能来自服务端配置）。
   三点与其他字段不同：**`secretAccessKey` 只写不读**，落库前用 AES-GCM 加密，
   任何响应都不回显，因此 `PUT` 省略它表示保持原值——这是上面「整体替换」的**唯一例外**，

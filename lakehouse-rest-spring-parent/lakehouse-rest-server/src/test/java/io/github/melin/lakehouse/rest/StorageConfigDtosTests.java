@@ -15,6 +15,7 @@ import io.github.melin.lakehouse.rest.dto.StorageDtos.FileStorageConfigInfo;
 import io.github.melin.lakehouse.rest.dto.StorageDtos.GcpStorageConfigInfo;
 import io.github.melin.lakehouse.rest.dto.StorageDtos.HuaweiObsStorageConfigInfo;
 import io.github.melin.lakehouse.rest.dto.StorageDtos.StorageConfigInfo;
+import io.github.melin.lakehouse.rest.dto.StorageDtos.TencentCosStorageConfigInfo;
 import io.github.melin.lakehouse.rest.support.Json;
 import io.github.melin.lakehouse.rest.support.StorageConfigs;
 import java.util.List;
@@ -201,6 +202,74 @@ class StorageConfigDtosTests {
         assertFalse(written.contains("gcsServiceAccount"), "OSS 不该带出 GCS 字段: " + written);
     }
 
+    /**
+     * 腾讯云 COS 的字段形状与另外两家对象存储不同：它有区域（COSN 的区域是独立配置项），
+     * 还有 {@code appId}（不是下发键，只用于写入口校验桶名）与 {@code useHttps}。
+     *
+     * <p>这里一并断言「不带出别家的字段」：{@code storageType} 判别错了不会解析失败，
+     * 只会让人以为在用 S3 兼容层接 COS，而那条路下发的键族没人认。
+     */
+    @Test
+    void cosConfigCarriesEndpointRegionAndAppId() {
+        String json = """
+                {"storageType":"COS",
+                 "allowedLocations":["cosn://analytics-1250000000/warehouse/"],
+                 "storageName":"named-cos",
+                 "endpoint":"cos.ap-guangzhou.myqcloud.com",
+                 "bucketRegion":"ap-guangzhou",
+                 "appId":"1250000000",
+                 "useHttps":true,
+                 "stsUnavailable":false}
+                """;
+
+        TencentCosStorageConfigInfo cos = assertInstanceOf(TencentCosStorageConfigInfo.class,
+                mapper.readValue(json, StorageConfigInfo.class));
+
+        assertEquals(List.of("cosn://analytics-1250000000/warehouse/"), cos.allowedLocations());
+        assertEquals("named-cos", cos.storageName());
+        assertEquals("cos.ap-guangzhou.myqcloud.com", cos.endpoint());
+        assertEquals("ap-guangzhou", cos.bucketRegion());
+        assertEquals("1250000000", cos.appId());
+        assertEquals(Boolean.TRUE, cos.useHttps());
+        assertEquals(Boolean.FALSE, cos.stsUnavailable());
+        assertEquals(StorageType.COS, cos.storageType());
+
+        String written = mapper.writeValueAsString(cos);
+        assertTrue(written.contains("\"storageType\":\"COS\""), written);
+        assertFalse(written.contains("roleArn"), "COS 不该带出 S3 字段: " + written);
+        assertFalse(written.contains("tenantId"), "COS 不该带出 Azure 字段: " + written);
+        assertFalse(written.contains("gcsServiceAccount"), "COS 不该带出 GCS 字段: " + written);
+        // COSN 这一族没有会话令牌键，字段层面也不该有这个入口
+        assertFalse(written.contains("sessionToken"), "COS 配置不该有 sessionToken: " + written);
+    }
+
+    /**
+     * COS 的 {@code appId} 与位置里的桶名必须对得上。
+     *
+     * <p>这两个字段各自都合法、拼在一起才错的配置，是这一类校验唯一有价值的场景：
+     * 桶名写成 {@code analytics-1250000000}、appId 写成 {@code 1250000001}，
+     * 建 catalog 成功、第一次读表才 404，而报错只说「文件不存在」。
+     */
+    @Test
+    void cosAppIdMustMatchTheBucketName() {
+        TencentCosStorageConfigInfo matching = new TencentCosStorageConfigInfo(
+                List.of("cosn://analytics-1250000000/warehouse/"), null, null, "ap-guangzhou",
+                "1250000000", null, null, null, null);
+        StorageConfigs.validate(matching);
+
+        TencentCosStorageConfigInfo mismatched = new TencentCosStorageConfigInfo(
+                List.of("cosn://analytics-1250000000/warehouse/"), null, null, "ap-guangzhou",
+                "1250000001", null, null, null, null);
+        RuntimeException failure =
+                assertThrows(RuntimeException.class, () -> StorageConfigs.validate(mismatched));
+        assertTrue(failure.getMessage().contains("analytics-1250000000"), failure.getMessage());
+        assertTrue(failure.getMessage().contains("1250000001"), failure.getMessage());
+
+        // 不给 appId 就不猜：位置写成什么样由调用方负责
+        StorageConfigs.validate(new TencentCosStorageConfigInfo(
+                List.of("cosn://whatever/warehouse/"), null, null, null, null, null, null, null, null));
+    }
+
     /** 两个扩展子类型也要走一遍落库编解码——它们与规格内类型的差别只在注册名。 */
     @Test
     void extensionStorageConfigsSurvivePersistence() {
@@ -217,6 +286,13 @@ class StorageConfigDtosTests {
                 List.of("obs://analytics-bucket/warehouse/"), null,
                 "obs.cn-north-4.myhuaweicloud.com", Boolean.TRUE, null, null);
         assertEquals(obs, Json.read(Json.write(obs), StorageConfigInfo.class));
+
+        TencentCosStorageConfigInfo cos = new TencentCosStorageConfigInfo(
+                List.of("cosn://analytics-1250000000/warehouse/"), "named-cos",
+                "cos.ap-guangzhou.myqcloud.com", "ap-guangzhou", "1250000000",
+                Boolean.FALSE, Boolean.TRUE, null, null);
+        assertEquals(cos, Json.read(Json.write(cos), StorageConfigInfo.class),
+                "落库再读回应逐字段相等（含 useHttps=false 这种「显式的否」）");
     }
 
     /**
@@ -246,6 +322,10 @@ class StorageConfigDtosTests {
         AliyunOssStorageConfigInfo oss = new AliyunOssStorageConfigInfo(
                 List.of("oss://b/warehouse/"), null, null, null, "oss-ak", "v1:osss");
         assertEquals(oss, Json.read(Json.write(oss), StorageConfigInfo.class));
+        TencentCosStorageConfigInfo cos = new TencentCosStorageConfigInfo(
+                List.of("cosn://b-1250000000/warehouse/"), null, "cos.ap-guangzhou.myqcloud.com",
+                "ap-guangzhou", "1250000000", null, null, "cos-ak", "v1:cossecret");
+        assertEquals(cos, Json.read(Json.write(cos), StorageConfigInfo.class));
 
         // 没有这对字段的类型不该凭空长出它们
         String file = Json.write(new FileStorageConfigInfo(List.of("file:///tmp/wh"), null));

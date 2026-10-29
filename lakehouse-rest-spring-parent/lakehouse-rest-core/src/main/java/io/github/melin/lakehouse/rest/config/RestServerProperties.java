@@ -585,6 +585,24 @@ public class RestServerProperties {
         private final CloudCredentials oss = new CloudCredentials();
 
         /**
+         * 腾讯云 COS 凭据，结构与 {@link #obs} 相同。
+         *
+         * <p><b>它的 {@code sessionToken} 不生效，且本工程不会下发。</b>
+         * paimon-cosn 2.1.0 内置的 hadoop-cos 只有 {@code SimpleCredentialsProvider}
+         * 与 {@code EnvironmentVariableCredentialsProvider}，{@code CosNConfigKeys}
+         * 里没有会话令牌这一项。配了它只会得到「配了但没用」的错觉，因此
+         * {@code DefaultStorageCredentialManager} 在这一级发现令牌时直接失败，
+         * 而不是把它连同 AK/SK 一起发出去——后者会让引擎用一份缺令牌的临时凭据去签名，
+         * 报错是「认证失败」，与真正的原因（COSN 不支持临时凭据）完全脱钩。
+         *
+         * <p>之所以仍然复用 {@link CloudCredentials} 而不另建一个没有令牌位的类：
+         * 三家云共用同一个「默认 + 具名存储」模型，形状一致才能共用
+         * {@code objectStoreSecrets} 那段四级来源逻辑；少一个字段换来三份复制粘贴，
+         * 而复制粘贴正是键族串错（G7/G12 那一类）的来源。
+         */
+        private final CloudCredentials cos = new CloudCredentials();
+
+        /**
          * 静态凭据的落库加密密钥：base64 的 32 字节（AES-256），可用
          * {@code openssl rand -base64 32} 生成。
          *

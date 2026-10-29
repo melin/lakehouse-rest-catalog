@@ -38,7 +38,7 @@ for scheme 's3' in the classpath. Hadoop FileSystem also cannot access this path
 ```
 
 失败。这条报错来自**引擎的类路径，与服务端无关**：服务端做不做 S3 都改变不了它。
-S3 加 `org.apache.paimon:paimon-s3:2.1.0`（OBS / OSS 分别是 `paimon-obs` / `paimon-oss`），
+S3 加 `org.apache.paimon:paimon-s3:2.1.0`（OBS / OSS / COS 分别是 `paimon-obs` / `paimon-oss` / `paimon-cosn`），
 生产上放进 `spark/jars`，本仓库的测试已经在 `lakehouse-rest-spark/pom.xml` 里声明。
 
 ### 1.2 会话配置

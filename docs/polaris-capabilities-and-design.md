@@ -49,7 +49,7 @@ Paimon 的 REST Catalog 规格遵循同一范式，但对象模型不同：Polar
 | 多租户 / 多 catalog | 路径前缀 `{prefix}` 即 catalog 标识 | `CatalogEntity` + `CatalogService.resolve()`，支持未登记 prefix 自动登记 |
 | catalog 类型（internal / external） | `register` 进来的表标记 `isExternal` | `TableEntity.external` + `POST .../databases/{database}/register` |
 | 存储配置抽象 | `warehouse` + 表路径约定 | `default-warehouse` 与 `path-template` 配置项；路径按 `warehouse/database.db/table` 推导 |
-| 存储类型与凭据（S3 / Azure / GCS） | `StorageConfigInfo` 判别联合 + `polaris.storage.*` 配置 | 管理面六种 `storageType` 完整建模并落库（`StorageConfigs`），其中 `OBS` / `OSS` 为超出规格的扩展（见下）；服务端侧配置面见 `RestServerProperties.Storage`、`CredentialManager`、`FileIo`，下发规则见 `StorageCredentialManager`。另有 catalog 自带的静态凭据（`accessKeyId` / `secretAccessKey`），同为超出规格的扩展（见下） |
+| 存储类型与凭据（S3 / Azure / GCS） | `StorageConfigInfo` 判别联合 + `polaris.storage.*` 配置 | 管理面七种 `storageType` 完整建模并落库（`StorageConfigs`），其中 `OBS` / `OSS` / `COS` 为超出规格的扩展（见下）；服务端侧配置面见 `RestServerProperties.Storage`、`CredentialManager`、`FileIo`，下发规则见 `StorageCredentialManager`。另有 catalog 自带的静态凭据（`accessKeyId` / `secretAccessKey`），同为超出规格的扩展（见下） |
 | 凭证下发 | `GET .../tables/{table}/token` | `CredentialService.token()`：按 catalog 的存储类型分派，经 `StorageCredentialCache` 复用未过期凭据并返回 `expiresAt` |
 | 查询鉴权与策略下推 | `POST .../tables/{table}/auth` | `CredentialService.auth()`：返回行过滤表达式与列脱敏映射；请求列不在 schema 中时返回 403 |
 | RBAC 细粒度权限 | 由 REST Management API 承担权限面 | 已实现：主体 → principal role → catalog role → 资源授权的完整链路，并作为 `/v1/**` 的判定依据。见第六节 |
@@ -94,6 +94,7 @@ Paimon 的 REST Catalog 规格遵循同一范式，但对象模型不同：Polar
 | `GCS` | `gcs.oauth2.token`、`gcs.oauth2.token-expires-at`、`gcs.service-account` | 服务端配置 → 环境凭据链 |
 | `OBS` | `fs.obs.access.key`、`fs.obs.secret.key`、`fs.obs.session.token`、`fs.obs.endpoint` | catalog 静态凭据 → 具名存储 → 默认配置 → 环境凭据链 |
 | `OSS` | `fs.oss.accessKeyId`、`fs.oss.accessKeySecret`、`fs.oss.securityToken`、`fs.oss.endpoint` | 同上 |
+| `COS` | `fs.cosn.userinfo.secretId`、`fs.cosn.userinfo.secretKey`、`fs.cosn.bucket.region`、`fs.cosn.bucket.endpoint_suffix`、`fs.cosn.useHttps` | 同上，但**没有临时令牌那一列**（COSN 无凭据提供器，见第 4 点） |
 | `FILE` | 自包含令牌（`accessKeyId` / `securityToken` / `expiration` / `tablePath`） | 服务端自签 |
 
 「catalog 静态凭据」这一级是本工程超出第三节规格的扩展（见第 5 点），它**优先于其余全部来源**：
@@ -112,18 +113,29 @@ catalog 自带 `accessKeyId` / `secretAccessKey` 时，具名存储与默认配�
 对应 Polaris 的短时效、按需授权模型。未过期的凭据在
 `lakehouse.rest.storage-credential-cache.max-entries` 的容量内被复用，同一张表反复读拿到的是同一份凭据。
 
-### 4. OBS / OSS 是超出规格的扩展
+### 4. OBS / OSS / COS 是超出规格的扩展
 
-`OBS` 与 `OSS` 不在 Polaris 规格 `StorageConfigInfo.discriminator.mapping` 的取值里。
-Polaris 把华为云 OBS 与阿里云 OSS 归入「兼容 S3 协议的对象存储」，靠自定义 `endpoint` 接入，
-因此没有可平移的类型与配置项。
+`OBS`、`OSS` 与 `COS` 不在 Polaris 规格 `StorageConfigInfo.discriminator.mapping` 的取值里。
+Polaris 把华为云 OBS、阿里云 OSS 与腾讯云 COS 都归入「兼容 S3 协议的对象存储」，
+靠自定义 `endpoint` 接入，因此没有可平移的类型与配置项。
 
 本工程单列它们，理由是**兼容 S3 协议不等于可用 `s3.*` 配置**：Paimon 的
-`paimon-obs` 与 `paimon-oss` 是两个独立的 FileIO，各认自己的一套键，且两套命名风格还不一致
-（华为 `fs.obs.access.key` 点分隔小写，阿里 `fs.oss.accessKeyId` 驼峰；
-临时凭据的令牌一个叫 `session.token`、一个叫 `securityToken`）。走 S3 兼容层能用，
-但拿不到这些厂商原生的键与凭据提供器配置。两套键名族在
-`DefaultStorageCredentialManager.OBS_KEYS` / `OSS_KEYS` 里集中声明，便于对照。
+`paimon-obs`、`paimon-oss` 与 `paimon-cosn` 是三个独立的 FileIO，各认自己的一套键，
+且三套命名风格互不一致（华为 `fs.obs.access.key` 点分隔小写，阿里 `fs.oss.accessKeyId` 驼峰，
+腾讯 `fs.cosn.userinfo.secretId` // `fs.cosn.bucket.endpoint_suffix` 点分隔 + 局部驼峰；
+临时凭据的令牌一个叫 `session.token`、一个叫 `securityToken`，**COS 干脆没有**）。
+走 S3 兼容层能用，但拿不到这些厂商原生的键与凭据提供器配置。三套键名族在
+`DefaultStorageCredentialManager.OBS_KEYS` / `OSS_KEYS` / `COS_KEYS` 里集中声明，便于对照。
+
+COS 与另外两家还有一处**方向不同**的差别：它不是「同一实现换一套键」，而是换了一个 FileIO
+scheme。`cosn` 既是 `FileIoType` 的配置取值，也是 Paimon `FileIOLoader` 注册表里的键
+（`COSNLoader#getScheme()` 返回 `"cosn"`），因此 `lakehouse.rest.file-io.type` 的取值必须写
+`cosn` 而不是 `cos`；写错的症状是「不支持的 scheme」，看起来像没装插件。
+另有一条只能靠读上游源码才发现的事实：COSN 只有 `fs.cosn.userinfo.secretId` 与
+`fs.cosn.userinfo.secretKey` 两个键**保留大小写**（Hadoop `Configuration` 会小写化，
+COSN 用一张两项的白名单还原），拼成 `secretID` 不会报错，只会让 AK 变成空串。
+`fs.cosn.useHttps` 的缺省方向也与人相反（上游缺省 `false` = 明文），本工程必须显式下发 `true`。
+细节与证据见 `credential-vending-design.md` v7 修订块。
 
 代价是 `storageType` 的取值集合超出规格。影响面仅限管理 API 的按类型分派逻辑：
 引擎只把 `storageConfigInfo` 原样透传、不解析 `storageType`，因此 REST Catalog 协议不受影响。
@@ -132,7 +144,13 @@ Polaris 把华为云 OBS 与阿里云 OSS 归入「兼容 S3 协议的对象存�
 这需要服务端持有云侧信任关系。`AZURE` 只传定位元数据：Polaris 的 `polaris.storage.*` 里没有
 Azure 账户密钥，它靠服务进程自身的 Azure 标识签 SAS，本工程没有那层标识。
 `OBS` / `OSS` 同理：服务端只代持配置里的 AK/SK（或成套的临时凭据），
-不代为向华为云 / 阿里云申请 STS 令牌。
+不代为向华为云 / 阿里云申请 STS 令牌。`COS` 比这两家更窄——**连「成套的临时凭据」也接不了**：
+`org.apache.hadoop.fs.cosn.auth` 下只有 `SimpleCredentialsProvider` 与
+`EnvironmentVariableCredentialsProvider`，没有能消费 sessionToken 的实现，
+`CosNConfigKeys` 里也没有任何令牌项。因此 `COS` 只能下发长期 AK/SK，
+配置里给了 `session-token` 会在下发时明确报错，而不是发一个没人读的键。
+同时它**只在 Paimon 面成立**：Iceberg 的 `HadoopFileIO` 不消费下发的 `config`，
+Lance 是 Rust 没有 COSN 实现——要在那两个面上读 COS 里的数据，得另建一个 `S3` catalog。
 接入真实临时凭据时应替换 `DefaultStorageCredentialManager` 的对应分支，这是本实现预留的外部集成点。
 上面这几种来源都要求**密钥写进服务端配置**；Polaris 那侧也一样
 （`polaris.storage.aws.access-key` / 具名存储），因此「同一套服务端配置打给多个 catalog
@@ -145,7 +163,7 @@ Polaris 规格的 `AwsStorageConfigInfo` 里**没有** per-catalog 的 `accessKe
 它没有顺手留一个「那就用我填的这对长期密钥」的入口。于是接入不提供 STS 的兼容 S3 存储时，
 密钥只能落在服务端侧，而服务端配置是**全局**的——多租户下无法给每个 catalog 一把独立的钥匙。
 
-本工程在 `S3` / `OBS` / `OSS` 三种 `storageConfigInfo` 上各加两个字段补上这个缺口：
+本工程在 `S3` / `OBS` / `OSS` / `COS` 四种 `storageConfigInfo` 上各加两个字段补上这个缺口：
 
 | 字段 | 读写 | 说明 |
 | --- | --- | --- |

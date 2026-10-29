@@ -16,6 +16,7 @@ import io.github.melin.lakehouse.rest.dto.StorageDtos.FileStorageConfigInfo;
 import io.github.melin.lakehouse.rest.dto.StorageDtos.GcpStorageConfigInfo;
 import io.github.melin.lakehouse.rest.dto.StorageDtos.HuaweiObsStorageConfigInfo;
 import io.github.melin.lakehouse.rest.dto.StorageDtos.StorageConfigInfo;
+import io.github.melin.lakehouse.rest.dto.StorageDtos.TencentCosStorageConfigInfo;
 import io.github.melin.lakehouse.rest.service.DefaultStorageCredentialManager;
 import io.github.melin.lakehouse.rest.service.StorageCredentialCache;
 import io.github.melin.lakehouse.rest.support.ApiException;
@@ -569,6 +570,160 @@ class StorageCredentialResolutionTests {
         assertTrue(failure.getMessage().contains("lakehouse.rest.storage.oss.storages"), failure.getMessage());
     }
 
+    // ------------------------------------------------------------------ COS
+
+    /**
+     * COS 的键名族是 {@code fs.cosn.userinfo.secretId} / {@code secretKey}——**大小写敏感**。
+     *
+     * <p>这条断言的是键名本身，不是「没抛异常」。Paimon 的 {@code COSNFileIO} 会把键名
+     * 小写化送进 Hadoop {@code Configuration}，再用一张只含这两个键的还原表把
+     * {@code secretid} 映射回 {@code secretId}；写错一个字母不会报错，
+     * 只会让 AK 变成空串。
+     *
+     * <p>顺带守住定位三项：区域与端点是 COSN {@code requiredOptions} 要求的东西，
+     * {@code useHttps} 则是它那个「默认明文」缺省值的唯一纠正点。
+     */
+    @Test
+    void cosVendsItsOwnKeyFamilyWithExactCase() {
+        properties.getStorage().getCos().setAccessKey("COS-AK");
+        properties.getStorage().getCos().setSecretKey("COS-SK");
+
+        VendedStorageCredential vended = manager.vend(
+                cosConfig("cosn://analytics-1250000000/warehouse", null,
+                        "cos.ap-guangzhou.myqcloud.com", "ap-guangzhou"), "t1", null);
+
+        assertEquals("COS-AK", vended.token().get("fs.cosn.userinfo.secretId"));
+        assertEquals("COS-SK", vended.token().get("fs.cosn.userinfo.secretKey"));
+        assertEquals("cos.ap-guangzhou.myqcloud.com", vended.token().get("fs.cosn.bucket.endpoint_suffix"));
+        assertEquals("ap-guangzhou", vended.token().get("fs.cosn.bucket.region"));
+        assertEquals("true", vended.token().get("fs.cosn.useHttps"));
+        assertEquals(VendedStorageCredential.SOURCE_CONFIGURATION, vended.source());
+        assertTrue(vended.hasSecrets());
+
+        // 三家云的键族互不可见，S3 那一套也不行
+        assertFalse(hasAnyKeyStartingWith(vended.token(), "s3."));
+        assertFalse(hasAnyKeyStartingWith(vended.token(), "fs.obs."));
+        assertFalse(hasAnyKeyStartingWith(vended.token(), "fs.oss."));
+    }
+
+    /**
+     * {@code useHttps} 缺省为 {@code true}，只有显式 {@code false} 才发 {@code false}。
+     *
+     * <p>COSN 自己的缺省是 {@code false}（明文），不配置就走 HTTP。本工程把默认值翻过来，
+     * 同时留一个显式关闭的出口（私有化部署的 COS 兼容实现可能只有 HTTP）。
+     * 这两种情况都要有用例，否则「默认安全」这件事只是注释里的一句话。
+     */
+    @Test
+    void cosDefaultsToHttpsUnlessExplicitlyDisabled() {
+        VendedStorageCredential byDefault = manager.vend(
+                cosConfig("cosn://analytics-1250000000/warehouse", null, null, null), "t1", null);
+        assertEquals("true", byDefault.token().get("fs.cosn.useHttps"));
+
+        VendedStorageCredential optedOut = manager.vend(
+                new TencentCosStorageConfigInfo(List.of("cosn://analytics-1250000000/warehouse"),
+                        null, null, "ap-guangzhou", "1250000000", Boolean.FALSE, null, null, null),
+                "t1", null);
+        assertEquals("false", optedOut.token().get("fs.cosn.useHttps"));
+    }
+
+    /**
+     * 不下发任何会话令牌，也不下发凭据提供器类名。
+     *
+     * <p>这条是**反悔用例**：设计稿里 G18 曾要求临时档发
+     * {@code fs.cosn.userinfo.sessionToken} 并把
+     * {@code fs.cosn.credentials.provider} 指到
+     * {@code org.apache.hadoop.fs.auth.SessionTokenCredentialProvider}。
+     * 核对 paimon-cosn 2.1.0 内置的 hadoop-cos 后确认：{@code CosNConfigKeys} 里没有
+     * 会话令牌这一项，认证包里也只有 {@code SimpleCredentialsProvider} 与
+     * {@code EnvironmentVariableCredentialsProvider}，那个类名根本不存在。
+     * 发了就是「看起来配了、实际没人读」，所以这里把它钉住。
+     */
+    @Test
+    void cosNeverVendsASessionTokenOrAProviderClass() {
+        properties.getStorage().getCos().setAccessKey("COS-AK");
+        properties.getStorage().getCos().setSecretKey("COS-SK");
+
+        VendedStorageCredential vended = manager.vend(
+                cosConfig("cosn://analytics-1250000000/warehouse", null, null, "ap-guangzhou"), "t1", null);
+
+        assertFalse(vended.token().containsKey("fs.cosn.userinfo.sessionToken"));
+        assertFalse(vended.token().containsKey("fs.cosn.credentials.provider"));
+        assertFalse(vended.token().containsValue("org.apache.hadoop.fs.auth.SessionTokenCredentialProvider"));
+    }
+
+    /**
+     * 配了 {@code sessionToken} 直接失败，不静默丢掉。
+     *
+     * <p>丢掉它的后果是「以为在用临时凭据、实际在用长期密钥」，权限没有按预期收窄；
+     * 把它连同 AK/SK 一起发出去的后果更糟——引擎拿一份缺令牌的临时凭据去签名，
+     * 报错是「认证失败」，与真正的原因完全脱钩。
+     */
+    @Test
+    void cosRefusesToVendATemporaryCredential() {
+        RestServerProperties.Storage.CloudCredentials cos = properties.getStorage().getCos();
+        cos.setAccessKey("COS-AK");
+        cos.setSecretKey("COS-SK");
+        cos.setSessionToken("COS-SESSION-TOKEN");
+
+        ApiException failure = assertThrows(ApiException.class, () -> manager.vend(
+                cosConfig("cosn://analytics-1250000000/warehouse", null, null, null), "t1", null));
+
+        assertEquals(500, failure.getStatus());
+        assertTrue(failure.getMessage().contains("lakehouse.rest.storage.cos"), failure.getMessage());
+        assertTrue(failure.getMessage().contains("sessionToken"), failure.getMessage());
+    }
+
+    /** 声明不下发凭据时定位三项仍要发：引擎可能用自己的 CVM 委托身份。 */
+    @Test
+    void cosKeepsLocationKeysWhenStsUnavailable() {
+        properties.getStorage().getCos().setAccessKey("COS-AK");
+        properties.getStorage().getCos().setSecretKey("COS-SK");
+
+        VendedStorageCredential vended = manager.vend(
+                new TencentCosStorageConfigInfo(List.of("cosn://analytics-1250000000/warehouse"),
+                        null, "cos.ap-guangzhou.myqcloud.com", "ap-guangzhou", "1250000000",
+                        null, Boolean.TRUE, null, null),
+                "t1", null);
+
+        assertFalse(vended.hasSecrets());
+        assertEquals(VendedStorageCredential.SOURCE_STS_UNAVAILABLE, vended.source());
+        assertEquals("cos.ap-guangzhou.myqcloud.com", vended.token().get("fs.cosn.bucket.endpoint_suffix"));
+        assertEquals("ap-guangzhou", vended.token().get("fs.cosn.bucket.region"));
+        assertFalse(vended.token().containsKey("fs.cosn.userinfo.secretId"));
+    }
+
+    @Test
+    void cosFallsBackToEnvironmentWhenNothingConfigured() {
+        VendedStorageCredential vended = manager.vend(
+                cosConfig("cosn://analytics-1250000000/warehouse", null, null, "ap-guangzhou"), "t1", null);
+
+        assertFalse(vended.token().containsKey("fs.cosn.userinfo.secretId"));
+        assertEquals(VendedStorageCredential.SOURCE_ENVIRONMENT, vended.source());
+        // 没有凭据不等于没有定位信息
+        assertEquals("ap-guangzhou", vended.token().get("fs.cosn.bucket.region"));
+    }
+
+    /** 具名存储优先于默认配置，与 OBS / OSS 同一套语义（含「找不到就失败」）。 */
+    @Test
+    void cosPrefersNamedStorageAndFailsOnUnknownName() {
+        properties.getStorage().getCos().setAccessKey("COS-DEFAULT-AK");
+        properties.getStorage().getCos().setSecretKey("COS-DEFAULT-SK");
+        RestServerProperties.Storage.Keys named = new RestServerProperties.Storage.Keys();
+        named.setAccessKey("COS-NAMED-AK");
+        named.setSecretKey("COS-NAMED-SK");
+        properties.getStorage().getCos().getStorages().put("warehouse-a", named);
+
+        VendedStorageCredential vended = manager.vend(
+                cosConfig("cosn://analytics-1250000000/warehouse", "warehouse-a", null, null), "t1", null);
+        assertEquals("COS-NAMED-AK", vended.token().get("fs.cosn.userinfo.secretId"));
+        assertEquals("named-storage:warehouse-a", vended.source());
+
+        ApiException failure = assertThrows(ApiException.class, () -> manager.vend(
+                cosConfig("cosn://analytics-1250000000/warehouse", "typo-storage", null, null), "t1", null));
+        assertTrue(failure.getMessage().contains("lakehouse.rest.storage.cos.storages"),
+                failure.getMessage());
+    }
+
     // ------------------------------------------------------------------ FILE
 
     @Test
@@ -676,13 +831,20 @@ class StorageCredentialResolutionTests {
             assertTrue(type.supports(StorageType.FILE), type + " must keep FILE available");
         }
         assertEquals(1, FileIoType.LOCAL.supportedStorageTypes().size());
-        assertEquals(6, FileIoType.DEFAULT.supportedStorageTypes().size());
-        // OBS / OSS 各自只放开自己那一种云存储，不是「所有对象存储」
+        assertEquals(StorageType.values().length, FileIoType.DEFAULT.supportedStorageTypes().size());
+        // OBS / OSS / COS 各自只放开自己那一种云存储，不是「所有对象存储」
         assertTrue(FileIoType.OBS.supports(StorageType.OBS));
         assertFalse(FileIoType.OBS.supports(StorageType.OSS));
         assertFalse(FileIoType.OBS.supports(StorageType.S3));
         assertTrue(FileIoType.OSS.supports(StorageType.OSS));
         assertFalse(FileIoType.OSS.supports(StorageType.OBS));
+        assertTrue(FileIoType.COS.supports(StorageType.COS));
+        assertFalse(FileIoType.COS.supports(StorageType.S3));
+        assertFalse(FileIoType.COS.supports(StorageType.OSS));
+        // COS 走 COSN，不是 S3 兼容层：S3 档不该顺手放开它
+        assertFalse(FileIoType.S3.supports(StorageType.COS));
+        // 对外的取值是 cosn（同时是 Paimon 的 FileIO scheme），不是 cos
+        assertEquals("cosn", FileIoType.COS.wireName());
     }
 
     @Test
@@ -750,6 +912,13 @@ class StorageCredentialResolutionTests {
                                                        String accessKeyId, String sealedSecret) {
         return new AliyunOssStorageConfigInfo(List.of(location), storageName, endpoint, null,
                 accessKeyId, sealedSecret);
+    }
+
+    /** 不带静态凭据、也不写 appId 的 COS 配置：多数用例只关心键族与来源。 */
+    private static TencentCosStorageConfigInfo cosConfig(String location, String storageName,
+                                                         String endpoint, String region) {
+        return new TencentCosStorageConfigInfo(List.of(location), storageName, endpoint, region,
+                null, null, null, null, null);
     }
 
     /** 键名族是否越界：断言「不含某前缀的键」比逐个断言「含哪些键」更能抓住串族。 */

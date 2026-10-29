@@ -9,6 +9,8 @@ import io.github.melin.lakehouse.rest.dto.StorageDtos.FileStorageConfigInfo;
 import io.github.melin.lakehouse.rest.dto.StorageDtos.GcpStorageConfigInfo;
 import io.github.melin.lakehouse.rest.dto.StorageDtos.HuaweiObsStorageConfigInfo;
 import io.github.melin.lakehouse.rest.dto.StorageDtos.StorageConfigInfo;
+import io.github.melin.lakehouse.rest.dto.StorageDtos.TencentCosStorageConfigInfo;
+import java.net.URI;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -57,7 +59,53 @@ public final class StorageConfigs {
             throw ApiException.badRequest(
                     "storageConfigInfo.tenantId is required for storageType AZURE");
         }
+        if (info instanceof TencentCosStorageConfigInfo cos) {
+            requireCosBucketMatchesAppId(cos);
+        }
         requireSingleCredentialSource(info);
+    }
+
+    /**
+     * COS 的 {@code appId} 必须出现在位置里的桶名末尾。
+     *
+     * <p>COS 的桶名就是 {@code <name>-<appid>}，appId 不是独立参数。填错的表现是
+     * 访问一个不存在的桶——COS 返回 404，而引擎的报错会落在「读不到文件」上，
+     * 与「密钥不对」的现象只差一层。写入口校验能把这个问题提前到建 catalog 时，
+     * 代价只是多一次字符串比较。
+     *
+     * <p>只在**给了 appId** 时校验：不给表示调用方自己清楚桶名，服务端不猜。
+     * 位置里的 {@code cosn://} 之外的前缀（例如 {@code cos://}）不在这里拦——
+     * 与 {@link #validate} 的总体取舍一致：只拒绝确知非法的输入。
+     */
+    private static void requireCosBucketMatchesAppId(TencentCosStorageConfigInfo cos) {
+        String appId = cos.appId();
+        if (isBlank(appId) || cos.allowedLocations() == null) {
+            return;
+        }
+        String suffix = "-" + appId.trim();
+        for (String location : cos.allowedLocations()) {
+            String bucket = bucketOf(location);
+            if (bucket != null && !bucket.endsWith(suffix)) {
+                throw ApiException.badRequest("storageConfigInfo.allowedLocations contains \""
+                        + location + "\" whose bucket \"" + bucket + "\" does not end with \""
+                        + suffix + "\": a COS bucket is named <bucket>-" + appId.trim()
+                        + ", so either the bucket or the appId is wrong");
+            }
+        }
+    }
+
+    /** 位置里的桶名（URI 的 host）；认不出 URI 时返回 {@code null}。 */
+    private static String bucketOf(String location) {
+        if (location == null || location.isBlank()) {
+            return null;
+        }
+        try {
+            String host = URI.create(location.trim()).getHost();
+            return host == null || host.isBlank() ? null : host;
+        } catch (IllegalArgumentException e) {
+            // 非法 URI 不在这里报错：位置的整体校验不归这个类管，这里只做 appId 比对
+            return null;
+        }
     }
 
     /**
@@ -173,6 +221,8 @@ public final class StorageConfigs {
             case GCS -> new GcpStorageConfigInfo(locations, null, null);
             case OBS -> new HuaweiObsStorageConfigInfo(locations, null, null, null, null, null);
             case OSS -> new AliyunOssStorageConfigInfo(locations, null, null, null, null, null);
+            case COS -> new TencentCosStorageConfigInfo(locations, null, null, null, null, null,
+                    null, null, null);
             case FILE -> new FileStorageConfigInfo(locations, null);
         };
     }
@@ -186,11 +236,12 @@ public final class StorageConfigs {
     public record StaticCredentials(String accessKeyId, String secretAccessKey) {
     }
 
-    /** 该配置能否承载静态凭据：只有 S3 / OBS / OSS 三种子类型有这对字段。 */
+    /** 该配置能否承载静态凭据：只有带 AK/SK 字段的子类型可以。 */
     public static boolean supportsStaticCredentials(StorageConfigInfo info) {
         return info instanceof AwsStorageConfigInfo
                 || info instanceof HuaweiObsStorageConfigInfo
-                || info instanceof AliyunOssStorageConfigInfo;
+                || info instanceof AliyunOssStorageConfigInfo
+                || info instanceof TencentCosStorageConfigInfo;
     }
 
     /** 该配置是否配了静态凭据（以 {@code accessKeyId} 为准，两者由写路径保证成对）。 */
@@ -298,6 +349,9 @@ public final class StorageConfigs {
         if (info instanceof AliyunOssStorageConfigInfo oss) {
             return oss.accessKeyId();
         }
+        if (info instanceof TencentCosStorageConfigInfo cos) {
+            return cos.accessKeyId();
+        }
         return null;
     }
 
@@ -310,6 +364,9 @@ public final class StorageConfigs {
         }
         if (info instanceof AliyunOssStorageConfigInfo oss) {
             return oss.secretAccessKey();
+        }
+        if (info instanceof TencentCosStorageConfigInfo cos) {
+            return cos.secretAccessKey();
         }
         return null;
     }
@@ -338,6 +395,11 @@ public final class StorageConfigs {
         if (info instanceof AliyunOssStorageConfigInfo oss) {
             return new AliyunOssStorageConfigInfo(oss.allowedLocations(), oss.storageName(),
                     oss.endpoint(), oss.stsUnavailable(), accessKeyId, secretAccessKey);
+        }
+        if (info instanceof TencentCosStorageConfigInfo cos) {
+            return new TencentCosStorageConfigInfo(cos.allowedLocations(), cos.storageName(),
+                    cos.endpoint(), cos.bucketRegion(), cos.appId(), cos.useHttps(),
+                    cos.stsUnavailable(), accessKeyId, secretAccessKey);
         }
         return info;
     }
@@ -387,6 +449,11 @@ public final class StorageConfigs {
         if (info instanceof AliyunOssStorageConfigInfo oss) {
             return new AliyunOssStorageConfigInfo(locations, storageName,
                     oss.endpoint(), oss.stsUnavailable(), oss.accessKeyId(), oss.secretAccessKey());
+        }
+        if (info instanceof TencentCosStorageConfigInfo cos) {
+            return new TencentCosStorageConfigInfo(locations, storageName,
+                    cos.endpoint(), cos.bucketRegion(), cos.appId(), cos.useHttps(),
+                    cos.stsUnavailable(), cos.accessKeyId(), cos.secretAccessKey());
         }
         if (info instanceof FileStorageConfigInfo) {
             return new FileStorageConfigInfo(locations, storageName);

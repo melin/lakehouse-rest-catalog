@@ -10,6 +10,7 @@ import io.github.melin.lakehouse.rest.dto.StorageDtos.FileStorageConfigInfo;
 import io.github.melin.lakehouse.rest.dto.StorageDtos.GcpStorageConfigInfo;
 import io.github.melin.lakehouse.rest.dto.StorageDtos.HuaweiObsStorageConfigInfo;
 import io.github.melin.lakehouse.rest.dto.StorageDtos.StorageConfigInfo;
+import io.github.melin.lakehouse.rest.dto.StorageDtos.TencentCosStorageConfigInfo;
 import io.github.melin.lakehouse.rest.support.ApiException;
 import io.github.melin.lakehouse.rest.support.CredentialCipher;
 import io.github.melin.lakehouse.rest.support.CredentialManagerType;
@@ -42,14 +43,16 @@ import org.springframework.stereotype.Component;
  * {@code s3.access-key} / {@code s3.secret-key}，两边互不认识；
  * 只给规格键名，Paimon 拿不到密钥。取舍与机制见 {@link #KEY_S3_ACCESS_ENGINE}。
  *
- * <p><b>OBS 与 OSS 的键名族不能互相套用。</b>两家云的对象存储都兼容 S3 协议，
+ * <p><b>OBS、OSS 与 COS 的键名族不能互相套用。</b>三家云的对象存储都兼容 S3 协议，
  * 容易以为用 {@code s3.*} 或对方的键名都能跑通，实际不行：Paimon 的
- * {@code paimon-obs} 与 {@code paimon-oss} 是两个独立的 FileIO，各认自己的一套键，
- * 而且两套的命名风格还不一致——华为是点分隔小写的
+ * {@code paimon-obs}、{@code paimon-oss} 与 {@code paimon-cosn} 是三个独立的 FileIO，
+ * 各认自己的一套键，而且三套的命名风格还各不相同——华为是点分隔小写的
  * {@code fs.obs.access.key} / {@code fs.obs.secret.key} / {@code fs.obs.session.token}，
  * 阿里是驼峰的 {@code fs.oss.accessKeyId} / {@code fs.oss.accessKeySecret} /
- * {@code fs.oss.securityToken}。就连「临时凭据的令牌」这个东西，两边都不同名。
- * 这层差异在 {@link #OBS_KEYS} 与 {@link #OSS_KEYS} 里集中表达，便于对照。
+ * {@code fs.oss.securityToken}，腾讯是 {@code fs.cosn.userinfo.secretId} /
+ * {@code fs.cosn.userinfo.secretKey}（**大小写敏感**，且没有令牌项）。
+ * 就连「临时凭据的令牌」这个东西，前两家有、第三家没有。
+ * 这层差异在 {@link #OBS_KEYS}、{@link #OSS_KEYS} 与 {@link #COS_KEYS} 里集中表达，便于对照。
  *
  * <p><b>刻意不下发的字段。</b>{@code AwsStorageConfigInfo} 的
  * {@code endpointInternal} 与 {@code stsEndpoint} 是服务端自己访问对象存储时用的地址，
@@ -139,6 +142,42 @@ public class DefaultStorageCredentialManager implements StorageCredentialManager
      */
     private static final KeyFamily OSS_KEYS = new KeyFamily(
             "fs.oss.accessKeyId", "fs.oss.accessKeySecret", "fs.oss.securityToken", "fs.oss.endpoint");
+
+    /**
+     * 腾讯云 COS（COSN）的键名族，取自 hadoop-cos 的 {@code CosNConfigKeys}。
+     *
+     * <p><b>大小写是真的敏感。</b>{@code secretId} 里的那个大写 {@code I} 必须保住：
+     * Paimon 的 {@code COSNFileIO#configure} 会把键名小写化后送进 Hadoop
+     * {@code Configuration}（Hadoop 自己就会小写化），再靠一张
+     * {@code CASE_SENSITIVE_KEYS} 还原表把 {@code fs.cosn.userinfo.secretid} 映射回
+     * {@code fs.cosn.userinfo.secretId}。那张表里**只有这两个键**，所以键名写错
+     * （哪怕是 {@code secretID}）不会报错，只会让 AK 变成空串，接着就是认证失败。
+     *
+     * <p><b>{@code sessionToken} 是 {@code null}，不是漏写。</b>校验过的
+     * paimon-cosn 2.1.0 内置 hadoop-cos：{@code CosNConfigKeys} 没有会话令牌这一项，
+     * 认证包（{@code org.apache.hadoop.fs.cosn.auth}）只有
+     * {@code SimpleCredentialsProvider} 与 {@code EnvironmentVariableCredentialsProvider}，
+     * 类路径上也搜不到 {@code SessionTokenCredentialProvider}。也就是说
+     * **COSN 这条路走不了临时凭据**——发一个没人读的令牌，与不发它的区别只是
+     * 「让运维以为临时凭据生效了」。{@link #putSecrets} 因此把「配了令牌但这一族
+     * 没有令牌键」变成一次显式失败。
+     *
+     * <p>端点键是 {@code endpoint_suffix}（形如 {@code cos.ap-guangzhou.myqcloud.com}），
+     * 不是 S3 那种带协议的 {@code endpoint}。
+     */
+    private static final KeyFamily COS_KEYS = new KeyFamily(
+            "fs.cosn.userinfo.secretId", "fs.cosn.userinfo.secretKey", null,
+            "fs.cosn.bucket.endpoint_suffix");
+
+    /** COSN 的区域键。{@code COSNLoader#requiredOptions} 要求它与端点至少给一个。 */
+    private static final String KEY_COS_REGION = "fs.cosn.bucket.region";
+
+    /**
+     * COSN 是否走 HTTPS。**它的缺省是 {@code false}**（{@code CosNConfigKeys.DEFAULT_USE_HTTPS}），
+     * 不配就意味着密钥与数据全部走明文，因此本工程默认下发 {@code true}，
+     * 只有 catalog 显式写了 {@code useHttps=false}（私有化部署的 COS 兼容实现）才发 {@code false}。
+     */
+    private static final String KEY_COS_USE_HTTPS = "fs.cosn.useHttps";
 
     private final RestServerProperties properties;
 
@@ -261,7 +300,7 @@ public class DefaultStorageCredentialManager implements StorageCredentialManager
         return vended;
     }
 
-    /** 非 S3 的六个分支；返回来源标识，键写进 {@code token}。 */
+    /** S3 之外的各分支；返回来源标识，键写进 {@code token}。 */
     private String otherSource(StorageConfigInfo storage, String tableId, String tablePath,
                                Map<String, String> token) {
         return switch (storage.storageType()) {
@@ -269,6 +308,7 @@ public class DefaultStorageCredentialManager implements StorageCredentialManager
             case GCS -> gcs((GcpStorageConfigInfo) storage, token);
             case OBS -> obs((HuaweiObsStorageConfigInfo) storage, token);
             case OSS -> oss((AliyunOssStorageConfigInfo) storage, token);
+            case COS -> cos((TencentCosStorageConfigInfo) storage, token);
             case FILE -> file((FileStorageConfigInfo) storage, tableId, tablePath, token);
             case S3 -> throw new IllegalStateException("S3 is handled before the switch");
         };
@@ -295,7 +335,14 @@ public class DefaultStorageCredentialManager implements StorageCredentialManager
         }
     }
 
-    /** 一个对象存储 FileIO 的凭据键名族。四个键里只有前三个是密钥，最后一个只是定位。 */
+    /**
+     * 一个对象存储 FileIO 的凭据键名族。
+     *
+     * <p>四个键里前三个是密钥，最后一个只是定位。{@code sessionToken} 允许为
+     * {@code null}：COSN 这一族根本没有令牌键（见 {@link #COS_KEYS}），
+     * 用 {@code null} 表达「这一族不支持临时凭据」，比给一个发了没人读的键名要好——
+     * 后者会在「配了令牌」时静默通过。
+     */
     record KeyFamily(String accessKey, String secretKey, String sessionToken, String endpoint) {
     }
 
@@ -415,7 +462,7 @@ public class DefaultStorageCredentialManager implements StorageCredentialManager
         putIfPresent(token, OBS_KEYS.endpoint(), obs.endpoint());
         StorageConfigs.StaticCredentials own = StorageConfigs.staticCredentials(obs, cipher);
         if (own != null) {
-            putSecrets(token, OBS_KEYS, own.accessKeyId(), own.secretAccessKey(), null);
+            putSecrets(token, OBS_KEYS, "obs", own.accessKeyId(), own.secretAccessKey(), null);
             return VendedStorageCredential.SOURCE_STATIC_CREDENTIALS;
         }
         if (Boolean.TRUE.equals(obs.stsUnavailable())) {
@@ -429,7 +476,7 @@ public class DefaultStorageCredentialManager implements StorageCredentialManager
         putIfPresent(token, OSS_KEYS.endpoint(), oss.endpoint());
         StorageConfigs.StaticCredentials own = StorageConfigs.staticCredentials(oss, cipher);
         if (own != null) {
-            putSecrets(token, OSS_KEYS, own.accessKeyId(), own.secretAccessKey(), null);
+            putSecrets(token, OSS_KEYS, "oss", own.accessKeyId(), own.secretAccessKey(), null);
             return VendedStorageCredential.SOURCE_STATIC_CREDENTIALS;
         }
         if (Boolean.TRUE.equals(oss.stsUnavailable())) {
@@ -439,7 +486,42 @@ public class DefaultStorageCredentialManager implements StorageCredentialManager
     }
 
     /**
-     * OBS / OSS 共用的三级凭据来源：具名存储 → 默认配置 → 环境凭据链。
+     * 腾讯云 COS：定位三项照发，密钥按四级来源取（catalog 静态凭据 → 具名 → 默认 → 环境）。
+     *
+     * <p>与 {@link #obs} 同构，只多两处 COSN 特有的决定：
+     *
+     * <ul>
+     *   <li>{@code fs.cosn.bucket.region} 只在非空时发。{@code COSNLoader#requiredOptions}
+     *       要它与端点「至少有一个」，两个都空时引擎会以一份没有定位信息的配置起 FileIO，
+     *       报错落在「无法解析桶」上，与真正的原因（catalog 没填区域）隔着一层。</li>
+     *   <li>{@code fs.cosn.useHttps} 恒发（见 {@link #KEY_COS_USE_HTTPS}）：
+     *       这是本工程对 COSN 那个「默认明文」缺省值的唯一纠正点，不发就等于默认明文。</li>
+     * </ul>
+     *
+     * <p><b>没有第五级「STS 签发」。</b>COSN 这条路走不了临时凭据（理由见
+     * {@link #COS_KEYS}），所以 {@code providers} 链对它不生效——链里只有 S3 的
+     * {@code s3-token}，而它按 {@code AwsStorageConfigInfo} 装配命令。这不是遗漏，
+     * 是上游能力的边界：把 COS 的 {@code stsUnavailable} 之外再造一条「真签发」，
+     * 得到的会是「服务端签了、引擎不认」的半成品。
+     */
+    private String cos(TencentCosStorageConfigInfo cos, Map<String, String> token) {
+        putIfPresent(token, KEY_COS_REGION, cos.bucketRegion());
+        putIfPresent(token, COS_KEYS.endpoint(), cos.endpoint());
+        token.put(KEY_COS_USE_HTTPS, Boolean.toString(!Boolean.FALSE.equals(cos.useHttps())));
+
+        StorageConfigs.StaticCredentials own = StorageConfigs.staticCredentials(cos, cipher);
+        if (own != null) {
+            putSecrets(token, COS_KEYS, "cos", own.accessKeyId(), own.secretAccessKey(), null);
+            return VendedStorageCredential.SOURCE_STATIC_CREDENTIALS;
+        }
+        if (Boolean.TRUE.equals(cos.stsUnavailable())) {
+            return VendedStorageCredential.SOURCE_STS_UNAVAILABLE;
+        }
+        return objectStoreSecrets("cos", properties.getStorage().getCos(), cos.storageName(), COS_KEYS, token);
+    }
+
+    /**
+     * OBS / OSS / COS 共用的三级凭据来源：具名存储 → 默认配置 → 环境凭据链。
      *
      * <p>与 S3 同构，包括「具名存储找不到时失败而非退回默认」这条取舍。
      * 静态凭据那一级不在这里：它在调用点先于 {@code stsUnavailable} 处理，
@@ -448,6 +530,9 @@ public class DefaultStorageCredentialManager implements StorageCredentialManager
      * <p>临时凭据（{@code sessionToken}）跟着它所属的那一级一起下发：具名存储里配了
      * 令牌就用那个，否则用默认配置的。混搭（具名存储的 AK/SK 配默认配置的令牌）
      * 没有任何合理场景——临时凭据的 AK、SK、令牌是一次签发的同一组。
+     *
+     * <p>{@code group} 同时用于错误信息与「这一族支不支持令牌」的判断：
+     * 见 {@link #putSecrets}。
      */
     private String objectStoreSecrets(String group,
                                       RestServerProperties.Storage.CloudCredentials credentials,
@@ -456,32 +541,54 @@ public class DefaultStorageCredentialManager implements StorageCredentialManager
                                       Map<String, String> token) {
         RestServerProperties.Storage.Keys named = namedKeys(credentials.getStorages(), storageName, group);
         if (named != null) {
-            putSecrets(token, keys, named.getAccessKey(), named.getSecretKey(), named.getSessionToken());
+            putSecrets(token, keys, group, named.getAccessKey(), named.getSecretKey(), named.getSessionToken());
             return VendedStorageCredential.SOURCE_NAMED_STORAGE_PREFIX + storageName;
         }
         if (configured(credentials.getAccessKey(), credentials.getSecretKey())) {
-            putSecrets(token, keys, credentials.getAccessKey(), credentials.getSecretKey(),
+            putSecrets(token, keys, group, credentials.getAccessKey(), credentials.getSecretKey(),
                     credentials.getSessionToken());
             return VendedStorageCredential.SOURCE_CONFIGURATION;
         }
         return VendedStorageCredential.SOURCE_ENVIRONMENT;
     }
 
-    /** 写入一组密钥；安全令牌只在非空时写入，长期凭据没有它。 */
+    /**
+     * 写入一组密钥；安全令牌只在「这一族有令牌键」且令牌非空时写入。
+     *
+     * <p><b>配了令牌却没有令牌键，直接失败。</b>COSN 就是这种族（见 {@link #COS_KEYS}）。
+     * 两个更省事的写法都试过、都不该用：
+     * 把令牌静默丢掉——运维在 {@code lakehouse.rest.storage.cos} 里写了令牌，
+     * 读表时却走长期密钥，唯一的痕迹是「权限没有按临时凭据收窄」；
+     * 发一个 {@code fs.cosn.userinfo.sessionToken}——没有任何实现读它，
+     * 于是「发了」与「生效」再次分家。失败消息里点名配置项，才停得下来。
+     *
+     * @throws ApiException 500 配置里有令牌，但这一存储族的 FileIO 不支持临时凭据
+     */
     private static void putSecrets(Map<String, String> token,
                                    KeyFamily keys,
+                                   String group,
                                    String accessKey,
                                    String secretKey,
                                    String sessionToken) {
         token.put(keys.accessKey(), accessKey);
         token.put(keys.secretKey(), secretKey);
+        if (keys.sessionToken() == null) {
+            if (sessionToken != null && !sessionToken.isBlank()) {
+                throw new ApiException(500, null, null,
+                        "lakehouse.rest.storage." + group + " configures a sessionToken, but the "
+                                + group + " FileIO has no key for it: temporary credentials are not"
+                                + " supported on this storage type. Remove the sessionToken, or use"
+                                + " a catalog with static long-term credentials instead");
+            }
+            return;
+        }
         putIfPresent(token, keys.sessionToken(), sessionToken);
     }
 
     /**
      * 取出具名存储的密钥。
      *
-     * @param group 配置组名，仅用于拼错误信息（{@code aws} / {@code obs} / {@code oss}）
+     * @param group 配置组名，仅用于拼错误信息（{@code aws} / {@code obs} / {@code oss} / {@code cos}）
      * @throws ApiException 500 catalog 引用了配置里不存在的具名存储
      */
     private RestServerProperties.Storage.Keys namedKeys(Map<String, RestServerProperties.Storage.Keys> storages,

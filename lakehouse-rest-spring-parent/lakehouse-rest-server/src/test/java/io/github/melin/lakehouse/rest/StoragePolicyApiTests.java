@@ -89,7 +89,7 @@ class StoragePolicyApiTests {
     }
 
     /**
-     * 扩展类型（OBS / OSS）同样受 {@code file-io.type} 约束。
+     * 扩展类型（OBS / OSS / COS）同样受 {@code file-io.type} 约束。
      *
      * <p>单独一条：它们不在规格的取值集合里，实现时容易被当成「额外放行」的特例。
      * 本部署只接入了 S3，创建 OBS catalog 一样要拒——storageType 的取值集合变了，
@@ -114,6 +114,16 @@ class StoragePolicyApiTests {
         assertEquals(400, oss.getResponse().getStatus(), oss.getResponse().getContentAsString());
         assertTrue(oss.getResponse().getContentAsString().contains("OSS"),
                 oss.getResponse().getContentAsString());
+
+        // COS 是最容易被漏的一个：它自己带一个 FileIO 取值（cosn），
+        // 「有独立 FileIO」不等于「本部署一定装了它」，仍要按 file-io.type 拒
+        MvcResult cos = perform(createCatalog("policy-cos", """
+                {"storageType":"COS","allowedLocations":["cosn://analytics-1250000000/wh/"],
+                 "appId":"1250000000"}
+                """));
+        assertEquals(400, cos.getResponse().getStatus(), cos.getResponse().getContentAsString());
+        assertTrue(cos.getResponse().getContentAsString().contains("COS"),
+                cos.getResponse().getContentAsString());
     }
 
     /** 本部署接入了 S3，创建 S3 catalog 与本地仓库都应当通过——限制的是没有的实现，不是云存储本身。 */

@@ -20,10 +20,10 @@ import java.util.stream.Collectors;
  * 报错会推迟到引擎真正读写数据的那一刻，且现象是引擎侧的文件系统异常，
  * 没人会去怀疑是 catalog 建错了。这里前移到创建/修改 catalog 时拒绝。
  *
- * <p><b>取值超出 Polaris 的两个。</b>{@code polaris.file-io.type} 的取值是 Polaris
- * 内置实现标识，没有 {@code obs} / {@code oss}——Polaris 用 S3 兼容层接入这两家云。
- * 这里单列它们，是为了与 {@link StorageType#OBS} / {@link StorageType#OSS}
- * 这两个扩展存储类型对齐：不放开的话，建 OBS catalog 会被
+ * <p><b>取值超出 Polaris 的三个。</b>{@code polaris.file-io.type} 的取值是 Polaris
+ * 内置实现标识，没有 {@code obs} / {@code oss} / {@code cosn}——Polaris 用 S3 兼容层
+ * 接入这几家云。这里单列它们，是为了与 {@link StorageType#OBS} / {@link StorageType#OSS} /
+ * {@link StorageType#COS} 这三个扩展存储类型对齐：不放开的话，建这些 catalog 会被
  * {@link #supports} 拒掉。
  *
  * <p>{@code FILE} 在所有取值下都可用：规格注明它仅供测试，本地部署与
@@ -31,7 +31,7 @@ import java.util.stream.Collectors;
  */
 public enum FileIoType {
 
-    /** 全部六种存储类型。 */
+    /** 全部存储类型。 */
     DEFAULT("default", EnumSet.allOf(StorageType.class)),
 
     /** 本地文件系统与 S3（含任何兼容 S3 协议的对象存储）。 */
@@ -48,6 +48,21 @@ public enum FileIoType {
 
     /** 本地文件系统与阿里云 OSS。 */
     OSS("oss", EnumSet.of(StorageType.FILE, StorageType.OSS)),
+
+    /**
+     * 本地文件系统与腾讯云 COS。
+     *
+     * <p><b>对外取值是 {@code cosn}，不是 {@code cos}。这个字符串同时是 Paimon 的
+     * FileIO scheme</b>：{@code paimon-cosn} 的 {@code COSNLoader#getScheme()} 返回
+     * {@code "cosn"}，而 {@code FileIOLoader} 的注册表按 scheme 建索引。写成 {@code cos}
+     * 会让「配了 cos、实际找 cosn」永远对不上，而错配的表现是「不支持的 scheme」，
+     * 看起来像没装插件。
+     *
+     * <p>COS 不放进 {@link #S3}：{@code S3} 那一档表达的是「用 S3 协议实现访问」，
+     * COS 走的是 COSN，两者的键族与 scheme 都不同（见
+     * {@link StorageType#COS} 的说明）。
+     */
+    COS("cosn", EnumSet.of(StorageType.FILE, StorageType.COS)),
 
     /** 仅本地文件系统。 */
     LOCAL("local", EnumSet.of(StorageType.FILE));

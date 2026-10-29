@@ -83,7 +83,7 @@ public class StorageFileIoFactory {
                     + storagePolicy.fileIo().wireName()
                     + " declares which storages this deployment accepts, but the actual"
                     + " implementation has to be deployed as a Paimon plugin"
-                    + " (file:// is built in; s3://, obs:// and oss:// are not)");
+                    + " (file:// is built in; s3://, obs://, oss:// and cosn:// are not)");
         }
         FileIO fileIO = loader.load(path);
         fileIO.configure(CatalogContext.create(new Options(options)));

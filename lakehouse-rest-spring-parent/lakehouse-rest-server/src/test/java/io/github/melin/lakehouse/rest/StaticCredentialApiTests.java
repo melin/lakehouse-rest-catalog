@@ -14,6 +14,7 @@ import io.github.melin.lakehouse.rest.domain.repo.CatalogRepository;
 import io.github.melin.lakehouse.rest.dto.StorageDtos.AwsStorageConfigInfo;
 import io.github.melin.lakehouse.rest.dto.StorageDtos.HuaweiObsStorageConfigInfo;
 import io.github.melin.lakehouse.rest.dto.StorageDtos.StorageConfigInfo;
+import io.github.melin.lakehouse.rest.dto.StorageDtos.TencentCosStorageConfigInfo;
 import io.github.melin.lakehouse.rest.support.CredentialCipher;
 import io.github.melin.lakehouse.rest.support.StorageConfigs;
 import java.util.ArrayList;
@@ -294,9 +295,9 @@ class StaticCredentialApiTests {
                 "错误信息应点出两个互斥字段: " + error);
     }
 
-    /** OBS / OSS 复用同一套字段与语义，别只给 S3 接上。 */
+    /** OBS / OSS / COS 复用同一套字段与语义，别只给 S3 接上。 */
     @Test
-    void obsAndOssAlsoAcceptStaticCredentials() throws Exception {
+    void obsOssAndCosAlsoAcceptStaticCredentials() throws Exception {
         createCatalog("static-obs", """
                 {"storageType":"OBS",
                  "allowedLocations":["obs://analytics-bucket/warehouse/"],
@@ -309,6 +310,13 @@ class StaticCredentialApiTests {
                  "endpoint":"oss-cn-hangzhou.aliyuncs.com",
                  "accessKeyId":"OSS-AK","secretAccessKey":"OSS-SK"}
                 """);
+        createCatalog("static-cos", """
+                {"storageType":"COS",
+                 "allowedLocations":["cosn://analytics-1250000000/warehouse/"],
+                 "bucketRegion":"ap-guangzhou",
+                 "appId":"1250000000",
+                 "accessKeyId":"COS-AK","secretAccessKey":"COS-SK"}
+                """);
 
         JsonNode obs = json(200, "GET", M + "/catalogs/static-obs", null).get("storageConfigInfo");
         assertEquals("OBS-AK", obs.get("accessKeyId").asString());
@@ -319,6 +327,13 @@ class StaticCredentialApiTests {
         JsonNode oss = json(200, "GET", M + "/catalogs/static-oss", null).get("storageConfigInfo");
         assertEquals("OSS-AK", oss.get("accessKeyId").asString());
         assertFalse(oss.has("secretAccessKey"));
+
+        JsonNode cos = json(200, "GET", M + "/catalogs/static-cos", null).get("storageConfigInfo");
+        assertEquals("COS-AK", cos.get("accessKeyId").asString());
+        assertFalse(cos.has("secretAccessKey"), "COS 的密钥同样只写不读: " + cos);
+        TencentCosStorageConfigInfo storedCos = (TencentCosStorageConfigInfo) storedConfig("static-cos");
+        assertTrue(CredentialCipher.sealed(storedCos.secretAccessKey()),
+                "COS 的密钥也必须以密文落库，而不是明文直存");
     }
 
     /** 控制台元数据要如实报告「本部署能保存静态凭据」，否则表单一律禁用输入。 */

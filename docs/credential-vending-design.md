@@ -1,6 +1,6 @@
 # 存储凭据下发（Credential Vending）：现状、缺口与七种存储的落地设计
 
-> **状态：P0 已实现、P1 部分实现（P1-9 服务端取票已落地，见 v6 修订块与 §8）。** 本文回答三个问题：① Gravitino 与 Polaris 都做了 Credential
+> **状态：P0 已实现、P1 部分实现（P1-9 服务端取票、P1-12 COS 落地已做；P1-13 经核查作废，见 v6/v7 修订块与 §8）。** 本文回答三个问题：① Gravitino 与 Polaris 都做了 Credential
 > Vending，**本工程有没有考虑、还差哪些功能**；② AWS / Azure / GCS / 阿里云 OSS / 华为云 OBS /
 > 腾讯云 COS 与 S3 兼容存储**分别怎么落地**；③ Spark 访问 Catalog 时**能不能不把 AK/SK 写进配置**。
 > §10 另外回答第四个：**控制台上怎么配**（附交互原型）。
@@ -78,7 +78,8 @@
 >    `expires_at_millis` 优先取凭据自己的寿命。
 > 7. **未做的（仍是 P1）**：Azure SAS / OSS / OBS / GCS 的签发、两个权限点、AK ID 打码、
 >    服务端自身 FileIO 独立取票、COS 落地。§8 的 P0 行已标 ✅，P1 行保持原状。
->    （**v6 已补上「服务端自身 FileIO 独立取票 / P1-9」**，其余仍按原状。）
+>    （**v6 补上「服务端自身 FileIO 独立取票 / P1-9」、v7 补上「COS 落地 / P1-12」，
+>    P1-13 经核查作废——COS 的 FileIO 没有临时凭据入口**，其余仍按原状。）
 >
 > **本次修订（v6）：P1-9 落地——服务端自己也按「catalog 的允许位置」取票。**
 >
@@ -104,6 +105,46 @@
 >
 > **仍未验的还是那一半**：`AssumeRole` 真实调用与「只配 `roleArn` 的 catalog 上优化任务能跑通」
 > 需要真实 S3，用例只断言了传下去的命令与缓存行为（同 P0-8 的偏差）。
+>
+> **本次修订（v7）：COS 落地（P1-12），同时作废 P1-13——COS 走不了临时凭据。**
+>
+> 1. **COS 的服务端实现已就位**：`StorageType.COS`、`TencentCosStorageConfigInfo`、
+>    `FileIoType.COS("cosn")`（对外取值就是 Paimon 的 FileIO scheme）、
+>    `fs.cosn.*` 键族、`lakehouse.rest.storage.cos` 配置组、`paimon-cosn` 依赖
+>    （含一个 99MB 的 `paimon-plugin-cosn` 子目录，见 POM 注释）、控制台表单与三面提示。
+> 2. **两处字段语义按验证结果收窄**，与 v4 写的不同：
+>    - `endpoint` **只表示 COSN 的 `fs.cosn.bucket.endpoint_suffix`**，不再兼作「给 Lance 用的
+>      S3 兼容端点」。一个字段被两种实现各按自己的语义解读，配置读起来是对的、跑起来才是错的；
+>     要用 Lance 请另建 S3 类型 catalog。
+>    - 新增 `useHttps`（缺省 `true`）。COSN 自己的缺省是 `fs.cosn.useHttps=false`，即
+>      **不配就走明文**；本工程把这个默认值翻过来，并留一个可以显式关掉的出口。
+>    - 新增 `appId`，但它**不是下发键**（COS 的 appId 是桶名的一部分），只用于写入口校验
+>      「位置里的桶名确实以 `-<appId>` 结尾」。填错时不校验的话，第一次读表才 404。
+> 3. **勘误（重要）：§6.3.4 的 G18 前提不成立，P1-13 作废。** 直接读了
+>    `paimon-cosn-2.1.0.jar` 而不是照抄文档，三条证据：
+>    - `CosNConfigKeys` 里**没有** `sessionToken` 这一项（只有 `secretId` / `secretKey` / `region` /
+>      `endpoint_suffix` / `useHttps` / `credentials.provider` 等）；
+>    - 认证包 `org.apache.hadoop.fs.cosn.auth` 只带 `SimpleCredentialsProvider` 与
+>      `EnvironmentVariableCredentialsProvider`，**没有** `SessionTokenCredentialProvider`；
+>    - 在整个 3 万条目的 jar 里搜 `sessionToken` / `BasicSessionCredentials`：`org/apache/hadoop/fs/cosn/**`
+>      下零命中。
+>
+>    所以 v4 写的 `fs.cosn.credentials.provider=org.apache.hadoop.fs.auth.SessionTokenCredentialProvider`
+>    **这个类名根本不存在**（连包名都不同：是 `fs.cosn.auth`，不是 `fs.auth`）。发它是往
+>    `CosNUtils` 的反射实例化里塞一个不存在的类，结果是启动 FileIO 就抛
+>    「… is not cos credential provider」。结论：**COS 在这条链上只能转发长期 AK/SK**
+>    （或让引擎用自己的 CVM 委托身份），「服务端签一张短期票给 COSN」这条路走不通——
+>    这不是我们没做，是上游 FileIO 没有这个入口。因此：
+>    - 不下发 `fs.cosn.userinfo.sessionToken`，也不下发 `fs.cosn.credentials.provider`；
+>    - `lakehouse.rest.storage.cos` 配了 `sessionToken` 时**直接 500**（`putSecrets` 里判断
+>      「这一族有没有令牌键」），而不是静默丢掉或发一份缺令牌的凭据。
+> 4. **用例**：`StorageCredentialResolutionTests` 新增 7 例（键名大小写 / `useHttps` 双态 /
+>    不下发令牌与 provider 类名 / 配了令牌就失败 / `stsUnavailable` 保留定位 / 环境回退 /
+>    具名存储优先与找不到即失败）、`StorageConfigDtosTests` 新增 2 例（字段往返含 `useHttps=false`
+>    这种「显式的否」、`appId` 与桶名比对）、`StaticCredentialApiTests` 把 COS 并入静态凭据的
+>    HTTP 语义、`ConsoleApiTests` 同步取值集合。
+> 5. **未验**：`cosn://` 的端到端（「不配 AK 也能读」需要真实 COS 账号）。键名这一层已由用例
+>    钉住，端到端这一层没有——与 P0-8 同类的偏差，别把它当「已验完」。
 
 
 ---
@@ -115,7 +156,7 @@
 | 问题 | 一句话回答 |
 | --- | --- |
 | ① 有没有考虑 | **有，P0 已落地**：三条协议面的下发通道、七种存储的键名族、TTL 缓存、静态凭据的加密落库都在；**S3 的「向云申请短期凭据」也已接通**（`s3-token` provider + session policy 收窄），但**默认关闭**（`lakehouse.rest.credential.providers` 为空）。其余五家的签发器仍是 P1（§8） |
-| ② 七种存储 | S3 / OSS / OBS / COS 走 STS `AssumeRole`（OSS、OBS、COS 各有自己的接口与 policy 收窄方式，COS 用 CAM policy），Azure 走 User Delegation SAS，GCS 走 downscoped token，**S3 兼容存储（MinIO / Ceph / Ozone）多数没有 STS，必须保留现在的静态转发**。逐种见 §6；腾讯云 COS 定案用 **COSN 原生**，见 §6.3 |
+| ② 七种存储 | S3 / OSS / OBS / COS 走 STS `AssumeRole`（OSS、OBS、COS 各有自己的接口与 policy 收窄方式，COS 用 CAM policy），Azure 走 User Delegation SAS，GCS 走 downscoped token，**S3 兼容存储（MinIO / Ceph / Ozone）多数没有 STS，必须保留现在的静态转发**。逐种见 §6；腾讯云 COS 定案用 **COSN 原生**，见 §6.3。**COS 的 `AssumeRole` 那半句已被 v7 推翻**：COSN 的 FileIO 不认临时凭据（没有令牌键、没有 session-token provider），所以 COS 只能转发长期 AK/SK |
 | ③ Spark 能不能不配 AK/SK | **Paimon 能（现在就能）、Iceberg 能但有三处卡点、Lance 今天不能**；Flink 只有 Paimon 面能，且没验过。逐条结论与那段配置的逐行点评见 §7。**COS 要单独看**：只有 Paimon 面能用 COSN 原生接到下发凭据、Iceberg 面下发断链、Lance 面根本没有 COSN（§6.3） |
 | ④ 控制台怎么配 | **三选一，不是一个开关**：不下发 / 转发长期密钥 / 签发短期凭据。后两档的客户端配置**完全一样**，所以标记必须做在控制台上。见 §10 与原型 [`credential-vending-mockup.html`](credential-vending-mockup.html) |
 
@@ -177,7 +218,7 @@ catalog 要数据访问权，catalog 判权之后再去云上换一张**只覆�
 缓存与过期时刻的算法都只有一份**——这是当初「表统一」的直接收益，也是现在加 STS 只需要改一处的
 原因。
 
-### 2.2 六种存储现在发的键
+### 2.2 七种存储现在发的键
 
 `DefaultStorageCredentialManager` 的 `vend()` 按 `storageType` 分派，产出各引擎 FileIO 真实认的键：
 
@@ -189,9 +230,11 @@ catalog 要数据访问权，catalog 判权之后再去云上换一张**只覆�
 | `OBS` | `fs.obs.endpoint` | `fs.obs.access.key` + `fs.obs.secret.key` + `fs.obs.session.token` | 无 | 四级来源同 S3 |
 | `OSS` | `fs.oss.endpoint` | `fs.oss.accessKeyId` + `fs.oss.accessKeySecret` + `fs.oss.securityToken` | 无 | 四级来源同 S3 |
 | `FILE` | — | 自签随机串（`PAIMON-<tableId>` / 随机 secret / 随机 token） | `expiration`（ISO8601）+ `tablePath` | 本地文件系统，仅审计用 |
+| `COS` | `fs.cosn.bucket.region`、`fs.cosn.bucket.endpoint_suffix`、`fs.cosn.useHttps` | `fs.cosn.userinfo.secretId` + `fs.cosn.userinfo.secretKey` | **无**（这一族没有令牌键，§6.3.4） | 四级来源同 S3，但**没有 STS 签发那一级** |
 
-> 本节是**现状**——六种，COS 尚未落地。COS 落地后是这个形状的第七个分支，键名族见 §6.3.1
-> （`fs.cosn.userinfo.secretId` / `secretKey` / `sessionToken`），与 OBS / OSS 同构。
+> 本节是**现状**——七种，COS 已按 v7 落地。COS 的键名族见 §6.3.1，
+> 与 OBS / OSS 同构的只有「四级来源」这层结构；**令牌那一列是空的**，
+> 且这一列不能靠加一个键补上（§6.3.4 的证据）。
 
 两处容易误读、但已经写死在代码注释里的取舍，值得在这里重述：
 
@@ -270,7 +313,7 @@ location 里取 URI scheme，**路由到唯一一个认领该 scheme 的 provide
 | `aws-irsa` | 用 Pod 的 web identity（`AWS_ROLE_ARN` / `AWS_WEB_IDENTITY_TOKEN_FILE`）换 STS，再按路径现生成 policy | 同上四件套；**catalog 级请求不带 policy**（#13928） |
 | `gcs-token` | `DownscopedCredentials.refreshAccessToken(CredentialAccessBoundary)` | 降权后的 access token |
 | `adls-token` | `DataLakeServiceClient.getUserDelegationKey(...)` → 拼 SAS | SAS token |
-| `cos-token` | 腾讯云 STS `AssumeRole` + CAM policy | AK/SK/sessionToken/expiration（#12199） |
+| ~~`cos-token`~~ | 腾讯云 STS `AssumeRole` + CAM policy | AK/SK/sessionToken/expiration（#12199）——**Gravitino 有，我们不做**：COSN 的 FileIO 没有令牌入口，签了没人消费（§6.3.4） |
 | `azure-account-key` / `s3-secret-key` / `oss-secret-key` | 什么都不调 | **配置里的静态密钥**（`expireTimeInMs()=0`） |
 
 到 2026 年 10 月这个名单已经有八个以上（`aws-secret-key`、`dlf-secret-key` 也各成一个 provider）。
@@ -550,7 +593,7 @@ catalog 显式配了 AK/SK 且用户选了那档时才发生，二者**正交**�
 | G15 | **服务端自身 FileIO 没有独立取票通道** | 优化任务、数据预览、元数据读走的都是 `StorageRuntimePolicy` 选出的同一个 manager，用的是部署配置里的身份（细化 G11） | 服务进程被攻破即以仓库权限暴露；「只能 AssumeRole、不能读写」的双层身份无法表达 | 中 |
 | G16 | **Flink 面没验过** | Paimon 面靠 `data-token.enabled` 与 Spark 共用 `RESTTokenFileIO`；Iceberg 面在 Flink 只有 REST 一种走法（不存在 #14032 的非 REST 问题）；但两条都没跑过 e2e | 文档若照抄 Spark 的说法，会给一个没验过的承诺 | 低（待验） |
 | G17 | **联邦时 header 不转发、refresh 端点不回写** | 我们目前没有做联邦/多级 catalog，一旦做，`loadTable` 的 delegation 头与远端 refresh 地址都要处理（对照 #12950） | 近端日志写着「vending: true」，远端收到的是「啥也没要」，引擎第一次读数据才失败 | 低（尚未涉及） |
-| G18 | **COS 临时凭据会静默用长期密钥签名** | COSN 默认 provider 链里 `SimpleCredentialProvider` 排在 `SessionTokenCredentialProvider` 之前；发了 `fs.cosn.userinfo.sessionToken` 但没设 `fs.cosn.credentials.provider`，token 被忽略（§6.3.4） | 要么签名失败报「认证失败」，要么**静默降级成转发长期密钥**——看起来正常，风险回到起点 | 高（COS 落地时必须一起做） |
+| ~~G18~~ | **COS 临时凭据曾以为会静默降级（v7 已澄清，作废）** | 原文假定 COSN 有 `SessionTokenCredentialProvider` 且默认链顺序会让 `SimpleCredentialProvider` 抢先。核对 paimon-cosn 2.1.0 后：`CosNConfigKeys` 没有会话令牌项、认证包里也没有这个 provider（§6.3.4） | **这里不存在「静默降级」，因为临时凭据这条路根本走不通**。真正的风险换成了另一种：配了 `sessionToken` 却以为它在生效——所以本工程在配了令牌时直接 500 | ~~高~~ → 已消解（改为「不支持」的显式失败） |
 
 > G4 / G5 / G12 / G16 / G18 都是「看起来在跑、其实没生效」的类型：不报错、不抛异常，只在特定路径上失败。
 > 这几条决定了本文所有落地项的前置顺序——**先证明报文能被客户端吃掉，再谈签不签得出来**。
@@ -637,7 +680,7 @@ warehouse 与类型一致），一个 catalog 只会是一种存储。按 `stora
 | GCS | `gcs.service-account` | `gcs.oauth2.token` | `gcs.oauth2.token-expires-at` | 无标准续期；靠 TTL |
 | OSS | `fs.oss.endpoint` | `fs.oss.accessKeyId`、`fs.oss.accessKeySecret`、`fs.oss.securityToken` | **无标准键** | 无（Hadoop 侧不会续） |
 | OBS | `fs.obs.endpoint` | `fs.obs.access.key`、`fs.obs.secret.key`、`fs.obs.session.token` | **无标准键** | 无（同上） |
-| COS（COSN 原生） | `fs.cosn.bucket.region`、`fs.cosn.bucket.endpoint_suffix` | `fs.cosn.userinfo.secretId`、`fs.cosn.userinfo.secretKey`、`fs.cosn.userinfo.sessionToken`；**临时档还必须设** `fs.cosn.credentials.provider=org.apache.hadoop.fs.auth.SessionTokenCredentialProvider`，否则 token 被静默忽略（G18） | **无标准键** | Paimon 面靠 `RESTTokenFileIO` 重取（它把 token 合并进 options 再重建 FileIO）；Iceberg 面**断链**、Lance 面不适用（§6.3） |
+| COS（COSN 原生） | `fs.cosn.bucket.region`、`fs.cosn.bucket.endpoint_suffix`、`fs.cosn.useHttps` | `fs.cosn.userinfo.secretId`、`fs.cosn.userinfo.secretKey`；**没有令牌键**（§6.3.4），因此不存在「临时档」 | **无** | Paimon 面靠 `RESTTokenFileIO` 重取（它把 token 合并进 options 再重建 FileIO）；Iceberg 面**断链**、Lance 面不适用（§6.3） |
 | Paimon 引擎（S3） | 同 S3 | 额外**同时**给 `s3.access-key`、`s3.secret-key`（理由见 §2.2） | — | Paimon 的 `RESTTokenFileIO` 重调 `/token` |
 | Lance（Rust 侧） | `aws_region`、`aws_endpoint`、`allow_http` | `aws_access_key_id`、`aws_secret_access_key`、`aws_session_token`（**已确认**，Gravitino #10895 与 G12） | `expires_at_millis`（Lance 自己的外层字段） | 无（connector 读成静态 map） |
 
@@ -794,7 +837,7 @@ Gravitino #11853 就是在补这件事：把 vended credentials 也注入**服�
 | GCP GCS | `DownscopedCredentials` + `CredentialAccessBoundary`（STS token exchange） | `availableResource`（`projects/_/buckets/<b>/objects/<prefix>*`）+ `availablePermissions`（`inRole:roles/storage.objectViewer`）+ 可选 `availabilityCondition` | **1 小时** | `gcs.oauth2.token` + `-expires-at` | 需要源凭据具备 token 交换权限（服务账号的 `roles/iam.serviceAccountTokenCreator`）；boundary 的 resource 必须写到 object 级，写 bucket 级会被拒 |
 | 阿里云 OSS | RAM STS `AssumeRole` | `Policy` 收窄到 `acs:oss:*:*:<bucket>/<prefix>/*` | `DurationSeconds` 900–3600；角色 `MaxSessionDuration` 最长 12h | `fs.oss.*`（含 `securityToken`） | endpoint 必须与 region 匹配；`securityToken` 走 `x-oss-security-token` 头；Hadoop 侧不续期 |
 | 华为云 OBS | IAM `POST /v3.0/OS-CREDENTIAL/securitytokens`（`CreateTemporaryAccessKeyByAgency`） | `policy` 字段（**仅 OBS 认这条限制**，≤2048 字符，与委托权限取交集） | `duration_seconds` 15 分钟 – 24 小时 | `fs.obs.*`（含 `session.token`） | 得先建委托（agency）；请求头带 `x-security-token`；policy 里用 `obs:prefix` 条件限定前缀 |
-| 腾讯云 COS | 腾讯云 STS `AssumeRole`，policy 用 **CAM** 格式 | CAM policy 的 `resource` 数组 + `StringLike`（前缀匹配）；**只有 Paimon 面吃得到** | `DurationSeconds` 900–43200；角色 `durationSeconds` 上限同 `MaxSessionDuration` | `fs.cosn.*`（`secretId` / `secretKey` / `sessionToken`） | **COSN 原生只覆盖 JVM 面**：Iceberg 只能 `HadoopFileIO` 且下发断链、Lance 无 COSN 只能 S3 兼容；临时档必须显式设 `fs.cosn.credentials.provider`（G18） |
+| 腾讯云 COS | ~~腾讯云 STS `AssumeRole`，policy 用 CAM 格式~~ **v7：不做签发**——COSN 的 FileIO 不收临时凭据，签出来没人消费（§6.3.4） | 只能转发长期 AK/SK；CAM policy 的写法留作备查（§6.3.3） | — | `fs.cosn.*`（`secretId` / `secretKey` / 区域 / 端点 / `useHttps`） | **COSN 原生只覆盖 JVM 面**：Iceberg 只能 `HadoopFileIO` 且下发断链、Lance 无 COSN 只能 S3 兼容；**不能设 `fs.cosn.credentials.provider`**（那个类不存在） |
 | S3 兼容（MinIO / Ceph RGW / Ozone / VAST） | 有的实现有 STS、有的没有；有 STS 的也可能**不接受 inline session policy**（VAST 返回 501） | 有则同 S3，但要能关 policy；无则静态 | — | 同 S3 | **必须保留静态转发路径**；有 STS 但拒绝 inline policy 的，默认**不带 policy**（牺牲收窄换能跑，§3.5.3） |
 
 ### 6.2 逐条补充
@@ -859,14 +902,15 @@ Lance 直接起不来」的方案。
 
 | 用途 | 键 | 说明 |
 | --- | --- | --- |
-| AK | `fs.cosn.userinfo.secretId` | **不是** `accessKeyId`；COSN 的命名是 `secretId` |
+| AK | `fs.cosn.userinfo.secretId` | **不是** `accessKeyId`；COSN 的命名是 `secretId`，且大小写敏感 |
 | SK | `fs.cosn.userinfo.secretKey` | |
-| 临时令牌 | `fs.cosn.userinfo.sessionToken` | 只发它不生效，见 6.3.4 |
-| 凭据提供器 | `fs.cosn.credentials.provider=org.apache.hadoop.fs.auth.SessionTokenCredentialProvider` | **临时档必设** |
-| 区域 | `fs.cosn.bucket.region` | 形如 `ap-guangzhou` |
+| 区域 | `fs.cosn.bucket.region` | 形如 `ap-guangzhou`；`COSNLoader#requiredOptions` 要求它与端点至少给一个 |
 | 端点 | `fs.cosn.bucket.endpoint_suffix` | 形如 `cos.ap-guangzhou.myqcloud.com`；公有云可不填 |
+| 是否 HTTPS | `fs.cosn.useHttps` | **缺省 `false`（明文）**，因此本工程默认下发 `true`，见 v7 修订块 |
 | 实现类 | `fs.cosn.impl=org.apache.hadoop.fs.CosFileSystem` | Paimon 的 `COSNFileIO` 自己 `new CosNFileSystem()`，不必配；Iceberg 的 `HadoopFileIO` 需要 |
 | URI | `cosn://<bucket>-<appid>/<path>` | appId 是 bucket 名的一部分，不是独立参数 |
+| ~~临时令牌~~ | ~~`fs.cosn.userinfo.sessionToken`~~ | **不存在这个键**（v7 勘误）。`CosNConfigKeys` 里没有它，认证包也没有读它的 provider |
+| ~~凭据提供器~~ | ~~`fs.cosn.credentials.provider=org.apache.hadoop.fs.auth.SessionTokenCredentialProvider`~~ | **那个类名不存在**（v7 勘误）。真实包名是 `org.apache.hadoop.fs.cosn.auth`，里面只有 `SimpleCredentialsProvider` 与 `EnvironmentVariableCredentialsProvider`；配一个不存在的类会在初始化 FileIO 时抛「… is not cos credential provider」 |
 
 **为什么键名不能套 S3 的。** Paimon 的 `COSNFileIO` 源码里写死了
 `CONFIG_PREFIXES = {"fs.cosn."}`——它只把**这个前缀**的键搬进 Hadoop `Configuration`，
@@ -897,6 +941,11 @@ Lance 面只能写 S3 兼容那套。**把三面写成一样，等于让两个�
 
 #### 6.3.3 签发：CAM policy，不能照抄 IAM 字符串
 
+> **v7 说明：本节是「如果哪天 COSN 支持临时凭据」的备查资料，当前不落地。**
+> 原因见 §6.3.4——COSN 的 FileIO 没有令牌入口，签出来的短期票没有消费者。
+> 一旦上游补上（或改用自定义 `COSCredentialsProvider`），这份 CAM policy 的形状仍然有效：
+> 它记的是腾讯云与 AWS 在「收窄到前缀」这件事上的写法差异，与能不能签发无关。
+
 | 维度 | 值 |
 | --- | --- |
 | 签发 API | 腾讯云 STS `AssumeRole`（`RoleArn` / `RoleSessionName` / `DurationSeconds` / `Policy`） |
@@ -909,49 +958,73 @@ Lance 面只能写 S3 兼容那套。**把三面写成一样，等于让两个�
 `Resource: arn:aws:s3:::b/prefix/*` + `Condition: {s3:prefix}`，在腾讯云上 resource 的写法与
 条件键名都不同。抄代码可以，抄 policy 字符串不行。
 
-#### 6.3.4 临时凭据的静默失效点（G18）
+#### 6.3.4 临时凭据：这条路走不通（G18 作废，v7 勘误）
 
-COSN 的默认 provider 链顺序是：
+**结论先行：paimon-cosn 2.1.0 的 FileIO 不接受临时凭据，因此 COS 只能转发长期 AK/SK。**
+v4 曾据此设计「三件套 + `fs.cosn.credentials.provider` 成对下发」，判定为 G18；
+读完实际构件后确认那个前提不成立，本节保留原文结构但把结论与依据换掉——
+否则下一个人还会照着一份错的清单去实现。
 
-```
-SessionCredentialProvider → SimpleCredentialProvider → EnvironmentVariableCredentialProvider
-  → SessionTokenCredentialProvider → CVMInstance → CPMInstance → EMRInstance
-```
+三条证据（都来自 `~/.m2/.../paimon-cosn-2.1.0.jar` 本身，不是二手文档）：
 
-**`SimpleCredentialProvider`（读 `fs.cosn.userinfo.secretId`/`secretKey`）排在
-`SessionTokenCredentialProvider` 之前。** 也就是说：三件套一起发时，默认会命中第 2 位、
-**用长期密钥签名，`sessionToken` 被完全忽略**。表现取决于那把 AK 本身的性质：
+1. **`CosNConfigKeys` 里没有会话令牌这一项。** 它的键表只有 `user.agent` /
+   `credentials.provider` / `userinfo.secretId` / `userinfo.secretKey` /
+   `bucket.region` / `bucket.endpoint_suffix` / `useHttps` / `tmp.dir` / `buffer.size` ……
+   没有任何 `sessionToken` 常量。
+2. **认证包里没有 session-token provider。** `org.apache.hadoop.fs.cosn.auth` 只有
+   `AbstractCOSCredentialsProvider` / `COSCredentialsProviderList` /
+   `SimpleCredentialsProvider` / `EnvironmentVariableCredentialsProvider`。
+3. **整个 jar 搜不到相关字节。** 在 3 万条目里检索 `sessionToken` 与
+   `BasicSessionCredentials`，`org/apache/hadoop/fs/cosn/**` 下零命中。
 
-- AK 是临时的（没有 token 就是残缺凭据）→ 签名失败，报错说「认证失败」，一句不提 token；
-- AK 是长期的 → **静默降级成转发长期密钥**，看起来一切正常，风险却回到了起点。
+推论有三条，每条都会踩：
 
-所以「发 `fs.cosn.userinfo.sessionToken`」这件事**必须与「设 `fs.cosn.credentials.provider`」成对出现**。
-这与 G4（S3 不发 `s3.session-token` 会让 Iceberg 客户端抛错）、G7（Azure 只发定位不发 SAS）同类：
-**键发了不等于生效**。测试要断言「三件套 + provider 类名一起出现」，不是「token 里有个 token 键」。
+- **`fs.cosn.credentials.provider` 不能指向一个不存在的类。** v4 写的
+  `org.apache.hadoop.fs.auth.SessionTokenCredentialProvider` 连包名都错（真实是
+  `org.apache.hadoop.fs.cosn.auth`），`CosNUtils` 反射实例化时会抛
+  「… is not cos credential provider」，而报错位置在 FileIO 初始化，指向的不是配置。
+- **发一个没人读的令牌键等于「发了但不生效」。** 这正是 P0-8/G12 那一类故障，
+  所以本工程**不发** `fs.cosn.userinfo.sessionToken`。
+- **配了 `sessionToken` 直接失败。** `DefaultStorageCredentialManager.putSecrets` 在
+  「这一族没有令牌键」且令牌非空时抛 500，并在消息里点名
+  `lakehouse.rest.storage.cos`——静默丢掉令牌的后果是「以为在用临时凭据、实际在用长期密钥」，
+  权限根本没有按预期收窄。
 
-反向也有一条：**转发档（长期密钥）绝对不能设 `SessionTokenCredentialProvider`**——那个 provider 会去找
-`sessionToken`，找不到就失败；长期密钥该走 `SimpleCredentialProvider`（默认链里它本来就在前），
-不设 provider 反而正确。所以这对键是「临时档加、转发档不加」，不是一个恒定的开关。
+**那 COS 还有没有短期凭据的路？** 有的，但不在我们这一侧：运维实现一个自定义
+`COSCredentialsProvider` 并通过引擎配置 `fs.cosn.credentials.provider` 指过去，
+由它自己去取票。服务端不下发这个键，也就不会替调用方做这个决定——
+一旦下发，等于把「引擎用谁的票」这件事从引擎侧挪到了 catalog 元数据里，
+而 COS 这条链上没有任何东西能保证那个类在引擎的类路径上。
 
-#### 6.3.5 落地清单（服务端要改的六处）
+**反向仍适用**：转发档（长期密钥）**绝不能**设 `credentials.provider`——
+`SimpleCredentialsProvider` 本来就在默认链里，不设反而正确。
 
-1. `ManagementEnums.StorageType` 加 `COS`；
-2. `StorageDtos` 加 `TencentCosStorageConfigInfo`（`allowedLocations` / `storageName` /
-   `endpoint`（S3 兼容端点，只给 Lance 用）/ `bucketRegion` / `appId` / `stsUnavailable` /
-   `accessKeyId` / `secretAccessKey`），注册 `WIRE_COS`；
-3. `FileIoType` 加 `COS("cosn", EnumSet.of(FILE, COS))`——**wire 名必须是 `cosn`**，它同时是
-   Paimon `FileIO.get()` 选实现用的 scheme；
-4. `DefaultStorageCredentialManager` 加 `COS_KEYS` / `cos()` / switch 分支，临时档多写
-   `fs.cosn.credentials.provider`；
-5. `RestServerProperties.Storage` 加 `Cos`（复用 `CloudCredentials`，因为它要 `sessionToken`）；
-6. 依赖里加 `paimon-cosn`——Paimon 的 FileIO 走 SPI（`META-INF/services/org.apache.paimon.fs.FileIOLoader`），
-   而本仓库 pom 里**一个 `paimon-*` filesystem 构件都没声明**（`lakehouse-rest-storage` 只依赖
-   `paimon-core`；`~/.m2` 里的 `paimon-oss` / `paimon-s3` 是传递或历史产物，不是本工程的直接依赖）。
-   不加 `paimon-cosn` 的话，`cosn://` 会落到「不支持的 scheme」——**服务端自己的 FileIO**
-   （优化任务、数据预览、元数据读）与引擎侧都受影响，两边都要这个 jar。
+#### 6.3.5 落地清单（v7 已实现，六处都落了）
 
----
+1. `ManagementEnums.StorageType` 加 `COS` ✅
+2. `StorageDtos` 加 `TencentCosStorageConfigInfo`，注册 `WIRE_COS` ✅ ——字段与 v4 的两处不同：
+   `endpoint` **只表示** `fs.cosn.bucket.endpoint_suffix`（不再兼作 S3 兼容端点），
+   并新增 `useHttps`（缺省 `true`）；`appId` 保留但**只用于写入口校验桶名**
+   （`StorageConfigs.requireCosBucketMatchesAppId`），不是下发键。
+3. `FileIoType` 加 `COS("cosn", EnumSet.of(FILE, COS))` ✅ ——**wire 名必须是 `cosn`**，
+   它同时是 Paimon 的 FileIO scheme（`COSNLoader#getScheme()`）。写成 `cos` 会得到
+   「不支持的 scheme」，看起来像没装插件。
+4. `DefaultStorageCredentialManager` 加 `COS_KEYS` / `cos()` / switch 分支 ✅ ——
+   **但不下发 `fs.cosn.credentials.provider`**（§6.3.4 勘误）：`KeyFamily.sessionToken`
+   对 COS 是 `null`，`putSecrets` 遇到「配了令牌却没有令牌键」直接 500。
+5. `RestServerProperties.Storage` 加 `Cos`（复用 `CloudCredentials`）✅ ——复用的理由不再是
+   「它要 `sessionToken`」（COSN 用不了），而是三家用同一个「默认 + 具名存储」模型，
+   形状一致才能共用 `objectStoreSecrets` 那四级来源，少一份复制粘贴就少一次键族串错。
+6. 依赖里加 `paimon-cosn` ✅ ——Paimon 的 FileIO 走 SPI
+   （`META-INF/services/org.apache.paimon.fs.FileIOLoader`），不加它 `cosn://` 会落到
+   「不支持的 scheme」：服务端自己的 FileIO（优化任务、数据预览、元数据读）与引擎侧都受影响。
+   声明在 `lakehouse-rest-server`（与 `paimon-s3` 同一处，因为「产物里装哪几个插件」是部署决策），
+   父 POM 的 `dependencyManagement` 里带版本。**它有 99MB**：构件本身只有 2KB 的 `COSNLoader`，
+   体积全在内嵌的 `paimon-plugin-cosn/` 子目录（shaded Hadoop + COS SDK，三万个条目），
+   `PluginLoader` 要的就是这个目录资源，剥不掉。
 
+> 与 v4 的差异不止一处，都记在 v7 修订块里。这里保留「六处」这个结构，
+> 是为了让后来对照时能一眼看出哪一处被改了语义。
 ## 7. 引擎侧：能不能不把 AK/SK 写进配置（Spark 与 Flink）
 
 ### 7.1 协议面 × 引擎的现状
@@ -1142,8 +1215,8 @@ object_store 认的是 `aws_access_key_id` / `aws_secret_access_key` / `aws_sess
 | ✅ P1-9 | **服务端自身 FileIO 走独立取票**（§5.7），作用域是 catalog 的允许位置，不复用任何用户的表级票 | 两类作用域分开（`vend` vs `vendForCatalog`）、写权限显式传、缓存键不撞 → `ServerSideCredentialTests`（9 例）；「只配 `roleArn` 的 catalog 上优化任务跑通」**需真实 S3，未跑** |
 | P1-10 | **联邦/多级 catalog 的 header 透传与 refresh 端点回写**（G17，对照 #12950） | 现在没有联邦，留位；做的时候按 #12950 的两条断言写用例 |
 | P1-11 | **S3 兼容存储的 `noInlinePolicy` 选项**（§3.5.3）：为 true 时省略 inline session policy，界面明说「此存储下无法按表收窄」 | VAST 等 STS 不接受 policy 的存储跑通；默认不带 policy |
-| P1-12 | **腾讯云 COS 落地**（§6.3.5 六处）：`StorageType.COS` / `TencentCosStorageConfigInfo` / `FileIoType.COS("cosn")` / `COS_KEYS` / `Storage.Cos` / `paimon-cosn` 依赖 | Paimon 面用 `cosn://` 端到端跑一次：下发 `fs.cosn.*` 后引擎不配 AK 也能读 |
-| P1-13 | **COS 临时档必发 `fs.cosn.credentials.provider`**（G18，§6.3.4） | 用例断言「三件套 + provider 类名」同时出现；只发三件套时用例必须红 |
+| ✅ P1-12 | **腾讯云 COS 落地**（§6.3.5 六处）：`StorageType.COS` / `TencentCosStorageConfigInfo` / `FileIoType.COS("cosn")` / `COS_KEYS` / `Storage.Cos` / `paimon-cosn` 依赖 | 键名与来源由用例钉住：`cosVendsItsOwnKeyFamilyWithExactCase`（大小写敏感的 `secretId` / `secretKey` + 区域 + 端点 + `useHttps`）/ `cosDefaultsToHttpsUnlessExplicitlyDisabled` / `cosKeepsLocationKeysWhenStsUnavailable` / `cosFallsBackToEnvironmentWhenNothingConfigured` / `cosPrefersNamedStorageAndFailsOnUnknownName` / `cosConfigCarriesEndpointRegionAndAppId` / `cosAppIdMustMatchTheBucketName`；静态凭据的 HTTP 语义并入 `obsOssAndCosAlsoAcceptStaticCredentials`。**「`cosn://` 端到端跑一次」需真实 COS 账号，未跑**（同 P0-8 的偏差） |
+| ❌ P1-13 | **~~COS 临时档必发 `fs.cosn.credentials.provider`~~（G18）——经核查作废**：COSN 的 FileIO 既没有令牌键、也没有 session-token provider，签出来的票没有消费者（§6.3.4） | 反向验收：`cosNeverVendsASessionTokenOrAProviderClass` 断言这两类键一个都不出现；`cosRefusesToVendATemporaryCredential` 断言「配了 `sessionToken` 就 500 并点名 `lakehouse.rest.storage.cos`」。**上游补上这个 provider 之前，本节不能按原样实现** |
 
 ### P2：工程化
 
@@ -1234,7 +1307,7 @@ Hadoop 配置）、Lance 面得换成 S3 兼容（§6.3.2）。用户看到的�
 | OBS | **只有委托（agency）** | `agency`、`domainId` | 华为的临时凭据接口要走委托（或联邦令牌），没有「拿 AK/SK 直接换票」这条路径——没配委托就没得签，只剩转发，界面要当场说（§3.5.2） |
 | AZURE | 托管身份 / 应用注册 | `tenantId`、`account`、`clientId`、`clientSecret`、`skipSasTokenGeneration` | 签的是目录级 SAS，平台上限 7 天；`skipSasTokenGeneration` 是 Azure 的「不 vend」开关（§6.2） |
 | GCS | 服务账号文件 / ADC | `serviceAccountFile`、`skipCredentialDownscoping` | 同一个文件既要签降权令牌、又要供服务端自己的 GCSFileIO 用；`skipCredentialDownscoping` 是 GCS 的「不 vend」开关（§6.2） |
-| COS（定案 COSN 原生，§6.3） | 服务端身份 / AK-SK（走腾讯云 STS） | `appId`、`roleArn`、`region`、`externalId`、`bucketRegion` | **「COSN 原生」只覆盖 Paimon 面**：同一份配置生成三条不同片段（Paimon `cosn://`、Iceberg `HadoopFileIO` 且拿不到下发凭据、Lance 退回 S3 兼容）。三面写成一样就是让两个面静默失败（§6.3.2） |
+| COS（定案 COSN 原生，§6.3） | **只有 AK-SK / 具名存储（没有签发）** | `appId`、`bucketRegion`、`endpoint`、`useHttps`、`stsUnavailable` | **COS 没有「签发」档**：COSN 的 FileIO 不收临时凭据，`roleArn` 在这一类型上没有意义（§6.3.4）。**「COSN 原生」只覆盖 Paimon 面**：同一份配置生成三条不同片段（Paimon `cosn://`、Iceberg `HadoopFileIO` 且拿不到下发凭据、Lance 退回 S3 兼容）。三面写成一样就是让两个面静默失败（§6.3.2） |
 
 **只有 S3 的「AK-SK」档要额外提示一句**：那把 AK 的权限应当只有 `sts:AssumeRole` 一条，
 不能同时能读写桶——否则把「短命票」换成了「一把权限更大的长命钥匙」。
@@ -1279,7 +1352,7 @@ Hadoop 配置）、Lance 面得换成 S3 兼容（§6.3.2）。用户看到的�
 
 | 面 | 选了 COS 之后片段怎么变 | 必须同时说的一句话 |
 | --- | --- | --- |
-| Spark / Flink · Paimon | `warehouse` 用 `cosn://<bucket>-<appid>/...`，密钥行写 `fs.cosn.userinfo.*` | 临时档要带 `fs.cosn.credentials.provider=...SessionTokenCredentialProvider`，否则 token 被忽略（G18） |
+| Spark / Flink · Paimon | `warehouse` 用 `cosn://<bucket>-<appid>/...`，密钥行写 `fs.cosn.userinfo.*` | **COS 没有「临时档」**：COSN 不收会话令牌，别去设 `fs.cosn.credentials.provider`——那个类不存在，会出现「… is not cos credential provider」（§6.3.4） |
 | Spark / Flink · Iceberg | **不能写 `cosn://` 就完事**：要显式 `'io-impl' = 'org.apache.iceberg.hadoop.HadoopFileIO'`，并把 `fs.cosn.*` 放进 Hadoop 配置（`spark.hadoop.*`） | **服务端下发的凭据到不了这一面**（`HadoopFileIO` 不吃 `storage-credentials`），必须客户端自配 |
 | Spark · Lance | **整段换成 S3 兼容**：`s3://` + `aws_access_key_id` / `aws_secret_access_key` / `aws_endpoint` 指向 COS 的 S3 端点 | Lance 是 Rust，没有 COSN；`cosn://` 它会当成不认识的 scheme |
 

@@ -112,7 +112,7 @@ public class StorageRuntimePolicy {
 
         log.info("storage runtime: file-io.type={} (supports {}), credential-manager.type={}, "
                         + "credential-cache.max-entries={}, aws.default-credentials={}, aws.named-storages={}, "
-                        + "gcp.token={}, obs={}, oss={}, read-timeout={}, connect-timeout={}",
+                        + "gcp.token={}, obs={}, oss={}, cos={}, read-timeout={}, connect-timeout={}",
                 fileIo.wireName(),
                 fileIo.supportedStorageTypes().stream().map(StorageType::wireName).collect(Collectors.joining(",")),
                 credentialManager.type().wireName(),
@@ -124,6 +124,7 @@ public class StorageRuntimePolicy {
                         ? "absent" : "configured",
                 summarize(storage.getObs()),
                 summarize(storage.getOss()),
+                summarize(storage.getCos()),
                 storage.getReadTimeout(),
                 storage.getConnectTimeout());
     }
@@ -131,8 +132,9 @@ public class StorageRuntimePolicy {
     /**
      * 凭据组的可读描述，形如 {@code configured/[warehouse-a]}。
      *
-     * <p>只给 OBS / OSS 用了这个写法，AWS 与 GCP 仍是展开的两项。不统一是为了不动
+     * <p>只给 OBS / OSS / COS 用了这个写法，AWS 与 GCP 仍是展开的两项。不统一是为了不动
      * 既有的日志行——它已经被抄进了运维记录与本文档，改格式等于让那些记录对不上号。
+     * COS 是后加的，直接沿用这个写法。
      */
     private static String summarize(RestServerProperties.Storage.CloudCredentials credentials) {
         boolean configured = credentials.getAccessKey() != null && !credentials.getAccessKey().isBlank()

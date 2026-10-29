@@ -67,6 +67,9 @@ public final class StorageDtos {
     /** 子类型注册名：阿里云 OSS。非规格取值，本工程扩展。 */
     static final String WIRE_OSS = "OSS";
 
+    /** 子类型注册名：腾讯云 COS。非规格取值，本工程扩展。 */
+    static final String WIRE_COS = "COS";
+
     /** 子类型注册名：本地文件系统。 */
     static final String WIRE_FILE = "FILE";
 
@@ -89,11 +92,13 @@ public final class StorageDtos {
             @JsonSubTypes.Type(value = GcpStorageConfigInfo.class, name = WIRE_GCS),
             @JsonSubTypes.Type(value = HuaweiObsStorageConfigInfo.class, name = WIRE_OBS),
             @JsonSubTypes.Type(value = AliyunOssStorageConfigInfo.class, name = WIRE_OSS),
+            @JsonSubTypes.Type(value = TencentCosStorageConfigInfo.class, name = WIRE_COS),
             @JsonSubTypes.Type(value = FileStorageConfigInfo.class, name = WIRE_FILE)
     })
     public sealed interface StorageConfigInfo
             permits AwsStorageConfigInfo, AzureStorageConfigInfo, GcpStorageConfigInfo,
-                    HuaweiObsStorageConfigInfo, AliyunOssStorageConfigInfo, FileStorageConfigInfo {
+                    HuaweiObsStorageConfigInfo, AliyunOssStorageConfigInfo,
+                    TencentCosStorageConfigInfo, FileStorageConfigInfo {
 
         /** 该 catalog 允许写入的位置白名单；首项同时用作仓库根。 */
         List<String> allowedLocations();
@@ -216,6 +221,60 @@ public final class StorageDtos {
         @Override
         public ManagementEnums.StorageType storageType() {
             return ManagementEnums.StorageType.OSS;
+        }
+    }
+
+    /**
+     * 腾讯云 COS。**非规格子类型，本工程扩展**（见 {@link ManagementEnums.StorageType}）。
+     *
+     * <p><b>它没有沿用 {@code AwsStorageConfigInfo} 的形状，尽管 COS 兼容 S3 协议。</b>
+     * 本工程对接 COS 走的是 COSN（{@code cosn://} + {@code fs.cosn.*}），与
+     * {@code s3://} + {@code s3.*} 是两条不同的 FileIO 实现路径；用一个
+     * {@code storageType=S3} 加自定义 {@code endpoint} 去接，得到的是一份
+     * 「服务端按 S3 键族下发、引擎按 COSN 键族读取」的配置——两边都不报错，
+     * 引擎只是拿不到密钥。因此单列类型、单列字段。
+     *
+     * <p><b>字段取舍：</b>
+     *
+     * <ul>
+     *   <li>{@code endpoint} 是 COSN 的 {@code fs.cosn.bucket.endpoint_suffix}
+     *       （形如 {@code cos.ap-guangzhou.myqcloud.com}），<b>不是</b> S3 兼容端点。
+     *       一个字段只表达一件事：同一个字符串若被两种实现各按自己的语义解读，
+     *       配置读起来就是对的、跑起来才是错的。</li>
+     *   <li>{@code bucketRegion} 对应 {@code fs.cosn.bucket.region}（形如
+     *       {@code ap-guangzhou}）。COSN 的 {@code requiredOptions} 要求它与
+     *       endpoint 至少给一个，所以两个都留。</li>
+     *   <li>{@code appId} <b>不是下发键</b>——COS 的 appId 是桶名的一部分
+     *       （{@code cosn://<bucket>-<appid>/<path>}），没有独立的配置项。
+     *       留着它只有一个用途：写入口校验位置里的桶名确实属于这个 appId
+     *       （见 {@code StorageConfigs}）。桶名写错时 COS 返回的是 404，
+     *       与「密钥不对」的现象隔着一层。</li>
+     *   <li>{@code useHttps} 为 {@code null} 时按 {@code true} 下发。COSN 自己的缺省是
+     *       {@code fs.cosn.useHttps=false}（{@code CosNConfigKeys.DEFAULT_USE_HTTPS}），
+     *       也就是不配就走明文——密钥、数据、全部走明文。这个默认值不适合作为
+     *       本工程的下发默认值，而私有化部署的 COS 兼容实现可能确实只有 HTTP，
+     *       所以留一个可以显式关掉的开关，而不是把默认值钉死。</li>
+     *   <li><b>没有 {@code sessionToken}，也没有 {@code roleArn}。</b>
+     *       paimon-cosn 2.1.0 内置的 hadoop-cos 只带 {@code SimpleCredentialsProvider}
+     *       与 {@code EnvironmentVariableCredentialsProvider}，其
+     *       {@code CosNConfigKeys} 里根本没有会话令牌这一项——发了也没有消费者。
+     *       详见 {@code docs/credential-vending-design.md} 的 §6.3 勘误。</li>
+     * </ul>
+     */
+    public record TencentCosStorageConfigInfo(List<String> allowedLocations,
+                                              String storageName,
+                                              String endpoint,
+                                              String bucketRegion,
+                                              String appId,
+                                              Boolean useHttps,
+                                              Boolean stsUnavailable,
+                                              String accessKeyId,
+                                              String secretAccessKey)
+            implements StorageConfigInfo {
+
+        @Override
+        public ManagementEnums.StorageType storageType() {
+            return ManagementEnums.StorageType.COS;
         }
     }
 

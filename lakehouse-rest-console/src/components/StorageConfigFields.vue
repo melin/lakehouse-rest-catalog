@@ -53,6 +53,23 @@
         </div>
       </el-form-item>
 
+      <!-- COS 的三面差异必须在这里说清楚：把三个面当成一样，等于让两个面静默失败。
+           Paimon 用 COSN 原生（凭据能下发、长作业能续）；
+           Iceberg 的 HadoopFileIO 不消费 storage-credentials 里的 config，收不到下发凭据；
+           Lance 是 Rust connector，根本没有 COSN 实现，只能另建 S3 类型 catalog。 -->
+      <TipAlert v-if="form.storageType === 'COS'" type="info" class="pc-storage-carry">
+        <template #title>COS 走 COSN 原生，但只有 Paimon 面能收到下发的凭据</template>
+        <div class="pc-field-note">
+          <b>Paimon</b>：<code>cosn://</code> + <code>fs.cosn.*</code>，服务端下发的密钥生效，
+          长作业按 <code>data-token.enabled=true</code> 自行续期。<br />
+          <b>Iceberg</b>：没有 COS FileIO，只能 <code>io-impl=HadoopFileIO</code> 并自行配
+          <code>spark.hadoop.fs.cosn.*</code>——它不读服务端下发的
+          <code>storage-credentials</code>。<br />
+          <b>Lance</b>：connector 是 Rust，没有 COSN 实现，请另建一个 S3 类型的 catalog
+          走 <code>s3://</code> + COS 的 S3 兼容端点。
+        </div>
+      </TipAlert>
+
       <el-form-item>
         <template #label>
           <FieldLabel label="具名存储（storageName）">
@@ -276,7 +293,7 @@ const COMMON_KEYS = ['storageType', 'allowedLocations', 'storageName']
  */
 const STATIC_CREDENTIAL_KEYS = ['accessKeyId', 'secretAccessKey']
 
-const STATIC_CREDENTIAL_TYPES = ['S3', 'OBS', 'OSS']
+const STATIC_CREDENTIAL_TYPES = ['S3', 'OBS', 'OSS', 'COS']
 
 /**
  * 各存储类型的字段，按「要不要在创建时就决定」分成两张表。
@@ -315,6 +332,10 @@ const BASIC_FIELDS = {
   ],
   OSS: [
     { key: 'endpoint', label: 'endpoint', placeholder: 'oss-cn-hangzhou.aliyuncs.com' },
+  ],
+  COS: [
+    { key: 'endpoint', label: 'endpoint', placeholder: 'cos.ap-guangzhou.myqcloud.com' },
+    { key: 'bucketRegion', label: 'bucketRegion', placeholder: 'ap-guangzhou' },
   ],
   FILE: [],
 }
@@ -357,6 +378,24 @@ const ADVANCED_FIELDS = {
   OSS: [
     { key: 'stsUnavailable', label: 'stsUnavailable', type: 'bool' },
   ],
+  COS: [
+    {
+      key: 'appId',
+      label: 'appId',
+      placeholder: '1250000000（留空则不校验桶名）',
+      hint: '不是下发键：COS 的 appId 是桶名的一部分（cosn://<bucket>-<appid>/）'
+        + '。填了会在保存时校验位置里的桶名确实以它结尾。',
+    },
+    {
+      key: 'useHttps',
+      label: 'useHttps',
+      type: 'bool',
+      default: true,
+      hint: 'COSN 自己的缺省是不走 HTTPS（fs.cosn.useHttps=false）。'
+        + '这里默认打开；只有私有化部署的 COS 兼容实现只能走 HTTP 时才关掉。',
+    },
+    { key: 'stsUnavailable', label: 'stsUnavailable', type: 'bool' },
+  ],
   FILE: [],
 }
 
@@ -385,13 +424,14 @@ const LOCATION_SCHEMES = {
   AZURE: ['abfss://', 'abfs://', 'wasbs://'],
   OBS: ['obs://'],
   OSS: ['oss://'],
+  COS: ['cosn://'],
   FILE: ['file://', 'file:/', '/'],
 }
 
 const props = defineProps({
   modelValue: { type: Object, default: () => ({}) },
   /** 全部存储类型取值（服务端元数据） */
-  storageTypes: { type: Array, default: () => ['S3', 'GCS', 'AZURE', 'OBS', 'OSS', 'FILE'] },
+  storageTypes: { type: Array, default: () => ['S3', 'GCS', 'AZURE', 'OBS', 'OSS', 'COS', 'FILE'] },
   /** 本部署实际支持的存储类型 */
   supportedTypes: { type: Array, default: () => [] },
   /**
@@ -450,7 +490,11 @@ function collectExtras(source, type) {
   for (const field of fieldsOf(type)) {
     const value = source[field.key]
     if (field.type === 'bool') {
-      extras[field.key] = Boolean(value)
+      // 布尔字段可以带 `default`（见 COS 的 useHttps）。字段缺省时灌入的是那个默认值，
+      // 而不是 false——否则「服务端默认 true」会在打开表单后被改写成 false。
+      extras[field.key] = value === undefined || value === null
+        ? Boolean(field.default)
+        : Boolean(value)
     } else if (field.type === 'list') {
       extras[field.key] = Array.isArray(value) ? value.map((item) => String(item ?? '')) : []
     } else {
@@ -554,7 +598,11 @@ const advancedGroups = computed(() => {
 const filledAdvancedKeys = computed(() => advancedFields.value
   .filter((field) => {
     const value = form.extras[field.key]
-    if (field.type === 'bool') return value === true
+    if (field.type === 'bool') {
+      // 带默认值的布尔项：与默认值相同就是「没动过」，不算已填；
+      // 否则 useHttps 会在每一份 COS 配置上都显示「已填 1 项」，计数随即失去意义
+      return field.default !== undefined ? Boolean(value) !== field.default : value === true
+    }
     if (field.type === 'list') return (value || []).some((item) => String(item ?? '').trim() !== '')
     return String(value ?? '').trim() !== ''
   })
@@ -587,6 +635,7 @@ const locationPlaceholder = computed(() => ({
   AZURE: 'abfss://container@account.dfs.core.windows.net/path',
   OBS: 'obs://bucket/prefix',
   OSS: 'oss://bucket/prefix',
+  COS: 'cosn://bucket-1250000000/prefix',
   FILE: 'file:///data/warehouse',
 }[form.storageType] || '存储位置 URI'))
 
@@ -633,7 +682,14 @@ function build() {
   for (const field of fields.value) {
     const value = form.extras[field.key]
     if (field.type === 'bool') {
-      config[field.key] = Boolean(value)
+      // 等于字段默认值时不写：`useHttps` 的服务端默认是 true，写一个 `true` 进去
+      // 会把「服务端以后改默认值」这件事钉死在这一份 catalog 上。
+      // 不等于默认值时写——那才是用户真正表达的意思（例如显式关掉 HTTPS）。
+      if (field.default !== undefined && Boolean(value) === field.default) {
+        delete config[field.key]
+      } else {
+        config[field.key] = Boolean(value)
+      }
     } else if (field.type === 'list') {
       const items = (value || []).map((item) => String(item ?? '').trim()).filter(Boolean)
       if (items.length) {

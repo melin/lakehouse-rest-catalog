@@ -45,6 +45,13 @@ public final class ManagementEnums {
      * 「按类型分派」逻辑：客户端（引擎）只是把 {@code storageConfigInfo} 原样透传，
      * 不解析这个字段，因此不破坏 REST Catalog 协议。取舍记在
      * {@code docs/management-api-contract.md}。
+     *
+     * <p><b>{@code COS} 同理，但它与 {@code OBS} / {@code OSS} 有一处本质差别</b>：
+     * 后两者是「兼容 S3 协议」的等价物，理论上可以用 {@code S3} 类型加自定义
+     * {@code endpoint} 接进来；腾讯云 COS 走的是 COSN（{@code cosn://} +
+     * {@code fs.cosn.*} 键族，见 {@code DefaultStorageCredentialManager}），
+     * 与 S3 兼容层是两条不同的实现路径，混用会静默失效。因此必须单列一个取值——
+     * 否则「用 S3 类型接 COS」这种看起来能跑的配置，会在引擎侧报一个与凭据无关的错。
      */
     public enum StorageType {
         S3,
@@ -52,6 +59,7 @@ public final class ManagementEnums {
         AZURE,
         OBS,
         OSS,
+        COS,
         FILE;
 
         public static Optional<StorageType> parse(String value) {

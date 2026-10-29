@@ -327,6 +327,21 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
 - **存储配置收口在 `support/StorageConfigs.java`**：`validate` / `blank` / `copyWith` / `of` /
   `withoutSecrets` / `mergeStaticCredentials`。新增存储类型或字段时这几处都要同步，
   漏一处就是「读得出来写不进去」。
+- **加一种存储类型要动的地方**（照 `COS` 那次走一遍，共十处）：`ManagementEnums.StorageType`、
+  `StorageDtos`（`WIRE_*` + `@JsonSubTypes` + `permits` + record）、`StorageConfigs` 的五个方法、
+  `FileIoType`（wire 名 + `EnumSet`）、`RestServerProperties.Storage`、
+  `DefaultStorageCredentialManager`（`KeyFamily` + `otherSource` 分支）、`StorageFileIoFactory`
+  的错误信息、两份 `pom.xml`、控制台 `StorageConfigFields.vue`、`ConsoleApiTests` 里的枚举断言。
+  漏掉 `StorageFileIoFactory` 这类「错误信息里列了支持的 scheme」的地方不会编译报错，
+  只会让用户看到一句过期的提示。
+- **`COS` 的 wire 名是 `cosn`，不是 `cos`**：它同时是 Paimon `FileIOLoader` 的 scheme
+  （`COSNLoader#getScheme()`），写成 `cos` 的表现是「不支持的 scheme」，看起来像没装插件。
+  另两个只靠读上游源码才发现的坑：`fs.cosn.userinfo.secretId` / `secretKey` 是**仅有的两个
+  保留大小写**的键（Hadoop `Configuration` 会小写化，COSN 用两项白名单还原，拼错不报错、
+  只是 AK 变空串）；`fs.cosn.useHttps` 上游缺省 `false`（明文），本工程必须显式下发 `true`。
+  COS **没有任何临时凭据能力**（`org.apache.hadoop.fs.cosn.auth` 下没有能消费 sessionToken
+  的 provider），因此 `KeyFamily.sessionToken` 允许为 `null`，`putSecrets` 在「有令牌要发、
+  但这一族没有令牌键」时抛 500——不要改成静默丢弃。
 - **catalog 静态凭据**（超出 Polaris 规格的扩展，见 `README.md` §5）：`secretAccessKey`
   **只写不读**（AES-GCM 加密落库，响应永不回显）→ `PUT` 省略它表示**保持**，这是规格
   「整体替换」语义的**唯一例外**；清除要显式提交一对空串；与 `storageName` 互斥；
@@ -475,7 +490,7 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
 - 全局说明：[`README.md`](README.md)（工程结构、配置项、测试清单、部署、已知边界 21 条）
 - 模块划分：[`docs/maven-module-design.md`](docs/maven-module-design.md)（依赖图、两条父 POM、enforcer 不变量、落点与依赖分工 §8、对外名字 §4）
 - 设计对照：[`docs/polaris-capabilities-and-design.md`](docs/polaris-capabilities-and-design.md)
-- 存储凭据下发：[`docs/credential-vending-design.md`](docs/credential-vending-design.md)（**P0 已实现、P1 部分实现**：`lakehouse.rest.credential.providers` 默认空，只走 relay 转发长期 AK/SK；写成 `[s3-token]` 后 S3 catalog 若配了 `roleArn` 就改走 STS `AssumeRole` + session policy 收窄；**服务端自己也按 catalog 的允许位置单独取票（P1-9）**，其余五家与权限点仍是 P1；Gravitino / Polaris 的三层抽象与键名契约、**2026 年 7–10 月 Gravitino `vended` PR 的九条改动**（静态用 `expireTimeInMs()==0` 表达而非 mode 开关、`USE_CREDENTIAL`/`USE_SECRET` 两个权限点、打码值回写、Flink 非 REST 后端只取一次凭据、联邦 delegation 头、服务端自身 FileIO、ADLS 多路径、COS）、七种存储的签发映射（**COS 定案 COSN 原生 `fs.cosn.*`，但只在 Paimon 面成立**——Iceberg 只能 `HadoopFileIO` 收不到下发凭据、Lance 是 Rust 没有 COSN）、18 条缺口、引擎侧四面矩阵与那段 AK/SK 配置的逐行点评、§10 控制台三态与引擎片段生成规则、P0/P1/P2 路线与 P0 的对应用例名；配套原型 `docs/credential-vending-mockup.html`）
+- 存储凭据下发：[`docs/credential-vending-design.md`](docs/credential-vending-design.md)（**P0 已实现、P1 部分实现**：`lakehouse.rest.credential.providers` 默认空，只走 relay 转发长期 AK/SK；写成 `[s3-token]` 后 S3 catalog 若配了 `roleArn` 就改走 STS `AssumeRole` + session policy 收窄；**服务端自己也按 catalog 的允许位置单独取票（P1-9）**；**腾讯云 COS 已按 COSN 原生落地（P1-12，`fs.cosn.*` 键族 + `cosn` wire 名 + `useHttps` 缺省反向修正）**，但 COS 在这条链上没有临时凭据能力，`G18` / `P1-13` 经 jar 实测后作废；其余四家与权限点仍是 P1；Gravitino / Polaris 的三层抽象与键名契约、**2026 年 7–10 月 Gravitino `vended` PR 的九条改动**（静态用 `expireTimeInMs()==0` 表达而非 mode 开关、`USE_CREDENTIAL`/`USE_SECRET` 两个权限点、打码值回写、Flink 非 REST 后端只取一次凭据、联邦 delegation 头、服务端自身 FileIO、ADLS 多路径、COS）、七种存储的签发映射（**COS 定案 COSN 原生 `fs.cosn.*`，但只在 Paimon 面成立**——Iceberg 只能 `HadoopFileIO` 收不到下发凭据、Lance 是 Rust 没有 COSN）、18 条缺口、引擎侧四面矩阵与那段 AK/SK 配置的逐行点评、§10 控制台三态与引擎片段生成规则、P0/P1/P2 路线与 P0 的对应用例名；配套原型 `docs/credential-vending-mockup.html`）
 - 事件框架：[`docs/event-framework.md`](docs/event-framework.md)（9 类 33 个领域事件、与 Polaris 枚举的映射、发布点清单与不发清单、按监听器的类别/类型订阅、增量拉取契约；加事件或接 listener 先读它）
 - 通用表（设计稿）：[`docs/generic-table-design.md`](docs/generic-table-design.md)（parquet / orc / lance / vortex 纳入目录：格式能力矩阵、`table_kind` 方案取舍、端点与权限、Spark 接入、影响面与风险；**未实现**）
 - 指标（设计稿）：[`docs/metrics-design.md`](docs/metrics-design.md)（Polaris telemetry 基线、`lakehouse.*` 指标目录与基数预算、标签闸门、管理端口与 ServiceMonitor；**未实现**）

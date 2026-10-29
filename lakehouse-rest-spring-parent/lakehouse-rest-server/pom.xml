@@ -94,6 +94,15 @@
 			<groupId>org.apache.paimon</groupId>
 			<artifactId>paimon-s3</artifactId>
 		</dependency>
+		<!--
+			腾讯云 COS（scheme 为 cosn）。与 paimon-s3 同属「可执行产物里装哪几个
+			FileIO 插件」这一部署决策，因此也声明在 server。体积（约 99MB，
+			内含 paimon-plugin-cosn 子目录）与取舍见父 POM 的 dependencyManagement。
+		-->
+		<dependency>
+			<groupId>org.apache.paimon</groupId>
+			<artifactId>paimon-cosn</artifactId>
+		</dependency>
 
 		<!--
 			Hadoop 的「可嵌入」两件套。**没有它们，数据预览读 parquet 会 500**：

@@ -148,7 +148,7 @@ curl -s http://127.0.0.1:8080/api/management/v1/catalogs
 
 warehouse 是节点本地目录 + `file://` 协议。扩到 2 个副本，第二个 Pod 要么调度到
 同一节点、要么各写一份互不相干的数据（表现为「建的表时有时无」）。
-要横向扩展必须先把仓库换成对象存储（S3 / Azure Blob / GCS / 华为云 OBS / 阿里云 OSS），
+要横向扩展必须先把仓库换成对象存储（S3 / Azure Blob / GCS / 华为云 OBS / 阿里云 OSS / 腾讯云 COS），
 换成 `s3://...` 之后 `hostPath` 卷与 `prepare-warehouse` 都可以删掉。
 
 ### 3.2 探针用 exec + curl，而不是 httpGet

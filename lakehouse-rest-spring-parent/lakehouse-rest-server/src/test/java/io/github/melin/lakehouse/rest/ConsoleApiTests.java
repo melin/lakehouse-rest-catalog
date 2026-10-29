@@ -104,16 +104,16 @@ class ConsoleApiTests {
         // 顺序即建议的展示顺序（默认格式在前），因此这里断言顺序而不只是集合
         // LANCE 是第三个协议面（/lance/v1/**），catalog 一建就定型，建的入口与其它两种一致
         assertEquals(List.of("PAIMON", "ICEBERG", "LANCE"), strings(enums.get("catalogFormats")));
-        // 两个扩展存储类型必须在取值集合里：控制台的存储类型下拉框据此渲染
-        assertEquals(Set.of("S3", "GCS", "AZURE", "OBS", "OSS", "FILE"),
+        // 三个扩展存储类型必须在取值集合里：控制台的存储类型下拉框据此渲染
+        assertEquals(Set.of("S3", "GCS", "AZURE", "OBS", "OSS", "COS", "FILE"),
                 new LinkedHashSet<>(strings(enums.get("storageTypes"))));
 
-        // file-io.type=default 时六种存储全部可用，FILE 恒在其中
-        assertEquals(Set.of("S3", "GCS", "AZURE", "OBS", "OSS", "FILE"),
+        // file-io.type=default 时全部存储可用，FILE 恒在其中
+        assertEquals(Set.of("S3", "GCS", "AZURE", "OBS", "OSS", "COS", "FILE"),
                 new LinkedHashSet<>(strings(enums.get("supportedStorageTypes"))));
 
         assertTrue(strings(enums.get("credentialManagerTypes")).containsAll(List.of("default", "noop")));
-        assertTrue(strings(enums.get("fileIoTypes")).containsAll(List.of("default", "local", "obs", "oss")));
+        assertTrue(strings(enums.get("fileIoTypes")).containsAll(List.of("default", "local", "obs", "oss", "cosn")));
 
         // 资源类型 = 官方 PermissionResource 的 8 个 discriminator 取值。
         // 字段名 `grantTypes` 是历史命名（原先指 Polaris 的授权类型小写值），

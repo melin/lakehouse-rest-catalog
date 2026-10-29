@@ -430,6 +430,9 @@ Catalog 侧与鉴权：
 | `lakehouse.rest.storage.oss.secret-key` | 空 | 同上 |
 | `lakehouse.rest.storage.oss.session-token` | 空 | OSS 临时凭据的安全令牌（阿里侧键名为 `securityToken`） |
 | `lakehouse.rest.storage.oss.storages.<name>.access-key` | 空 | OSS 具名存储，另支持 `.secret-key` / `.session-token` |
+| `lakehouse.rest.storage.cos.access-key` | 空 | 腾讯云 COS 默认凭据（下发为 `fs.cosn.userinfo.secretId`） |
+| `lakehouse.rest.storage.cos.secret-key` | 空 | 同上 |
+| `lakehouse.rest.storage.cos.storages.<name>.access-key` | 空 | COS 具名存储，另支持 `.secret-key`；`.session-token` 虽能绑定，但 **COS 的发包里没有能消费它的凭据提供器**，配上之后该 catalog 的下发会以 500 明确失败，而不是发一个没人读的键 |
 | `lakehouse.rest.storage.credential-secret-key` | 空 | catalog 自带静态凭据的落库加密密钥，Base64 且解码后**恰好 32 字节**；留空则关闭静态凭据，见下方说明 |
 | `lakehouse.rest.storage.clients-cache-max-size` | 空 | 保留项，见下方说明 |
 | `lakehouse.rest.storage.max-http-connections` | 空 | 保留项，见下方说明 |
@@ -441,14 +444,16 @@ Catalog 侧与鉴权：
 | `lakehouse.rest.storage.expect-continue-enabled` | 空 | 保留项，见下方说明 |
 | `lakehouse.rest.storage-credential-cache.max-entries` | `10000` | 已下发凭据的复用上限，条目按各自过期时间失效 |
 | `lakehouse.rest.credential-manager.type` | `default` | `default` 下发凭据；`noop` 不下发，读表接口返回 501 |
-| `lakehouse.rest.file-io.type` | `default` | 本部署接入的存储实现：`default`/`s3`/`azure`/`gcs`/`obs`/`oss`/`local` |
+| `lakehouse.rest.file-io.type` | `default` | 本部署接入的存储实现：`default`/`s3`/`azure`/`gcs`/`obs`/`oss`/`cosn`/`local` |
 
-`lakehouse.rest.storage.obs.*` 与 `lakehouse.rest.storage.oss.*` 两组**没有 Polaris 侧的对应项**
-——Polaris 没有这两个存储类型，它在 S3 兼容层上接入华为云与阿里云。
-本工程单列，是为了让这两家的 AK/SK 独立于 S3 那一份，各按各自的节奏轮转与授权。
+`lakehouse.rest.storage.obs.*`、`lakehouse.rest.storage.oss.*` 与 `lakehouse.rest.storage.cos.*`
+三组**没有 Polaris 侧的对应项**——Polaris 没有这三个存储类型，它在 S3 兼容层上接入华为云、
+阿里云与腾讯云。本工程单列，是为了让这三家的 AK/SK 独立于 S3 那一份，各按各自的节奏轮转与授权。
+其中 `cos.*` 复用 S3 那一档的字段形状，但 **`sessionToken` 填了会在下发时明确报 500**：
+COS 这条链上没有能消费临时令牌的凭据提供器（见下）。
 
 **catalog 自带的静态凭据**是另一处在 Polaris 规格之外的扩展：
-`S3` / `OBS` / `OSS` 三种 `storageConfigInfo` 都多出 `accessKeyId` 与 `secretAccessKey`
+`S3` / `OBS` / `OSS` / `COS` 四种 `storageConfigInfo` 都多出 `accessKeyId` 与 `secretAccessKey`
 两个字段，填写后该 catalog 就用这把钥匙访问对象存储，不必把密钥写进服务端配置。
 参照 Polaris 的路径接入不提供 STS 的兼容 S3 存储（MinIO、Ceph RGW、Ozone、FlashBlade 等）
 要写 `stsUnavailable: true`，此时服务端不再下发任何密钥，引擎只能靠自己的凭据链；
@@ -474,8 +479,8 @@ Catalog 侧与鉴权：
 JDK 的 `HttpClient` 也没有对应的调节项，因此它们不改变行为。保留是为了让配置面与 Polaris
 一一对应，迁移时不必删配置。`read-timeout` 与 `connect-timeout` 之外的连接池参数属于此类。
 
-`lakehouse.rest.file-io.type` 决定 catalog 允许的 `storageType`：`default` 接受全部六种，
-`s3`/`azure`/`gcs`/`obs`/`oss` 只接受对应云存储加 `FILE`，`local` 只接受 `FILE`。
+`lakehouse.rest.file-io.type` 决定 catalog 允许的 `storageType`：`default` 接受全部七种，
+`s3`/`azure`/`gcs`/`obs`/`oss`/`cosn` 只接受对应云存储加 `FILE`，`local` 只接受 `FILE`。
 不接受本部署没有实现的存储类型时，创建或修改 catalog 直接返回 400，而不是让错误
 推迟到引擎第一次读写时才以文件系统异常暴露。`FILE` 在所有取值下都保留，它是本地的退路。
 
@@ -492,6 +497,7 @@ JDK 的 `HttpClient` 也没有对应的调节项，因此它们不改变行为�
 | `GCS` | `gcs.oauth2.token`、`gcs.oauth2.token-expires-at`、`gcs.service-account` | 服务端配置 → 环境凭据链 |
 | `OBS` | `fs.obs.access.key`、`fs.obs.secret.key`、`fs.obs.session.token`、`fs.obs.endpoint` | 具名存储 → 默认配置 → 环境凭据链 |
 | `OSS` | `fs.oss.accessKeyId`、`fs.oss.accessKeySecret`、`fs.oss.securityToken`、`fs.oss.endpoint` | 同上 |
+| `COS` | `fs.cosn.userinfo.secretId`、`fs.cosn.userinfo.secretKey`、`fs.cosn.bucket.region`、`fs.cosn.bucket.endpoint_suffix`、`fs.cosn.useHttps` | 同上，但**没有临时令牌那一列** |
 | `FILE` | 自包含令牌（`accessKeyId`/`securityToken`/`expiration`/`tablePath`） | 服务端自签，文件系统本身不校验 |
 
 `OBS` 与 `OSS` 都是兼容 S3 协议的对象存储，但**键名族互不通用，也都不认 `s3.*`**：
@@ -500,6 +506,30 @@ Paimon 的 `paimon-obs` 与 `paimon-oss` 是两个独立的 FileIO。两家的�
 连「临时凭据的令牌」都不同名（`session.token` 对 `securityToken`）。
 这些差异来自各自的 Hadoop FileSystem（`hadoop-huaweicloud` 与 `hadoop-aliyun`），不是笔误，
 改「统一」会让其中一侧静默失效：引擎只是拿不到凭据，然后在第一次读数据时以看似无关的文件系统异常失败。
+
+`COS` 走的是**腾讯云原生的 COSN**（`paimon-cosn`，FileIO 取值 `cosn`），不是 S3 兼容层。
+它的三条约束值得单独记住：
+
+- **两个键名的大小写是例外**。Hadoop 的 `Configuration` 会把键名小写化，COSN 靠一张只有两项的
+  白名单还原——`fs.cosn.userinfo.secretId` 与 `fs.cosn.userinfo.secretKey`。写成
+  `secretID` 之类的拼法不会报错，只会让 AK 变成空串，然后在读数据时报认证失败。
+  因此这两项有专门的断言（`cosVendsItsOwnKeyFamilyWithExactCase`）。
+- **`fs.cosn.useHttps` 的缺省方向与别人相反**。COSN 自己不写这个键时是**明文**（缺省 `false`），
+  所以服务端必须显式下发 `true`，只在本工程判 `useHttps == false` 时才发 `false`。
+- **`appId` 不是下发键**。COS 的桶名形如 `<bucket>-<appid>`，没有独立的配置项，
+  它只用来在建 catalog 时校验 `allowedLocations` 的桶名后缀——填错时第一次读表才 404，
+  而报错只说文件不存在，很难往「appId 写错了」上想。
+
+临时凭据在 COS 上**不可用，这是上游能力边界**：`org.apache.hadoop.fs.cosn.auth` 下只有
+`SimpleCredentialsProvider` 与 `EnvironmentVariableCredentialsProvider`，
+没有能消费 sessionToken 的实现；`CosNConfigKeys` 里也没有任何令牌项。
+往 `fs.cosn.credentials.provider` 填一个不存在的类会在 FileIO 初始化时失败，
+因此本工程不下发这个键，并在「配了 sessionToken 要发、但这一族没有令牌键」时返回 500
+而不是静默丢掉——否则表现就是「票发了、引擎不认、过一会儿失败」。
+
+COS 还只在 **Paimon 面**成立：Iceberg 的 `HadoopFileIO` 不消费下发的 `config`，
+Lance 是 Rust 没有 COSN 实现。要在 Iceberg 上读 COS 里的数据，得另建一个 `S3` catalog
+指向 COS 的 S3 兼容端点（那时用的是 `s3.*` 键族，与这里互不相干）。
 
 `endpointInternal`、`stsEndpoint`、`roleArn`、`externalId`、`userArn` 一律不下发：
 前者规格明确写了客户端看不到，后三者是服务端去换临时凭据的材料。
@@ -515,7 +545,7 @@ Paimon 叫 `s3.access-key` / `s3.secret-key`，两边互不认识。
 这个异常类来自插件的隔离类加载器，Spark 上报时序列化不到 driver，
 最终在用户面前只剩一句 `UnknownReason`。同时下发两套，两边才都能用。
 
-仍可用 S3 类型接入华为云与阿里云：两者都提供 S3 兼容端点，把 `endpoint` 指向该端点即可。
+仍可用 S3 类型接入华为云、阿里云与腾讯云：三家都提供 S3 兼容端点，把 `endpoint` 指向该端点即可。
 代价是拿不到厂商原生的临时凭据键与凭据提供器配置，且多依赖一层协议转换。
 
 Azure 只下发定位元数据是个明确的缺口：Polaris 的 `polaris.storage.*` 里没有 Azure 账户密钥这一项，
@@ -757,14 +787,14 @@ JAVA_HOME=/path/to/jdk-21 mvn test
 | `TableMetadataMaterializationTests` | 把 schema 与快照物化到 Paimon 表目录：建表写 `schema-0`、改表写下一个号、回滚把旧内容写到**新号**（回滚也是向前一步）、`register` 进来的外部表一个文件都不碰、缺 FileIO 实现时默认只记日志不打断请求（并断言打开 `fail-on-error` 后确实变成 500）；快照侧写 `snapshot/snapshot-<id>` 与 `LATEST`、落盘的是客户端**原文**（`properties` 这类规格没建模的字段不能丢）、`VERSION AS OF <数字>` 按**快照 id** 而不是 `Snapshot.version` 取值（含 `LATEST` / `EARLIEST` / 标签名）、快照回滚会删掉目标之后的快照文件；钉住「数据库 `schemaId` ↔ 仓库 `schema-<n>`」与「数据库 `snapshotId` ↔ 仓库 `snapshot-<n>`」逐号对应 |
 | `ManagementApiTests` | 管理 API 的主体、角色、装配与授权链路；以及**格式分派**（`catalogFormat` 省略时用部署默认值、显式 ICEBERG 落库且能读回、认不出的取值 400 不让脏值进库、改已有 catalog 的格式 400 且消息说明不可变、原样带回则放行、`/v1/config` 的形状随格式变（Iceberg 带 `endpoints` 而 Paimon 不带）、两个方向的格式不匹配都给出**指名原因**的 404） |
 | `PermissionManagementTests` | Paimon 原生权限端点（`/v1/{prefix}/permissions`）与直授判定：赋权三元组的增删查、官方词表的入参校验、撤销幂等、重复授予覆盖过期时间，以及直授真的能打通 catalog API 的权限判定（`user:` 与 `role:` 两种 principal 形式各一条链路）；**Iceberg 多级 namespace 的判权口径**（授 `accounting.tax` 命中 `["accounting","tax"]`、授上级覆盖后代、不反向覆盖、`sales` 不命中 `salesforce`）；与 `AuthorizationTests`（Polaris RBAC 链）互补 |
-| `StorageConfigApiTests` | `storageConfigInfo` 六种存储类型的建 / 读 / 改往返、`AZURE` 缺 `tenantId` 与空位置的 400、换存储后新库位置随之改变、OBS↔OSS 换类型时端点一起替换 |
+| `StorageConfigApiTests` | `storageConfigInfo` 七种存储类型的建 / 读 / 改往返、`AZURE` 缺 `tenantId` 与空位置的 400、换存储后新库位置随之改变、OBS↔OSS 换类型时端点一起替换、`COS` 的地域 / `appId` / `useHttps` 三项往返且 `appId` 与桶名后缀对不上时 400 |
 | `StorageConfigDtosTests` | 判别联合的绑定位形：子类型注册名与枚举一致、判别字段只出现一次、跨类型字段不串、落库路径（`Json`）往返、静态凭据字段随实体往返 |
-| `StorageCredentialApiTests` | 按存储类型下发凭据的 HTTP 链路：S3 的密钥来源（默认配置与具名存储）与不下发 `endpointInternal` / `stsEndpoint`、`stsUnavailable` 时不给密钥、Azure 只给定位元数据、GCS 的 `lifespan` 收窄 `expiresAt`、OBS / OSS 各自走对键族且不串族、FILE 保留自包含令牌、未过期凭据被复用（比对 `expiresAt` 而非密钥） |
-| `StorageCredentialResolutionTests` | 凭据解析与缓存的单元行为：具名存储优先且找不到时明确失败而非退回默认凭据、服务端专用字段不泄露、Azure 账户名只在已知端点后缀上解析、GCS `lifespan` 与 `ttl` 取小、OBS / OSS 的键名族与临时凭据令牌（含两家不同拼写）、两家的凭据互不可见、LRU 淘汰与过期失效、两个策略枚举的取值校验与错误信息；**catalog 静态凭据压过一切服务端来源、在 `stsUnavailable` 下仍然下发、OBS / OSS 各走自己的键族、密文解不开或不是密文时明确失败而非静默退回** |
-| `StaticCredentialApiTests` | catalog 静态凭据的 HTTP 语义（配了加密密钥）：创建响应不回显密钥而库内是密文且能解回原值、凭据下发优先用 catalog 这一份、`PUT` 省略密钥表示保持、完全不带凭据字段也表示保持、提交一对空串即清除并退回服务端配置、只给密钥 / 换 ID 不带新密钥 / 空 ID 配非空密钥各自 400、与 `storageName` 互斥 400、OBS 与 OSS 同样支持、meta 报告 `staticCredentialsEnabled` |
+| `StorageCredentialApiTests` | 按存储类型下发凭据的 HTTP 链路：S3 的密钥来源（默认配置与具名存储）与不下发 `endpointInternal` / `stsEndpoint`、`stsUnavailable` 时不给密钥、Azure 只给定位元数据、GCS 的 `lifespan` 收窄 `expiresAt`、OBS / OSS / COS 各自走对键族且不串族、FILE 保留自包含令牌、未过期凭据被复用（比对 `expiresAt` 而非密钥） |
+| `StorageCredentialResolutionTests` | 凭据解析与缓存的单元行为：具名存储优先且找不到时明确失败而非退回默认凭据、服务端专用字段不泄露、Azure 账户名只在已知端点后缀上解析、GCS `lifespan` 与 `ttl` 取小、OBS / OSS 的键名族与临时凭据令牌（含两家不同拼写）、两家的凭据互不可见、LRU 淘汰与过期失效、两个策略枚举的取值校验与错误信息；**catalog 静态凭据压过一切服务端来源、在 `stsUnavailable` 下仍然下发、OBS / OSS / COS 各走自己的键族、密文解不开或不是密文时明确失败而非静默退回**；COS 另有三条自己的约束被钉住——`secretId` / `secretKey` 两个键的**大小写必须原样**（Hadoop 会小写化，靠 COSN 的两项白名单还原）、`useHttps` 缺省发 `true`（COSN 自己的缺省是 `false` = 明文）、以及**配了 `sessionToken` 就明确失败**而不是发一个没人读的键 |
+| `StaticCredentialApiTests` | catalog 静态凭据的 HTTP 语义（配了加密密钥）：创建响应不回显密钥而库内是密文且能解回原值、凭据下发优先用 catalog 这一份、`PUT` 省略密钥表示保持、完全不带凭据字段也表示保持、提交一对空串即清除并退回服务端配置、只给密钥 / 换 ID 不带新密钥 / 空 ID 配非空密钥各自 400、与 `storageName` 互斥 400、OBS / OSS / COS 同样支持、meta 报告 `staticCredentialsEnabled` |
 | `StaticCredentialDisabledApiTests` | 未配 `credential-secret-key` 时的 fail-closed（`test` profile 里显式把该键置空——`application.yml` 那份是给人手工起实例用的）：保存静态凭据返回 400 且错误信息点明配置项与 `openssl rand -base64 32`、**不带凭据的 catalog 照常可建**（对照组，防「顺手把整个存储配置关掉」）、meta 报告能力已关闭 |
 | `CredentialCipherTests` | 落库加解密单元行为：往返、同一明文两次密文不同（随机 IV）、空值保持空、未配密钥时拒绝加密、换密钥后解不开、密文被篡改时认证失败、明文当密文传入被拒、密文载荷畸形被拒、密钥不是 Base64 或解码后不是 32 字节时启动即失败、留空的密钥视为关闭 |
-| `StoragePolicyApiTests` | `file-io.type=s3` 时拒绝 Azure / GCS / OBS / OSS catalog 并在报错里点明原因、接受 S3 与 FILE；`credential-manager.type=noop` 时凭据下发返回 501 |
+| `StoragePolicyApiTests` | `file-io.type=s3` 时拒绝 Azure / GCS / OBS / OSS / COS catalog 并在报错里点明原因、接受 S3 与 FILE；`credential-manager.type=noop` 时凭据下发返回 501（`file-io.type=cosn` 只放开 COS 与 FILE 的那条映射在 `StorageCredentialResolutionTests` 里） |
 | `AuthorizationTests` | 权限蕴含与判定的单元行为 |
 | `CatalogEndpointAuthorizationTests` | 从运行时请求映射枚举全部 `/v1/{prefix}/**` 端点，逐一核对授权映射是否已登记——新增端点若忘记登记映射会让构建失败。枚举是**方法无关**的：Iceberg 面那三个显式登记的 `HEAD` 存在性检查端点一开始就把造请求的工厂顶爆了（`IllegalArgumentException: HEAD`），说明枚举确实覆盖了新协议面，而不是静默少测一批 |
 | `ConsoleApiTests` | 控制台的托管与元数据：`/console` 重定向、目录式路径转发入口页、深链回退、缺失 assets 仍 404、已提交入口页引用的产物都存在、meta 的枚举与权限分组跟着规格走（含 `catalogFormats` 与服务端 `CatalogFormat` 枚举一致、`defaultCatalogFormat`）、登录引导同时如实返回 `authEnabled` 与 `consoleRequired`、门禁开着时控制台端点拒匿名而数据面仍开放（见第 9 节） |

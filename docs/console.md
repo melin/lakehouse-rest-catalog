@@ -284,7 +284,7 @@ meta 只暴露枚举取值与服务端自身的配置，不含任何主体、cat
 ### 4.3 存储配置表单里的静态凭据
 
 创建 / 编辑 catalog 时的存储配置（`components/StorageConfigFields.vue`）在
-`S3` / `OBS` / `OSS` 三种类型下多出一组「静态凭据」：`accessKeyId` 与
+`S3` / `OBS` / `OSS` / `COS` 四种类型下多出一组「静态凭据」：`accessKeyId` 与
 `secretAccessKey`（密码框，可切换显示）。它是本工程在规格之外的扩展，语义与边界见
 [`README.md` 的存储与凭据一节](../README.md#5-配置项)，这里只说表单侧的做法：
 
@@ -311,6 +311,7 @@ meta 只暴露枚举取值与服务端自身的配置，不含任何主体、cat
 | `AZURE` | `tenantId`（必填） | `multiTenantAppName`、`consentUrl`、`hierarchical` |
 | `GCS` | — | `gcsServiceAccount` |
 | `OBS` / `OSS` | `endpoint` | `stsUnavailable` |
+| `COS` | `endpoint`（COSN 的 `endpoint_suffix`）、`bucketRegion` | `appId`（只用于校验桶名）、`useHttps`（缺省开）、`stsUnavailable` |
 | `FILE` | — | 无（折叠区整块不出现） |
 
 三条规则与它们的理由：
