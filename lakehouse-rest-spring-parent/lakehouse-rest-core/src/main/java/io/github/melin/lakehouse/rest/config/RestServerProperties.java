@@ -92,26 +92,30 @@ public class RestServerProperties {
     /**
      * 行过滤 / 列脱敏的写入口开关（{@code docs/row-filter-column-mask-design.md} §5.4）。
      *
-     * <p><b>默认关闭，只锁写入口、读照常</b>——与血缘开关同一模式：把「功能没开」与
-     * 「没建策略」分开。读侧（resolve、策略详情、列表）如果也被关掉，「上下文包 404」
-     * 和「本来就没策略」就混成一件事了，引擎侧的 fail-closed 无法区分故障与空态。
-     * yml 里不要写非默认值（血缘的 {@code LineageDisabledTests} 教训）：要开的部署
-     * 用启动参数显式打开。
+     * <p><b>默认开启，只锁写入口、读永远不锁</b>——与血缘开关同一模式：把「功能没开」与
+     * 「没建策略」分开。读侧（resolve、策略详情、列表）任何情况下都不受它限制，
+     * 否则「上下文包 404」和「本来就没策略」就混成一件事了，引擎侧的 fail-closed
+     * 无法区分故障与空态。
+     *
+     * <p>缺省取开，取的是「开箱即用就具备治理能力」：策略的<b>执行</b>在引擎侧由
+     * {@code spark.lakehouse.rest.policy.enforced} 控制（那里缺省不注入），因此服务端
+     * 放开写入口不会让任何查询突然开始被过滤——它只决定「能不能把规则存进来」。
+     * 不开治理的部署显式关掉：{@code --lakehouse.rest.policy.enabled=false}。
+     * 注意它与 {@code auth.enabled} 是两个维度：后者缺省仍是关，所以单机默认状态下
+     * 「能改脱敏规则」等同于「能访问管理 API」，别把它当成一层权限。
      */
     @Getter
     @Setter
     public static class DataPolicy {
 
         /**
-         * 是否允许创建 / 修改 / 删除策略（PUT / DELETE）。<b>默认 false。</b>
+         * 是否允许创建 / 修改 / 删除策略（PUT / DELETE）。<b>默认 true。</b>
          *
-         * <p>默认关的理由与血缘同一条：这些写入口一上线就是「任何人都能改脱敏规则」，
-         * 而「默认打开、需要时再关」意味着每个部署都得先知道有这个开关。
-         * 读侧不受它限制（{@code /resolve}、策略详情照常），否则「功能没开」
-         * 和「本来就没策略」就混成一件事了，引擎侧的 fail-closed 无法区分故障与空态。
-         * 要开的部署用启动参数显式打开：{@code --lakehouse.rest.policy.enabled=true}。
+         * <p>关掉之后写入口一律 403 且报错写明本配置项，读侧照常（{@code /resolve}、
+         * 策略详情、列表）。已下发的策略在引擎侧继续执行——这个开关管的是
+         * 「这个部署还开不开放治理」，不是「已存的策略要不要生效」。
          */
-        private boolean enabled = false;
+        private boolean enabled = true;
     }
 
     /** Bearer 鉴权开关。关闭时所有请求以 {@code principal} 身份通过。 */
@@ -960,23 +964,28 @@ public class RestServerProperties {
     /**
      * {@code lakehouse.rest.lineage.*}：Spark SQL 血缘（设计见 {@code docs/lineage-design.md}）。
      *
-     * <p><b>默认关。</b>两个理由：没有客户端埋点就没有数据，写了也只是一张空表；
-     * 而边表<b>不按时间清</b>（§7.5），一旦开始写就只剩「删表时级联删边」一条回收路径，
-     * 因此量级要先在测试环境跑准。读端点不受这个开关限制——关闭只影响写入，
-     * 已有的边仍然能查（关掉采集的部署不该连带看不见历史图）。
+     * <p><b>默认开。</b>「没有客户端埋点就没有数据」这条不变——服务端开着也不会自己长出图来，
+     * 真正决定有没有数据的是 Spark 侧的 {@code spark.lakehouse.rest.lineage.enabled}。
+     * 因此服务端缺省取开，含义是「谁按规范上报都收」，而不是「已经开始采集」。
+     *
+     * <p>代价要提前知道：边表<b>不按时间清</b>（§7.5），一旦开始写就只剩「删表时级联删边」
+     * 一条回收路径，因此准备接采集器的部署要先把量级跑准。不接采集器的部署显式关掉
+     * （{@code --lakehouse.rest.lineage.enabled=false}），上报会拿到 403。
+     * 读端点任何情况下都不受这个开关限制——关闭只影响写入，已有的边仍然能查
+     * （关掉采集的部署不该连带看不见历史图）。
      */
     @Getter
     @Setter
     public static class Lineage {
 
         /**
-         * 是否接受 {@code POST /api/management/v1/lineage/runs}。<b>默认 false。</b>
+         * 是否接受 {@code POST /api/management/v1/lineage/runs}。<b>默认 true。</b>
          *
-         * <p>采集器一上线就会被 Spark 任务按批调用，而「上线才发现每个作业都在往一张新表里
-         * 写」不该是默认结果。读端点不跟着关——图是只读的，关掉它只会让「开关忘了打开」
+         * <p>它只决定「上报告要不要收」，不决定「有没有图」：没有 Spark 侧埋点就没有数据。
+         * 关掉之后上报拿 403，读端点照常——图是只读的，关掉读只会让「开关忘了打开」
          * 表现为「页签一直空着」，而空态无法区分这两种情况。
          */
-        private boolean enabled = false;
+        private boolean enabled = true;
 
         /**
          * {@code lineage_run} 的保留天数。

@@ -1716,7 +1716,7 @@ ResourceState 的用法不变，差别在动作条放不放。
 
 | 键 | 默认 | 说明 |
 | --- | --- | --- |
-| `enabled` | `false` | 总开关。默认关：没有客户端埋点就没有数据，且写入量要先评估 |
+| `enabled` | `true` | 总开关：是否接受上报。**缺省开**只表示「谁按规范上报都收」，不表示已经有数据——有没有图取决于 Spark 侧埋点 |
 | `run-retention-days` | `90` | `lineage_run` 保留天数 |
 | `max-runs-per-batch` | `50` | 单次上报最多几条 run，超了 400 |
 | `max-columns-per-target` | `2000` | 单目标列级边上限，超了降级为表级并标 `truncated` |
@@ -1724,8 +1724,12 @@ ResourceState 的用法不变，差别在动作条放不放。
 | `max-nodes` | `500` | 单次图查询返回节点上限 |
 | `cleanup-cron` | `0 30 3 * * *` | 过期 run 的清理节拍（cron）。`@Scheduled` 的占位符里也出现一次，改两处 |
 
-默认关的另一个原因：血缘表一旦开始写，就**只能靠时间清理**（边表不按时间清），
-先在测试环境把量跑准再开。
+缺省取开的代价要说清：血缘表一旦开始写，run 只按 `run-retention-days` 清、**边表根本不按时间清**
+（§7.5），所以准备接采集器的部署要先把量级在测试环境跑准。不接采集器的部署显式关掉
+（`enabled=false`），上报拿 403、读端点照常。
+另外 `enabled` 缺省为开还有两处**条件装配**要跟着走（`LineageSchedulingConfig` 与
+`LineageRetentionJob` 的 `matchIfMissing` 必须为 `true`），否则不写这个键的部署会
+「保留采集但不做清理」，现象是 run 表一直在长。
 
 ### 10.2 Spark 侧（`spark.lakehouse.rest.lineage.*`）
 
@@ -1985,7 +1989,7 @@ Paimon 2.1.0 提供了原生 `paimon-spark-4.1_2.13`，4.1 模块已切过去、
 lakehouse:
   rest:
     lineage:
-      enabled: false              # 默认关：没有客户端埋点就没有数据
+      enabled: true               # 缺省开：只表示「谁上报都收」，数据靠 Spark 侧埋点
       run-retention-days: 90      # 只清 run，边不按时间清
       max-runs-per-batch: 50      # 超了 400，不静默截断
       max-columns-per-target: 2000

@@ -15,10 +15,14 @@ import org.springframework.scheduling.annotation.EnableScheduling;
  * <p>{@code enabled=false} 时整个配置不生效：那时没有 run 会被写入，
  * 也就不需要清理；让一个关着的功能仍在后台跑定时任务，是「看起来什么都没做」的
  * 那类配置噪声。
+ *
+ * <p><b>{@code matchIfMissing} 必须是 true。</b>缺省值是开，因此「配置文件里没写这个键」
+ * 与「显式写了 true」是同一档语义。写成 false 会让绝大多数部署（不写这个键的）保留采集
+ * 却不做清理，现象是「run 表一直在长」——比报错难查得多。
  */
 @Configuration
 @EnableScheduling
 @ConditionalOnProperty(prefix = "lakehouse.rest.lineage", name = "enabled",
-        havingValue = "true", matchIfMissing = false)
+        havingValue = "true", matchIfMissing = true)
 public class LineageSchedulingConfig {
 }

@@ -415,10 +415,11 @@ data:
         # 回收路径只有「删表时级联删边」，量级要先在测试环境跑准。
         # -----------------------------------------------------------------------
         lineage:
-          # 是否接受血缘上报（POST /lineage/runs）。**缺省 false**（与 RestServerProperties
-          # 的代码默认一致——yml 里写非默认值会盖掉「缺省关闭」的语义）。这份清单显式打开：
-          # 集群部署是「已经决定要采集」的那一档，但新起的空集群要注意从此每个作业都会
-          # 往 lakehouse_lineage_* 里写；不采集就把下面那行改成 false。
+          # 是否接受血缘上报（POST /lineage/runs）。**缺省 true**（与 RestServerProperties
+          # 的代码默认一致）。这份清单显式写出来只为让配置可读，不代表与缺省不同。
+          # 「开着」只表示「谁按规范上报都收」，不等于已经有数据——决定有没有图的是
+          # Spark 侧的 spark.lakehouse.rest.lineage.enabled。不采集就把下面那行改成 false：
+          # 否则每个作业都会往 lakehouse_lineage_* 里写。
           # 读端点不受它限制：关掉采集的部署仍然查得到已有的边与运行历史。
           enabled: true
           # lineage_run 表的保留天数（清理只删 run，不清边；边的 last_seen 自带「最近一次」）。
@@ -452,13 +453,12 @@ data:
         # 策略详情 / resolve / 列表在关闭时仍然可达——「功能没开」与「本来就没策略」
         # 必须分得开，否则引擎侧的 fail-closed 无法区分故障与空态。
         #
-        # 这里写 true 是**这份清单的决定**，不是缺省值：代码与 application.yml 的缺省都是
-        # false（DataPolicyDisabledTests / LineageDisabledTests 验的就是那个缺省）。
-        # 集群里要治理就显式开；不需要就改成 false，别指望「缺省会替我关」。
-        # 要开的部署用启动参数显式打开：--lakehouse.rest.policy.enabled=true
+        # 这里写 true 与缺省值一致（代码与 application.yml 的缺省都是 true），显式写出来
+        # 只为让这份清单本身可读。不需要治理就改成 false，或用启动参数
+        # --lakehouse.rest.policy.enabled=false 关掉。
         # -----------------------------------------------------------------------
         policy:
-          # 是否允许创建 / 修改 / 删除策略（PUT / DELETE）。缺省 false，本清单显式 true。
+          # 是否允许创建 / 修改 / 删除策略（PUT / DELETE）。缺省 true，与清单一致。
           enabled: true
     
     # ===========================================================================

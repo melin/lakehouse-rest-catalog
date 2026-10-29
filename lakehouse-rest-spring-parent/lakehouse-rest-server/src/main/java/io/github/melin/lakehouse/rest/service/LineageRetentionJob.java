@@ -22,11 +22,15 @@ import org.springframework.stereotype.Component;
  *
  * <p>清理失败只记 WARN：一个删旧数据的任务失败，比它把服务搞挂要好得多；
  * 第二天会再跑一次，表只会多留一天。
+ *
+ * <p><b>{@code matchIfMissing} 必须是 true</b>：{@code lineage.enabled} 缺省是开，
+ * 因此「配置里没写这个键」也应当清理。漏了它，绝大多数部署会保留采集却不做清理。
  */
 @Slf4j
 @Component
 @RequiredArgsConstructor
-@ConditionalOnProperty(prefix = "lakehouse.rest.lineage", name = "enabled", havingValue = "true")
+@ConditionalOnProperty(prefix = "lakehouse.rest.lineage", name = "enabled",
+        havingValue = "true", matchIfMissing = true)
 public class LineageRetentionJob {
 
     private final LineageService lineageService;

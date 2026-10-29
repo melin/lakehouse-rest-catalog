@@ -1,7 +1,7 @@
 package io.github.melin.lakehouse.rest;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 
@@ -17,15 +17,18 @@ import org.springframework.test.web.servlet.MvcResult;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
- * 血缘默认关闭时的行为：<b>只锁写入口，读照常</b>。
+ * 血缘被显式关掉时的行为：<b>只锁写入口，读照常</b>。
  *
- * <p>为什么默认关：采集器一上线就会被 Spark 任务按批调用，而「上线才发现每个作业都在
- * 往一张新表里写」不该是默认结果。反过来，读端点不跟着关——图是只读的，
- * 关掉它只会让「开关忘了打开」表现为「页签一直空着」，而空态无法区分这两种情况。
+ * <p>关掉之后采集器拿 403、图照常能查——这条不变式与「缺省是开还是关」无关，
+ * 因此本类不靠缺省值，而是显式写 {@code enabled=false}。缺省值本身由
+ * {@link #codeDefaultIsOn()} 单独盯住（缺省值曾是这套开关最容易被改坏的地方：
+ * yml 的值会盖住代码默认，行为用例绿了不等于默认值对）。
  *
- * <p>这个类刻意不写 {@code @TestPropertySource}：它验的就是**缺省值**。
+ * <p>为什么不跟着缺省值走：缺省值改过一次（false → true）。若这里仍依赖缺省，
+ * 改默认值就会让本类从「验关闭行为」悄悄变成「验开启行为」——用例还绿着，
+ * 但已经什么都不验了。
  */
-@SpringBootTest
+@SpringBootTest(properties = "lakehouse.rest.lineage.enabled=false")
 @ActiveProfiles("test")
 @AutoConfigureMockMvc
 class LineageDisabledTests {
@@ -57,14 +60,15 @@ class LineageDisabledTests {
     /**
      * 代码里的缺省值本身也要盯住。
      *
-     * <p>上面那条用例验的是**这份配置的生效值**——`application.yml` 里也写着 `false`，
-     * 于是它把「代码里的缺省值被改成 `true`」这件事挡住了：两者只要有一个是 false，
-     * 行为就还是关的。实际发生过一次（yml 与代码同时写成 true，注释写着 false），
-     * 现象是这条用例红了而没人知道该改哪边。所以缺省值单独断言。
+     * <p>上面那条用例是显式关的，验的是**关闭时的行为**；它挡不住「缺省值被改掉」——
+     * 这正是历史上出过的事（yml 与代码同时写成 true，注释却写着 false，于是用例红了
+     * 也没人知道该改哪边）。所以缺省值单独断言，且**与 yml 里的值分开看**：
+     * 这里 new 一个空对象，读的是纯代码默认。
      */
     @Test
-    void codeDefaultIsOff() {
-        assertFalse(new RestServerProperties().getLineage().isEnabled(),
-                "Lineage.enabled 的缺省值必须是 false：要采集的部署用启动参数显式打开");
+    void codeDefaultIsOn() {
+        assertTrue(new RestServerProperties().getLineage().isEnabled(),
+                "Lineage.enabled 的缺省值是 true（谁按规范上报都收）；"
+                        + "不采集的部署用 --lakehouse.rest.lineage.enabled=false 关掉");
     }
 }

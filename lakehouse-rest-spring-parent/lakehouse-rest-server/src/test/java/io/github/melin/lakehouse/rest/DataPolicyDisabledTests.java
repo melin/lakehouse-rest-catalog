@@ -1,7 +1,6 @@
 package io.github.melin.lakehouse.rest;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -19,15 +18,17 @@ import org.springframework.test.web.servlet.MvcResult;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
- * 数据策略默认关闭时的行为：<b>只锁写入口，读照常</b>（§5.4）。
+ * 数据策略被显式关掉时的行为：<b>只锁写入口，读照常</b>（§5.4）。
  *
  * <p>与血缘开关同一模式：把「功能没开」与「没建策略」分开。读侧（resolve、策略详情）
  * 如果也被关掉，引擎侧的 fail-closed 无法区分「故障」与「本来就没策略」；而写入口
  * 关掉只是「这个部署不开放治理」，不影响已经下发的策略继续执行。
  *
- * <p>这个类刻意不写 {@code @TestPropertySource}：它验的就是**缺省值**。
+ * <p>本类不靠缺省值，而是显式写 {@code enabled=false}：缺省值是开，依赖缺省会让本类
+ * 从「验关闭行为」悄悄变成「验开启行为」，用例还绿但已经什么都不验。
+ * 缺省值本身由 {@link #codeDefaultIsOn()} 单独盯住。
  */
-@SpringBootTest
+@SpringBootTest(properties = "lakehouse.rest.policy.enabled=false")
 @ActiveProfiles("test")
 @AutoConfigureMockMvc
 class DataPolicyDisabledTests {
@@ -69,12 +70,13 @@ class DataPolicyDisabledTests {
     }
 
     /**
-     * 代码里的缺省值本身也要盯住（理由与 {@code LineageDisabledTests#codeDefaultIsOff} 相同）：
-     * yml 里也写着 false，上面那条用例因此验的是「生效值」，挡不住「缺省值被改成 true」。
+     * 代码里的缺省值本身也要盯住（理由与 {@code LineageDisabledTests#codeDefaultIsOn} 相同）：
+     * 上面那条用例是显式关的，验的是关闭时的行为，挡不住「缺省值被改掉」。
      */
     @Test
-    void codeDefaultIsOff() {
-        assertFalse(new RestServerProperties().getPolicy().isEnabled(),
-                "DataPolicy.enabled 的缺省值必须是 false：要开放的部署用启动参数显式打开");
+    void codeDefaultIsOn() {
+        assertTrue(new RestServerProperties().getPolicy().isEnabled(),
+                "DataPolicy.enabled 的缺省值是 true（写入口默认开放）；"
+                        + "不开放治理的部署用 --lakehouse.rest.policy.enabled=false 关掉");
     }
 }

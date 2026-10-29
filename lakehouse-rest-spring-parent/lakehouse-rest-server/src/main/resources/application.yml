@@ -357,12 +357,15 @@ lakehouse:
     # 回收路径只有「删表时级联删边」，量级要先在测试环境跑准。
     # -----------------------------------------------------------------------
     lineage:
-      # 是否接受血缘上报（POST /lineage/runs）。默认 false（与 RestServerProperties 的
-      # 代码默认一致——yml 里写非默认值会盖掉「缺省关闭」的语义，测试与安全基线都按
-      # 默认关来验）。要采集的部署用启动参数显式打开：
-      #   --lakehouse.rest.lineage.enabled=true
+      # 是否接受血缘上报（POST /lineage/runs）。默认 true，与 RestServerProperties 的
+      # 代码默认一致——**yml 与代码要一起改**，只改一处会让「缺省值」与「生效值」
+      # 分叉，而行为用例绿的通常只是后者（历史教训：注释与取值写反过一次，
+      # 用例红了却没人知道该改哪边）。
+      # 「开着」只表示「谁按规范上报都收」，不等于「已经有数据」：真正决定有没有图的是
+      # Spark 侧的 spark.lakehouse.rest.lineage.enabled。
+      # 不接采集器的部署显式关掉：--lakehouse.rest.lineage.enabled=false
       # 读端点不受它限制：关掉采集的部署仍然查得到已有的边与运行历史。
-      enabled: false
+      enabled: true
       # lineage_run 表的保留天数（清理只删 run，不清边；边的 last_seen 自带「最近一次」）。
       # 默认 90。
       run-retention-days: 90
@@ -394,13 +397,13 @@ lakehouse:
     # 策略详情 / resolve / 列表在关闭时仍然可达——「功能没开」与「本来就没策略」
     # 必须分得开，否则引擎侧的 fail-closed 无法区分故障与空态。
     #
-    # 这里写 false（与代码默认一致）：yml 里写非默认值会盖掉「缺省关闭」的语义，
-    # DataPolicyDisabledTests / LineageDisabledTests 验的就是这个缺省值。
-    # 要开的部署用启动参数显式打开：--lakehouse.rest.policy.enabled=true
+    # 这里写 true（与代码默认一致）：yml 与代码要一起改，只改一处会让「缺省值」与
+    # 「生效值」分叉。不开放治理的部署显式关掉：--lakehouse.rest.policy.enabled=false
     # -----------------------------------------------------------------------
     policy:
-      # 是否允许创建 / 修改 / 删除策略（PUT / DELETE）。默认 false。
-      enabled: false
+      # 是否允许创建 / 修改 / 删除策略（PUT / DELETE）。默认 true。
+      # 关掉只锁写入口、读照常；已下发的策略在引擎侧继续执行。
+      enabled: true
 
 # ===========================================================================
 # 接口文档（knife4j-next，Boot 4 线：springdoc 3.x）

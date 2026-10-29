@@ -15,8 +15,9 @@
 #   - 已执行过 mvn -o install -DskipTests（需要 lakehouse-rest-server 的 jar）
 #
 # 与 e2e-spark-sql.sh 的关系：同一个服务端形态，两处差别—
-#   - 这里显式打开 lakehouse.rest.lineage.enabled=true；那个脚本不开（默认关，
-#     关的时候 POST /lineage/runs 会被拒，普通 e2e 不必为它买单）；
+#   - 这里显式写 lakehouse.rest.lineage.enabled=true。服务端缺省已经是 true，
+#     写出来只为让「本脚本依赖血缘可用」这件事在启动命令里看得见；
+#     那个脚本不写、走缺省；
 #   - 这里的 SparkSession 用 -De2e.lineage.enabled=true 打开客户端的采集开关，
 #     LiveSparkSession 据此设置 spark.lakehouse.rest.lineage.enabled。
 #
