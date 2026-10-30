@@ -2,17 +2,21 @@ package io.github.melin.lakehouse.rest;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.github.melin.lakehouse.rest.config.RestServerProperties;
 import io.github.melin.lakehouse.rest.service.AccessTokenService;
+import io.github.melin.lakehouse.rest.service.TokenIssuanceMetrics;
 import io.github.melin.lakehouse.rest.support.AuthenticatedToken;
 import io.github.melin.lakehouse.rest.support.Jwt;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
@@ -31,6 +35,9 @@ import org.junit.jupiter.api.Test;
 class AccessTokenServiceTests {
 
     private static final String KEY = base64Key("0123456789abcdef0123456789abcdef");
+
+    /** 轮换里的「新钥」。取值随意，只要与 {@link #KEY} 不同且足够长。 */
+    private static final String NEW_KEY = base64Key("fedcba9876543210fedcba9876543210");
 
     private final TestClock clock = new TestClock("2026-01-01T00:00:00Z");
 
@@ -183,6 +190,132 @@ class AccessTokenServiceTests {
         service(base64Key("0123456789abcdef0123456789abcdef"), Duration.ofHours(1));
     }
 
+    // ------------------------------------------------- 密钥轮换（kid + 双密钥）
+
+    /**
+     * 没配 {@code signing-key-id} 时，头部必须还是那两项——逐项比对，不是「看起来一样」。
+     *
+     * <p>这条守的是「升级不改变令牌形状」：单密钥部署加了这个功能之后，头部多一个
+     * {@code kid} 也不会更安全（只有一把钥匙，没有歧义），但会让升级前后签出的票在
+     * 头部就出现差异，排查时多一个与问题无关的变量。所以断言的是<b>键的顺序与集合</b>，
+     * 而不只是「有 alg 和 typ」。
+     */
+    @Test
+    void headerKeepsTwoFieldsWhenSigningKeyIdIsNotConfigured() {
+        String token = service(KEY, Duration.ofHours(1)).issue("alice", null).token();
+
+        Map<String, Object> header = Jwt.decode(token).header();
+        assertEquals(List.of("alg", "typ"), new ArrayList<>(header.keySet()));
+    }
+
+    /** 配了 {@code signing-key-id} 时多一个 kid，其余不变。 */
+    @Test
+    void headerCarriesKidWhenSigningKeyIdIsConfigured() {
+        String token = service(KEY, "k1", Map.of(), Duration.ofHours(1)).issue("alice", null).token();
+
+        Jwt.Decoded decoded = Jwt.decode(token);
+        assertEquals("k1", decoded.keyId());
+        assertEquals("HS256", decoded.algorithm());
+        assertEquals("JWT", decoded.header().get("typ"));
+    }
+
+    /**
+     * 旧钥匙签的票，在「签 B、验 A+B」的实例上仍要通过——这是滚动轮换不中断的全部。
+     *
+     * <p>它同时钉住一个副作用：这类票会被记进 {@code legacy-key} 计数。删旧钥的判据是
+     * 「连续一个窗口没有新增」，判据要是没人记，第三步就只能靠猜。
+     */
+    @Test
+    void tokenSignedWithTheOldKeyStillVerifiesWhileItIsListedAsVerifyOnly() {
+        AccessTokenService beforeRotation = service(KEY, "k1", Map.of(), Duration.ofHours(1));
+        String oldToken = beforeRotation.issue("alice", null).token();
+
+        TokenIssuanceMetrics metrics = new TokenIssuanceMetrics();
+        AccessTokenService duringRotation = new AccessTokenService(
+                properties(NEW_KEY, "k2", Map.of("k1", KEY), Duration.ofHours(1)), clock, metrics);
+
+        Optional<AuthenticatedToken> verified = duringRotation.verify(oldToken);
+        assertTrue(verified.isPresent(), "旧票在轮换窗口里被拒，等于轮换期间全量 401");
+        assertEquals("alice", verified.get().principal());
+        assertEquals(1L, metrics.legacyKeyUsage().get("k1"), "旧钥匙的用量是删旧钥的唯一判据");
+
+        // 新票由新钥签发，并且它只在新配置下通过——旧配置还没学会新钥（这正是滚动顺序的意义）
+        String newToken = duringRotation.issue("alice", null).token();
+        assertEquals("k2", Jwt.decode(newToken).keyId());
+        assertTrue(duringRotation.verify(newToken).isPresent());
+        assertFalse(beforeRotation.verify(newToken).isPresent());
+    }
+
+    /**
+     * 未知的 kid 直接判 {@code INVALID}，<b>不回退去挨个试</b>。
+     *
+     * <p>两边都用真钥匙签、签名完全合法，唯一的差别是头部的 kid：
+     * 如果实现「不认识的 kid 就挨个试」，这张票会被收下，而它代表的正是
+     * 「某个副本还没学会新钥却已经开始签发」这种错误顺序。让它通过等于把这个
+     * 错误推迟到删旧钥时才爆发。
+     *
+     * <p>第二条断言守的是「先验签再判过期」：过期且 kid 未知必须是 {@code INVALID}
+     * 而不是 {@code EXPIRED}，否则编一个 kid 就能探出这张票原来什么时候过期。
+     */
+    @Test
+    void tokenWithUnknownKidIsRejectedWithoutFallingBackToOtherKeys() {
+        AccessTokenService service = service(KEY, "k2", Map.of("k1", NEW_KEY), Duration.ofHours(1));
+
+        Map<String, Object> claims = new LinkedHashMap<>();
+        claims.put("iss", "paimon-rest");
+        claims.put("sub", "alice");
+        claims.put("exp", clock.instant().getEpochSecond() + 3600);
+        String future = Jwt.signHs256(claims, Base64.getDecoder().decode(KEY), "k9");
+        assertEquals(AccessTokenService.Verdict.INVALID, service.examine(Jwt.decode(future)));
+
+        claims.put("exp", clock.instant().getEpochSecond() - 1);
+        String expired = Jwt.signHs256(claims, Base64.getDecoder().decode(KEY), "k9");
+        assertEquals(AccessTokenService.Verdict.INVALID, service.examine(Jwt.decode(expired)));
+        assertNotEquals(AccessTokenService.Verdict.EXPIRED, service.examine(Jwt.decode(expired)),
+                "未验签就回 EXPIRED，等于用一张乱签的票探测过期时间");
+    }
+
+    /**
+     * 升级前签发的票（头部没有 kid、由旧钥签）在多钥配置下仍要通过。
+     *
+     * <p>没有这条，升级动作本身就会踢掉所有在线的人：他们的票是上一个版本签的，
+     * 头部没有 kid，走的是「逐把试」那条路径。这条路径通常只在升级当天被走到，
+     * 也就最容易没被测到。
+     */
+    @Test
+    void tokenWithoutKidIsStillAcceptedWhenAnOldKeyIsListed() {
+        AccessTokenService beforeUpgrade = service(KEY, Duration.ofHours(1));
+        String oldToken = beforeUpgrade.issue("alice", null).token();
+        assertFalse(Jwt.decode(oldToken).header().containsKey("kid"));
+
+        AccessTokenService afterUpgrade = service(NEW_KEY, "k2", Map.of("k1", KEY), Duration.ofHours(1));
+        assertTrue(afterUpgrade.verify(oldToken).isPresent());
+    }
+
+    /**
+     * 四类密钥配置错误必须启动失败。
+     *
+     * <p>它们的共同点是「会让票签出来或配下去之后没人能验」，而症状都是 401——
+     * 如果静默接受，排查会从「为什么所有人掉线」开始，而不是从「配置写错了」开始。
+     */
+    @Test
+    void misconfiguredKeyRingFailsFast() {
+        String shortKey = Base64.getEncoder().encodeToString("too-short".getBytes(StandardCharsets.UTF_8));
+
+        assertThrows(IllegalStateException.class,
+                () -> service(KEY, "k2", Map.of("k1", "not-base64!!!"), Duration.ofHours(1)),
+                "旧钥写成非 base64：轮换窗口里的票会全部被拒");
+        assertThrows(IllegalStateException.class,
+                () -> service(KEY, "k2", Map.of("k1", shortKey), Duration.ofHours(1)),
+                "短于 32 字节的旧钥同样可被暴力还原");
+        assertThrows(IllegalStateException.class,
+                () -> service(KEY, "k1", Map.of("k1", NEW_KEY), Duration.ofHours(1)),
+                "同一个 kid 既是签发钥又在旧钥表里：旧钥会被静默架空，轮换第三步删的是个空配置");
+        assertThrows(IllegalStateException.class,
+                () -> service(KEY, "k1", Map.of("  ", NEW_KEY), Duration.ofHours(1)),
+                "空 kid 永远命中不了，属于纯写错");
+    }
+
     /** TTL 写成 0 或负数时收敛到 1 秒，而不是签出一个立刻失效的令牌。 */
     @Test
     void nonPositiveTtlIsClampedToOneSecond() {
@@ -197,15 +330,28 @@ class AccessTokenServiceTests {
     // ------------------------------------------------------------------ 工具
 
     private RestServerProperties properties(String signingKey, Duration ttl) {
+        return properties(signingKey, null, Map.of(), ttl);
+    }
+
+    private RestServerProperties properties(String signingKey, String signingKeyId,
+                                            Map<String, String> verifyOnlyKeys, Duration ttl) {
         RestServerProperties properties = new RestServerProperties();
         properties.getAuth().setEnabled(true);
         properties.getAuth().getAccessToken().setTtl(ttl);
         properties.getAuth().getAccessToken().setSigningKey(signingKey);
+        properties.getAuth().getAccessToken().setSigningKeyId(signingKeyId);
+        properties.getAuth().getAccessToken().getVerifyOnlyKeys().putAll(verifyOnlyKeys);
         return properties;
     }
 
     private AccessTokenService service(String signingKey, Duration ttl) {
-        return new AccessTokenService(properties(signingKey, ttl), clock);
+        return service(signingKey, null, Map.of(), ttl);
+    }
+
+    private AccessTokenService service(String signingKey, String signingKeyId,
+                                       Map<String, String> verifyOnlyKeys, Duration ttl) {
+        return new AccessTokenService(properties(signingKey, signingKeyId, verifyOnlyKeys, ttl), clock,
+                new TokenIssuanceMetrics());
     }
 
     private static String base64Key(String value) {

@@ -342,6 +342,8 @@ catalog 存在但主体无权时仍返回 403。
 | `lakehouse.rest.auth.access-token.ttl` | `1h` | 控制台签发的访问令牌有效期 |
 | `lakehouse.rest.auth.access-token.issuer` | `paimon-rest` | 访问令牌的 `iss` |
 | `lakehouse.rest.auth.access-token.signing-key` | 空 | HS256 签名密钥（Base64，≥32 字节）；留空则每次启动随机生成 |
+| `lakehouse.rest.auth.access-token.signing-key-id` | 空 | 写进令牌头部当 `kid`；留空则头部不写，令牌形状与旧版一致 |
+| `lakehouse.rest.auth.access-token.verify-only-keys` | 空 | 只验不签的旧钥匙 `kid → Base64`，只在轮换窗口里配 |
 | `lakehouse.rest.auth.console.required` | `true` | 浏览器进控制台是否必须先登录；**只作用于界面，不是安全边界** |
 | `lakehouse.rest.auth.console.password.enabled` | `true` | 是否允许用配置里的账号密码换令牌 |
 | `lakehouse.rest.auth.console.password.users` | `admin: admin` | 控制台账号表（明文）；**生产必须改** |
@@ -453,6 +455,8 @@ curl -s -X POST -H "$AUTH" -H "$J" \
    `clientSecret`，用它们换一个访问令牌即可立即调用管理 API。
 2. **访问令牌无法即时撤销。** 服务端不保存会话，令牌在 `access-token.ttl` 内一直有效；
    要立刻失效只能轮换 `access-token.signing-key`（会作废所有人的令牌）。
+   轮换本身可以不停服：配 `signing-key-id` 后令牌头部带 `kid`，服务端能「用一把签、
+   用两把验」，按 [`../README.md`](../README.md) §9.1 的三步走，滚动重启期间零 401。
 3. **两个 `_ALL` 不含容器本身。** 这是官方描述的直译。想「一条授权管全部」做不到，
    因为 `CATALOG_ALL` / `DATABASE_ALL` 的词表里没有 `CREATEDATABASE` /
    `CREATETABLE` / `DESCRIBE` 这些容器级取值。要建库、建表、读 catalog 详情，

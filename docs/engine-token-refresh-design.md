@@ -442,6 +442,10 @@ spark.sql.catalog.<name>.scope=PRINCIPAL_ROLE:ALL      # 必须有，理由见�
   新的控制台端点要连带登记权限点与校验脚本，为两个计数器做这些不划算）；
   引擎侧 `lakehouse.auth.token.refresh.failure{cause}`（`TokenRefreshMetrics`），
   累计次数与原因写进**同一条** WARN：单条 WARN 分不清「偶发一次」与「每个请求都失败」。
+  同一个类里还有 `lakehouse.auth.token.legacy-key{kid}`：**用非当前签发钥验过的次数**，
+  它是「那把旧钥现在能删了吗」的唯一判据（连续一个窗口无新增才删）。
+  记在验签那一层而不是端点层，因为验签发生在每个带 Bearer 的请求上——
+  它与 `exchanged` 是同一问题的两面：前者说「还在续」，后者说「还有谁没续上来」。
 - **401 的「过期 / 无效」区分**：响应体一字不差（那是既有的安全取舍），区别放在
   `WWW-Authenticate`——`Bearer error="invalid_token", error_description="the access token has expired"`
   与 `… "the access token is not valid"`。先验签再判过期：签名不对时 `exp` 是不可信输入。

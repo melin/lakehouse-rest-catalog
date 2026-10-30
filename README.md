@@ -420,6 +420,8 @@ Catalog 侧与鉴权：
 | `lakehouse.rest.auth.token-principals` | 空 | 静态令牌 → 主体名映射；未登记时退化为「令牌即主体名」（审计列放不下的长度会记摘要，见第 6 节第 19 条） |
 | `lakehouse.rest.auth.access-token.ttl` | `1h` | 控制台签发的访问令牌有效期（唯一能限制令牌泄露窗口的参数） |
 | `lakehouse.rest.auth.access-token.signing-key` | 空 | HS256 签名密钥，Base64 且解码后 ≥32 字节；**留空则每次启动随机生成**（多实例互不认、重启掉线），生产必须配 |
+| `lakehouse.rest.auth.access-token.signing-key-id` | 空 | 上面那把钥匙的标识，写进令牌头部当 `kid`。**留空则头部不写 `kid`**（单密钥部署不需要）；配了它才能做到「轮换不停服」，见 9.1「轮换签名密钥」 |
+| `lakehouse.rest.auth.access-token.verify-only-keys` | 空 | 只验不签的旧钥匙 `kid → Base64`。**只在轮换窗口里配**，旧票全部到期后删掉 |
 | `lakehouse.rest.auth.console.required` | `true` | 浏览器进控制台是否必须先登录。**只作用于控制台界面与 `/api/console/v1/**`，不是安全边界** |
 | `lakehouse.rest.auth.console.password.enabled` | `true` | 允许用配置里的用户名 + 密码换访问令牌 |
 | `lakehouse.rest.auth.console.password.users` | `admin: admin` | 控制台账号表（明文，可写 `${ENV_VAR}`）；**生产必须改**，启动日志会告警 |
@@ -873,7 +875,7 @@ JAVA_HOME=/path/to/jdk-21 mvn test
 | `ConsoleEventTests` | 目录事件流（`GET /api/console/v1/events`）：表生命周期（建 / 改名 / 删）与授权变更（授 / 撤）都落成事件且 principal / requestId 来自请求上下文、属性带格式标识；**幂等撤销（未命中）不进事件流**（事件流里没有空操作）；增量游标契约——首页游标落在「现在」、带 `since` 只回更新的、`limit` 截断给 `hasMore`、catalog 过滤按 catalog 名（传库名拿到空页）；**类别过滤**（`?category=` 只回该类事件、大小写不敏感、未知取值 400 而不是空页） |
 | `EventListenerSettingsTests` | 监听器订阅配置（`lakehouse.rest.event-listener.types` / `<name>.enabled-event-categories`）：不配 = 全订阅、`types` 只启用名单内的监听器、类别与类型同时配取并集、单配某一类不影响其他监听器；监听器名 / 类别名 / wire 值写错都在启动期抛错（配置错的后果是「该记的没记」，运行期发现通常已经丢了审计） |
 | `ConsoleAuthMethodVisibilityTests` | 登录方式的可见性：**没开启的方式不出现在登录引导里**——关掉 `console.client-credentials.enabled` 就不下发 `client-credentials`，`auth.tokens` 为空就不下发 `static-token`，而默认开启的用户名密码照旧（对照组，防「无脑返回空列表」） |
-| `AccessTokenServiceTests` | 访问令牌的签发与验证：claims、TTL 边界、换钥、篡改、换 issuer、无 `exp`、`alg:none`、签名密钥格式错必须启动失败、随机钥不共享 |
+| `AccessTokenServiceTests` | 访问令牌的签发与验证：claims、TTL 边界、换钥、篡改、换 issuer、无 `exp`、`alg:none`、签名密钥格式错必须启动失败、随机钥不共享；**密钥轮换**（不配 `signing-key-id` 时头部仍是 `alg`/`typ` 两项且顺序不变、配了才多一个 `kid`、旧钥签的票在「签 B 验 A+B」下仍通过并记一次旧钥用量、未知 `kid` 直接 `INVALID` 且不回退、无 `kid` 的老票在多钥配置下仍通过、四类密钥配置错误启动即失败） |
 | `JwtTests` | 纯 JDK 的 JWT 编解码与验签：HS256 / RS256 / ES256 往返、**ES256 的原始签名转 DER**、`alg:none` 与未知算法、结构拒绝、`aud` 单值与数组 |
 | `JwksTests` | JWKS 解析：RSA 与 EC 可用性（实测验签）、混合类型、不可用键跳过而非整份失败、私钥材料忽略、无 `kid` 与重复 `kid`、畸形文档 |
 | `OidcServiceTests` | 用 JDK `HttpServer` 起假 IdP：发现文档与 JWKS 的缓存与刷新、**未知 `kid` 强制重取**、刷新失败沿用旧值、换钥、`audience`、时钟偏移、发现文档 issuer 不符则拒绝、IdP 不可达时不影响已缓存的验证 |
@@ -1305,6 +1307,40 @@ http://localhost:8080/console/
 浏览器登录支持用户名密码（默认 `admin/admin`，不需要先建主体）、OAuth 客户端凭据、
 OIDC 授权码 + PKCE 三种方式；令牌是自包含 JWT，多实例互认但**无法即时撤销**。
 完整设计见 [`docs/console-auth.md`](docs/console-auth.md)，三层测试（31 / 63 / 59）用法见第 7 节。
+
+#### 轮换签名密钥（不停服）
+
+换 `access-token.signing-key` 不能只改值然后重启：滚动发布期间新旧 Pod 并存，
+老 Pod 签的票新 Pod 不认，症状是**随机 401**——一半请求打到认票的 Pod 上就正常。
+按请求随机出现的 401，几乎不会被归因到「刚才改了配置」。
+
+配上 `signing-key-id` 之后，「签」和「验」可以分开推进。三步走完没有一张票被误拒：
+
+1. **让所有副本先学会验新钥**（还不是用新钥签）：`signing-key` 仍是 A、
+   `signing-key-id: k1`、`verify-only-keys: {k2: <B>}`。滚动重启，等
+   `kubectl rollout status` 就绪。每个副本的启动日志都要出现这一行才算学会：
+   `access token signing key id: k1; also accepting tokens signed with: [k1 (signing), k2]`。
+   **这一步不必等 TTL**：此刻所有票仍由 A 签。升级当天还会有一批**头部没 `kid` 的老票**
+   （上一个版本签的），它们走「逐把试」那条路，照样验得过。
+2. **开始用新钥签**：`signing-key: <B>`、`signing-key-id: k2`、
+   `verify-only-keys: {k1: <A>}`，再滚动一次。已经起来的副本签 B、还没轮到的签 A，
+   两边的验签表里都有对方，所以中间态不会 401。**这一次要等满一个 `ttl`**。
+3. **删掉旧钥**：`verify-only-keys: {}`，再滚动一次。删的依据是那行 10 分钟一次的
+   `access tokens verified with a non-active signing key: {...} (+N)`：
+   **连续一个窗口 `+N` 为 0，且第二步之后已过一个 `ttl`**，才删。删早了只会让
+   最后几张 A 签的票以 401 收场，影响面小到监控看不出来。
+   顺带作废的还有**数据预览的分页游标**——`PreviewCursorCodec` 用同一把密钥签游标，
+   翻页翻到一半会报错，刷新一下即可。
+
+三个不要：
+
+- **不要跳过第一步**。直接换 `signing-key` 又不配旧钥，就是开头那种随机 401。
+- **不要给旧钥配与签发钥相同的 `kid`**。验签只查签发钥，旧钥会被静默架空，
+  第三步删的是一个从来没生效过的配置——启动会直接失败来挡这个错。
+- **不要用 `kid` 做权限或身份判定**。它在明文头部里，谁都能改。
+
+单实例部署直接换钥匙重启即可，不需要 `signing-key-id`：没有第二个节点，
+也就没有「一半节点不认另一半的票」这件事。
 
 ### 9.2 文档
 

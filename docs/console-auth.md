@@ -580,6 +580,11 @@ lakehouse:
         ttl: 1h                      # 浏览器一次工作会话的长度；没有撤销机制时不宜大
         issuer: paimon-rest
         signing-key: ""              # Base64，解码后 ≥32 字节。生成：openssl rand -base64 48
+        # 下面两项只为「不停服换钥匙」存在，单实例部署不用配（见 §12）。
+        # signing-key-id 写进令牌头部当 kid；留空则头部不写 kid，令牌形状与旧版一致
+        signing-key-id: ""
+        # 只验不签的旧钥匙：kid -> Base64。只在轮换窗口里配，旧票到期后删掉
+        verify-only-keys: {}
       # ---- 浏览器登录方式，三种可同时启用 ----
       console:
         # 控制台自己是否要求先登录。默认 true：只挡住界面，
@@ -729,6 +734,13 @@ curl -s -X POST http://localhost:8080/api/management/v1/principals \
 - **无法即时撤销令牌。** 只能等 TTL 过期，或轮换 `access-token.signing-key`
   （作废所有人的令牌）。要做单点撤销需要引入令牌黑名单，那会让「服务端不保存状态」
   这条性质失效，因此没有做。
+- **换钥匙不必停服，但顺序不能错。** 配 `access-token.signing-key-id` 后，
+  令牌头部带 `kid`，服务端可以「用一把签、用两把验」：先让所有副本学会验新钥，
+  再让它们开始用新钥签，最后删旧钥（`verify-only-keys`）。顺序反了的表现是
+  滚动发布期间**随机 401**——一半节点不认另一半签的票。三步做法与「三个不要」
+  见 [`../README.md`](../README.md) §9.1「轮换签名密钥」。未知 `kid` 的票直接判
+  `INVALID` 且**不回退**去试其它钥匙：回退会把「顺序错了」洗成静默通过。
+  单实例部署不需要这一套——直接换 `signing-key` 重启即可。
 - **OIDC 的 RP-initiated logout 只在 IdP 提供端点时成立。** `end_session_endpoint`
   来自发现文档，OIDC 不强制它存在；没有它（或本次登录不是 SSO）时登出退回纯本地行为，
   IdP 那边的会话仍然存在。另外**回跳地址要单独配**（`oidc.post-logout-redirect-uri`，

@@ -59,11 +59,45 @@ public class TokenIssuanceMetrics {
     /** 凭据不对。与 {@link #RESULT_INVALID_GRANT} 分开：这条要改配置，不是重新拿票。 */
     public static final String RESULT_INVALID_CLIENT = "invalid_client";
 
+    /**
+     * 仍用「非当前签发钥」验过的次数，按那把钥匙的 {@code kid} 分。
+     *
+     * <p><b>它存在只为了回答一个问题：那把旧钥匙现在能删了吗。</b>轮换密钥的第二步
+     * （全员开始用新钥签、旧钥留在 {@code verify-only-keys} 里）之后，旧票会随着
+     * {@code ttl} 到期而自然消失；但「理论上应该没了」和「实际上没了」是两件事——
+     * 有作业把票缓存在进程外、有客户端拿着一张老票反复重试，都会让旧钥一直有用量。
+     * 删早了的表现是那部分调用方开始 401，而它们是少数，监控里看不到明显的量变。
+     *
+     * <p><b>判据是「连续一个窗口没有新增」而不是「累计为 0」</b>：累计值只增不减，
+     * 永远等不到 0。看的是每 10 分钟那一行里的 {@code +N}。
+     *
+     * <p>这是唯一一条不与令牌端点绑定的计数：它记的是「验签用了哪把钥匙」，
+     * 而验签发生在每一个带 Bearer 的请求上。放在这里是因为它和
+     * {@link #EXCHANGED} 是同一个问题的两面——前者说「还在续」，后者说
+     * 「还有谁没续上来」。
+     */
+    public static final String LEGACY_KEY_VERIFIED = "lakehouse.auth.token.legacy-key";
+
     /** 键是 {@code grant|result}；值单调递增。 */
     private final Map<String, AtomicLong> counters = new ConcurrentHashMap<>();
 
+    /** 键是旧钥匙的 {@code kid}；值单调递增。取值集合由配置决定，因此天然有界。 */
+    private final Map<String, AtomicLong> legacyKeyUses = new ConcurrentHashMap<>();
+
     /** 上一次摘要时的总量，用来跳过「一条都没变」的那一轮。 */
     private long reportedTotal;
+
+    /** 上一次摘要时旧钥匙的累计用量。 */
+    private long reportedLegacyTotal;
+
+    /**
+     * 上一轮旧钥匙是否还有新增。
+     *
+     * <p>它的唯一用途是让「从有量掉到 0」的那一轮仍然打日志：那一行是
+     * 「从现在开始数，连续一个窗口没有新增就可以删旧钥」的计时起点。
+     * 少了它，运维看到的是「日志停了」，而那与「一直都是 0」长得一样。
+     */
+    private boolean legacyActiveLastWindow;
 
     /**
      * 记一次。
@@ -76,6 +110,16 @@ public class TokenIssuanceMetrics {
     }
 
     /**
+     * 记一次「这张票是用旧钥匙验过的」。
+     *
+     * <p><b>调用点只可能是配置里列出的 kid</b>（未知 kid 的票在验签之前就被拒了），
+     * 所以这张表的键来自配置、数量有界，不会被伪造请求撑大。
+     */
+    public void recordLegacyKey(String kid) {
+        legacyKeyUses.computeIfAbsent(kid, key -> new AtomicLong()).incrementAndGet();
+    }
+
+    /**
      * 当前计数快照（键 {@code grant|result}）。
      *
      * <p>返回副本：调用方遍历时不能看到并发自增造成的中间状态，也不能顺手改内部表。
@@ -83,6 +127,13 @@ public class TokenIssuanceMetrics {
     public Map<String, Long> snapshot() {
         Map<String, Long> copy = new LinkedHashMap<>();
         counters.forEach((key, value) -> copy.put(key, value.get()));
+        return copy;
+    }
+
+    /** 旧钥匙累计用量快照（键 {@code kid}）。 */
+    public Map<String, Long> legacyKeyUsage() {
+        Map<String, Long> copy = new LinkedHashMap<>();
+        legacyKeyUses.forEach((key, value) -> copy.put(key, value.get()));
         return copy;
     }
 
@@ -101,11 +152,26 @@ public class TokenIssuanceMetrics {
     public void report() {
         Map<String, Long> current = snapshot();
         long total = current.values().stream().mapToLong(Long::longValue).sum();
-        if (total == reportedTotal) {
+        Map<String, Long> legacy = legacyKeyUsage();
+        long legacyTotal = legacy.values().stream().mapToLong(Long::longValue).sum();
+        long legacyDelta = legacyTotal - reportedLegacyTotal;
+        boolean grantsChanged = total != reportedTotal;
+        // 静默的条件比原来多一项：旧钥匙上一轮有量时，这一轮的「+0」必须打出来
+        if (!grantsChanged && legacyDelta == 0 && !legacyActiveLastWindow) {
             return;
         }
         reportedTotal = total;
-        log.info("token endpoint: {} (cumulative; granted tokens keep working until they expire)",
-                current);
+        reportedLegacyTotal = legacyTotal;
+        legacyActiveLastWindow = legacyDelta > 0;
+        if (grantsChanged) {
+            log.info("token endpoint: {} (cumulative; granted tokens keep working until they expire)",
+                    current);
+        }
+        if (!legacy.isEmpty()) {
+            log.info("access tokens verified with a non-active signing key: {} (+{} since the last report)."
+                    + " Once a full report window shows no increase and every token signed with that key"
+                    + " has expired, drop it from lakehouse.rest.auth.access-token.verify-only-keys",
+                    legacy, legacyDelta);
+        }
     }
 }

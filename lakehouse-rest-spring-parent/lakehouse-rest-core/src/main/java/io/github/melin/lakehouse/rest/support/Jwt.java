@@ -84,17 +84,38 @@ public final class Jwt {
     }
 
     /**
-     * 用 HMAC-SHA256 签发一个令牌。
+     * 用 HMAC-SHA256 签发一个令牌（头部只有 {@code alg} / {@code typ}）。
      *
      * @param claims 载荷。{@code iat} / {@code exp} 等时间声明由调用方填好——
      *               本方法不读时钟，以免同一个令牌在测试里出现两个签发时间
      * @param key    签名密钥，至少 {@value #MIN_HMAC_KEY_BYTES} 字节
      */
     public static String signHs256(Map<String, Object> claims, byte[] key) {
+        return signHs256(claims, key, null);
+    }
+
+    /**
+     * 用 HMAC-SHA256 签发一个令牌，并声明用了哪把钥匙。
+     *
+     * <p>{@code kid} 是 RFC 7515 第 4.1.4 节的「密钥标识」，本工程只用它做一件事：
+     * 让验签方在多把钥匙并存时知道该用哪一把。**它不是安全边界**——攻击者可以往
+     * 头部里写任意 kid，验签失败的结论依旧是失败，只是失败得更早一点。
+     *
+     * <p><b>传 {@code null} 时头部一个字节都不变</b>（仍然只有 {@code alg} 与
+     * {@code typ} 两项，顺序也一致）。这是刻意的：单密钥部署不该因为「多了个不用
+     * 的功能」而改变令牌形状——那会让升级前的旧票与升级后的新票在头部就不一样，
+     * 排查时多出一个与问题无关的差异。
+     *
+     * @param kid 密钥标识；为空表示不写该头部
+     */
+    public static String signHs256(Map<String, Object> claims, byte[] key, String kid) {
         requireKeyLength(key);
         Map<String, Object> header = new LinkedHashMap<>();
         header.put("alg", "HS256");
         header.put("typ", "JWT");
+        if (kid != null && !kid.isBlank()) {
+            header.put("kid", kid);
+        }
         String signingInput = encode(header) + "." + encode(claims);
         return signingInput + "." + ENCODER.encodeToString(hmac(signingInput, key));
     }
