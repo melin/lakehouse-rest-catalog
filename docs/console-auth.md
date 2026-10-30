@@ -256,6 +256,10 @@ lakehouse:
 
 ## 5. 方式二：OAuth 2.0 客户端凭据
 
+> 这个端点同时服务**两个 grant**：`client_credentials`（本节）与 RFC 8693 的
+> `token-exchange`（[§5.4](#54-令牌交换rfc-8693长作业的续期)）。两者产出的票形状完全相同，
+> 响应只差一个 `issued_token_type`。
+
 ### 5.1 请求
 
 ```
@@ -292,7 +296,8 @@ curl -s -X POST http://localhost:8080/api/catalog/v1/oauth/tokens \
 | --- | --- | --- |
 | 400 | `invalid_request` | 缺 `client_id` / `client_secret`；请求体不是合法 JSON；本方式未开启 |
 | 400 | `invalid_scope` | `scope` 不是 `PRINCIPAL_ROLE:ALL` |
-| 400 | `unsupported_grant_type` | `grant_type` 不是 `client_credentials` |
+| 400 | `unsupported_grant_type` | `grant_type` 既不是 `client_credentials` 也不是 `token-exchange` |
+| 400 | `invalid_grant` | 只有令牌交换会有：`subject_token` 无效或已过期 |
 | 401 | `invalid_client` | 凭据不符（**不区分** clientId 不存在与密钥不对） |
 | 429 | `temporarily_unavailable` | 同一来源 + clientId 连续失败超限 |
 
@@ -312,6 +317,63 @@ curl -s -X POST http://localhost:8080/api/catalog/v1/oauth/tokens \
 因此接受 `PRINCIPAL_ROLE:read_only` 这样的 scope 会是**最糟的一种**：
 调用方以为权限被收窄了，实际拿到的是主体的全部权限，而这一点在测试里不会暴露
 （请求全都成功）。**拒绝是可见的**，静默忽略不是。
+
+### 5.4 令牌交换（RFC 8693）：长作业的续期
+
+```
+POST /api/catalog/v1/oauth/tokens        （或 /v1/oauth/tokens）
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=urn:ietf:params:oauth:grant-type:token-exchange
+subject_token=<当前仍然有效的票>
+subject_token_type=urn:ietf:params:oauth:token-type:access_token
+# 可选：requested_token_type=urn:ietf:params:oauth:token-type:access_token
+# 可选：scope=PRINCIPAL_ROLE:ALL（省略即取它）
+```
+
+响应比客户端凭据那一种多一个字段：
+
+```json
+{"access_token":"...","token_type":"bearer","expires_in":3600,
+ "scope":"PRINCIPAL_ROLE:ALL","issued_token_type":"urn:ietf:params:oauth:token-type:access_token"}
+```
+
+```bash
+curl -s -X POST http://localhost:8080/v1/oauth/tokens \
+  -d grant_type=urn:ietf:params:oauth:grant-type:token-exchange \
+  -d subject_token="$TOKEN" \
+  -d subject_token_type=urn:ietf:params:oauth:token-type:access_token
+```
+
+**为什么要有它。** 本服务端签的是自包含 JWT，服务端不存令牌、也无法撤销，
+所以续期只能由客户端发起。而 Iceberg 的 REST 客户端**已经写好了**这条链：
+解析票里的 `exp`，到期前 `min(ttl/10, 5min)` 开始刷新，刷新时默认发的就是这个 grant。
+服务端认它，引擎侧一行代码都不用改；不认的话每次刷新都吃 400，
+而失败之后它不再重排——作业跑到一小时后必然 401，重启就好，所以一线通常报成「偶发失败」。
+来龙去脉见 [`engine-token-refresh-design.md`](engine-token-refresh-design.md)。
+
+**七条判定规则**（每条都有用例，在 `TokenExchangeTests`）：
+
+| # | 规则 | 理由 |
+| --- | --- | --- |
+| 1 | `subject_token` 走**同一条**认证链（静态令牌 / 自签 JWT / OIDC），不认 → 400 `invalid_grant` | 换票与用票必须认同一批凭据，否则会出现「能用却不能续」的票 |
+| 2 | 新票的 `sub` 取自**认证结果**，请求里根本没有「换成谁」这个参数 | 否则就是提权。交换的授权等价物是「重新登录一次」 |
+| 3 | 新票 TTL = `access-token.ttl`，**不放大** | 交换不是「延期」，是换一张同寿命的新票 |
+| 4 | `scope` 与客户端凭据流程**共用同一套归一化**，只认 `PRINCIPAL_ROLE:ALL` | 交换既不能加权限也不能减权限，接受一个不生效的 scope 会让人以为被收窄了 |
+| 5 | `requested_token_type` / `subject_token_type` 只接受 `…:access_token`；`actor_token` 一律 400 `invalid_request` | 本工程没有「代他人操作」的模型，**静默忽略一个声明等于假装支持它** |
+| 6 | 审计日志记 `grant=token-exchange` 与父票的 `jti` | 没有撤销机制时，「这张票从哪来」是唯一的事后线索 |
+| 7 | 失败计入 `LoginAttemptLimiter`（与客户端凭据**共用阈值配置**，桶按来源 IP 分）；成功不计 | 这个端点匿名可调，不拦会被拿去刷验签 |
+
+**三条必须点明的边界：**
+
+- **没有开关。** 不提供 `exchange.enabled`：它唯一能产出的东西是与调用方手里的票
+  **等权**的另一张票，关掉不增加任何安全性，却会让长作业在一小时后失败——
+  正是本功能要消除的那种故障。需要「作业不能永久持有访问权」应该做**总时长上限**
+  （设计稿里的 P2 `max-session`），不是关掉续期。
+- **寿命上界在 `subject_token` 上。** 那张票必须仍然有效，所以作业挂起超过一个 TTL
+  就续不上、必须重新拿票。「一张泄露的票被无限续期」因此不成立——上界是「持有者一直活着」。
+- **它只管控制面。** 数据面（存储凭据）本来就是另一套、本来就能续：
+  Paimon 的 `/token`、Iceberg 的 `storage-credentials`。两件事不要互相引用错。
 
 ---
 
@@ -672,8 +734,14 @@ curl -s -X POST http://localhost:8080/api/management/v1/principals \
   IdP 那边的会话仍然存在。另外**回跳地址要单独配**（`oidc.post-logout-redirect-uri`，
   在 IdP 侧登记过的那个）：不配也能登出，只是浏览器停在 IdP 自己的「已退出」页面，
   需要用户自己走回来——服务端不替用户拼这个地址，未登记的地址会被 IdP 拒绝。
-- **不做刷新令牌（refresh token）。** 过期就重新登录。控制台是低频使用的运维界面，
+- **控制台不做刷新令牌（refresh token）。** 过期就重新登录。控制台是低频使用的运维界面，
   引入刷新流程会带来「刷新令牌怎么存、怎么撤销」一整串问题，收益不抵。
+  注意这与[§5.4](#54-令牌交换rfc-8693长作业的续期)的令牌交换不是同一件事：
+  那一套是给**引擎的长作业**用的（Iceberg 客户端自带刷新调度），控制台自己不用它。
+- **令牌交换只有「等权换新」，没有总时长上限。** 交换不放大 `sub`、TTL、`scope`，
+  但链条本身可以一直续下去——上界是「父票仍然有效」，而父票由客户端自己不断换新。
+  需要「作业跑满 N 小时必须重新取票」的合规场景要等 P2 的 `max-session`（当前未实现）。
+  同理，`actor_token`（代他人操作）不支持，出现即 400。
 - **`scope` 只有 `PRINCIPAL_ROLE:ALL`。** 见 [§5.3](#53-scope-只接受-principal_roleall)。
 - **`token-principals` 与 `password.principals` 都是静态配置。** 令牌 / 账号 → 主体名的
   映射写在配置文件里，改映射要重启。

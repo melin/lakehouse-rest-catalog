@@ -169,9 +169,14 @@ public class ClientCredentialsService {
     /**
      * 归一化 scope。
      *
+     * <p>包内可见是**有意的**：{@link TokenExchangeService} 必须与这里用同一份规则
+     * （RFC 8693 的交换不能把原票的 scope 放宽，而本工程只认一个取值）。两份各写一遍
+     * 的代价是「改了一处忘了另一处」，表现是某个 grant 永远报 {@code invalid_scope}，
+     * 而错误信息看起来像是调用方配置错了。
+     *
      * @return 可接受的 scope（空请求归一成 {@value #SCOPE_ALL}）；不可接受时返回 {@code null}
      */
-    private static String normalizeScope(String scope) {
+    static String normalizeScope(String scope) {
         if (scope == null || scope.isBlank()) {
             return SCOPE_ALL;
         }

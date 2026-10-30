@@ -1,6 +1,8 @@
 # 引擎侧主体令牌续期：Spark / Flink 的 Paimon 与 Iceberg catalog
 
-**状态：设计稿，未实现。**（本文件只定义契约与取舍，不含代码改动）
+**状态：P0-1 已落地（服务端 RFC 8693 令牌交换）；P0-2 / P0-3 / P0-4、P1、P2 未实现。**
+下面的 §1 与 §2 保留**落地之前**的事实描述——它们是这份文档的论证基础，改掉就看不出「为什么必须这么改」；
+每处都已标注现在的状态。
 
 **要解决的问题：** 引擎注册 Paimon / Iceberg REST catalog 时填的是**主体令牌**（`Authorization: Bearer <JWT>`），
 而它的有效期只有 `lakehouse.rest.auth.access-token.ttl`（默认 **1 小时**）。跑得比 1 小时久的作业，
@@ -43,7 +45,8 @@ iss=paimon-rest   sub=<主体名>   iat=<签发秒>   exp=<iat+ttl>   jti=<随�
 → **自签 JWT**（控制台 / 引擎用主体凭据换的票）→ **OIDC**（外部 IdP）。
 
 换票入口只有一个，`OAuthTokenController`：`POST /v1/oauth/tokens` 与 `POST /api/catalog/v1/oauth/tokens`
-（同一处理方法的两个名字，后者是 Polaris 对齐路径）。它**只认 `client_credentials`**，
+（同一处理方法的两个名字，后者是 Polaris 对齐路径）。它**只认 `client_credentials`**
+（P0-1 之后认两个 grant：这个加上 RFC 8693 的 `token-exchange`，见 §4.1），
 凭据是主体的 `clientId` / `clientSecret`，`scope` **只认 `PRINCIPAL_ROLE:ALL`**（本工程按主体全部角色并集判权，
 没有「挑一个角色」这一层，因此其余 scope 一律 `invalid_scope` 拒绝而不是忽略）。
 
@@ -122,6 +125,9 @@ AuthManagers.loadAuthManager("oauth2")
 我们的 `OAuthTokenController` 只认 `client_credentials` → 回 **400 `unsupported_grant_type`** →
 Iceberg 记 `Failed to refresh token` 并重试 5 次 → `refresh()` 返回 null →
 `scheduleTokenRefresh` **只在 `expiration != null` 时继续排下一次** → 于是**不再重试** → 到期即 401。
+
+> **P0-1 之后**：服务端认了这个 grant，上面这条链的 400 那一环消失，Iceberg 侧的刷新**不经任何客户端改动**就能成功
+> （`OAuthTokenController` → `TokenExchangeService`）。本节余下的描述保留原样——它记录的是「为什么必须加这个 grant」。
 
 三条附带结论：
 
@@ -214,6 +220,22 @@ requested_token_type = urn:ietf:params:oauth:token-type:access_token   # 可省
 | 5 | `requested_token_type` 只接受 `…:access_token`；`actor_token` 一律 400 `invalid_request` | 我们还没有「代他人操作」的模型。**静默忽略一个声明等于假装支持它**——这与 `invalid_scope` 的取舍同一个理由 |
 | 6 | 审计日志记 `grant=token-exchange` + 父票的 `jti` | 没有撤销机制时，「这张票从哪来」是唯一的事后线索 |
 | 7 | 失败计入 `LoginAttemptLimiter`（与 `client_credentials` 共用窗口）；成功不限速 | 与今天一致：匿名端点的防爆破只针对失败 |
+
+**已落地的形态**（`TokenExchangeService` + `OAuthTokenController` 的 grant 分支 + `TokenResponse.issued_token_type`，
+用例在 `TokenExchangeTests`，17 条）。实现时定下、文档里原来没写的四件事：
+
+- **没有开关。** 不留 `exchange.enabled`：它唯一能产出的是与调用方手里的票**等权**的另一张票，
+  关掉不增加安全性，却会让长作业在一小时后失败——正是本功能要消除的故障。要「总时长上限」做 P2 的
+  `max-session`，不要靠关续期。
+- **限速桶与 `client_credentials` 分开。** 规则 7 说的「共用窗口」是共用**阈值配置**
+  （`console.client-credentials.rate-limit.*`），不是共用一个桶：交换在认证成功之前不知道调用方是谁，
+  只能按来源 IP 分桶（键是 `ip|token-exchange`）。混在一个桶里会让「有人在刷登录」把长作业的续期一起锁掉。
+- **规则 4 的「缺省沿用 subject 的 scope」在本工程等价于 `PRINCIPAL_ROLE:ALL`。**
+  因为 `ClientCredentialsService` 对空 scope 也归一成它，本服务端签出的每张票都带着这个值；
+  而外部 OIDC 票的 `scope` claim 是 IdP 的语义（`openid profile` 之类），原样搬进我们签的票只会在
+  下一次换票时变成 `invalid_scope`——那时距离真正的故障已过一个 TTL。
+- **`subject_token_type` 缺省放行、取值不对拒绝。** 「没说」与「说了另一种类型」要区别对待：
+  前者只是省了参数，后者说明它期望的行为（如 `id_token`）我们没实现，必须让它看见拒绝。
 
 **P2 可选护栏（默认关）**：`ses` claim（会话起点）+ `lakehouse.rest.auth.access-token.max-session`
 （默认 `0` = 不限）。换票时 `ses' = 父票的 ses ?: 父票 iat`，若 `now - ses' > max-session` 则拒绝。
@@ -383,12 +405,12 @@ spark.sql.catalog.<name>.scope=PRINCIPAL_ROLE:ALL      # 必须有，理由见�
 
 ### P0（能让长作业活下来）
 
-| # | 内容 | 验收用例 |
-| --- | --- | --- |
-| P0-1 | 服务端 exchange：`TokenExchangeService` + `OAuthTokenController` 分支 + `TokenResponse.issued_token_type` | `TokenExchangeTests`：正常换票 / 过期 subject → `invalid_grant` / `scope` 不支持 → `invalid_scope` / `actor_token` → `invalid_request` / `requested_token_type` 不支持 → `invalid_request` / 换出的票 `sub` 与原票一致且 TTL 不放大 |
-| P0-2 | Paimon `OAuth2AuthProvider` + `Factory` + SPI 文件 | `RefreshingAuthProviderTests`：未进窗口不换票 / 进窗口换一次（并发 8 线程只发 1 次请求）/ 换票失败返回旧票且不抛 / `expires_in` 缺失时读 JWT `exp` / 两者都缺失时不换且打 WARN |
-| P0-3 | Iceberg 配置落地：两份 e2e 文档加 `scope` 那一行与对照表，无代码 | 短 TTL e2e：`ttl=90s`，跑 5 分钟反复 `select`，跨过 90 秒仍成功；日志里有 exchange 记录 |
-| P0-4 | `TokenSource` + `ManagementApiClient` 改造 | `TokenSourceTests`：`fixed` 行为与今天一致（逐字节：同一 `Authorization` 头）/ 到期前换票 / 401 只重放一次 / 第二次 401 原样抛 |
+| # | 内容 | 状态 | 验收用例 |
+| --- | --- | --- | --- |
+| P0-1 | 服务端 exchange：`TokenExchangeService` + `OAuthTokenController` 分支 + `TokenResponse.issued_token_type` | **已落地** | `TokenExchangeTests`（17 条）：正常换票 / 换出的票能被受保护端点接受 / 过期 subject → `invalid_grant` / `scope` 不支持 → `invalid_scope` / `actor_token` → `invalid_request` / `requested_token_type` 与 `subject_token_type` 不支持 → `invalid_request` / 换出的票 `sub` 与原票一致且 `exp - iat` 不放大 / 连换两级主体不变 / 静态令牌可换 / 失败限速 / client_credentials 响应不多出 `issued_token_type` / JSON 体与两个路径都通 |
+| P0-2 | Paimon `OAuth2AuthProvider` + `Factory` + SPI 文件 | 未开始 | `RefreshingAuthProviderTests`：未进窗口不换票 / 进窗口换一次（并发 8 线程只发 1 次请求）/ 换票失败返回旧票且不抛 / `expires_in` 缺失时读 JWT `exp` / 两者都缺失时不换且打 WARN |
+| P0-3 | Iceberg 配置落地：两份 e2e 文档加 `scope` 那一行与对照表，无代码 | 未开始 | 短 TTL e2e：`ttl=90s`，跑 5 分钟反复 `select`，跨过 90 秒仍成功；日志里有 exchange 记录 |
+| P0-4 | `TokenSource` + `ManagementApiClient` 改造 | 未开始 | `TokenSourceTests`：`fixed` 行为与今天一致（逐字节：同一 `Authorization` 头）/ 到期前换票 / 401 只重放一次 / 第二次 401 原样抛 |
 
 ### P1（让人不用读文档也能用对）
 
@@ -413,8 +435,11 @@ Iceberg 的失败甚至要等到 55 分钟后才出现。短 TTL 是唯一能把
 
 1. **`token.provider` 的取值**：`oauth2`（与 Iceberg 对齐）还是 `exchange`（更准确）？
    倾向 `oauth2`，但这是一次性的对外命名，改了要连带改名文档与片段。
-2. **失败码**：exchange 的 subject 无效用 `invalid_grant`（RFC 6749 语义）还是 `invalid_token`（RFC 6750）？
-   两者都能自圆其说，需要定一个并只用这一个。
+2. ~~**失败码**：exchange 的 subject 无效用 `invalid_grant`（RFC 6749 语义）还是 `invalid_token`（RFC 6750）？~~
+   **已定：`invalid_grant`。** RFC 6749 §5.2 把它定义为「授权许可无效」，而 subject token 在这次交换里
+   就是授权许可；调用方该做的是「重新拿票」。`invalid_token`（RFC 6750）留给
+   `BearerAuthInterceptor` 那条路——「访问受保护资源时令牌不管用」。两者混用会让作业日志里的
+   401/400 分不清是「续期失败」还是「权限不对」。
 3. **兜底路线的默认**：Paimon provider 在「没配 `credential` 且起始票已过期」时，应该
    a) 抛错让作业立刻失败（早失败早发现），还是 b) 打 WARN 继续用过期票（401 由服务端给）？
    倾向 a——但会让「作业排队一小时后再启动」这个场景直接起不来。

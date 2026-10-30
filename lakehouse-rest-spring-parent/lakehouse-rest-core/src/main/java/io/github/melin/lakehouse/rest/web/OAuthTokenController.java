@@ -2,6 +2,7 @@ package io.github.melin.lakehouse.rest.web;
 
 import io.github.melin.lakehouse.rest.dto.ConsoleDtos;
 import io.github.melin.lakehouse.rest.service.ClientCredentialsService;
+import io.github.melin.lakehouse.rest.service.TokenExchangeService;
 import io.github.melin.lakehouse.rest.support.ApiException;
 import io.github.melin.lakehouse.rest.support.Json;
 import io.github.melin.lakehouse.rest.support.Values;
@@ -22,7 +23,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * OAuth 2.0 令牌端点（客户端凭据流程）。
+ * OAuth 2.0 令牌端点（客户端凭据流程 + 令牌交换）。
  *
  * <p><b>路径与 Polaris 对齐</b>（{@code /api/catalog/v1/oauth/tokens}）：按 OAuth 2.0
  * 写的客户端库、以及 Polaris 官方的 console（其默认 {@code VITE_OAUTH_TOKEN_URL}
@@ -30,7 +31,18 @@ import org.springframework.web.bind.annotation.RestController;
  *
  * <p><b>它必须在鉴权之外</b>——它就是用来换取令牌的，要求它自带令牌会形成死循环。
  * 因此它是整套鉴权里唯一能匿名反复调用的端点，防爆破由
- * {@code ClientCredentialsService} 的失败限速承担。
+ * {@code LoginAttemptLimiter} 的失败限速承担（两种 grant 各有各的桶，共用一套阈值）。
+ *
+ * <p><b>两个 grant</b>，产出的票形状完全相同（本服务端签的 JWT，TTL 同一个配置）：
+ *
+ * <ol>
+ *   <li>{@code client_credentials}——用主体的 clientId / clientSecret 换票，见
+ *       {@link ClientCredentialsService}；
+ *   <li>{@code urn:ietf:params:oauth:grant-type:token-exchange}——用一张<b>仍然有效</b>
+ *       的票换一张新票（RFC 8693），见 {@link TokenExchangeService}。它存在的唯一理由是
+ *       让引擎侧的长作业能续期：Iceberg 的 REST 客户端在到期前默认发的就是这个 grant，
+ *       服务端认了它，引擎侧一行代码都不用改。
+ * </ol>
  *
  * <p><b>响应形状用 RFC 6749 的字段名</b>（{@code access_token} 等），不是本工程
  * 其余 DTO 的驼峰。这个端点的消费者是通用 OAuth 客户端，不是控制台一个——
@@ -52,6 +64,8 @@ public class OAuthTokenController {
     private static final String GRANT_CLIENT_CREDENTIALS = "client_credentials";
 
     private final ClientCredentialsService clientCredentials;
+
+    private final TokenExchangeService tokenExchange;
 
     /**
      * {@code POST /api/catalog/v1/oauth/tokens} 与 {@code POST /v1/oauth/tokens}。
@@ -93,13 +107,19 @@ public class OAuthTokenController {
         String grantType = parameters.get("grant_type");
         if (grantType == null || grantType.isBlank()) {
             return oauthError(HttpStatus.BAD_REQUEST, "invalid_request",
-                    "grant_type is required; this endpoint supports " + GRANT_CLIENT_CREDENTIALS);
+                    "grant_type is required; this endpoint supports " + GRANT_CLIENT_CREDENTIALS
+                    + " and " + TokenExchangeService.GRANT_TOKEN_EXCHANGE);
+        }
+        if (TokenExchangeService.GRANT_TOKEN_EXCHANGE.equals(grantType)) {
+            return exchange(parameters, request);
         }
         if (!GRANT_CLIENT_CREDENTIALS.equals(grantType)) {
             // 单独回 unsupported_grant_type 而不是 invalid_request：规范区分这两者，
-            // 而「我用的 grant_type 不对」与「我少传了参数」对调用方要做的事不一样
+            // 而「我用的 grant_type 不对」与「我少传了参数」对调用方要做的事不一样。
+            // 报文里列出两个受支持的取值——只说「不支持」会让人以为要换个端点
             return oauthError(HttpStatus.BAD_REQUEST, "unsupported_grant_type",
-                    "only " + GRANT_CLIENT_CREDENTIALS + " is supported");
+                    "only " + GRANT_CLIENT_CREDENTIALS + " and "
+                    + TokenExchangeService.GRANT_TOKEN_EXCHANGE + " are supported");
         }
 
         String clientId = parameters.get("client_id");
@@ -114,8 +134,31 @@ public class OAuthTokenController {
 
         ClientCredentialsService.IssuedToken issued = clientCredentials.issue(
                 clientId, clientSecret, parameters.get("scope"), request.getRemoteAddr());
+        // 客户端凭据流程不填 issued_token_type：那个字段属于 RFC 8693，
+        // 这里返回 null 且被 NON_NULL 抹掉，响应对老客户端逐字节不变
         return ResponseEntity.ok(new ConsoleDtos.TokenResponse(
-                issued.accessToken(), issued.tokenType(), issued.expiresInSeconds(), issued.scope()));
+                issued.accessToken(), issued.tokenType(), issued.expiresInSeconds(), issued.scope(),
+                null));
+    }
+
+    /**
+     * RFC 8693 令牌交换。
+     *
+     * <p>参数名全部按规范取（{@code subject_token} 等），不读 {@code client_id} /
+     * {@code client_secret}：这条路的凭据就是那张 subject token 本身，多一套凭据
+     * 只会让「到底用哪个身份」这件事多一个歧义来源。
+     */
+    private ResponseEntity<Object> exchange(Map<String, String> parameters, HttpServletRequest request) {
+        ClientCredentialsService.IssuedToken issued = tokenExchange.exchange(
+                parameters.get("subject_token"),
+                parameters.get("subject_token_type"),
+                parameters.get("requested_token_type"),
+                parameters.get("actor_token"),
+                parameters.get("scope"),
+                request.getRemoteAddr());
+        return ResponseEntity.ok(new ConsoleDtos.TokenResponse(
+                issued.accessToken(), issued.tokenType(), issued.expiresInSeconds(), issued.scope(),
+                TokenExchangeService.TOKEN_TYPE_ACCESS_TOKEN));
     }
 
     /**

@@ -1,5 +1,6 @@
 package io.github.melin.lakehouse.rest.dto;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import io.github.melin.lakehouse.rest.dto.StorageDtos.StorageConfigInfo;
 import io.github.melin.lakehouse.rest.support.PageMeta;
@@ -285,7 +286,18 @@ public final class ConsoleDtos {
             @JsonProperty("access_token") String accessToken,
             @JsonProperty("token_type") String tokenType,
             @JsonProperty("expires_in") long expiresInSeconds,
-            @JsonProperty("scope") String scope) {
+            @JsonProperty("scope") String scope,
+            /**
+             * RFC 8693 §2.2.1 要求的「换出来的是什么类型」。
+             *
+             * <p>只有令牌交换才会有它；客户端凭据流程的响应里<b>不出现这个键</b>
+             * （{@code NON_NULL}）。{@code invalid_request} 这条硬要求来自兼容性：
+             * 加一个字段对老客户端是透明的，把字段名改掉或让某个字段时有时无地
+             * 变成 {@code null} 则不是——按 RFC 6749 写的库会把它当成未知键忽略，
+             * 但返回 {@code "issued_token_type": null} 会让手写解析与日志对比更难读。
+             */
+            @JsonProperty("issued_token_type")
+            @JsonInclude(JsonInclude.Include.NON_NULL) String issuedTokenType) {
     }
 
     /**
@@ -295,7 +307,9 @@ public final class ConsoleDtos {
      * {@code invalid_request}（缺参数、请求形状不对）、
      * {@code invalid_scope}（scope 取值不支持）、
      * {@code invalid_client}（凭据不符）、
-     * {@code unsupported_grant_type}（只支持 {@code client_credentials}）、
+     * {@code invalid_grant}（令牌交换的 {@code subject_token} 无效或已过期）、
+     * {@code unsupported_grant_type}（只支持 {@code client_credentials} 与
+     * RFC 8693 的 {@code token-exchange}）、
      * {@code temporarily_unavailable}（失败次数超限）。
      * {@code error_description} 是给人读的一句话。
      */
