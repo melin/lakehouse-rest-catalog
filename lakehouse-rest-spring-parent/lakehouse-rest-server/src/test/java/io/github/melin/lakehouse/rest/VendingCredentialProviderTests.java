@@ -21,6 +21,7 @@ import io.github.melin.lakehouse.rest.service.DefaultStorageCredentialManager;
 import io.github.melin.lakehouse.rest.service.S3SessionPolicy;
 import io.github.melin.lakehouse.rest.service.S3TokenCredentialProvider;
 import io.github.melin.lakehouse.rest.service.StsSession;
+import io.github.melin.lakehouse.rest.support.ApiException;
 import io.github.melin.lakehouse.rest.support.CredentialCipher;
 import io.github.melin.lakehouse.rest.support.Json;
 import io.github.melin.lakehouse.rest.support.VendedStorageCredential;
@@ -544,6 +545,44 @@ class VendingCredentialProviderTests {
             return new StsSession("AKIA-SESSION", "SECRET-SESSION", "TOKEN-SESSION",
                     Instant.now().plus(Duration.ofSeconds(command.duration().toSeconds())));
         }
+    }
+
+    /**
+     * P2-2 身份分层：本部署不允许拿服务端自己的身份去 assume 时，缺钥匙就**失败**。
+     *
+     * <p>「失败」而不是「退回默认链」是这个开关的全部意义：默认链的表现是
+     * 「能跑，但 CloudTrail 里只有服务端那个万能身份」，而这正是要消除的东西。
+     * 因此这里同时断言**一次 STS 都没打**——拒绝要发生在请求之前，而不是请求之后。
+     */
+    @Test
+    void requireCatalogSignerRefusesToFallBackToTheServerIdentity() {
+        FakeSts sts = new FakeSts();
+        DefaultStorageCredentialManager manager =
+                managerWith(new S3TokenCredentialProvider(properties, cipher, sts));
+        properties.getCredential().setRequireCatalogSigner(true);
+
+        ApiException rejected = assertThrows(ApiException.class,
+                () -> manager.vend(awsWithRole("arn:aws:iam::123:role/lakehouse"), "t1", "s3://wh/db/t"));
+
+        assertEquals(503, rejected.getStatus());
+        assertTrue(rejected.getMessage().contains("require-catalog-signer"), rejected.getMessage());
+        assertNull(sts.last.get(), "拒绝要发生在调用云之前");
+    }
+
+    /** 同一开关下，catalog 自带钥匙时照常签发——开关约束的是「身份从哪来」，不是「别签」。 */
+    @Test
+    void requireCatalogSignerStillSignsWhenTheCatalogCarriesItsOwnKeys() {
+        FakeSts sts = new FakeSts();
+        DefaultStorageCredentialManager manager =
+                managerWith(new S3TokenCredentialProvider(properties, cipher, sts));
+        properties.getCredential().setRequireCatalogSigner(true);
+
+        VendedStorageCredential vended = manager.vend(
+                awsWithRoleAndKeys("arn:aws:iam::123:role/lakehouse", "AKIA-CATALOG", "SECRET-CATALOG"),
+                "t1", "s3://wh/db/t");
+
+        assertEquals(VendedStorageCredential.SOURCE_STS_SESSION, vended.source());
+        assertEquals("AKIA-CATALOG", sts.last.get().callerAccessKey());
     }
 
     /** {@link CredentialContext} 的会话名规整：STS 的字符集不含 {@code /} 与 {@code :}。 */

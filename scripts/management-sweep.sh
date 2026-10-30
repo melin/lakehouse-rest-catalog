@@ -40,7 +40,7 @@ field() { $PY -c "import json,sys;d=json.load(open(sys.argv[1]));print(d$1)" "$B
 # 从指定 URL 取字段，不受上一条响应影响
 fetch() { curl -s --noproxy '*' "$1" | $PY -c "import json,sys;print(json.load(sys.stdin)$2)" 2>/dev/null; }
 
-echo "========== 1. catalogs（5 个 operation） =========="
+echo "========== 1. catalogs（6 个 operation，含凭据作废） =========="
 ok 200 "GET    /catalogs" "$M/catalogs"
 ok 201 "POST   /catalogs (mgmt)" -X POST -H "$J" -d '{
   "catalog":{"type":"INTERNAL","name":"mgmt","properties":{"owner":"qa"},
@@ -64,6 +64,17 @@ ok 200 "PUT    /catalogs/mgmt storageConfigInfo 更新仓库" -X PUT -H "$J" \
   "$M/catalogs/mgmt"
 echo "     管理面改过的仓库应同步到 catalog 面："
 ok 200 "GET    /v1/mgmt 侧的 catalog 发现" "$B/v1/config?warehouse=mgmt"
+
+# 凭据作废：清的是缓存，不是资源，所以连调两次都该是 200（条目数会不同）。
+# 回执必须带 alreadyIssuedStillWork=true —— 云侧没有按 token 吊销的 API，
+# 这个值等于在接口层面承认「已经发出去的票还在外面」。
+ok 200 "POST   /catalogs/mgmt/credentials/revoke" -X POST -H "$J" "$M/catalogs/mgmt/credentials/revoke"
+ok 404 "POST   /catalogs/nope/credentials/revoke -> 404" -X POST -H "$J" "$M/catalogs/nope/credentials/revoke"
+REVOKE_JSON=$(curl -s --noproxy '*' -X POST -H "$J" "$M/catalogs/mgmt/credentials/revoke")
+case "$REVOKE_JSON" in
+  *'"alreadyIssuedStillWork":true'*) pass=$((pass + 1)); printf 'ok  %s\n' "[--/--] 作废回执声明已发出的票仍然有效" ;;
+  *) fail=$((fail + 1)); printf '!!  %s\n' "[--/--] 作废回执形状不符 -> $REVOKE_JSON" ;;
+esac
 
 echo "========== 1b. storageConfigInfo 六种存储类型 =========="
 ok 201 "POST   /catalogs (S3 全字段)" -X POST -H "$J" -d '{

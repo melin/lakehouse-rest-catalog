@@ -352,6 +352,19 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
   **下发顺序是 `stsUnavailable` → 签发 → 转发 → 环境链**：catalog 上那对 AK/SK 配了
   `roleArn`（S3 / OSS）时是**服务端 assume 用的调用方身份**，没配时才是转发给引擎的
   数据面凭据。「静态凭据优先于一切」与「静态凭据 / `roleArn` 互斥 400」两条旧规则都已删。
+- **凭据缓存有两个不可省的机制**（`StorageCredentialCache`，2026-10-30 加的 P2-1）：
+  ① `resolve(key, loader)` 是 singleflight——同键并发未命中只让一个线程真去签发，
+  其余等它的 `CompletableFuture`；**失败不写缓存**，且把 `CompletionException` 拆掉再抛
+  （否则异常处理器按 500 处理，丢掉的正是「签发不了 = 503」这个语义）。
+  ② `generation` 是作废代数：签发开始时记一次、写回前比对，**作废期间完成的签发不落缓存**，
+  否则「点了作废，下一读表还是拿到刚被作废的票」。`clear()` 也推进它，但**不动 `inFlight`**
+  （摘掉在途 future 会让等待者永远醒不过来）。
+- **限流的退避分两级**（`ThrottlingGuard`，冷却键是 **provider 名**而不是 catalog——
+  配额按云账号算）：重试消化偶发限流，重试耗尽后进冷却、冷却期内**直接 503 且一次也不打云**。
+  `cooldownRemainingMillis` 到期**不删条目**：条目里带着 streak，删掉就等于把翻倍曲线重置。
+  只有 `ThrottledException` 参与重试，`ApiException` 的其它 503 不重试。
+- **「凭据作废」端点只清缓存**：`POST /catalogs/{name}/credentials/revoke` 返回被清条数与
+  `alreadyIssuedStillWork: true`。四家云都没有按 token 吊销的 API，别把它写成「立即失效」。
 - **`accessKeyId` 打码成 `******`，且这个值同时是回写哨兵**（P1-8）。两条**必须同时成立**，
   少一条就会静默改坏配置：只打码不认哨兵 → 「只改个名字」的保存把 AK ID 写成六个星号、
   SK 还是旧的，错误现场在存储侧（`InvalidAccessKeyId`），与「我刚改了什么」联系不上。

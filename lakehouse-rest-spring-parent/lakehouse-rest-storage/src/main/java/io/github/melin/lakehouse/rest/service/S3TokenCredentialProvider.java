@@ -2,6 +2,7 @@ package io.github.melin.lakehouse.rest.service;
 
 import io.github.melin.lakehouse.rest.config.RestServerProperties;
 import io.github.melin.lakehouse.rest.dto.StorageDtos.AwsStorageConfigInfo;
+import io.github.melin.lakehouse.rest.support.ApiException;
 import io.github.melin.lakehouse.rest.support.CredentialCipher;
 import io.github.melin.lakehouse.rest.support.StorageConfigs;
 import io.github.melin.lakehouse.rest.support.VendedStorageCredential;
@@ -108,6 +109,17 @@ public class S3TokenCredentialProvider implements CredentialProvider {
         // 拿哪把钥匙去 assume：catalog 自己填的那对；没填就交给 SDK 的默认链
         // （实例角色 / IRSA），那是部署身份，不需要配置项。
         StorageConfigs.StorageSecrets caller = StorageConfigs.secrets(s3, cipher);
+        if (caller == null && properties.getCredential().isRequireCatalogSigner()) {
+            // P2-2 身份分层：本部署不允许用服务端自己的身份去 assume。
+            // 不回退到「转发」也不静默跳过——两种都会让「谁签的这张票」变得不可知，
+            // 而 CloudTrail 里只会留下服务端那个万能身份。
+            throw new ApiException(503, null, null,
+                    "catalog " + context.scopeId() + " declares roleArn " + s3.roleArn()
+                            + " but carries no accessKeyId/secretAccessKey to sign the AssumeRole call,"
+                            + " and this deployment forbids falling back to its own identity"
+                            + " (lakehouse.rest.credential.require-catalog-signer=true);"
+                            + " set the catalog's accessKeyId + secretAccessKey, or turn that flag off");
+        }
         StsSession session = assumeRoleClient.assumeRole(new AssumeRoleCommand(
                 s3.roleArn(),
                 s3.externalId(),

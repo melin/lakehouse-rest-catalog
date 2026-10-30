@@ -89,6 +89,26 @@ public final class ManagementDtos {
                                        StorageConfigInfo storageConfigInfo) {
     }
 
+    /**
+     * {@code POST /catalogs/{catalogName}/credentials/revoke} 的回执（服务端扩展）。
+     *
+     * <p><b>名字里带 {@code cached} 是刻意的。</b>云侧没有「按 token 吊销」的 API
+     * （设计稿 G10 / P2-3）：已经发出去的那张票会一直有效到它自己的到期时刻，
+     * 任何声称「立即失效」的接口都是在骗人。这个端点能做的只有两件：
+     * 把服务端缓存里这个 catalog 的条目清掉（下一次读表会重新签发，
+     * 而旧票仍在寿命内可用），以及让运维知道「从现在起新签的票已经是新的」。
+     *
+     * @param catalog             catalog 的 prefix
+     * @param invalidatedEntries  清掉的缓存条目数（表级票 + 服务端 catalog 级票）
+     * @param alreadyIssuedStillWork 固定 {@code true}，一句话说清边界，别让调用方误读
+     * @param note               人读的处置建议（缩短 TTL / 轮换 catalog 上的钥匙 / 云侧拒条件）
+     */
+    public record CachedCredentialRevocation(String catalog,
+                                             int invalidatedEntries,
+                                             boolean alreadyIssuedStillWork,
+                                             String note) {
+    }
+
     // ------------------------------------------------------------------ principal
 
     /** {@code Principals}。 */

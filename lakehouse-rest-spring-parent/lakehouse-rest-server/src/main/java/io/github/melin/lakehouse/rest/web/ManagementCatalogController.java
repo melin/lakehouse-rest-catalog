@@ -188,4 +188,27 @@ public class ManagementCatalogController {
         catalogService.delete(catalogName);
         return ResponseEntity.noContent().build();
     }
+
+    /**
+     * {@code POST /catalogs/{catalogName}/credentials/revoke}：清掉该 catalog 的凭据缓存。
+     *
+     * <p>判 {@code CATALOG:ALTER} 而不是读权限：这个动作不读任何数据，但它改变的是
+     * 「下一张票长什么样」——能改 catalog 配置的人本来就能换掉那把钥匙，
+     * 所以不需要再发明一个权限点（官方 12 项之外我们已经加了两个，见 P1-7）。
+     *
+     * <p><b>用 POST 而不是 DELETE：</b>它不是「删掉某个资源」，而是「让缓存作废，
+     * 下次重新签发」——资源本身（catalog、云上的角色）一个都没少。用 DELETE 会让
+     * 「可重复调用」这一性质（第二次清 0 条）显得自相矛盾。
+     *
+     * <p><b>响应里那两句 {@code alreadyIssuedStillWork} / {@code note} 不是客套。</b>
+     * 云侧没有按 token 吊销的 API，已经发出去的票会一直有效到到期——这个端点最容易被
+     * 当成「紧急撤销按钮」，而它按不了那个。把边界写在回执里，比写在文档里更可能被读到。
+     */
+    @PostMapping("/{catalogName}/credentials/revoke")
+    public ManagementDtos.CachedCredentialRevocation revokeCredentials(
+            @PathVariable String catalogName) {
+        authorizationService.requireCatalog(catalogName, Access.ALTER,
+                "revoke the cached credentials of the catalog");
+        return catalogService.revokeCachedCredentials(catalogName);
+    }
 }

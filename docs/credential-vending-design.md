@@ -1,6 +1,6 @@
 # 存储凭据下发（Credential Vending）：现状、缺口与七种存储的落地设计
 
-> **状态：P0 已实现、P1 部分实现（P1-7 两个权限点、P1-8 打码与哨兵、P1-9 服务端取票、P1-12 COS 落地、P1-6 控制台标记（列表 / 详情 / 表单预览）已做；P1-13 经核查作废，见 v6/v7/v8 修订块与 §8、§10.8）。** 本文回答三个问题：① Gravitino 与 Polaris 都做了 Credential
+> **状态：P0 已实现、P1 部分实现（P1-7 两个权限点、P1-8 打码与哨兵、P1-9 服务端取票、P1-12 COS 落地、P1-6 控制台标记（列表 / 详情 / 表单预览）已做；P1-13 经核查作废，见 v6/v7/v8 修订块与 §8、§10.8）；P2 做了 P2-1（singleflight + 限流退避）、P2-2（身份分层开关）、P2-3（凭据作废入口），P2-4 明确不做（§11.2），P2-5 只给算式（§9.2）。** 本文回答三个问题：① Gravitino 与 Polaris 都做了 Credential
 > Vending，**本工程有没有考虑、还差哪些功能**；② AWS / Azure / GCS / 阿里云 OSS / 华为云 OBS /
 > 腾讯云 COS 与 S3 兼容存储**分别怎么落地**；③ Spark 访问 Catalog 时**能不能不把 AK/SK 写进配置**。
 > §10 另外回答第四个：**控制台上怎么配**（附交互原型）。
@@ -1347,11 +1347,11 @@ object_store 认的是 `aws_access_key_id` / `aws_secret_access_key` / `aws_sess
 
 | # | 做什么 | 为什么排后面 |
 | --- | --- | --- |
-| P2-1 | 刷新路径 singleflight + STS 限流退避 | 只有大规模并发才暴露 |
-| P2-2 | 服务端身份分层（只 `sts:AssumeRole`） | 纯运维配置，代码侧只需不再直用静态 AK/SK |
-| P2-3 | 「凭据作废」入口（只能靠缩短 TTL + 云侧条件拒绝，无真正吊销） | 云侧没有按 token 吊销的 API，别承诺做不到的事 |
-| P2-4 | Spark 侧统一插件（B 方案） | 只有无 STS 的自建存储需要 |
-| P2-5 | 多实例部署下缓存与 STS 调用的配额评估 | 依赖部署形态，先看 P0/P1 的实测调用量 |
+| ✅ P2-1 | 刷新路径 singleflight + STS 限流退避 | 落地：`StorageCredentialCache#resolve`（同键并发未命中只签一次、失败不缓存、**作废代数 fencing** 让作废期间完成的签发不写回）+ `ThrottlingGuard`（限流重试 200ms 起翻倍、耗尽后按 provider 冷却、冷却期内直接 503 不打云）+ `ThrottledException`（继承 `ApiException`，仍是 503，分类由各云客户端做）。用例：`StorageCredentialCacheTests` 7 条、`ThrottlingGuardTests` 7 条 |
+| ✅ P2-2 | 服务端身份分层（只 `sts:AssumeRole`） | 落地：`credential.require-catalog-signer`（**默认关**）。打开后「配了 `roleArn` 却自带钥匙为空」的 catalog 直接 503 并点名该配置项，**不再退回服务进程的默认凭据链**；拒绝发生在调云之前（用例断言 `FakeSts.last` 为空）。默认关的理由：整个服务共用一个工作负载身份（IRSA）是很多部署的正常形态，改成默认拒绝会让它们升级当天全量读不了表。运维侧的 IAM 最小集见 §11.1。用例：`VendingCredentialProviderTests#requireCatalogSignerRefusesToFallBackToTheServerIdentity`（503 + 一次 STS 都没打）、`#requireCatalogSignerStillSignsWhenTheCatalogCarriesItsOwnKeys` |
+| ✅ P2-3 | 「凭据作废」入口（只能靠缩短 TTL + 云侧条件拒绝，无真正吊销） | 落地：`POST /catalogs/{name}/credentials/revoke`（判 `CATALOG:ALTER`），清掉该 catalog 的**两种**缓存键（表级票 + 服务端 catalog 级票）并返回被清的条数。**回执里写死边界**：`alreadyIssuedStillWork=true` + `note` 明说已经发出去的票到期前仍然有效。云侧没有按 token 吊销的 API（G10），这个端点按不了「紧急撤销」那个按钮。用例：`CredentialRevokeApiTests` 2 条（作废后下一读表换新票 / 回执不撒谎 / 第二次清到 0 仍 200 / 未知 catalog 404） |
+| ❌ P2-4 | Spark 侧统一插件（B 方案） | **未做**，见 §11：它只在「无 STS 的自建存储 + 引擎侧 FileIO 不消费下发凭据」这个交集里才有用，而这两条目前都不成立；硬写出来只能验证「编译通过」 |
+| ◑ P2-5 | 多实例部署下缓存与 STS 调用的配额评估 | 见 §9.2 的算式与结论：**不做共享缓存**，按「实例数 × 并发表数 / 缓存窗口」估。这一项没有代码产物，只有一条运维公式 |
 
 ---
 
@@ -1364,6 +1364,35 @@ object_store 认的是 `aws_access_key_id` / `aws_secret_access_key` / `aws_sess
 **9.2 STS 配额与延迟。** AWS STS 单账号约 250 TPS（文章给的量级），且每次 loadTable 多一次网络
 往返。缓存比例调到 0.15 会让命中率下降、调用变多——这是刻意的取舍（宁可多调，也不给快过期的票）。
 需要在上线前按「引擎数 × 表数 / TTL」估一遍。
+
+**P2-5 的算式（多实例配额评估）。** 一条能直接代数的式子，取代「按经验估一下」：
+
+```
+每个实例每分钟的签发次数 ≈ 活跃表数 / (ttl_seconds × cache-expire-ratio / 60)
+全站调用量               = 上式 × 实例数            # 每个实例各签各的，没有共享缓存
+```
+
+代入默认值（`ttl=3600`、`ratio=0.15` → 缓存窗口 9 分钟）：
+
+| 部署 | 活跃表 | 每实例每分钟 | 全站每分钟 | 占 250 TPS 配额 |
+| --- | --- | --- | --- | --- |
+| 单个 3 副本集群 | 500 | 56 | 167 | 1.1% |
+| 单个 3 副本集群 | 5000 | 556 | 1667 | 11% |
+| 两个集群（各 3 副本） | 5000 | 556 | 3333 | 22% |
+
+**三个结论，比数字本身更重要：**
+
+1. **瓶颈不是持续流量，是尖峰。** 稳态下几十上百倍的余量很宽；危险的是「一批引擎 9 分钟里陆续
+   重启」——那会把一个缓存窗口内的签发压缩到几分钟里，瞬时 TPS 可以到稳态的十几倍。
+   P2-1 的 singleflight 削掉的是**同一张表**的重复，削不掉「不同表一起到期」这件事；
+   真正兜住尖峰的是 `ThrottlingGuard` 的冷却（把打满变成一段明确的 503，而不是全站变慢）。
+2. **不必引入共享缓存。** 表数在 5000 这个量级、单账号配额 250 TPS 的前提下，多实例各签各的
+   只吃掉个位数到二十几个百分点。为省这点调用去加一层 Redis，等于给一条已经很关键的路径
+   再插一个可能挂的依赖（§9.3 的结论仍然成立）。
+3. **要调的旋钮只有一个。** 真到配额紧张，先调大 `cache-expire-ratio`（0.15 → 0.3），
+   而不是调大 `ttl-seconds`：前者只影响「缓存多久」，后者会**同时放大泄露窗口**，
+   而泄露窗口是接上 STS 想缩小的那个东西。
+
 
 **9.3 缓存一致性与多实例。** 每个实例各自缓存、各自 assume。同一张表在两台机器上会拿到两份不同
 的票（都有效，但审计里会出现两条 session）。可以接受；如果要收敛，得引入共享缓存（Redis），
@@ -1616,7 +1645,71 @@ Lance 只有 Spark 一个页签：connector（`org.lance.spark`）没有 Flink �
 
 ---
 
-## 11. 附录
+## 11. P2-2 与 P2-4：身份分层的最小 IAM，以及 Spark 统一插件为什么不做
+
+### 11.1 服务端身份应该只拿到 `sts:AssumeRole`
+
+代码侧 P2-2 只做了一件事——`credential.require-catalog-signer`（默认关，见 §8 的 P2 表）。
+真正的分层在 IAM 里，形态就是下面两条：**服务端的身份能 assume，不能读写数据**；
+**角色上才挂数据面权限，并且按 catalog 分角色**。
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": "sts:AssumeRole",
+    "Resource": [
+      "arn:aws:iam::111122223333:role/lakehouse-data/team-a-*",
+      "arn:aws:iam::111122223333:role/lakehouse-data/team-b-*"
+    ]
+  }]
+}
+```
+
+三条容易被忽略的配套：
+
+1. **`Resource` 要写成前缀通配，不要写 `*`。** 写成 `*` 之后，服务端一旦被拿下，
+   攻击者可以 assume 账号里任何一个角色——包括管理员。
+2. **被 assume 的角色要信这个身份**（`TrustPolicy` 的主体是服务端的角色 ARN / IRSA 的
+   OIDC 主体），且**只信它一个**；顺手放一个 `"Principal": {"AWS": "*"}` 等于前面全白做。
+3. **`stsUnavailable=true` 的 catalog 与这条无关。** 那一档压根不签，走转发；
+   把它也算进「服务端身份」的讨论只会让人以为转发档也能被这条 IAM 收紧。
+
+`require-catalog-signer=true` 之后，「用哪把钥匙去 assume」就从「部署身份」下移到
+「catalog 自己带的那对 AK/SK」。这时那对钥匙的权限应该是**只有 `sts:AssumeRole`**——
+它能 assume 到的角色才是数据面权限的边界。这一点在代码里没有开关可验证（要真实云），
+所以它只写在文档里，靠 IAM 评审兜住。
+
+### 11.2 Spark 统一插件（B 方案）：现在不做，理由是它解决不了任何现存问题
+
+设计稿最早把它列进 P2 时，假设是「引擎拿不到凭据的时候需要一个统一插件去取」。
+现在逐条核对，这个假设在四条路径上都不成立：
+
+| 引擎 × 协议面 | 现状 | 还需不需要插件 |
+| --- | --- | --- |
+| Paimon（Spark / Flink） | `RESTTokenFileIO` 自己调 `/token`，按 token 作缓存键重建 FileIO | **不需要**：它已经把「取票」这件事做完了 |
+| Iceberg（Spark） | `X-Iceberg-Access-Delegation: vended-credentials` + `client.refresh-credentials-endpoint` | **不需要**：`iceberg-aws` 自带 `VendedCredentialsProvider` |
+| COS（Paimon 面） | `COSNFileIO` 包在 `RESTTokenFileIO` 外，能续 | **不需要** |
+| COS（Iceberg / Lance 面） | 收不到凭据（§6.3.4） | **插件也救不了**：COSN 没有令牌位，问题在存储实现，不在取票方式 |
+
+也就是说，**只有一种情形需要 B 方案**：某个自建存储既没有 STS（所以只能转发长期密钥），
+它的 FileIO 又**不消费下发的 `credentials`**（所以连转发都拿不到）。这两条同时成立时，
+一个「在 Spark 侧主动调管理 API 取票并写进 Hadoop `Configuration`」的插件才有意义。
+
+而这两种失败模式在**别的层**已经有更便宜的答案：
+
+- 「没有 STS」是运维事实，用 `stsUnavailable=true` 表达，转发档照常工作（§9.6）；
+- 「FileIO 不消费 credentials」是兼容性问题，症状是「配了也读不了」，
+  应该用启动自检报出来（哪个 catalog 的哪种存储会让凭据落空），而不是再写一条取票链路替它兜底。
+
+**结论：不写。** 真要写，前提是先有一个具体的存储实现与一套能跑通的实测环境；
+在没有它们的情况下写出来，最多能验证「编译通过」——那正是本文档反复批评的
+「看起来在跑、其实没生效」。等出现真实需求时，按 §7.1 的表新增一行，比现在猜着写要省得多。
+
+---
+
+## 12. 附录
 
 ### A. 怎么观察现状（不启动引擎，纯 curl）
 

@@ -391,6 +391,13 @@ Catalog 侧与鉴权：
 | `lakehouse.rest.auth.console.client-credentials.rate-limit.max-failures` / `.window` | `10` / `1m` | 该方式的失败限速 |
 | `lakehouse.rest.auth.console.oidc.*` | 关闭 | 外部身份提供方（OIDC + PKCE）登录，见 [`console-auth.md`](docs/console-auth.md) |
 | `lakehouse.rest.credential.ttl-seconds` | `3600` | 数据访问令牌有效期 |
+| `lakehouse.rest.credential.providers` | 空（= 只有转发） | 启用的签发器：`s3-token` / `azure-sas` / `oss-sts` / `gcs-downscope`；写错名字启动即失败 |
+| `lakehouse.rest.credential.cache-expire-ratio` | `0.15` | 短期票在缓存里留多久（占寿命的比例）。只对短期票生效 |
+| `lakehouse.rest.credential.session-tags` | `false` | AssumeRole 时带 `lh:principal` / `lh:scope` / `lh:access`。**开启前**角色信任策略要放行 `sts:TagSession` |
+| `lakehouse.rest.credential.retry-attempts` | `3` | 云侧**限流**时的尝试次数（含第一次）。权限错 / 网络错不重试 |
+| `lakehouse.rest.credential.retry-backoff-millis` | `200` | 限流重试的首次退避，之后翻倍，单次上限 2s |
+| `lakehouse.rest.credential.throttle-cooldown-seconds` | `10` | 重试耗尽的冷却：这段时间该 provider 直接 503、不再打云。连续失败翻倍（上限 6 倍），一次成功清零 |
+| `lakehouse.rest.credential.require-catalog-signer` | `false` | 为 `true` 时，配了 `roleArn` 却自带 AK/SK 为空的 catalog **直接 503**，不允许退回服务进程的默认凭据链（身份分层，见设计稿 §11.1） |
 
 表元数据物化（把 schema 写进 Paimon 表目录，见
 [`docs/spark-paimon-rest-e2e.md`](docs/spark-paimon-rest-e2e.md) 第 4 节）：
@@ -567,6 +574,13 @@ Paimon 叫 `s3.access-key` / `s3.secret-key`，两边互不认识。
 Azure 只下发定位元数据是个明确的缺口：Polaris 的 `polaris.storage.*` 里没有 Azure 账户密钥这一项，
 它靠服务进程自身的 Azure 标识签 SAS，而本工程没有那层标识。硬造一个签名错误的 SAS
 比不给更糟，因此这里传租户与账户，由引擎用它自己的身份换取访问权。
+
+**作废入口**：`POST /api/management/v1/catalogs/{catalogName}/credentials/revoke`
+（判 `CATALOG:ALTER`）清掉该 catalog 的凭据缓存，下一次读表重新签发。回执里写明
+`alreadyIssuedStillWork: true`——**已经发出去的票到期前仍然有效**，四家云都没有
+按 token 吊销的 API。要真正缩短泄露窗口只有三条路：调小 `credential.ttl-seconds`、
+轮换 catalog 上那把钥匙、或在云侧按条件（时间段 / 来源身份 / VPC 端点）拒绝。
+详见 [`docs/credential-vending-design.md`](docs/credential-vending-design.md) §8 的 P2-3。
 
 ---
 

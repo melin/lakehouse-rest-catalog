@@ -580,6 +580,25 @@ public class RestServerProperties {
          * 上限 {@code 6 ×} 本值；一次成功即清零。
          */
         private long throttleCooldownSeconds = 10;
+
+        /**
+         * 是否要求「每份签发都用 catalog 自己带的那对 AK/SK 去 assume」，默认 {@code false}。
+         *
+         * <p><b>这是服务端身份分层的开关（设计稿 P2-2）。</b>理想形态里，服务端自己那把
+         * 身份只该有 {@code sts:AssumeRole}（外加换成目标角色所需的最小集），
+         * 数据面的权限全在角色上；而「用哪把钥匙去 assume」按 catalog 决定。
+         * 打开后，一个配了 {@code roleArn} 却没填 AK/SK 的 catalog 会**直接失败**，
+         * 而不是悄悄退回服务进程的默认凭据链（实例角色 / IRSA / 环境变量）。
+         *
+         * <p><b>为什么默认关。</b>退回默认链不是错误，而是很多部署的**正常形态**：
+         * 整个服务只有一个工作负载身份（IRSA），所有 catalog 都靠它去 assume 各自的角色，
+         * 角色上的权限差异已经够了。把它改成默认拒绝，升级当天这些部署会全量读不了表。
+         * 想要「每个 catalog 一把最低权限钥匙」的部署显式打开即可。
+         *
+         * <p>失败是 {@code 503} 而不是 {@code 400}：catalog 的配置本身合法，
+         * 是**本部署的策略**不允许用环境身份签。消息里点名这个配置项与改法。
+         */
+        private boolean requireCatalogSigner = false;
     }
 
     /** 启动时预置的 catalog 与 database。 */

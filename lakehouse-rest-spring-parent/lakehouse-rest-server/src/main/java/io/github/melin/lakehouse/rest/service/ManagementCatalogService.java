@@ -9,6 +9,7 @@ import io.github.melin.lakehouse.rest.domain.repo.CatalogRepository;
 import io.github.melin.lakehouse.rest.domain.repo.PermissionAssignmentRepository;
 import io.github.melin.lakehouse.rest.domain.repo.TableSnapshotRepository;
 import io.github.melin.lakehouse.rest.dto.ManagementDtos.Catalog;
+import io.github.melin.lakehouse.rest.dto.ManagementDtos.CachedCredentialRevocation;
 import io.github.melin.lakehouse.rest.dto.ManagementDtos.Catalogs;
 import io.github.melin.lakehouse.rest.dto.ManagementDtos.CreateCatalogRequest;
 import io.github.melin.lakehouse.rest.dto.ManagementDtos.DatabaseStat;
@@ -83,6 +84,14 @@ public class ManagementCatalogService {
     private final CredentialCipher cipher;
     private final CatalogEventPublisher events;
     private final ExecutionClusterService executionClusters;
+
+    /**
+     * 「凭据作废」入口要清的就是这个缓存。
+     *
+     * <p>它在这里而不是在一个新服务里：作废的作用对象是 catalog，判定「这是哪个 catalog」
+     * 也要先 {@code require(name)}，两件事都在本类手里，多一个类只会多一层转发。
+     */
+    private final StorageCredentialCache credentialCache;
 
     /**
      * {@code GET /catalogs}：全量、按 catalog 名升序。
@@ -390,6 +399,39 @@ public class ManagementCatalogService {
         }
         return catalogRepository.findByPrefix(name)
                 .orElseThrow(() -> ApiException.managementNotExist(ResourceType.CATALOG, name));
+    }
+
+    /**
+     * {@code POST /catalogs/{catalogName}/credentials/revoke}：清掉这个 catalog 的凭据缓存。
+     *
+     * <p><b>这个入口能做什么、不能做什么，必须先说清楚（设计稿 G10 / P2-3）。</b>
+     *
+     * <ul>
+     *   <li><b>能做：</b>把服务端缓存里属于这个 catalog 的条目全部清掉——下一读表会重新
+     *       签发，新票用新配置（比如刚换过的那对钥匙）。表级票与服务端自己用的 catalog 级票
+     *       一起清，两种都要清的理由见 {@code StorageCredentialCache#invalidateCatalog}。</li>
+     *   <li><b>不能做：</b>让**已经发出去**的票立刻失效。四家云的 STS 都没有按 token 吊销的
+     *       API，一张 1 小时的票在它的寿命内永远可用。真要「立刻断掉」，只有三条路：
+     *       缩短 TTL 后重新签发、轮换 catalog 上的钥匙、或在云侧用条件（时间段 / 来源
+     *       身份 / VPC 端点）拒绝。回执里把这句话带回去，是因为这个端点最容易被当成
+     *       「紧急撤销按钮」——而它按不了那个。</li>
+     *   <li><b>不推进 {@code throttling} 的冷却：</b>作废与限流是两件事，顺手解掉冷却
+     *       只会让刚被限流的云侧立刻再挨一轮。</li>
+     * </ul>
+     *
+     * <p>并发地，若此刻正好有一次签发在途，它的结果不会写回缓存（缓存里的作废代数
+     * 会把它挡掉）——也就是说这里之后的下一次读表一定重新签发。
+     */
+    public CachedCredentialRevocation revokeCachedCredentials(String catalogName) {
+        CatalogEntity entity = require(catalogName);
+        int cleared = credentialCache.invalidateCatalog(entity.getId());
+        log.info("revoked {} cached credentials for catalog {}", cleared, catalogName);
+        return new CachedCredentialRevocation(catalogName, cleared, true,
+                "cached credentials dropped; the next table read mints a new one. Tokens already"
+                        + " handed out stay valid until their own expiry (no cloud offers per-token"
+                        + " revocation) — to cut that window, lower lakehouse.rest.credential.ttl-seconds,"
+                        + " rotate the key pair stored on the catalog, or deny at the cloud side"
+                        + " (time window / source identity / VPC endpoint)");
     }
 
     /** 实体 → 管理规格的 {@code Catalog}（顺带查一次执行集群摘要，单条路径用）。 */
