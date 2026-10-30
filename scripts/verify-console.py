@@ -1034,12 +1034,17 @@ check("存储类型用中文名显示，且「本部署未接入」的类型点�
       "StorageConfigFields 应用 utils/storageType.js 的 storageTypeLabel 显示、"
       "用 isUnsupportedStorageType 判定能否点（自绘按钮没有 el-option 的 disabled 兜底）")
 
-# 「将提交的报文」是这一页唯一能自证「填的东西会被翻译成什么」的地方。
-# 它原先在右栏与「生效摘要」并排；摘要去掉后若顺手把它一起删了，
-# 页面上就再没有任何东西能回答这个问题。
-check("表单页在页尾保留「将提交的报文」",
-      "将提交的报文" in catalog_form_view and "payloadText" in catalog_form_view,
-      "CatalogFormView 应保留报文卡片（移到页尾后仍要渲染 payloadText）")
+# 页尾那张「将提交的报文」已经去掉（它常驻占一整块，而「我填的会被翻译成什么」
+# 对着表单本身读更快）。**但它当初承担的那条约定不能跟着消失**：提交体只能由
+# `buildPayload()` 造一份。去掉卡片之后这条反而更容易被破坏——页面不再显示报文，
+# 谁也不会当场发现「另拼了一份」；等到发现时症状是「存进去的和点出来的不一样」。
+check("表单页不再渲染报文卡片，提交体仍只有 buildPayload 一个来源",
+      'title="将提交的报文"' not in catalog_form_view
+      and "payloadText" not in catalog_form_view
+      and catalog_form_view.count("function buildPayload(") == 1
+      and "buildPayload().storageConfigInfo" in catalog_form_view,
+      "CatalogFormView 已去掉报文卡片（payloadText 随之删除）；提交体仍只能由 "
+      "buildPayload() 造，创建分支从它取 storageConfigInfo")
 
 # --- 12.2.1 表单是独立页面，不是列表页里的弹窗 ----------------------------
 # 拆成两页之后有两件事会**安静地**回退：

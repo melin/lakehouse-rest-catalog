@@ -1,6 +1,17 @@
 <template>
   <div class="pc-storage">
-    <el-form label-position="top" size="small" class="pc-form">
+    <!--
+      标签在左、控件在右（`.pc-form-label-left`，全局样式）：这一节的字段名都短
+      （region / endpoint / roleArn / accessKeyId），而这一份配置要跟第 3 节的
+      「凭据来源」判定对照着读——标签在上时每个字段两行，一屏只放得下五六个。
+      列宽由全局变量 `--pc-form-label-w` 给，不在这里另写一个数值。
+    -->
+    <el-form
+      label-position="right"
+      label-width="var(--pc-form-label-w)"
+      size="small"
+      class="pc-form pc-form-label-left"
+    >
       <el-form-item required>
         <template #label>
           <FieldLabel label="存储类型（storageType）">
@@ -967,6 +978,19 @@ defineExpose({ validate, build })
 
 .pc-storage-carry {
   margin-top: 4px;
+}
+
+/* 字段级说明行跟控件列对齐。
+ *
+ * 标签挪到左列之后，任何贴在标签列下面的文字都会被读成「对那个字段名的补充说明」，
+ * 而这三条说的是**控件里的值**：`roleArn` 与静态凭据并存、本部署没开静态凭据、
+ * `noInlinePolicy` 打开之后票的作用域。宽度引全局同一个变量（列宽只有一处定义）。
+ *
+ * 只挑 `.el-form` 的直接子元素：`TipAlert` 里也有一条 `.pc-field-note`（COS 的三面
+ * 差异），那是整段提示的正文，跟着提示走，不该缩进。 */
+.pc-storage .el-form > .pc-field-note,
+.pc-storage .el-form > .pc-static-disabled-hint {
+  padding-left: var(--pc-form-label-w);
 }
 
 /* 「保存后凭据来源」预览。故意做得比 `.pc-field-note` 重一点、比 `el-alert` 轻得多：

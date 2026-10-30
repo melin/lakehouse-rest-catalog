@@ -30,7 +30,16 @@
         <PanelCard title="基本信息" hint="只影响元数据，与凭据无关">
           <template #icon><span class="pc-step">1</span></template>
 
-          <el-form label-position="top" size="small" class="pc-form">
+          <!--
+            标签在左、控件在右（`pc-form-label-left`）：这一节的字段名都短（名称 / 表格式 /
+            类型），而第 2 节与第 3 节要对照着看，省下来的行高比省下来的列宽值钱。
+          -->
+          <el-form
+            label-position="right"
+            label-width="var(--pc-form-label-w)"
+            size="small"
+            class="pc-form pc-form-label-left"
+          >
             <el-form-item v-if="isCreate" required>
               <template #label>
                 <FieldLabel
@@ -295,19 +304,6 @@
           </div>
         </PanelCard>
 
-        <!-- ============================ 将提交的报文 ============================ -->
-        <!--
-          它是「按上面填的会发出什么」，所以放在最后：读它的时候表单已经填完，
-          往上对照比在右栏窄条里滚动舒服。原型把它放在右栏底部，但那一栏里同时
-          还有一张摘要——摘要去掉之后它自己撑不起一栏，也没必要再挤成 340px。
-        -->
-        <PanelCard title="将提交的报文" hint="与上面的表单同源">
-          <pre class="pc-payload">{{ payloadText }}</pre>
-          <div class="pc-field-note">
-            <code class="pc-mono">******</code> 表示「沿用已保存的那一份」，它不是空串——
-            空串才是「清除」。
-          </div>
-        </PanelCard>
       </div>
     </div>
   </div>
@@ -355,11 +351,20 @@ import {
  *
  * <p><b>曾经有一栏「生效摘要」，已去掉。</b>它回答的四个问题现在各自回到更近的地方：
  * 判定回到第 3 节（那里本来就写着「你现在在哪一档」）、续期回到第 4 节片段下方
- * （读它的人正对着配置）、报文移到底部（填完之后才需要对照）。
- * 留在右栏的代价是整页被挤成两栏，而这一页的字段都不长，右栏一半是空白。
+ * （读它的人正对着配置）。留在右栏的代价是整页被挤成两栏，而这一页的字段都不长，
+ * 右栏一半是空白。
+ *
+ * <p><b>页尾那张「将提交的报文」也去掉了。</b>它先前是「我填的东西会被翻译成什么」的
+ * 唯一自证处，但那份 JSON 与表单同源（同一个 `buildPayload()`），真要核对时读表单本身
+ * 更快，而它常驻在页尾占掉一整块。提交体因此**只保留一个来源**：`buildPayload()`，
+ * 保存走它，页面上不再有第二处拼给人看的地方。
+ *
+ * <p><b>字段名与控件同一行</b>（`pc-form-label-left` + 左列 `--pc-form-label-w`）：这一页要
+ * 「对照」而不是「依次填」——第 2 节选了什么，第 3 节就落在哪一档，两节隔得太远就
+ * 读不出因果。标签在上时每个字段多占一行，两个区块会被拉出视野。
  *
  * <p><b>状态只有一个来源：`form.storageConfigInfo`。</b>存储表单是子组件，它的
- * 内部副本靠 props 同步、靠 `update:modelValue` 回传编译后的提交体，因此报文与
+ * 内部副本靠 props 同步、靠 `update:modelValue` 回传编译后的提交体，因此保存与
  * 第 3 节的判定都直接读它——不再另存一份「摘要用的状态」，两份迟早对不上。
  *
  * <p><b>判定的东西一律问服务端。</b>「保不保存得住」「保存后凭据从哪来」都由
@@ -527,16 +532,17 @@ function jumpToStorage() {
   window.setTimeout(() => { flashStorage.value = false }, 1600)
 }
 
-// ------------------------------------------------------------------ 报文
+// ------------------------------------------------------------------ 提交体
 /**
- * 右栏的「将提交的报文」。
+ * 送出去的那一份。创建态与编辑态**不是同一个报文**：更新不带 `catalogFormat`
+ * （服务端把它当不可变列，改就 400），而创建必须带（不带的话服务端用部署默认值，
+ * 会出现「表单里选 Paimon、建出来是 Iceberg」）。这里照实分叉。
  *
- * <p>编辑态与创建态**不是同一个报文**：更新不带 `catalogFormat`（服务端把它当不可变列，
- * 改就 400），而创建必须带（不带的话服务端用部署默认值，会出现「表单里选 Paimon、
- * 建出来是 Iceberg」）。这里照实分叉，避免有人照着右栏拼一个更新请求却多发了字段。
+ * <p><b>页面上不再显示这份 JSON</b>（页尾那张「将提交的报文」卡片已去掉）。但它仍是
+ * 唯一的提交体来源：保存走它，`StorageConfigFields.build()` 是它里面那块存储配置的
+ * 来源。去掉卡片不改变这条约定，反而更紧——没有第二处「再拼一份给人看」的地方，
+ * 也就没有「存进去的和看到的不是同一份」。
  */
-const payloadText = computed(() => JSON.stringify(buildPayload(), null, 2))
-
 function buildPayload() {
   const storageConfigInfo = storageForm.value?.build?.() ?? form.storageConfigInfo
   if (isCreate.value) {
@@ -660,10 +666,10 @@ function cancel() {
 </script>
 
 <style scoped>
-/* 单列。原先这里是「左表单 + 右 340 摘要」的两栏，右栏的「生效摘要」去掉之后
-   报文卡移到底部，页面就是一条直线往下读。
-   宽度收在 1080：这一页的字段都不长（名字、位置、region），超宽屏上拉满会把
-   label 与输入框拽到屏幕两头，读一行要横着跳一次。 */
+/* 单列。原先这里是「左表单 + 右 340 摘要」的两栏，右栏的「生效摘要」与页尾的
+   「将提交的报文」都去掉之后，页面就是一条直线往下读。
+   宽度收在 1080：字段名都在左列 200px 里，页签与片段也不需要更宽；超宽屏上拉满
+   只会让每行多出一段空白。 */
 .pc-form-cols {
   max-width: 1080px;
 }
@@ -895,25 +901,5 @@ function cancel() {
 
 .pc-snippet-copy:hover {
   color: #fff;
-}
-
-/* ---------------- 报文 ---------------- */
-/* 铺满整张卡（原来右栏只有 340px，高给到 300 靠滚动）。
-   现在它在页面底部、宽度是整列，报文本身不长，直接展开比让人滚更好读——
-   留一个 420 的上限只为挡住「properties 里塞了几十条」的那种极端。 */
-.pc-payload {
-  margin: 0;
-  padding: 9px 11px;
-  max-height: 420px;
-  overflow: auto;
-  border: 1px solid var(--pc-border);
-  border-radius: var(--pc-radius);
-  background: var(--pc-surface-2);
-  color: var(--pc-text);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 11px;
-  line-height: 1.65;
-  white-space: pre-wrap;
-  word-break: break-all;
 }
 </style>
