@@ -68,6 +68,9 @@ class ConsoleApiTests {
     /** 表单里**还没保存**的那份配置的凭据来源（单个，POST 一份 storageConfigInfo）。 */
     private static final String CREDENTIAL_SOURCE = "/api/console/v1/catalog-credential-source";
 
+    /** 保存前自检：拿草稿里的凭据与位置真的去存储上探一次（读档 HEAD / 写档 0 字节 PUT）。 */
+    private static final String STORAGE_PROBE = "/api/console/v1/catalog-storage-probe";
+
     /** 可见性必须与这条列表一致：来源端点照抄它的规则，条数也要对得上。 */
     private static final String MANAGEMENT_CATALOGS = "/api/management/v1/catalogs";
 
@@ -250,14 +253,14 @@ class ConsoleApiTests {
     // ------------------------------------------------------------------ 凭据来源
 
     /**
-     * 「凭据来源」必须覆盖**当前可见的每个** catalog，且取值落在四档之内。
+     * 「凭据来源」必须覆盖**当前可见的每个** catalog，且取值落在五档之内。
      *
      * <p>为什么钉「条数一致」而不是只钉 200：控制台拿这一份去标列表的每一行，
      * 少一条的表现是那一行显示「—」（`credentialSourceCell` 的兜底），
      * 而人多半会把它读成「这个 catalog 不下发凭据」——一个错误的结论，
      * 却没有任何报错。条数与管理 API 的可见列表相等，是这条契约最省事的判据。
      *
-     * <p>测试 profile 的仓库是本地文件系统，因此至少有一条 `NONE`，且 detail 里
+     * <p>测试 profile 的仓库是本地文件系统，因此至少有一条 `LOCAL`，且 detail 里
      * 应当说的是「没有密钥可发」而不是别的原因。
      */
     @Test
@@ -271,7 +274,7 @@ class ConsoleApiTests {
         // 详情页要据此解释「填了 roleArn 为什么仍显示不下发」
         assertNotNull(body.get("credentialProviders"), "credentialProviders is missing");
 
-        Set<String> modes = Set.of("STS", "RELAY", "NONE", "INVALID");
+        Set<String> modes = Set.of("VENDED", "STATIC", "LOCAL", "LEGACY_ENV", "INVALID");
         for (JsonNode entry : sources) {
             assertFalse(entry.get("catalog").asString().isBlank(), "catalog is blank");
             assertTrue(modes.contains(entry.get("mode").asString()),
@@ -286,8 +289,103 @@ class ConsoleApiTests {
 
         assertTrue(sources.size() > 0, "测试 profile 至少有一个预置 catalog");
         // 预置 catalog 的仓库是 file://（见 application-test.yml），文件系统没有密钥可发
-        assertEquals("NONE", sources.get(0).get("mode").asString(),
-                "file:// 仓库的凭据来源应当是「不下发」");
+        assertEquals("LOCAL", sources.get(0).get("mode").asString(),
+                "file:// 仓库是 LOCAL（没有密钥这回事），不是「出了问题」");
+    }
+
+    // ------------------------------------------------------------------ 保存前自检（E14 / E16）
+
+    /** 自检端点：正文是一份 `storageConfigInfo` + `checkWrite`。 */
+    private MvcResult probe(String body) throws Exception {
+        return mockMvc.perform(post(STORAGE_PROBE)
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + TOKEN)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(body))
+                .andReturn();
+    }
+
+    /**
+     * 自检对本地路径一律拒绝（E14）。
+     *
+     * <p>这条是整个端点最要紧的一道边界：`HEAD` 一个 `file://` 路径等于对外提供
+     * 一个「本机某个文件是否存在」的预言机——一个已登录的控制台用户本来不该有
+     * 这种能力，而它比其他任何探测都容易利用（路径可枚举、结果二分）。因此它不做成开关，是硬拒。
+     */
+    @Test
+    void storageProbeRefusesLocalPaths() throws Exception {
+        MvcResult result = probe("""
+                {"storageConfigInfo":{"storageType":"S3",
+                                      "allowedLocations":["file:///tmp/warehouse"]},
+                 "checkWrite":false}
+                """);
+        String body = result.getResponse().getContentAsString();
+        assertEquals(400, result.getResponse().getStatus(), () -> "body=" + body);
+        assertTrue(body.contains("file"), () -> "400 要说清拒绝的是本地路径：" + body);
+
+        // 反过来：`FILE` 类型的 catalog 不是错误，而是「这个能力不适用」——
+        // 本地仓库没有密钥可校验。回 UNSUPPORTED 而不是 400，界面据此说明原因。
+        MvcResult local = probe("""
+                {"storageConfigInfo":{"storageType":"FILE",
+                                      "allowedLocations":["file:///tmp/warehouse"]},
+                 "checkWrite":true}
+                """);
+        String localBody = local.getResponse().getContentAsString();
+        assertEquals(200, local.getResponse().getStatus(), () -> "body=" + localBody);
+        assertTrue(localBody.contains("UNSUPPORTED"), () -> "body=" + localBody);
+        assertFalse(localBody.contains("probeKey"), () -> "本地存储不该产生探测对象：" + localBody);
+    }
+
+    /**
+     * 带打码值的草稿必须带 catalog 名（S5 修订）。
+     *
+     * <p>编辑态的表单提交体里，服务端打码回来的 `accessKeyId` 是 `******`。要把它变成
+     * 可用的凭据只有一条路——按 catalog 名把库中那份合并进来。少了这个名字，
+     * 后面取票时会以 500 拒掉，而这个 500 在界面上被归成「这个存储不支持探测」，
+     * 指向 `lakehouse.rest.file-io.type` 与插件——与真实原因毫无关系。
+     *
+     * <p>因此在最前面拦成 400，并说清缺的正是 `catalog`。
+     */
+    @Test
+    void storageProbeAsksForTheCatalogNameWhenTheDraftCarriesTheMask() throws Exception {
+        MvcResult result = probe("""
+                {"storageConfigInfo":{"storageType":"S3",
+                                      "allowedLocations":["s3://bucket/warehouse"],
+                                      "accessKeyId":"******"},
+                 "checkWrite":false}
+                """);
+        String body = result.getResponse().getContentAsString();
+        assertEquals(400, result.getResponse().getStatus(), () -> "body=" + body);
+        assertTrue(body.contains("catalog"), () -> "400 要点名缺的是 catalog 名：" + body);
+        assertTrue(body.contains("******"), () -> "要指出带上的是打码值：" + body);
+    }
+
+    /**
+     * 自检只回分类，不回云侧的原文（E16）。
+     *
+     * <p>探一个必然连不上的端点：判定要落在 {@code UNREACHABLE} 一档，而响应里不能出现
+     * SDK 的异常文本——那段文本会把 endpoint、桶名、有时还有凭据 id 一起带出来，
+     * 而这个端点已经是一个「谁能调它谁就能读别人的桶」的入口。
+     */
+    @Test
+    void storageProbeNeverReturnsTheCloudErrorText() throws Exception {
+        MvcResult result = probe("""
+                {"storageConfigInfo":{"storageType":"S3",
+                                      "allowedLocations":["s3://probe-bucket/warehouse"],
+                                      "region":"us-east-1",
+                                      "endpoint":"http://127.0.0.1:1",
+                                      "pathStyleAccess":true},
+                 "checkWrite":false}
+                """);
+        String body = result.getResponse().getContentAsString();
+        assertEquals(200, result.getResponse().getStatus(), () -> "body=" + body);
+        assertTrue(body.contains("UNREACHABLE") || body.contains("NOT_FOUND")
+                        || body.contains("DENIED"),
+                () -> "判定要落在已知的分类上：" + body);
+        for (String leak : new String[] {"Connection refused", "java.", "Exception", "SdkClient"}) {
+            assertFalse(body.contains(leak), () -> "响应里出现了云侧原文「" + leak + "」：" + body);
+        }
+        // 没勾写档就绝不写：`probeKey` / `cleanup` 都不该出现
+        assertFalse(body.contains("probeKey"), () -> "只探读却回了写档字段：" + body);
     }
 
     /**
@@ -299,17 +397,31 @@ class ConsoleApiTests {
      */
     @Test
     void credentialSourcePreviewJudgesTheDraftBeforeItIsSaved() throws Exception {
-        // ① 填了 roleArn、但本部署没启用 s3-token（测试 profile 的 providers 是空的）。
-        //    这是整件事的由头：它与「什么都没填」的结果一模一样，字段上看不出来，
-        //    保存后要回列表页才看得见——而那时用户已经在另一步上了
+        // ① v3 起「填了 roleArn 却没填 AK/SK」是配置错误：没有签名身份就去不了
+        //    AssumeRole。保存时会被 400 拦住，但草稿预览要更早一步说出来——
+        //    那对钥匙的用途是签名，不是数据面凭据，界面上不解释清楚就会被当成漏填
         JsonNode orphanRole = previewDraft(Map.of(
                 "storageType", "S3",
                 "allowedLocations", List.of("s3://bucket/warehouse"),
                 "roleArn", "arn:aws:iam::123456789012:role/lakehouse"));
-        assertEquals("NONE", orphanRole.get("mode").asString());
-        assertTrue(orphanRole.get("detail").asString().contains("s3-token"),
-                () -> "detail 必须点名要开的配置项，否则用户不知道去改什么："
+        assertEquals("INVALID", orphanRole.get("mode").asString());
+        assertTrue(orphanRole.get("detail").asString().contains("accessKeyId"),
+                () -> "detail 必须点名缺的字段，否则用户不知道去补什么："
                         + orphanRole.get("detail").asString());
+
+        // ①b 三样齐全、但本部署没启用 s3-token（测试 profile 的 providers 是空的）。
+        //    这是整件事的由头：它与「只填了 AK/SK」的结果一模一样，字段上看不出来，
+        //    保存后要回列表页才看得见——而那时用户已经在另一步上了
+        JsonNode roleWithoutProvider = previewDraft(Map.of(
+                "storageType", "S3",
+                "allowedLocations", List.of("s3://bucket/warehouse"),
+                "roleArn", "arn:aws:iam::123456789012:role/lakehouse",
+                "accessKeyId", "AKIAEXAMPLE",
+                "secretAccessKey", "s3cr3t"));
+        assertEquals("STATIC", roleWithoutProvider.get("mode").asString());
+        assertTrue(roleWithoutProvider.get("detail").asString().contains("s3-token"),
+                () -> "detail 必须点名要开的配置项，否则用户不知道去改什么："
+                        + roleWithoutProvider.get("detail").asString());
 
         // ② catalog 自带静态凭据、没填 roleArn → 转发档：这把钥匙没有别的用途，
         //    它就是发给引擎的数据面凭据
@@ -318,7 +430,7 @@ class ConsoleApiTests {
                 "allowedLocations", List.of("s3://bucket/warehouse"),
                 "accessKeyId", "AKIAEXAMPLE",
                 "secretAccessKey", "s3cr3t"));
-        assertEquals("RELAY", relay.get("mode").asString());
+        assertEquals("STATIC", relay.get("mode").asString());
 
         // ③ 打码值不影响结论：编辑一份已保存的配置时，表单拿到的 accessKeyId 是 ******，
         //    它与真值得判出同一档——否则「打开编辑框」这个动作本身就会改变界面上显示的档位
@@ -326,7 +438,7 @@ class ConsoleApiTests {
                 "storageType", "S3",
                 "allowedLocations", List.of("s3://bucket/warehouse"),
                 "accessKeyId", "******"));
-        assertEquals("RELAY", masked.get("mode").asString(),
+        assertEquals("STATIC", masked.get("mode").asString(),
                 "对外那份（已打码）与库里那份必须判出同一档");
 
         // ④ storageName 现在只是个标签（凭据与签发材料全部写在 catalog 自己的字段上，
@@ -337,20 +449,20 @@ class ConsoleApiTests {
                 "storageType", "S3",
                 "allowedLocations", List.of("s3://bucket/warehouse"),
                 "storageName", "no-such-storage"));
-        assertEquals("NONE", labelOnly.get("mode").asString(),
+        assertEquals("LEGACY_ENV", labelOnly.get("mode").asString(),
                 "storageName 是纯标签：不会因为名字不存在而变成 INVALID");
         assertFalse(labelOnly.get("detail").asString().contains("no-such-storage"),
                 () -> "detail 不该把一个纯标签说成问题来源：" + labelOnly.get("detail").asString());
-        // 注：INVALID 这一档在当前测试 profile 下**无法从这里触发**——它只在
-        //    「provider 已启用、但 catalog 缺签发所需的身份」时成立，而本 profile 的
-        //    providers 是空的。那几条由各自的单元测试覆盖
-        //    （AzureSasVendingTests / OssStsVendingTests 的 console 档位断言）。
+        // 注：VENDED 这一档在当前测试 profile 下**无法从这里触发**——它要求
+        //    providers 里启用对应的签发器，而本 profile 的 providers 是空的。
+        //    那几条由各自的单元测试覆盖
+        //    （AzureSasVendingTests / OssStsVendingTests / GcsDownscopeVendingTests）。
 
         // ⑤ 本地文件系统：没有密钥可发
         JsonNode file = previewDraft(Map.of(
                 "storageType", "FILE",
                 "allowedLocations", List.of("file:///data/warehouse")));
-        assertEquals("NONE", file.get("mode").asString());
+        assertEquals("LOCAL", file.get("mode").asString());
 
         // ⑥ 控制台不认识的存储类型：400，前端据此把预览藏起来（表单自己会先拦住这种情况）。
         //    这里断言的是「解析失败不要变成 500」——500 会让控制台弹出全局错误提示，

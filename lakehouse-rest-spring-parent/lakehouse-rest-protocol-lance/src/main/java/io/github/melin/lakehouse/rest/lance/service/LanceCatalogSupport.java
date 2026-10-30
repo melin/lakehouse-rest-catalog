@@ -184,9 +184,15 @@ public class LanceCatalogSupport {
     public Map<String, String> storageOptions(CatalogEntity catalog, String tableId,
                                               String location, List<String> namespace, String table,
                                               boolean vendCredentials) {
+        // 票里要不要写权限，判据是调用者对这张表的 UPDATE（设计稿 §2.3）。
+        // 只在真要下发凭据时判：{@code vend_credentials=false} 那条路只用定位信息，
+        // 多打一次授权查询换不到任何区别。
+        boolean allowWrite = vendCredentials && authorization.allows(catalog.getPrefix(),
+                PermissionDtos.ResourceType.TABLE, namespace, table, Access.UPDATE);
         VendedStorageCredential credential;
         try {
-            credential = runtimePolicy.credentialManager().vend(catalog.getStorageConfig(), tableId, location);
+            credential = runtimePolicy.credentialManager()
+                    .vend(catalog.getStorageConfig(), tableId, location, allowWrite);
         } catch (RuntimeException e) {
             if (vendCredentials) {
                 // 客户端明确要凭据：失败必须可见。静默返回空的后果是客户端拿着

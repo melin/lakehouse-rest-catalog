@@ -236,18 +236,30 @@ export function buildEngineSnippet({
   if (face === 'spark-iceberg') {
     lines.push(pair(`spark.sql.catalog.${name}`, 'org.apache.iceberg.spark.SparkCatalog'))
     lines.push(pair(`spark.sql.catalog.${name}.type`, 'rest'))
+    // 基址写到端口为止：客户端自己拼 `v1/config`、`v1/{prefix}/namespaces`。
+    // 写成 `/v1` 会得到 `/v1/v1/config`，报的是 404——看不出是自己多写了一段
     lines.push(pair(`spark.sql.catalog.${name}.uri`, serverUrl))
+    // 填 catalog 名（prefix），不是文件路径：客户端先 `GET /v1/config?warehouse=<prefix>`
+    // 换回真正的仓库位置，物理路径服务端知道就够了
     lines.push(pair(`spark.sql.catalog.${name}.warehouse`, name))
+    // 认证三行：属性全名是 `rest.auth.type`，不是 `auth.type`（后者会被当成一个
+    // 没人看的 catalog 属性原样发给服务端，功能上看着能用，日志里一直有推断警告）
+    lines.push(pair(`spark.sql.catalog.${name}.rest.auth.type`, 'oauth2'))
+    lines.push(pair(`spark.sql.catalog.${name}.token`, '<主体令牌>'))
     if (vendored) {
       lines.push(pair(`spark.sql.catalog.${name}.header.X-Iceberg-Access-Delegation`, 'vended-credentials'))
     } else {
       lines.push(...manualSecrets({ spark: true, name }).map(({ key, value }) => pair(key, value)))
     }
+    // 关元数据缓存：凭据换了它也可能继续拿旧表对象，表现是「改了配置没生效」
+    lines.push(pair(`spark.sql.catalog.${name}.cache-enabled`, 'false'))
     lines.push(...cos())
-    return finish(lines, vendored
+    return finish(lines, (vendored
       ? 'delegation 头靠 header. 前缀注入，不是内置开关；它只在服务端下发了'
         + ' client.refresh-credentials-endpoint 时才会被升级成「可刷新」。'
-      : '没有 delegation 头，服务端就不会在 loadTable 里带凭据，必须自己配 s3.*。',
+      : '没有 delegation 头，服务端就不会在 loadTable 里带凭据，必须自己配 s3.*。')
+      + ' rest.auth.type 与 token 这两行只在本部署开了 lakehouse.rest.auth.enabled 时才需要；'
+      + ' 令牌是主体令牌，不是存储密钥。',
     warehouse)
   }
 
@@ -286,6 +298,10 @@ export function buildEngineSnippet({
     lines.push(pair(`spark.sql.catalog.${name}.parent`, name))
     lines.push(pair(`spark.sql.catalog.${name}.single_level_ns`, 'false'))
     lines.push(pair(`spark.sql.catalog.${name}.header.Authorization`, 'Bearer <主体令牌>'))
+    // `spark.sql.extensions` 是 **session 级**配置，不是 catalog 属性，因此没有前缀。
+    // Lance 的 SQL 能力（含本页那些优化语句）来自这个扩展；缺了它，catalog 能连上，
+    // 但每次 DDL 都报「不认识这个语法」，而错误信息不会提扩展
+    lines.push(pair('spark.sql.extensions', 'org.lance.spark.extensions.LanceSparkSessionExtensions'))
     if (vendored) {
       lines.push(comment('存储凭据来自 describe 的 storage_options：aws_access_key_id / aws_secret_access_key /'))
       lines.push(comment('  aws_session_token / expires_at_millis（是 aws_* 键，不是 s3.*）；connector 0.8 只读一次'))
@@ -295,7 +311,9 @@ export function buildEngineSnippet({
     }
     lines.push(...cos())
     return finish(lines, 'uri 要写到 /lance 为止（这一面没有 /v1/config 握手，也不带 prefix）；delimiter 必须与服务端一致，'
-      + '否则每个请求都会被解析成别的东西。'
+      + '否则每个请求都会被解析成别的东西。spark.sql.extensions 是 session 级配置——'
+      + '若同时要用本工程的管理语句，用逗号把 ManagementSparkExtensions 拼在一起；'
+      + '另外 lance-spark-bundle（3.5 / 4.1 对应包）必须已经在 Spark 的 classpath 上。'
       + (vendored ? ' 它今天拿到的仍是「一次性」凭据。' : ''), warehouse)
   }
 

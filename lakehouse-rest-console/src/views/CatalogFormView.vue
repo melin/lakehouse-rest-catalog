@@ -1,6 +1,6 @@
 <template>
   <div class="pc-page">
-    <PageHeader :title="title" :subtitle="subtitle">
+    <PageHeader :title="title">
       <template #actions>
         <el-button size="small" @click="cancel">取消</el-button>
         <el-button size="small" type="primary" :loading="saving" @click="save">
@@ -73,9 +73,11 @@
                 />
               </template>
               <!--
-                按钮组而不是三张卡：三种格式的差别已经写在下方那句 catalogFormatNote
-                里（一句一格式，随选中项变），卡片里再各写一段就成了同一件事说两遍，
-                而卡片占的高度让下面「存储类型」被推到首屏之外。原型也是按钮组。
+                按钮组而不是三张卡：卡片占的高度会让下面「存储类型」被推到首屏之外。
+                选完**不再在下面补一句格式说明**——三种格式各自要提醒的事（控制台这一期
+                跟到哪、服务端本来就不做什么）已经由本卡片底部的两条 TipAlert 承担，
+                而「Paimon 走 /v1/{prefix}/databases/**」这类协议细节属于引擎接入那一节，
+                放在这里只是把同一件事说第二遍。
               -->
               <div class="pc-seg">
                 <span
@@ -86,7 +88,6 @@
                   @click="form.catalogFormat = option"
                 >{{ option }}</span>
               </div>
-              <div class="pc-field-note">{{ catalogFormatNote(form.catalogFormat) }}</div>
             </el-form-item>
 
             <el-form-item v-else>
@@ -116,15 +117,12 @@
               </el-select>
             </el-form-item>
 
-            <el-form-item v-else>
-              <template #label>
-                <FieldLabel
-                  label="当前版本（currentEntityVersion）"
-                  tip="并发保护：版本与服务端不一致时更新会被拒绝（409），此时请刷新后重试。"
-                />
-              </template>
-              <el-input :model-value="String(form.entityVersion)" disabled />
-            </el-form-item>
+            <!--
+              编辑态不再显示 `currentEntityVersion`。它是并发保护的版本号，只对
+              「两次保存互相踩」有意义，而用户既不能改它、也无法据此做任何决定；
+              它仍在 `buildPayload()` 里随更新请求发出（见那个函数），
+              409 的处置写在保存失败的分支里。
+            -->
           </el-form>
 
           <!-- 格式的「控制台这一期跟到哪」与「服务端本来就不做什么」分开说：
@@ -166,6 +164,52 @@
           </TipAlert>
 
           <!--
+            认证方式：先选「用哪条路」，再填那条路需要的字段。
+            顺序不能反——反过来的话，S3 的 roleArn 与静态密钥会同时出现在一屏里，
+            用户既不知道哪个该填，也不知道两个都填会怎样（v3 之前正是这样）。
+          -->
+          <div v-if="authMethods.length > 1" class="pc-method-grid">
+            <button
+              v-for="item in authMethods"
+              :key="item.id"
+              type="button"
+              class="pc-method"
+              :class="{ 'is-on': method === item.id, 'is-dim': item.state !== 'ok' }"
+              :disabled="item.state !== 'ok'"
+              @click="selectMethod(item.id)"
+            >
+              <div class="pc-method-head">
+                <span class="pc-method-name">{{ item.title }}</span>
+                <el-tag v-if="item.state === 'deployDisabled'" size="small" type="info" effect="plain">
+                  本部署未启用
+                </el-tag>
+                <el-tag v-else-if="item.state === 'notImplemented'" size="small" type="info" effect="plain">
+                  本工程暂未接入
+                </el-tag>
+              </div>
+              <div class="pc-method-desc">{{ item.desc }}</div>
+              <div v-if="item.state === 'ok'" class="pc-method-get">
+                引擎拿到 {{ item.engine }}；轮换：{{ item.rotate }}
+              </div>
+              <div v-else class="pc-method-get">
+                不可用，缺{{ item.state === 'notImplemented' ? '字段与接口' : '部署开关' }}：{{ item.reason }}
+              </div>
+            </button>
+          </div>
+          <div v-else-if="authMethods.length === 1" class="pc-method-grid is-single">
+            <div class="pc-method is-on">
+              <div class="pc-method-head">
+                <span class="pc-method-name">{{ authMethods[0].title }}</span>
+                <el-tag size="small" type="info" effect="plain">唯一方式</el-tag>
+              </div>
+              <div class="pc-method-desc">{{ authMethods[0].desc }}</div>
+              <div class="pc-method-get">
+                引擎拿到 {{ authMethods[0].engine }}；轮换：{{ authMethods[0].rotate }}
+              </div>
+            </div>
+          </div>
+
+          <!--
             key 让每次进入页面都拿到一个新实例：这个组件的表单是内部副本（靠 props 同步、
             靠 update:modelValue 回传），重建实例比依赖 watch 更不容错。
           -->
@@ -177,6 +221,7 @@
               :storage-types="storageTypes"
               :supported-types="supportedTypes"
               :static-credentials-enabled="staticCredentialsEnabled"
+              :method="method"
             />
           </div>
         </PanelCard>
@@ -184,7 +229,7 @@
         <!-- ============================ 3 凭据来源 ============================ -->
         <PanelCard
           title="凭据来源"
-          hint="三档之一；只有服务端算得准"
+          hint="五档之一；只有服务端算得准"
         >
           <template #icon><span class="pc-step">3</span></template>
           <template #actions>
@@ -194,29 +239,39 @@
           </template>
 
           <!--
-            三档是**状态**，不是三个可以点的开关。
-            这一点与原型不同，理由是实的：真正决定档位的字段（静态凭据 / roleArn /
-            stsUnavailable）在第 2 节里，而「点一下就能落到这一档」在缺字段时落不下去——
-            点了「签发」却没有 roleArn，判定仍然是「不下发」，卡片当场又灭了，
-            看起来像坏了。因此这里把「你现在在哪一档」和「要落到这一档需要什么」分开写，
+            五档是**状态**，不是五个可以点的开关。这一点与原型不同，理由是实的：
+            真正决定档位的字段在第 2 节里，而「点一下就能落到这一档」在缺字段时落不下去——
+            点了「签发」却没有 roleArn，判定仍然是「无可用凭据」，卡片当场又灭了，
+            看起来像坏了。因此这里只写「你现在在哪一档、这一档意味着什么」，
             缺的那一项给一个跳回第 2 节的入口。
           -->
+          <!--
+            存量横幅（E10）：v3 之前的 catalog 一个密钥都没配，它们不会被自动迁移。
+            这档不是错误，但也绝不能安静地留在那里——服务端读它会失败，而用户
+            只会在第一次预览时看到一个指向存储的 500。
+          -->
+          <TipAlert
+            v-if="verdictMode === 'LEGACY_ENV'"
+            class="pc-form-alert"
+            type="warning"
+            title="这个 catalog 没有可用凭据（v3 之前的存量）"
+          >
+            服务端读这个位置用的是进程自己的身份，预览 / 浏览 / 下载可能失败；引擎用它自己的。
+            不会被自动迁移：在第 2 节选一种方式、补上字段，再跑一次自检即可。
+          </TipAlert>
+
           <div class="pc-source-list">
-            <div
-              v-for="option in SOURCE_OPTIONS"
-              :key="option.mode"
-              class="pc-source"
-              :class="{ 'is-on': verdictMode === option.mode }"
-            >
+            <div class="pc-source" :class="{ 'is-on': Boolean(verdict) }">
               <div class="pc-source-head">
                 <span class="pc-source-dot" />
-                <span class="pc-source-name">{{ option.label }}</span>
-                <el-tag v-if="verdictMode === option.mode" size="small" type="success" effect="plain">
-                  当前
+                <span class="pc-source-name">{{ verdict ? verdict.label : '还没取到判定' }}</span>
+                <el-tag v-if="currentMethod" size="small" type="info" effect="plain">
+                  {{ currentMethod.title }}
                 </el-tag>
               </div>
-              <div class="pc-source-desc">{{ option.desc }}</div>
-              <div class="pc-source-need">{{ option.need }}</div>
+              <div class="pc-source-desc">
+                {{ verdict ? verdict.hint : '表单还没填到能判定的程度，或判定接口暂时不可用。' }}
+              </div>
             </div>
           </div>
 
@@ -227,6 +282,43 @@
           <div v-else class="pc-field-note">
             还没有拿到服务端判定（草稿还没填完，或判定接口暂时不可用）。保存后可以在
             catalog 列表的「凭据来源」列看到结果。
+          </div>
+
+          <!--
+            保存前自检：整个控制台唯一「按用户给的地址真的发一次请求」的地方。
+            与上面的标签回答的不是同一个问题——标签说「凭据从哪来」，
+            自检说「这份凭据现在能不能用」。一个 VENDED 的 catalog 同样可能因为
+            角色信任关系写错而读不了。
+          -->
+          <div class="pc-probe">
+            <div class="pc-probe-head">
+              <span>保存前自检</span>
+              <span class="pc-probe-hint">
+                用表单里这份凭据真的去存储上探一次（不保存任何改动）
+              </span>
+            </div>
+            <div v-if="probeUnavailable" class="pc-field-note">{{ probeUnavailable }}</div>
+            <template v-else>
+              <div class="pc-probe-actions">
+                <el-checkbox v-model="checkWrite" :disabled="probing">
+                  连写权限一起探（在仓库里写一个 0 字节对象再删掉）
+                </el-checkbox>
+                <el-button size="small" type="primary" plain :loading="probing" @click="runProbe">
+                  运行自检
+                </el-button>
+              </div>
+              <div v-if="probeVerdict" class="pc-probe-result">
+                <el-tag size="small" :type="probeVerdict.tag" effect="plain">
+                  {{ probeVerdict.label }}
+                </el-tag>
+                <span v-if="probeResult.hint" class="pc-probe-detail">{{ probeResult.hint }}</span>
+              </div>
+              <ul v-if="probeResult && probeResult.checks && probeResult.checks.length" class="pc-probe-checks">
+                <li v-for="(check, index) in probeResult.checks" :key="index" class="pc-mono">
+                  {{ check.location }} —— {{ check.detail }}
+                </li>
+              </ul>
+            </template>
           </div>
 
           <div v-if="missingHint" class="pc-source-jump">
@@ -319,6 +411,7 @@ import PanelCard from '@/components/PanelCard.vue'
 import ResourceState from '@/components/ResourceState.vue'
 import StorageConfigFields from '@/components/StorageConfigFields.vue'
 import TipAlert from '@/components/TipAlert.vue'
+import { consoleApi } from '@/api/console.js'
 import { managementApi } from '@/api/management.js'
 import { useCredentialPreview } from '@/composables/credentialPreview.js'
 import { notifyError, notifySuccess } from '@/composables/index.js'
@@ -326,13 +419,13 @@ import { session } from '@/store/session.js'
 import {
   CATALOG_FORMATS,
   catalogFormatLabel,
-  catalogFormatNote,
   catalogFormatTagType,
   isIcebergCatalog,
   isLanceCatalog,
   PAIMON,
 } from '@/utils/catalogFormat.js'
 import { credentialSourceInfo } from '@/utils/credentialSource.js'
+import { availability, inferMethod, methodsFor } from '@/utils/storageAuthMethods.js'
 import {
   buildEngineSnippet,
   defaultSnippetFace,
@@ -378,10 +471,6 @@ const router = useRouter()
 const isCreate = computed(() => route.name === 'catalogCreate')
 
 const title = computed(() => (isCreate.value ? '新建 Catalog' : `编辑 Catalog：${form.name}`))
-const subtitle = computed(() => (isCreate.value
-  ? '名称与表格式创建后不可更改。这一页唯一会影响「引擎要不要自带 AK/SK」的是第 3 节的凭据来源——'
-    + '它有三档，而其中两档在客户端配置上完全一样，只有服务端知道区别。'
-  : '这里能改的是存储配置与目录属性；名称与表格式是创建时定下的，改它们等于删除重建。'))
 
 const loading = ref(false)
 const loadError = ref('')
@@ -425,33 +514,132 @@ const allowedLocations = computed(() => form.storageConfigInfo?.allowedLocations
 const { preview } = useCredentialPreview(() => form.storageConfigInfo)
 const verdict = computed(() => (preview.value ? credentialSourceInfo(preview.value.mode) : null))
 const verdictMode = computed(() => preview.value?.mode || '')
-const vendored = computed(() => (preview.value ? preview.value.mode !== 'NONE' : true))
+/**
+ * 引擎会不会拿到凭据（接入片段要不要写 AK/SK）。
+ *
+ * <p>只认「签发」与「转发」两档：其余三档（本地 / 无可用凭据 / 配置有误）都没有
+ * 凭据可下发。判定没回来时按「有」处理——宁可多写两行配置，也不要让片段少一段
+ * 而让引擎在运行时才报认证失败。
+ */
+const vendored = computed(() => {
+  const mode = preview.value?.mode
+  if (!mode) return true
+  return mode === 'VENDED' || mode === 'STATIC'
+})
 
 /**
- * 三档的说明。`need` 那一行写的是「要落到这一档，第 2 节里必须有哪个字段」——
- * 这是这一页唯一能替用户做判断的地方（字段值本身在前端可见），
- * 而「会不会真的签发」仍然只有服务端说了算。
+ * 认证方式：这一页的「选什么」。
+ *
+ * <p>方式表在 `utils/storageAuthMethods.js`（纯数据，不含档位判定），
+ * 这里只补两件服务端才知道的事：本部署启用了哪些签发器（卡片可不可选），
+ * 以及当前选中的是哪一条。
+ *
+ * <p><b>不可用的卡片照样渲染，只是不可选。</b>删掉它们会让「S3 只有静态密钥一种方式」
+ * 看起来像设计，而不是缺口；但也不能让它们可选——v3 的底线是「列出来的都能同时
+ * 供服务端预览和引擎使用」，一个选得中但用不了的方式比不显示更糟。
  */
-const SOURCE_OPTIONS = [
-  {
-    mode: 'STS',
-    label: '签发短期凭据',
-    desc: '服务端拿自己的身份去云上现签，按表路径收窄、到期自然失效。泄漏的影响面是「这一张表 + 这一段时间」。',
-    need: '需要：第 2 节「存储高级参数」里的 roleArn，且本部署启用了对应的签发 provider。',
-  },
-  {
-    mode: 'RELAY',
-    label: '转发长期密钥',
-    desc: '把 catalog 里存着的长期 AK/SK 原样发给引擎。能兼容没有 STS 的存储（自建 MinIO / Ceph），但这把钥匙不会过期。',
-    need: '需要：第 2 节填了静态凭据——S3 / OBS / OSS / COS 是 accessKeyId + secretAccessKey，Azure 是 clientId + clientSecret。',
-  },
-  {
-    mode: 'NONE',
-    label: '不下发',
-    desc: '只发定位信息（endpoint / region / path-style），密钥由引擎自己的身份提供（实例角色、环境变量、服务账号）。',
-    need: '需要：勾上 stsUnavailable，或干脆什么凭据都不填——两者结果一样，但前者是明确的意图。',
-  },
-]
+const credentialProviders = ref(null)
+
+const authMethods = computed(() => {
+  const type = form.storageConfigInfo?.storageType
+  return methodsFor(type).map((item) => ({
+    ...item,
+    state: availability(item, credentialProviders.value),
+    reason: item.notImplemented
+      ? item.missing
+      : `本部署没启用 ${item.provider}（lakehouse.rest.credential.providers）`,
+  }))
+})
+
+/** 用户点过的卡片；空表示「按已填字段反推」（编辑态第一次进来就是这种）。 */
+const method = ref('')
+
+const currentMethod = computed(() => authMethods.value.find((item) => item.id === method.value) || null)
+
+/**
+ * 换方式只改这一个 ref。
+ *
+ * <p>真正的「清掉上一种方式的字段」发生在存储表单里：它按 `method` 过滤字段表，
+ * 隐藏的键在下一次 `build()` 里就不写进提交体了。在这里删字段是第二份逻辑，
+ * 两份迟早不一致。
+ */
+function selectMethod(id) {
+  method.value = id
+}
+
+/** 按当前配置反推方式：编辑态打开页面、以及切了存储类型之后各调一次。 */
+function syncMethod() {
+  method.value = inferMethod(form.storageConfigInfo?.storageType, form.storageConfigInfo)
+}
+
+watch(() => form.storageConfigInfo?.storageType, syncMethod)
+
+// ------------------------------------------------------------------ 保存前自检
+const checkWrite = ref(false)
+const probing = ref(false)
+const probeResult = ref(null)
+
+/**
+ * 自检在这个状态下没有意义的两处（E8）。
+ *
+ * <p>`FILE` 不是「跳过」而是「不适用」：本地仓库没有密钥可校验，两档都点不了，
+ * 文案要说清原因，否则用户会以为功能坏了。
+ */
+const probeUnavailable = computed(() => {
+  const type = form.storageConfigInfo?.storageType
+  if (type === 'FILE') {
+    return '本地仓库不需要认证：没有密钥可校验，读档与写档都不适用。'
+  }
+  if (!(form.storageConfigInfo?.allowedLocations || []).length) {
+    return '先在第 2 节填写允许位置——自检要探的就是这些位置。'
+  }
+  return ''
+})
+
+/** 自检结论的文案。分类由服务端给，这里只负责把它说成人话。 */
+const PROBE_VERDICTS = {
+  OK: { label: '通过', tag: 'success' },
+  DENIED: { label: '被拒绝（权限不足）', tag: 'danger' },
+  NOT_FOUND: { label: '路径不可见', tag: 'warning' },
+  UNREACHABLE: { label: '连不上', tag: 'danger' },
+  UNSUPPORTED: { label: '这个存储不支持探测', tag: 'info' },
+  // 与 UNSUPPORTED 分开：这一档是「服务端自己没装配起来」，去查配置；
+  // 那一档是「本部署没有这种 scheme 的实现」，去查 file-io.type 与插件。
+  // 合成一个标签时，最常见的「拿打码配置去探测」会被指向一个不相干的方向。
+  CONFIG_ERROR: { label: '服务端没装配起凭据', tag: 'warning' },
+}
+
+const probeVerdict = computed(() => (probeResult.value
+  ? PROBE_VERDICTS[probeResult.value.verdict] || { label: probeResult.value.verdict, tag: 'info' }
+  : null))
+
+async function runProbe() {
+  if (probing.value) return
+  probing.value = true
+  probeResult.value = null
+  try {
+    // 编辑态必须带上 catalog 名：提交体里的 accessKeyId 是打码值，服务端要靠这个名字
+    // 把库中那份真凭据合并进来。不带它的症状是「探测提示这个存储不支持」，
+    // 而真实原因是它拿着一份只有星号的配置去取票了。
+    probeResult.value = await consoleApi.probeStorage(
+      storageForm.value?.build?.() ?? form.storageConfigInfo,
+      checkWrite.value,
+      isCreate.value ? '' : form.name,
+    )
+  } catch (error) {
+    // 400 / 429 都是「这份草稿现在不能探」（本地路径、超出限频），
+    // 提示已经由 http 层统一给出，这里只把上一次的结论清掉——
+    // 留着上一次的「通过」比不显示更危险
+    notifyError(error)
+  } finally {
+    probing.value = false
+  }
+}
+
+// 改了配置，上一次的结论就不再适用：它验的是另一份草稿
+watch(() => form.storageConfigInfo, () => {
+  probeResult.value = null
+})
 
 /**
  * 「还没落到签发或转发」时，第 2 节缺的是哪一项。
@@ -462,11 +650,12 @@ const SOURCE_OPTIONS = [
  */
 const missingHint = computed(() => {
   const payload = form.storageConfigInfo || {}
-  // `storageName` 不再参与判断：它现在只是个标签，填了它不会让任何一档成立
+  // 「具名存储」那个字段已经随具名存储配置组一起删了，因此这里只看真正的两种路：
+  // 签发的 roleArn（或 Azure / GCS 的身份字段）与转发的静态密钥
   if (payload.roleArn || payload.accessKeyId || payload.clientId || payload.serviceAccountJson) {
     return ''
   }
-  if (preview.value && verdictMode.value !== 'NONE') {
+  if (preview.value && vendored.value) {
     return ''
   }
   return 'roleArn（签发）或静态凭据（转发）'
@@ -573,11 +762,21 @@ onMounted(async () => {
   form.catalogFormat = defaultCatalogFormat.value
   activeFace.value = defaultSnippetFace(form.catalogFormat)
 
+  // 本部署启用了哪些签发器：方式卡片的「可选 / 本部署未启用」全靠它。
+  // 失败时保持 null —— 卡片按「未知」处理（不置灰），而不是统统判成未启用：
+  // 把取不到数据说成「你的部署没开这个功能」，是这一格最容易犯的错。
+  consoleApi.credentialSources()
+    .then((payload) => {
+      credentialProviders.value = payload?.credentialProviders || []
+    })
+    .catch(() => {})
+
   if (isCreate.value) {
     form.storageConfigInfo = {
       storageType: supportedTypes.value[0] || 'FILE',
       allowedLocations: [],
     }
+    syncMethod()
     return
   }
 
@@ -594,6 +793,9 @@ onMounted(async () => {
     form.storageConfigInfo = catalog.storageConfigInfo
       ? JSON.parse(JSON.stringify(catalog.storageConfigInfo))
       : fallbackStorage(catalog)
+    // 方式由已保存的字段反推：编辑一个「配了 roleArn」的 catalog 时，
+    // 卡片要亮在「IAM 角色」上，否则第 2 节会把 roleArn 藏在折叠区里
+    syncMethod()
   } catch (error) {
     loadError.value = error?.message || '读取 catalog 失败'
   } finally {
@@ -901,5 +1103,121 @@ function cancel() {
 
 .pc-snippet-copy:hover {
   color: #fff;
+}
+
+/* ---------------------------------------------------------------- 认证方式卡片 */
+
+/* 一行几张：S3 三张、OSS 三张、OBS 两张、COS/Azure/GCS 一张（走 `.is-single`）。
+   不用 grid-auto-fit：三张卡片的文字长度差很大，等宽会让「静态访问密钥」那张
+   空出半行，而它恰是多数人要点的那一张。 */
+.pc-method-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.pc-method-grid.is-single {
+  grid-template-columns: 1fr;
+}
+
+.pc-method {
+  display: block;
+  width: 100%;
+  padding: 10px 12px;
+  text-align: left;
+  font: inherit;
+  color: var(--pc-text);
+  background: var(--pc-bg-subtle);
+  border: 1px solid var(--pc-border);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.pc-method.is-on {
+  border-color: var(--el-color-primary);
+  background: var(--pc-bg-active);
+}
+
+.pc-method.is-dim {
+  cursor: not-allowed;
+  border-style: dashed;
+  opacity: 0.68;
+}
+
+.pc-method-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.pc-method-name {
+  font-weight: 600;
+}
+
+.pc-method-desc {
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--pc-text-secondary);
+}
+
+/* 「引擎拿到什么」单独一行：它才是几种方式之间真正的差别——
+   能不能用是三线全过的共同前提，拿到什么才需要人选。 */
+.pc-method-get {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--pc-text-tertiary);
+}
+
+/* ---------------------------------------------------------------- 保存前自检 */
+
+.pc-probe {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--pc-border);
+}
+
+.pc-probe-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 6px;
+  font-weight: 600;
+}
+
+.pc-probe-hint {
+  font-weight: 400;
+  font-size: 12px;
+  color: var(--pc-text-tertiary);
+}
+
+.pc-probe-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.pc-probe-result {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.pc-probe-detail {
+  font-size: 12px;
+  color: var(--pc-text-secondary);
+}
+
+.pc-probe-checks {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--pc-text-secondary);
 }
 </style>

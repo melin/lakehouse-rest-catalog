@@ -201,6 +201,12 @@ EXTENSION_ENDPOINTS = {
     # （库里还没有，无从谈可见性）。roleArn 填了但没启用 s3-token 时，结果与什么都
     # 没填一模一样（都退回环境凭据链），这句话只有保存前说才有用。
     ("POST", "/api/console/v1/catalog-credential-source"): "控制台：表单草稿的凭据来源判定（只读，不发凭据）",
+    # 保存前自检：拿草稿里的凭据与位置，真的去存储上探一次（HEAD 读档 / 0 字节写档）。
+    # 它是整个控制台**唯一会按用户给的地址发请求**的端点，因此边界必须写在服务端：
+    # file:// 硬拒、只探 allowedLocations、读只 HEAD、写只 0 字节且写完即删、
+    # 每主体每分钟限次、只回分类不回云侧原文（ConsoleStorageProbeService 的类注释）。
+    # 两份规格都不涉及这件事，按扩展端点登记。
+    ("POST", "/api/console/v1/catalog-storage-probe"): "控制台：保存前存储自检（读/写两档，限频，不落库）",
     # 仓库文件浏览：列 catalog 仓库里某个目录的一层内容（`?path=` 相对仓库根）。
     # 与 meta 一样是控制台扩展端点，服务端实现见 ConsoleFileController；
     # 它读的是物理目录（表目录下有哪些文件、有没有残留），两份规格都不涉及文件系统，
@@ -720,23 +726,28 @@ def parameter_names(header):
 shapes = record_shapes(storage_dtos)
 by_type = {wire: name for name, (_, wire) in shapes.items() if wire}
 
-server_types = []
-method = re.search(
-    r"supportsStaticCredentials\(StorageConfigInfo info\)\s*\{(.*?)\n    \}",
-    storage_configs, re.S)
-for cls in re.findall(r"instanceof (\w+)", method.group(1) if method else ""):
-    if shapes.get(cls, (None, None))[1]:
-        server_types.append(shapes[cls][1])
-server_types = sorted(server_types)
+# 哪几种类型承载这对 AK/SK：**从 DTO 的 record 参数反推**，不读服务端的方法名。
+# 曾经这里钉的是 `supportsStaticCredentials` 里的 `instanceof` 分支，而那个方法
+# 后来改名并扩了语义（多出 Azure / GCS，它们存的是别的秘密，没有这对字段），
+# 于是检查红在一句「未解析出 instanceof 分支」上——它守的其实是「两边同一张名单」，
+# 而名单的真源一直是 `StorageDtos` 里各 record 的字段。
+vue_keys_source = re.search(
+    r"STATIC_CREDENTIAL_KEYS\s*=\s*\[([^\]]*)\]", fields_vue)
+vue_credential_keys = set(re.findall(r"'([^']+)'", vue_keys_source.group(1))) \
+    if vue_keys_source else {"accessKeyId", "secretAccessKey"}
+
+server_types = sorted(
+    wire for wire, name in by_type.items()
+    if name in shapes and vue_credential_keys <= set(parameter_names(shapes[name][0])))
 
 vue_types_source = re.search(
     r"STATIC_CREDENTIAL_TYPES\s*=\s*\[([^\]]*)\]", fields_vue)
 vue_types = sorted(re.findall(r"'([^']+)'", vue_types_source.group(1))) \
     if vue_types_source else []
 
-check("表单承载静态凭据的类型与服务端 supportsStaticCredentials 一致",
+check("表单承载静态凭据的类型与服务端有那对字段的类型一致",
       server_types and vue_types == server_types,
-      f"StorageConfigs.java={server_types or '未解析出 instanceof 分支'}，"
+      f"StorageDtos.java={server_types or '没有 record 带这对字段'}，"
       f"StorageConfigFields.vue={vue_types or '未找到 STATIC_CREDENTIAL_TYPES'}")
 
 vue_keys_source = re.search(
@@ -1010,16 +1021,20 @@ check("新建表单从 meta 取候选与默认值、提交时带上 catalogForma
       all(create_wiring.values()),
       "\n".join(name for name, ok in create_wiring.items() if not ok))
 
-# 选项下方要有一行影响面说明：选 Iceberg 之后客户端只能走 Iceberg 路径、
-# 控制台一期不浏览它的表——这些要**在提交前**看到，而不是建完再发现。
-# Lance 那条必须与 Iceberg 分开写：两种格式「控制台没做」的范围不一样
-# （Iceberg 缺表管理与数据浏览，Lance 缺库表浏览但文件列表还在），
-# 合并成一条「不支持」会让人以为 Lance 连数据都看不了。
-check("新建表单在选项下方给出影响面说明（选 Iceberg / Lance 之前都能看见）",
-      "catalogFormatNote(form.catalogFormat)" in catalog_form_view
+# 选项下方**不再**补一行格式说明（`catalogFormatNote`）：三种格式各写一段，等于把
+# 「Paimon 走 /v1/{prefix}/databases/**」这类协议细节搬到第 1 节，而同一件事在
+# 「引擎接入配置」里已经按面写清了。页头那句「名称与表格式创建后不可更改……
+# 它有三档」也一并删掉（v3 起是五档，那句话早就过期）。
+# 但这两句删掉之后，**影响面必须还有地方说**：选 Iceberg / Lance 之前要能看见
+# 「控制台这一期跟到哪」——它们的范围不同（Iceberg 缺表管理与数据浏览，
+# Lance 缺库表浏览但文件列表还在），因此仍是分开的两条 TipAlert。
+check("新建表单不再渲染格式说明与页头三档说明，影响面只由下方两条 TipAlert 承担",
+      "catalogFormatNote(" not in catalog_form_view
+      and ":subtitle=" not in catalog_form_view
       and "isIcebergCatalog(form.catalogFormat)" in catalog_form_view
       and "isLanceCatalog(form.catalogFormat)" in catalog_form_view,
-      "CatalogFormView 应在格式选择下方渲染 catalogFormatNote，并给 Iceberg / Lance 各一条分开的提示")
+      "CatalogFormView 不该再渲染 catalogFormatNote 或页头 subtitle；"
+      "但 Iceberg / Lance 两条分开的 TipAlert 必须留着")
 
 # 存储类型改成按钮组之后，两件事会**安静地**回退：
 #  ① 界面显示裸枚举值（`S3` / `AZURE` / `FILE`）——不认识 ADLS 的人看不出那是 Azure，
@@ -1508,13 +1523,19 @@ advanced_table = vue_field_table("ADVANCED_FIELDS")
 shared_keys = set(vue_string_list("COMMON_KEYS"))
 credential_keys = set(vue_string_list("STATIC_CREDENTIAL_KEYS"))
 
+# 表单**故意不渲染**、由 `build()` 主动删掉的字段（不是漏了）：`storageName` 指向的
+# 「具名存储」配置组已随 v3 删除，字段只剩 DTO 上的标签含义，留输入框会让人以为
+# 「填了它就能不填密钥」。写成一个显式名单而不是塞进 COMMON_KEYS——后者表示
+# 「由模板单独渲染」，混进来会让下一个人以为表单里真有个输入框。
+DROPPED_KEYS = {"storageName"}
+
 
 def dto_form_fields(wire):
     """服务端 record 里「该由这两张表渲染」的字段；找不到对应 record 时返回 None。"""
     shape = shapes.get(by_type.get(wire, ""))
     if shape is None:
         return None
-    return set(parameter_names(shape[0])) - shared_keys - credential_keys
+    return set(parameter_names(shape[0])) - shared_keys - credential_keys - DROPPED_KEYS
 
 
 # --- 13.1 拆分不丢字段、也不多出服务端没有的字段 -----------------------------
@@ -2561,7 +2582,7 @@ check("优化任务页连展开中的批次明细一起刷，且同样静默",
 # ------------------------------------------------------------------ 24. 凭据来源
 
 print()
-print("24. 凭据来源（三档标签；判定在服务端，控制台只负责翻译）")
+print("24. 凭据来源（五档标签；判定在服务端，控制台只负责翻译）")
 
 # 这一组钉的是**分层**，不是像素：
 #
@@ -2581,11 +2602,11 @@ credential_java = read(os.path.join(
           "lakehouse/rest/service/CatalogCredentialSource.java"))
 credential_detail = read(os.path.join(CONSOLE_DIR, "src/views/CatalogDetailView.vue"))
 
-credential_modes = ("STS", "RELAY", "NONE", "INVALID")
+credential_modes = ("VENDED", "STATIC", "LOCAL", "LEGACY_ENV", "INVALID")
 missing_in_java = [mode for mode in credential_modes
                    if not re.search(rf"^\s*{mode},?\s*$", credential_java, re.M)]
 missing_in_js = [mode for mode in credential_modes if f"{mode}: {{" not in credential_util]
-check("控制台的四档与后端 CatalogCredentialSource.Mode 一一对应",
+check("控制台的五档与后端 CatalogCredentialSource.Mode 一一对应",
       not missing_in_java and not missing_in_js,
       "Java 侧缺：{}；JS 侧缺：{}".format(missing_in_java or "无", missing_in_js or "无"))
 
@@ -2616,9 +2637,57 @@ credential_preview_code = re.sub(r"/\*[\s\S]*?\*/", "", credential_preview_js)
 credential_preview_code = re.sub(r"//.*", "", credential_preview_code)
 check("表单预览只发请求，不自己推断档位（不读判据字段、不出现档位字面量）",
       not re.search(r"\.(roleArn|stsUnavailable|providers)\b", credential_preview_code)
-      and not re.search(r"['\"](STS|RELAY|NONE|INVALID)['\"]", credential_preview_code),
+      and not re.search(r"['\"](VENDED|STATIC|LOCAL|LEGACY_ENV|INVALID)['\"]",
+                        credential_preview_code),
       "composables/credentialPreview.js 里出现了判据或档位字面量：预览会与列表页各算一遍，"
       "而两处算出来的档位一旦不同，用户会以为自己填错了")
+
+# E11 / E12：**方式表**（`utils/storageAuthMethods.js`）是这一轮新加的辅助模块。
+# 它回答「这张卡片能不能选」，而「凭据来源是哪一档」必须由服务端算——
+# 档位字面量与判据字段（roleArn / stsUnavailable / providers）一旦出现在这里，
+# 就说明有人开始在浏览器里重算一遍，而两份算法迟早不一致（漂移的表现是
+# 「界面说在签发、实际在转发」，只在出事那天被发现）。
+#
+# 注意与上面那条的区别：`utils/credentialSource.js` **必须**含五个档位取值
+# （它是翻译表，键就是 wire 上的 mode）；被禁止的是**判据**与**第二份判定**。
+auth_methods_js = read(os.path.join(CONSOLE_DIR, "src/utils/storageAuthMethods.js"))
+auth_methods_code = re.sub(r"/\*[\s\S]*?\*/", "", auth_methods_js)
+auth_methods_code = re.sub(r"//.*", "", auth_methods_code)
+check("方式表里不出现档位字面量（档位只由服务端判定）",
+      not re.search(r"['\"](VENDED|STATIC|LOCAL|LEGACY_ENV|INVALID)['\"]", auth_methods_code),
+      "utils/storageAuthMethods.js 出现了档位取值：方式卡片开始自己报「来源」，"
+      "而它与 CatalogCredentialSource 是两份判定")
+
+# `inferMethod` 是这一层唯一允许读字段值的地方：它反推的是「用户现在选的是哪张卡片」，
+# 一个纯界面状态（编辑一个配了 roleArn 的 catalog 时卡片要亮在 IAM 角色上）。
+# 与「凭据来源是哪一档」是两件事——后者由服务端算，前者连档位的词都不碰。
+# 因此先把这个函数的实现切掉，再对剩下的部分断言。
+auth_no_infer = re.sub(r"export function inferMethod[\s\S]*?\n\}", "", auth_methods_code)
+check("方式表不读判据字段（roleArn / stsUnavailable / providers 只由服务端读）",
+      not re.search(r"\.(roleArn|stsUnavailable|providers)\b", auth_no_infer),
+      "utils/storageAuthMethods.js 读到了判据字段：可用性只该看服务端下发的 provider 名单，"
+      "而「来源是哪一档」完全不该在这一层出现")
+
+# E13：v3 删掉的三种方式（环境身份 / 托管标识 / 应用默认凭据）不得留在界面文案里。
+# 按模板属性与字符串匹配，且先剥注释——注释里解释「为什么删掉它们」是应该留的。
+form_views = [read(STORAGE_CONFIG_FIELDS), read(os.path.join(
+    CONSOLE_DIR, "src/views/CatalogFormView.vue")),
+    read(os.path.join(CONSOLE_DIR, "src/utils/storageAuthMethods.js"))]
+removed_words = ("环境身份", "托管标识", "应用默认凭据")
+found_words = []
+for path, text in zip(("components/StorageConfigFields.vue",
+                       "views/CatalogFormView.vue",
+                       "utils/storageAuthMethods.js"), form_views):
+    code = re.sub(r"<!--[\s\S]*?-->", "", text)
+    code = re.sub(r"/\*[\s\S]*?\*/", "", code)
+    code = re.sub(r"//.*", "", code)
+    for word in removed_words:
+        if word in code:
+            found_words.append(f"{path}: {word}")
+check("界面源码里没有「环境身份 / 托管标识 / 应用默认凭据」三种被删掉的方式",
+      not found_words,
+      "\n".join(found_words) + "\n它们不能预览也不能确定性地下发（catalog 必须能预览），"
+      "留着会让用户以为有这条路；注释里解释为什么删是允许的")
 
 check("表单预览的输入是提交体（modelValue），不是表单内部状态",
       "useCredentialPreview(() => props.modelValue)" in read(STORAGE_CONFIG_FIELDS)

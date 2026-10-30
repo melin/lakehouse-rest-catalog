@@ -19,9 +19,13 @@ import java.util.List;
  *
  * <p><b>三个入口对应两类消费者，不能合并。</b>
  * <ul>
- *   <li>{@link #vend(StorageConfigInfo, String, String)}：引擎的票，按表收窄，只读。
- *       这是高频路径（每读一张表一次）。</li>
- *   <li>{@link #vend(StorageConfigInfo, String, String, boolean)}：同上，但显式要写权限。</li>
+ *   <li>{@link #vend(StorageConfigInfo, String, String)}：引擎的票，按表收窄、只要读。
+ *       这是高频路径（每读一张表一次），也是「调用方没说自己要写」时的缺省。</li>
+ *   <li>{@link #vend(StorageConfigInfo, String, String, boolean)}：同上，但显式声明
+ *       这次要不要写权限。三个引擎取票点（Paimon {@code /token}、Iceberg
+ *       {@code loadTable} + {@code /credentials}、Lance {@code storage_options}）
+ *       都按「调用者对该表有没有 {@code UPDATE}」传这个参数——写权限属于授权模型，
+ *       不属于建 catalog 时的选择（设计稿 §2.3）。</li>
  *   <li>{@link #vendForCatalog}：**服务端自己**的票，按 catalog 的允许位置收窄。
  *       它是「服务端也是凭据消费者」那件事的落点（设计稿 §5.7）：给服务端的动作签
  *       表级票，表现是列目录 / 删表目录 403，而报错指向存储、与 catalog 无关。</li>
@@ -51,8 +55,14 @@ public interface StorageCredentialManager {
     /**
      * 同上，但显式声明这次要不要写权限。
      *
-     * <p>写权限只在服务端自己写元数据时用得上（例如 Paimon 的
-     * {@code schema-<n>}）。引擎侧一律只读：协议上读写分不开，先收紧。
+     * <p><b>两类消费者都会传 {@code true}。</b>服务端自己写元数据（Paimon 的
+     * {@code schema-<n>}）时传；引擎侧在调用者对该表有 {@code UPDATE} 时也传。
+     * 早先这里写的是「引擎侧一律只读，协议上读写分不开」——协议确实分不开，
+     * 但**权限分得开**：请求者是谁、他能不能改这张表，每个取票点都已经知道了。
+     * 一律只读的代价是「能建表、不能写」，而那个 403 落在数据源算子里。
+     *
+     * <p>三参版本转调本方法并传 {@code false}，因此「没表态」仍然等于只读：
+     * 收紧的方向是默认值，放开必须显式。
      *
      * @param allowWrite 是否把写对象（PutObject / DeleteObject）放进票里
      */

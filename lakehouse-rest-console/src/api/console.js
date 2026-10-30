@@ -93,4 +93,28 @@ export const consoleApi = {
   previewCredentialSource: (storageConfigInfo) => post('credentialSourcePreview', {
     body: storageConfigInfo,
   }),
+
+  /**
+   * 保存前自检：`{ storageConfigInfo, checkWrite }` → `{ verdict, serverReadable, ... }`。
+   *
+   * <p>它回答的是「这份配置**现在**能不能用」——第 3 节的标签只回答「凭据从哪来」，
+   * 两者不能互相替代：一个 `VENDED` 的 catalog 完全可能因为角色信任关系写错而读不了。
+   *
+   * <p><b>`checkWrite` 默认 false，必须由用户显式勾选。</b>读档只发一次 HEAD，
+   * 写档要 PUT 一个 0 字节对象再删掉——那是在用户的仓库里真的落了东西。
+   * 默认打开等于「点一下自检就在别人的桶里写文件」。
+   *
+   * <p><b>`catalog` 不是可选的装饰。</b>编辑态的表单提交体里 `accessKeyId` 是服务端
+   * 打码回来的 `******`（真值不会下发），服务端必须先按这个 catalog 名把库中那份
+   * 配置合并进来才能取票；不传名字，它拿到的就是一份「只有星号」的配置，
+   * 取票当场失败——而失败被归类成「这个存储不支持探测」，指向一个完全不相干的方向。
+   * 新建态没有库中那份，才允许省略。
+   *
+   * @param {object} storageConfigInfo 表单提交体（`StorageConfigFields.build()` 的产物）
+   * @param {boolean} checkWrite 是否连写权限一起探
+   * @param {string} [catalog] 编辑态的 catalog 名；新建时留空
+   */
+  probeStorage: (storageConfigInfo, checkWrite, catalog) => post('storageProbe', {
+    body: { storageConfigInfo, catalog: catalog || null, checkWrite: checkWrite === true },
+  }),
 }

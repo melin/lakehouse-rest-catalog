@@ -41,6 +41,11 @@ import org.springframework.transaction.annotation.Transactional;
  * 过期时刻，而不是「当前时间 + TTL」。差异在这里很实际：后者会让调用方以为
  * 每次拿到的都是一份全新的、完整时长的凭据，而实际上密钥没变。
  *
+ * <p><b>票的写权限跟着调用者走，不由建 catalog 的人决定。</b>同一个 {@code /token}，
+ * 对该表有 {@code UPDATE} 的人拿到的是可写票（policy 覆盖读写），只有 {@code SELECT}
+ * 的人拿到只读票。这条判据放在这里而不是放在表单上：建 catalog 的人通常不知道
+ * 谁会来写（设计稿 §2），而「能不能写这张表」与「有没有 {@code UPDATE}」是同一个问题。
+ *
  * <p><b>鉴权分两步。</b>「能调这个端点」是拦截器按 {@code CatalogAccessRules} 判的
  * {@code USE_CREDENTIAL}；「票里能不能含库里存的那对长期密钥」在这里再判一次
  * {@code USE_SECRET}。第二步必须留在这里：它取决于**签发结果**而不是路径，
@@ -64,10 +69,17 @@ public class CredentialService {
                 .orElseThrow(() -> ApiException.managementNotExist(ResourceType.CATALOG, prefix));
         StorageConfigInfo storage = StorageConfigs.of(catalog);
 
-        String key = StorageCredentialCache.key(catalog.getId(), storage, target.getPath());
+        // 票里要不要写权限，判据是这个调用者**对这张表**有没有 UPDATE——
+        // 不是建 catalog 时谁选了什么（设计稿 §2.3）。协议形状不变：字段一个没多，
+        // policy 变宽变窄。写票与只读票在缓存里也是两个键，否则先到的那一次
+        // 决定了后来者拿到哪一种。
+        boolean allowWrite = authorization.allows(prefix, PermissionDtos.ResourceType.TABLE,
+                List.of(database), table, Access.UPDATE);
+        String key = StorageCredentialCache.key(catalog.getId(), storage, target.getPath(), allowWrite);
         // singleflight：一批引擎同时启动时，同一张表只会打一次 AssumeRole
         StorageCredentialCache.Cached cached = cache.resolve(key,
-                () -> storagePolicy.credentialManager().vend(storage, target.getId(), target.getPath()));
+                () -> storagePolicy.credentialManager()
+                        .vend(storage, target.getId(), target.getPath(), allowWrite));
 
         // 端点本身要求 USE_CREDENTIAL（能取票）；票里若有**没有时限的那对长期密钥**，
         // 还要 USE_SECRET（能拿走存着的钥匙）。判据在凭据自己身上，所以只能在这之后判：

@@ -685,15 +685,24 @@ onMounted(loadCredentialSource)
 
 const credentialSource = computed(() => credentialSourceCell(credentialSourceEntry.value))
 
-/** 续期一句话：只有短期票有「换一张」这回事，另外两档没有。 */
+/**
+ * 续期一句话：只有短期票有「换一张」这回事。
+ *
+ * <p>五档里 {@code VENDED} 还要再分一次——S3 能续（Paimon 的 data-token、Iceberg 的
+ * /credentials），OSS / Azure / GCS 三家都不能续。这里不细分：能不能续写在
+ * `credentialSource.js` 的 `renewable` 与来源明细里，而这一行只在「要不要为长作业做点什么」
+ * 这个问题上有用——答案是「看方式」，不是「一律能」。
+ */
 const credentialRenewNote = computed(() => {
   switch (credentialSource.value.mode) {
-    case 'STS':
-      return '能：票到期前客户端会再换一张（Paimon 的 data-token、Iceberg 的 /credentials）'
-    case 'RELAY':
+    case 'VENDED':
+      return '看方式：S3 的票可以续，OSS / Azure / GCS 没有标准续期（明细见上一行）'
+    case 'STATIC':
       return '不能：长期密钥不会过期，也没有换票这一步——轮换只能在服务端改配置'
-    case 'NONE':
-      return '不需要：服务端不发票，引擎用的是自己的身份'
+    case 'LOCAL':
+      return '不需要：本地文件系统没有凭据这回事'
+    case 'LEGACY_ENV':
+      return '不适用：服务端拿不到这个位置的凭据，先把一种认证方式补上'
     default:
       return '—'
   }
@@ -706,9 +715,18 @@ const credentialRenewNote = computed(() => {
  * 升级之后取票另要 `USE_CREDENTIAL`，而转发档还要 `USE_SECRET`。
  * 写在页面里比写在文档里有用——报 403 的人第一时间是在这一页。
  */
-const credentialAccessNote = computed(() => (credentialSource.value.mode === 'RELAY'
-  ? 'USE_CREDENTIAL + USE_SECRET（票里含目录存的长期密钥对）'
-  : 'USE_CREDENTIAL'))
+const credentialAccessNote = computed(() => {
+  switch (credentialSource.value.mode) {
+    case 'STATIC':
+      return 'USE_CREDENTIAL + USE_SECRET（票里含目录存的长期密钥对）'
+    case 'VENDED':
+      return 'USE_CREDENTIAL（票是现签的短期凭据，不需要 USE_SECRET）'
+    case 'LOCAL':
+      return '—（本地文件系统不发票）'
+    default:
+      return '—（先补一种认证方式）'
+  }
+})
 
 /**
  * 表格式：`catalogFormat`（PAIMON / ICEBERG / LANCE），**创建后不可更改**。

@@ -264,16 +264,19 @@ class GcsDownscopeVendingTests {
     // ------------------------------------------------------------------ 控制台判定
 
     @Test
-    void consoleReportsTheFourGcsStates() {
+    void consoleReportsTheThreeGcsStates() {
         GcpStorageConfigInfo noAccount =
                 new GcpStorageConfigInfo(List.of(TABLE), null, SA_EMAIL, null);
         GcpStorageConfigInfo account = gcp(TABLE);
 
-        assertEquals(CatalogCredentialSource.Mode.NONE,
+        assertEquals(CatalogCredentialSource.Mode.LEGACY_ENV,
                 CatalogCredentialSource.of(noAccount, properties).mode(), "没账号、没启用");
-        assertTrue(CatalogCredentialSource.of(noAccount, properties).detail().contains("ADC"));
+        // v3 删掉了「ADC（应用默认凭据）」这一档：它既不能预览也不能下发，只是把
+        // 「服务端没有身份」换了个说法。detail 只点出缺的是什么，不再提那条链。
+        assertTrue(CatalogCredentialSource.of(noAccount, properties).detail()
+                .contains("serviceAccountJson"));
 
-        assertEquals(CatalogCredentialSource.Mode.NONE,
+        assertEquals(CatalogCredentialSource.Mode.LEGACY_ENV,
                 CatalogCredentialSource.of(account, properties).mode(), "有账号但没启用签发");
         assertTrue(CatalogCredentialSource.of(account, properties).detail()
                 .contains("没启用 gcs-downscope"));
@@ -281,12 +284,12 @@ class GcsDownscopeVendingTests {
         properties.getCredential().setProviders(
                 List.of(VendedStorageCredential.PROVIDER_GCS_DOWNSCOPE));
         CatalogCredentialSource.Source signed = CatalogCredentialSource.of(account, properties);
-        assertEquals(CatalogCredentialSource.Mode.STS, signed.mode());
+        assertEquals(CatalogCredentialSource.Mode.VENDED, signed.mode());
         assertTrue(signed.detail().contains("没有续期"), signed.detail());
 
         CatalogCredentialSource.Source enabledWithoutAccount =
                 CatalogCredentialSource.of(noAccount, properties);
-        assertEquals(CatalogCredentialSource.Mode.NONE, enabledWithoutAccount.mode());
+        assertEquals(CatalogCredentialSource.Mode.INVALID, enabledWithoutAccount.mode());
         assertTrue(enabledWithoutAccount.detail().contains("serviceAccountJson"),
                 enabledWithoutAccount.detail());
     }

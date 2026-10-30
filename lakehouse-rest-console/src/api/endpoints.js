@@ -31,6 +31,13 @@ export const ENDPOINTS = {
   // 它与上一条答的不是同一个问题：那边是「这个 catalog 现在会怎样」（库里查得到），
   // 这边是「我这样填完保存会怎样」（库里还没有）。
   credentialSourcePreview: { method: 'POST', path: '/api/console/v1/catalog-credential-source' },
+  // 保存前自检：拿表单里**还没保存**的凭据与位置，真的去存储上探一次。
+  // 这是整个控制台唯一「按用户给的地址发请求」的端点，因此边界写死在服务端：
+  // `file://` 与无 scheme 的路径硬拒（HEAD 一个本地路径等于「本机文件存在性」预言机）、
+  // 只探 allowedLocations、读只 HEAD 不 LIST、写只 0 字节且写完即删、
+  // 每个主体每分钟限次、只回分类不回云侧原文。用 POST 的理由同在下面一条：
+  // 正文里带凭据，进查询串会入访问日志。
+  storageProbe: { method: 'POST', path: '/api/console/v1/catalog-storage-probe' },
   // 仓库文件浏览：列出 catalog 仓库里某个目录的一层内容（`?path=` 给相对仓库根的路径）。
   // 与 meta 一样是本工程的扩展端点，服务端实现见 ConsoleFileController；
   // 它读的是物理目录（表目录里有哪些文件、有没有残留），不是元数据。

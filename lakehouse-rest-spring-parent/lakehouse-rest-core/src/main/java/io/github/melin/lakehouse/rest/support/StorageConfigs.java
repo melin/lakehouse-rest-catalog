@@ -82,7 +82,46 @@ public final class StorageConfigs {
         if (info instanceof AwsStorageConfigInfo s3) {
             requireInlinePolicyDecisionIsCoherent(s3);
         }
+        if (info instanceof AliyunOssStorageConfigInfo oss) {
+            requireRoleHasSigningKeys(oss.roleArn(), oss.accessKeyId(), oss.secretAccessKey(), "OSS");
+        }
+        if (info instanceof AwsStorageConfigInfo s3) {
+            requireRoleHasSigningKeys(s3.roleArn(), s3.accessKeyId(), s3.secretAccessKey(), "S3");
+        }
         requireServicePrincipalIsComplete(info);
+    }
+
+    /**
+     * 「IAM 角色 / RAM 角色」必须带上**签名身份**：{@code roleArn} + 一对 AK/SK。
+     *
+     * <p>这不是风格要求，是能不能签出来的分界线。配了角色却不给钥匙时，服务端只能拿
+     * 自己进程的身份去 {@code AssumeRole}——那正是 v3 删掉的「环境身份」：它把
+     * 「这个 catalog 到底用谁的权限」交给部署，而部署方在表单上看不见。表现是
+     * 保存成功、引擎读表要么 403 要么读到别的账号的数据，两者都不指向配置。
+     *
+     * <p>所以这里直接把缺的那两个字段名字写进错误信息。笼统的「配置不完整」在
+     * 一个十几个输入框的表单上没有可操作性（设计稿 §3.3）。
+     *
+     * <p><b>反向不成立</b>：只填钥匙不填角色是合法的（静态访问密钥档），
+     * 所以本方法只在「有角色」时要求钥匙，不在「有钥匙」时要求角色。
+     */
+    private static void requireRoleHasSigningKeys(String roleArn, String accessKeyId,
+                                                  String secretAccessKey, String type) {
+        if (isBlank(roleArn)) {
+            return;
+        }
+        boolean hasId = !isBlank(accessKeyId);
+        boolean hasSecret = !isBlank(secretAccessKey);
+        if (hasId && hasSecret) {
+            return;
+        }
+        String missing = !hasId && !hasSecret ? "accessKeyId and secretAccessKey"
+                : !hasId ? "accessKeyId" : "secretAccessKey";
+        throw ApiException.badRequest("storageConfigInfo.roleArn is set but storageConfigInfo."
+                + missing + " is not: a " + type + " role is assumed *by* a signing identity, so the"
+                + " pair must be supplied together with roleArn. Those keys are only used for"
+                + " sts:AssumeRole (they are not forwarded to engines); to use a plain key pair"
+                + " instead, clear roleArn");
     }
 
     /**
@@ -313,6 +352,24 @@ public final class StorageConfigs {
             return false;
         }
         return !isBlank(idOf(info)) || !isBlank(secretOf(info));
+    }
+
+    /**
+     * 这份配置里的密钥是**对外那份**（带打码值 {@link #MASKED}）吗。
+     *
+     * <p>对外响应（{@link #withoutSecrets}）与内部配置长得一样，只有密钥位置上的六个
+     * 星号能区分。{@link #secrets} 在真正取用时也会拦（500），但那个错误到得太晚、
+     * 也太像内部故障：调用方拿着一份打码副本请求「代我探一下存储」，得到的分类是
+     * 「本部署没有这个 scheme 的实现」，指向一个完全不相干的方向。
+     *
+     * <p>因此需要一个**提前**的判据：谁准备把一份配置当内部配置用（自检端点、缓存、
+     * 引擎取票），谁就先问一句。它不是「有没有凭据」——没凭据的配置是合法的。
+     */
+    public static boolean carriesMaskedSecret(StorageConfigInfo info) {
+        if (!supportsSecrets(info)) {
+            return false;
+        }
+        return isMasked(idOf(info)) || isMasked(secretOf(info));
     }
 
     /**

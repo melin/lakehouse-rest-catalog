@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
@@ -90,7 +91,7 @@ class LanceCredentialAccessTests {
      */
     @Test
     void vendCredentialsRequiresTheCredentialGrant() {
-        when(manager.vend(any(), anyString(), anyString()))
+        when(manager.vend(any(), anyString(), anyString(), anyBoolean()))
                 .thenReturn(credential(VendedStorageCredential.SOURCE_STATIC_CREDENTIALS, 0L));
         doThrow(ApiException.forbidden("lacks USE_CREDENTIAL"))
                 .when(authorization).require(eq(CATALOG), eq(ResourceType.TABLE), eq(NAMESPACE),
@@ -110,7 +111,7 @@ class LanceCredentialAccessTests {
      */
     @Test
     void storedKeyPairAlsoNeedsTheSecretGrant() {
-        when(manager.vend(any(), anyString(), anyString()))
+        when(manager.vend(any(), anyString(), anyString(), anyBoolean()))
                 .thenReturn(credential(VendedStorageCredential.SOURCE_STATIC_CREDENTIALS, 0L));
         doThrow(ApiException.forbidden("lacks USE_SECRET"))
                 .when(authorization).require(eq(CATALOG), eq(ResourceType.TABLE), eq(NAMESPACE),
@@ -125,7 +126,7 @@ class LanceCredentialAccessTests {
     /** 短期票只要能取票：它是现签、收窄到表、到点作废的，不该再要一个密钥权限。 */
     @Test
     void shortLivedTicketNeedsOnlyTheCredentialGrant() {
-        when(manager.vend(any(), anyString(), anyString()))
+        when(manager.vend(any(), anyString(), anyString(), anyBoolean()))
                 .thenReturn(credential(VendedStorageCredential.SOURCE_STS_SESSION,
                         System.currentTimeMillis() + 900_000L));
 
@@ -144,7 +145,7 @@ class LanceCredentialAccessTests {
     /** 不带那个参数就不取票，也就不判权——定位信息照发，且里面不能有密钥。 */
     @Test
     void withoutTheVendFlagNothingIsVendedOrChecked() {
-        when(manager.vend(any(), anyString(), anyString()))
+        when(manager.vend(any(), anyString(), anyString(), anyBoolean()))
                 .thenReturn(credential(VendedStorageCredential.SOURCE_STATIC_CREDENTIALS, 0L));
 
         Map<String, String> options =

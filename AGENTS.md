@@ -349,7 +349,9 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
   连接池参数——每个 catalog 的存储配置本来就不一样，凭据跟着 catalog 走。
   `secretAccessKey` **只写不读**（AES-GCM 加密落库，响应永不回显）→ `PUT` 省略它
   表示**保持**，这是规格「整体替换」语义的**唯一例外**；清除要显式提交一对空串。
-  `storageName` 退化为纯**标签**，与凭据字段可以并存（早先它指向具名密钥，那时互斥）。
+  `storageName` 退化为纯**标签**（早先它指向具名密钥，那时互斥）：DTO 上还留着，但控制台
+  不再渲染它、`build()` 会把它从提交体里删掉——留一个没有含义的输入框会让人以为
+  「填了它就能不填密钥」。
   **下发顺序是 `stsUnavailable` → 签发 → 转发 → 环境链**：catalog 上那对 AK/SK 配了
   `roleArn`（S3 / OSS）时是**服务端 assume 用的调用方身份**，没配时才是转发给引擎的
   数据面凭据。「静态凭据优先于一切」与「静态凭据 / `roleArn` 互斥 400」两条旧规则都已删。
@@ -393,7 +395,10 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
   以及不存在的第三个——但判定是同一段代码，因此不会出现「表单说会签发、建完显示转发」。
   前端**只翻译**（`utils/credentialSource.js` 出标签与颜色、`composables/credentialPreview.js`
   出去抖与过期响应丢弃）：这两个文件里出现 `roleArn` / `stsUnavailable` / `providers`
-  或 `'STS'` 这类档位字面量，`verify-console.py` 第 24 组就红。
+  或 `'VENDED'` / `'LEGACY_ENV'` 这类档位字面量，`verify-console.py` 第 24 组就红。
+  唯一例外是 `utils/credentialSource.js` 本身——它就是那张翻译表，键必须是 wire 上的 mode。
+  方式与可用性另有一张表（`utils/storageAuthMethods.js`）：它只说「这张卡片能不能选」，
+  因此**不许**出现任何档位取值（第 24 组反向断言），也不许读判据字段。
   这条护栏不是形式主义——`roleArn` 就在表单组件里手边，「顺手推断一下」比发一次请求便宜，
   而那正是漂移的起点。判据是「凭据管理器走哪条分支」，不是「配了哪个字段」。
 - **新建 / 编辑 catalog 是一整页**（`CatalogFormView`；路由 `/catalogs/new` 与

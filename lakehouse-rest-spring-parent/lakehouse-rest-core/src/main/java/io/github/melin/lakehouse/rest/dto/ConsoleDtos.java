@@ -1,9 +1,10 @@
 package io.github.melin.lakehouse.rest.dto;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
+import io.github.melin.lakehouse.rest.dto.StorageDtos.StorageConfigInfo;
+import io.github.melin.lakehouse.rest.support.PageMeta;
 import java.util.List;
 import java.util.Map;
-import io.github.melin.lakehouse.rest.support.PageMeta;
 
 /**
  * 控制台扩展端点（{@code /api/console/v1/**}）的响应与请求模型。
@@ -456,7 +457,8 @@ public final class ConsoleDtos {
          * 一个 catalog 的判定结果。
          *
          * @param catalog catalog 名（即 prefix）
-         * @param mode    {@code STS} / {@code RELAY} / {@code NONE} / {@code INVALID}，
+         * @param mode    {@code VENDED} / {@code STATIC} / {@code LOCAL} / {@code LEGACY_ENV} /
+         *                {@code INVALID}，
          *                与 {@code CatalogCredentialSource.Mode} 一一对应；
          *                取字符串而不是枚举，是为了让「前端不认识的新取值」降级成一行文字，
                  *                而不是整个响应反序列化失败
@@ -480,11 +482,70 @@ public final class ConsoleDtos {
      * 结果与「什么都没填」一模一样（都退回环境凭据链）。这件事在保存前不可能从字段上看出来，
      * 保存后要回到列表页才看得见，而那时用户已经在另一步上了。
      *
-     * @param mode   {@code STS} / {@code RELAY} / {@code NONE} / {@code INVALID}，
+     * @param mode   {@code VENDED} / {@code STATIC} / {@code LOCAL} / {@code LEGACY_ENV} /
+     *               {@code INVALID}，
      *               与 {@code CatalogCredentialSource.Mode} 一一对应；同样用字符串，
      *               理由同 {@link CatalogCredentialSources.Entry}
      * @param detail 走的是哪条分支，直接显示在表单里
      */
     public record CredentialSourcePreview(String mode, String detail) {
+    }
+
+    /**
+     * {@code POST /api/console/v1/catalog-storage-probe} 的请求：**保存前**用这份草稿真的敲一次存储。
+     *
+     * <p><b>为什么值得一个会写东西的端点。</b>三条准入线里前两条（服务端读 / 服务端写）
+     * 只有真发一次请求才能回答，而配置错误的现象是「保存成功、建表 500」——
+     * 两件事之间隔着一次用户操作和一次引擎重试，几乎不可能靠读配置反推。
+     *
+     * @param storageConfigInfo 与保存时**同一份**草稿（可以带打码值：给了 {@code catalog}
+     *                          就按保存路径的规则与库里那份合并）
+     * @param catalog           编辑已有 catalog 时传名字；新建时留空
+     * @param warehouse         仓库根。草稿里 {@code allowedLocations} 为空时用它兜底
+     * @param checkWrite        是否连写入一起验。默认 {@code false}——写档会在对方的桶里
+     *                          真的创建一个 0 字节对象，替用户做这件事不礼貌
+     */
+    public record StorageProbeRequest(StorageConfigInfo storageConfigInfo,
+                                      String catalog,
+                                      String warehouse,
+                                      boolean checkWrite) {
+    }
+
+    /**
+     * 自检结果：一次可能的判定 + 逐位置的明细。
+     *
+     * <p>{@code verdict} 取**最坏**的那个（{@code DENIED} > {@code NOT_FOUND} >
+     * {@code UNREACHABLE} > {@code CONFIG_ERROR} > {@code UNSUPPORTED} > {@code OK}）：
+     * 多位置时常见的形态是「第一个通、第二个不通」，取平均或取第一个都会把坏消息藏起来。
+     *
+     * <p><b>{@code CONFIG_ERROR} 与 {@code UNSUPPORTED} 是两件事</b>：前者是我们自己没装配起
+     * 凭据（取票 / 解密 / 合并配置失败，**根本没碰到存储**），后者是本部署没有这种 scheme 的
+     * FileIO。合成一档时，「编辑态发来一份打码配置」会被报成「这个存储不支持探测」，
+     * 而该查的东西完全在另一边。
+     *
+     * <p>{@code serverWritable} 在没勾写档时是 {@code null} 而不是 {@code false}：
+     * 「没验」与「验了不行」差着一整次排查。
+     *
+     * @param probeKey 写档用的 key（0 字节对象）。删失败时把它回给用户去清，
+     *                 静默残留不可接受
+     * @param cleanup  写档的对象是否删掉了；没勾写档时为 {@code null}
+     * @param hint     一句话说清「下一步该查什么」，不含任何云侧原文
+     */
+    public record StorageProbeResult(String verdict,
+                                     boolean serverReadable,
+                                     Boolean serverWritable,
+                                     List<StorageProbeCheck> checks,
+                                     String probeKey,
+                                     Boolean cleanup,
+                                     String hint) {
+    }
+
+    /**
+     * 单个位置的探测结果。
+     *
+     * @param detail 归类后的说明（{@code HEAD 200} / {@code 403 AccessDenied} …），
+     *               **不是**云侧的错误原文：原文常带 endpoint、账号 ID、内网域名
+     */
+    public record StorageProbeCheck(String location, String verdict, String detail) {
     }
 }

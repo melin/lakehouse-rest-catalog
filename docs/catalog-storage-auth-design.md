@@ -1,6 +1,13 @@
 # Catalog 存储认证设计（v3）：只留「两侧都能用」的路
 
-> **状态：设计稿，未实现。** 配套原型 [`catalog-storage-auth-mockup.html`](catalog-storage-auth-mockup.html)。
+> **状态：已实现（S1–S5 全部落地）。** 配套原型 [`catalog-storage-auth-mockup.html`](catalog-storage-auth-mockup.html)。
+>
+> 落地位置：S1 三个取票点（`CredentialService` / `IcebergCredentialService` / `LanceCatalogSupport`）按
+> `Access.UPDATE` 传 `allowWrite`，缓存键带 `|rw` / `|r`（用例 `WriteTicketTests`）；S2 方式集合在
+> `StorageConfigs.validate` + `utils/storageAuthMethods.js`；S3 五档在 `CatalogCredentialSource` 与
+> `utils/credentialSource.js`；S4 自检在 `ConsoleStorageProbeService` + `POST /api/console/v1/catalog-storage-probe`
+> （用例 `ConsoleApiTests#storageProbe*`）；S5 在 `CatalogFormView`（方式卡片 / 五档状态 / 自检两档）+
+> `verify-console.py` 第 24 组（193 项）。
 >
 > **v3 修订（2026-10-30）。** v2 把「这个 catalog 要不要给引擎写」做成表单上的一个开关
 > （用途：只读 / 可写），并保留了「环境身份（不在 catalog 存秘密）」这一档。两处都撤掉：
@@ -165,23 +172,27 @@ v2 的用途开关想解决的是：签发档发出去的票只有读权限，�
 | 存储 | 方式 | catalog 上存什么 | L1 | L2 | L3 | 今天能否选 |
 | --- | --- | --- | --- | --- | --- | --- |
 | **S3** | 静态访问密钥 | `accessKeyId` + `secretAccessKey` | ✓ | ✓ | ✓（引擎拿永久密钥） | 可 |
-| **S3** | IAM 角色 | `roleArn` + 签名 AK/SK | ✓ | ✓ | ✓（票按调用者权限） | 等 S1 与 `s3-token` |
-| **S3** | 临时安全凭证 | AK/SK + `sessionToken` | — | — | — | 灰卡不可选（G6 未实现） |
+| **S3** | IAM 角色 | `roleArn` + 签名 AK/SK | ✓ | ✓ | ✓（票按调用者权限） | 可（本部署要启用 `s3-token`） |
 | **OBS** | 永久 AK/SK | AK/SK | ✓ | ✓ | ✓ | 可 |
 | **OSS** | 静态 AccessKey | AK/SK | ✓ | ✓ | ✓ | 可 |
-| **OSS** | RAM 角色 | `roleArn` + AK/SK | ✓ | ✓ | ✓（票按调用者权限） | 等 S1 与 `oss-sts` |
+| **OSS** | RAM 角色 | `roleArn` + AK/SK | ✓ | ✓ | ✓（票按调用者权限） | 可（本部署要启用 `oss-sts`） |
 | **COS** | 永久密钥 | `secretId` / `secretKey` | ✓ | ✓ | ✓ | 可（COSN 无令牌位，永远没有临时档） |
-| **Azure** | 服务主体 | `tenantId` + `clientId` + `clientSecret` | ✓ | ✓ | ✓（SAS 按权限位签） | 等 S1 与 `azure-sas` |
-| **GCS** | 服务账号 JSON | `serviceAccountJson` | ✓ | ✓ | ✓（boundary 带写） | 等 S1 与 `gcs-downscope` |
+| **Azure** | 服务主体 | `tenantId` + `clientId` + `clientSecret` | ✓ | ✓ | ✓（SAS 按权限位签） | 可（本部署要启用 `azure-sas`） |
+| **GCS** | 服务账号 JSON | `serviceAccountJson` | ✓ | ✓ | ✓（boundary 带写） | 可（本部署要启用 `gcs-downscope`） |
 | **FILE** | 本地文件系统 | 无凭据 | ✓ | ✓ | ✓ | 可（不探测） |
 
 **三行是故意没有的**（DOM 里也没有）：S3 环境身份、Azure 托管标识、GCS ADC——
 它们的取消是设计决定（§3），不是待办。
 
-**两行是灰卡**：S3 临时安全凭证（缺 `sessionToken`）、OBS 的 IAM 委托
-（`CreateTemporaryAccessKeyByAgency` 要账号 + 口令）。它们缺的是代码不是配置，
+**一行是灰卡**：OBS 的 IAM 委托（`CreateTemporaryAccessKeyByAgency` 要账号 + 口令，
+那是一类新的密钥，存哪 / 怎么轮换都没定）。它缺的是代码不是配置，
 所以放在列表里、不可选、写明缺什么——灰掉比删掉更有用，因为「为什么没有这一档」
 本身就是答案（§4.3）。
+
+**S3 的「临时安全凭证（Session Token）」在 S5 删掉了**（原本也是灰卡）。理由不是「还没做」，
+而是它**与 IAM 角色重复**：那条路把一组会过期的 AK/SK 长期存在 catalog 上，到期后服务端
+与引擎同时失效；同样的事由 `s3-token` 现签现发做得更好（作用域还能按表收窄）。
+留一张永远不可选的卡片，只会让人以为该去补一个 `sessionToken` 字段。
 
 ### 4.2 卡片上写什么：不写「能不能用」，写「密钥在哪、什么时候失效」
 
@@ -263,7 +274,7 @@ Authorization: 控制台会话；需 CATALOG:CREATE（新建）或 CATALOG:ALTER
 
 200 OK
 {
-  "verdict": "OK | DENIED | NOT_FOUND | UNREACHABLE | UNSUPPORTED",
+  "verdict": "OK | DENIED | NOT_FOUND | UNREACHABLE | UNSUPPORTED | CONFIG_ERROR",
   "serverReadable": true,
   "serverWritable": true,                // checkWrite=false 时为 null
   "checks": [
@@ -302,6 +313,16 @@ Authorization: 控制台会话；需 CATALOG:CREATE（新建）或 CATALOG:ALTER
 | 404 `NoSuchBucket` / 前缀不存在 | `NOT_FOUND` | 桶 / 前缀不存在 | 地址写错、region 不对 |
 | 连接超时 / DNS 失败 | `UNREACHABLE` | 服务端连不上这个地址 | endpoint 填成内网地址、出网没开 |
 | 没有对应 scheme 的 FileIO | `UNSUPPORTED` | 本部署没有这个 scheme 的实现 | `lakehouse.rest.file-io.type` 与插件 |
+| 取票 / 解密 / 合并配置时抛错（**根本没碰到存储**） | `CONFIG_ERROR` | 服务端没装配起这份凭据 | 编辑态提交了打码配置却没带 `catalog` 名、落库密钥换过旧密文解不开、配置自相矛盾 |
+
+**`CONFIG_ERROR` 与 `UNSUPPORTED` 必须分开**（S5 加的一档）。两者的现象都是「没探成」，
+但指向的方向相反：后者去查部署的 FileIO 与插件，前者去查配置本身。合并成一档时，
+最常发生的那一种——编辑态把打码的 `******` 当凭据发过来——会被报成「这个存储不支持探测」，
+而它与 scheme 毫无关系。同因，编辑态请求必须带 `catalog` 名，服务端据此把库中那份
+真凭据合并进来；带了星号却没带名字，直接 400 并说清缺哪个字段。
+
+**判定顺序与优先级**：`OK < UNSUPPORTED < CONFIG_ERROR < UNREACHABLE < NOT_FOUND < DENIED`
+（越靠后越坏，取最坏的那个）。
 
 **403 与 404 在 S3 上不可区分**（无 `s3:ListBucket` 时 HEAD 一个不存在的 key 回 403）。
 所以文案不写「对象不存在」，写「这个位置读不到：可能地址不对，也可能这份身份没有权限」——
@@ -463,7 +484,7 @@ LEGACY_ENV · 靠环境身份访问，控制台预览可能失败
 | **G3** | `/meta` 不下发 `credential.providers` | 前端无法预知签发档可用性 | §4.3 |
 | **G4** | 没有 probe 端点（含写档） | L1/L2 无法在保存前验证 | §5 |
 | **G5** | 两条取票路径缓存策略不一致（浏览缓存 / 预览不缓存） | STS 调用量偏高且难解释 | §1.1 |
-| **G6** | `AwsStorageConfigInfo` 缺 `sessionToken` | 「临时安全凭证」做不了 | §4.1 第 3 行 |
+| **G6** | `AwsStorageConfigInfo` 缺 `sessionToken` | ~~「临时安全凭证」做不了~~ **作废（S5 删掉那一档）** | —— |
 | **G8** | 存量 `LEGACY_ENV` 无处表达 | 编辑时无法给出「补一种方式」的入口 | §7 |
 
 G2 从 v2 的「一格能力缺口」升格为**前置**：v3 不允许存在「能用一半」的方式，
@@ -471,7 +492,8 @@ G2 从 v2 的「一格能力缺口」升格为**前置**：v3 不允许存在「
 结果是「能建、不能写」的 catalog —— 这正是 v2 想用红角标警告、而用户要求去掉的东西。**
 
 G7（Azure / GCS 的「不签发」开关）作废：那两个开关原本是用来表达「环境身份」的，
-现在没有这一档了。
+现在没有这一档了。G6 同样作废：S3 的「临时安全凭证」不是缺字段，而是与 IAM 角色重复，
+那一档已从方式表里删掉（§4.1）。
 
 ---
 
@@ -486,7 +508,7 @@ G7（Azure / GCS 的「不签发」开关）作废：那两个开关原本是用
 | E3 | 每张方式卡片都有「引擎拿到什么」一行，且不含「写不了 / 只读」这类需要用户权衡的措辞 |
 | E4 | `roleArn` 填了但密钥空 → 服务端 400 点名字段；表单先拦 |
 | E5 | 本部署没启用签发时，该方式灰底虚线 + 「本部署未启用」，不可选；文案给两条出路 |
-| E6 | 「本工程没做」的方式不可选且写明缺什么（`sessionToken` / 委托凭据） |
+| E6 | 「本工程没做」的方式不可选且写明缺什么（OSS 的 `securityToken`、OBS 的委托凭据）；S3 的「临时安全凭证」已整张卡片删掉（不是灰卡） |
 | E7 | 每种存储永远没有的方式**不出现在 DOM 里**（COS 临时、Azure 账户密钥） |
 | E8 | `FILE` 下自检两档都不可用，并说明「本地仓库不需要认证」 |
 | E9 | 写档必须显式勾选才发请求；默认只探读 |
@@ -515,13 +537,31 @@ G7（Azure / GCS 的「不签发」开关）作废：那两个开关原本是用
 
 ## 11. 落地顺序
 
-| 步 | 做什么 | 为什么排这里 |
-| --- | --- | --- |
-| **S1** | 写票按调用者权限签（`vend` 加 `allowWrite`，三个调用点判 `UPDATE`） | L3 的前提。没有它，签发档不许进列表 |
-| **S2** | 方式集合裁剪（删环境身份 / 托管标识 / ADC）+ 校验三条 | 依赖 S1 才能保证「列出来的都能用」 |
-| **S3** | 来源枚举收敛到五档 + `LEGACY_ENV` + 存量横幅 | 依赖 S2 的方式集合 |
-| **S4** | probe 端点（读 + 写两档）+ 保存前自检 | 依赖 S1（复用同一套取票判定） |
-| **S5** | 引擎片段补「本方式需要哪个权限点」 | 依赖 S3 的档位信息 |
+| 步 | 做什么 | 为什么排这里 | 状态 |
+| --- | --- | --- | --- |
+| **S1** | 写票按调用者权限签（`vend` 加 `allowWrite`，三个调用点判 `UPDATE`） | L3 的前提。没有它，签发档不许进列表 | ✅ |
+| **S2** | 方式集合裁剪（删环境身份 / 托管标识 / ADC）+ 校验三条 | 依赖 S1 才能保证「列出来的都能用」 | ✅ |
+| **S3** | 来源枚举收敛到五档 + `LEGACY_ENV` + 存量横幅 | 依赖 S2 的方式集合 | ✅ |
+| **S4** | probe 端点（读 + 写两档）+ 保存前自检 | 依赖 S1（复用同一套取票判定） | ✅ |
+| **S5** | 引擎片段补「本方式需要哪个权限点」 | 依赖 S3 的档位信息 | ✅ |
+
+**S5 之后的界面修订（同日）**，四处与本文原稿不同，均已落到代码：
+
+1. **S3 的「临时安全凭证」整张卡片删掉**（原本是灰卡）。它与 IAM 角色重复，且灰卡会被读成
+   「这里缺一个字段」。方式表因此只剩静态密钥与 IAM 角色两条路。
+2. **「具名存储」（`storageName`）退出表单**。它指向的配置组已随 v3 删掉，字段只剩标签含义；
+   `build()` 顺手把它从提交体里删掉（DTO 字段保留，老客户端仍可回传）。
+3. **自检多一档 `CONFIG_ERROR`**：取票 / 解密 / 合并配置时抛错（根本没碰到存储）不再被归成
+   `UNSUPPORTED`——那条文案指向 `file-io.type` 与插件，与真实原因无关。这是本轮踩到的实际故障：
+   编辑态提交体带着打码的 `******`、又没告诉服务端改的是哪个 catalog，结果被报成
+   「这个存储不支持探测」。
+4. **自检请求必须带 `catalog` 名**（编辑态）。服务端按名字把库中那份真凭据合并进来；
+   带了星号却没带名字，直接 400 并说清缺哪个字段，而不是等到 `secrets()` 抛 500。
+
+一处**与本文的偏差**，记录在案：E15（写档只 PUT 0 字节、只写 `_lakehouse_probe/` 前缀、写完 DELETE）
+由 `ConsoleStorageProbeService` 的实现与注释保证，**没有自动化用例**——真验它需要一个可写的对象存储，
+而这台机器上没有；三个 S3 验收类因此是属性驱动 + 缺配置跳过。E14 / E16 有用例
+（`ConsoleApiTests#storageProbeRefusesLocalPaths` / `#storageProbeNeverReturnsTheCloudErrorText`）。
 
 **S1 单独就能解决「引擎能读不能写」这个长期问题**，而且它不需要产品决策——
 它就是权限模型本来该有的样子。建议先做 S1，再动界面。

@@ -80,6 +80,9 @@ public class RestServerProperties {
     /** {@code lakehouse.rest.file-browser.*}：控制台的文件浏览器（见 {@link FileBrowser}）。 */
     private final FileBrowser fileBrowser = new FileBrowser();
 
+    /** {@code lakehouse.rest.storage-probe.*}：保存前存储自检（见 {@link StorageProbe}）。 */
+    private final StorageProbe storageProbe = new StorageProbe();
+
     /** {@code lakehouse.rest.optimization.*}：表存储优化（见 {@link Optimization}）。 */
     private final Optimization optimization = new Optimization();
 
@@ -884,6 +887,37 @@ public class RestServerProperties {
          * 排序是目录优先、名称升序，因此被截掉的总是尾部——用户至少能看到所有目录。
          */
         private int maxEntries = 1000;
+    }
+
+    /**
+     * {@code lakehouse.rest.storage-probe.*}：catalog 表单「保存前自检」的边界。
+     *
+     * <p><b>它为什么需要一组自己的配置。</b>{@code POST /api/console/v1/catalog-storage-probe}
+     * 是整个控制台里唯一「按用户给的地址真的发一次请求」的端点：正文里带仓库路径与
+     * 待保存的凭据，服务端拿它去 {@code HEAD} 一个对象、或者写一个 0 字节对象再删掉。
+     * 这个能力没法和其余只读端点用同一套假设——它们读的都是本服务端已经存下来的东西，
+     * 而这里处理的是「还没保存、也不会保存」的输入。所以边界要显式写出来、可被部署调整。
+     *
+     * <p>与 SSRF 的关系：{@code file://} 与无 scheme 的路径在服务层被**硬拒**，不是开关；
+     * 这条不做成配置项，是因为它没有任何正当用途——一个「本机某个路径是否存在」的
+     * 预言机，能拿来试探服务账号可读的文件。剩下的调整空间只有限频。
+     */
+    @Getter
+    @Setter
+    public static class StorageProbe {
+
+        /**
+         * 每个主体每分钟最多探测几次（默认 6）。
+         *
+         * <p><b>失败也计数。</b>不限频的话这个端点就是一个免费的凭据试错器
+         * （拿一批 AK/SK 挨个试，看谁不 403）+ 内网端口扫描器（看哪些地址回
+         * {@code UNREACHABLE} 之外的东西）。6 这个数来自实际用法：一张表单最多试
+         * 两三次就定了，留三倍余量给「边填边试」。
+         *
+         * <p>窗口是滑动的 60 秒，按主体名分桶——按 IP 分桶在多实例和反向代理下
+         * 分不清谁是谁，而这里挡的是「一个已登录的人反复试」，主体名正是那个粒度。
+         */
+        private int perMinute = 6;
     }
 
     /**

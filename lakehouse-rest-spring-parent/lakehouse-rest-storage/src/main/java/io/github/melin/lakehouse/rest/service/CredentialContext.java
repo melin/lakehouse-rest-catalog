@@ -29,9 +29,11 @@ import java.util.Map;
  * {@code StorageCredentialCache#catalogKey}），否则一张表的票会被拿去当 catalog 票用，
  * 表现是「预览能读、列目录 403」，而日志里一切正常。
  *
- * <p><b>{@code allowWrite} 目前只有服务端这条链路会传 {@code true}。</b>
- * 引擎侧的读写路径在协议上分不开（{@code loadTable} 之后客户端既读也写），
- * 那里仍然一律按只读签——先收紧，等有了「写请求」的判据再放开。
+ * <p><b>{@code allowWrite} 由调用点决定，不由存储类型或部署配置决定。</b>
+ * 服务端自己写元数据时传 {@code true}；引擎侧在**调用者对该表有 {@code UPDATE}** 时
+ * 也传 {@code true}——协议上读写确实分不开（{@code loadTable} 之后客户端既读也写），
+ * 但权限分得开（设计稿 §2.3）。一律只读的后果是「能建表、不能写」，
+ * 而那个 403 落在数据源算子里，与签票时给了什么隔着好几层。
  */
 public record CredentialContext(StorageConfigInfo storage,
                                 String scopeId,

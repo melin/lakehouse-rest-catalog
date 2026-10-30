@@ -407,8 +407,9 @@ class AzureSasVendingTests {
     @Test
     void consoleReportsSignedSasOnlyWhenBothTheProviderAndTheIdentityArePresent() {
         AzureStorageConfigInfo withoutIdentity = azureWithoutIdentity(TABLE);
-        assertEquals(CatalogCredentialSource.Mode.NONE,
-                CatalogCredentialSource.of(withoutIdentity, properties).mode(), "默认不启用");
+        assertEquals(CatalogCredentialSource.Mode.LEGACY_ENV,
+                CatalogCredentialSource.of(withoutIdentity, properties).mode(),
+                "默认不启用，且没有服务主体：环境身份那一档");
 
         properties.getCredential().setProviders(List.of(VendedStorageCredential.PROVIDER_AZURE_SAS));
         CatalogCredentialSource.Source enabledWithoutIdentity =
@@ -420,7 +421,7 @@ class AzureSasVendingTests {
 
         CatalogCredentialSource.Source signed =
                 CatalogCredentialSource.of(azure(TABLE), properties);
-        assertEquals(CatalogCredentialSource.Mode.STS, signed.mode());
+        assertEquals(CatalogCredentialSource.Mode.VENDED, signed.mode());
         assertTrue(signed.detail().contains("没有标准续期"), signed.detail());
     }
 

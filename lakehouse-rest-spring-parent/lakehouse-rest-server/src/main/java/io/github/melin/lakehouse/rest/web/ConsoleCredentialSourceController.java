@@ -3,6 +3,7 @@ package io.github.melin.lakehouse.rest.web;
 import io.github.melin.lakehouse.rest.dto.ConsoleDtos;
 import io.github.melin.lakehouse.rest.dto.StorageDtos.StorageConfigInfo;
 import io.github.melin.lakehouse.rest.service.ConsoleCredentialSourceService;
+import io.github.melin.lakehouse.rest.service.ConsoleStorageProbeService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -29,6 +30,8 @@ public class ConsoleCredentialSourceController {
 
     private final ConsoleCredentialSourceService service;
 
+    private final ConsoleStorageProbeService probeService;
+
     /** {@code GET /api/console/v1/catalog-credential-sources}：当前可见 catalog 的来源判定。 */
     @GetMapping("/catalog-credential-sources")
     public ConsoleDtos.CatalogCredentialSources list() {
@@ -49,5 +52,24 @@ public class ConsoleCredentialSourceController {
     @PostMapping("/catalog-credential-source")
     public ConsoleDtos.CredentialSourcePreview preview(@RequestBody StorageConfigInfo draft) {
         return service.preview(draft);
+    }
+
+    /**
+     * {@code POST /api/console/v1/catalog-storage-probe}：保存前自检（设计稿 §5）。
+     *
+     * <p><b>这是整个控制台唯一会「按用户给的地址真的发请求」的端点。</b>它存在的理由很直接：
+     * 三条准入线里的前两条（服务端读 / 服务端写）只有真发一次请求才能回答，而配置错误的
+     * 现象是「保存成功、建表 500」——中间隔着一次用户操作，几乎不可能靠读配置反推。
+     *
+     * <p>边界与取舍（{@code file://} 硬拒、只探 allowedLocations、写档只写 0 字节到
+     * {@code _lakehouse_probe/} 再删、只回分类不回云侧原文、每主体每分钟限频）全部写在
+     * {@link ConsoleStorageProbeService} 的类注释里——它们不是实现细节，是这个端点的契约。
+     *
+     * <p>用 POST：输入是一整份草稿（可以带打码的 {@code accessKeyId}），
+     * 而且它**会改变外部状态**（写档真的创建对象），这两条都不适合放进查询串。
+     */
+    @PostMapping("/catalog-storage-probe")
+    public ConsoleDtos.StorageProbeResult probe(@RequestBody ConsoleDtos.StorageProbeRequest request) {
+        return probeService.probe(request);
     }
 }

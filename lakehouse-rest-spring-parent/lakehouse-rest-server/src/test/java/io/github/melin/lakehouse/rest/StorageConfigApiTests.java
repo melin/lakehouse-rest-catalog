@@ -18,6 +18,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
@@ -43,10 +44,17 @@ import tools.jackson.databind.node.JsonNodeFactory;
  * 只有把两边串起来跑才能发现「配置存对了但仓库没跟着变」这类断链。
  *
  * <p>{@code test} profile 把数据源换成内存 H2，本类不依赖外部服务。
+ *
+ * <p><b>单独配一把加密密钥的理由。</b>共享的 {@code test} profile 刻意把
+ * {@code lakehouse.rest.storage.credential-secret-key} 留空（{@code StaticCredentialDisabledApiTests}
+ * 靠这个状态验证「没密钥就不许存静态凭据」）。而 v3 之后 {@code roleArn} 必须带着一对签名用的
+ * AK/SK 才合法，存这一对钥匙需要密钥——所以本类显式给一把。
  */
 @SpringBootTest
 @ActiveProfiles("test")
 @AutoConfigureMockMvc
+@TestPropertySource(properties =
+        "lakehouse.rest.storage.credential-secret-key=AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=")
 class StorageConfigApiTests {
 
     private static final String M = "/api/management/v1";
@@ -114,6 +122,7 @@ class StorageConfigApiTests {
                 {"storageType":"S3",
                  "allowedLocations":["s3://analytics-bucket/warehouse/"],
                  "roleArn":"arn:aws:iam::123456789001:role/polaris-s3",
+                 "accessKeyId":"AKIAEXAMPLE","secretAccessKey":"s3cr3t",
                  "externalId":"external-id-1234",
                  "userArn":"arn:aws:iam::123456789001:user/polaris",
                  "region":"ap-east-1",
@@ -130,6 +139,9 @@ class StorageConfigApiTests {
         JsonNode storage = created.get("storageConfigInfo");
         assertEquals("S3", storage.get("storageType").asString());
         assertEquals("arn:aws:iam::123456789001:role/polaris-s3", storage.get("roleArn").asString());
+        // 签名用的那对钥匙不回显：id 打码成 ******、密钥整存整取不出现在响应里
+        assertEquals("******", storage.get("accessKeyId").asString(), storage.toString());
+        assertFalse(created.toString().contains("s3cr3t"), "响应里不该残留密钥: " + created);
         assertEquals("external-id-1234", storage.get("externalId").asString());
         assertEquals("arn:aws:iam::123456789001:user/polaris", storage.get("userArn").asString());
         assertEquals("ap-east-1", storage.get("region").asString());
@@ -428,7 +440,9 @@ class StorageConfigApiTests {
         JsonNode created = createCatalog("replace-catalog", """
                 {"storageType":"S3",
                  "allowedLocations":["s3://bucket-a/warehouse/"],
-                 "roleArn":"arn:aws:iam::1:role/r","region":"us-east-1"}
+                 "roleArn":"arn:aws:iam::1:role/r",
+                  "accessKeyId":"AKIAEXAMPLE","secretAccessKey":"s3cr3t",
+                  "region":"us-east-1"}
                 """);
         int version = created.get("entityVersion").asInt();
 
@@ -441,6 +455,42 @@ class StorageConfigApiTests {
         assertEquals("s3://bucket-b/warehouse/", strings(storage.get("allowedLocations")).get(0));
         assertFalse(storage.has("roleArn"), "PUT 是整体替换，未给出的字段应被清空: " + storage);
         assertFalse(storage.has("region"), "PUT 是整体替换，未给出的字段应被清空: " + storage);
+    }
+
+    /**
+     * v3：填了 {@code roleArn} 就必须同时给出能签名的一对 AK/SK。
+     *
+     * <p>那对钥匙的用途是 {@code sts:AssumeRole}——它是**服务端去扮演角色时出示的调用方身份**，
+     * 不是转发给引擎的数据面凭据。少了它，签发那一步没有任何身份可用；而旧版本在这里是
+     * 静默降级：catalog 建得出来，直到第一次取票才失败，现象落在存储的认证错误上。
+     *
+     * <p><b>反向必须放行。</b>只有钥匙没有角色是合法配置（转发档），别顺手把「两个都没有」
+     * 也当成错误——本地文件系统、以及「先用进程身份跑起来」的部署都长这样。
+     */
+    @Test
+    void roleArnWithoutSigningKeysIsRejectedAndNamesTheMissingField() throws Exception {
+        JsonNode rejected = json(400, "POST", M + "/catalogs", """
+                {"catalog":{"type":"INTERNAL","name":"role-without-keys","properties":{},
+                 "storageConfigInfo":{"storageType":"S3",
+                                      "allowedLocations":["s3://bucket-a/warehouse/"],
+                                      "roleArn":"arn:aws:iam::1:role/r"}}}
+                """);
+        String message = rejected.get("message").asString();
+        assertTrue(message.contains("accessKeyId"), message);
+        assertTrue(message.contains("secretAccessKey"), message);
+
+        JsonNode forwarded = createCatalog("keys-without-role", """
+                {"storageType":"S3",
+                 "allowedLocations":["s3://bucket-b/warehouse/"],
+                 "accessKeyId":"AKIAEXAMPLE","secretAccessKey":"s3cr3t"}
+                """);
+        assertFalse(forwarded.get("storageConfigInfo").has("roleArn"));
+
+        JsonNode nothing = createCatalog("nothing-configured", """
+                {"storageType":"S3",
+                 "allowedLocations":["s3://bucket-c/warehouse/"]}
+                """);
+        assertFalse(nothing.get("storageConfigInfo").has("accessKeyId"));
     }
 
     /** 只改 properties 时不能把存储配置冲掉。 */

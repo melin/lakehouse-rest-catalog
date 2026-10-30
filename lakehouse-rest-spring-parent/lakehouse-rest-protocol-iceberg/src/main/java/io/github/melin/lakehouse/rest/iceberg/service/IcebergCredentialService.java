@@ -114,7 +114,7 @@ public class IcebergCredentialService {
                     delegation, table.getDatabaseId(), table.getName());
             return null;
         }
-        StorageCredentialCache.Cached cached = cached(catalog, table);
+        StorageCredentialCache.Cached cached = cached(catalog, table, levels);
         if (!mayVend(catalog.getPrefix(), levels, table, cached.credential())) {
             // 完整信息在 mayVend 的 WARN 里，这里只说明「所以这次没带」
             log.warn("not vending credentials for {}.{} to this caller even though loadTable asked"
@@ -145,7 +145,7 @@ public class IcebergCredentialService {
     @Transactional(readOnly = true)
     public IcebergDtos.LoadCredentialsResponse credentials(CatalogEntity catalog, TableEntity table,
                                                           List<String> levels) {
-        StorageCredentialCache.Cached cached = cached(catalog, table);
+        StorageCredentialCache.Cached cached = cached(catalog, table, levels);
         // 与 Paimon 面 /token 同一道判定：票里有长期密钥对就要 USE_SECRET。
         // 端点本身（USE_CREDENTIAL）已由拦截器按 CatalogAccessRules 判过。
         if (cached.credential().carriesLongTermKeyPair()) {
@@ -226,12 +226,24 @@ public class IcebergCredentialService {
      * <p>缓存键与 Paimon 侧同源（{@code StorageCredentialCache.key}），于是同一张表
      * 从两个协议面各取一次凭据时命中同一份——否则「同一个引擎、同一张表、两把不同的钥匙」
      * 会在密钥轮换时表现成一半请求失败。
+     *
+     * <p><b>读写要进键。</b>同一张表的只读票与可写票是两份不同的授权：共用一条缓存会把
+     * 前一次只读的票发给后一次要写的调用，表现是第一次 {@code INSERT} 403，
+     * 而它发生在数据源算子里，与「签票时给了什么」隔着好几层。
+     *
+     * @param levels 命名空间层级，判 {@code UPDATE} 与 {@code USE_*} 都用它
      */
-    private StorageCredentialCache.Cached cached(CatalogEntity catalog, TableEntity table) {
+    private StorageCredentialCache.Cached cached(CatalogEntity catalog, TableEntity table,
+                                                 List<String> levels) {
         StorageConfigInfo storage = StorageConfigs.of(catalog);
-        String key = StorageCredentialCache.key(catalog.getId(), storage, table.getPath());
+        // 写权限的判据是调用者对这张表的 UPDATE（设计稿 §2.3），不是建 catalog 时的选择。
+        // 判在缓存之前：读写两种票的键不同，先判完再取键，才不会拿到另一方向的票。
+        boolean allowWrite = authorization.allows(catalog.getPrefix(), ResourceType.TABLE, levels,
+                table.getName(), Access.UPDATE);
+        String key = StorageCredentialCache.key(catalog.getId(), storage, table.getPath(), allowWrite);
         return cache.resolve(key,
-                () -> storagePolicy.credentialManager().vend(storage, table.getId(), table.getPath()));
+                () -> storagePolicy.credentialManager()
+                        .vend(storage, table.getId(), table.getPath(), allowWrite));
     }
 
     /**

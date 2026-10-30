@@ -345,12 +345,12 @@ class OssStsVendingTests {
     @Test
     void consoleReportsSignedCredentialsOnlyWhenAllThreePartsArePresent() {
         AliyunOssStorageConfigInfo withoutRole = ossWithoutRole(BUCKET_PATH);
-        assertEquals(CatalogCredentialSource.Mode.NONE,
-                CatalogCredentialSource.of(ossWithoutCallerKeys(BUCKET_PATH), properties).mode(),
-                "默认不启用时，有 AK/SK 也只是转发");
+        assertEquals(CatalogCredentialSource.Mode.STATIC,
+                CatalogCredentialSource.of(withoutRole, properties).mode(),
+                "只有 AK/SK 没有角色：转发档");
 
         properties.getCredential().setProviders(List.of(VendedStorageCredential.PROVIDER_OSS_STS));
-        assertEquals(CatalogCredentialSource.Mode.RELAY,
+        assertEquals(CatalogCredentialSource.Mode.STATIC,
                 CatalogCredentialSource.of(withoutRole, properties).mode(),
                 "启用了但没角色：仍是转发");
 
@@ -362,7 +362,7 @@ class OssStsVendingTests {
 
         CatalogCredentialSource.Source signed =
                 CatalogCredentialSource.of(oss(BUCKET_PATH), properties);
-        assertEquals(CatalogCredentialSource.Mode.STS, signed.mode());
+        assertEquals(CatalogCredentialSource.Mode.VENDED, signed.mode());
         assertTrue(signed.detail().contains("没有续期"), signed.detail());
     }
 
@@ -380,7 +380,7 @@ class OssStsVendingTests {
         AliyunOssStorageConfigInfo stsUnavailable = new AliyunOssStorageConfigInfo(
                 List.of(BUCKET_PATH), null, "oss-cn-hangzhou.aliyuncs.com", true,
                 CATALOG_AK, cipher.seal(CATALOG_SK), "acs:ram::1234567890:role/lh-vending", null);
-        assertEquals(CatalogCredentialSource.Mode.RELAY,
+        assertEquals(CatalogCredentialSource.Mode.STATIC,
                 CatalogCredentialSource.of(stsUnavailable, properties).mode(),
                 "有钥匙可转发：档位必须是转发，不能报「不下发」");
 
@@ -402,7 +402,7 @@ class OssStsVendingTests {
         AliyunOssStorageConfigInfo stsUnavailable = new AliyunOssStorageConfigInfo(
                 List.of(BUCKET_PATH), null, "oss-cn-hangzhou.aliyuncs.com", true,
                 null, null, "acs:ram::1234567890:role/lh-vending", null);
-        assertEquals(CatalogCredentialSource.Mode.NONE,
+        assertEquals(CatalogCredentialSource.Mode.LEGACY_ENV,
                 CatalogCredentialSource.of(stsUnavailable, properties).mode());
 
         FakeSts sts = new FakeSts();

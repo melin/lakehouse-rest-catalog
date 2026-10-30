@@ -107,16 +107,6 @@
         </div>
       </TipAlert>
 
-      <el-form-item>
-        <template #label>
-          <FieldLabel label="具名存储（storageName）">
-            填服务端 <code>lakehouse.rest.storage.&lt;厂商&gt;.storages</code> 下的键名。
-            这种做法让密钥只留在服务端配置里，不出现在 catalog 元数据中。
-          </FieldLabel>
-        </template>
-        <el-input v-model="form.storageName" placeholder="留空则使用服务端默认凭据" />
-      </el-form-item>
-
       <template v-for="field in basicFields" :key="field.key">
         <el-form-item>
           <template #label>
@@ -146,7 +136,7 @@
           <template #label>
             <FieldLabel
               label="accessKeyId"
-              tip="该 catalog 访问对象存储用的长期密钥 ID。与具名存储（storageName）互斥：两者都在回答「用哪把钥匙」。已保存时服务端只返回 ******，留空即沿用那把钥匙。"
+              tip="该 catalog 访问对象存储用的长期密钥 ID。已保存时服务端只返回 ******，留空即沿用那把钥匙。"
             />
           </template>
           <el-input
@@ -172,8 +162,8 @@
           />
         </el-form-item>
 
-        <!-- roleArn 与静态凭据是两条并存的取密钥路径。服务端今天都接受
-             （`StorageConfigs` 只拒绝「静态凭据 × storageName」），所以这里
+        <!-- roleArn 与静态凭据是两条并存的取密钥路径。服务端两者都接受
+             （v3 起只多了一条「填了 roleArn 就必须同时给签名 AK/SK」），所以这里
              只提示、不拦截：前端比服务端更严，会让一份服务端认可的配置在控制台里存不回去。
              之所以仍要说一句，是因为 roleArn 收进折叠区后，用户更难自己发现。 -->
         <p v-if="credentialConflict" class="pc-field-note pc-field-note-warn">
@@ -308,6 +298,7 @@ import FieldLabel from '@/components/FieldLabel.vue'
 import SectionTitle from '@/components/SectionTitle.vue'
 import { useCredentialPreview } from '@/composables/credentialPreview.js'
 import { credentialSourceInfo } from '@/utils/credentialSource.js'
+import { inferMethod } from '@/utils/storageAuthMethods.js'
 import { isUnsupportedStorageType, storageTypeLabel, sortStorageTypes } from '@/utils/storageType.js'
 
 /**
@@ -333,8 +324,15 @@ import { isUnsupportedStorageType, storageTypeLabel, sortStorageTypes } from '@/
  * </ol>
  */
 
-/** 所有子类型共有的字段。 */
-const COMMON_KEYS = ['storageType', 'allowedLocations', 'storageName']
+/**
+ * 所有子类型共有的字段。
+ *
+ * <p>`storageName` 不在这里：它指向的「具名存储」配置组（`lakehouse.rest.storage.<厂商>.storages`）
+ * 已经随 v3 一起删掉，字段本身只是 DTO 上一个不参与任何判定的标签。
+ * 表单不再给它控件，`build()` 也会把它删掉——留着一个没有含义的输入框，
+ * 用户会以为「填了它就能不填密钥」。
+ */
+const COMMON_KEYS = ['storageType', 'allowedLocations']
 
 /**
  * 静态凭据的字段名，以及哪些存储类型有这对字段。
@@ -356,6 +354,24 @@ const STATIC_CREDENTIAL_KEYS = ['accessKeyId', 'secretAccessKey']
 const MASKED_ACCESS_KEY_ID = '******'
 
 const STATIC_CREDENTIAL_TYPES = ['S3', 'OBS', 'OSS', 'COS']
+
+/**
+ * 服务端**会打码回显**的身份字段（回的是 {@link MASKED_ACCESS_KEY_ID}）。
+ *
+ * <p>它们不能灌进输入框（用户会把星号当成真值继续编辑），但「沿用库里的那一份」
+ * 必须能被表达出来——省略它只等于「保持不变」，而改成「换密钥、ID 不动」时
+ * 省略会变成「有密钥没 ID」，服务端只能拒。哨兵是唯一能表达这件事的取值。
+ */
+const MASKED_KEYS = ['accessKeyId', 'clientId']
+
+/**
+ * 服务端**从不回显**的字段：留空即保持，永不下发星号。
+ *
+ * <p>与 {@link MASKED_KEYS} 分开的理由是它们的空值语义不同：这里的「空」只能读成
+ * 「我没动它」（想清除必须显式给空串，服务端另有分支），因此表单里也不放
+ * 「移除」这种动作——删掉一份服务账号 JSON 的正确做法是换一种方式。
+ */
+const WRITE_ONLY_KEYS = ['secretAccessKey', 'clientSecret', 'serviceAccountJson']
 
 /**
  * 各存储类型的字段，按「要不要在创建时就决定」分成两张表。
@@ -387,7 +403,13 @@ const BASIC_FIELDS = {
   ],
   GCS: [],
   AZURE: [
-    { key: 'tenantId', label: 'tenantId', placeholder: 'Azure 租户 ID（必填）' },
+    {
+      key: 'tenantId',
+      label: 'tenantId',
+      placeholder: '00000000-0000-0000-0000-000000000000',
+      method: 'principal',
+      hint: '身份的一部分，不是位置参数：服务端换 AAD token 要用它。',
+    },
   ],
   OBS: [
     { key: 'endpoint', label: 'endpoint', placeholder: 'obs.cn-north-4.myhuaweicloud.com' },
@@ -415,10 +437,18 @@ const BASIC_FIELDS = {
  */
 const ADVANCED_FIELDS = {
   S3: [
-    { key: 'roleArn', label: 'roleArn', placeholder: '跨账户访问时填写', group: 'STS 与角色' },
-    { key: 'externalId', label: 'externalId', group: 'STS 与角色' },
-    { key: 'userArn', label: 'userArn', group: 'STS 与角色' },
-    { key: 'stsEndpoint', label: 'stsEndpoint', placeholder: '可选，STS 端点', group: 'STS 与角色' },
+    {
+      key: 'roleArn',
+      label: 'roleArn',
+      method: 'role',
+      placeholder: 'arn:aws:iam::123456789012:role/lakehouse',
+      group: 'STS 与角色',
+      hint: '角色由服务端扮演：填了它就必须同时给一对 AK/SK，那对钥匙只用来签 AssumeRole，'
+        + '不会转发给引擎。想只用一把长期密钥，就清空 roleArn。',
+    },
+    { key: 'externalId', label: 'externalId', method: 'role', group: 'STS 与角色' },
+    { key: 'userArn', label: 'userArn', method: 'role', group: 'STS 与角色' },
+    { key: 'stsEndpoint', label: 'stsEndpoint', method: 'role', placeholder: '可选，STS 端点', group: 'STS 与角色' },
     { key: 'endpointInternal', label: 'endpointInternal', placeholder: '可选，内网端点', group: 'STS 与角色' },
     { key: 'stsUnavailable', label: 'stsUnavailable', type: 'bool', group: 'STS 与角色' },
     {
@@ -436,8 +466,34 @@ const ADVANCED_FIELDS = {
   ],
   GCS: [
     { key: 'gcsServiceAccount', label: 'gcsServiceAccount', placeholder: '服务账号邮箱' },
+    {
+      key: 'serviceAccountJson',
+      label: 'serviceAccountJson',
+      secret: true,
+      method: 'serviceAccount',
+      placeholder: '{ "type": "service_account", "client_email": "...", "private_key": "..." }',
+      hint: '整份密钥 JSON。服务端只回星号，留空即沿用已保存的那一份；'
+        + '它同时是签发 downscoped token 的源身份，改它等于换一个身份换票。',
+    },
   ],
   AZURE: [
+    {
+      key: 'clientId',
+      label: 'clientId',
+      method: 'principal',
+      placeholder: '服务主体（应用）的 client id',
+      hint: '服务端会打码回显；留空即沿用已保存的那一个。',
+    },
+    {
+      key: 'clientSecret',
+      label: 'clientSecret',
+      secret: true,
+      method: 'principal',
+      placeholder: '密钥值（只写不读）',
+      hint: '只在设置时提交，服务端从不回显。留空即保持。',
+    },
+    { key: 'authority', label: 'authority', placeholder: '可选，默认 login.microsoftonline.com' },
+    { key: 'scope', label: 'scope', placeholder: '可选，默认 https://storage.azure.com/.default' },
     { key: 'multiTenantAppName', label: 'multiTenantAppName' },
     { key: 'consentUrl', label: 'consentUrl' },
     { key: 'hierarchical', label: 'hierarchical', type: 'bool' },
@@ -446,6 +502,20 @@ const ADVANCED_FIELDS = {
     { key: 'stsUnavailable', label: 'stsUnavailable', type: 'bool' },
   ],
   OSS: [
+    {
+      key: 'roleArn',
+      label: 'roleArn',
+      method: 'ramRole',
+      placeholder: 'acs:ram::1234567890123456:role/lakehouse',
+      hint: '填了它就同时需要一对 AK/SK —— 阿里云 STS 必须由调用方签名，那对钥匙就是签名身份，'
+        + '不是发给引擎的数据面凭据。',
+    },
+    {
+      key: 'stsEndpoint',
+      label: 'stsEndpoint',
+      method: 'ramRole',
+      placeholder: '可选，默认 sts.aliyuncs.com',
+    },
     { key: 'stsUnavailable', label: 'stsUnavailable', type: 'bool' },
   ],
   COS: [
@@ -511,6 +581,14 @@ const props = defineProps({
    * 乐观地放开输入，只会让用户填完再吃一个服务端 400。
    */
   staticCredentialsEnabled: { type: Boolean, default: false },
+  /**
+   * 当前选中的认证方式（`utils/storageAuthMethods.js` 里的 id）。
+   *
+   * <p>方式决定「哪些字段该出现」：S3 选静态密钥时 `roleArn` 不该占位置，
+   * 选 IAM 角色时 `roleArn` 就是必填。留空表示「自己按字段反推」——
+   * 编辑态下父组件还没算出方式时用得上。
+   */
+  method: { type: String, default: '' },
 })
 
 const emit = defineEmits(['update:modelValue'])
@@ -526,10 +604,15 @@ const carried = ref({})
  */
 const storedAccessKeyId = ref('')
 
+/** 库中已保存的**其余**打码身份值（`clientId` 这类，键 → 打码串或空）。 */
+const storedMaskedValues = ref({})
+
+/** 库中已保存的只写字段（值永远拿不到，只记「有没有」，用来解释「留空即保持」）。 */
+const storedSecrets = ref({})
+
 const form = reactive({
   storageType: '',
   allowedLocations: [],
-  storageName: '',
   extras: {},
   accessKeyId: '',
   secretAccessKey: '',
@@ -537,8 +620,30 @@ const form = reactive({
   removeCredentials: false,
 })
 
-/** 当前类型是否承载静态凭据。 */
-const supportsStaticCredentials = computed(() => STATIC_CREDENTIAL_TYPES.includes(form.storageType))
+/** 会用到那一对 AK/SK 的方式：静态密钥本身、S3 的 IAM 角色、OSS 的 RAM 角色。 */
+const CREDENTIAL_PAIR_METHODS = ['static', 'role', 'ramRole']
+
+/**
+ * 当前方式。父组件给了就用它（用户刚点了卡片），没给就按已有字段反推。
+ *
+ * <p>反推只在编辑态用得上，且顺序不能与 `StorageConfigs.validate` 相反：
+ * `roleArn` 优先于静态密钥——配了角色时那对钥匙是签名身份，不是数据面凭据。
+ */
+const activeMethod = computed(() => {
+  if (props.method) {
+    return props.method
+  }
+  return inferMethod(form.storageType, {
+    roleArn: form.extras.roleArn,
+    accessKeyId: form.accessKeyId || storedAccessKeyId.value,
+    clientId: form.extras.clientId || storedMaskedValues.value.clientId,
+    serviceAccountJson: storedSecrets.value.serviceAccountJson ? 'stored' : '',
+  })
+})
+
+/** 当前方式要不要那一对 AK/SK（决定模板里那块凭据输入区出不出）。 */
+const supportsStaticCredentials = computed(() => STATIC_CREDENTIAL_TYPES.includes(form.storageType)
+  && CREDENTIAL_PAIR_METHODS.includes(activeMethod.value))
 
 /**
  * 「按现在这样填，保存后凭据从哪来」——问服务端，前端不算。
@@ -596,6 +701,12 @@ const unknownType = computed(() => {
 function collectExtras(source, type) {
   const extras = {}
   for (const field of fieldsOf(type)) {
+    if (MASKED_KEYS.includes(field.key) || WRITE_ONLY_KEYS.includes(field.key)) {
+      // 这两类值一律不进输入框：打码值灌进去会被当成真值继续编辑，
+      // 只写字段则根本不回显。库里有没有，记在 stored* 那两份 map 里。
+      extras[field.key] = ''
+      continue
+    }
     const value = source[field.key]
     if (field.type === 'bool') {
       // 布尔字段可以带 `default`（见 COS 的 useHttps）。字段缺省时灌入的是那个默认值，
@@ -639,7 +750,6 @@ function adopt(source) {
   const type = next.storageType || defaultType()
   form.storageType = type
   form.allowedLocations = [...(next.allowedLocations || [])]
-  form.storageName = next.storageName || ''
   form.extras = collectExtras(next, type)
   // 两个字段都不回显真值：AK ID 回来的是打码值 ******，密钥则根本不出现。
   // 已保存的那一份记在 storedAccessKeyId（只用来回答「有/无」并给 build() 提供哨兵），
@@ -647,6 +757,18 @@ function adopt(source) {
   // 改一个字符就变成一把不存在的钥匙。
   const credentialTypes = STATIC_CREDENTIAL_TYPES.includes(type)
   storedAccessKeyId.value = credentialTypes ? (next.accessKeyId || '') : ''
+  storedMaskedValues.value = {}
+  storedSecrets.value = {}
+  for (const field of fieldsOf(type)) {
+    if (MASKED_KEYS.includes(field.key) && field.key !== 'accessKeyId') {
+      storedMaskedValues.value[field.key] = next[field.key] || ''
+    }
+    if (WRITE_ONLY_KEYS.includes(field.key) && field.key !== 'secretAccessKey') {
+      // 有的类型回星号（GCS 的服务账号 JSON）、有的回 null（Azure 的密钥），
+      // 「非空」两种都算「库里有一份」，而值本身从不进表单
+      storedSecrets.value[field.key] = Boolean(next[field.key])
+    }
+  }
   form.accessKeyId = ''
   form.secretAccessKey = ''
   form.removeCredentials = false
@@ -663,8 +785,23 @@ function adopt(source) {
  * <p>`fields` 是两者的合并视图，<b>只给 `build()` 用</b>，刻意不暴露给模板：
  * 模板要的是「分区的两半」，给它合并后的整体就无从判断哪一半该进折叠区了。
  */
-const basicFields = computed(() => BASIC_FIELDS[form.storageType] || [])
-const advancedFields = computed(() => ADVANCED_FIELDS[form.storageType] || [])
+/**
+ * 按当前方式筛掉不属于它的字段。
+ *
+ * <p>筛在**渲染层之上、build() 之下**是刻意的：`fields`（合并视图）只剩当前方式的字段，
+ * 因此从「IAM 角色」切到「静态密钥」时，`roleArn` 会在下一次 build 里被删掉——
+ * 否则保存下去的是一份「roleArn 还在、密钥倒是换了」的配置，界面上又看不出来。
+ */
+function visibleForMethod(list) {
+  // 一个字段只属于一种方式：需要「两种方式共用某个字段」时它就不该按方式过滤
+  // （`region` / `endpoint` 这类就是这样，它们没有 `method`）。
+  // 写成数组会让字段表的字面量里出现 `]`，而 `verify-console.py` 第 14 组是
+  // 按 `[` … `]` 切块的——那边的正则会在第一个 `]` 处收尾，静默只读到第一项。
+  return list.filter((field) => !field.method || field.method === activeMethod.value)
+}
+
+const basicFields = computed(() => visibleForMethod(BASIC_FIELDS[form.storageType] || []))
+const advancedFields = computed(() => visibleForMethod(ADVANCED_FIELDS[form.storageType] || []))
 const fields = computed(() => [...basicFields.value, ...advancedFields.value])
 
 /**
@@ -726,8 +863,7 @@ const advancedBadge = computed(() => (filledAdvancedKeys.value.length
 /**
  * `roleArn` 与静态凭据同时填写时的提示。
  *
- * <p><b>这是提示，不是校验</b>：服务端今天接受这种组合
- * （`StorageConfigs` 只拒绝「静态凭据 × storageName」，`roleArn` 那一对没被检查），
+ * <p><b>这是提示，不是校验</b>：服务端接受这种组合（v3 只要求「有 roleArn 就得有签名 AK/SK」），
  * 前端不该比服务端更严——拦下来会让一份服务端认可的配置在控制台里存不回去。
  * 之所以仍然要说一句，是因为 `roleArn` 现在收进了折叠区，用户更不容易
  * 发现自己同时填了两条路。
@@ -817,12 +953,9 @@ function build() {
   const config = { ...carried.value }
   config.storageType = form.storageType
   config.allowedLocations = form.allowedLocations.map((item) => (item || '').trim()).filter(Boolean)
-  const storageName = (form.storageName || '').trim()
-  if (storageName) {
-    config.storageName = storageName
-  } else {
-    delete config.storageName
-  }
+  // 「具名存储」那条配置组已经不存在，字段只剩一个标签的含义：编辑一份旧配置时
+  // 顺手清掉，别让它在提交体里继续传下去（界面上已经没有它的入口了）
+  delete config.storageName
   for (const field of fields.value) {
     const value = form.extras[field.key]
     if (field.type === 'bool') {
@@ -838,6 +971,24 @@ function build() {
       const items = (value || []).map((item) => String(item ?? '').trim()).filter(Boolean)
       if (items.length) {
         config[field.key] = items
+      } else {
+        delete config[field.key]
+      }
+    } else if (WRITE_ONLY_KEYS.includes(field.key)) {
+      // 只写字段：给了新值才提交，留空即「不提交该字段」= 服务端保持已保存的那一份
+      const typed = String(value ?? '').trim()
+      if (typed) {
+        config[field.key] = typed
+      } else {
+        delete config[field.key]
+      }
+    } else if (MASKED_KEYS.includes(field.key)) {
+      // 打码字段：用户没改就回传哨兵（否则「换密钥、身份不动」表达不出来）
+      const typed = String(value ?? '').trim()
+      const stored = storedMaskedValues.value[field.key]
+      const out = typed || (stored ? MASKED_ACCESS_KEY_ID : '')
+      if (out) {
+        config[field.key] = out
       } else {
         delete config[field.key]
       }
@@ -938,7 +1089,7 @@ function validate() {
  *
  * <p>与服务端规则一致，提前在这里拦一次是因为它们的可发现性太差：
  * 两个字段都不回显真值（AK ID 是 {@code ******}、密钥根本不出现），
- * 用户看不到「服务端手上是什么」；而 storageName 与静态凭据在表单里相隔很远，
+ * 用户看不到「服务端手上是什么」；而 `roleArn` 收在折叠区里、与静态凭据隔得很远，
  * 「保存失败」时很难把两者联系到一起。
  *
  * <p>判断「有没有凭据」要同时看输入框与 {@link storedAccessKeyId}：
@@ -958,9 +1109,12 @@ function validateCredentials() {
   if (accessKeyId && !secretAccessKey) {
     return '更换 accessKeyId 时必须同时填写 secretAccessKey（服务端不回显密钥，无法沿用）'
   }
-  if (hasCredential && String(form.storageName || '').trim()) {
-    return '静态凭据与具名存储（storageName）互斥：两者都在指定用哪一组密钥，请只保留一种；'
-      + '要改用具名存储请先「移除已保存的静态凭据」'
+  // 填了 roleArn 就一定需要那对签名钥匙：没有它服务端连 AssumeRole 都发不出去。
+  // 这条在 v3 之前是**静默降级**（catalog 建得出来，第一次取票才失败，
+  // 错误落在存储的认证失败上），所以这里宁可提前拦一次，措辞直接点名缺什么。
+  if (String(form.extras.roleArn || '').trim() && !hasCredential) {
+    return '填了 roleArn 就必须同时填写 accessKeyId 与 secretAccessKey：'
+      + '那对钥匙是服务端去扮演角色时出示的调用方身份，不是发给引擎的数据面凭据'
   }
   if (accessKeyId && !props.staticCredentialsEnabled) {
     return '本部署未开启静态凭据（服务端未配置 lakehouse.rest.storage.credential-secret-key），'
