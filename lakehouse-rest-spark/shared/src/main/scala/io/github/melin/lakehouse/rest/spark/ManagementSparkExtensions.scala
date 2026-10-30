@@ -1,5 +1,7 @@
 package io.github.melin.lakehouse.rest.spark
 
+import io.github.melin.lakehouse.rest.engine.auth.EngineTokenSources
+import io.github.melin.lakehouse.rest.engine.auth.TokenSource
 import io.github.melin.lakehouse.rest.spark.client.ManagementApiClient
 import io.github.melin.lakehouse.rest.spark.policy.{PolicyEnforcementStrategy, PolicyHiddenColumnsRule, PolicyInjectionRule}
 import org.apache.spark.sql.SparkSession
@@ -21,6 +23,13 @@ import java.util.Locale
  * # 权限语句（GRANT ... TO USER ...）需要 catalog API 基址；默认由上面那个推导，
  * # 服务部署在非标准路径下时才需要显式指定：
  * # spark.lakehouse.rest.catalog.url=http://catalog-host:8080/v1
+ *
+ * # 令牌续期（默认开启）：服务端支持令牌交换时，到期前自动换票。
+ * # 令牌端点默认由管理面基址推导（/api/management/v1 → /v1/oauth/tokens）：
+ * # spark.lakehouse.rest.management.token-endpoint=http://catalog-host:8080/v1/oauth/tokens
+ * # spark.lakehouse.rest.management.refresh-window=300s
+ * # 服务端还没升级时的兜底（代价是长期密钥进作业配置，只在必要时配）：
+ * # spark.lakehouse.rest.management.credential=<clientId>:<clientSecret>
  *
  * # 2) 编程方式
  * val spark = PaimonRestManagement.install(SparkSession.builder())
@@ -72,6 +81,39 @@ object PaimonRestManagement {
   /** 调用者令牌，会作为 {@code Authorization: Bearer <token>} 发出。 */
   val TOKEN = "spark.lakehouse.rest.token"
 
+  /**
+   * 取票凭据 {@code clientId:clientSecret}，用于令牌到期前续期。
+   *
+   * <p><b>首选不配它</b>：配了 {@link #TOKEN} 之后，服务端支持 RFC 8693 令牌交换时，
+   * 到期前会自动换票，作业配置里始终只有一张短票。这一项只在两种情况下需要：
+   *
+   * <ul>
+   *   <li>服务端还没升级（换票会被拒）——此时靠 {@code client_credentials} 兜底；
+   *   <li>作业启动时手里没有有效票（排队超过一个 TTL），需要冷启动去取一张。
+   * </ul>
+   *
+   * <p>代价是**长期密钥进了作业配置**：Spark 会在 UI 上给含 {@code secret} 的项打码，
+   * 但命令行 {@code --conf} 在进程列表里可见。这也是「只在必要时才配」的理由。
+   */
+  val CREDENTIAL = "spark.lakehouse.rest.management.credential"
+
+  /**
+   * 令牌端点。默认由 {@link #MANAGEMENT_URL} 推导：把 {@code /api/management/v1}
+   * 换成 {@code /v1/oauth/tokens}。
+   *
+   * <p>管理面被部署在非标准路径下时推不出来，那时续期不会发生（日志里有一条 WARN），
+   * 需要显式配这一项。
+   */
+  val TOKEN_ENDPOINT = "spark.lakehouse.rest.management.token-endpoint"
+
+  /**
+   * 提前多久换票。默认 {@code min(ttl × 15%, 5min)}——与服务端签票的 TTL 成比例，
+   * 不写死数值：把 TTL 调到 90 秒做验收时，窗口自动变成 13.5 秒。
+   *
+   * <p>形式：{@code 300s} / {@code 5min} / {@code 500ms} / 裸数字（按秒）。
+   */
+  val REFRESH_WINDOW = "spark.lakehouse.rest.management.refresh-window"
+
   /** 单次请求超时（秒）。 */
   val TIMEOUT_SECONDS = "spark.lakehouse.rest.management.timeoutSeconds"
 
@@ -79,6 +121,9 @@ object PaimonRestManagement {
   val EXTENSION_CLASS = classOf[ManagementSparkExtensions].getName
 
   private[spark] val DEFAULT_URL = "http://127.0.0.1:8080/api/management/v1"
+
+  /** 管理面基址的固定后缀，用来推导令牌端点（见 tokenEndpoint）。 */
+  private[spark] val MANAGEMENT_SUFFIX = "/api/management/v1"
   private val DEFAULT_CATALOG_URL = ""
 
   /** 默认超时秒数；策略获取与解析器共用，包内可见。 */
@@ -117,8 +162,77 @@ object PaimonRestManagement {
     val catalogUrl = setting(session, CATALOG_URL, DEFAULT_CATALOG_URL)
     val token = setting(session, TOKEN, "")
     val timeout = setting(session, TIMEOUT_SECONDS, DEFAULT_TIMEOUT_SECONDS.toString)
-    new ManagementApiClient(url, token, catalogUrl, Duration.ofSeconds(parseTimeout(timeout)))
+    ManagementApiClient.withTokenSource(
+      url,
+      tokenSourceFor(session, url, token),
+      catalogUrl,
+      Duration.ofSeconds(parseTimeout(timeout))
+    )
   }
+
+  /**
+   * 按「显式基址 + 显式令牌」构造客户端，续期配置仍从会话里读。
+   *
+   * <p>给血缘那条路用：它可以配自己的 {@code spark.lakehouse.rest.lineage.url/token}
+   * （指向另一个服务端、或另一个主体），但**续期方式与治理通道相同**——
+   * 血缘是 fail-open 的，票过期不会报错，只会让「作业跑一段时间之后的边」从图上消失。
+   */
+  def clientFor(session: SparkSession, url: String, token: String,
+                timeoutSeconds: Long): ManagementApiClient =
+    ManagementApiClient.withTokenSource(
+      url,
+      tokenSourceFor(session, url, token),
+      null,
+      Duration.ofSeconds(timeoutSeconds)
+    )
+
+  /**
+   * 组装票来源：有端点就续期，没有就退化成固定票（并留一条 WARN）。
+   *
+   * <p>三条链路（管理语句、策略、血缘）共用这一处，避免「一处续、一处不续」——
+   * 那种不一致的表现是「同一个会话里 GRANT 能用、血缘缺边」。
+   */
+  private def tokenSourceFor(session: SparkSession, url: String, token: String): TokenSource = {
+    val credential = setting(session, CREDENTIAL, "")
+    val window = setting(session, REFRESH_WINDOW, "")
+    val endpoint = setting(session, TOKEN_ENDPOINT, "")
+    EngineTokenSources.create(
+      tokenEndpoint(url, endpoint),
+      token,
+      credential,
+      null,
+      parseWindowOrNull(window)
+    )
+  }
+
+  /**
+   * 令牌端点：显式配置优先，否则由管理面基址推导。
+   *
+   * <p>两者在同一台服务的固定路径上（管理面 {@code /api/management/v1}，令牌端点
+   * {@code /v1/oauth/tokens}），所以常规部署下不需要配第二个地址。
+   *
+   * <p>基址落在非标准路径下时**不猜**：返回 {@code null} 让续期退化，并留下一条
+   * WARN 指向 {@link #TOKEN_ENDPOINT}。猜一个错的地址会让换票一直 404，
+   * 而 404 看起来像「服务端没开令牌端点」。
+   */
+  private[spark] def tokenEndpoint(managementUrl: String, configured: String): String = {
+    if (configured != null && configured.trim.nonEmpty) {
+      return configured.trim
+    }
+    val base = if (managementUrl == null) "" else managementUrl.trim.stripSuffix("/")
+    if (!base.endsWith(MANAGEMENT_SUFFIX)) {
+      return null
+    }
+    base.dropRight(MANAGEMENT_SUFFIX.length) + "/v1/oauth/tokens"
+  }
+
+  /** 解析刷新窗口；写错时退化为「按 TTL 推算」，不让会话因为一个配置项起不来。 */
+  private def parseWindowOrNull(raw: String): Duration =
+    try {
+      EngineTokenSources.parseWindow(raw)
+    } catch {
+      case _: IllegalArgumentException => null
+    }
 
   /**
    * 读取配置项：优先读会话的 SQL 配置，其次读 {@code SparkConf}。

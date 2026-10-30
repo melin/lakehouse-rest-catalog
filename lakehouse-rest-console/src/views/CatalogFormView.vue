@@ -368,6 +368,18 @@
             >{{ face.label }}</span>
           </div>
 
+          <!--
+            续期开关：只影响 Paimon 两面的 token.provider（bear ↔ oauth2）。
+            **默认关**是有意的：老 classpath 上没有 provider jar，片段里直接写 oauth2
+            会让 getOrCreate() 当场失败，报的是一句「找不到 factory」——比「不会续期」难查得多。
+            打开之后片段会带上需要什么 jar 的注释，代价只是一行可见的说明。
+          -->
+          <label v-if="renewSwitchable" class="pc-snippet-switch">
+            <el-checkbox v-model="renewToken" size="small" />
+            <span>主体令牌自动续期（token.provider=oauth2）</span>
+            <span class="pc-snippet-switch-hint">需要 lakehouse-rest-engine-auth 在与 paimon bundle 同一个 ClassLoader 里</span>
+          </label>
+
           <div class="pc-snippet-wrap">
             <el-button class="pc-snippet-copy" size="small" text @click="copySnippet">复制</el-button>
             <pre class="pc-snippet"><code><span
@@ -381,12 +393,15 @@
           <div v-if="snippet.note" class="pc-field-note">{{ snippet.note }}</div>
           <!--
             续期这件事贴着片段说，不放进「摘要」：它回答的是「这份配置能不能撑住一个
-            跑几小时的任务」，而读这句话的人此时正对着配置本身。三档答案的差别很大
-            （Paimon 能自动换票 / Iceberg 补三处后能算 / Lance 只读一次），
-            混在一屏摘要里会被当成一行装饰。
+            跑几小时的任务」，而读这句话的人此时正对着配置本身。
+            **控制面与数据面分两行**：以前只有一句「能」，而那个「能」说的是数据票——
+            真正让长作业挂掉的恰恰是另一条（主体令牌）。合成一句等于把唯一的故障点藏在「能」后面。
           -->
           <div v-if="vendored" class="pc-field-note">
-            长作业：<strong>{{ renewal.label }}</strong>——{{ renewal.hint }}
+            控制面（主体令牌）：<strong>{{ renewal.control.label }}</strong>——{{ renewal.control.hint }}
+          </div>
+          <div v-if="vendored" class="pc-field-note">
+            数据面（存储凭据）：<strong>{{ renewal.data.label }}</strong>——{{ renewal.data.hint }}
           </div>
           <div v-else class="pc-field-note">
             长作业：服务端不下发凭据，续期由引擎自己的身份提供，与这一页无关。
@@ -663,15 +678,29 @@ const missingHint = computed(() => {
 })
 
 /**
- * 「这个格式撑不撑得住一个长作业」。三档答案差别很大（见 `RENEWAL`），
- * 因此不折算成一个「能/不能」的布尔——Iceberg 那一档的答案是「要补三处才成立」，
- * 折掉之后就只剩一句会误导人的「能」。
+ * 「这个格式撑不撑得住一个长作业」。**控制面与数据面分开答**（见 `RENEWAL`），
+ * 因此不折算成一个「能/不能」的布尔——Iceberg 那一档控制面是「能（服务端支持 exchange 时）」、
+ * 数据面是「要看客户端」，折掉之后就只剩一句会误导人的「能」。
+ *
+ * <p>默认值兜住「认不出的格式」：控制台宁可在这一行写「未知」，也不假装能续。
  */
-const renewal = computed(() => RENEWAL[form.catalogFormat] || { label: '未知', hint: '' })
+const UNKNOWN_RENEWAL = { control: { label: '未知', hint: '' }, data: { label: '未知', hint: '' } }
+const renewal = computed(() => RENEWAL[form.catalogFormat] || UNKNOWN_RENEWAL)
 
 // ------------------------------------------------------------------ 接入片段
 const faces = computed(() => snippetFaces(form.catalogFormat))
 const activeFace = ref(defaultSnippetFace(PAIMON))
+
+/**
+ * 「主体令牌自动续期」开关，**默认关**。
+ *
+ * <p>默认关不是保守，是必须：片段里写 `token.provider=oauth2` 而 classpath 上没有
+ * 本工程的 provider jar 时，Paimon 在建 catalog 那一刻就失败，报的是一句
+ * `Could not find any factory for identifier 'oauth2'`——排查方向会跑到「版本对不对」
+ * 而不是「少了一个 jar」。默认关时片段与今天逐字一致，想续期的人会看到开关并读到
+ * 它需要什么。
+ */
+const renewToken = ref(false)
 
 /**
  * 换格式就把页签落到新格式的第一个。
@@ -697,8 +726,20 @@ const snippet = computed(() => {
     location: allowedLocations.value[0] || '',
     storageType: form.storageConfigInfo?.storageType || '',
     vendored: vendored.value,
+    // 只对 Paimon 两面生效：Iceberg 原生的 oauth2 本来就会续期，Lance 那一面没有 provider 概念。
+    // 开关放在 `renewable` 上而不是直接改片段文本，是为了让「切 face 之后取值仍然一致」
+    // ——按面各写一份状态的话，切页签会看到两个答案
+    renewable: renewSwitchable.value && renewToken.value,
   })
 })
+
+/**
+ * 续期开关要不要显示。
+ *
+ * <p>只在 Paimon 面显示：Iceberg 那一面本来就在续（`rest.auth.type=oauth2` 是它原生的），
+ * 摆一个开关会让人以为不打开就不续；Lance 面没有 provider 机制，摆出来是假的。
+ */
+const renewSwitchable = computed(() => String(activeFace.value).includes('paimon'))
 
 async function copySnippet() {
   const text = snippet.value.copyText
@@ -1053,6 +1094,22 @@ function cancel() {
 
 .pc-snippet-wrap {
   position: relative;
+}
+
+/* 续期开关：夹在页签与代码块之间，读片段之前先看到「这份配置会不会续」 */
+.pc-snippet-switch {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 2px;
+  color: var(--pc-text-dim);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.pc-snippet-switch-hint {
+  color: var(--pc-text-faint, var(--pc-text-dim));
+  font-size: 11.5px;
 }
 
 .pc-snippet {

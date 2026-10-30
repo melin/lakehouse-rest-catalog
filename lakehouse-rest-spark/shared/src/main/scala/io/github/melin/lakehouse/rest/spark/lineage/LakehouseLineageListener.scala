@@ -150,7 +150,10 @@ class LakehouseLineageListener extends QueryExecutionListener {
             if (settings.enabled) {
               val client: ManagementApiClient =
                 if (settings.url.nonEmpty) {
-                  new ManagementApiClient(settings.url, settings.token, Duration.ofSeconds(settings.timeoutSeconds))
+                  // 配了自己的地址/令牌也照样续期：血缘是 fail-open 的，票过期不会报错，
+                  // 只会让「作业跑一段时间之后的边」从图上消失（见 design §2.4）
+                  PaimonRestManagement.clientFor(session, settings.url, settings.token,
+                    settings.timeoutSeconds)
                 } else {
                   // 留空 = 复用管理 API 的客户端配置（地址、令牌、超时都从那一套来）
                   PaimonRestManagement.clientFor(session)

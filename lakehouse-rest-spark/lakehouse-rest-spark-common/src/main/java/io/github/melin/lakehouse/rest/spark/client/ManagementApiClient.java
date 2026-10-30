@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import io.github.melin.lakehouse.rest.engine.auth.TokenSource;
 import io.github.melin.lakehouse.rest.spark.lineage.LineageRun;
 import java.io.IOException;
 import java.net.URI;
@@ -86,6 +87,9 @@ public final class ManagementApiClient {
     /** 管理 API 基址的后缀，用来反推 catalog API 基址（见 {@link #deriveCatalogBase}）。 */
     private static final String MANAGEMENT_SUFFIX = "/api/management/v1";
 
+    /** 认证头的名字。重放时要用它把旧值从复制的请求里剔掉，因此提成常量。 */
+    private static final String AUTHORIZATION = "Authorization";
+
     /**
      * 权限端点的最大分页数。
      *
@@ -99,7 +103,21 @@ public final class ManagementApiClient {
     private static final int PERMISSION_PAGE_SIZE = 1000;
 
     private final String baseUrl;
-    private final String token;
+
+    /**
+     * 当前该用的令牌。
+     *
+     * <p><b>它原来是一个 {@code final String}。</b>升级成 {@link TokenSource} 之后，
+     * 「取票」从「构造时定死」变成「每次请求问一次」，续期才有可能发生。
+     * 治理通道的票与 catalog 的票是同一个主体的同一把钥匙，过期时间也一样——
+     * 会话活过 TTL 之后，血缘上报与 {@code GRANT} 会一起 401，
+     * 而血缘是 fail-open 的（异步、队列满即丢、异常吞掉），症状是
+     * 「血缘图里作业运行一段时间之后的边消失了」，不是任何一条报错。
+     *
+     * <p>默认仍是 {@code TokenSource.fixed(token)}：未配置凭据时行为与改造前逐字节相同。
+     */
+    private final TokenSource tokenSource;
+
     private final Duration timeout;
     private final HttpClient http;
     private final ObjectMapper mapper;
@@ -126,8 +144,29 @@ public final class ManagementApiClient {
      *                       {@code http://host:8080/v1}）；留空则从 {@code baseUrl} 推导
      */
     public ManagementApiClient(String baseUrl, String token, String catalogBaseUrl, Duration timeout) {
+        // 固定票：令牌不会再变，401 时 invalidate() 返回 false，因此也不会重放
+        this(baseUrl, TokenSource.fixed(token), catalogBaseUrl, timeout);
+    }
+
+    /**
+     * 带续期的构造。
+     *
+     * <p>刻意做成静态工厂而不是第二个 {@code (String, TokenSource, String, Duration)} 构造：
+     * 既有调用点里有 {@code new ManagementApiClient(url, null, catalogUrl, timeout)} 这样的
+     * 写法，多一个同参数个数的重载会让那个 {@code null} 变成二义，编译器报的是调用点，
+     * 而不是这里。
+     *
+     * @param tokens 票来源；401 时会尝试 {@link TokenSource#invalidate()} 并重放一次
+     */
+    public static ManagementApiClient withTokenSource(String baseUrl, TokenSource tokens,
+                                                      String catalogBaseUrl, Duration timeout) {
+        return new ManagementApiClient(baseUrl, tokens, catalogBaseUrl, timeout);
+    }
+
+    private ManagementApiClient(String baseUrl, TokenSource tokens, String catalogBaseUrl,
+                                Duration timeout) {
         this.baseUrl = stripTrailingSlash(baseUrl);
-        this.token = token == null || token.isBlank() ? null : token;
+        this.tokenSource = tokens == null ? TokenSource.fixed(null) : tokens;
         this.timeout = timeout == null ? Duration.ofSeconds(30) : timeout;
         this.http = HttpClient.newBuilder().connectTimeout(this.timeout).build();
         this.mapper = new ObjectMapper();
@@ -720,20 +759,7 @@ public final class ManagementApiClient {
 
     /** 与 {@link #get} 相同，只是 204（无内容）不按错误处理——「没策略」是正常响应。 */
     private HttpResponse<String> sendAllowNoContent(HttpRequest.Builder builder, String path) {
-        builder.timeout(timeout).header("Accept", "application/json");
-        if (token != null) {
-            builder.header("Authorization", "Bearer " + token);
-        }
-        try {
-            return http.send(builder.build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
-        } catch (IOException e) {
-            throw new ManagementApiException(0, "GET", path,
-                    "cannot reach the management API at " + baseUrl + ": " + e.getMessage(), null, null);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new ManagementApiException(0, "GET", path,
-                    "interrupted while calling the management API", null, null);
-        }
+        return sendWithRefresh(build(builder), path);
     }
 
     // ------------------------------------------------------------------ 内部：HTTP
@@ -778,24 +804,8 @@ public final class ManagementApiClient {
     }
 
     private JsonNode send(HttpRequest.Builder builder, String path, int expected) {
-        builder.timeout(timeout).header("Accept", "application/json");
-        if (token != null) {
-            // 未配置令牌时不发送 Authorization 头：空值会让服务端把空串当成主体名
-            builder.header("Authorization", "Bearer " + token);
-        }
-        HttpRequest request = builder.build();
-        HttpResponse<String> response;
-        try {
-            response = http.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
-        } catch (IOException e) {
-            throw new ManagementApiException(0, request.method(), path,
-                    "cannot reach the management API at " + baseUrl + ": " + e.getMessage(),
-                    null, null);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new ManagementApiException(0, request.method(), path,
-                    "interrupted while calling the management API", null, null);
-        }
+        HttpRequest request = build(builder);
+        HttpResponse<String> response = sendWithRefresh(request, path);
         int status = response.statusCode();
         String body = response.body();
         if (status != expected) {
@@ -810,6 +820,61 @@ public final class ManagementApiClient {
             throw new ManagementApiException(status, request.method(), path,
                     "management API returned a body that is not valid JSON: " + e.getMessage(),
                     null, null);
+        }
+    }
+
+    /** 补齐超时、Accept 与 Authorization，得到最终请求。 */
+    private HttpRequest build(HttpRequest.Builder builder) {
+        builder.timeout(timeout).header("Accept", "application/json");
+        String token = tokenSource.token();
+        if (token != null) {
+            // 未配置令牌时不发送 Authorization 头：空值会让服务端把空串当成主体名
+            builder.header(AUTHORIZATION, "Bearer " + token);
+        }
+        return builder.build();
+    }
+
+    /**
+     * 发一次；401 且换到了新票时重放一次。
+     *
+     * <p><b>只重放一次。</b>把 401 变成重试风暴比 401 本身更糟：服务端如果持续拒绝
+     * （主体被撤权、票被换签名密钥作废），无限重试只会把一次失败放大成一片超时。
+     * 第二次 401 原样返回，由调用方转成异常。
+     *
+     * <p><b>要不要重放由 {@link TokenSource#invalidate()} 回答。</b>固定票（没配凭据）
+     * 与「换票失败 / 退避中」都会返回 {@code false}——那些情况下重放用的是同一张票，
+     * 只会多打一次注定失败的请求。
+     */
+    private HttpResponse<String> sendWithRefresh(HttpRequest request, String path) {
+        HttpResponse<String> response = execute(request, path);
+        if (response.statusCode() != 401 || !tokenSource.invalidate()) {
+            return response;
+        }
+        String refreshed = tokenSource.token();
+        if (refreshed == null || refreshed.isBlank()) {
+            return response;
+        }
+        // 用 newBuilder(request, filter) 复制除 Authorization 之外的所有头：
+        // 直接复用原 Builder 再 .header(...) 会**追加**第二个 Authorization，
+        // 服务端看到哪个由实现决定——这类问题只在 401 之后才出现，最难查
+        HttpRequest replay = HttpRequest.newBuilder(request,
+                        (name, value) -> !AUTHORIZATION.equalsIgnoreCase(name))
+                .header(AUTHORIZATION, "Bearer " + refreshed)
+                .build();
+        return execute(replay, path);
+    }
+
+    private HttpResponse<String> execute(HttpRequest request, String path) {
+        try {
+            return http.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+        } catch (IOException e) {
+            throw new ManagementApiException(0, request.method(), path,
+                    "cannot reach the management API at " + baseUrl + ": " + e.getMessage(),
+                    null, null);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ManagementApiException(0, request.method(), path,
+                    "interrupted while calling the management API", null, null);
         }
     }
 
@@ -1758,8 +1823,13 @@ public final class ManagementApiClient {
         return Optional.ofNullable(permissionBaseUrl);
     }
 
-    /** 便于测试断言：是否配置了令牌。 */
+    /**
+     * 供诊断输出：此刻该用的令牌。
+     *
+     * <p>语义从「构造时那个字符串」变成「当前票」——续期之后它会变。取票可能触发一次
+     * 换票，所以不要把它放进热路径的日志里（每调一次都可能是一次网络往返）。
+     */
     public Optional<String> tokenOptional() {
-        return Optional.ofNullable(token);
+        return Optional.ofNullable(tokenSource.token());
     }
 }

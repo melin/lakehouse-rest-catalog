@@ -35,7 +35,13 @@ import org.springframework.stereotype.Service;
  * <p><b>没有开关。</b>不提供 {@code exchange.enabled} 这样的配置项：这个端点唯一能
  * 产出的东西，是与调用方手里的票<b>等权</b>的另一张票，关掉它不增加任何安全性，
  * 却会让长作业在跑了一小时后失败——正是本功能要消除的那种故障。需要「作业不能
- * 永久持有访问权」的场合属于另一个问题（总时长上限），不靠关掉续期来解决。
+ * 永久持有访问权」的场合属于另一个问题（总时长上限），由
+ * {@code lakehouse.rest.auth.access-token.max-session} 回答，不靠关掉续期来解决。
+ *
+ * <p><b>总时长上限（默认关）。</b>打开后每张票都带一个 {@code ses} claim（这条链的起点），
+ * 换票时沿用父票的 {@code ses}（没有就取父票的 {@code iat}），整个链共享同一个起点。
+ * 链龄超过上限就拒绝交换，但<b>已经签发的票仍然可用到期</b>——否则正在跑的作业会在
+ * 没有任何预兆的情况下 401，而那时它既没有新票也没有告警，只能重启。
  *
  * <p><b>不计数、不审计「换了几次」本身</b>：审计日志记的是「谁、从哪张票换来的」
  * （父票的 {@code jti}）。没有撤销机制时，这是唯一能追到链条起点的线索。
@@ -79,6 +85,8 @@ public class TokenExchangeService {
 
     private final LoginAttemptLimiter limiter;
 
+    private final TokenIssuanceMetrics metrics;
+
     /**
      * 用一张访问令牌换一张新的访问令牌。
      *
@@ -94,13 +102,13 @@ public class TokenExchangeService {
     public ClientCredentialsService.IssuedToken exchange(String subjectToken, String subjectTokenType,
             String requestedTokenType, String actorToken, String scope, String clientAddress) {
         if (subjectToken == null || subjectToken.isBlank()) {
-            throw ApiException.protocolError(400, "invalid_request", "subject_token is required");
+            throw fail("invalid_request", "subject_token is required");
         }
         // actor_token 与 requested_token_type / subject_token_type 一样，都是「声明」。
         // 声明了却不支持的东西必须拒绝：静默忽略一个 actor_token，等于让调用方以为
         // 「这次操作记在别人名下」，而实际上记的是他自己——这类误解在审计时才会暴露
         if (actorToken != null && !actorToken.isBlank()) {
-            throw ApiException.protocolError(400, "invalid_request",
+            throw fail("invalid_request",
                     "actor_token is not supported: this server has no \"act on behalf of another"
                     + " principal\" model, and ignoring it would silently attribute the request to"
                     + " the subject instead");
@@ -112,6 +120,8 @@ public class TokenExchangeService {
 
         if (!limiter.allow(rateLimit(), clientAddress, RATE_LIMIT_IDENTIFIER)) {
             log.warn("refusing a token exchange from {}: too many recent failures", clientAddress);
+            metrics.record(TokenIssuanceMetrics.GRANT_TOKEN_EXCHANGE,
+                    TokenIssuanceMetrics.RESULT_RATE_LIMITED);
             throw ApiException.protocolError(429, "temporarily_unavailable",
                     "too many failed token exchanges; retry after "
                     + rateLimit().getWindow().toSeconds() + " seconds");
@@ -126,17 +136,85 @@ public class TokenExchangeService {
             // （这里就是那张 subject token）无效」，而调用方该做的是「重新拿一张票再来」。
             // invalid_token（RFC 6750）指的是「访问受保护资源时令牌不管用」，
             // 那个错误由 BearerAuthInterceptor 那条路产生，两者不该混用同一个码
-            throw ApiException.protocolError(400, "invalid_grant",
-                    "subject_token is not valid or has expired");
+            throw fail("invalid_grant", "subject_token is not valid or has expired");
         }
 
         AuthenticatedToken authenticated = subject.get();
-        AccessTokenService.Issued issued = accessTokens.issue(authenticated.principal(), effectiveScope);
+        // 链的起点：父票自己记的 ses，没有就退回它的签发时刻。
+        // 两者都没有（静态令牌 / 外部票）时为 null，issue() 会以「现在」为起点
+        Long sessionStart = sessionStartOf(subjectToken);
+        requireSessionWithinLimit(sessionStart);
+        AccessTokenService.Issued issued =
+                accessTokens.issue(authenticated.principal(), effectiveScope, sessionStart);
+        metrics.record(TokenIssuanceMetrics.GRANT_TOKEN_EXCHANGE, TokenIssuanceMetrics.RESULT_SUCCESS);
         log.info("exchanged an access token for principal {} (grant=token-exchange, parent jti={},"
                         + " expires in {}s)",
                 authenticated.principal(), jtiOf(subjectToken), issued.expiresInSeconds());
         return new ClientCredentialsService.IssuedToken(
                 issued.token(), "bearer", issued.expiresInSeconds(), effectiveScope);
+    }
+
+    /**
+     * 一条续期链的起点（秒）。
+     *
+     * <p>{@code ses} 优先于 {@code iat}：上限打开之前签出的票没有 {@code ses}，
+     * 用 {@code iat} 兜底，于是「先关着跑、后打开上限」时，正在跑的链也能被算出真实年龄。
+     *
+     * <p>解析失败返回 {@code null} 而不是抛：静态令牌不是 JWT，它照样可以参与交换
+     * （它本来就代表一次长期授权）；这种情况下链的起点只能算作「现在」——
+     * 也就是说，静态令牌换来的是新的一条链，而不是无限延长的那一条。
+     */
+    private static Long sessionStartOf(String subjectToken) {
+        try {
+            Jwt.Decoded decoded = Jwt.decode(subjectToken);
+            Long session = decoded.numericClaim(AccessTokenService.CLAIM_SESSION_START);
+            return session != null ? session : decoded.numericClaim("iat");
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
+    }
+
+    /**
+     * 链龄超过 {@code max-session} 时拒绝交换。
+     *
+     * <p>拒绝的是「再换一张」，<b>不是</b>「手里的票作废」：已签发的票仍然可用到期。
+     * 这一条是有意的——反向做法（到点即失效）会让跑满 N 小时的作业在某个请求上
+     * 毫无预兆地 401，而它既没有新票也没有告警；按这里的规定，它至少能把当前这张
+     * 票用完，运维在日志里看到的是「续期被拒」而不是「随机 401」。
+     *
+     * <p>错误码仍是 {@code invalid_grant}：RFC 6749 里它涵盖「授权许可不能再用」，
+     * 而调用方能做的动作与「主体令牌过期」完全一样（重新登录 / 重新拿票）。
+     * 另起一个码会让通用 OAuth 客户端把它当成未知错误丢掉原因。
+     */
+    private void requireSessionWithinLimit(Long sessionStart) {
+        if (sessionStart == null || !properties.getAuth().getAccessToken().maxSessionEnabled()) {
+            return;
+        }
+        long limitSeconds = properties.getAuth().getAccessToken().getMaxSession().toSeconds();
+        long age = accessTokens.nowSeconds() - sessionStart;
+        if (age <= limitSeconds) {
+            return;
+        }
+        log.warn("token exchange rejected: the renewal chain started {}s ago, which exceeds"
+                        + " lakehouse.rest.auth.access-token.max-session ({}s). The current token keeps"
+                        + " working until it expires; a new login or client_credentials request starts a"
+                        + " new chain.",
+                age, limitSeconds);
+        throw fail("invalid_grant", "this session is older than lakehouse.rest.auth.access-token"
+                + ".max-session (" + limitSeconds + "s); obtain a fresh token with a new login or a"
+                + " client_credentials request");
+    }
+
+    /**
+     * 记一次失败并造出异常。
+     *
+     * <p>两件事绑在一起做，是为了让「某个分支忘了计数」不可能发生：这些 throw 点都在
+     * 本类内，且每个都从这里出。请求参数类的错误也计数——它们同样是「有人在打这个端点
+     * 却没拿到票」，而这一点正是指标要回答的。
+     */
+    private ApiException fail(String errorCode, String message) {
+        metrics.record(TokenIssuanceMetrics.GRANT_TOKEN_EXCHANGE, errorCode);
+        return ApiException.protocolError(400, errorCode, message);
     }
 
     /**
@@ -149,10 +227,10 @@ public class TokenExchangeService {
      * 只会在下一次换票时变成 {@code invalid_scope}——那时距离真正的故障已经过了
      * 一个 TTL，排查成本极高。
      */
-    private static String scopeOrAll(String scope) {
+    private String scopeOrAll(String scope) {
         String normalized = ClientCredentialsService.normalizeScope(scope);
         if (normalized == null) {
-            throw ApiException.protocolError(400, "invalid_scope",
+            throw fail("invalid_scope",
                     "unsupported scope \"" + scope + "\": a token exchange cannot widen what the"
                     + " subject token carries, and this server grants the principal's full set of"
                     + " roles, so it only accepts " + ClientCredentialsService.SCOPE_ALL);
@@ -167,11 +245,11 @@ public class TokenExchangeService {
      * （例如 {@code jwt} 或 {@code id_token}）说明它期望的行为我们没有实现。
      * 两者的区别是「没说」与「说了但不支持」，后者必须让它看见拒绝。
      */
-    private static void requireAccessTokenType(String parameter, String value) {
+    private void requireAccessTokenType(String parameter, String value) {
         if (value == null || value.isBlank() || TOKEN_TYPE_ACCESS_TOKEN.equals(value)) {
             return;
         }
-        throw ApiException.protocolError(400, "invalid_request",
+        throw fail("invalid_request",
                 parameter + " must be " + TOKEN_TYPE_ACCESS_TOKEN + ", got \"" + value + "\"");
     }
 

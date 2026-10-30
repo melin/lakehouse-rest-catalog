@@ -146,7 +146,7 @@ this catalog: [...]`，报错里同时给出整份白名单）。
 | 部署形态 | Spark 侧配置 |
 | --- | --- |
 | 默认（数据面匿名） | 什么都不用配。服务端把认不出主体的请求记为 `lakehouse.rest.auth.principal`（默认 `anonymous`） |
-| 数据面要求令牌（`auth.enabled=true`） | `spark.sql.catalog.lakehouse.token=<令牌>`，并显式加 `spark.sql.catalog.lakehouse.rest.auth.type=oauth2` |
+| 数据面要求令牌（`auth.enabled=true`） | `spark.sql.catalog.lakehouse.token=<令牌>`，并显式加 `spark.sql.catalog.lakehouse.rest.auth.type=oauth2`，**再加** `spark.sql.catalog.lakehouse.scope=PRINCIPAL_ROLE:ALL` |
 | 用主体凭据换令牌 | `spark.sql.catalog.lakehouse.credential=<clientId>:<clientSecret>` **加** `spark.sql.catalog.lakehouse.scope=PRINCIPAL_ROLE:ALL` |
 
 两个坑，都是名字或取值级别的：
@@ -156,9 +156,11 @@ this catalog: [...]`，报错里同时给出整份白名单）。
   `Inferring rest.auth.type=oauth2` 的警告，功能上能用，但日志里会一直有这一行。
   另外 `spark.sql.catalog.<名>.*` 里除开 Spark 自己认识的键，其余都会作为 catalog
   属性发给服务端，`auth.type` 就会变成一个被传过去但没人看的属性。
-- **`credential=` 必须同时配 `scope=PRINCIPAL_ROLE:ALL`。** 客户端默认发的 scope 是
+- **`scope=PRINCIPAL_ROLE:ALL` 不是只给 `credential=` 用的。** 客户端默认发的 scope 是
   `catalog`（`OAuth2Properties.CATALOG_SCOPE`），而本服务端的令牌端点只接受
   `PRINCIPAL_ROLE:ALL`，其余取值一律 `400 invalid_scope`。
+  用 `token=` 时这条同样要配：**续期也要带 scope**（见 1.3.1），只是它的报错来得晚——
+  第一次刷新通常在 55 分钟后，那时作业已经在正常跑了。
   这不是谁的 bug：本工程按 Polaris 的约定用 scope 表示「以哪个 principal role 的身份访问」，
   但它的授权判定是把主体的**全部**角色并起来算（没有「挑一个角色」这一层），
   所以只认「不限制」那个取值，而拒绝而不是忽略——接受了却不生效会让调用方
@@ -168,6 +170,35 @@ this catalog: [...]`，报错里同时给出整份白名单）。
 `oauth2-server-uri` 不用配：客户端默认就是 `<uri>/v1/oauth/tokens`
 （`AuthConfig.oauth2ServerUri` 的默认值取自 `ResourcePaths.tokens()`），
 正是本服务端的路径。
+
+### 1.3.1 令牌续期（服务端已经支持，配置对了就自动生效）
+
+服务端签发的访问令牌是自包含 JWT，默认 TTL 一小时、没有撤销机制，因此**续期只能由
+客户端发起**。Iceberg 的 REST 客户端本来就写好了这条链：解析票里的 `exp`，到期前
+`min(ttl/10, 5min)` 用 RFC 8693 的 `token-exchange` 换一张新的。本服务端认这个 grant
+（设计见 [`engine-token-refresh-design.md`](engine-token-refresh-design.md) §4.1），
+所以**升了服务端之后，配置正确的 Spark 作业会自动跨过第一个 TTL**——这一半不需要改引擎。
+
+需要的配置就是上面那三行（`token` + `rest.auth.type=oauth2` + `scope`）。
+`token-exchange-enabled` 与 `token-refresh-enabled` 都保持默认 `true`，不要关。
+
+**服务端还没升级时的兜底三行**（分批升级期间必须能用）：
+
+```properties
+spark.sql.catalog.lakehouse.credential=<clientId>:<clientSecret>
+spark.sql.catalog.lakehouse.token-exchange-enabled=false
+spark.sql.catalog.lakehouse.scope=PRINCIPAL_ROLE:ALL
+```
+
+此时刷新走 `fetchToken`（`client_credentials`），响应里同样有 `expires_in`，一样能续。
+代价是长期密钥进了作业配置（`--conf` 在进程列表里可见，Spark UI 只对含 `secret`
+的键打码）——**这是兜底，不是首选**。
+
+**验收方法：把服务端 TTL 调到 90 秒，跑一个 ≥5 分钟的作业。**
+默认 1 小时的用例没人会在 CI 里跑，而在 TTL 之内「配置看起来对」与「真的续上了」
+完全无法区分——Iceberg 的失败甚至要等到 55 分钟后才出现（见 §4 第一行）。
+短 TTL 是唯一能把「没续上」变成两分钟内可复现的手段，步骤见
+[`../README.md`](../README.md) 的「验证令牌续期」一段。
 
 ### 1.4 手工验证（不装 Spark 也能先验一遍）
 
@@ -397,7 +428,11 @@ catalog 收到的名字空间是 `["lakehouse", "ice"]`，服务端会回
 | `NoSuchNamespaceException` / `NoSuchTableException` | 404 的两种细分，被客户端翻成了具体异常 | 这就是对的：说明错误体接上了。名字或 namespace 拼错了 |
 | `NamespaceNotEmptyException` | 删一个还有表的 namespace | 先删表。规格要求如此，服务端不做级联 |
 | `AlreadyExistsException` | 建重名的 namespace / 表 | — |
-| `400 invalid_scope: … only accepts PRINCIPAL_ROLE:ALL` | 用了 `credential=` 而没配 `scope` | 见 1.3 第 2 个坑：加 `spark.sql.catalog.<名>.scope=PRINCIPAL_ROLE:ALL` |
+| `400 invalid_scope: … only accepts PRINCIPAL_ROLE:ALL` | 用了 `credential=` 而没配 `scope`；**或者**只配了 `token=` 但没配 `scope`，第一次续期时才撞上 | 见 1.3 第 2 个坑：加 `spark.sql.catalog.<名>.scope=PRINCIPAL_ROLE:ALL`。**先看时间点**：作业刚启动就报是前者，跑了将近一个 TTL 才报是后者 |
+| 作业跑到约一小时后开始 401，重启即恢复 | 控制面票过期且没续上：`rest.auth.type` 没配成 `oauth2`、`scope` 缺了，或服务端不支持 `token-exchange` | 见 1.3.1。按「TTL 调到 90 秒跑 5 分钟」的办法复现，别等一小时 |
+| 日志里每个 TTL 出现一次 `Failed to refresh token`，随后 401 | 刷新走的 exchange 被拒（服务端没升级 / 前置网关拦掉了这个 grant） | 抓一次 `/v1/oauth/tokens` 的请求与响应码；临时按 1.3.1 的兜底三行走 `client_credentials` |
+| `400 invalid_grant: subject_token is not valid or has expired` | 手里的票本身已过期（作业挂起超过一个 TTL 才第一次刷新） | 这是设计上的寿命上界：重新拿票重启。不是配置问题 |
+| `400 invalid_grant: this session is older than … max-session` | 部署开了 `lakehouse.rest.auth.access-token.max-session`，这条续期链跑满上限了 | 正常的护栏行为：手里的票仍可用到期，重新登录或重新走 `client_credentials` 会开一条新链 |
 | `NoClassDefFoundError: org.apache.hadoop.conf.Configurable` | 在**裸 JVM** 里用 Iceberg 客户端，默认 `io-impl` 的 `ResolvingFileIO` 需要 Hadoop | 换 `io-impl`，或把 Hadoop 加进客户端的类路径。Spark 里不会遇到 |
 | `IllegalArgumentException: Invalid codec name: <路径>` | 不会出现在客户端——这是服务端曾经的一个 bug，已在 `IcebergMetadataFiles` 修掉，记在这里只为报错搜索能命中 | 升级到含该修复的版本 |
 | 一次 `UPDATE` / `INSERT` 之后仍然读到旧数据 | 客户端开了元数据缓存 | `spark.sql.catalog.<名>.cache-enabled=false` 关掉，或刷新会话 |

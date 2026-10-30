@@ -40,6 +40,15 @@ import org.springframework.stereotype.Service;
 @Service
 public class AccessTokenService {
 
+    /**
+     * 续期链起点的 claim 名。
+     *
+     * <p>写在这里而不是各写一份字面量：写的一侧（{@link #issue}）与读的一侧
+     * （{@code TokenExchangeService}）必须用同一个键。拼错的表现是「上限设了却不生效」——
+     * 没有报错，也没有日志，只是永远算不出链龄。
+     */
+    public static final String CLAIM_SESSION_START = "ses";
+
     private final RestServerProperties properties;
 
     /** 取当前时间。抽成字段以便测试用固定时钟确定性地验证过期。 */
@@ -57,9 +66,37 @@ public class AccessTokenService {
     public record Issued(String token, long expiresInSeconds) {
     }
 
+    /**
+     * 一个令牌的判定结果。
+     *
+     * <p>三种取值而不是布尔值，是为了让 401 的响应能区分「过期」与「无效」。
+     * 两者的处理方式完全不同：过期该去续期（或重新登录），无效该检查配置或密钥。
+     * 报文里不加区分时，一线看到的是同一条 401，于是「票过期」被当成「权限不对」排查。
+     *
+     * <p>{@link #EXPIRED} 的前提是**签名与签发者都对**——也就是说，能拿到这个答案的人
+     * 手里本来就有一张真票的副本。因此它不构成对攻击者的额外信息（无法凭它伪造票）。
+     */
+    public enum Verdict {
+        OK,
+        EXPIRED,
+        INVALID
+    }
+
     /** 令牌有效期（秒）。控制台登录页据此提示「多久后需要重新登录」。 */
     public long ttlSeconds() {
         return Math.max(1, properties.getAuth().getAccessToken().getTtl().toSeconds());
+    }
+
+    /**
+     * 本服务看到的当前时刻（秒）。
+     *
+     * <p>对外暴露是为了让「令牌的年龄」只有一个算法：{@code ses} 由这里写、
+     * 由这里判，{@code max-session} 的比较也走这里。若换票那边自己再持一个
+     * {@link Clock}，测试用固定时钟时两边会各说各话——而这类不一致的表现是
+     * 「刚签的票被判超时」，很难联想到是时钟源不同。
+     */
+    public long nowSeconds() {
+        return clock.millis() / 1000;
     }
 
     /** 签发者标识，即 JWT 的 {@code iss}。 */
@@ -75,22 +112,74 @@ public class AccessTokenService {
      * @param scope     记录在令牌里的授权范围；为空则不带该 claim
      */
     public Issued issue(String principal, String scope) {
-        long nowSeconds = clock.millis() / 1000;
+        return issue(principal, scope, null);
+    }
+
+    /**
+     * 为指定主体签发令牌，并沿用一条续期链的起点。
+     *
+     * @param sessionStartSeconds 这条链的起点（秒）；{@code null} 表示这是一张新票
+     *                            （登录 / 客户端凭据 / 冷启动），起点就是现在。
+     *                            令牌交换会把父票的起点传进来，于是整条链共享同一个
+     *                            {@code ses}，{@code max-session} 才能对「链」而不是
+     *                            「票」设上限。**{@code max-session} 关闭时它被忽略**
+     */
+    public Issued issue(String principal, String scope, Long sessionStartSeconds) {
+        long now = nowSeconds();
         long ttl = ttlSeconds();
 
         Map<String, Object> claims = new LinkedHashMap<>();
         claims.put("iss", issuer());
         claims.put("sub", principal);
-        claims.put("iat", nowSeconds);
-        claims.put("exp", nowSeconds + ttl);
+        claims.put("iat", now);
+        claims.put("exp", now + ttl);
         // jti 目前只用于日志与排查：没有撤销机制，它不参与判定。
         // 留着是因为将来若加黑名单，这是现成的键——事后补一个 claim 会让
         // 已签发的令牌与新签发的令牌形状不一致
         claims.put("jti", Paging.newId());
+        // ses：续期链的起点。**只在 max-session 打开时才放进去**——关掉时令牌形状与
+        // 改造前完全一致，这是最省事的兼容：没有 ses 的部署里，「这张票是哪条链上的」
+        // 这个问题不存在，也就没人会去读它。
+        // 反过来（上限打开）时，父票没有 ses 也能算出链龄：换票那边退回父票的 iat，
+        // 所以「先关着跑一段、再打开上限」的链不会被误判成刚开头
+        if (properties.getAuth().getAccessToken().maxSessionEnabled()) {
+            claims.put(CLAIM_SESSION_START, sessionStartSeconds == null ? now : sessionStartSeconds);
+        }
         if (scope != null && !scope.isBlank()) {
             claims.put("scope", scope);
         }
         return new Issued(Jwt.signHs256(claims, signingKey), ttl);
+    }
+
+    /**
+     * 判定一个已经解析过的令牌，区分「过期」与「无效」。
+     *
+     * <p>顺序与 {@link #verify(Jwt.Decoded)} 完全一致，只是把失败的那一步记下来：
+     * 签名 → 签发者 → 过期 → not-before → 主体名。**先判签名再判过期**，
+     * 因为「签名不对」时 {@code exp} 是不可信输入，据此回 EXPIRED 会让攻击者
+     * 用一个乱签的令牌探测「这张票原来什么时候过期」。
+     */
+    public Verdict examine(Jwt.Decoded decoded) {
+        if (!Jwt.verifyHmac(decoded, signingKey)) {
+            return Verdict.INVALID;
+        }
+        if (!issuer().equals(decoded.claim("iss"))) {
+            return Verdict.INVALID;
+        }
+        long now = nowSeconds();
+        Long expiresAt = decoded.numericClaim("exp");
+        if (expiresAt == null) {
+            return Verdict.INVALID;
+        }
+        if (now >= expiresAt) {
+            return Verdict.EXPIRED;
+        }
+        Long notBefore = decoded.numericClaim("nbf");
+        if (notBefore != null && now < notBefore) {
+            return Verdict.INVALID;
+        }
+        String principal = decoded.claim("sub");
+        return principal == null || principal.isBlank() ? Verdict.INVALID : Verdict.OK;
     }
 
     /**
@@ -119,29 +208,14 @@ public class AccessTokenService {
      * <b>调用前必须已经确认这不是静态令牌</b>：静态令牌不是 JWT，解析会失败。
      */
     public Optional<AuthenticatedToken> verify(Jwt.Decoded decoded) {
-        if (!Jwt.verifyHmac(decoded, signingKey)) {
+        // 判定只有一份（examine），这里只负责在通过之后取出身份。
+        // 两处各写一遍的后果是「verify 通过、examine 说过期」这种自相矛盾，
+        // 而它出现的地方恰好是 401 的归因
+        if (examine(decoded) != Verdict.OK) {
             return Optional.empty();
         }
-        // 密钥是自己的，但签发者也要比：将来若出现「同一份密钥被多个服务共用」的部署，
-        // 这个字段是唯一能区分令牌归属的地方
-        if (!issuer().equals(decoded.claim("iss"))) {
-            return Optional.empty();
-        }
-        long nowSeconds = clock.millis() / 1000;
         Long expiresAt = decoded.numericClaim("exp");
-        if (expiresAt == null || nowSeconds >= expiresAt) {
-            return Optional.empty();
-        }
-        // 自签发的令牌不给时钟偏移：签发与验证在同一个进程里用同一个时钟，
-        // 容忍偏移只会在时钟被回拨时延长令牌寿命
-        Long notBefore = decoded.numericClaim("nbf");
-        if (notBefore != null && nowSeconds < notBefore) {
-            return Optional.empty();
-        }
-        String principal = decoded.claim("sub");
-        return principal == null || principal.isBlank()
-                ? Optional.empty()
-                : Optional.of(new AuthenticatedToken(principal, expiresAt * 1000L));
+        return Optional.of(new AuthenticatedToken(decoded.claim("sub"), expiresAt * 1000L));
     }
 
     // ------------------------------------------------------------------ 内部

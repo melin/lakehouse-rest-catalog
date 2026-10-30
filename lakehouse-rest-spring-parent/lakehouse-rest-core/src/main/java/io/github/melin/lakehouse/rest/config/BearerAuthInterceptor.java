@@ -30,9 +30,24 @@ import org.springframework.web.servlet.HandlerInterceptor;
  * 令牌来自哪里（服务端配置的静态令牌、控制台登录签发的访问令牌、外部 OIDC）
  * 由认证链判断，本类不关心也不会分叉——所以加一种认证方式不需要动这里。
  *
- * <p><b>「没有令牌」与「令牌无效」返回同一个响应。</b>区分它们对攻击者有用
- * （能确认「这个地址确实要鉴权」以及「我的令牌格式被识别了」），对使用者没用。
- * 两者都是 401 加同一句话。
+ * <p><b>「没有令牌」与「令牌无效」的响应体相同，但挑战头不同。</b>报文一字不差
+ * （区分它们对攻击者有用——能确认「这个地址确实要鉴权」以及「我的令牌格式被识别了」），
+ * 而 {@code WWW-Authenticate} 按 RFC 6750 §3.1 说明下一步该做什么：
+ *
+ * <ul>
+ *   <li>没带令牌 → {@code Bearer}（规范要求此时不给 {@code error} 码）；</li>
+ *   <li>令牌过期 → {@code error="invalid_token"} 加一句「已过期」；</li>
+ *   <li>令牌无效 → 同样 {@code invalid_token}，措辞不同。</li>
+ * </ul>
+ *
+ * <p>为什么值得多这一行：长作业续期失败时，作业日志里只有服务端回的状态码，
+ * 而「票过期」与「票不对」在 401 上长得一模一样——前者该去看续期配置，后者该去看
+ * 签名密钥或主体名。把区别放在挑战头里，是因为它<b>不进响应体</b>：
+ * {@code ErrorResponse} 的形状是对外契约，为一句诊断说明改它不划算；
+ * 而 {@code WWW-Authenticate} 本来就是用来讲「怎么才能通过」的地方。
+ *
+ * <p>「过期」不会泄露信息：能拿到这个答案的前提是签名与签发者都对，也就是
+ * 调用方手里本来就有一张真票的副本。
  *
  * <p><b>例外路径由 {@code WebConfig} 声明</b>，本类看不到它们——拦截器根本不会被调用。
  * 那几个例外之所以必须存在（登录页要先读到「支持哪些登录方式」、登录与令牌端点本身
@@ -43,6 +58,15 @@ import org.springframework.web.servlet.HandlerInterceptor;
 public class BearerAuthInterceptor implements HandlerInterceptor {
 
     private static final String BEARER = "Bearer ";
+
+    /**
+     * 挑战里那个 scheme 名。
+     *
+     * <p>与 {@link #BEARER} 分开一个常量：前者带尾空格，是「怎么从请求头里切出令牌」的
+     * 前缀；这个不带，是「告诉客户端该用哪种方式」的 scheme 名。合成一个常量会让
+     * 挑战头里多出一个尾空格——客户端倒是能容忍，但抓包对比时很难看出是为什么。
+     */
+    private static final String BEARER_CHALLENGE = "Bearer";
 
     /** 控制台自己的扩展端点。门禁只作用于这一段路径。 */
     private static final String CONSOLE_API = "/api/console/v1/";
@@ -73,12 +97,33 @@ public class BearerAuthInterceptor implements HandlerInterceptor {
         }
 
         if (token == null) {
+            response.setHeader(HttpHeaders.WWW_AUTHENTICATE, BEARER_CHALLENGE);
             throw new ApiException(401, null, null, "No auth for this resource");
         }
-        AuthenticatedToken identity = tokens.authenticate(token)
-                .orElseThrow(() -> new ApiException(401, null, null, "No auth for this resource"));
+        AuthenticatedToken identity = tokens.authenticate(token).orElse(null);
+        if (identity == null) {
+            response.setHeader(HttpHeaders.WWW_AUTHENTICATE, challengeFor(tokens.rejectionOf(token)));
+            throw new ApiException(401, null, null, "No auth for this resource");
+        }
         RequestContext.setPrincipal(identity.principal());
         return true;
+    }
+
+    /**
+     * 按被拒原因写出 {@code WWW-Authenticate}。
+     *
+     * <p>「没带令牌」那一条刻意不带 {@code error} 码：RFC 6750 §3.1 说得很清楚——
+     * 调用方连凭据都没发时，不该收到「凭证无效」这种结论，那会让一个本来只是
+     * 忘了加头的客户端去怀疑自己的令牌。
+     */
+    private static String challengeFor(TokenAuthenticationService.Rejection rejection) {
+        return switch (rejection) {
+            case MISSING -> BEARER_CHALLENGE;
+            case EXPIRED -> BEARER_CHALLENGE
+                    + ", error=\"invalid_token\", error_description=\"the access token has expired\"";
+            case INVALID -> BEARER_CHALLENGE
+                    + ", error=\"invalid_token\", error_description=\"the access token is not valid\"";
+        };
     }
 
     /**

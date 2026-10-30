@@ -53,20 +53,53 @@ export const SNIPPET_FACES = {
   ],
 }
 
-/** 各面的续期能力。`vendored=false` 时引擎自管凭据，这张表不适用。 */
+/**
+ * 各面的续期能力，**分控制面与数据面两列**。
+ *
+ * <p>以前这张表只有一列，写着 Paimon「能」——而那个「能」说的是**数据票**
+ * （`RESTTokenFileIO` 到期前重打 `/token`）。用户问的却是另一件事：「我这个作业
+ * 跑八小时会不会中途 401」。两者不是同一个答案：Paimon 数据票能续，但主体令牌
+ * （控制面）在改造前压根不会续——恰恰是跑挂的那一条。把两件事写成一列，等于把
+ * 唯一的故障点藏在了「能」字后面。
+ *
+ * <p>所以每面两个答案：`control` 是「主体令牌怎么续」（靠服务端 exchange 或
+ * `client_credentials`），`data` 是「存储凭据怎么续」（靠 `/token` 或 delegation）。
+ * 两列都能答「能」时，一个长作业才是真的跑得住。
+ */
 export const RENEWAL = {
   [PAIMON]: {
-    label: '能',
-    hint: '每次读表都会重打 /v1/{prefix}/.../token，RESTTokenFileIO 在到期前重取。',
+    control: {
+      label: '能（换成 oauth2 provider 后）',
+      hint: '`token.provider=bear` 只是把票原样贴上去，到期即 401。改成 `oauth2` 才会在到期前'
+        + '用 RFC 8693 的 exchange 换票；需要 `lakehouse-rest-engine-auth` 在与 paimon bundle'
+        + '同一个 ClassLoader 里（放错只报 `Could not find any factory for identifier \'oauth2\'`）。',
+    },
+    data: {
+      label: '能',
+      hint: '每次读表都会重打 /v1/{prefix}/.../token，RESTTokenFileIO 在到期前重取。',
+    },
   },
   [ICEBERG]: {
-    label: '要看客户端',
-    hint: 'Iceberg 客户端在到期前 5 分钟预取，但要有 client.refresh-credentials-endpoint'
-      + '（服务端下发 config 时才给）；没有它的话 delegation 只生效一次。',
+    control: {
+      label: '能（服务端支持 exchange 时）',
+      hint: '客户端本来就在到期前发 token-exchange；服务端认这个 grant 且配置里有'
+        + '`scope=PRINCIPAL_ROLE:ALL` 时才真的续上。缺 scope 的报错发生在「五十多分钟之后」。',
+    },
+    data: {
+      label: '要看客户端',
+      hint: 'delegation 只在服务端下发了 client.refresh-credentials-endpoint 时才能刷新；'
+        + '没有它时凭据只生效一次。',
+    },
   },
   [LANCE]: {
-    label: '不能',
-    hint: 'connector 0.8 只在 describe 时读一次 storage_options，作业时长必须小于有效期。',
+    control: {
+      label: '不能',
+      hint: '这一面的令牌只是一个固定的 Authorization 头，connector 0.8 不会换票。',
+    },
+    data: {
+      label: '不能',
+      hint: 'connector 0.8 只在 describe 时读一次 storage_options，作业时长必须小于有效期。',
+    },
   },
 }
 
@@ -205,6 +238,11 @@ function cosNotes(face) {
  * @param {string} [options.location]    首个允许位置（决定片段里的路径形态）
  * @param {string} [options.storageType] `S3` / `OSS` / …，只用来选占位与特别说明
  * @param {boolean} [options.vendored]   服务端会不会下发凭据（`NONE` 档为 false）
+ * @param {boolean} [options.renewable]  主体令牌要不要自动续期（Paimon 面切 `oauth2` provider）。
+ *                                       默认 `false`：老 classpath 上没有本工程的 provider jar，
+ *                                       片段里直接写 `oauth2` 会让 `getOrCreate()` 当场失败，
+ *                                       报的却是一句「找不到 factory」——那比「不会续期」更难查。
+ *                                       Iceberg 面不受这个开关影响：它原生的 oauth2 就会续期
  * @param {string} [options.serverUrl]   服务端地址；默认给一个显眼的占位
  * @returns {{lines: Array<{kind: string, text: string, key?: string, value?: string}>, note: string, copyText: string}}
  */
@@ -215,6 +253,7 @@ export function buildEngineSnippet({
   location = '',
   storageType = 'S3',
   vendored = true,
+  renewable = false,
   serverUrl = 'http://<catalog-host>:8080',
 }) {
   const name = catalog && catalog.trim() ? catalog.trim() : 'lakehouse'
@@ -230,11 +269,18 @@ export function buildEngineSnippet({
       { key: 'type', value: 'rest' },
       { key: 'uri', value: serverUrl },
       { key: 'warehouse', value: name },
-      { key: 'token.provider', value: 'bear' },
+      { key: 'token.provider', value: renewable ? 'oauth2' : 'bear' },
       { key: 'token', value: '<主体令牌>' },
       { key: 'data-token.enabled', value: vendored ? 'true' : 'false' },
     ]
     lines.push(...entries.map(({ key, value }) => pair(`spark.sql.catalog.${name}.${key}`, value)))
+    if (renewable) {
+      // 这两行只能是注释：`oauth2.credential` 里放的是长期密钥，写进可复制的片段
+      // 就等于鼓励人把它贴进 --conf（进程列表可见）。要兜底的人知道有这个键就能自己加
+      lines.push(comment('oauth2 provider：主体令牌到期前自动换票（要 lakehouse-rest-engine-auth，'))
+      lines.push(comment('  且与 paimon bundle 同一个 ClassLoader；放错只报「找不到 factory」）'))
+      lines.push(comment('起始票已过期时可用凭据兜底：oauth2.credential=<clientId>:<clientSecret>'))
+    }
     if (vendored) {
       lines.push(comment('到此为止：存储凭据由 /token 按表下发，配置里一行密钥都没有'))
     } else {
@@ -243,10 +289,15 @@ export function buildEngineSnippet({
     }
     lines.push(...governance(serverUrl))
     lines.push(...cos())
-    return finish(lines, vendored
-      ? 'token.provider 的取值是 bear，不是 bearer；写错不报参数错误，只是认证不上。'
-        + ' 这一面上「转发」与「签发」长得完全一样——差别只在服务端发的是哪把钥匙。'
-      : '关掉 data-token 之后凭据完全由本地配置决定，这是「不下发」唯一诚实的写法。',
+    return finish(lines, (renewable
+      ? 'token.provider 的取值是 oauth2，不是 bearer；provider 认的是 oauth2 这个标识符，'
+        + '写错不报参数错误，只是认证不上。'
+      : 'token.provider 的取值是 bear，不是 bearer；写错不报参数错误，只是认证不上。'
+        + ' 这一档不会续期：作业跑过一个令牌 TTL 之后会开始 401，要续就把 provider 换成 oauth2'
+        + '（需要本工程的 provider jar，见注释）。')
+      + (vendored
+        ? ' 这一面上「转发」与「签发」长得完全一样——差别只在服务端发的是哪把钥匙。'
+        : ' 关掉 data-token 之后凭据完全由本地配置决定，这是「不下发」唯一诚实的写法。'),
     warehouse)
   }
 
@@ -257,7 +308,7 @@ export function buildEngineSnippet({
       { key: 'metastore', value: 'rest' },
       { key: 'uri', value: serverUrl },
       { key: 'warehouse', value: name },
-      { key: 'token.provider', value: 'bear' },
+      { key: 'token.provider', value: renewable ? 'oauth2' : 'bear' },
       { key: 'token', value: '<主体令牌>' },
     ]
     if (vendored) {
@@ -267,14 +318,26 @@ export function buildEngineSnippet({
       entries.push(...manualSecrets({ spark: false, name }))
     }
     lines.push(...flinkBlock(`CREATE CATALOG ${name} WITH (`, entries, ');'))
+    if (renewable) {
+      // Flink 这一侧的坑比 Spark 更硬：`-j` 加的 jar 进的是用户子 loader，
+      // 而 FactoryUtil 用的是 AuthProviderFactory 自己的 loader，服务文件看不见
+      lines.push(comment('oauth2 provider 要 lakehouse-rest-engine-auth，且必须放 lib/、不能用 -j'))
+      lines.push(comment('  （FactoryUtil 用的是 AuthProviderFactory 自己的 ClassLoader，'))
+      lines.push(comment('  子 loader 注册的服务文件看不见，症状只有「找不到 factory」）'))
+      lines.push(comment('起始票已过期时用凭据兜底：oauth2.credential=<clientId>:<clientSecret>'))
+    }
     if (vendored) {
       lines.push({ kind: 'plain', text: '-- 存储凭据按表下发（data-token.enabled 默认就是 true）' })
     }
     lines.push(...cos())
-    return finish(lines, vendored
+    return finish(lines, (renewable
       ? 'Flink 的 Paimon 面与 Spark 用同一套 data-token 机制（同一个 RESTTokenFileIO），长作业能续；'
-        + ' 但「凭据那条路」在本仓库没有跑过 e2e（Flink 用例全落在 file://）。'
-      : '服务端不下发时，存储键名要自己写在这一句里——写错了 Flink 只报「读不到路径」。',
+      : '这一档不会续期：作业跑过一个令牌 TTL 之后会开始 401，要续就把 token.provider 换成 oauth2'
+        + '（provider jar 必须放 lib/）。'
+      )
+      + (vendored
+        ? ' 但「凭据那条路」在本仓库没有跑过 e2e（Flink 用例全落在 file://）。'
+        : ' 服务端不下发时，存储键名要自己写在这一句里——写错了 Flink 只报「读不到路径」。'),
     warehouse)
   }
 
@@ -291,6 +354,10 @@ export function buildEngineSnippet({
     // 没人看的 catalog 属性原样发给服务端，功能上看着能用，日志里一直有推断警告）
     lines.push(pair(`spark.sql.catalog.${name}.rest.auth.type`, 'oauth2'))
     lines.push(pair(`spark.sql.catalog.${name}.token`, '<主体令牌>'))
+    // scope 这一行不是可选的：客户端默认发的是 `catalog`，而服务端只认 PRINCIPAL_ROLE:ALL。
+    // 缺了它第一次刷新（约 55 分钟后）才报 invalid_scope——那时作业已经在正常跑了，
+    // 排查的人不会想到是启动时少了一行
+    lines.push(pair(`spark.sql.catalog.${name}.scope`, 'PRINCIPAL_ROLE:ALL'))
     if (vendored) {
       lines.push(pair(`spark.sql.catalog.${name}.header.X-Iceberg-Access-Delegation`, 'vended-credentials'))
     } else {
@@ -301,10 +368,15 @@ export function buildEngineSnippet({
     lines.push(...governance(serverUrl))
     lines.push(...cos())
     return finish(lines, (vendored
-      ? 'delegation 头靠 header. 前缀注入，不是内置开关；它只在服务端下发了'
-        + ' client.refresh-credentials-endpoint 时才会被升级成「可刷新」。'
-      : '没有 delegation 头，服务端就不会在 loadTable 里带凭据，必须自己配 s3.*。')
-      + ' rest.auth.type 与 token 这两行只在本部署开了 lakehouse.rest.auth.enabled 时才需要；'
+      // 两件事必须分开说：主体令牌的续期靠服务端的 token-exchange，存储凭据的续期靠 delegation。
+      // 合成一句时，缺 scope 导致「票续不上」会被读成「delegation 没配好」
+      ? '主体令牌的续期：客户端本来就在到期前发 token-exchange，服务端认这个 grant 就自动续，'
+        + '不需要额外开关；scope 这一行是它的前提，缺了会等到第一次刷新才报 invalid_scope。'
+        + ' 存储凭据的续期：delegation 只在服务端下发了 client.refresh-credentials-endpoint 时'
+        + '才会被升级成「可刷新」。'
+      : '没有 delegation 头，服务端就不会在 loadTable 里带凭据，必须自己配 s3.*。'
+        + ' 主体令牌的续期仍由客户端负责（exchange），与凭据这一档无关。')
+      + ' rest.auth.type、token、scope 这三行只在本部署开了 lakehouse.rest.auth.enabled 时才需要；'
       + ' 令牌是主体令牌，不是存储密钥。',
     warehouse)
   }
@@ -317,6 +389,8 @@ export function buildEngineSnippet({
       { key: 'warehouse', value: name },
       { key: 'rest.auth.type', value: 'oauth2' },
       { key: 'token', value: '<主体令牌>' },
+      // Flink 这条同样要 scope：默认值 catalog 会被服务端回 invalid_scope
+      { key: 'scope', value: 'PRINCIPAL_ROLE:ALL' },
     ]
     if (vendored) {
       entries.push({ key: 'header.X-Iceberg-Access-Delegation', value: 'vended-credentials' })
@@ -328,10 +402,12 @@ export function buildEngineSnippet({
     }
     lines.push(...flinkBlock(`CREATE CATALOG ${name} WITH (`, entries, ');'))
     lines.push(...cos())
-    return finish(lines, vendored
-      ? '与 Spark · Iceberg 同一条 REST 路径，delegation 头同样靠 header.* 注入；'
+    return finish(lines, (vendored
+      ? '与 Spark · Iceberg 同一条 REST 路径：主体令牌的续期靠服务端的 token-exchange'
+        + '（scope 那一行是前提），存储凭据的续期靠 header.* 注入的 delegation 头。'
         + ' 这条凭据路径在本仓库没有跑过 e2e。'
-      : `服务端不下发：按 ${storageType} 对应 FileIO 的键名自行配置。`,
+      : `服务端不下发：按 ${storageType} 对应 FileIO 的键名自行配置；`
+        + '主体令牌的续期仍由客户端负责，与凭据这一档无关。'),
     warehouse)
   }
 

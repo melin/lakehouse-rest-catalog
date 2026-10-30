@@ -35,7 +35,7 @@ lakehouse-rest-flink/
 | 走 REST | `metastore=rest` | `catalog-type=rest` |
 | 地址 | `uri` | `uri` |
 | 仓库名 | `warehouse=<catalog prefix>` | `warehouse=<catalog prefix>` |
-| 认证 | `token.provider=bear` + `token` | `rest.auth.type=oauth2` + `token` |
+| 认证 | `token.provider=bear`（或 `oauth2`，见 §2.1）+ `token` | `rest.auth.type=oauth2` + `token` + **`scope=PRINCIPAL_ROLE:ALL`** |
 | 其它 | `data-token.enabled=true` | `cache-enabled=false` |
 
 两条最容易错的：
@@ -44,6 +44,22 @@ lakehouse-rest-flink/
   拿它换回 prefix，客户端后续所有路径都以它开头。写成真实目录不会报错，只会在服务端
   找不到同名 catalog，症状是 404 或「catalog 不存在」。
 - **Paimon 的令牌提供者标识是 `bear`，不是 `bearer`。**
+
+### 2.1 令牌续期（`token.provider=oauth2`）
+
+`bear` 把令牌原样贴上去，不续期：服务端签的票默认一小时到期，跑得比它久的作业
+会在某个请求上开始 401。要续期就换成 `oauth2`，选项与 Spark 侧完全同形
+（`token` / `oauth2.credential` / `oauth2.token-endpoint` / `oauth2.refresh-window`），
+规则见 [`spark-paimon-rest-e2e.md`](spark-paimon-rest-e2e.md) §1.2.1。
+
+**Flink 侧额外注意一件事：provider jar 必须放 `lib/`，不能用 `-j`。**
+`FactoryUtil.discoverFactory` 用的是 `AuthProviderFactory` 自己的 ClassLoader，
+不是线程上下文 loader；`-j` 的 jar 进的是用户的子 loader，那里注册的服务文件看不见。
+放错的症状只有一句 `Could not find any factory for identifier 'oauth2'`，
+它不会提示 classloader——这一条实测过，写在这里是为了省掉一次盲查。
+
+Iceberg 侧的续期同样需要 `scope=PRINCIPAL_ROLE:ALL`（上表已列）：客户端默认发的是
+`catalog`，服务端只认「不限制」那个取值，缺了它，第一次刷新才报 `invalid_scope`。
 
 Iceberg 的 prefix 必须**先**用管理 API 建成 `ICEBERG`：让客户端撞 `/v1/config` 的自动登记
 会按部署默认值建成 PAIMON，此后每次调用都会以 `is a PAIMON catalog` 失败，

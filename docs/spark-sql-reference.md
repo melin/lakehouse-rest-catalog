@@ -51,6 +51,9 @@ val spark = PaimonRestManagement.install(SparkSession.builder())
 | `spark.lakehouse.rest.management.url` | `http://127.0.0.1:8080/api/management/v1` | 管理 API 基址，须含 `/api/management/v1` 前缀。末尾多余的 `/` 会被去掉 |
 | `spark.lakehouse.rest.catalog.url` | 空（从管理 API 基址推导） | catalog API 基址，资源授权语句（第 7 节）用它。空值时按「去掉 `/api/management/v1`」推导；推导不出来（基址不以该前缀结尾）会报错并点名这个键 |
 | `spark.lakehouse.rest.token` | 空 | 作为 `Authorization: Bearer <token>` 发出；为空时**不发送**该请求头 |
+| `spark.lakehouse.rest.management.token-endpoint` | 空（从管理 API 基址推导） | 令牌续期的端点。空值时把基址的 `/api/management/v1` 换成 `/v1/oauth/tokens`；基址落在别的路径下时**不猜**（续期退化为固定票，日志里一条 WARN），需显式配这一项 |
+| `spark.lakehouse.rest.management.refresh-window` | `min(ttl × 15%, 5min)` | 提前多久换票。形式 `300s` / `5min` / `500ms` / 裸数字（按秒）；配得比 TTL 还大时会被压到 TTL 的 90%，避免「每个请求都换票」 |
+| `spark.lakehouse.rest.management.credential` | 空 | `clientId:clientSecret`，**只在两种情况下需要**：服务端还没支持令牌交换（这时用它兜底 `client_credentials`）、或作业启动时手里的票已过期（冷启动去取一张）。**它是长期密钥**：`--conf` 在进程列表里可见，能不配就不配——配了 `token` 且服务端支持交换时，续期本来就会自动发生 |
 | `spark.lakehouse.rest.management.timeoutSeconds` | `30` | 单次请求超时秒数；非数字或非正数时退化为默认值，不会让会话启动失败 |
 | `spark.lakehouse.rest.sql.confirm-destructive` | 未设置 | 数据策略语句的确认开关：`DROP POLICY` 必须把它设为 `true` 才会执行，否则报错并点名这个键（第 11.3 节）。它在语句运行时读取，随时可改 |
 

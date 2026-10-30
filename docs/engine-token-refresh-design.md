@@ -1,6 +1,10 @@
 # 引擎侧主体令牌续期：Spark / Flink 的 Paimon 与 Iceberg catalog
 
-**状态：P0-1 已落地（服务端 RFC 8693 令牌交换）；P0-2 / P0-3 / P0-4、P1、P2 未实现。**
+**状态：P0-1…P2 全部落地。** 服务端 RFC 8693 令牌交换（`TokenExchangeTests` 21 条）、
+引擎侧 `lakehouse-rest-engine-auth`（`RefreshingAuthProviderTests` 30 条）、治理通道的
+`TokenSource`（`TokenSourceTests` 8 条 + `ManagementApiClientTests` 31 条）、Iceberg 只加配置、
+控制台片段与校验、`max-session` 护栏与「过期 / 无效」归因（`TokenSessionLimitTests` 6 条）。
+逐项状态见 §8，落地时改主意的六处见 §9。
 下面的 §1 与 §2 保留**落地之前**的事实描述——它们是这份文档的论证基础，改掉就看不出「为什么必须这么改」；
 每处都已标注现在的状态。
 
@@ -408,18 +412,41 @@ spark.sql.catalog.<name>.scope=PRINCIPAL_ROLE:ALL      # 必须有，理由见�
 | # | 内容 | 状态 | 验收用例 |
 | --- | --- | --- | --- |
 | P0-1 | 服务端 exchange：`TokenExchangeService` + `OAuthTokenController` 分支 + `TokenResponse.issued_token_type` | **已落地** | `TokenExchangeTests`（17 条）：正常换票 / 换出的票能被受保护端点接受 / 过期 subject → `invalid_grant` / `scope` 不支持 → `invalid_scope` / `actor_token` → `invalid_request` / `requested_token_type` 与 `subject_token_type` 不支持 → `invalid_request` / 换出的票 `sub` 与原票一致且 `exp - iat` 不放大 / 连换两级主体不变 / 静态令牌可换 / 失败限速 / client_credentials 响应不多出 `issued_token_type` / JSON 体与两个路径都通 |
-| P0-2 | Paimon `OAuth2AuthProvider` + `Factory` + SPI 文件 | 未开始 | `RefreshingAuthProviderTests`：未进窗口不换票 / 进窗口换一次（并发 8 线程只发 1 次请求）/ 换票失败返回旧票且不抛 / `expires_in` 缺失时读 JWT `exp` / 两者都缺失时不换且打 WARN |
-| P0-3 | Iceberg 配置落地：两份 e2e 文档加 `scope` 那一行与对照表，无代码 | 未开始 | 短 TTL e2e：`ttl=90s`，跑 5 分钟反复 `select`，跨过 90 秒仍成功；日志里有 exchange 记录 |
-| P0-4 | `TokenSource` + `ManagementApiClient` 改造 | 未开始 | `TokenSourceTests`：`fixed` 行为与今天一致（逐字节：同一 `Authorization` 头）/ 到期前换票 / 401 只重放一次 / 第二次 401 原样抛 |
+| P0-2 | Paimon `OAuth2AuthProvider` + `Factory` + SPI 文件 | **已落地** | `RefreshingAuthProviderTests`（30 条）：未进窗口不换票 / 进窗口换一次（并发 8 线程只发 1 次请求）/ 换票失败返回旧票且不抛 / `expires_in` 缺失时读 JWT `exp` / 两者都缺失时不换且打 WARN / 窗口被压到 TTL 的 90% / 重建 provider 后复用已续期的票 / 缓存键不含令牌 / SPI 文件确实存在 / 起始票已过期时直接取票 |
+| P0-3 | Iceberg 配置落地：两份 e2e 文档加 `scope` 那一行与对照表，无代码 | **已落地**（文档） | 短 TTL e2e：`ttl=90s`，跑 5 分钟反复 `select`，跨过 90 秒仍成功；日志里有 exchange 记录。步骤写进 `README.md` §2.3 |
+| P0-4 | `TokenSource` + `ManagementApiClient` 改造 | **已落地** | `TokenSourceTests`（8 条）：`fixed` 行为与今天一致（逐字节：同一 `Authorization` 头）/ 到期前换票 / 401 只重放一次 / 第二次 401 原样抛 / `invalidate()` 为 false 时不重放；`ManagementApiClientTests`（31 条）全绿 |
 
 ### P1（让人不用读文档也能用对）
 
-- 控制台四片段改造 + `RENEWAL` 两列 + `PRINCIPAL_ROLE:ALL` 字面量对齐断言；
-  `tools/snippet-tests` 加 4 条；`verify-console.py` 加 1 组。
+**已落地。** 控制台四片段改造 + `RENEWAL` 两列 + `PRINCIPAL_ROLE:ALL` 字面量对齐断言：
+
+- Paimon 两面 `token.provider` 默认仍是 `bear`，详情页给一个「主体令牌自动续期」开关
+  （默认关，只在 Paimon 面显示），打开后片段变 `oauth2` 并带上「需要哪个 jar、放在哪」的注释；
+- Iceberg 两面加 `scope=PRINCIPAL_ROLE:ALL`，note 拆成「主体令牌的续期」与「存储凭据的续期」两句；
+- `RENEWAL` 拆成 `{control, data}` 两列，页面上分两行显示；
+- `tools/snippet-tests` 加 4 条（默认 `bear` / `oauth2` 只在显式要求时出现 / Iceberg 两面都有 `scope` /
+  片段里只有占位符没有真实密钥）；`verify-console.py` 加第 26 组（8 项），
+  其中 `scope` 的字面量**直接读** `ClientCredentialsService.SCOPE_ALL` 比对，不抄第二份。
 
 ### P2（收边界）
 
-- `max-session` 护栏；交换与刷新指标；401 的「过期 / 无效」区分；Lance 面等 connector 支持后再说。
+**已落地**，三件事：
+
+- **`max-session` 护栏**（`lakehouse.rest.auth.access-token.max-session`，默认 `0` = 不限）：
+  令牌多一个 `ses` claim，换票时 `ses' = 父票 ses ?: 父票 iat`，超过上限拒绝交换，
+  但**已签发的票仍可用到期**——否则跑满 N 小时的作业会在某个请求上毫无预兆地 401。
+  只在打开时写 `ses`，关掉时令牌形状与改造前完全一致（`TokenSessionLimitTests` 6 条钉住，
+  含「上限打开之前签出的票用 `iat` 兜底算年龄」这条升级路径）。
+- **指标**：服务端 `lakehouse.auth.token.exchanged{grant,result}`（`TokenIssuanceMetrics`，
+  按 `metrics-design.md` 已定的名字计数，每 10 分钟把增量打进日志——仓库还没有指标注册表，
+  新的控制台端点要连带登记权限点与校验脚本，为两个计数器做这些不划算）；
+  引擎侧 `lakehouse.auth.token.refresh.failure{cause}`（`TokenRefreshMetrics`），
+  累计次数与原因写进**同一条** WARN：单条 WARN 分不清「偶发一次」与「每个请求都失败」。
+- **401 的「过期 / 无效」区分**：响应体一字不差（那是既有的安全取舍），区别放在
+  `WWW-Authenticate`——`Bearer error="invalid_token", error_description="the access token has expired"`
+  与 `… "the access token is not valid"`。先验签再判过期：签名不对时 `exp` 是不可信输入。
+  没带令牌时按 RFC 6750 §3.1 只回 `Bearer`，不给 `error` 码。
+- Lance 面等 connector 支持后再说（本期不做）。
 
 ### 验收的唯一有效方法
 
@@ -431,23 +458,33 @@ Iceberg 的失败甚至要等到 55 分钟后才出现。短 TTL 是唯一能把
 
 ---
 
-## 9. 未决问题
+## 9. 落地时定下的事（原「未决问题」）
 
-1. **`token.provider` 的取值**：`oauth2`（与 Iceberg 对齐）还是 `exchange`（更准确）？
-   倾向 `oauth2`，但这是一次性的对外命名，改了要连带改名文档与片段。
+1. ~~**`token.provider` 的取值**：`oauth2` 还是 `exchange`？~~
+   **已定：`oauth2`**（与 Iceberg 的 `rest.auth.type` 同名，读者只需记一个词）。
 2. ~~**失败码**：exchange 的 subject 无效用 `invalid_grant`（RFC 6749 语义）还是 `invalid_token`（RFC 6750）？~~
    **已定：`invalid_grant`。** RFC 6749 §5.2 把它定义为「授权许可无效」，而 subject token 在这次交换里
    就是授权许可；调用方该做的是「重新拿票」。`invalid_token`（RFC 6750）留给
    `BearerAuthInterceptor` 那条路——「访问受保护资源时令牌不管用」。两者混用会让作业日志里的
    401/400 分不清是「续期失败」还是「权限不对」。
-3. **兜底路线的默认**：Paimon provider 在「没配 `credential` 且起始票已过期」时，应该
-   a) 抛错让作业立刻失败（早失败早发现），还是 b) 打 WARN 继续用过期票（401 由服务端给）？
-   倾向 a——但会让「作业排队一小时后再启动」这个场景直接起不来。
-4. **控制台默认档**：续期开关默认关（安全、老 classpath 兼容）还是默认开（新用户按默认配置就能跑长作业）？
-   倾向默认关 + 显眼提示。
-5. **`max-session` 要不要现在就做**：它决定了「续期」是「可无限续」还是「有总时长上限」。
-6. **Flink 侧的部署约束要不要进镜像**：provider jar 必须与 paimon bundle 同 loader 这条约束，
-   只在文档里写够不够，还是要在 `deploy/` 的 Dockerfile 里体现。
+3. ~~**兜底路线的默认**：没配 `credential` 且起始票已过期时，抛错还是打 WARN 继续用？~~
+   **已定：既不抛也不「继续用过期票」——起始票过期但有 `credential` 时直接冷启动取票。**
+   只配 `credential` 不配 `token` 也走同一条路（第一次请求就 `client_credentials`）。
+   没有 `credential` 时按 b) 处理：不动那张票，让服务端回 401，Paimon 侧只记一条 WARN。
+   理由：a) 会让「作业排队一小时后再启动」直接起不来，而那种场景下凭据本来就能救；
+   而 b) 的代价只是一条 401，它恰好出现在日志里、指向真正的原因。
+4. ~~**控制台默认档**：续期开关默认关还是默认开？~~
+   **已定：默认关 + 开关旁写明需要什么。** 默认开会让所有还没有 provider jar 的部署在建
+   catalog 时直接失败，而那句报错（`Could not find any factory`）指向的是「版本对不对」，
+   不是「少了一个 jar」。
+5. ~~**`max-session` 要不要现在就做**：~~
+   **已定：做，但默认 `0`（不限）。** 算式简单、边界清楚，且「有旋钮」与「默认打开」是两件事：
+   打开它会让跑超过 N 小时的作业必须重启，而在本功能落地之前长作业连一小时都过不去。
+   打开时**已签发的票仍可用到期**，不让在跑的作业无预兆 401。
+6. **Flink 侧的部署约束要不要进镜像**（仍未定）：provider jar 必须与 paimon bundle 同 loader
+   这条约束，现在只写在 `flink-rest-catalog.md` §2.1 与 `spark-sql-extension.md` §1 的部署表里。
+   进镜像要动 `deploy/` 的 Dockerfile，而本仓库的 Flink 用例不跑对象存储、也不需要续期——
+   没有能验收它的用例之前，改镜像只是把一个没验过的假设固化下来。
 
 ---
 

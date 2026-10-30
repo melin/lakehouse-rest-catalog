@@ -269,12 +269,78 @@ test('Iceberg 的 delegation 头只在下发凭据时出现（不下发时它是
   assert.equal(pairOf(manual, 'spark.sql.catalog.ice.s3.access-key'), '<AK>')
 })
 
-test('续期能力按格式各一份，且都是「能不能自动续」这句话的回答', () => {
+test('续期能力按格式各一份，**控制面与数据面分开**', () => {
   assert.deepEqual(Object.keys(RENEWAL).sort(), ['ICEBERG', 'LANCE', 'PAIMON'])
-  assert.equal(RENEWAL.PAIMON.label, '能')
-  assert.equal(RENEWAL.LANCE.label, '不能')
-  assert.match(RENEWAL.ICEBERG.label, /看客户端/)
-  for (const entry of Object.values(RENEWAL)) {
-    assert.ok(entry.hint.length > 10)
+  for (const [format, entry] of Object.entries(RENEWAL)) {
+    // 两列都必须有：只写一列时，「数据票能续」会被读成「主体令牌也能续」，
+    // 而后者才是长作业真正挂掉的那一条
+    for (const column of ['control', 'data']) {
+      assert.ok(entry[column], `${format} 缺 ${column} 列`)
+      assert.ok(entry[column].label.length > 0, `${format}.${column} 缺 label`)
+      assert.ok(entry[column].hint.length > 10, `${format}.${column} 的 hint 太短，等于没说`)
+    }
+  }
+  // 三面在数据面上的答案各自不同，这正是拆列的理由
+  assert.match(RENEWAL.PAIMON.control.label, /oauth2/)
+  assert.match(RENEWAL.ICEBERG.control.label, /能/)
+  assert.equal(RENEWAL.LANCE.control.label, '不能')
+  assert.equal(RENEWAL.PAIMON.data.label, '能')
+  assert.match(RENEWAL.ICEBERG.data.label, /看客户端/)
+  assert.equal(RENEWAL.LANCE.data.label, '不能')
+})
+
+test('Paimon 两面的 token.provider 默认是 bear，只有显式要求续期才变 oauth2', () => {
+  for (const face of ['spark-paimon', 'flink-paimon']) {
+    // 默认必须是 bear：老 classpath 上没有本工程的 provider jar，写 oauth2 会让
+    // getOrCreate() 当场失败（Could not find any factory），比「不会续期」更难查
+    const fallback = buildEngineSnippet({ format: 'PAIMON', face, catalog: 'paimon' })
+    assert.equal(pairOf(fallback, 'spark.sql.catalog.paimon.token.provider')
+      ?? pairOf(fallback, 'token.provider'), 'bear', `${face} 默认应仍是 bear`)
+    assert.ok(!allText(fallback).includes('oauth2'), `${face} 默认不该出现 oauth2`)
+
+    const renewable = buildEngineSnippet({
+      format: 'PAIMON', face, catalog: 'paimon', renewable: true,
+    })
+    assert.equal(pairOf(renewable, 'spark.sql.catalog.paimon.token.provider')
+      ?? pairOf(renewable, 'token.provider'), 'oauth2', `${face} 打开开关后应是 oauth2`)
+    // 打开之后必须说明需要什么，否则「换成 oauth2 就能续」会变成一个跑不起来的谜
+    assert.match(allText(renewable), /lakehouse-rest-engine-auth/)
+    assert.match(allText(renewable), /ClassLoader/)
+    // 兜底键只以注释形式出现：可复制的片段里不该有一行等着人填真实密钥的配置
+    assert.match(allText(renewable), /oauth2\.credential/)
+    assert.ok(
+      renewable.lines.filter((line) => line.key === 'oauth2.credential').length === 0,
+      'oauth2.credential 只该出现在注释里，不该是可粘贴的配置行',
+    )
+  }
+})
+
+test('Iceberg 两面都带 scope=PRINCIPAL_ROLE:ALL（缺了会在第一次刷新时才报错）', () => {
+  const spark = buildEngineSnippet({ format: 'ICEBERG', face: 'spark-iceberg', catalog: 'ice' })
+  assert.equal(pairOf(spark, 'spark.sql.catalog.ice.scope'), 'PRINCIPAL_ROLE:ALL')
+  // 客户端默认发的是 `catalog`，服务端只认这一个值；文案要说清楚不是「可选优化」
+  assert.match(spark.note, /scope/)
+
+  const flink = buildEngineSnippet({ format: 'ICEBERG', face: 'flink-iceberg', catalog: 'ice' })
+  assert.equal(pairOf(flink, 'scope'), 'PRINCIPAL_ROLE:ALL')
+
+  // 这个字面量必须与服务端 ClientCredentialsService.SCOPE_ALL 一致：
+  // 改一处忘另一处的表现是「配置永远报 invalid_scope」，而那要等到 55 分钟后才发作。
+  // 静态比对在 scripts/verify-console.py 那一侧（它直接读 Java 常量），这里只钉住两面都有
+})
+
+test('片段里不出现任何真实密钥，只有占位符', () => {
+  for (const [format, faces] of Object.entries(SNIPPET_FACES)) {
+    for (const face of faces) {
+      for (const vendored of [true, false]) {
+        const snippet = buildEngineSnippet({
+          format, face: face.id, catalog: 'paimon', vendored, renewable: true,
+        })
+        // 复制出去的东西会进版本库、进 --conf、进进程列表：任何一处真实凭据都是泄漏
+        assert.ok(!/clientSecret=[^<]/.test(allText(snippet)), `${face} 里疑似有真实 clientSecret`)
+        assert.ok(!/access-key=[^<]/.test(allText(snippet)), `${face} 里疑似有真实 AK`)
+        assert.ok(!/secret-key=[^<]/.test(allText(snippet)), `${face} 里疑似有真实 SK`)
+      }
+    }
   }
 })

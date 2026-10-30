@@ -74,6 +74,8 @@ public class ClientCredentialsService {
 
     private final LoginAttemptLimiter limiter;
 
+    private final TokenIssuanceMetrics metrics;
+
     /** 签发结果。字段名对应 RFC 6749 第 5.1 节的令牌响应。 */
     public record IssuedToken(String accessToken, String tokenType, long expiresInSeconds, String scope) {
     }
@@ -108,14 +110,14 @@ public class ClientCredentialsService {
         if (!enabled()) {
             // 400 而不是 401：这是「服务端没提供这个功能」，不是「你给的凭据不对」。
             // 混在一起会让部署者一直怀疑密码，而真正的原因是配置没开
-            throw ApiException.protocolError(400, OAUTH_INVALID_REQUEST,
+            throw fail(400, OAUTH_INVALID_REQUEST,
                     "client credentials login is not enabled on this server:"
                     + " set lakehouse.rest.auth.console.client-credentials.enabled=true, and make sure"
                     + " the console actually requires a login"
                     + " (lakehouse.rest.auth.enabled=true or lakehouse.rest.auth.console.required=true)");
         }
         if (clientId == null || clientId.isBlank() || clientSecret == null || clientSecret.isEmpty()) {
-            throw ApiException.protocolError(400, OAUTH_INVALID_REQUEST,
+            throw fail(400, OAUTH_INVALID_REQUEST,
                     "client_id and client_secret are both required");
         }
         String requestedScope = normalizeScope(scope);
@@ -123,14 +125,14 @@ public class ClientCredentialsService {
             // invalid_scope 而不是 invalid_request：RFC 6749 第 5.2 节把 scope 取值问题
             // 单独分开（invalid_request 的定义明确排除了它）。两者的 HTTP 状态都是 400，
             // 因此只有错误码能把这个区别带给调用方
-            throw ApiException.protocolError(400, "invalid_scope",
+            throw fail(400, "invalid_scope",
                     "unsupported scope \"" + scope + "\": this server grants the"
                     + " principal's full set of roles and therefore only accepts " + SCOPE_ALL);
         }
         if (!limiter.allow(rateLimit(), clientAddress, clientId)) {
             log.warn("refusing client credentials login for {} from {}: too many recent failures",
                     clientId, clientAddress);
-            throw ApiException.protocolError(429, "temporarily_unavailable",
+            throw fail(429, "temporarily_unavailable",
                     "too many failed login attempts; retry after"
                             + " " + properties.getAuth().getConsole().getClientCredentials()
                                     .getRateLimit().getWindow().toSeconds() + " seconds");
@@ -148,7 +150,7 @@ public class ClientCredentialsService {
             log.warn("client credentials login rejected from {}: clientId={}",
                     clientAddress, clientId);
             // 措辞刻意与「凭据不符」一致：不要在报文里区分「没这个 clientId」与「密码不对」
-            throw ApiException.protocolError(401, "invalid_client", "invalid client credentials");
+            throw fail(401, "invalid_client", "invalid client credentials");
         }
 
         PrincipalEntity principal = found.get();
@@ -161,9 +163,23 @@ public class ClientCredentialsService {
         }
 
         AccessTokenService.Issued issued = accessTokens.issue(principal.getName(), requestedScope);
+        metrics.record(TokenIssuanceMetrics.GRANT_CLIENT_CREDENTIALS, TokenIssuanceMetrics.RESULT_SUCCESS);
         log.info("issued an access token for principal {} (clientId={}, expires in {}s)",
                 principal.getName(), clientId, issued.expiresInSeconds());
         return new IssuedToken(issued.token(), "bearer", issued.expiresInSeconds(), requestedScope);
+    }
+
+    /**
+     * 记一次失败并造出异常。
+     *
+     * <p>与 {@link TokenExchangeService} 里的同名方法同一个理由：把「计数」与「抛」
+     * 绑在一起，就不存在「新加了一个拒绝分支却忘了计数」的可能。这个端点的失败率
+     * 是登录页与引擎冷启动共用的信号——它涨起来时，第一条要查的是「谁在重试」，
+     * 而那条线索只有计数给得出来。
+     */
+    private ApiException fail(int status, String errorCode, String message) {
+        metrics.record(TokenIssuanceMetrics.GRANT_CLIENT_CREDENTIALS, errorCode);
+        return ApiException.protocolError(status, errorCode, message);
     }
 
     /**

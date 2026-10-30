@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -174,6 +175,11 @@ class TokenExchangeTests {
         assertTrue(after.numericClaim("iat") >= before.numericClaim("iat"),
                 "新票的 iat 不该早于原票");
         assertNotEquals(before.claim("jti"), after.claim("jti"), "两张票必须是不同的票");
+
+        // max-session 默认关（本类配置没打开它），因此票里不该多出 ses 这个 claim：
+        // 「默认部署的令牌形状与改造前一致」是一条对外承诺，加字段要显式打开上限
+        assertNull(after.numericClaim("ses"),
+                "max-session 关着时不该写 ses，否则所有部署的令牌形状都变了");
     }
 
     /** 换出来的票还能再换——多级链上主体保持不变，这一点是「长作业」的前提。 */
@@ -377,6 +383,74 @@ class TokenExchangeTests {
         assertEquals("unsupported_grant_type", body.get("error").asString());
         assertTrue(body.get("error_description").asString().contains("client_credentials"));
         assertTrue(body.get("error_description").asString().contains(GRANT_EXCHANGE));
+    }
+
+    // ------------------------------------------------------------------ 401 的归因
+    //
+    // 这四条守的是「作业日志里一眼能分出是哪一种 401」。报文（响应体）必须**一字不差**——
+    // 那是既有的安全取舍：区分「没带令牌」与「令牌不认识」会让攻击者确认这个地址要鉴权、
+    // 以及自己的令牌格式被识别了。区别只放在 WWW-Authenticate 里，它本来就是
+    // 告诉客户端「下一步该怎么改」的地方。
+
+    /** 过期的自签票 → 挑战头说「已过期」，而报文与「无效」那条完全相同。 */
+    @Test
+    void anExpiredTokenIsChallengedAsExpired() throws Exception {
+        long now = System.currentTimeMillis() / 1000;
+        String expired = sign(Map.of("sub", PRINCIPAL_NAME, "iat", now - 7200, "exp", now - 3600));
+
+        MvcResult result = mockMvc.perform(get(PROTECTED)
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + expired)).andReturn();
+        assertEquals(401, result.getResponse().getStatus());
+
+        String challenge = result.getResponse().getHeader(HttpHeaders.WWW_AUTHENTICATE);
+        assertNotNull(challenge, "401 必须带 WWW-Authenticate");
+        assertTrue(challenge.contains("invalid_token"), challenge);
+        assertTrue(challenge.contains("expired"), "要能读出「票过期了」：" + challenge);
+        assertFalse(challenge.contains("is not valid"), challenge);
+    }
+
+    /** 认不出的令牌 → 同一句 {@code invalid_token}，但措辞里没有「过期」。 */
+    @Test
+    void anUnrecognisedTokenIsChallengedAsInvalid() throws Exception {
+        MvcResult result = mockMvc.perform(get(PROTECTED)
+                .header(HttpHeaders.AUTHORIZATION, "Bearer not-a-token-at-all")).andReturn();
+        assertEquals(401, result.getResponse().getStatus());
+
+        String challenge = result.getResponse().getHeader(HttpHeaders.WWW_AUTHENTICATE);
+        assertNotNull(challenge);
+        assertTrue(challenge.contains("invalid_token"), challenge);
+        assertTrue(challenge.contains("is not valid"), challenge);
+        assertFalse(challenge.contains("expired"),
+                "验签都不对时不能声称「已过期」——那等于用乱签的票探测过期时间");
+    }
+
+    /**
+     * 没带令牌 → 挑战头只有 scheme，不带 {@code error} 码（RFC 6750 §3.1）。
+     *
+     * <p>按规范，调用方连凭据都没发时不该收到「凭证无效」的结论：那会让一个只是
+     * 忘了加头的客户端去怀疑自己的令牌。
+     */
+    @Test
+    void aMissingTokenGetsABareChallenge() throws Exception {
+        MvcResult result = mockMvc.perform(get(PROTECTED)).andReturn();
+        assertEquals(401, result.getResponse().getStatus());
+        assertEquals("Bearer", result.getResponse().getHeader(HttpHeaders.WWW_AUTHENTICATE));
+    }
+
+    /** 三种 401 的响应体一字不差：区别只在挑战头。 */
+    @Test
+    void allThreeRejectionsShareTheSameBody() throws Exception {
+        long now = System.currentTimeMillis() / 1000;
+        String expired = sign(Map.of("sub", PRINCIPAL_NAME, "iat", now - 7200, "exp", now - 3600));
+
+        String missing = body(mockMvc.perform(get(PROTECTED)).andReturn());
+        String invalid = body(mockMvc.perform(get(PROTECTED)
+                .header(HttpHeaders.AUTHORIZATION, "Bearer not-a-token-at-all")).andReturn());
+        String stale = body(mockMvc.perform(get(PROTECTED)
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + expired)).andReturn());
+
+        assertEquals(missing, invalid, "报文相同，区别只在挑战头");
+        assertEquals(missing, stale, "报文相同，区别只在挑战头");
     }
 
     // ------------------------------------------------------------------ 工具

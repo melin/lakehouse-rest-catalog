@@ -241,6 +241,18 @@ lakehouse-rest-spark/      语法扩展（16 条管理语句），一份源码�
                         lakehouse-rest-spark-4.1/  Spark 4.1 / Scala 2.13 / ANTLR 4.13.1
                         两个版本模块各自只有一个 LakehouseRestSqlParser（4.1 侧补
                         parseRoutineParam），其余代码全部来自 shared/
+lakehouse-rest-engine-auth/  引擎侧「拿票 / 续票」（12 个类，纯 Java，不碰 Spark / Flink）：
+                        engine/auth/  TokenSource（取票 / invalidate 两方法）、IssuedToken、
+                        TokenClient + HttpTokenClient（JDK HttpClient，form-urlencoded）、
+                        RefreshingToken（single-flight + 退避 + 「不知道就不能续」）、
+                        RefreshingTokens（**进程级**静态表，Paimon 每次刷新数据票都会重建
+                        provider，状态放实例字段会变成「目录能读、读表一小时后 401」）、
+                        EngineTokenSources（两个消费面共用的装配）、TokenRefreshMetrics、
+                        JwtClaims（只读载荷，不验签）、PaimonOAuth2AuthProvider(+Factory)、
+                        TokenRefreshException；
+                        META-INF/services/org.apache.paimon.factories.Factory 登记 `oauth2`
+                        ↑ 部署约束：provider jar 必须与 paimon bundle **同一个 ClassLoader**
+                        （Spark 同一处 jars/，Flink 放 lib/），否则只报「找不到 factory」
 lakehouse-rest-flink/      Flink SQL 读写 Paimon / Iceberg，一份源码、两个版本（1.20 / 2.3）：
                         shared/src/main/java/…/LakehouseRestFlinkCatalogs.java   两套 catalog 选项
                         shared/src/test/java/…        Paimon 主键更新 / Iceberg 读写（各 3 例）
@@ -293,7 +305,7 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
 | `spark-lance-rest-e2e.md` | 让 Spark 通过本服务端读写 **Lance** 表：`impl=rest` 的七个配置项（`delimiter` / `parent` / **`single_level_ns=false`** 各自不配会怎样）、可执行的 SQL（含 `OPTIMIZE` / `VACUUM` 两条 parser 级命令的三条语法规则）、**§3 的能力边界：这一面没有服务端建表、也没有 `DROP TABLE`**（清理用 `deregister`）、§4 两侧各自写了什么（V2 版本命名、manifest 是带 footer 的**容器**、`Field` 已无 `type`）、§5 类路径上 arrow 两份（以及 0.4.0 才有的 `NamedArgument` 两份）的坑、§6 报错对照。**Spark 引擎层已实测，3.5 与 4.1 各 7 例**（`LanceCatalogLiveTests` 在 `shared/`，`scripts/e2e-lance-spark.sh` 两版各跑一遍） |
 | `flink-rest-catalog.md` | 让 Flink SQL 读写 Paimon / Iceberg：两个版本模块为什么拆、两套 catalog 选项（`metastore=rest` vs `catalog-type=rest`、`warehouse` 是 prefix、`token.provider=bear`）、实测矩阵、**主键更新必须配 `sequence.field`**（否则同键先后未定义）、缺 Hadoop / `flink-connector-base|files` / JDK17 `add-opens` 的报错对照、Iceberg 无 upsert |
 | `catalog-storage-auth-design.md` | 改创建 catalog 页的「存储认证」区块 / 排查「控制台预览 500、引擎却正常」「引擎能读不能写」——**设计稿，未实现（v3）**：主线是 **catalog 自己也是凭据消费者**，六个功能（预览 / 浏览 / 下载 / 分区列举 / 元数据物化 / 删表目录）推出**三条准入线**（服务端读 / 服务端写 / 引擎读写，服务端写是建表写 `schema-<n>` 的必经路径），**三条全过的方式才进表单**；因此 v2 的「用途（只读 / 可写）」被删——票按调用者的 `UPDATE` 签，「环境身份（不在 catalog 存秘密）」也被删——它与「必须能预览」互斥，且 `roleArn` 单独填变成 400；自检升级为**读 + 写两档**（0 字节对象写到 `_lakehouse_probe/` 再删）；来源枚举收成一维五档（`VENDED` / `STATIC` / `LOCAL` / `LEGACY_ENV` / `INVALID`）配存量无损映射；**G2（引擎票恒只读）是前置**：不先做，签发档不许进列表 |
-| `engine-token-refresh-design.md` | 排查「作业跑到约 1 小时后 401」「Iceberg 日志每个 TTL 一次 `Failed to refresh token`」「血缘图后半段没有边」，或要设计引擎侧令牌续期（**设计稿：P0-1 服务端令牌交换已落地，其余未实现**）：先分清**控制面**（主体令牌）与**数据面**（存储凭据，本来就能续，见 `credential-vending-design.md`）；三个断点——Paimon `bear` 只在构造期读票（但 `AuthProvider.mergeAuthHeader` 每请求都被调，钩子一直空着）、Iceberg 默认走 RFC 8693 exchange 而服务端只认 `client_credentials`（**刷新必然 400 且失败后不再重排**）、`ManagementApiClient` 的 `final String` 令牌 + 血缘 fail-open；定案是**服务端加 token exchange + Paimon 自定义 `AuthProvider`**（四个方案的取舍、`RESTTokenFileIO` 每次刷新 `new RESTApi` 所以缓存必须进程级、provider jar 与 paimon bundle 必须同 ClassLoader、`scope=PRINCIPAL_ROLE:ALL` 不是可选项、验收必须把 ttl 调到 90 秒） |
+| `engine-token-refresh-design.md` | 排查「作业跑到约 1 小时后 401」「Iceberg 日志每个 TTL 一次 `Failed to refresh token`」「血缘图后半段没有边」，或要设计引擎侧令牌续期（**已实现：P0-1…P2 全部落地**）：先分清**控制面**（主体令牌）与**数据面**（存储凭据，本来就能续，见 `credential-vending-design.md`）；三个断点——Paimon `bear` 只在构造期读票（但 `AuthProvider.mergeAuthHeader` 每请求都被调，钩子一直空着）、Iceberg 默认走 RFC 8693 exchange 而服务端只认 `client_credentials`（**刷新必然 400 且失败后不再重排**）、`ManagementApiClient` 的 `final String` 令牌 + 血缘 fail-open；定案是**服务端加 token exchange + Paimon 自定义 `AuthProvider`**（四个方案的取舍、`RESTTokenFileIO` 每次刷新 `new RESTApi` 所以缓存必须进程级、provider jar 与 paimon bundle 必须同 ClassLoader、`scope=PRINCIPAL_ROLE:ALL` 不是可选项、验收必须把 ttl 调到 90 秒） |
 | `authorization.md` | 权限实体链、授权映射、失败关闭的取舍；**多级 namespace 的判定口径在 §2.6**（两条链存的形状不同，按点号拼成路径再比，逐段比会静默不命中） |
 | `console.md` | 改控制台 / 排查「页面空列表」：分层、端点契约表、机械校验、加页面清单 |
 | `console-table-detail.md` | 改表详情页：页签随**表格式**（表级 `schema.options.type`）伸缩的数据来源（详细信息含字段/分区列表、表目录文件列表、「为什么没有权限页签」）、按需加载与非 Paimon 表不问快照端点、破坏性操作 |
@@ -453,7 +465,7 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
 - **写了机械校验就要做变异测试**：故意把被校验的东西改错（DTO 字段改名、前端类型列表少一项），
   确认校验脚本**报得出来**。不做的校验往往是空跑。
 - 新增校验组要顺手把「总数」写进 `README.md` / `docs/console.md`。**这条现在由机制兜着**
-  （`verify-console.py` 第 25 组断言这两处写的「N 组 M 项」与脚本实际一致，也断言那一组自己）——
+  （`verify-console.py` 第 27 组断言这两处写的「N 组 M 项」与脚本实际一致，也断言那一组自己）——
   在此之前它只是句人情话，真漏过一次：`docs/console.md` 写 37、`README.md` 写 38、实际 38。
 - **前端字段分层的改动要连 `build()` 一起看**：catalog 表单的字段拆成了
   `BASIC_FIELDS` / `ADVANCED_FIELDS`（高级那张进折叠区），而 `build()` 读的是两者合并后的

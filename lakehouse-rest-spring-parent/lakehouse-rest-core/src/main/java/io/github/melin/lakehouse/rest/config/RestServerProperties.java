@@ -206,6 +206,29 @@ public class RestServerProperties {
              * {@code openssl rand -base64 48}。启动日志会就此给出告警。
              */
             private String signingKey;
+
+            /**
+             * 一条「续期链」的最长寿命，{@code 0} 表示不限。
+             *
+             * <p><b>它与 {@link #ttl} 回答的不是同一个问题。</b>{@code ttl} 是「一张票能活多久」，
+             * 这一项是「靠不断换票能往前跑多久」。没有它，一张泄露的票可以在持有者一直
+             * 活着的情况下被链式续到无限（见 {@code docs/engine-token-refresh-design.md} §7）。
+             *
+             * <p>**默认关闭（{@code 0}）**：打开它会让跑超过 N 小时的作业必须重启，
+             * 而在本功能落地之前，长作业连一小时都过不去。需要「作业不能永久持有访问权」
+             * 的合规场景再打开。
+             *
+             * <p>实现方式是令牌里多一个 {@code ses} claim（会话起点）。换票时沿用父票的
+             * {@code ses}（没有就取父票的 {@code iat}），于是整条链共享同一个起点；
+             * 超过上限就拒绝交换，而**已签发的票仍然可用到期**——否则正在跑的作业会
+             * 在没有任何预兆的情况下 401。
+             */
+            private Duration maxSession = Duration.ZERO;
+
+            /** 是否对续期链设总时长上限（即 {@link #maxSession} 是否生效）。 */
+            public boolean maxSessionEnabled() {
+                return maxSession != null && !maxSession.isZero() && !maxSession.isNegative();
+            }
         }
 
         /**

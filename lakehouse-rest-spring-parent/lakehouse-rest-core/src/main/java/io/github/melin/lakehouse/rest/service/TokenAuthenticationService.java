@@ -51,10 +51,54 @@ public class TokenAuthenticationService {
     private final OidcService oidc;
 
     /**
+     * 令牌被拒的原因。<b>只在认证已经失败之后才能问</b>，它不是判定结果。
+     *
+     * <p>三个取值对应三句不同的下步动作：没带令牌（补上）、过期（去续期或重新登录）、
+     * 无效（检查配置或签名密钥）。混成同一个 401 时，一线看到的现象完全一样，
+     * 于是「票过期」被当成「权限不对」排查——这正是长作业在跑满一个 TTL 之后
+     * 遇到的那种情况，而它本来只需要一次自动续期。
+     */
+    public enum Rejection {
+        /** 请求里没有 Bearer 令牌。 */
+        MISSING,
+        /** 令牌是本服务端签的、签名也对，只是过了 {@code exp}。 */
+        EXPIRED,
+        /** 签名不符、签发者不对、结构损坏，或外部 OIDC 校验没过。 */
+        INVALID
+    }
+
+    /**
+     * 这个被拒的令牌属于哪一种情况。
+     *
+     * <p><b>先验签再判过期</b>：{@code exp} 是令牌里的一个字段，签名不对时它是不可信的
+     * 输入。据此回 {@code EXPIRED}，等于让攻击者用一个乱签的令牌探测「这个服务端签的票
+     * 原来什么时候过期」——虽然用处不大，但没有理由给。
+     *
+     * <p>外部 OIDC 令牌一律归为 {@link Rejection#INVALID}：{@link OidcService} 只回
+     * 「行 / 不行」，而它的失败原因（JWKS 拉不到、issuer 配错、签名算法不支持）在
+     * 一线排查时看的是服务端日志，不是客户端的一个响应头。
+     */
+    public Rejection rejectionOf(String token) {
+        if (token == null || token.isBlank()) {
+            return Rejection.MISSING;
+        }
+        Jwt.Decoded decoded;
+        try {
+            decoded = Jwt.decode(token);
+        } catch (IllegalArgumentException e) {
+            return Rejection.INVALID;
+        }
+        return accessTokens.examine(decoded) == AccessTokenService.Verdict.EXPIRED
+                ? Rejection.EXPIRED
+                : Rejection.INVALID;
+    }
+
+    /**
      * 认证一个令牌。
      *
      * @return 令牌有效时的身份；无效（含格式不对、签名不符、已过期）时为空。
-     *         调用方不应区分这些原因——它们对外都是同一个 401
+     *         <b>是否放行只看这个返回值</b>——「因为什么被拒」由
+     *         {@link #rejectionOf(String)} 单独回答，它不参与判定
      */
     public Optional<AuthenticatedToken> authenticate(String token) {
         if (token == null || token.isBlank()) {

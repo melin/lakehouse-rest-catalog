@@ -76,7 +76,12 @@ spec/rest-catalog-open-api-iceberg.yaml）。路径写错时前端只表现为�
                   「这张票是 IdP 发的」、地址只来自服务端下发的 end_session_endpoint、
                   且必须在清令牌之前算。三处任一处判错都不报错——要么把口令登录者
                   扔到别人的 IdP 页面上，要么登出悄悄退回「只清本机」
- 26. 文档计数     文档里写的「N 组 M 项」与脚本实际一致——加校验组的人要顺手改文档，
+ 26. 引擎片段     「引擎怎么连」那几行可复制配置里的续期契约：Paimon 的 token.provider
+                  默认仍是 bear（写 oauth2 而 classpath 上没有 provider jar 会让建 catalog
+                  当场失败）、Iceberg 两面的 scope 必须与服务端 SCOPE_ALL 逐字相同
+                  （否则第一次刷新才报 invalid_scope）、续期能力分控制面/数据面两列、
+                  片段里不得出现真实密钥
+ 27. 文档计数     文档里写的「N 组 M 项」与脚本实际一致——加校验组的人要顺手改文档，
                   而这条约定此前没人执行（真漂过一次：docs/console.md 37、实际 38）
 
 用法：
@@ -2741,10 +2746,90 @@ check("两个登出入口都是整页跳转（不是路由跳转）",
       "登出目标是另一个域，vue-router 跳不过去；顶栏与设置页任一入口漏掉，"
       "从那个入口登出的 SSO 会话就结束不了")
 
-# ------------------------------------------------------------------ 26. 文档计数
+# ------------------------------------------------------------------ 26. 引擎接入片段
 
 print()
-print("26. 文档计数（文档写的「N 组 M 项」必须与脚本实际一致）")
+print("26. 引擎接入片段（可复制那几行里的续期契约）")
+
+# 这一组罩的是 `utils/engineSnippet.js`——**复制出去的东西**。它错了控制台不会报任何错：
+# 片段照常显示、照常复制成功，只是粘进引擎之后行为不对，而且往往要跑满一个令牌 TTL
+# （默认一小时）才现形。六个检查点各对应一类静默错法：
+#
+#   1. `token.provider` 默认必须是 `bear`。写成 `oauth2` 而 classpath 上没有本工程的
+#      provider jar 时，Paimon 在建 catalog 那一刻就失败，报的是「找不到 factory」。
+#   2. Iceberg 两面的 `scope` 必须与服务端 `ClientCredentialsService.SCOPE_ALL` **逐字**
+#      相同。这里直接读 Java 常量，不抄第二个副本——抄了就会漂，而漂的表现是
+#      「配置永远 400 invalid_scope」，且发生在第一次刷新之后。
+#   3. `RENEWAL` 必须分控制面 / 数据面两列。合成一列时「数据票能续」会被读成
+#      「主体令牌也能续」，而后者才是长作业真正挂掉的那一条。
+#   4. `oauth2.credential` 只能作为注释出现，不能是一行可粘贴的配置。
+#   5. 片段里不得出现真实密钥，只有占位符（`<主体令牌>` / `<AK>`）。
+#   6. 详情页真的把续期开关接上了，且只为 Paimon 面显示。
+snippet_source = read(os.path.join(CONSOLE_DIR, "src/utils/engineSnippet.js"))
+
+# --- 26.1 Paimon 的 token.provider 默认仍是 bear ---------------------------
+# 「默认关」是这个开关的全部安全性所在：默认开会让所有还没有 provider jar 的部署
+# 在建 catalog 时直接失败。因此这里钉的是「默认值」而不是「有没有 oauth2 这个选项」。
+check("Paimon 两面的 token.provider 默认仍是 bear（oauth2 只在显式要求续期时出现）",
+      snippet_source.count("{ key: 'token.provider', value: renewable ? 'oauth2' : 'bear' }") == 2,
+      "两处（Spark / Flink）都该是 `renewable ? 'oauth2' : 'bear'`")
+
+# --- 26.2 scope 字面量与 Java 常量逐字一致 ---------------------------------
+SCOPE_SOURCE = os.path.join(
+    ROOT, "lakehouse-rest-spring-parent/lakehouse-rest-core/src/main/java/"
+          "io/github/melin/lakehouse/rest/service/ClientCredentialsService.java")
+scope_java = re.search(r'SCOPE_ALL\s*=\s*"([^"]+)"', read(SCOPE_SOURCE))
+expected_scope = scope_java.group(1) if scope_java else "<找不到 SCOPE_ALL>"
+
+check(f"服务端 SCOPE_ALL 仍是 {expected_scope}（片段与它的字面量由此对齐）",
+      scope_java is not None and ":" in expected_scope,
+      "没在 ClientCredentialsService 里读到 SCOPE_ALL")
+
+# 片段里出现的每一个 PRINCIPAL_ROLE:* 字面量都必须等于那个常量：
+# 反例是「某处写 PRINCIPAL_ROLE:all 或 PRINCIPAL_ROLE:READ_ONLY」，编译与测试都发现不了
+snippet_scopes = set(re.findall(r"PRINCIPAL_ROLE:[A-Za-z_]+", snippet_source))
+check(f"片段里的 PRINCIPAL_ROLE:* 只有服务端那一个取值（{expected_scope}）",
+      snippet_scopes == {expected_scope},
+      f"片段里出现了 {sorted(snippet_scopes)}")
+
+# 两面都要带上它：Iceberg 客户端默认发 `catalog`，缺这一行会等到第一次刷新才报错
+scope_occurrences = snippet_source.count("'PRINCIPAL_ROLE:ALL'")
+check("Iceberg 两面各有一行 scope（Spark 带前缀、Flink 不带）",
+      scope_occurrences >= 2,
+      f"只出现 {scope_occurrences} 处")
+
+# --- 26.3 续期能力分两列 ---------------------------------------------------
+# 用计数而不是解析对象：这个文件是纯函数模块，`control:` / `data:` 各三次
+# （Paimon / Iceberg / Lance），少一次就说明某一面被漏掉了
+check("RENEWAL 的三面各有 control 与 data 两列",
+      snippet_source.count("\n    control: {") == 3 and snippet_source.count("\n    data: {") == 3,
+      f"control {snippet_source.count(chr(10) + '    control: {')} 处、"
+      f"data {snippet_source.count(chr(10) + '    data: {')} 处")
+
+# --- 26.4 兜底凭据只以注释形式出现 -----------------------------------------
+# `oauth2.credential` 里放的是长期密钥。把它作为可粘贴的配置行放进片段，
+# 等于鼓励人把它贴进 --conf（进程列表可见）。允许被提及，不允许成为一行配置
+pair_credential = re.search(r"\{ key: 'oauth2\.credential'", snippet_source)
+check("oauth2.credential 只出现在注释里，不是可粘贴的配置行",
+      pair_credential is None and "oauth2.credential=<clientId>:<clientSecret>" in snippet_source,
+      "它要么成了 pair（会被当配置复制出去），要么连注释都没有（读者不知道有这个键）")
+
+# --- 26.5 占位符而不是真实值 -----------------------------------------------
+check("手动密钥仍是占位符（<AK> / <SK>）",
+      "'<AK>'" in snippet_source and "'<SK>'" in snippet_source,
+      "manualSecrets 里的值被换成了看起来像真密钥的东西")
+
+# --- 26.6 详情页把开关接上了 -----------------------------------------------
+form_view = read(os.path.join(CONSOLE_DIR, "src/views/CatalogFormView.vue"))
+check("CatalogFormView 把 renewable 传给了片段生成器，且开关只为 Paimon 面显示",
+      "renewable: renewSwitchable.value && renewToken.value" in form_view
+      and "renewSwitchable" in form_view,
+      "页面没接上开关，或开关对所有格式都显示（Iceberg 本来就会续，摆开关会误导）")
+
+# ------------------------------------------------------------------ 27. 文档计数
+
+print()
+print("27. 文档计数（文档写的「N 组 M 项」必须与脚本实际一致）")
 
 # 这一组是**元校验**，起因是一次真实的漂移：docs/console.md 写「12 组 37 项」、
 # README 写「12 组 38 项」，而脚本实际是 38——两个数字都没人核对，因为脚本此前

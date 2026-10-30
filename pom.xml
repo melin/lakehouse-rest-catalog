@@ -51,6 +51,7 @@
 	-->
 	<modules>
 		<module>lakehouse-rest-spring-parent</module>
+		<module>lakehouse-rest-engine-auth</module>
 		<module>lakehouse-rest-spark</module>
 		<module>lakehouse-rest-flink</module>
 		<module>lakehouse-rest-optimizer</module>

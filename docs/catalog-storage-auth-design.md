@@ -7,7 +7,7 @@
 > `StorageConfigs.validate` + `utils/storageAuthMethods.js`；S3 五档在 `CatalogCredentialSource` 与
 > `utils/credentialSource.js`；S4 自检在 `ConsoleStorageProbeService` + `POST /api/console/v1/catalog-storage-probe`
 > （用例 `ConsoleApiTests#storageProbe*`）；S5 在 `CatalogFormView`（方式卡片 / 五档状态 / 自检两档）+
-> `verify-console.py` 第 24 组（193 项）。
+> `verify-console.py` 第 24 组（全文 201 项）。
 >
 > **v3 修订（2026-10-30）。** v2 把「这个 catalog 要不要给引擎写」做成表单上的一个开关
 > （用途：只读 / 可写），并保留了「环境身份（不在 catalog 存秘密）」这一档。两处都撤掉：

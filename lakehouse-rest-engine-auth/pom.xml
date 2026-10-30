@@ -1,0 +1,127 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+	<modelVersion>4.0.0</modelVersion>
+
+	<parent>
+		<groupId>io.github.melin</groupId>
+		<artifactId>lakehouse-rest-parent</artifactId>
+		<version>1.0.0</version>
+	</parent>
+
+	<artifactId>lakehouse-rest-engine-auth</artifactId>
+	<packaging>jar</packaging>
+	<name>lakehouse-rest-engine-auth</name>
+	<description>引擎侧的主体令牌获取与续期：Paimon AuthProvider 与 Spark 治理通道共用的 TokenSource</description>
+
+	<!--
+		这个模块回答一个问题：**引擎手里的主体令牌过期了，去哪里换、什么时候换。**
+
+		为什么要单独成模块，而不是塞进 lakehouse-rest-spark-common：
+
+		  - 它同时被 Spark 与 Flink 用。放进 spark-common 的话，lakehouse-rest-flink-*
+		    就得依赖一个叫 spark-common 的模块（见 docs/maven-module-design.md §4 的判据）；
+		  - 它对 Paimon 的依赖只有 **SPI 接口**（AuthProvider / AuthProviderFactory /
+		    Options），没有 Spark、没有 Scala、没有 ANTLR，因此一份 jar 两个引擎通用；
+		  - 同一个模块里放 Spark 治理通道用的 TokenSource：两者是同一件事（拿票、续票）
+		    的两个消费面，逻辑只该有一份。续期策略（进程级缓存、single-flight、退避、
+		    JWT exp 兜底）写在 RefreshingToken 里，Paimon 的 provider 与
+		    ManagementApiClient 都只是它的调用方。
+
+		**部署位置是唯一的硬坑**：Paimon 用
+		`FactoryUtil.discoverFactory(AuthProviderFactory.class.getClassLoader(), ...)`
+		发现 provider——用的是 AuthProviderFactory 的 loader，**不是**线程上下文 loader。
+		所以本 jar 必须与 paimon 的 bundle 处在**同一个 ClassLoader**：
+
+		  Spark：和 paimon bundle 一起放同一条提交参数（`jars` 选项）或分发的 `jars/` 下，
+		         不能一个在 `jars/`（父 loader）一个在提交参数里（子 loader）；
+		  Flink：放 `lib/`；用 `-j`（用户 jar → 子 loader）会看不见。
+
+		看不见的症状只有一句 `Could not find any factory for identifier 'oauth2'`，
+		它不会提示 classloader。这条已写进 flink-rest-catalog.md 与两份 e2e 文档的报错表。
+
+		依赖作用域全是 provided：这份 jar 只在引擎的 classpath 上生效，Paimon / Jackson /
+		slf4j 都由发行版提供。用 compile 会把它们打进产物，与集群里的版本形成竞争——
+		与 spark-common 的取向一致（见那边 POM 的说明）。
+	-->
+
+	<dependencies>
+		<!--
+			Paimon 的 SPI 接口在这里（不是 paimon-common）。
+
+			`org.apache.paimon.rest.auth.AuthProvider`、`AuthProviderFactory`、
+			`org.apache.paimon.options.Options`、`org.apache.paimon.factories.Factory`
+			都在 **paimon-api** 里；paimon-common 不含这些类。写成 paimon-common 会让
+			编译期找不到 AuthProvider，而报错指向的是本模块而不是依赖写错。
+
+			provided：运行时由引擎上的 paimon bundle 提供。**不能**用 compile——那会把
+			paimon-api 打进引擎 jar 并可能与 bundle 里的同名类分裂成两份。
+		-->
+		<dependency>
+			<groupId>org.apache.paimon</groupId>
+			<artifactId>paimon-api</artifactId>
+			<version>${paimon.version}</version>
+			<scope>provided</scope>
+			<exclusions>
+				<!--
+					paimon-api 以 compile 作用域带进 slf4j-api 1.7.32。留着它就有两个
+					slf4j-api 版本在同一份编译类路径上，而 1.7 与 2.x 的 SPI 不同：
+					1.7 只认 `StaticLoggerBinder`，2.x 认 `SLF4JServiceProvider`。
+					两个都在时**一个绑定都装不上**，全局退化成 NOP——
+					表现是「日志一行都没有」，而不是任何报错。下面显式钉 2.0.13。
+				-->
+				<exclusion>
+					<groupId>org.slf4j</groupId>
+					<artifactId>slf4j-api</artifactId>
+				</exclusion>
+			</exclusions>
+		</dependency>
+
+		<!--
+			日志：只能用 slf4j。用 java.util.logging 的话，Spark 的 log4j2 / Flink 的
+			logback 都只接管 slf4j，续期失败与「这张票不会自动续期」这类 WARN 在引擎
+			日志里**看不见**——而它们正是本模块唯一的可观测面。
+
+			2.0.13 而不是继承 paimon-api 的 1.7.32：见上面 exclusion 的说明。
+		-->
+		<dependency>
+			<groupId>org.slf4j</groupId>
+			<artifactId>slf4j-api</artifactId>
+			<version>2.0.13</version>
+			<scope>provided</scope>
+		</dependency>
+
+		<!--
+			解析换票响应（`access_token` / `expires_in`）与读 JWT 的 `exp` / `sub`。
+			版本走根 POM 的 dependencyManagement（2.15.2，与 Spark 3.5 对齐）。
+			provided：Spark 自带 Jackson，Flink 的 lib 里也有。
+		-->
+		<dependency>
+			<groupId>com.fasterxml.jackson.core</groupId>
+			<artifactId>jackson-databind</artifactId>
+			<scope>provided</scope>
+		</dependency>
+
+		<dependency>
+			<groupId>org.junit.jupiter</groupId>
+			<artifactId>junit-jupiter</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.junit.platform</groupId>
+			<artifactId>junit-platform-launcher</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<!--
+			测试期要真的构造 `Options`、也要能看见 WARN 是否发出来；
+			slf4j-simple 是 2.x 的实现，与本模块钉的 2.0.13 同代。
+		-->
+		<dependency>
+			<groupId>org.slf4j</groupId>
+			<artifactId>slf4j-simple</artifactId>
+			<version>2.0.13</version>
+			<scope>test</scope>
+		</dependency>
+	</dependencies>
+
+</project>

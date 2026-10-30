@@ -38,15 +38,12 @@ private[spark] class PolicyFetcher(session: SparkSession) {
 
   private val log = LoggerFactory.getLogger(classOf[PolicyFetcher])
 
-  private lazy val client: ManagementApiClient = {
-    val url = PolicySettings.stringOf(session, PaimonRestManagement.MANAGEMENT_URL,
-      PaimonRestManagement.DEFAULT_URL)
-    val token = PolicySettings.stringOf(session, PaimonRestManagement.TOKEN, "")
-    val timeout = PolicySettings.stringOf(session, PaimonRestManagement.TIMEOUT_SECONDS,
-      PaimonRestManagement.DEFAULT_TIMEOUT_SECONDS.toString)
-    new ManagementApiClient(url, token,
-      Duration.ofSeconds(PaimonRestManagement.parseTimeout(timeout)))
-  }
+  private lazy val client: ManagementApiClient =
+    // 与管理语句共用同一个装配入口：地址、令牌、超时、续期配置都是同一套。
+    // 这里**必须**也续期——它的失效方向是 fail-closed（默认），票过期之后
+    // 每条查询都会因为「拉不到策略」而失败，报错是 PolicyEnforcementException，
+    // 看起来像权限问题而不是令牌过期。
+    PaimonRestManagement.clientFor(session)
 
   private lazy val cache: PolicyCache = new PolicyCache(PolicySettings.ttlMillis(session))
 

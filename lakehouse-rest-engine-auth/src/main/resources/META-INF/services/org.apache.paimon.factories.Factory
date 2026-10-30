@@ -1,0 +1,8 @@
+# Paimon 用 FactoryUtil.discoverFactory(...) 按 identifier 找 AuthProviderFactory。
+#
+# 这个文件必须与 paimon 的 bundle 处在**同一个 ClassLoader**：
+# FactoryUtil 用的是 AuthProviderFactory.class.getClassLoader()，不是线程上下文 loader。
+#   Spark：本 jar 与 paimon bundle 都放 --jars 或分发的 jars/（同一 loader）
+#   Flink：放 lib/（用 -j 会进子 loader，看不见）
+# 看不见的症状只有一句 "Could not find any factory for identifier 'oauth2'"。
+io.github.melin.lakehouse.rest.engine.auth.PaimonOAuth2AuthProviderFactory

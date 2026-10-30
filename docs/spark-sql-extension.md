@@ -23,12 +23,18 @@ SHOW PERMISSIONS IN CATALOG paimon FOR USER svc_etl;
 
 | 集群 | 扩展 jar | 配套 jar |
 | --- | --- | --- |
-| Spark 3.5.x / Scala 2.12 | `lakehouse-rest-spark-3.5` | `lakehouse-rest-spark-common` |
-| Spark 4.1.x / Scala 2.13 | `lakehouse-rest-spark-4.1` | `lakehouse-rest-spark-common` |
+| Spark 3.5.x / Scala 2.12 | `lakehouse-rest-spark-3.5` | `lakehouse-rest-spark-common` + `lakehouse-rest-engine-auth` |
+| Spark 4.1.x / Scala 2.13 | `lakehouse-rest-spark-4.1` | `lakehouse-rest-spark-common` + `lakehouse-rest-engine-auth` |
 
-两个 jar 都要带：`-common` 是 REST 客户端（纯 Java，两版共用一份），版本 jar 里只有
-语法扩展本身。它们各自的依赖都是 `provided`（Spark / Scala / ANTLR 由集群提供），
-因此不需要再拷别的东西。
+三个 jar 都要带：`-common` 是 REST 客户端（纯 Java，两版共用一份），`engine-auth` 提供
+「拿票与续票」（治理通道的 401 重放靠它换票，Paimon 的 `token.provider=oauth2` 也是它），
+版本 jar 里只有语法扩展本身。它们各自的依赖都是 `provided`（Spark / Scala / ANTLR 由集群
+提供），因此不需要再拷别的东西。
+
+> `engine-auth` 里面还有 Paimon 的 `AuthProvider` 实现。**Paimon 那一侧要求它与
+> `paimon-bundle` 在同一个 ClassLoader**（Spark 放同一处 `jars/`，Flink 放 `lib/`，
+> 不能用 `-j`），否则报的只是一句 `Could not find any factory for identifier 'oauth2'`。
+> 把三个 jar 一起放在同一处就同时满足两边。
 
 ```bash
 spark-sql \

@@ -31,6 +31,22 @@
 
 	<dependencies>
 		<!--
+			令牌来源。治理通道的票与 Paimon catalog 的票是同一件事（拿票、续票），
+			续期策略只该有一份实现，所以共用 lakehouse-rest-engine-auth。
+
+			这个 jar 同时被 Flink 用，它对本模块的唯一贡献是 TokenSource 这一层；
+			它自己对 paimon-api 的依赖是 provided，不会传递到这里。
+
+			**部署时要三个 jar 一起上**（本模块 + 版本模块 + 这个）：见
+			docs/spark-sql-extension.md 的部署表。少了它，启动即
+			NoClassDefFoundError: io/github/melin/lakehouse/rest/engine/auth/TokenSource。
+		-->
+		<dependency>
+			<groupId>io.github.melin</groupId>
+			<artifactId>lakehouse-rest-engine-auth</artifactId>
+		</dependency>
+
+		<!--
 			日志用 slf4j-api，运行时由 Spark 提供（provided）。
 			为什么不用 java.util.logging：Spark 的日志配置（log4j2 / logback）只接管 slf4j，
 			JUL 写出来的东西在 spark-submit 的日志里看不到——而血缘的丢弃与失败计数

@@ -258,8 +258,10 @@ for label, columns in SHOW_COLUMNS.items():
 # ------------------------------------------------------------------ 6. 配置项
 
 extensions = read(EXTENSIONS) + read(POLICY_COMMANDS)
-config_keys = sorted(set(re.findall(r'val\s+[A-Z_]+\s*=\s*"(spark\.[a-zA-Z.]+)"', extensions)))
-docs_keys = set(re.findall(r"`(spark\.lakehouse\.rest\.[a-zA-Z.]+)`", doc))
+# 键名里可以有连字符（`refresh-window`、`confirm-destructive`），字符类必须带上 `-`：
+# 少了它，这些键根本不在检查范围内——「全部键都在文档里」于是变成一条空跑的校验
+config_keys = sorted(set(re.findall(r'val\s+[A-Z_]+\s*=\s*"(spark\.[a-zA-Z.\-]+)"', extensions)))
+docs_keys = set(re.findall(r"`(spark\.lakehouse\.rest\.[a-zA-Z.\-]+)`", doc))
 missing_keys = [key for key in config_keys if key not in docs_keys]
 check(f"实现的配置键都在文档中列出（{len(config_keys)} 个）",
       not missing_keys,

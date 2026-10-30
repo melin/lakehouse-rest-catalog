@@ -21,13 +21,13 @@ Paimon 与 Iceberg」的协议方案。本文件解决它的前置问题：**代
 | 命名族 | **`lakehouse-rest-*`**，groupId 仍是 `io.github.melin` |
 | 骨架模块 | `lakehouse-rest-parent`（聚合）、`lakehouse-rest-spring-parent`（服务端世界的父）、`-core`、`-storage`、`-server` |
 | 协议面模块 | `lakehouse-rest-protocol-paimon`、`lakehouse-rest-protocol-iceberg`、`lakehouse-rest-protocol-lance` —— **格式名只允许出现在协议面模块的 artifactId 里**（§2.2） |
-| 集群侧模块 | `lakehouse-rest-optimizer`；Spark 侧自 §13 起拆成 `lakehouse-rest-spark-parent` + `-common` + `-3.5` + `-4.1`（一份源码、两个版本产物）；Flink 侧（§14）拆成 `lakehouse-rest-flink-parent` + `-1.20` + `-2.3`（同样一份源码、两个版本产物） |
-| Maven 项目数 | **16**（构成见 §3.1 的结构树：聚合 + 两个父 POM + 服务端 6 jar + Spark 4 件 + Flink 3 件 + optimizer） |
+| 集群侧模块 | `lakehouse-rest-optimizer`；Spark 侧自 §13 起拆成 `lakehouse-rest-spark-parent` + `-common` + `-3.5` + `-4.1`（一份源码、两个版本产物）；Flink 侧（§14）拆成 `lakehouse-rest-flink-parent` + `-1.20` + `-2.3`（同样一份源码、两个版本产物）；引擎侧共用的 `lakehouse-rest-engine-auth` 不带版本后缀（拿票 / 续票，Spark 与 Flink 同用） |
+| Maven 项目数 | **17**（构成见 §3.1 的结构树：聚合 + 两个父 POM + 服务端 6 jar + Spark 4 件 + Flink 3 件 + `engine-auth` + optimizer） |
 | Java 包名 | **`io.github.melin.lakehouse.rest`**，与 artifactId 的 `lakehouse` 对齐；协议面各独占一层格式子包（§11） |
 | Spring 配置前缀 | **`lakehouse.rest.*`**。客户端键 `spark.lakehouse.rest.*` 与 k8s 资源名各有各的判据，都不跟它走（§4） |
 | k8s 资源名 | **`lakehouse-rest*`**，与镜像名同词根；改名要连带改 selector、Secret 引用与 Service DNS（§4） |
 | 加新格式面 | 按 §5 的顺序，新格式的代码从第一天就落进新的 `-protocol-<格式>` 模块 |
-| 当前形态 | 16 个 Maven 项目（见上一行）；五个服务端模块嵌在 `spring-parent/` 下（§9）；类的实际落点见 §8 |
+| 当前形态 | 17 个 Maven 项目（见上一行）；五个服务端模块嵌在 `spring-parent/` 下（§9）；类的实际落点见 §8 |
 
 ---
 
@@ -94,12 +94,21 @@ io.github.melin:lakehouse-rest-parent                     pom   聚合器 + 集�
 │   ├── lakehouse-rest-spark-3.5                          jar   Spark 3.5 / Scala 2.12 / ANTLR 4.9.3
 │   └── lakehouse-rest-spark-4.1                          jar   Spark 4.1 / Scala 2.13 / ANTLR 4.13.1
 │       （shared/ 不是模块：两个版本模块共用的源码目录，见 §13）
+├── lakehouse-rest-engine-auth                            jar   引擎侧「拿票 / 续票」（纯 Java，无 Spark/Flink 依赖）
 ├── lakehouse-rest-flink-parent                           pom   Flink 侧的聚合（复用根 POM 的依赖世界）
 │   ├── lakehouse-rest-flink-1.20                         jar   Flink 1.20.1 + Paimon 2.1.0 + Iceberg 1.11.0
 │   └── lakehouse-rest-flink-2.3                          jar   Flink 2.3.0 + Paimon 2.1.0（2.2 连接器）+ Iceberg 1.12.0
 │       （shared/ 同上：catalog 选项与端到端用例的唯一一份，见 §14）
 └── lakehouse-rest-optimizer                              jar   k8s 优化任务
 ```
+
+> `lakehouse-rest-engine-auth` 是唯一一个**不面向某个引擎版本**的模块，理由是它同时被
+> 三个消费面用：Paimon 的 `AuthProvider`（Spark 与 Flink 都走 Paimon 的连接器）、
+> Spark 治理通道的 `ManagementApiClient`、以及将来的其它引擎。塞进 `spark-common`
+> 会让 Flink 去依赖一个叫 `spark-` 的东西；按版本各写一份则要把「什么时候换票、
+> 失败怎么退避」这段逻辑抄三遍。它只依赖 `paimon-api`（`provided`，仅取 SPI 接口）、
+> Jackson 与 slf4j，**不 import 任何 Spark / Flink 类型**——这条由 pom 的依赖清单本身就
+> 能看出来，不需要额外的 enforcer 规则。
 
 > 磁盘布局与这棵树**一致**：五个服务端模块的目录就嵌在 `lakehouse-rest-spring-parent/`
 > 里面，所以 `spring-parent` 的 `<module>` 写裸名字、子模块的 `<parent>` 不用写

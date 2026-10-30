@@ -65,6 +65,41 @@ Spark 原生解析器，与 Paimon 注入的规则不重叠，因此谁在前都
 
 `spark.sql.extensions` 只在**建会话那一刻**生效，会话建好之后再设不会生效。
 
+#### 1.2.1 令牌续期：`token.provider=oauth2`
+
+上面的 `bear` 把令牌原样当静态头贴上去，**不会续期**：服务端签的票默认一小时到期，
+跑得比它久的作业会在某个请求上开始 401，重启就恢复——这是「长作业活不过一个 TTL」
+的典型症状。要续期，换成 provider `oauth2`（需要 `lakehouse-rest-engine-auth` 这个 jar）：
+
+```properties
+spark.sql.catalog.paimon.token.provider=oauth2
+spark.sql.catalog.paimon.token=<起始票>
+# 可选：起始票不可用（已过期 / 没填）时用凭据兜底；长期密钥进作业配置，见下面的取舍
+spark.sql.catalog.paimon.oauth2.credential=<clientId>:<clientSecret>
+# 可选：不配则由 uri 推导 <uri>/v1/oauth/tokens
+spark.sql.catalog.paimon.oauth2.token-endpoint=http://catalog-host:8080/v1/oauth/tokens
+# 可选：默认 min(ttl×15%, 5min)；配了也不会超过 TTL 的 90%
+spark.sql.catalog.paimon.oauth2.refresh-window=5min
+```
+
+规则（细节与理由见 [`engine-token-refresh-design.md`](engine-token-refresh-design.md) §4.2）：
+
+- 每进刷新窗口换一次票，并发请求只发一次换票（single-flight）；
+- **换票失败不会让请求失败**：返回旧票、按 1s/2s/4s… 退避（上限 30s）并打 WARN。
+  单条 WARN 分不清偶发与持续，所以它带着「累计失败次数」与原因；
+- 票里既没有 `expires_in` 也没有可读的 `exp` → 判定不可续并打一条 WARN，**不假装能续**；
+- 只配 `credential` 不配 `token` → 第一次请求时直接走 `client_credentials`（冷启动）；
+- 缓存是**进程级**的。Paimon 每次刷新数据票都会重建 `RESTApi`，把票存在 provider
+  实例字段里会让目录能读、读表一小时后 401。
+
+**部署上唯一必须注意的一条**：`oauth2` provider 的服务文件必须与 `paimon-bundle`
+处在**同一个 ClassLoader**。Spark 下把 `lakehouse-rest-engine-auth-*.jar` 与 paimon
+的 jar 放同一处（分发的 `jars/` 或同一个 `--jars`）；Flink 放 `lib/`。
+放错位置的症状只有一句 `Could not find any factory for identifier 'oauth2'`（见 §5）。
+
+`oauth2.credential` 是长期密钥，`--conf` 在进程列表里可见：优先用 secret 挂载 +
+启动后 `spark.conf.set`，或者干脆只用起始票（短票由服务端续，密钥不落作业配置）。
+
 ### 1.3 手工验证
 
 ```bash
@@ -456,6 +491,10 @@ options.put(PATH.key(), response.getPath());   // put，不是 putIfAbsent
 | `Cannot get latest schema for table <表名>`（服务端日志里**没有**对应 WARN） | 物化那一步压根没被触发：`lakehouse.rest.table-metadata.enabled=false`，或者表是**外部表**——`register` 登记进来的，或建表时客户端自己给了 `path` 的非 Paimon 表（见 4.4.1） | 前者打开开关；后者是有意不物化的（位置不归本服务端所有），需要引擎侧自己保证目录里有 schema |
 | `Content-Type 'text/plain;charset=UTF-8' is not supported` | 服务端未放宽 JSON 转换器。Paimon 客户端（Apache HttpClient 5）把 JSON 请求体标成 `text/plain`，早期版本会因此 415 | 已由 `JsonContentTypeConfig` 修复；若仍遇到，确认服务端版本 |
 | `Table <库.表> does not support batch scan.` / `does not support append in batch mode.` | 表的 `capabilities()` 里没有 `BATCH_READ` / `BATCH_WRITE`。Lance 表（连同 Iceberg 表）在 Paimon 2.1.0 里就是空集——上游只搭了 API 骨架，`LanceTableImpl` 的 `newScan()` / `newRead()` 都抛 `UnsupportedOperationException`，见 4.4 | **不是缺 jar**，补 `lance-core` 也没用。要读 Lance 数据用 Lance 生态自己的 Spark 连接器，拿 `LanceTable.location()` 指过去；Paimon 的 Spark 连接器在当前版本不解 |
+| `Could not find any factory for identifier 'oauth2'` | 配了 `token.provider=oauth2`，但 provider 的服务文件与 paimon bundle **不在同一个 ClassLoader** | 见 1.2.1 末段。Spark：`lakehouse-rest-engine-auth-*.jar` 与 paimon 的 jar 放同一处（同一个 `--jars` 或分发的 `jars/`），**不能**一个在 `jars/` 一个在 `--jars`；Flink：放 `lib/`，用 `-j` 看不见。`FactoryUtil` 用的是 `AuthProviderFactory` 自己的 loader，不是线程上下文 loader——所以这句报错永远不会提示你去查 classpath |
+| 目录能读，读表跑到一小时后开始 401 | 续期的缓存放在了 provider 实例字段里。Paimon 每次刷新数据票都 `new RESTApi(...)`，provider 被反复重建，新实例拿到的只有配置里那张初始票 | 用本工程的 `oauth2` provider（1.2.1），它的状态在进程级静态表里。判据：换票日志一条都没有，而数据票刷新的日志在涨 |
+| 作业跑到一小时左右开始 401，日志里每个 TTL 出现一次刷新失败 | 配了 `bear`（不会续期），或 `oauth2` 的换票被服务端拒（服务端没升级 / 网关拦了 grant） | 先看 WARN 里的 `cause=`：`unsupported_grant_type` 说明服务端不认识交换，配 `oauth2.credential` 走兜底；`invalid_grant` 说明起始票已过期，重新拿票 |
+| `400 invalid_grant: this session is older than … max-session` | 部署开了 `lakehouse.rest.auth.access-token.max-session`，这条链跑满上限 | 护栏的正常行为：手里的票仍可用到期，重新拿票会开一条新链 |
 
 ---
 

@@ -101,6 +101,16 @@
 			</dependency>
 
 			<!--
+				令牌来源（Paimon provider 与治理通道共用的那一层）。Spark 侧只用它的
+				TokenSource；同族的 provider 是给 Paimon 用的，与本模块无关。
+			-->
+			<dependency>
+				<groupId>io.github.melin</groupId>
+				<artifactId>lakehouse-rest-engine-auth</artifactId>
+				<version>${project.version}</version>
+			</dependency>
+
+			<!--
 				测试期的引擎 bundle。构件名由上面两个属性给出，模块里只写 groupId/artifactId
 				之外的 scope——版本仍由根 POM 的 paimon.version / iceberg.version 管，
 				那两个值必须与服务端世界保持一致（见根 POM 的注释）。

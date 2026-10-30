@@ -23,9 +23,10 @@ Paimon 与 Iceberg 共用 `/v1/{prefix}` 靠这个字段分派；Lance 没有 `/
 
 - 元数据存储：**MySQL 8.0**，DDL 由实体生成、见 `sql/schema-mysql.sql`（划分与取舍见
   [`docs/data-model.md`](docs/data-model.md)），经 JPA 访问；另有 H2 内存库与 PostgreSQL 两个 profile
-- 工程：**16 个 Maven 项目** + 一个 Vite 控制台——服务端拆 `core` / `storage` / `protocol-paimon` /
+- 工程：**17 个 Maven 项目** + 一个 Vite 控制台——服务端拆 `core` / `storage` / `protocol-paimon` /
   `protocol-iceberg` / `protocol-lance` / `server` 六个，Spark SQL 扩展与 Flink 连接器各按引擎版本拆包，
-  另有表存储优化任务与两个父 POM；目录与依赖不变量见第 1 节
+  另有引擎侧共用的 `engine-auth`（拿票与续票，Spark/Flink 同用）、表存储优化任务与两个父 POM；
+  目录与依赖不变量见第 1 节
 - 表格式：**Paimon 表**，以及三种不受快照管理的表——**Format 表**（目录里的既有文件）、
   **Object 表**（对象元数据，列由 Paimon 固定）、**Lance 表**（只登记不读写，Paimon 2.1.0 未实现）。
   类型写在 `schema.options.type`，位置可由建表请求的 `path` 指定，边界见第 6 节第 23 条
@@ -107,7 +108,7 @@ mysql -h 127.0.0.1 -u root -p < sql/schema-mysql.sql
 ### 2.2 构建与运行
 
 ```bash
-# 全量构建（16 个模块；用 install 而不是 package，因为模块之间有内部依赖）
+# 全量构建（17 个模块；用 install 而不是 package，因为模块之间有内部依赖）
 JAVA_HOME=/path/to/jdk-21 mvn -o -DskipTests install
 
 # 只要服务端可执行 jar：-am 会一并构建它依赖的 core / storage / 三个协议面
@@ -221,7 +222,44 @@ open http://localhost:8080/doc.html
 > `ApiDocEndpointTests` 在 `auth.enabled=true` 下钉住：`/doc.html` 与 `/v3/api-docs`
 > 匿名 200，而 `/api/management/v1/**`、`/v1/**` 仍然 401。
 
-### 2.3 数据源 profile
+### 2.3 验证令牌续期（唯一有效的办法：把 TTL 调到 90 秒）
+
+服务端签的主体令牌默认一小时到期，引擎侧（Iceberg 与 Paimon 的 `oauth2` provider）
+会在到期前用 RFC 8693 的 `token-exchange` 换一张新的。**在 TTL 之内，「配置看起来对」
+与「真的续上了」完全无法区分**——Iceberg 的失败甚至要等到 55 分钟后才出现，默认
+一小时的用例没人会在 CI 里跑。所以验收只有一种做法：
+
+```bash
+# 1) 用 90 秒的 TTL 起服务端（其余配置照常）
+java -jar lakehouse-rest-spring-parent/lakehouse-rest-server/target/lakehouse-rest-server-1.0.0.jar \
+  --spring.profiles.active=h2 \
+  --lakehouse.rest.auth.enabled=true \
+  --lakehouse.rest.auth.access-token.ttl=90s
+
+# 2) 用一个 ≥5 分钟的作业反复 select（Spark，Iceberg 面；Paimon 面把 catalog 换成
+#    paimon 并配 token.provider=oauth2，见 docs/spark-paimon-rest-e2e.md §1.2.1）
+while true; do
+  spark-sql --conf spark.sql.catalog.lakehouse=org.apache.iceberg.spark.SparkCatalog \
+    --conf spark.sql.catalog.lakehouse.type=rest \
+    --conf spark.sql.catalog.lakehouse.uri=http://localhost:8080 \
+    --conf spark.sql.catalog.lakehouse.warehouse=iceberg_demo \
+    --conf spark.sql.catalog.lakehouse.token=<起始票> \
+    --conf spark.sql.catalog.lakehouse.scope=PRINCIPAL_ROLE:ALL \
+    -e 'select count(*) from lakehouse.db.t'
+  sleep 20
+done
+```
+
+**判据**：跨过 90 秒之后仍然成功，且服务端日志里出现 `exchanged an access token`
+（每 90 秒左右一条）。如果开始 401，看那行日志有没有出现——一条都没有，说明刷新
+压根没发起（`rest.auth.type` 没配成 `oauth2`，或 Paimon 那边还是 `bear`）；
+出现了却还 401，说明换来的票没被用上（缓存被放在了实例字段里）。
+
+引擎侧配置与两种面的差异见
+[`docs/engine-token-refresh-design.md`](docs/engine-token-refresh-design.md)
+（含「服务端还没升级」时的兜底三行）。
+
+### 2.4 数据源 profile
 
 | profile | 数据源 | 建表方式 | 用途 |
 | --- | --- | --- | --- |
@@ -1237,14 +1275,15 @@ http://localhost:8080/console/
   因此 `verify-console.py` 第 6 组、`build-image.sh` 与 `ConsoleApiTests` 都会在产物缺失时明确失败。
 - **路径不靠人工比对。** 全部端点收在 `lakehouse-rest-console/src/api/endpoints.js` 一张表里，
   由 `scripts/verify-console.py` 与四份 OpenAPI 规格（Paimon / Iceberg / Lance / 管理 API）机械比对
-  （26 组 193 项：端点存在性、引用完整性、五处基址一致、产物新鲜度、对话框状态、下拉候选来源、
+  （27 组 201 项：端点存在性、引用完整性、五处基址一致、产物新鲜度、对话框状态、下拉候选来源、
   静态凭据字段与服务端的一致性、三种格式的优化参数键（且两两不重合）、**catalog 表格式**、**Iceberg 目录浏览的契约形状**、
   存储字段分层、事件页的远程分页与类型筛选、问号图标悬停即显、提示性告警的正文收进问号（TipAlert：错误不收、带按钮的正文留在可见区）、**全站表格的远程分页（页码与过滤下推、
   分页器只有 `TablePager` 一个）**、**血缘页签的异步挂载与纯函数布局**、
   **catalog 级执行集群（五个端点都挂在 catalog 下、状态只由服务端算、凭据只进不出、
   yml 里不再有提交参数、fail-closed 的两处落点）**、**列表的定时刷新（默认开启 5 秒、
-  每一拍只走静默刷新、后台暂停、失败不清空表格）**，最后由一组「文档计数」盯住
-  这个数字本身与脚本一致）；
+  每一拍只走静默刷新、后台暂停、失败不清空表格）**、**引擎接入片段里的续期契约
+  （Paimon 默认仍是 bear、Iceberg 的 scope 与服务端常量逐字对齐、续期能力分控制面/数据面两列）**，
+  最后由一组「文档计数」盯住这个数字本身与脚本一致）；
   服务端侧 `ConsoleApiTests` 守住静态资源托管与 SPA 深链回退。
 - **表格式（Paimon / Iceberg）在创建 Catalog 时就选定，之后不可改。** 新建弹窗里用
   **选项卡片**而不是下拉：每个选项要能读出「客户端走哪段路径」与一句话影响面；
