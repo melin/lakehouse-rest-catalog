@@ -423,7 +423,8 @@ spark.sql.catalog.<name>.scope=PRINCIPAL_ROLE:ALL      # 必须有，理由见�
 - Paimon 两面 `token.provider` 默认仍是 `bear`，详情页给一个「主体令牌自动续期」开关
   （默认关，只在 Paimon 面显示），打开后片段变 `oauth2` 并带上「需要哪个 jar、放在哪」的注释；
 - Iceberg 两面加 `scope=PRINCIPAL_ROLE:ALL`，note 拆成「主体令牌的续期」与「存储凭据的续期」两句；
-- `RENEWAL` 拆成 `{control, data}` 两列，页面上分两行显示；
+- `RENEWAL` 拆成 `{control, data}` 两列，页面上分两行显示（**后来去掉了**：页面上那两行
+  连同片段下方的 `note` 一起撤掉，`RENEWAL` 表仍留在 `engineSnippet.js` 里、仍被第 26 组钉着）；
 - `tools/snippet-tests` 加 4 条（默认 `bear` / `oauth2` 只在显式要求时出现 / Iceberg 两面都有 `scope` /
   片段里只有占位符没有真实密钥）；`verify-console.py` 加第 26 组（8 项），
   其中 `scope` 的字面量**直接读** `ClientCredentialsService.SCOPE_ALL` 比对，不抄第二份。

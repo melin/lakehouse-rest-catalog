@@ -390,22 +390,6 @@
             ><template v-if="line.kind === 'pair'"><span class="pc-snip-key">{{ line.key }}</span><span class="pc-snip-eq">=</span><span class="pc-snip-val">{{ line.value }}</span></template><template v-else>{{ line.text }}</template></span></code></pre>
           </div>
 
-          <div v-if="snippet.note" class="pc-field-note">{{ snippet.note }}</div>
-          <!--
-            续期这件事贴着片段说，不放进「摘要」：它回答的是「这份配置能不能撑住一个
-            跑几小时的任务」，而读这句话的人此时正对着配置本身。
-            **控制面与数据面分两行**：以前只有一句「能」，而那个「能」说的是数据票——
-            真正让长作业挂掉的恰恰是另一条（主体令牌）。合成一句等于把唯一的故障点藏在「能」后面。
-          -->
-          <div v-if="vendored" class="pc-field-note">
-            控制面（主体令牌）：<strong>{{ renewal.control.label }}</strong>——{{ renewal.control.hint }}
-          </div>
-          <div v-if="vendored" class="pc-field-note">
-            数据面（存储凭据）：<strong>{{ renewal.data.label }}</strong>——{{ renewal.data.hint }}
-          </div>
-          <div v-else class="pc-field-note">
-            长作业：服务端不下发凭据，续期由引擎自己的身份提供，与这一页无关。
-          </div>
           <div v-if="faces.length === 1 && isLanceCatalog(form.catalogFormat)" class="pc-field-note">
             Lance 只有 Spark 一个页签：connector（<code class="pc-mono">org.lance.spark</code>）没有 Flink 版，
             摆一个出来只会让人去找它。
@@ -445,7 +429,6 @@ import { availability, inferMethod, methodsFor } from '@/utils/storageAuthMethod
 import {
   buildEngineSnippet,
   defaultSnippetFace,
-  RENEWAL,
   snippetFaces,
 } from '@/utils/engineSnippet.js'
 
@@ -459,8 +442,8 @@ import {
  * 弹窗里两者都会被滚走。
  *
  * <p><b>曾经有一栏「生效摘要」，已去掉。</b>它回答的四个问题现在各自回到更近的地方：
- * 判定回到第 3 节（那里本来就写着「你现在在哪一档」）、续期回到第 4 节片段下方
- * （读它的人正对着配置）。留在右栏的代价是整页被挤成两栏，而这一页的字段都不长，
+ * 判定回到第 3 节（那里本来就写着「你现在在哪一档」）、续期只剩第 4 节片段上方
+ * 那个开关。留在右栏的代价是整页被挤成两栏，而这一页的字段都不长，
  * 右栏一半是空白。
  *
  * <p><b>页尾那张「将提交的报文」也去掉了。</b>它先前是「我填的东西会被翻译成什么」的
@@ -676,16 +659,6 @@ const missingHint = computed(() => {
   }
   return 'roleArn（签发）或静态凭据（转发）'
 })
-
-/**
- * 「这个格式撑不撑得住一个长作业」。**控制面与数据面分开答**（见 `RENEWAL`），
- * 因此不折算成一个「能/不能」的布尔——Iceberg 那一档控制面是「能（服务端支持 exchange 时）」、
- * 数据面是「要看客户端」，折掉之后就只剩一句会误导人的「能」。
- *
- * <p>默认值兜住「认不出的格式」：控制台宁可在这一行写「未知」，也不假装能续。
- */
-const UNKNOWN_RENEWAL = { control: { label: '未知', hint: '' }, data: { label: '未知', hint: '' } }
-const renewal = computed(() => RENEWAL[form.catalogFormat] || UNKNOWN_RENEWAL)
 
 // ------------------------------------------------------------------ 接入片段
 const faces = computed(() => snippetFaces(form.catalogFormat))
