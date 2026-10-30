@@ -468,14 +468,14 @@ public class ManagementCatalogService {
      *
      * @param existing 库中已有的配置，新建时为 {@code null}。只有静态凭据的合并需要它：
      *                 密钥只写不读，请求里省略时必须从旧值继承（见
-     *                 {@link StorageConfigs#mergeStaticCredentials}）
+     *                 {@link StorageConfigs#mergeCredentials}）
      */
     private void applyStorage(CatalogEntity entity, StorageConfigInfo requested, StorageConfigInfo existing) {
         StorageConfigInfo supplied = requested == null
                 ? StorageConfigs.blank(StorageType.FILE, new ArrayList<>())
                 : requested;
         StorageConfigInfo normalized = StorageConfigs.normalize(supplied, properties.getDefaultWarehouse());
-        StorageConfigInfo merged = StorageConfigs.mergeStaticCredentials(normalized, existing, cipher);
+        StorageConfigInfo merged = StorageConfigs.mergeCredentials(normalized, existing, cipher);
         StorageConfigs.validate(merged);
         // 存储类型是否可用是本部署的能力问题（装了哪个 FileIO），
         // 与配置本身是否合法是两件事，因此分两步校验、分开报错

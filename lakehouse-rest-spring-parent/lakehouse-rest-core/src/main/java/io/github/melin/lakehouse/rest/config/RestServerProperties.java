@@ -545,6 +545,41 @@ public class RestServerProperties {
          * 但「不传」能保证与改造前的请求逐字节相同，抓包对比因此还能用。
          */
         private boolean sessionTags = false;
+
+        /**
+         * 云侧回限流时，一次签发动作最多尝试几次（含第一次），默认 {@code 3}。
+         *
+         * <p>只对**限流**重试。权限不足、角色不存在、网络不通都不重试：
+         * 它们重试一百次结果一样，而每次重试都要占一个请求线程。
+         * 判据见 {@code ThrottledException}。
+         *
+         * <p>为什么是 3 而不是更多：签发跑在读表的同步路径上，重试的代价直接是
+         * 引擎的等待时间。3 次、退避 200/400ms，最坏多等 0.6 秒；
+         * 再往上加，一次读表要多等好几秒，不如让调用方自己重来。
+         */
+        private int retryAttempts = 3;
+
+        /**
+         * 限流重试的首次退避（毫秒），默认 {@code 200}，之后每次翻倍。
+         *
+         * <p>翻倍是云侧限流的惯例（指数退避），也是「短窗口内别再加压」的唯一表达。
+         * 加抖动是为了避免一批引擎在同一毫秒一起醒来，把退避变成新的尖峰。
+         */
+        private long retryBackoffMillis = 200;
+
+        /**
+         * 连续限流后进入的冷却时长（秒），默认 {@code 10}。
+         *
+         * <p><b>这一档才是真正的「退避」。</b>重试解决的是「偶发的一两次限流」；
+         * 配额真被打满时，重试只会在别人的修复动作之前把线程一起拖住。
+         * 进入冷却后，同一个 provider 的签发**直接失败**（{@code 503} + 剩余秒数），
+         * 不再向云发起请求——这就是给云侧让路，也让故障从「全站变慢」收敛成
+         * 「一个错误率」。
+         *
+         * <p>冷却时间随连续失败次数翻倍（{@code 10s → 20s → 40s}），
+         * 上限 {@code 6 ×} 本值；一次成功即清零。
+         */
+        private long throttleCooldownSeconds = 10;
     }
 
     /** 启动时预置的 catalog 与 database。 */
@@ -579,15 +614,22 @@ public class RestServerProperties {
     }
 
     /**
-     * {@code lakehouse.rest.storage.*}：服务端访问对象存储所用的凭据与连接参数。
+     * {@code lakehouse.rest.storage.*}：**加密密钥**与连接参数。
      *
-     * <p>键名与 Polaris 1.8.0 配置参考的「Storage & Credentials」一节逐项对应，
-     * 只把前缀从 {@code polaris} 换成 {@code lakehouse.rest}，运维从 Polaris 迁过来时
-     * 配置可以按名字平移。唯一的结构差异是具名存储：Polaris 写成
-     * {@code polaris.storage.aws.<storage>.access-key}，与同层的
-     * {@code polaris.storage.aws.access-key} 共用键空间；Spring 的绑定器无法在
-     * 一个 {@code aws} 前缀下同时接受具名字段和动态子节点，因此这里下沉一层，
-     * 写成 {@code lakehouse.rest.storage.aws.storages.<storage>.access-key}。
+     * <p><b>这里没有对象存储凭据，一行都没有，这是有意的。</b>AK/SK、Azure 的服务主体、
+     * GCS 的服务账号 JSON、OSS 要 assume 的角色，全部跟着 catalog 走
+     * （{@code storageConfigInfo} 里各自的字段），不在这份全局配置里。
+     *
+     * <p>理由是「每个 catalog 的存储配置不一样」：一个服务端同时挂生产桶与测试桶时，
+     * 这两组密钥的签发人、轮转周期、失效方式都不同；把它们塞进同一份 yml 后，
+     * 只有一条路能区分「这次该用哪把钥匙」——{@code storageName} 这个额外字段，
+     * 而它只是把「配置在哪个桶」的答案挪了个位置，没有消除「全局配置里躺着别人的密钥」
+     * 这件事本身。Polaris 的 {@code polaris.storage.aws.<name>.access-key} 是同一思路，
+     * 本工程不再沿用它。
+     *
+     * <p>代价要写清楚：**密钥会随 catalog 落库**（{@code storage_config_json}），
+     * 以 {@code credential-secret-key} 加密后的形态。这是「配置跟着 catalog 走」的
+     * 必然结果，所以加密密钥留在这里——它保护的是库里的密文，不属于任何一个 catalog。
      *
      * <p><b>连接池与超时项的作用范围。</b>{@code read-timeout}、{@code connect-timeout}
      * 之外的连接池参数（{@code max-http-connections}、{@code connection-max-idle-time}、
@@ -599,56 +641,6 @@ public class RestServerProperties {
     @Getter
     @Setter
     public static class Storage {
-
-        private final Aws aws = new Aws();
-
-        private final Gcp gcp = new Gcp();
-
-        /**
-         * Azure 的**服务身份**：签 User Delegation SAS 时用它去换 AAD 令牌。
-         *
-         * <p>与 S3 的 {@code aws.access-key} 是同一个位置上的两件事——「服务端自己是谁」。
-         * catalog 里的 {@code AzureStorageConfigInfo} 只描述「数据在哪个账户里」，
-         * 不带任何凭据；这是规格的形状，也不是缺项：Azure 的 SAS 必须由持有
-         * {@code Microsoft.Storage/storageAccounts/blobServices/generateUserDelegationKey/action}
-         * 的主体签发，那个主体属于部署，不属于某一个 catalog。
-         */
-        private final Azure azure = new Azure();
-
-        /**
-         * 华为云 OBS 凭据。
-         *
-         * <p><b>为什么与 {@code aws} 分开而不是共用。</b>华为 OBS 与阿里云 OSS 都兼容
-         * S3 协议，看起来可以当成一类存储吃同一份凭据。但它们的 AK/SK 是独立签发、
-         * 独立轮转、独立授权的：挤进同一个键空间后，「给 OBS 换一把钥匙」与
-         * 「给生产 S3 换一把钥匙」就没法区分，只能靠命名约定维持，而命名约定不会在
-         * 轮转出错时提醒任何人。
-         *
-         * <p>这一组不是 Polaris 配置面的对应项——Polaris 里没有 OBS 存储类型，
-         * 它用 S3 兼容层接入。本工程单列，理由见 {@code ManagementEnums.StorageType}。
-         */
-        private final CloudCredentials obs = new CloudCredentials();
-
-        /** 阿里云 OSS 凭据，结构与 {@link #obs} 相同，另加签发用的 {@link Oss}。 */
-        private final Oss oss = new Oss();
-
-        /**
-         * 腾讯云 COS 凭据，结构与 {@link #obs} 相同。
-         *
-         * <p><b>它的 {@code sessionToken} 不生效，且本工程不会下发。</b>
-         * paimon-cosn 2.1.0 内置的 hadoop-cos 只有 {@code SimpleCredentialsProvider}
-         * 与 {@code EnvironmentVariableCredentialsProvider}，{@code CosNConfigKeys}
-         * 里没有会话令牌这一项。配了它只会得到「配了但没用」的错觉，因此
-         * {@code DefaultStorageCredentialManager} 在这一级发现令牌时直接失败，
-         * 而不是把它连同 AK/SK 一起发出去——后者会让引擎用一份缺令牌的临时凭据去签名，
-         * 报错是「认证失败」，与真正的原因（COSN 不支持临时凭据）完全脱钩。
-         *
-         * <p>之所以仍然复用 {@link CloudCredentials} 而不另建一个没有令牌位的类：
-         * 三家云共用同一个「默认 + 具名存储」模型，形状一致才能共用
-         * {@code objectStoreSecrets} 那段四级来源逻辑；少一个字段换来三份复制粘贴，
-         * 而复制粘贴正是键族串错（G7/G12 那一类）的来源。
-         */
-        private final CloudCredentials cos = new CloudCredentials();
 
         /**
          * 静态凭据的落库加密密钥：base64 的 32 字节（AES-256），可用
@@ -719,180 +711,6 @@ public class RestServerProperties {
         /** 是否发送 {@code Expect: 100-continue}。 */
         private Boolean expectContinueEnabled;
 
-        /**
-         * AWS 凭据。
-         *
-         * <p>{@code access-key}/{@code secret-key} 是默认凭据，用于未指定具名存储的 S3 catalog；
-         * 两者都不配时，凭据来源退化为环境（实例角色、环境变量、配置文件），
-         * 与 Polaris 的「默认凭据链」一致。
-         */
-        @Getter
-        @Setter
-        public static class Aws {
-
-            private String accessKey;
-
-            private String secretKey;
-
-            /**
-             * 具名存储的凭据，键为 {@code StorageConfigInfo.storageName}。
-             *
-             * <p>Polaris 用它支持「一个服务托管多组 S3 凭据」：catalog 只引用一个名字，
-             * 密钥留在服务端配置里，不出现在管理 API 的报文中。这也是**密钥完全不落库**
-             * 的唯一途径——另一种做法（{@code storageConfigInfo} 里的静态凭据）
-             * 密钥仍然写进 {@code storage_config_json}，只是以
-             * {@code lakehouse.rest.storage.credential-secret-key} 加密后的形态落库。
-             */
-            private Map<String, Keys> storages = new LinkedHashMap<>();
-        }
-
-        /** 一组访问密钥。 */
-        @Getter
-        @Setter
-        public static class Keys {
-
-            private String accessKey;
-
-            private String secretKey;
-
-            /**
-             * 临时凭据的安全令牌。
-             *
-             * <p>与 AK/SK 三者必须同时提供——只给令牌不给 AK/SK 不会失败，
-             * 只会让引擎拿一份不完整的凭据去签名。华为与阿里都要求临时凭据
-             * 「AK + SK + 令牌」成套使用。
-             *
-             * <p>S3 的具名存储不使用这个字段：{@code AwsStorageConfigInfo} 用
-             * {@code stsUnavailable} 表达「不下发密钥」，服务端不再代持临时凭据。
-             */
-            private String sessionToken;
-        }
-
-        /**
-         * 一组对象存储凭据：默认凭据 + 具名存储。OBS 与 OSS 共用这个结构。
-         *
-         * <p>与 {@link Aws} 的差别只有 {@code sessionToken} 一项：华为与阿里的
-         * 临时凭据是「AK/SK + 安全令牌」三件套，长期凭据则只有 AK/SK。
-         * 没有把它合并进 {@link Aws}，是因为那会给 S3 凭空多出一个不生效的
-         * {@code aws.session-token} 配置键——服务端当前的 S3 分支不读它。
-         */
-        @Getter
-        @Setter
-        public static class CloudCredentials {
-
-            private String accessKey;
-
-            private String secretKey;
-
-            /** 安全令牌；留空表示使用长期凭据。三项都空则退化为环境凭据链。 */
-            private String sessionToken;
-
-            /**
-             * 具名存储的凭据，键为 {@code StorageConfigInfo.storageName}。
-             *
-             * <p>与 {@code aws.storages} 同构，理由相同：让 catalog 只引用一个名字，
-             * 密钥留在服务端配置里，不出现在管理 API 的报文中。
-             */
-            private Map<String, Keys> storages = new LinkedHashMap<>();
-        }
-
-        /**
-         * 阿里云 OSS 的配置：通用凭据 + 一个可 assume 的 RAM 角色。
-         *
-         * <p><b>为什么角色放在部署配置而不是 catalog 上。</b>与 Azure 那组同一个理由：
-         * 角色 ARN 一旦写进 {@code storageConfigInfo}，就会出现在每一次管理 API 的
-         * 报文里；而它描述的是「这个部署以谁的身份签发」，属于部署。代价写清楚：
-         * 一套部署只能签发到一个角色，多租户想要「每租户一个角色」时得先加 DTO 字段。
-         * 收窄仍然按表做——角色是上限，policy 才是这张表的边界。
-         *
-         * <p><b>调用者身份就是上面那对 {@code accessKey} / {@code secretKey}。</b>
-         * 阿里云的 STS 不认识别的凭据链，所以服务端没有 AK/SK 时这一档不会被接
-         * （`oss-sts` 返回空，链继续往下走，退回转发档）。
-         */
-        @Getter
-        @Setter
-        public static class Oss extends CloudCredentials {
-
-            /**
-             * 被 assume 的 RAM 角色，形如 {@code acs:ram::1234567890:role/lakehouse-vending}。
-             *
-             * <p>留空 = 本部署没有签发能力。这不是错误：老部署升级后不该因为少配一个
-             * 角色就读不了表。
-             */
-            private String roleArn;
-
-            /** STS 端点。全球化端点，通常不需要改；专有云按需覆盖。 */
-            private String stsEndpoint = "https://sts.aliyuncs.com";
-        }
-
-        /**
-         * GCP 凭据。
-         *
-         * <p>{@code token} 是访问令牌明文；{@code lifespan} 是它的有效期，
-         * 两者都对应 Polaris 的 {@code polaris.storage.gcp.token} 与
-         * {@code polaris.storage.gcp.lifespan}（后者默认 {@code null}，即用令牌自带的有效期）。
-         */
-        @Getter
-        @Setter
-        public static class Gcp {
-
-            private String token;
-
-            private Duration lifespan;
-
-            /**
-             * 令牌交换端点，默认 {@code https://sts.googleapis.com}。
-             *
-             * <p>与 {@code azure.authority} 同一个理由：专有环境与部分合规部署会把
-             * STS 也代理掉，写死会让这些部署只能改代码。
-             */
-            private String stsEndpoint = "https://sts.googleapis.com";
-        }
-
-        /**
-         * Azure 服务身份（应用注册 + 客户端密钥）。
-         *
-         * <p><b>为什么是「服务端全局」而不是 catalog 字段。</b>Polaris 的 Azure 配置面里
-         * {@code clientId} / {@code clientSecret} 也在 catalog 上，但那是它把「凭据」与
-         * 「位置」放进了同一份配置。本工程不这么做：catalog 的 {@code storageConfigInfo}
-         * 会经管理 API 回显给任何能读 catalog 的人，把应用密钥放进去等于让它出现在
-         * 每一次 {@code GET} 的响应里；而 {@code storage_credential} 的加密机制是为
-         * 「非填不可的长期 AK/SK」准备的，不是给一个本来就可以留在服务端配置里的
-         * 身份用的。租户可以从 catalog 的 {@code tenantId} 取（那个字段规格本来就有），
-         * 本组只在 catalog 没写时作为兜底。
-         *
-         * <p><b>三项都配齐才算启用。</b>缺任何一项时 {@code azure-sas} 这一档不会被接，
-         * 凭据下发退回原来的「只给定位元数据」——这不是失败，是「本部署没有那个身份」。
-         * 若把它当成错误，所有 S3/GCS 之外的历史 catalog 会在升级后直接读不了表。
-         */
-        @Getter
-        @Setter
-        public static class Azure {
-
-            private String tenantId;
-
-            private String clientId;
-
-            private String clientSecret;
-
-            /**
-             * AAD 的 authority，默认公有云。
-             *
-             * <p>中国云是 {@code https://login.chinacloudapi.cn}；主权云的域名各不相同，
-             * 所以是可填项而不是枚举——写死两个值会让第三个环境的部署只能改代码。
-             */
-            private String authority = "https://login.microsoftonline.com";
-
-            /**
-             * 换 AAD 令牌时请求的 scope，默认公有云的存储面。
-             *
-             * <p><b>必须与云环境一致。</b>用公有云的 scope 去请求中国云的令牌，AAD 回的
-             * 是 {@code invalid_resource} 或一个 audience 不对的令牌，而后者会在调用
-             * {@code generateUserDelegationKey} 时变成 401——错误现场离原因隔着一层。
-             * 中国云填 {@code https://storage.azure.cn/.default}。
-             */
-            private String scope = "https://storage.azure.com/.default";
-        }
     }
 
     /**

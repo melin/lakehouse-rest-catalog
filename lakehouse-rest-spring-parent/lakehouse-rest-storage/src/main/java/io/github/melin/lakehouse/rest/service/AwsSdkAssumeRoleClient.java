@@ -1,6 +1,5 @@
 package io.github.melin.lakehouse.rest.service;
 
-import io.github.melin.lakehouse.rest.config.RestServerProperties;
 import io.github.melin.lakehouse.rest.support.ApiException;
 import java.net.URI;
 import java.time.Duration;
@@ -25,12 +24,13 @@ import software.amazon.awssdk.services.sts.model.Tag;
 /**
  * AWS STS 的真实实现。
  *
- * <p><b>「谁在签名」必须是服务自己的身份，不是 catalog 里那把 AK/SK。</b>
- * 这是与转发模式最本质的区别：转发是把长期钥匙交给引擎，签发是服务用自己的身份
- * 去换一张只覆盖这张表的票。所以这里的凭据链按顺序取服务身份——
- * 显式配置的 {@code lakehouse.rest.storage.aws.access-key} → 环境变量 →
- * 实例角色 / IRSA。目标态（设计 §5.7）是服务身份**只能** {@code AssumeRole}、
- * 不能直接读写桶，那是运维侧的 IAM 配置，代码侧只需要保证不拿静态钥匙当访问凭据。
+ * <p><b>「谁在签名」有两条路，由 command 决定。</b>catalog 上填了 AK/SK 时用那一对
+ * （自建机房常见：一把只能 {@code sts:AssumeRole} 的钥匙，按 catalog 一把）；
+ * 没填时交给 SDK 的默认链（环境变量、实例角色、IRSA 的 web identity）——
+ * 那是部署自己的身份，不需要任何配置项。
+ *
+ * <p>两条路都只用来**换票**，不用来读写数据：服务端从不把这对钥匙当访问凭据用。
+ * 目标态（设计 §5.7）是它只能 {@code AssumeRole}，那是运维侧的 IAM 配置。
  *
  * <p><b>客户端按「区域 + 端点」缓存。</b>STS 客户端内部有连接池与端点解析缓存，
  * 每次签发都新建一个会让长跑作业每秒创建若干个连接池，最终表现成句柄耗尽。
@@ -59,8 +59,6 @@ public class AwsSdkAssumeRoleClient implements AssumeRoleClient {
 
     /** STS 允许的最长会话时长（角色自身的 {@code MaxSessionDuration} 可能更短）。 */
     static final long MAX_DURATION_SECONDS = 43200L;
-
-    private final RestServerProperties properties;
 
     private final Map<String, StsClient> clients = new ConcurrentHashMap<>();
 
@@ -113,14 +111,19 @@ public class AwsSdkAssumeRoleClient implements AssumeRoleClient {
         String region = command.region() == null || command.region().isBlank()
                 ? "us-east-1" : command.region();
         String endpoint = command.stsEndpoint() == null ? "" : command.stsEndpoint().trim();
-        String key = region + "|" + endpoint;
-        return clients.computeIfAbsent(key, ignored -> build(region, endpoint));
+        // 缓存键必须带上「谁在签名」：STS 客户端把凭据存在自己身上，两个 catalog
+        // 用不同的 AK/SK 签同一个区域、同一个端点时，第二张票会拿第一把钥匙去换，
+        // 报 AccessDenied，而错误信息里没有任何一处提到「用错了钥匙」。
+        String identity = command.hasCallerCredentials()
+                ? "static:" + command.callerAccessKey() : "default";
+        String key = region + "|" + endpoint + "|" + identity;
+        return clients.computeIfAbsent(key, ignored -> build(command, region, endpoint));
     }
 
-    private StsClient build(String region, String endpoint) {
+    private StsClient build(AssumeRoleCommand command, String region, String endpoint) {
         StsClientBuilder builder = StsClient.builder()
                 .region(Region.of(region))
-                .credentialsProvider(serviceIdentity())
+                .credentialsProvider(callerIdentity(command))
                 .httpClientBuilder(UrlConnectionHttpClient.builder());
         if (!endpoint.isEmpty()) {
             builder.endpointOverride(URI.create(endpoint));
@@ -129,18 +132,16 @@ public class AwsSdkAssumeRoleClient implements AssumeRoleClient {
     }
 
     /**
-     * 服务自身身份的凭据链。
+     * 换票时用的身份：catalog 自带的 AK/SK，或 SDK 的默认链。
      *
-     * <p>配了 {@code storage.aws.access-key} 就用它（自建机房常见：一把只能
-     * {@code sts:AssumeRole} 的钥匙），否则交给 SDK 的默认链（环境变量、
-     * 实例角色、IRSA 的 web identity）。
+     * <p>只有 {@code hasCallerCredentials()} 为真才建静态 provider——半份凭据
+     * （只有 AK 没有 SK）会让 SDK 在签名时抛出「无法解析凭据」，而那条消息与
+     * 「catalog 里少填了一栏」看不出关系。
      */
-    private AwsCredentialsProvider serviceIdentity() {
-        RestServerProperties.Storage.Aws aws = properties.getStorage().getAws();
-        if (aws.getAccessKey() != null && !aws.getAccessKey().isBlank()
-                && aws.getSecretKey() != null && !aws.getSecretKey().isBlank()) {
-            return StaticCredentialsProvider.create(
-                    AwsBasicCredentials.create(aws.getAccessKey(), aws.getSecretKey()));
+    private AwsCredentialsProvider callerIdentity(AssumeRoleCommand command) {
+        if (command.hasCallerCredentials()) {
+            return StaticCredentialsProvider.create(AwsBasicCredentials.create(
+                    command.callerAccessKey(), command.callerSecretKey()));
         }
         return DefaultCredentialsProvider.builder().build();
     }

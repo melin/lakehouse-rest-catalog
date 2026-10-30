@@ -17,12 +17,14 @@ import java.util.List;
 import org.junit.jupiter.api.Test;
 
 /**
- * 「这个 catalog 的凭据从哪来」的判定：三档优先级 + 四种「配置有误」。
+ * 「这个 catalog 的凭据从哪来」的判定：三档优先级 + 几种「配置有误」。
  *
- * <p>钉的是**顺序**，不是文案：静态凭据排在 {@code stsUnavailable} 之前、
- * {@code stsUnavailable} 排在签发之前、签发排在具名存储之前。
- * 这条链与 {@code DefaultStorageCredentialManager#s3} 是同一套，任何一处改动
- * 只要改错了顺序，界面上就会出现「说在转发、其实在签发」这类只在出事那天才被发现的错。
+ * <p>钉的是**顺序**，不是文案：{@code stsUnavailable} 先于签发、签发先于转发。
+ * 这条链与 {@code DefaultStorageCredentialManager} 是同一套，任何一处改动只要改错了
+ * 顺序，界面上就会出现「说在转发、其实在签发」这类只在出事那天才被发现的错。
+ *
+ * <p>凭据本身全部来自 catalog，因此这里的每个用例都从 {@code storageConfigInfo} 出发，
+ * 不再去改服务端配置——那份配置已经不存在了。
  *
  * <p>纯单测（不起 Spring）：判定只读配置，起容器只会把「判了哪一条」埋掉。
  */
@@ -34,11 +36,10 @@ class CatalogCredentialSourceTests {
 
     // ------------------------------------------------------------------ S3
 
-    /** 静态凭据最优先：调用方明确写了「用这把钥匙」，策略不许覆盖决定。 */
+    /** 只有 AK/SK、没有角色：直接转发给引擎。 */
     @Test
-    void catalogStaticCredentialsWinOverEverythingElse() {
-        properties.getCredential().getProviders().add("s3-token");
-        AwsStorageConfigInfo s3 = aws("AK-STORE", "SK-STORE", ROLE, null, true);
+    void catalogCredentialsAreRelayedWhenThereIsNoRole() {
+        AwsStorageConfigInfo s3 = aws("AK-STORE", "SK-STORE", null, null, null);
 
         CatalogCredentialSource.Source source = CatalogCredentialSource.of(s3, properties);
 
@@ -46,7 +47,23 @@ class CatalogCredentialSourceTests {
         assertTrue(source.detail().contains("静态凭据"), source.detail());
     }
 
-    /** 只填了 roleArn 与本部署开了 s3-token：这是唯一会去签的一档。 */
+    /**
+     * 有角色、本部署也开了签发：签发票。**哪怕同时填了 AK/SK**。
+     *
+     * <p>此时那对钥匙是「去 assume 的身份」，不是要转发给引擎的凭据——
+     * 判定顺序写反的话，这个 catalog 会永远走转发档。
+     */
+    @Test
+    void roleArnWinsOverTheCredentialsItUsesToSign() {
+        properties.getCredential().getProviders().add("s3-token");
+        AwsStorageConfigInfo s3 = aws("AK-CALLER", "SK-CALLER", ROLE, null, null);
+
+        CatalogCredentialSource.Source source = CatalogCredentialSource.of(s3, properties);
+
+        assertEquals(Mode.STS, source.mode());
+        assertTrue(source.detail().contains("s3-token"), source.detail());
+    }
+
     @Test
     void roleArnWithTheProviderEnabledIsTheOnlyStsBranch() {
         properties.getCredential().getProviders().add("s3-token");
@@ -86,43 +103,13 @@ class CatalogCredentialSourceTests {
     }
 
     @Test
-    void namedStorageVendsTheKeysItReferences() {
-        properties.getStorage().getAws().getStorages().put("etl", keys("AK-NAMED", "SK-NAMED"));
-
-        CatalogCredentialSource.Source source =
-                CatalogCredentialSource.of(aws(null, null, null, "etl", null), properties);
-
-        assertEquals(Mode.RELAY, source.mode());
-        assertTrue(source.detail().contains("etl"), source.detail());
-    }
-
-    /** 引用了不存在的具名存储：取票会 500，界面必须先标出来。 */
-    @Test
-    void referencingAMissingNamedStorageIsReportedAsInvalid() {
-        CatalogCredentialSource.Source source =
-                CatalogCredentialSource.of(aws(null, null, null, "typo", null), properties);
-
-        assertEquals(Mode.INVALID, source.mode());
-        assertTrue(source.detail().contains("typo"), source.detail());
-    }
-
-    @Test
-    void serverDefaultKeysAreForwarded() {
-        properties.getStorage().getAws().setAccessKey("AK-DEFAULT");
-        properties.getStorage().getAws().setSecretKey("SK-DEFAULT");
-
-        assertEquals(Mode.RELAY,
-                CatalogCredentialSource.of(aws(null, null, null, null, null), properties).mode());
-    }
-
-    @Test
     void nothingConfiguredMeansTheEngineBringsItsOwnIdentity() {
         assertEquals(Mode.NONE,
                 CatalogCredentialSource.of(aws(null, null, null, null, null), properties).mode());
     }
 
     /**
-     * 对外那份（{@code accessKeyId} 已打码成 {@code ******}）也能判：只看「有没有配」。
+     * 对外那份（凭据已打码成 {@code ******}）也能判：只看「有没有配」。
      *
      * <p>控制台把列表接口的响应直接喂进这个判定，因此这条不是理论情形。
      */
@@ -136,71 +123,118 @@ class CatalogCredentialSourceTests {
     // ------------------------------------------------------------------ OBS / OSS / COS
 
     @Test
-    void obsHasNoSigningBranchSoRoleArnIsIrrelevant() {
-        properties.getStorage().getObs().setAccessKey("AK-OBS");
-        properties.getStorage().getObs().setSecretKey("SK-OBS");
-
+    void obsRelaysTheCatalogCredentials() {
         assertEquals(Mode.RELAY,
-                CatalogCredentialSource.of(obs(null, false, null, null), properties).mode());
+                CatalogCredentialSource.of(obs(false, "AK-OBS", "SK-OBS"), properties).mode());
     }
 
     @Test
     void obsStsUnavailableSendsLocatorsOnly() {
         assertEquals(Mode.NONE,
-                CatalogCredentialSource.of(obs(null, true, null, null), properties).mode());
+                CatalogCredentialSource.of(obs(true, null, null), properties).mode());
     }
 
-    /** OSS 配了会话令牌：转发的是临时凭据，仍然是「转发」而不是「签发」。 */
+    /** OSS：角色 + 钥匙 + 本部署开了 oss-sts，三者齐了才签。 */
     @Test
-    void ossForwardsATemporaryKeyTripleAsRelay() {
-        properties.getStorage().getOss().setAccessKey("AK-OSS");
-        properties.getStorage().getOss().setSecretKey("SK-OSS");
-        properties.getStorage().getOss().setSessionToken("TOKEN-OSS");
+    void ossSignsWhenRoleAndCallerKeysAreBothOnTheCatalog() {
+        properties.getCredential().getProviders().add("oss-sts");
 
-        CatalogCredentialSource.Source source =
-                CatalogCredentialSource.of(oss(null, false, null, null), properties);
+        CatalogCredentialSource.Source source = CatalogCredentialSource.of(
+                oss("AK-CALLER", "SK-CALLER", "acs:ram::1:role/lh"), properties);
 
-        assertEquals(Mode.RELAY, source.mode());
-        assertTrue(source.detail().contains("安全令牌"), source.detail());
+        assertEquals(Mode.STS, source.mode());
+        assertTrue(source.detail().contains("900–3600"), source.detail());
     }
 
     /**
-     * COS 配了 {@code sessionToken}：COSN 没有令牌位，**取票会 500**。
+     * OSS 填了角色却没有钥匙：**标成配置有误**。
      *
-     * <p>这条必须比「转发」更早说出来，否则界面显示一切正常，读表时才炸。
+     * <p>阿里云的 STS 必须用一对 AK/SK 签名，没有环境凭据链。这一档取票会退回
+     * 「引擎用自己的身份」，而界面若显示「签发」，排查会从权限绕一大圈才回到配置上。
      */
     @Test
-    void cosWithASessionTokenIsInvalidRatherThanRelayed() {
-        properties.getStorage().getCos().setAccessKey("AK-COS");
-        properties.getStorage().getCos().setSecretKey("SK-COS");
-        properties.getStorage().getCos().setSessionToken("TOKEN-COS");
+    void ossWithARoleButNoCallerKeysIsReportedAsInvalid() {
+        properties.getCredential().getProviders().add("oss-sts");
 
-        CatalogCredentialSource.Source source =
-                CatalogCredentialSource.of(cos(null, null, null, null, null, false, null, null),
-                        properties);
+        CatalogCredentialSource.Source source = CatalogCredentialSource.of(
+                oss(null, null, "acs:ram::1:role/lh"), properties);
 
         assertEquals(Mode.INVALID, source.mode());
-        assertTrue(source.detail().contains("sessionToken"), source.detail());
+        assertTrue(source.detail().contains("AK/SK"), source.detail());
     }
 
-    // ------------------------------------------------------------------ 其余类型
-
     @Test
-    void azureSendsLocatorsOnly() {
+    void ossWithoutARoleJustRelays() {
+        properties.getCredential().getProviders().add("oss-sts");
+
+        assertEquals(Mode.RELAY,
+                CatalogCredentialSource.of(oss("AK-OSS", "SK-OSS", null), properties).mode());
+    }
+
+    /** COS 只有转发档：COSN 不收临时凭据，配了也没有可以表达它的字段。 */
+    @Test
+    void cosOnlyEverRelays() {
+        assertEquals(Mode.RELAY,
+                CatalogCredentialSource.of(cos("AK-COS", "SK-COS"), properties).mode());
+        assertEquals(Mode.NONE, CatalogCredentialSource.of(cos(null, null), properties).mode());
+    }
+
+    // ------------------------------------------------------------------ Azure / GCS
+
+    /** 没开 azure-sas：只发定位元数据，SAS 由引擎自己换。 */
+    @Test
+    void azureSendsLocatorsOnlyWhenTheProviderIsOff() {
         CatalogCredentialSource.Source source = CatalogCredentialSource.of(
-                new AzureStorageConfigInfo(List.of("abfss://c@a.dfs.core.windows.net/x"), null,
-                        "tenant", null, null, null), properties);
+                azure("tenant", "client", "secret"), properties);
 
         assertEquals(Mode.NONE, source.mode());
     }
 
+    /** 开了 azure-sas 且 catalog 上有服务主体：签 SAS。 */
     @Test
-    void gcsIsRelayOnlyWhenAnAccessTokenIsConfigured() {
-        GcpStorageConfigInfo gcs = new GcpStorageConfigInfo(List.of("gs://b/x"), null, null);
-        assertEquals(Mode.NONE, CatalogCredentialSource.of(gcs, properties).mode());
+    void azureSignsWhenTheServicePrincipalIsOnTheCatalog() {
+        properties.getCredential().setProviders(
+                List.of(io.github.melin.lakehouse.rest.support.VendedStorageCredential
+                        .PROVIDER_AZURE_SAS));
 
-        properties.getStorage().getGcp().setToken("ya29.token");
-        assertEquals(Mode.RELAY, CatalogCredentialSource.of(gcs, properties).mode());
+        assertEquals(Mode.STS,
+                CatalogCredentialSource.of(azure("tenant", "client", "secret"), properties).mode());
+    }
+
+    /** 开了 azure-sas 但 catalog 上没服务主体：标成配置有误，而不是「签发」。 */
+    @Test
+    void azureWithoutAServicePrincipalIsReportedAsInvalid() {
+        properties.getCredential().setProviders(
+                List.of(io.github.melin.lakehouse.rest.support.VendedStorageCredential
+                        .PROVIDER_AZURE_SAS));
+
+        assertEquals(Mode.INVALID,
+                CatalogCredentialSource.of(azure("tenant", null, null), properties).mode());
+    }
+
+    @Test
+    void gcsWithoutAServiceAccountLetsTheEngineUseItsOwnAdc() {
+        assertEquals(Mode.NONE,
+                CatalogCredentialSource.of(gcs(null), properties).mode());
+    }
+
+    /** 有服务账号但没启用 gcs-downscope：不签发，引擎拿不到它，只能用自己的 ADC。 */
+    @Test
+    void gcsServiceAccountDoesNotImplySigning() {
+        assertEquals(Mode.NONE, CatalogCredentialSource.of(gcs("{\"a\":1}"), properties).mode());
+    }
+
+    @Test
+    void gcsSignsOnceTheProviderIsEnabled() {
+        properties.getCredential().setProviders(
+                List.of(io.github.melin.lakehouse.rest.support.VendedStorageCredential
+                        .PROVIDER_GCS_DOWNSCOPE));
+
+        CatalogCredentialSource.Source source =
+                CatalogCredentialSource.of(gcs("{\"a\":1}"), properties);
+
+        assertEquals(Mode.STS, source.mode());
+        assertTrue(source.detail().contains("没有续期"), source.detail());
     }
 
     @Test
@@ -224,30 +258,29 @@ class CatalogCredentialSourceTests {
                 accessKeyId, secretAccessKey);
     }
 
-    private static HuaweiObsStorageConfigInfo obs(String storageName, Boolean stsUnavailable,
-                                                  String accessKeyId, String secretAccessKey) {
-        return new HuaweiObsStorageConfigInfo(List.of("obs://bucket/wh"), storageName,
+    private static HuaweiObsStorageConfigInfo obs(Boolean stsUnavailable, String accessKeyId,
+                                                  String secretAccessKey) {
+        return new HuaweiObsStorageConfigInfo(List.of("obs://bucket/wh"), null,
                 "obs.cn-north-4.myhuaweicloud.com", stsUnavailable, accessKeyId, secretAccessKey);
     }
 
-    private static AliyunOssStorageConfigInfo oss(String storageName, Boolean stsUnavailable,
-                                                  String accessKeyId, String secretAccessKey) {
-        return new AliyunOssStorageConfigInfo(List.of("oss://bucket/wh"), storageName,
-                "oss-cn-hangzhou.aliyuncs.com", stsUnavailable, accessKeyId, secretAccessKey);
+    private static AliyunOssStorageConfigInfo oss(String accessKeyId, String secretAccessKey,
+                                                  String roleArn) {
+        return new AliyunOssStorageConfigInfo(List.of("oss://bucket/wh"), null,
+                "oss-cn-hangzhou.aliyuncs.com", null, accessKeyId, secretAccessKey, roleArn, null);
     }
 
-    private static TencentCosStorageConfigInfo cos(String storageName, String endpoint,
-                                                   String bucketRegion, String appId, Boolean useHttps,
-                                                   Boolean stsUnavailable, String accessKeyId,
-                                                   String secretAccessKey) {
-        return new TencentCosStorageConfigInfo(List.of("cosn://bucket-1250000000/wh"), storageName,
-                endpoint, bucketRegion, appId, useHttps, stsUnavailable, accessKeyId, secretAccessKey);
+    private static TencentCosStorageConfigInfo cos(String accessKeyId, String secretAccessKey) {
+        return new TencentCosStorageConfigInfo(List.of("cosn://bucket-1250000000/wh"), null,
+                null, null, null, null, null, accessKeyId, secretAccessKey);
     }
 
-    private static RestServerProperties.Storage.Keys keys(String accessKey, String secretKey) {
-        RestServerProperties.Storage.Keys keys = new RestServerProperties.Storage.Keys();
-        keys.setAccessKey(accessKey);
-        keys.setSecretKey(secretKey);
-        return keys;
+    private static AzureStorageConfigInfo azure(String tenantId, String clientId, String clientSecret) {
+        return new AzureStorageConfigInfo(List.of("abfss://c@a.dfs.core.windows.net/x"), null,
+                tenantId, null, null, null, clientId, clientSecret, null, null);
+    }
+
+    private static GcpStorageConfigInfo gcs(String serviceAccountJson) {
+        return new GcpStorageConfigInfo(List.of("gs://b/x"), null, null, serviceAccountJson);
     }
 }

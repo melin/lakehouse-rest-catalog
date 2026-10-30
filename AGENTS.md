@@ -342,10 +342,16 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
   COS **没有任何临时凭据能力**（`org.apache.hadoop.fs.cosn.auth` 下没有能消费 sessionToken
   的 provider），因此 `KeyFamily.sessionToken` 允许为 `null`，`putSecrets` 在「有令牌要发、
   但这一族没有令牌键」时抛 500——不要改成静默丢弃。
-- **catalog 静态凭据**（超出 Polaris 规格的扩展，见 `README.md` §5）：`secretAccessKey`
-  **只写不读**（AES-GCM 加密落库，响应永不回显）→ `PUT` 省略它表示**保持**，这是规格
-  「整体替换」语义的**唯一例外**；清除要显式提交一对空串；与 `storageName` 互斥；
-  下发优先级**高于一切服务端来源，且排在 `stsUnavailable` 判断之前**。
+- **catalog 静态凭据是唯一来源**（超出 Polaris 规格的扩展，见 `README.md` §5）。
+  服务端配置里的六组对象存储凭据（`lakehouse.rest.storage.{aws,gcp,azure,obs,oss,cos}`）
+  与具名 `storages` 映射**已全部删除**，`lakehouse.rest.storage` 下只剩落库加密密钥与
+  连接池参数——每个 catalog 的存储配置本来就不一样，凭据跟着 catalog 走。
+  `secretAccessKey` **只写不读**（AES-GCM 加密落库，响应永不回显）→ `PUT` 省略它
+  表示**保持**，这是规格「整体替换」语义的**唯一例外**；清除要显式提交一对空串。
+  `storageName` 退化为纯**标签**，与凭据字段可以并存（早先它指向具名密钥，那时互斥）。
+  **下发顺序是 `stsUnavailable` → 签发 → 转发 → 环境链**：catalog 上那对 AK/SK 配了
+  `roleArn`（S3 / OSS）时是**服务端 assume 用的调用方身份**，没配时才是转发给引擎的
+  数据面凭据。「静态凭据优先于一切」与「静态凭据 / `roleArn` 互斥 400」两条旧规则都已删。
 - **`accessKeyId` 打码成 `******`，且这个值同时是回写哨兵**（P1-8）。两条**必须同时成立**，
   少一条就会静默改坏配置：只打码不认哨兵 → 「只改个名字」的保存把 AK ID 写成六个星号、
   SK 还是旧的，错误现场在存储侧（`InvalidAccessKeyId`），与「我刚改了什么」联系不上。

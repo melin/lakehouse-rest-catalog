@@ -3,17 +3,24 @@ package io.github.melin.lakehouse.rest;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.github.melin.lakehouse.rest.config.RestServerProperties;
 import io.github.melin.lakehouse.rest.dto.StorageDtos.GcpStorageConfigInfo;
 import io.github.melin.lakehouse.rest.service.CatalogCredentialSource;
+import io.github.melin.lakehouse.rest.service.CredentialScope;
 import io.github.melin.lakehouse.rest.service.DefaultStorageCredentialManager;
+import io.github.melin.lakehouse.rest.service.GcsAccessToken;
+import io.github.melin.lakehouse.rest.service.GcsAccessTokenClient;
 import io.github.melin.lakehouse.rest.service.GcsBoundary;
 import io.github.melin.lakehouse.rest.service.GcsDownscopeClient;
 import io.github.melin.lakehouse.rest.service.GcsDownscopeRequest;
 import io.github.melin.lakehouse.rest.service.GcsDownscopedCredentialProvider;
 import io.github.melin.lakehouse.rest.service.GcsDownscopedToken;
+import io.github.melin.lakehouse.rest.service.GcsServiceAccount;
+import io.github.melin.lakehouse.rest.service.GcsServiceAccountTokenSource;
+import io.github.melin.lakehouse.rest.support.ApiException;
 import io.github.melin.lakehouse.rest.support.CredentialCipher;
 import io.github.melin.lakehouse.rest.support.VendedStorageCredential;
 import java.time.Duration;
@@ -28,12 +35,26 @@ import org.junit.jupiter.api.Test;
  * <p>这一家没有「角色」，所以断言的落点全在 boundary 上：资源必须写到对象层、
  * 权限必须是 {@code inRole:…} 形式、规则数不能超过 10。三条都是「写错了不报错、
  * 只在交换时被拒」的那一类。
+ *
+ * <p><b>源身份在 catalog 上，不在 yml 里。</b>所以每个用例都必须先给
+ * {@code serviceAccountJson}（库里是密文，这里用真实的 {@link CredentialCipher}
+ * 封一遍，而不是塞一段假的 {@code v1:…}——那会把「解不开」变成另一条失败路径）。
  */
 class GcsDownscopeVendingTests {
 
     private static final String SECRET_KEY = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=";
 
     private static final String TABLE = "gs://warehouse/wh/db.db/orders";
+
+    private static final String SA_EMAIL = "svc@project.iam.gserviceaccount.com";
+
+    /** 只求「是 JSON 对象且有两个必填键」——真正参与签名的只有换票客户端。 */
+    private static final String SERVICE_ACCOUNT_JSON = """
+            {"type":"service_account","project_id":"project",
+             "client_email":"svc@project.iam.gserviceaccount.com",
+             "private_key":"-----BEGIN PRIVATE KEY-----\\nMIIBVAIBADANBg\\n-----END PRIVATE KEY-----\\n",
+             "token_uri":"https://oauth2.googleapis.com/token"}
+            """;
 
     private final RestServerProperties properties = new RestServerProperties();
 
@@ -55,8 +76,8 @@ class GcsDownscopeVendingTests {
     @Test
     void writesTheResourceAtObjectLevel() {
         String boundary = GcsBoundary.json(
-                List.of(new io.github.melin.lakehouse.rest.service.CredentialScope(
-                        "warehouse", List.of("wh/db.db/orders"), List.of("wh/db.db/orders"), List.of())),
+                List.of(new CredentialScope("warehouse", List.of("wh/db.db/orders"),
+                        List.of("wh/db.db/orders"), List.of())),
                 false);
 
         assertTrue(boundary.contains(
@@ -70,9 +91,8 @@ class GcsDownscopeVendingTests {
     /** 写权限加的是 {@code objectCreator}，不是 {@code objectAdmin}。 */
     @Test
     void addsTheCreatorRoleOnlyWhenAsked() {
-        io.github.melin.lakehouse.rest.service.CredentialScope scope =
-                new io.github.melin.lakehouse.rest.service.CredentialScope(
-                        "warehouse", List.of("wh/t"), List.of("wh/t"), List.of("wh/t"));
+        CredentialScope scope = new CredentialScope(
+                "warehouse", List.of("wh/t"), List.of("wh/t"), List.of("wh/t"));
 
         assertFalse(GcsBoundary.json(List.of(scope), false).contains("objectCreator"));
         String write = GcsBoundary.json(List.of(scope), true);
@@ -84,12 +104,10 @@ class GcsDownscopeVendingTests {
     /** 多条位置 → 多条规则；一个 scope 一条，不合并（合并要靠共同父目录，那是 Azure 的活）。 */
     @Test
     void writesOneRulePerScope() {
-        io.github.melin.lakehouse.rest.service.CredentialScope first =
-                new io.github.melin.lakehouse.rest.service.CredentialScope(
-                        "warehouse", List.of("wh/a"), List.of("wh/a"), List.of());
-        io.github.melin.lakehouse.rest.service.CredentialScope second =
-                new io.github.melin.lakehouse.rest.service.CredentialScope(
-                        "archive", List.of("wh/b"), List.of("wh/b"), List.of());
+        CredentialScope first = new CredentialScope(
+                "warehouse", List.of("wh/a"), List.of("wh/a"), List.of());
+        CredentialScope second = new CredentialScope(
+                "archive", List.of("wh/b"), List.of("wh/b"), List.of());
 
         String boundary = GcsBoundary.json(List.of(first, second), false);
         assertTrue(boundary.contains("/buckets/warehouse/objects/wh/a*"), boundary);
@@ -99,21 +117,21 @@ class GcsDownscopeVendingTests {
     /** 超过 10 条规则时拒绝生成——STS 会拒整份 boundary，让它在本地失败更早也更清楚。 */
     @Test
     void refusesMoreRulesThanTheApiAccepts() {
-        List<io.github.melin.lakehouse.rest.service.CredentialScope> scopes = new ArrayList<>();
+        List<CredentialScope> scopes = new ArrayList<>();
         for (int i = 0; i < GcsBoundary.MAX_RULES + 1; i++) {
-            scopes.add(new io.github.melin.lakehouse.rest.service.CredentialScope(
+            scopes.add(new CredentialScope(
                     "warehouse", List.of("wh/t" + i), List.of("wh/t" + i), List.of()));
         }
-        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
-                () -> GcsBoundary.json(scopes, false));
+        assertThrows(IllegalArgumentException.class, () -> GcsBoundary.json(scopes, false));
 
         FakeGcs gcs = new FakeGcs();
         VendedStorageCredential vended = manager(gcs).vendForCatalog(
-                gcp(TABLE), "lh", scopes.stream().map(scope -> "gs://warehouse/" + scope.readPrefixes().get(0)).toList(),
+                gcp(TABLE), "lh",
+                scopes.stream().map(scope -> "gs://warehouse/" + scope.readPrefixes().get(0)).toList(),
                 false);
         assertTrue(gcs.requests.isEmpty(), "规则太多时不该调云");
-        assertEquals(VendedStorageCredential.SOURCE_CONFIGURATION, vended.source(),
-                "退回「转发服务端令牌」那一档，而不是报错");
+        assertEquals(VendedStorageCredential.SOURCE_ENVIRONMENT, vended.source(),
+                "退回「引擎自带身份」那一档，而不是报错");
     }
 
     // ------------------------------------------------------------------ 键名
@@ -131,23 +149,38 @@ class GcsDownscopeVendingTests {
 
         assertEquals("DOWN.TOKEN", vended.token().get("gcs.oauth2.token"));
         assertNotNull(vended.token().get("gcs.oauth2.token-expires-at"));
-        assertEquals("svc@project.iam.gserviceaccount.com", vended.token().get("gcs.service-account"));
+        assertEquals(SA_EMAIL, vended.token().get("gcs.service-account"));
         assertEquals(VendedStorageCredential.SOURCE_GCS_DOWNSCOPED, vended.source());
         assertEquals(VendedStorageCredential.PROVIDER_GCS_DOWNSCOPE, vended.provider());
         assertTrue(vended.shortLived());
     }
 
-    /** 交换请求里带的是配置里的源令牌，且 {@code options} 是一段 JSON 文本（不是对象）。 */
+    /** 交换请求里带的是「服务账号换来的源令牌」，且 {@code options} 是一段 JSON 文本。 */
     @Test
-    void exchangesTheConfiguredTokenWithAJsonStringOption() {
+    void exchangesTheMintedTokenWithAJsonStringOption() {
         FakeGcs gcs = new FakeGcs();
         manager(gcs).vend(gcp(TABLE), "t", TABLE);
 
         GcsDownscopeRequest request = gcs.requests.get(0);
-        assertEquals("SOURCE.TOKEN", request.subjectToken());
+        assertEquals(FakeTokens.TOKEN, request.subjectToken());
         assertNotNull(request.options());
         assertTrue(request.options().startsWith("{"), "options 必须是 JSON 文本: " + request.options());
         assertTrue(request.options().contains("accessBoundary"), request.options());
+    }
+
+    /**
+     * 换源令牌用的是**这个 catalog 上那份服务账号**。
+     *
+     * <p>这条断言是「配置跟着 catalog 走」在运行时的落点：身份一旦从全局配置读，
+     * 两个 GCS catalog 会拿着同一把钥匙去换票，而这个错误在返回的键上完全看不出来。
+     */
+    @Test
+    void mintsTheSourceTokenFromTheCatalogsOwnServiceAccount() {
+        FakeTokens tokens = new FakeTokens();
+        manager(new FakeGcs(), tokens).vend(gcp(TABLE), "t", TABLE);
+
+        assertEquals(1, tokens.minted.size(), "一次取票只换一次源令牌");
+        assertEquals(SA_EMAIL, tokens.minted.get(0).clientEmail());
     }
 
     // ------------------------------------------------------------------ 有效期
@@ -166,16 +199,14 @@ class GcsDownscopeVendingTests {
 
     // ------------------------------------------------------------------ 退档
 
-    /** 没有源令牌：不签、不调云，行为与接入 provider 之前一致。 */
+    /** 没有服务账号：不签、不调云，行为与接上 provider 之前一致。 */
     @Test
-    void declinesWithoutASourceToken() {
-        properties.getCredential().setProviders(
-                List.of(VendedStorageCredential.PROVIDER_GCS_DOWNSCOPE));
+    void declinesWithoutAServiceAccount() {
         FakeGcs gcs = new FakeGcs();
-        DefaultStorageCredentialManager manager = new DefaultStorageCredentialManager(
-                properties, cipher, List.of(new GcsDownscopedCredentialProvider(properties, gcs)));
+        GcpStorageConfigInfo noAccount =
+                new GcpStorageConfigInfo(List.of(TABLE), null, SA_EMAIL, null);
 
-        VendedStorageCredential vended = manager.vend(gcp(TABLE), "t", TABLE);
+        VendedStorageCredential vended = manager(gcs).vend(noAccount, "t", TABLE);
 
         assertTrue(gcs.requests.isEmpty());
         assertEquals(VendedStorageCredential.SOURCE_ENVIRONMENT, vended.source());
@@ -183,10 +214,10 @@ class GcsDownscopeVendingTests {
     }
 
     /**
-     * 位置认不出来时不换令牌，退回「转发源令牌」那一档。
+     * 位置认不出来时不换令牌，退回「引擎自带身份」那一档。
      *
-     * <p>注意这里**不是**「什么都不发」：转发档本来就会把配置里的令牌原样给出去，
-     * 断言要落在「发的是源令牌、不是换出来的」上，否则会误以为退档等于没凭据。
+     * <p>注意这里**不是**「把服务账号原样发出去」：{@code serviceAccountJson} 里是私钥，
+     * 它只用于服务端换票。所以断言落在「没有令牌下发、也没调云」上。
      */
     @Test
     void declinesWithoutAScope() {
@@ -194,9 +225,31 @@ class GcsDownscopeVendingTests {
         VendedStorageCredential vended = manager(gcs).vend(gcp(""), "t", "");
 
         assertTrue(gcs.requests.isEmpty(), "认不出位置就不该调云");
-        assertEquals("SOURCE.TOKEN", vended.token().get("gcs.oauth2.token"),
-                "退回合法的转发档：源令牌原样下发");
-        assertEquals(VendedStorageCredential.SOURCE_CONFIGURATION, vended.source());
+        assertFalse(vended.token().containsKey("gcs.oauth2.token"));
+        assertEquals(VendedStorageCredential.SOURCE_ENVIRONMENT, vended.source());
+    }
+
+    /**
+     * 有服务账号却换不到源令牌：**向上抛**，不退档。
+     *
+     * <p>这时引擎没有任何可用身份（GKE 之外没有 ADC），静默退回只会把错误推到
+     * 引擎的 403 上，而服务端日志一片正常。
+     */
+    @Test
+    void failsLoudlyWhenTheSourceTokenCannotBeMinted() {
+        properties.getCredential().setProviders(
+                List.of(VendedStorageCredential.PROVIDER_GCS_DOWNSCOPE));
+        GcsAccessTokenClient broken = account -> {
+            throw new ApiException(503, null, null, "mint failed");
+        };
+        DefaultStorageCredentialManager manager = new DefaultStorageCredentialManager(
+                properties, cipher,
+                List.of(new GcsDownscopedCredentialProvider(properties, cipher,
+                        new GcsServiceAccountTokenSource(broken), new FakeGcs())));
+
+        ApiException thrown = assertThrows(ApiException.class,
+                () -> manager.vend(gcp(TABLE), "t", TABLE));
+        assertEquals(503, thrown.getStatus());
     }
 
     /** 源令牌本身带过期时刻时，取云的到期而不是「现在 + TTL」。 */
@@ -211,41 +264,51 @@ class GcsDownscopeVendingTests {
     // ------------------------------------------------------------------ 控制台判定
 
     @Test
-    void consoleReportsTheThreeGcsStates() {
-        GcpStorageConfigInfo gcs = gcp(TABLE);
-        assertEquals(CatalogCredentialSource.Mode.NONE,
-                CatalogCredentialSource.of(gcs, properties).mode(), "没令牌、没启用");
+    void consoleReportsTheFourGcsStates() {
+        GcpStorageConfigInfo noAccount =
+                new GcpStorageConfigInfo(List.of(TABLE), null, SA_EMAIL, null);
+        GcpStorageConfigInfo account = gcp(TABLE);
 
-        properties.getStorage().getGcp().setToken("SOURCE.TOKEN");
-        assertEquals(CatalogCredentialSource.Mode.RELAY,
-                CatalogCredentialSource.of(gcs, properties).mode(), "有令牌但没启用签发：转发");
+        assertEquals(CatalogCredentialSource.Mode.NONE,
+                CatalogCredentialSource.of(noAccount, properties).mode(), "没账号、没启用");
+        assertTrue(CatalogCredentialSource.of(noAccount, properties).detail().contains("ADC"));
+
+        assertEquals(CatalogCredentialSource.Mode.NONE,
+                CatalogCredentialSource.of(account, properties).mode(), "有账号但没启用签发");
+        assertTrue(CatalogCredentialSource.of(account, properties).detail()
+                .contains("没启用 gcs-downscope"));
 
         properties.getCredential().setProviders(
                 List.of(VendedStorageCredential.PROVIDER_GCS_DOWNSCOPE));
-        CatalogCredentialSource.Source signed = CatalogCredentialSource.of(gcs, properties);
+        CatalogCredentialSource.Source signed = CatalogCredentialSource.of(account, properties);
         assertEquals(CatalogCredentialSource.Mode.STS, signed.mode());
         assertTrue(signed.detail().contains("没有续期"), signed.detail());
 
-        properties.getStorage().getGcp().setToken("");
-        CatalogCredentialSource.Source enabledWithoutToken =
-                CatalogCredentialSource.of(gcs, properties);
-        assertEquals(CatalogCredentialSource.Mode.NONE, enabledWithoutToken.mode());
-        assertTrue(enabledWithoutToken.detail().contains("没有源令牌"), enabledWithoutToken.detail());
+        CatalogCredentialSource.Source enabledWithoutAccount =
+                CatalogCredentialSource.of(noAccount, properties);
+        assertEquals(CatalogCredentialSource.Mode.NONE, enabledWithoutAccount.mode());
+        assertTrue(enabledWithoutAccount.detail().contains("serviceAccountJson"),
+                enabledWithoutAccount.detail());
     }
 
     // ------------------------------------------------------------------ 工具
 
     private DefaultStorageCredentialManager manager(FakeGcs gcs) {
-        properties.getCredential().setProviders(
-                List.of(VendedStorageCredential.PROVIDER_GCS_DOWNSCOPE));
-        properties.getStorage().getGcp().setToken("SOURCE.TOKEN");
-        return new DefaultStorageCredentialManager(properties, cipher,
-                List.of(new GcsDownscopedCredentialProvider(properties, gcs)));
+        return manager(gcs, new FakeTokens());
     }
 
-    private static GcpStorageConfigInfo gcp(String location) {
-        return new GcpStorageConfigInfo(List.of(location), null,
-                "svc@project.iam.gserviceaccount.com");
+    private DefaultStorageCredentialManager manager(FakeGcs gcs, GcsAccessTokenClient tokens) {
+        properties.getCredential().setProviders(
+                List.of(VendedStorageCredential.PROVIDER_GCS_DOWNSCOPE));
+        return new DefaultStorageCredentialManager(properties, cipher,
+                List.of(new GcsDownscopedCredentialProvider(properties, cipher,
+                        new GcsServiceAccountTokenSource(tokens), gcs)));
+    }
+
+    /** 带服务账号的 catalog 配置；密钥按落库形态密封。 */
+    private GcpStorageConfigInfo gcp(String location) {
+        return new GcpStorageConfigInfo(List.of(location), null, SA_EMAIL,
+                cipher.seal(SERVICE_ACCOUNT_JSON));
     }
 
     /** 假 STS：记录请求，返回一个一小时有效的令牌。 */
@@ -259,6 +322,20 @@ class GcsDownscopeVendingTests {
         public GcsDownscopedToken downscope(GcsDownscopeRequest request) {
             requests.add(request);
             return new GcsDownscopedToken("DOWN.TOKEN", expiresAt);
+        }
+    }
+
+    /** 假换票端：记录「用哪份服务账号换的」，返回固定源令牌。 */
+    private static final class FakeTokens implements GcsAccessTokenClient {
+
+        static final String TOKEN = "SOURCE.TOKEN";
+
+        private final List<GcsServiceAccount> minted = new ArrayList<>();
+
+        @Override
+        public GcsAccessToken mint(GcsServiceAccount account) {
+            minted.add(account);
+            return new GcsAccessToken(TOKEN, Instant.now().plus(Duration.ofHours(1)));
         }
     }
 }

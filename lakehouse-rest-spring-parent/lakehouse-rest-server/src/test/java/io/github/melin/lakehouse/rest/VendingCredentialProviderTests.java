@@ -125,7 +125,7 @@ class VendingCredentialProviderTests {
     @Test
     void stsProviderVendsFourKeysAndAdvertisesItsOwnName() {
         FakeSts sts = new FakeSts();
-        DefaultStorageCredentialManager manager = managerWith(new S3TokenCredentialProvider(properties, sts));
+        DefaultStorageCredentialManager manager = managerWith(new S3TokenCredentialProvider(properties, cipher, sts));
         properties.getCredential().setTtlSeconds(3600);
         RequestContext.setPrincipal("alice");
         try {
@@ -161,21 +161,57 @@ class VendingCredentialProviderTests {
         }
     }
 
+    /**
+     * 配了 {@code roleArn} 又填了 AK/SK：**签发照走，那对钥匙是签名身份**。
+     *
+     * <p>这条断言的方向曾经是反的——「有静态凭据就让 STS 让路」。那条规则的成立前提是
+     * 「catalog 上的钥匙是调用方明确的数据面决定，STS 只是服务端的默认策略，策略不覆盖决定」。
+     * 而钥匙的用途在「同时配了 {@code roleArn}」时已经变了：它不再是发给引擎的凭据，
+     * 而是服务端拿去 assume 这个角色时的调用方身份。此时若仍让转发档抢先，
+     * 一个「填了角色也填了最低权限钥匙」的 catalog 就永远走转发——配置里写着换票，
+     * 运行时从未发生，而界面上一切正常。
+     *
+     * <p>配置面的「静态凭据与 {@code roleArn} 互斥（400）」已经删掉，所以这条顺序
+     * 是新语义的唯一落点：改回去不会有任何报错，只有这里会红。
+     */
     @Test
-    void stsProviderIsSkippedWhenCatalogCarriesStaticCredentials() {
+    void roleArnWinsOverTheKeysItUsesToSign() {
         FakeSts sts = new FakeSts();
-        DefaultStorageCredentialManager manager = managerWith(new S3TokenCredentialProvider(properties, sts));
+        DefaultStorageCredentialManager manager = managerWith(new S3TokenCredentialProvider(properties, cipher, sts));
 
-        AwsStorageConfigInfo config = new AwsStorageConfigInfo(List.of("s3://wh/db/t"),
-                null, "arn:aws:iam::123:role/lakehouse", null, null, null, null, "us-east-1",
-                null, null, null, null, null, null, null, "AKIA-STATIC", cipher.seal("SECRET-STATIC"));
+        VendedStorageCredential vended = manager.vend(
+                awsWithRoleAndKeys("arn:aws:iam::123:role/lakehouse", "AKIA-STATIC", "SECRET-STATIC"),
+                "t1", "s3://wh/db/t");
 
-        VendedStorageCredential vended = manager.vend(config, "t1", "s3://wh/db/t");
+        AssumeRoleCommand command = sts.last.get();
+        assertNotNull(command, "填了角色就该去换票，不能因为同时填了钥匙而退回转发");
+        assertTrue(command.hasCallerCredentials(), "catalog 的那对钥匙是 assume 的调用方身份");
+        assertEquals("AKIA-STATIC", command.callerAccessKey());
+        assertEquals("SECRET-STATIC", command.callerSecretKey());
+        // 下发的是票，绝不是那把长期钥匙
+        assertEquals(VendedStorageCredential.SOURCE_STS_SESSION, vended.source());
+        assertEquals("AKIA-SESSION", vended.token().get("s3.access-key-id"));
+        assertTrue(vended.shortLived());
+    }
 
-        assertNull(sts.last.get(), "显式指定的钥匙不该被服务端拿去换票");
+    /**
+     * 没配 {@code roleArn} 时，那把钥匙退回纯数据面凭据：原样转发，绝不编 session token。
+     *
+     * <p>假 token 会被 S3 以 {@code InvalidToken} 拒绝每一次请求，而错误文本只说令牌无效，
+     * 不提「这个来源本来就没有令牌」。
+     */
+    @Test
+    void withoutARoleTheCatalogKeysAreForwardedAsTheyAre() {
+        FakeSts sts = new FakeSts();
+        DefaultStorageCredentialManager manager = managerWith(new S3TokenCredentialProvider(properties, cipher, sts));
+
+        VendedStorageCredential vended = manager.vend(
+                awsWithRoleAndKeys(null, "AKIA-STATIC", "SECRET-STATIC"), "t1", "s3://wh/db/t");
+
+        assertNull(sts.last.get(), "没有角色可 assume，不该有任何远程调用");
         assertEquals(VendedStorageCredential.SOURCE_STATIC_CREDENTIALS, vended.source());
         assertEquals("AKIA-STATIC", vended.token().get("s3.access-key-id"));
-        // 静态凭据绝不能编 session token：假 token 会被 S3 以 InvalidToken 拒绝每一次请求
+        assertEquals("SECRET-STATIC", vended.token().get("s3.secret-access-key"));
         assertFalse(vended.token().containsKey("s3.session-token"));
         assertEquals(0L, vended.expireTimeInMs(), "静态凭据的 expireTimeInMs 恒为 0");
         assertFalse(vended.shortLived());
@@ -184,7 +220,7 @@ class VendingCredentialProviderTests {
     @Test
     void stsProviderIsSkippedWhenStsUnavailable() {
         FakeSts sts = new FakeSts();
-        DefaultStorageCredentialManager manager = managerWith(new S3TokenCredentialProvider(properties, sts));
+        DefaultStorageCredentialManager manager = managerWith(new S3TokenCredentialProvider(properties, cipher, sts));
 
         AwsStorageConfigInfo config = new AwsStorageConfigInfo(List.of("s3://wh/db/t"),
                 null, "arn:aws:iam::123:role/lakehouse", null, null, null, null, "us-east-1",
@@ -208,7 +244,7 @@ class VendingCredentialProviderTests {
     @Test
     void noInlinePolicyOmitsTheSessionPolicyWithoutChangingTheTicket() {
         FakeSts sts = new FakeSts();
-        DefaultStorageCredentialManager manager = managerWith(new S3TokenCredentialProvider(properties, sts));
+        DefaultStorageCredentialManager manager = managerWith(new S3TokenCredentialProvider(properties, cipher, sts));
         RequestContext.setPrincipal("alice");
         try {
             VendedStorageCredential vended = manager.vend(awsWithoutInlinePolicy(), "t1", "s3://wh/db/t");
@@ -235,7 +271,7 @@ class VendingCredentialProviderTests {
     @Test
     void noInlinePolicyStillRefusesLocationsItCannotScope() {
         FakeSts sts = new FakeSts();
-        DefaultStorageCredentialManager manager = managerWith(new S3TokenCredentialProvider(properties, sts));
+        DefaultStorageCredentialManager manager = managerWith(new S3TokenCredentialProvider(properties, cipher, sts));
 
         VendedStorageCredential vended = manager.vend(awsWithoutInlinePolicy(), "t1", "/local/warehouse");
 
@@ -256,7 +292,7 @@ class VendingCredentialProviderTests {
     @Test
     void sessionTagsAreLeftOutOfTheRequestUnlessTheDeploymentOptsIn() {
         FakeSts sts = new FakeSts();
-        DefaultStorageCredentialManager manager = managerWith(new S3TokenCredentialProvider(properties, sts));
+        DefaultStorageCredentialManager manager = managerWith(new S3TokenCredentialProvider(properties, cipher, sts));
         RequestContext.setPrincipal("alice");
         try {
             manager.vend(awsWithRole("arn:aws:iam::123:role/lakehouse"), "t1", "s3://wh/db/t");
@@ -271,7 +307,7 @@ class VendingCredentialProviderTests {
     void sessionTagsNameThePrincipalTheScopeAndTheDirection() {
         properties.getCredential().setSessionTags(true);
         FakeSts sts = new FakeSts();
-        DefaultStorageCredentialManager manager = managerWith(new S3TokenCredentialProvider(properties, sts));
+        DefaultStorageCredentialManager manager = managerWith(new S3TokenCredentialProvider(properties, cipher, sts));
         RequestContext.setPrincipal("user:alice@corp/x");
         try {
             manager.vend(awsWithRole("arn:aws:iam::123:role/lakehouse"), "db.orders", "s3://wh/db/orders");
@@ -311,18 +347,18 @@ class VendingCredentialProviderTests {
     void disabledProviderChainKeepsTheRelayBehaviour() {
         FakeSts sts = new FakeSts();
         // 不写 providers：默认空链。provider bean 在容器里，但没启用
-        DefaultStorageCredentialManager manager =
-                new DefaultStorageCredentialManager(properties, cipher, List.of(new S3TokenCredentialProvider(properties, sts)));
-        properties.getStorage().getAws().setAccessKey("AKIA-CONFIG");
-        properties.getStorage().getAws().setSecretKey("SECRET-CONFIG");
+        DefaultStorageCredentialManager manager = new DefaultStorageCredentialManager(
+                properties, cipher, List.of(new S3TokenCredentialProvider(properties, cipher, sts)));
 
-        VendedStorageCredential vended =
-                manager.vend(awsWithRole("arn:aws:iam::123:role/lakehouse"), "t1", "s3://wh/db/t");
+        VendedStorageCredential vended = manager.vend(
+                awsWithRoleAndKeys("arn:aws:iam::123:role/lakehouse", "AKIA-CATALOG", "SECRET-CATALOG"),
+                "t1", "s3://wh/db/t");
 
         assertNull(sts.last.get(), "默认配置下不该有任何远程调用");
         assertEquals(VendedStorageCredential.PROVIDER_RELAY, vended.provider());
-        assertEquals(VendedStorageCredential.SOURCE_CONFIGURATION, vended.source());
-        assertEquals("AKIA-CONFIG", vended.token().get("s3.access-key-id"));
+        // 填了 roleArn 又填了钥匙，但链是空的：这时钥匙是数据面凭据，转发出去
+        assertEquals(VendedStorageCredential.SOURCE_STATIC_CREDENTIALS, vended.source());
+        assertEquals("AKIA-CATALOG", vended.token().get("s3.access-key-id"));
         assertEquals(0L, vended.expireTimeInMs());
     }
 
@@ -340,7 +376,7 @@ class VendingCredentialProviderTests {
     @Test
     void providerWithoutRoleArnDeclinesInsteadOfSigning() {
         FakeSts sts = new FakeSts();
-        DefaultStorageCredentialManager manager = managerWith(new S3TokenCredentialProvider(properties, sts));
+        DefaultStorageCredentialManager manager = managerWith(new S3TokenCredentialProvider(properties, cipher, sts));
 
         VendedStorageCredential vended =
                 manager.vend(awsWithRole(null), "t1", "s3://wh/db/t");
@@ -384,7 +420,7 @@ class VendingCredentialProviderTests {
 
         VendedStorageCredential staticCredential = new VendedStorageCredential(Map.of("k", "v"), 3600L,
                 io.github.melin.lakehouse.rest.dto.ManagementEnums.StorageType.S3,
-                VendedStorageCredential.SOURCE_CONFIGURATION);
+                VendedStorageCredential.SOURCE_STATIC_CREDENTIALS);
         cache.put("s", staticCredential, now - 10 * 60_000L);
 
         assertTrue(cache.get("s").isPresent(), "静态凭据没有「快过期」，不该按比例缩短");
@@ -481,6 +517,13 @@ class VendingCredentialProviderTests {
     private static AwsStorageConfigInfo awsWithRole(String roleArn) {
         return new AwsStorageConfigInfo(List.of("s3://wh/db/t"), null, roleArn, null, null, null, null,
                 "us-east-1", null, null, null, null, null, null, null, null, null);
+    }
+
+    /** 同样的 catalog，外加一对「用来 assume」的钥匙（库内形态由调用方密封）。 */
+    private AwsStorageConfigInfo awsWithRoleAndKeys(String roleArn, String accessKey, String plainSecret) {
+        return new AwsStorageConfigInfo(List.of("s3://wh/db/t"), null, roleArn, null, null, null, null,
+                "us-east-1", null, null, null, null, null, null, null,
+                accessKey, cipher.seal(plainSecret));
     }
 
     /** 同样的 catalog，外加 {@code noInlinePolicy=true}（VAST 那类不接受 policy 的存储）。 */

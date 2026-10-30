@@ -44,6 +44,11 @@ class OssStsVendingTests {
 
     private static final String BUCKET_PATH = "oss://warehouse/wh/db.db/orders";
 
+    /** catalog 上那一对签名钥匙；它不是转发给引擎的凭据。 */
+    private static final String CATALOG_AK = "CATALOG.AK";
+
+    private static final String CATALOG_SK = "CATALOG.SK";
+
     private final RestServerProperties properties = new RestServerProperties();
 
     private final CredentialCipher cipher = cipher(properties);
@@ -73,7 +78,12 @@ class OssStsVendingTests {
         assertEquals("STS.TOKEN", token.get("fs.oss.securityToken"));
         assertEquals("oss-cn-hangzhou.aliyuncs.com", token.get("fs.oss.endpoint"));
         // 长期凭据的两个键名与临时凭据是同一套，所以必须确认这里发的是临时的那份
-        assertFalse("PROP.AK".equals(token.get("fs.oss.accessKeyId")), "不该发服务端长期 AK");
+        assertFalse(CATALOG_AK.equals(token.get("fs.oss.accessKeyId")), "不该发 catalog 上的长期 AK");
+
+        // 签名用的是 catalog 上那一对；它只用于 assume，不进下发键
+        assertEquals(CATALOG_AK, sts.requests.get(0).accessKeyId());
+        assertEquals(CATALOG_SK, sts.requests.get(0).secretAccessKey());
+        assertFalse(token.containsValue(CATALOG_SK), "签名钥匙不该出现在下发键里");
 
         assertEquals(VendedStorageCredential.SOURCE_OSS_STS, vended.source());
         assertEquals(VendedStorageCredential.PROVIDER_OSS_STS, vended.provider());
@@ -222,30 +232,27 @@ class OssStsVendingTests {
     @Test
     void declinesWithoutARole() {
         properties.getCredential().setProviders(List.of(VendedStorageCredential.PROVIDER_OSS_STS));
-        properties.getStorage().getOss().setAccessKey("PROP.AK");
-        properties.getStorage().getOss().setSecretKey("PROP.SK");
         FakeSts sts = new FakeSts();
         DefaultStorageCredentialManager manager = new DefaultStorageCredentialManager(
-                properties, cipher, List.of(new OssStsCredentialProvider(properties, sts)));
+                properties, cipher, List.of(new OssStsCredentialProvider(properties, cipher, sts)));
 
-        VendedStorageCredential vended = manager.vend(oss(BUCKET_PATH), "t", BUCKET_PATH);
+        VendedStorageCredential vended = manager.vend(ossWithoutRole(BUCKET_PATH), "t", BUCKET_PATH);
 
         assertTrue(sts.requests.isEmpty());
-        assertEquals(VendedStorageCredential.SOURCE_CONFIGURATION, vended.source(),
-                "配了服务端 AK/SK 却没角色：退回转发");
-        assertEquals("PROP.AK", vended.token().get("fs.oss.accessKeyId"));
+        assertEquals(VendedStorageCredential.SOURCE_STATIC_CREDENTIALS, vended.source(),
+                "catalog 有 AK/SK 却没角色：退回转发");
+        assertEquals(CATALOG_AK, vended.token().get("fs.oss.accessKeyId"));
     }
 
-    /** 配了角色但服务端没有 AK/SK：阿里云的 STS 必须有一对密钥签名，只能跳过。 */
+    /** 配了角色但 catalog 上没有 AK/SK：阿里云的 STS 必须有一对密钥签名，只能跳过。 */
     @Test
     void declinesWithoutACallerIdentity() {
         properties.getCredential().setProviders(List.of(VendedStorageCredential.PROVIDER_OSS_STS));
-        properties.getStorage().getOss().setRoleArn("acs:ram::1:role/lh");
         FakeSts sts = new FakeSts();
         DefaultStorageCredentialManager manager = new DefaultStorageCredentialManager(
-                properties, cipher, List.of(new OssStsCredentialProvider(properties, sts)));
+                properties, cipher, List.of(new OssStsCredentialProvider(properties, cipher, sts)));
 
-        VendedStorageCredential vended = manager.vend(oss(BUCKET_PATH), "t", BUCKET_PATH);
+        VendedStorageCredential vended = manager.vend(ossWithoutCallerKeys(BUCKET_PATH), "t", BUCKET_PATH);
 
         assertTrue(sts.requests.isEmpty());
         assertEquals(VendedStorageCredential.SOURCE_ENVIRONMENT, vended.source(),
@@ -266,10 +273,10 @@ class OssStsVendingTests {
     @Test
     void ignoresOtherStorageTypes() {
         FakeSts sts = new FakeSts();
-        OssStsCredentialProvider provider = new OssStsCredentialProvider(properties, sts);
+        OssStsCredentialProvider provider = new OssStsCredentialProvider(properties, cipher, sts);
         CredentialContext gcs = CredentialContext.forTable(
                 new io.github.melin.lakehouse.rest.dto.StorageDtos.GcpStorageConfigInfo(
-                        List.of("gs://bucket/p"), null, null),
+                        List.of("gs://bucket/p"), null, null, null),
                 "t", "gs://bucket/p", "alice", false);
 
         assertTrue(provider.vend(gcs).isEmpty());
@@ -337,61 +344,104 @@ class OssStsVendingTests {
     /** 控制台的「凭据来源」跟着变：三条齐全才是「签发」，缺调用者身份要明说。 */
     @Test
     void consoleReportsSignedCredentialsOnlyWhenAllThreePartsArePresent() {
-        AliyunOssStorageConfigInfo oss = oss(BUCKET_PATH);
+        AliyunOssStorageConfigInfo withoutRole = ossWithoutRole(BUCKET_PATH);
         assertEquals(CatalogCredentialSource.Mode.NONE,
-                CatalogCredentialSource.of(oss, properties).mode(), "默认不启用");
+                CatalogCredentialSource.of(ossWithoutCallerKeys(BUCKET_PATH), properties).mode(),
+                "默认不启用时，有 AK/SK 也只是转发");
 
         properties.getCredential().setProviders(List.of(VendedStorageCredential.PROVIDER_OSS_STS));
-        assertEquals(CatalogCredentialSource.Mode.NONE,
-                CatalogCredentialSource.of(oss, properties).mode(), "启用了但没角色：仍不签发");
+        assertEquals(CatalogCredentialSource.Mode.RELAY,
+                CatalogCredentialSource.of(withoutRole, properties).mode(),
+                "启用了但没角色：仍是转发");
 
-        properties.getStorage().getOss().setRoleArn("acs:ram::1:role/lh");
         CatalogCredentialSource.Source withoutIdentity =
-                CatalogCredentialSource.of(oss, properties);
-        assertEquals(CatalogCredentialSource.Mode.NONE, withoutIdentity.mode());
-        assertTrue(withoutIdentity.detail().contains("access-key"), withoutIdentity.detail());
+                CatalogCredentialSource.of(ossWithoutCallerKeys(BUCKET_PATH), properties);
+        assertEquals(CatalogCredentialSource.Mode.INVALID, withoutIdentity.mode(),
+                "有角色但没签名钥匙是配置错误，不是「短期签发」");
+        assertTrue(withoutIdentity.detail().contains("accessKeyId"), withoutIdentity.detail());
 
-        properties.getStorage().getOss().setAccessKey("PROP.AK");
-        properties.getStorage().getOss().setSecretKey("PROP.SK");
-        CatalogCredentialSource.Source signed = CatalogCredentialSource.of(oss, properties);
+        CatalogCredentialSource.Source signed =
+                CatalogCredentialSource.of(oss(BUCKET_PATH), properties);
         assertEquals(CatalogCredentialSource.Mode.STS, signed.mode());
         assertTrue(signed.detail().contains("没有续期"), signed.detail());
     }
 
-    /** 静态凭据与 stsUnavailable 仍然优先于签发：那是调用方的明确决定。 */
+    /**
+     * {@code stsUnavailable} 仍然优先于签发：那是调用方的明确决定，签发只是服务端的默认策略。
+     *
+     * <p><b>但「不申请临时凭据」只否定签发，不否定转发。</b>catalog 上那对 AK/SK 本来就在，
+     * 这一档下它仍然原样发给引擎——所以档位要跟着密钥有无走，一律报「不下发」是界面上
+     * 最容易误导人的一种不一致（用户以为引擎在用环境身份，其实拿的是 catalog 上的钥匙）。
+     */
     @Test
     void explicitDecisionsWinOverSigning() {
         properties.getCredential().setProviders(List.of(VendedStorageCredential.PROVIDER_OSS_STS));
-        properties.getStorage().getOss().setRoleArn("acs:ram::1:role/lh");
-        properties.getStorage().getOss().setAccessKey("PROP.AK");
-        properties.getStorage().getOss().setSecretKey("PROP.SK");
 
         AliyunOssStorageConfigInfo stsUnavailable = new AliyunOssStorageConfigInfo(
-                List.of(BUCKET_PATH), null, "oss-cn-hangzhou.aliyuncs.com", true, null, null);
+                List.of(BUCKET_PATH), null, "oss-cn-hangzhou.aliyuncs.com", true,
+                CATALOG_AK, cipher.seal(CATALOG_SK), "acs:ram::1234567890:role/lh-vending", null);
+        assertEquals(CatalogCredentialSource.Mode.RELAY,
+                CatalogCredentialSource.of(stsUnavailable, properties).mode(),
+                "有钥匙可转发：档位必须是转发，不能报「不下发」");
+
+        FakeSts sts = new FakeSts();
+        VendedStorageCredential vended = manager(sts)
+                .vend(stsUnavailable, "t", BUCKET_PATH);
+        assertTrue(sts.requests.isEmpty(), "stsUnavailable=true 时不该调云");
+        assertEquals(VendedStorageCredential.SOURCE_STATIC_CREDENTIALS, vended.source(),
+                "「不签发」不等于「不转发」：钥匙照发，来源要说清是它");
+        assertEquals(CATALOG_AK, vended.token().get("fs.oss.accessKeyId"));
+        assertFalse(vended.token().containsKey("fs.oss.securityToken"), "静态凭据不该带假令牌");
+    }
+
+    /** 没有钥匙可转发时，{@code stsUnavailable} 才是真的「一个密钥都不发」。 */
+    @Test
+    void stsUnavailableWithoutAnyKeyVendsNoSecrets() {
+        properties.getCredential().setProviders(List.of(VendedStorageCredential.PROVIDER_OSS_STS));
+
+        AliyunOssStorageConfigInfo stsUnavailable = new AliyunOssStorageConfigInfo(
+                List.of(BUCKET_PATH), null, "oss-cn-hangzhou.aliyuncs.com", true,
+                null, null, "acs:ram::1234567890:role/lh-vending", null);
         assertEquals(CatalogCredentialSource.Mode.NONE,
                 CatalogCredentialSource.of(stsUnavailable, properties).mode());
 
         FakeSts sts = new FakeSts();
         VendedStorageCredential vended = manager(sts)
                 .vend(stsUnavailable, "t", BUCKET_PATH);
-        assertTrue(sts.requests.isEmpty(), "stsUnavailable=true 时不该调云");
+        assertTrue(sts.requests.isEmpty());
         assertEquals(VendedStorageCredential.SOURCE_STS_UNAVAILABLE, vended.source());
+        assertFalse(vended.token().containsKey("fs.oss.accessKeyId"));
+        assertEquals("oss-cn-hangzhou.aliyuncs.com", vended.token().get("fs.oss.endpoint"),
+                "不下发密钥不等于不下发定位");
     }
 
     // ------------------------------------------------------------------ 工具
 
     private DefaultStorageCredentialManager manager(FakeSts sts) {
         properties.getCredential().setProviders(List.of(VendedStorageCredential.PROVIDER_OSS_STS));
-        properties.getStorage().getOss().setAccessKey("PROP.AK");
-        properties.getStorage().getOss().setSecretKey("PROP.SK");
-        properties.getStorage().getOss().setRoleArn("acs:ram::1234567890:role/lh-vending");
         return new DefaultStorageCredentialManager(properties, cipher,
-                List.of(new OssStsCredentialProvider(properties, sts)));
+                List.of(new OssStsCredentialProvider(properties, cipher, sts)));
     }
 
-    private static AliyunOssStorageConfigInfo oss(String location) {
+    /** 三样齐全的 catalog：角色 + 签名用的 AK/SK（密钥按落库形态密封）。 */
+    private AliyunOssStorageConfigInfo oss(String location) {
         return new AliyunOssStorageConfigInfo(List.of(location), null,
-                "oss-cn-hangzhou.aliyuncs.com", null, null, null);
+                "oss-cn-hangzhou.aliyuncs.com", null, CATALOG_AK, cipher.seal(CATALOG_SK),
+                "acs:ram::1234567890:role/lh-vending", null);
+    }
+
+    /** 有 AK/SK 但没有角色：转发档。 */
+    private AliyunOssStorageConfigInfo ossWithoutRole(String location) {
+        return new AliyunOssStorageConfigInfo(List.of(location), null,
+                "oss-cn-hangzhou.aliyuncs.com", null, CATALOG_AK, cipher.seal(CATALOG_SK),
+                null, null);
+    }
+
+    /** 有角色但没有任何钥匙可签名：签发档接不住，退回环境链。 */
+    private static AliyunOssStorageConfigInfo ossWithoutCallerKeys(String location) {
+        return new AliyunOssStorageConfigInfo(List.of(location), null,
+                "oss-cn-hangzhou.aliyuncs.com", null, null, null,
+                "acs:ram::1234567890:role/lh-vending", null);
     }
 
     /** 假 STS：记录请求，返回一张固定寿命（30 分钟）的票。 */

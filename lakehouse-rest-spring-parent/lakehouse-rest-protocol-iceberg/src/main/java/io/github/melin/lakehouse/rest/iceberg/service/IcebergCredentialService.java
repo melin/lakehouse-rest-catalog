@@ -230,9 +230,8 @@ public class IcebergCredentialService {
     private StorageCredentialCache.Cached cached(CatalogEntity catalog, TableEntity table) {
         StorageConfigInfo storage = StorageConfigs.of(catalog);
         String key = StorageCredentialCache.key(catalog.getId(), storage, table.getPath());
-        long now = System.currentTimeMillis();
-        return cache.get(key).orElseGet(() -> cache.put(key,
-                storagePolicy.credentialManager().vend(storage, table.getId(), table.getPath()), now));
+        return cache.resolve(key,
+                () -> storagePolicy.credentialManager().vend(storage, table.getId(), table.getPath()));
     }
 
     /**

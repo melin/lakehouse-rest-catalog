@@ -192,12 +192,6 @@ class CredentialAccessSplitTests {
         assertTrue(credential(VendedStorageCredential.SOURCE_STATIC_CREDENTIALS, 0L)
                         .carriesLongTermKeyPair(),
                 "catalog 自己存的那对密钥：最典型的「长期密钥」");
-        assertTrue(credential(VendedStorageCredential.SOURCE_CONFIGURATION, 0L)
-                        .carriesLongTermKeyPair(),
-                "服务端配置里的默认凭据同样是长期密钥");
-        assertTrue(credential(VendedStorageCredential.SOURCE_NAMED_STORAGE_PREFIX + "s3-a", 0L)
-                        .carriesLongTermKeyPair(),
-                "具名存储也是从配置里取的长期密钥");
 
         assertFalse(credential(VendedStorageCredential.SOURCE_STS_SESSION, 1_000L).carriesLongTermKeyPair(),
                 "STS 现签的票有 TTL、policy 收窄到表：发给能读表的人是设计意图");

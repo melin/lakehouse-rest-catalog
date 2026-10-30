@@ -2,6 +2,8 @@ package io.github.melin.lakehouse.rest.service;
 
 import io.github.melin.lakehouse.rest.config.RestServerProperties;
 import io.github.melin.lakehouse.rest.dto.StorageDtos.AliyunOssStorageConfigInfo;
+import io.github.melin.lakehouse.rest.support.CredentialCipher;
+import io.github.melin.lakehouse.rest.support.StorageConfigs;
 import io.github.melin.lakehouse.rest.support.VendedStorageCredential;
 import java.time.Duration;
 import java.time.Instant;
@@ -33,10 +35,14 @@ import org.springframework.stereotype.Component;
  *       直接透传会在签名阶段被拒，报错是 {@code InvalidParameter.RoleSessionName}。</li>
  * </ol>
  *
- * <p><b>先看 {@code stsUnavailable}，再看角色。</b>两者的顺序在调用方
- * （{@code DefaultStorageCredentialManager}）按既有优先级做完：静态凭据优先于一切、
- * {@code stsUnavailable} 表达「不要申请」。本 provider 只在被链调起来时回答一个问题：
- * 「这次我能不能签」。
+ * <p><b>先看 {@code stsUnavailable}，再看角色。</b>{@code stsUnavailable} 由调用方
+ * （{@code DefaultStorageCredentialManager}）在最前面判掉；本 provider 只在被链调起来时
+ * 回答一个问题：「这次我能不能签」。
+ *
+ * <p><b>签名用的那把钥匙来自 catalog。</b>阿里云的 STS 没有「环境凭据链」这条路，
+ * 必须有一对 AK/SK 去签 {@code AssumeRole}。这对钥匙与 {@code roleArn} 一起填在
+ * catalog 上——它们描述的是「这个 catalog 用谁的身份去换票」，不同账号的 OSS catalog
+ * 本来就该不同。角色只是上限，policy 才是这张表的边界。
  */
 @Component
 @RequiredArgsConstructor
@@ -50,7 +56,12 @@ public class OssStsCredentialProvider implements CredentialProvider {
     /** 阿里云 {@code AssumeRole} 允许的最大有效期（角色自身的 MaxSessionDuration 可能更短）。 */
     static final long MAX_TTL_SECONDS = 3600L;
 
+    /** 全球化 STS 端点；专有云在 catalog 的 {@code stsEndpoint} 里覆盖。 */
+    static final String DEFAULT_STS_ENDPOINT = "https://sts.aliyuncs.com";
+
     private final RestServerProperties properties;
+
+    private final CredentialCipher cipher;
 
     private final OssStsClient client;
 
@@ -64,21 +75,20 @@ public class OssStsCredentialProvider implements CredentialProvider {
         if (!(context.storage() instanceof AliyunOssStorageConfigInfo oss)) {
             return Optional.empty();
         }
-        RestServerProperties.Storage.Oss config = properties.getStorage().getOss();
-        String roleArn = config.getRoleArn();
-        if (roleArn == null || roleArn.isBlank()) {
-            // 没配角色 = 本部署没有签发能力。退回「只有定位键」的旧行为，不是失败。
+        String roleArn = oss.roleArn();
+        if (blank(roleArn)) {
+            // 没填角色 = 这个 catalog 没要求换票。退回「转发 AK/SK」那一档，不是失败。
             return Optional.empty();
         }
-        String accessKeyId = config.getAccessKey();
-        String secretAccessKey = config.getSecretKey();
-        if (blank(accessKeyId) || blank(secretAccessKey)) {
-            // 阿里云的 STS 必须由一对 AK/SK 签名，没有「环境凭据链」这条路。
-            // 静默跳过而不是抛错：一个开着 oss-sts 却没有服务身份的部署，
-            // 仍然应该能用「转发 catalog 里的静态凭据」那一档读表。
-            log.warn("oss-sts is enabled and has a roleArn, but lakehouse.rest.storage.oss"
-                    + ".access-key / secret-key is not configured: skipping STS for {}",
-                    context.scopeId());
+        StorageConfigs.StorageSecrets caller = StorageConfigs.secrets(oss, cipher);
+        if (caller == null || blank(caller.id()) || blank(caller.secret())) {
+            // 阿里云的 STS 必须由一对 AK/SK 签名，没有环境凭据链。
+            // 静默跳过而不是抛错：填了角色但没填钥匙的 catalog，仍然应该能用
+            // 「转发」那一档读表——只是它拿不到收窄。
+            log.warn("catalog {} declares roleArn {} but carries no accessKeyId/secretAccessKey"
+                            + " to sign the AssumeRole call: skipping oss-sts for it (Aliyun STS"
+                            + " has no ambient credential chain, so the pair must be on the catalog)",
+                    context.scopeId(), roleArn);
             return Optional.empty();
         }
         List<CredentialScope> scopes = context.scopes();
@@ -106,9 +116,9 @@ public class OssStsCredentialProvider implements CredentialProvider {
                 sessionName(context),
                 ttl,
                 OssStsPolicy.build(scopes),
-                config.getStsEndpoint(),
-                accessKeyId,
-                secretAccessKey));
+                blank(oss.stsEndpoint()) ? DEFAULT_STS_ENDPOINT : oss.stsEndpoint(),
+                caller.id(),
+                caller.secret()));
 
         Map<String, String> token = new LinkedHashMap<>();
         if (!blank(oss.endpoint())) {

@@ -285,13 +285,40 @@ lakehouse-rest-console/
 meta 只暴露枚举取值与服务端自身的配置，不含任何主体、catalog 或凭据信息，
 因此与 `/api/management/v1/**` 一样只过认证拦截器，不做细粒度授权判定。
 
-### 4.3 存储配置表单里的静态凭据
+### 4.3 存储配置表单里的凭据字段
 
 创建 / 编辑 catalog 时的存储配置（`components/StorageConfigFields.vue`）在
 `S3` / `OBS` / `OSS` / `COS` 四种类型下多出一组「静态凭据」：`accessKeyId` 与
 `secretAccessKey`（密码框，可切换显示）。它是本工程在规格之外的扩展，语义与边界见
-[`README.md` 的存储与凭据一节](../README.md#5-配置项)，这里只说表单侧的做法：
+[`README.md` 的存储与凭据一节](../README.md#5-配置项)，这里只说表单侧的做法。
 
+**凭据只有一种形态：写在 catalog 的 `storageConfigInfo` 上。** 服务端配置里一行都没有
+（`lakehouse.rest.storage` 只剩落库加密密钥与连接参数），因为每个 catalog 的存储配置
+本来就不一样——同一套部署里的两个 S3 catalog 可以属于两个云账号。表单因此按类型给出
+四组形状：
+
+| 存储类型 | 凭据字段 | 表单形态 |
+| --- | --- | --- |
+| `S3` / `OBS` / `OSS` / `COS` | `accessKeyId` + `secretAccessKey` | 两个单行框，密钥是密码框；`******` 只出现在 placeholder 里 |
+| `AZURE` | `tenantId` + `clientId` + `clientSecret`（可再给 `authority` / `scope`） | 租户在主表单（决定仓库在哪），服务主体两框与两个可选框在折叠区 |
+| `GCS` | `serviceAccountJson` | **多行框**，整段 JSON 粘进去；旁边一行「服务端只读 `client_email` / `private_key` / `token_uri`」 |
+| `OSS`（追加） | `roleArn` + `stsEndpoint` | 折叠区「阿里云 RAM STS」一组，与 S3 的 `roleArn` 同位置 |
+
+三种形状的**用途不一样**，表单必须说清，否则用户会以为填了就能用：
+
+- `accessKeyId` / `secretAccessKey` 是唯一可能**转发给引擎**的一对（没有签发材料时）。
+- Azure 的 `clientId` / `clientSecret` 与 GCS 的 `serviceAccountJson` 是**服务端换票的身份**，
+  永远不下发。把服务主体发给引擎等于把「能签任意 SAS 的身份」交出去。
+- GCS 的 `serviceAccountJson` 打码位置与别家不同：它没有 ID 字段，`******` 打在 JSON 本体上。
+
+> **缺口（已知，未做）**：Azure 的 `clientId` / `clientSecret` / `authority` / `scope`、
+> GCS 的 `serviceAccountJson`、OSS 的 `roleArn` / `stsEndpoint` 目前**还没有进表单**——
+> 服务端已经接收并在契约里（见 §4.5 与 `management-api-contract.md` 的扩展字段清单），
+> 控制台这三处仍只能靠 API 填。GCS 那一栏现在还是配置时代的 `gcsServiceAccount`。
+> 判定侧不受影响：`/api/console/v1/catalog-credential-source` 直接读提交体，
+> 手填的字段一样判得出档位。
+
+其余表单规则：
 - **是否渲染由 `staticCredentialsEnabled` 决定**（即服务端有没有配 `credential-secret-key`）。
   取不到 meta 时按 `false` 处理——宁可少一个字段，也不要让用户填完才被 400 拒绝。
 - **能力关着时不把字段藏起来**，而是在原位说明该开哪个配置项、以及生成密钥的命令
@@ -303,7 +330,8 @@ meta 只暴露枚举取值与服务端自身的配置，不含任何主体、cat
 - **提交时回传哨兵而不是省略 AK ID。** 输入框空但库里有凭据时，`build()` 发
   `accessKeyId: "******"`——省略只能表达「两个字段都不改」，而用户只想换密钥时
   省略会变成「有密钥没 ID」，服务端只能拒。哨兵是「ID 沿用库里的、密钥换新的」的唯一表达。
-- **「移除已保存的静态凭据」按钮**提交一对空串（二次确认），之后下发退回服务端配置那一级。
+- **「移除已保存的静态凭据」按钮**提交一对空串（二次确认），之后下发**不再带任何密钥**
+  （服务端配置里已经没有可以回落的凭据了，引擎走自己的凭据链）。
   注意这与上面那条的区别：**`******` 不是「清除」**，清除只有一对空串这一条路。
 - **前端先拦一遍**同样的四条规则：有密钥没 ID、换 ID 不带新密钥、与 `storageName` 互斥、
   能力未开启。理由与下拉候选来源一致：服务端只会回一句笼统的 400，而这一层能说清是哪一条。
@@ -324,6 +352,11 @@ meta 只暴露枚举取值与服务端自身的配置，不含任何主体、cat
 | `OBS` / `OSS` | `endpoint` | `stsUnavailable` |
 | `COS` | `endpoint`（COSN 的 `endpoint_suffix`）、`bucketRegion` | `appId`（只用于校验桶名）、`useHttps`（缺省开）、`stsUnavailable` |
 | `FILE` | — | 无（折叠区整块不出现） |
+
+表中是**当前**表单的实际字段。§4.3 末尾那三组缺口补上之后，Azure 行会多出
+`clientId` / `clientSecret` / `authority` / `scope`，GCS 行会把 `gcsServiceAccount`
+换成 `serviceAccountJson`（多行），`OBS` / `OSS` 行会拆开——OSS 多一组
+`roleArn` / `stsEndpoint`。
 
 三条规则与它们的理由：
 
@@ -357,13 +390,24 @@ meta 只暴露枚举取值与服务端自身的配置，不含任何主体、cat
   降级」的声明（票退回角色权限范围、无法按表收窄），收进折叠区就等于只有点开的人知道。
   判据是**字段值本身**，不是「谁推断出了什么档位」——它与第 24 组禁的那类前端推断无关。
 
-### 4.5 `roleArn` 与静态凭据并存时只提示、不拦截
+### 4.5 `roleArn` 与静态凭据并存：允许，且签发优先
 
-`StorageDtos` 的注释写着「静态凭据与 `roleArn` 系列互斥，由 `StorageConfigs` 拒绝」，
-但 `StorageConfigs.requireSingleCredentialSource` 实际只判「静态凭据 × `storageName`」。
-**服务端今天接受这种组合**，因此控制台只给一条提示（`.pc-field-note-warn`），不写进
-`validateCredentials()`：前端比服务端更严，会让一份服务端认可的配置在控制台里存不回去。
-要根治得在服务端补拒绝逻辑，那属于契约变更。
+早先服务端把「静态凭据 + `roleArn`」判为互斥（400），控制台因此只给一条提示、不写进
+`validateCredentials()`。**那条互斥规则已经删除**，因为两者并存是最常见的自建机房形态：
+一把只允许 `sts:AssumeRole` 的钥匙，配一个角色，让服务端去换票。
+
+于是语义变成「同一个字段、两种身份」：
+
+| 填了什么 | 那对 AK/SK 是什么 | 走哪一档 |
+| --- | --- | --- |
+| 只有钥匙 | 数据面凭据 | 转发（`RELAY`） |
+| 钥匙 + `roleArn`（S3）／ + `roleArn`（OSS，且启用 `oss-sts`） | 换票时的**调用方身份** | 签发（`STS`） |
+| 钥匙 + `stsUnavailable=true` | 数据面凭据 | 转发（`RELAY`，不调云） |
+| 只有 `roleArn` 但没钥匙 | —— | OSS 是「配置有误」（`INVALID`，阿里云 STS 必须签名）；S3 交给 SDK 默认链（`STS`） |
+
+前端**不复制这张表**：档位只来自服务端（§24 组反向断言盯着这条）。表单要做的事只有两件——
+把 `******` 哨兵按 §4.3 的规则处理，以及在 `roleArn` 填了而本部署没启用签发 provider 时
+把判定结果原样显示出来（那句 detail 会点名要开的配置项）。
 
 ### 4.6 Iceberg catalog 的目录浏览
 
@@ -602,16 +646,17 @@ catalog 列表多一列、详情页多一段，说的都是同一件事：**引�
 唯一能区分它们的地方就是界面上的这个标记——因此它必须在列表页出现，不能只藏在详情的折叠区里。
 
 判定**只在服务端做**（`CatalogCredentialSource`）：判据是「凭据管理器走哪条分支」，
-要读 `lakehouse.rest.storage.*`（具名存储、默认凭据）与 `lakehouse.rest.credential.providers`
-（本部署有没有启用签发），这两份东西前端拿不到；把优先级抄进 JS 必然与
-`DefaultStorageCredentialManager` 漂移，而漂移的表现是「界面说在签发、实际在转发」。
+要读 catalog 自己的 `storageConfigInfo`（有没有 `roleArn` / 凭据 / `stsUnavailable`）
+与 `lakehouse.rest.credential.providers`（本部署有没有启用签发）——后者前端拿不到；
+把优先级抄进 JS 必然与 `DefaultStorageCredentialManager` 漂移，而漂移的表现是
+「界面说在签发、实际在转发」。
 
 | 档 | 界面标签 | 什么时候出现 |
 | --- | --- | --- |
-| `STS` | 短期签发 | S3 + 填了 `roleArn` + 本部署启用了 `s3-token` |
-| `RELAY` | 转发长期密钥 | catalog 自带静态凭据 / 具名存储 / 服务端默认凭据（GCS 是配置的访问令牌） |
-| `NONE` | 不下发 | `stsUnavailable=true`、没有配任何密钥、Azure（只发定位元数据）、文件系统 |
-| `INVALID` | 配置有误 | 引用了不存在的具名存储、COS 配了 `sessionToken`（COSN 没有令牌位，取票会 500） |
+| `STS` | 短期签发 | S3 + 填了 `roleArn` + 启用了 `s3-token`；OSS + `roleArn` + AK/SK + 启用了 `oss-sts`；Azure + 服务主体 + `azure-sas`；GCS + `serviceAccountJson` + `gcs-downscope` |
+| `RELAY` | 转发长期密钥 | catalog 上填了静态凭据，但**没有**能接手的签发（没 `roleArn`、provider 未启用、或 `stsUnavailable=true`） |
+| `NONE` | 不下发 | `stsUnavailable=true` 且也没有密钥、什么都没填、Azure 没有服务主体（只发定位元数据）、GCS 没有服务账号、文件系统 |
+| `INVALID` | 配置有误 | 启用了签发但缺签发所需的身份：Azure 缺 `clientId`/`clientSecret`、OSS 有 `roleArn` 却缺 AK/SK、没有 `storageConfigInfo` |
 
 四条实现约定：
 

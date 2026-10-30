@@ -55,16 +55,13 @@ public record VendedStorageCredential(Map<String, String> token,
         this(token, ttlSeconds, storageType, source, PROVIDER_RELAY, 0L);
     }
 
-    /** 密钥来源为服务端配置里的默认凭据。 */
-    public static final String SOURCE_CONFIGURATION = "configuration";
-
-    /** 密钥来源为服务端配置里的具名存储，实际取值形如 {@code named-storage:<name>}。 */
-    public static final String SOURCE_NAMED_STORAGE_PREFIX = "named-storage:";
-
     /**
-     * 密钥来源为 catalog 自己带的静态凭据（{@code storageConfigInfo.accessKeyId}）。
+     * 密钥来源为 catalog 自己带的长期凭据（{@code storageConfigInfo} 的凭据字段）。
      *
-     * <p>这是最具体的一级：catalog 显式写下了「用这把钥匙」，就不再去找服务端配置。
+     * <p><b>这是唯一的一档长期凭据。</b>早先还有「服务端配置里的默认凭据」与
+     * 「具名存储」两档，配置面删掉之后它们不可能再出现——留着常量会让
+     * {@link #hasSecrets()} 里挂着永远为假的分支，而这个方法是 {@code USE_SECRET}
+     * 判权的唯一口径，多一条看着能命中的分支就多一次误读的机会。
      */
     public static final String SOURCE_STATIC_CREDENTIALS = "static-credentials";
 
@@ -121,9 +118,10 @@ public record VendedStorageCredential(Map<String, String> token,
      * 自身的 Azure 标识签 SAS。本工程没有那层标识，因此只能把库、账户、租户传下去，
      * 由引擎用自己那份身份去换 SAS。这是明确的缺口，不是遗漏。
      *
-     * <p>部署配了 {@code lakehouse.rest.storage.azure} 时不再走这一档，
-     * 改由 {@code azure-sas} 签真 SAS；这一档保留给「没有服务身份」的部署，
-     * 以及位置认不出来（跨容器、跨账户）时明确退回的路径。
+     * <p>catalog 上配齐了服务主体（{@code tenantId} + {@code clientId} + {@code clientSecret}）
+     * 且本部署启用了 {@code azure-sas} 时不再走这一档，改由它签真 SAS；这一档保留给
+     * 「catalog 没有服务主体」的部署，以及位置认不出来（跨容器、跨账户）时明确退回的路径。
+     * <b>服务主体本身永不下发</b>——它只在服务端换票时用。
      */
     public static final String SOURCE_AZURE_METADATA_ONLY = "metadata-only";
 
@@ -142,11 +140,6 @@ public record VendedStorageCredential(Map<String, String> token,
     /** provider 名：GCS downscoped token。 */
     public static final String PROVIDER_GCS_DOWNSCOPE = "gcs-downscope";
 
-    /** 取值是否来自具名存储。 */
-    public boolean namedStorage() {
-        return source != null && source.startsWith(SOURCE_NAMED_STORAGE_PREFIX);
-    }
-
     /**
      * 是否真的下发了密钥（而非只给定位信息）。
      *
@@ -156,11 +149,11 @@ public record VendedStorageCredential(Map<String, String> token,
      * 因此把一张真票当成空响应放行，或者反过来。而「是不是短期」这个信息
      * {@link #expireTimeInMs()} 本来就已经说清楚了：只有真签了票的路径会填非零值。
      *
-     * <p>剩下的三种静态来源仍然是显式列举——它们没有到期时刻，也就没有别的判据。
+     * <p>静态来源只剩一种，显式列举它是为了让「只发定位信息」那一档明确落空——
+     * 它没有到期时刻，也就没有别的判据可用。
      */
     public boolean hasSecrets() {
-        return shortLived() || SOURCE_CONFIGURATION.equals(source) || namedStorage()
-                || SOURCE_STATIC_CREDENTIALS.equals(source);
+        return shortLived() || SOURCE_STATIC_CREDENTIALS.equals(source);
     }
 
     /**

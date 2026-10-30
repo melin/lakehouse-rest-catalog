@@ -420,26 +420,20 @@ Catalog 侧与鉴权：
 [Storage & Credentials](https://polaris.apache.org/releases/1.8.0/configuration/configuration-reference/#storage--credentials)
 一节，键名逐项对应，只把前缀从 `polaris` 换成 `lakehouse.rest`：
 
+> **对象存储凭据不在配置文件里。** AK/SK、Azure 的服务主体（`clientId` / `clientSecret`
+> 与 `authority` / `scope`）、GCS 的服务账号 JSON、OSS 要 assume 的 `roleArn` 与
+> `stsEndpoint`，全部写在**创建 catalog 的表单**上、落进 `storageConfigInfo`，
+> 以 `credential-secret-key` 加密后存库，对外只回 `******`。
+> 理由很简单：每个 catalog 的存储配置不一样——一个服务端同时挂生产桶与测试桶时，
+> 这两组密钥的签发人、轮转周期、失效方式都不同，塞进同一份 yml 之后只有
+> `storageName` 这一个额外字段能区分「这次该用哪把钥匙」，而它只是把
+> 「配置在哪个桶」的答案挪了个位置，没有消除「全局配置里躺着别人的密钥」这件事本身。
+> 因此下表里只剩加密密钥与连接参数；Terraform / Helm 之类的部署清单里也不要再放凭据。
+
 | 配置 | 默认值 | 说明 |
 | --- | --- | --- |
-| `lakehouse.rest.storage.aws.access-key` | 空 | S3 默认凭据；留空则退化为环境凭据链 |
-| `lakehouse.rest.storage.aws.secret-key` | 空 | 同上 |
-| `lakehouse.rest.storage.aws.storages.<name>.access-key` | 空 | 具名存储，键为 catalog 的 `storageConfigInfo.storageName` |
-| `lakehouse.rest.storage.aws.storages.<name>.secret-key` | 空 | 同上 |
-| `lakehouse.rest.storage.gcp.token` | 空 | GCS 访问令牌；留空则交给引擎自己的凭据链 |
-| `lakehouse.rest.storage.gcp.lifespan` | 空 | GCS 令牌有效期；比 `credential.ttl-seconds` 短时收窄 `expiresAt` |
-| `lakehouse.rest.storage.obs.access-key` | 空 | 华为云 OBS 默认凭据；三项全空则退化为环境凭据链 |
-| `lakehouse.rest.storage.obs.secret-key` | 空 | 同上 |
-| `lakehouse.rest.storage.obs.session-token` | 空 | OBS 临时凭据的安全令牌；长期凭据留空 |
-| `lakehouse.rest.storage.obs.storages.<name>.access-key` | 空 | OBS 具名存储，另支持 `.secret-key` / `.session-token` |
-| `lakehouse.rest.storage.oss.access-key` | 空 | 阿里云 OSS 默认凭据 |
-| `lakehouse.rest.storage.oss.secret-key` | 空 | 同上 |
-| `lakehouse.rest.storage.oss.session-token` | 空 | OSS 临时凭据的安全令牌（阿里侧键名为 `securityToken`） |
-| `lakehouse.rest.storage.oss.storages.<name>.access-key` | 空 | OSS 具名存储，另支持 `.secret-key` / `.session-token` |
-| `lakehouse.rest.storage.cos.access-key` | 空 | 腾讯云 COS 默认凭据（下发为 `fs.cosn.userinfo.secretId`） |
-| `lakehouse.rest.storage.cos.secret-key` | 空 | 同上 |
-| `lakehouse.rest.storage.cos.storages.<name>.access-key` | 空 | COS 具名存储，另支持 `.secret-key`；`.session-token` 虽能绑定，但 **COS 的发包里没有能消费它的凭据提供器**，配上之后该 catalog 的下发会以 500 明确失败，而不是发一个没人读的键 |
-| `lakehouse.rest.storage.credential-secret-key` | 空 | catalog 自带静态凭据的落库加密密钥，Base64 且解码后**恰好 32 字节**；留空则关闭静态凭据，见下方说明 |
+| `lakehouse.rest.storage.credential-secret-key` | 空 | catalog 自带凭据的落库加密密钥，Base64 且解码后**恰好 32 字节**；留空则关闭凭据落库，见下方说明 |
+| `lakehouse.rest.storage.credential-secret-key-previous` | 空 | 上一把加密密钥，只在**轮换期间**配置，仅用于解密旧密文 |
 | `lakehouse.rest.storage.clients-cache-max-size` | 空 | 保留项，见下方说明 |
 | `lakehouse.rest.storage.max-http-connections` | 空 | 保留项，见下方说明 |
 | `lakehouse.rest.storage.read-timeout` | 空 | 读取超时；正数校验 |
@@ -452,20 +446,27 @@ Catalog 侧与鉴权：
 | `lakehouse.rest.credential-manager.type` | `default` | `default` 下发凭据；`noop` 不下发，读表接口返回 501 |
 | `lakehouse.rest.file-io.type` | `default` | 本部署接入的存储实现：`default`/`s3`/`azure`/`gcs`/`obs`/`oss`/`cosn`/`local` |
 
-`lakehouse.rest.storage.obs.*`、`lakehouse.rest.storage.oss.*` 与 `lakehouse.rest.storage.cos.*`
-三组**没有 Polaris 侧的对应项**——Polaris 没有这三个存储类型，它在 S3 兼容层上接入华为云、
-阿里云与腾讯云。本工程单列，是为了让这三家的 AK/SK 独立于 S3 那一份，各按各自的节奏轮转与授权。
-其中 `cos.*` 复用 S3 那一档的字段形状，但 **`sessionToken` 填了会在下发时明确报 500**：
-COS 这条链上没有能消费临时令牌的凭据提供器（见下）。
+凭据字段按存储类型分布在 `storageConfigInfo` 上（写路径加密、读路径打码）：
 
-**catalog 自带的静态凭据**是另一处在 Polaris 规格之外的扩展：
-`S3` / `OBS` / `OSS` / `COS` 四种 `storageConfigInfo` 都多出 `accessKeyId` 与 `secretAccessKey`
-两个字段，填写后该 catalog 就用这把钥匙访问对象存储，不必把密钥写进服务端配置。
+| 存储类型 | 凭据字段 | 备注 |
+| --- | --- | --- |
+| `S3` / `OBS` / `OSS` / `COS` | `accessKeyId` + `secretAccessKey` | 没配签发材料时它就是要转发给引擎的数据面凭据；S3 配了 `roleArn` 之后它是服务端 `AssumeRole` 时的**调用方身份**，OSS 同理 |
+| `AZURE` | `tenantId` + `clientId` + `clientSecret`（另可给 `authority` / `scope`） | 服务主体**只用于签发**，永远不当数据面凭据下发 |
+| `GCS` | `serviceAccountJson` | 服务账号密钥 JSON，服务端自签 JWT 换 access token 再 downscope；**只用于签发** |
+| `OSS`（追加） | `roleArn` + `stsEndpoint` | 阿里云 RAM STS：`roleArn` 是上限，`stsEndpoint` 只在专有云覆盖 |
+
+`OBS` / `OSS` / `COS` 三个存储类型**没有 Polaris 侧的对应项**——Polaris 没有这三个类型，
+它在 S3 兼容层上接入华为云、阿里云与腾讯云。本工程单列，是因为三家的 FileIO 各认自己
+一套键名（`fs.obs.*` / `fs.oss.*` / `fs.cosn.*`），键名写错不会报错，只会让引擎静默拿不到
+凭据。它们的凭据字段与 S3 同形（`accessKeyId` + `secretAccessKey`）——写在 catalog 上，
+不写在服务端配置里。
+
+**凭据全部写在 catalog 上**，这是 Polaris 规格之外的扩展：`S3` / `OBS` / `OSS` / `COS`
+四种 `storageConfigInfo` 带 `accessKeyId` 与 `secretAccessKey`，`AZURE` 带
+`tenantId` + `clientId` + `clientSecret`，`GCS` 带 `serviceAccountJson`。
 参照 Polaris 的路径接入不提供 STS 的兼容 S3 存储（MinIO、Ceph RGW、Ozone、FlashBlade 等）
-要写 `stsUnavailable: true`，此时服务端不再下发任何密钥，引擎只能靠自己的凭据链；
-静态凭据补上的正是这一格——它表达的是「下发用户自己填进来的长期密钥」，
-与 `stsUnavailable` 的「服务端不去向云申请临时凭据」是两件事，
-因此**静态凭据排在 `stsUnavailable` 之前**，两者同时出现不冲突。
+要写 `stsUnavailable: true`，此时服务端不再**向云申请**临时凭据；但 catalog 上那份长期密钥
+仍会转发给引擎——「不去换票」与「不发用户填的钥匙」是两件事，两者同时出现不冲突。
 
 - `accessKeyId` 可读可写，但**响应里是打码值 `******`**（六个星号），不是原文。
   打码而不是省略：省略了就分不清「没配凭据」与「配了但看不到」，而这两种在 `PUT` 里含义不同。
@@ -478,10 +479,11 @@ COS 这条链上没有能消费临时令牌的凭据提供器（见下）。
 - `secretAccessKey` **只写不读**。落库前用 AES-GCM（AES-256）加密，任何响应都不回显，
   因此 `PUT` 省略它表示**保持原值**而不是清空——这是规格 `PUT`「整体替换」语义的唯一例外，
   否则每次改 `endpoint` 都得重新贴一遍密钥。
-- 想清除已配的凭据，显式提交一对空串（控制台表单里有「移除已保存的静态凭据」按钮），
-  之后下发退回服务端配置那一级。只给其中一个会返回 400：有密钥没 ID、换 ID 不带新密钥、
-  空 ID 配非空密钥，都无法区分是笔误还是有意为之。
-- 静态凭据与 `storageName` **互斥**，两者都在回答「用哪组密钥」，同时出现返回 400。
+- 想清除已配的凭据，显式提交一对空串（控制台表单里有「移除已保存的凭据」按钮），
+  之后该 catalog 不再下发任何密钥，引擎走自己的凭据链。只给其中一个会返回 400：
+  有密钥没 ID、换 ID 不带新密钥、空 ID 配非空密钥，都无法区分是笔误还是有意为之。
+- `storageName` 是一个**标签**，不参与凭据解析，因此与凭据字段可以同时出现。
+  早先它指向服务端配置里的具名密钥，那时两者互斥；配置面删掉之后互斥失去了依据。
 - 未配 `credential-secret-key` 时**拒绝保存**静态凭据（400，错误信息给出生成命令
   `openssl rand -base64 32`），而不是明文落库；取值不是 Base64 或解码后不是 32 字节则启动即失败。
   轮换该密钥要注意：旧密文用新密钥解不开，读取该 catalog 的凭据会以 500 明确失败，
@@ -504,18 +506,20 @@ JDK 的 `HttpClient` 也没有对应的调节项，因此它们不改变行为�
 
 | storageType | 下发的键 | 密钥来源 |
 | --- | --- | --- |
-| `S3` | `s3.access-key-id`、`s3.secret-access-key`、`s3.access-key`、`s3.secret-key`、`s3.region`、`s3.endpoint`、`s3.path-style-access` | catalog 静态凭据 → 具名存储 → 默认配置 → 环境凭据链 |
-| `AZURE` | `azure.tenant-id`、`azure.account`、`azure.hierarchical`、`azure.multi-tenant-app-name`、`azure.consent-url` | 仅定位元数据，见下 |
-| `GCS` | `gcs.oauth2.token`、`gcs.oauth2.token-expires-at`、`gcs.service-account` | 服务端配置 → 环境凭据链 |
-| `OBS` | `fs.obs.access.key`、`fs.obs.secret.key`、`fs.obs.session.token`、`fs.obs.endpoint` | 具名存储 → 默认配置 → 环境凭据链 |
-| `OSS` | `fs.oss.accessKeyId`、`fs.oss.accessKeySecret`、`fs.oss.securityToken`、`fs.oss.endpoint` | 同上 |
-| `COS` | `fs.cosn.userinfo.secretId`、`fs.cosn.userinfo.secretKey`、`fs.cosn.bucket.region`、`fs.cosn.bucket.endpoint_suffix`、`fs.cosn.useHttps` | 同上，但**没有临时令牌那一列** |
+| `S3` | `s3.access-key-id`、`s3.secret-access-key`、`s3.access-key`、`s3.secret-key`、`s3.region`、`s3.endpoint`、`s3.path-style-access` | `stsUnavailable` → `s3-token` 签发 → catalog 上的 AK/SK → 环境凭据链 |
+| `AZURE` | `azure.tenant-id`、`azure.account`、`azure.hierarchical`、`azure.multi-tenant-app-name`、`azure.consent-url`（启用 `azure-sas` 时另加 `adls.sas-token*`） | 只发定位元数据；服务主体**永远不下发** |
+| `GCS` | `gcs.service-account`（启用 `gcs-downscope` 时另加 `gcs.oauth2.token`、`gcs.oauth2.token-expires-at`） | 只发定位信息；`serviceAccountJson` **永远不下发** |
+| `OBS` | `fs.obs.access.key`、`fs.obs.secret.key`、`fs.obs.endpoint` | catalog 上的 AK/SK → 环境凭据链 |
+| `OSS` | `fs.oss.accessKeyId`、`fs.oss.accessKeySecret`、`fs.oss.endpoint`（启用 `oss-sts` 时另加 `fs.oss.securityToken`） | catalog 上的 AK/SK（有 `roleArn` 则先拿去换票） |
+| `COS` | `fs.cosn.userinfo.secretId`、`fs.cosn.userinfo.secretKey`、`fs.cosn.bucket.region`、`fs.cosn.bucket.endpoint_suffix`、`fs.cosn.useHttps` | catalog 上的 AK/SK；**没有临时令牌那一列** |
 | `FILE` | 自包含令牌（`accessKeyId`/`securityToken`/`expiration`/`tablePath`） | 服务端自签，文件系统本身不校验 |
 
 `OBS` 与 `OSS` 都是兼容 S3 协议的对象存储，但**键名族互不通用，也都不认 `s3.*`**：
 Paimon 的 `paimon-obs` 与 `paimon-oss` 是两个独立的 FileIO。两家的命名风格还不一致——
 华为是点分隔小写（`fs.obs.access.key`），阿里是驼峰（`fs.oss.accessKeyId`）；
 连「临时凭据的令牌」都不同名（`session.token` 对 `securityToken`）。
+本工程只在 OSS 上签发临时凭据（`oss-sts`），所以 `securityToken` 会出现，
+而 `fs.obs.session.token` 从不出现——catalog 上的凭据是长期的，没有令牌可发。
 这些差异来自各自的 Hadoop FileSystem（`hadoop-huaweicloud` 与 `hadoop-aliyun`），不是笔误，
 改「统一」会让其中一侧静默失效：引擎只是拿不到凭据，然后在第一次读数据时以看似无关的文件系统异常失败。
 
@@ -536,8 +540,8 @@ Paimon 的 `paimon-obs` 与 `paimon-oss` 是两个独立的 FileIO。两家的�
 `SimpleCredentialsProvider` 与 `EnvironmentVariableCredentialsProvider`，
 没有能消费 sessionToken 的实现；`CosNConfigKeys` 里也没有任何令牌项。
 往 `fs.cosn.credentials.provider` 填一个不存在的类会在 FileIO 初始化时失败，
-因此本工程不下发这个键，并在「配了 sessionToken 要发、但这一族没有令牌键」时返回 500
-而不是静默丢掉——否则表现就是「票发了、引擎不认、过一会儿失败」。
+因此本工程不下发这个键，也不给 COS 造一条「服务端签了、引擎不认」的签发路径——
+`credential.providers` 里没有任何 provider 会接手 COS，这不是遗漏，是能力边界的写法。
 
 COS 还只在 **Paimon 面**成立：Iceberg 的 `HadoopFileIO` 不消费下发的 `config`，
 Lance 是 Rust 没有 COSN 实现。要在 Iceberg 上读 COS 里的数据，得另建一个 `S3` catalog

@@ -159,16 +159,16 @@ public class StorageFileIoFactory {
     private VendedStorageCredential catalogCredential(CatalogEntity catalog, StorageConfigInfo storage,
                                                       boolean allowWrite) {
         String key = StorageCredentialCache.catalogKey(catalog.getId(), storage, allowWrite);
-        Optional<StorageCredentialCache.Cached> cached = credentialCache.get(key);
-        if (cached.isPresent()) {
-            return cached.get().credential();
+        // singleflight 与「只缓存短期票」两件事一起做：并发时只签一次，
+        // 而静态凭据（长期 AK/SK）用完即弃——库里的钥匙被换掉之后，
+        // 服务端后台不该在缓存过期前继续拿着旧的那对。
+        StorageCredentialCache.Cached cached = credentialCache.resolve(key,
+                () -> storagePolicy.credentialManager()
+                        .vendForCatalog(storage, catalog.getId(), storage.allowedLocations(), allowWrite));
+        if (!cached.credential().shortLived()) {
+            credentialCache.invalidate(key);
         }
-        VendedStorageCredential vended = storagePolicy.credentialManager()
-                .vendForCatalog(storage, catalog.getId(), storage.allowedLocations(), allowWrite);
-        if (vended.shortLived()) {
-            credentialCache.put(key, vended, System.currentTimeMillis());
-        }
-        return vended;
+        return cached.credential();
     }
 
     /**

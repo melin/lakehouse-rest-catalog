@@ -2,6 +2,8 @@ package io.github.melin.lakehouse.rest.service;
 
 import io.github.melin.lakehouse.rest.config.RestServerProperties;
 import io.github.melin.lakehouse.rest.dto.StorageDtos.GcpStorageConfigInfo;
+import io.github.melin.lakehouse.rest.support.CredentialCipher;
+import io.github.melin.lakehouse.rest.support.StorageConfigs;
 import io.github.melin.lakehouse.rest.support.VendedStorageCredential;
 import java.time.Duration;
 import java.time.Instant;
@@ -17,14 +19,18 @@ import org.springframework.stereotype.Component;
 /**
  * GCS 的『真签发』：用服务端现有的访问令牌换一个「只能碰这张表」的令牌。
  *
- * <p>这是设计稿 P1-4。它是四家云里**唯一不需要新凭据**的一方：源令牌
- * （{@code lakehouse.rest.storage.gcp.token}）本来就在配置里，这一档只是把它
- * 换小。所以「启用条件」也比别家简单——有令牌就签，没令牌就不签。
+ * <p>这是设计稿 P1-4。源身份是 catalog 上的服务账号密钥（{@code serviceAccountJson}），
+ * 由 {@link GcsServiceAccountTokenSource} 换成访问令牌，再交给
+ * {@link GcsDownscopeClient} 收窄。因此「启用条件」很简单——catalog 上有服务账号就签，
+ * 没有就不签（引擎用自己的 ADC，绝大多数 GKE 部署正是这样）。
  *
- * <p><b>没有令牌时不签，而且不降级成「转发一个更小的票」。</b>转发档本来就会
- * 把这个令牌原样发给引擎；如果这里在拿不到新令牌时返回一个「看起来一样」的结果，
- * 上层就无法区分「收窄成功」与「没收窄」——那正是设计稿反复警告的那类故障。
- * 所以只回答两件事：签成功，或者「我不适用」。
+ * <p><b>没有服务账号时不签，而且不降级成「转发一个更小的票」。</b>转发档本来就会
+ * 把 {@code gcs.service-account} 发给引擎；如果这里在拿不到新令牌时返回一个
+ * 「看起来一样」的结果，上层就无法区分「收窄成功」与「没收窄」——
+ * 那正是设计稿反复警告的那类故障。所以只回答两件事：签成功，或者「我不适用」。
+ *
+ * <p><b>有服务账号却换不到令牌时是异常，不是「不适用」。</b>那种情况下引擎没有任何
+ * 可用的身份（ADC 在 GKE 之外不存在），静默退回只会把错误推到引擎的 403 上。
  *
  * <p><b>1 小时是平台上限。</b>downscoped token 最长 3600 秒，配得更长会被拒；
  * 这里夹紧并留痕，理由与 OSS 那一档相同：TTL 是部署级配置，不该被一个存储类型
@@ -48,7 +54,14 @@ public class GcsDownscopedCredentialProvider implements CredentialProvider {
     static final String KEY_TOKEN = "gcs.oauth2.token";
     static final String KEY_EXPIRES = "gcs.oauth2.token-expires-at";
 
+    /** 令牌交换端点；私有化部署会把它代理掉，但那是部署级事实，不走 catalog。 */
+    static final String DEFAULT_STS_ENDPOINT = "https://sts.googleapis.com";
+
     private final RestServerProperties properties;
+
+    private final CredentialCipher cipher;
+
+    private final GcsServiceAccountTokenSource tokenSource;
 
     private final GcsDownscopeClient client;
 
@@ -62,12 +75,14 @@ public class GcsDownscopedCredentialProvider implements CredentialProvider {
         if (!(context.storage() instanceof GcpStorageConfigInfo gcs)) {
             return Optional.empty();
         }
-        String source = properties.getStorage().getGcp().getToken();
-        if (source == null || source.isBlank()) {
-            // 没有源令牌 = 本部署没有身份可换。退回「引擎用自己的 ADC」那一档，
-            // 不是失败：绝大多数 GKE 部署就是靠 Workload Identity 直连的。
+        StorageConfigs.StorageSecrets serviceAccount = StorageConfigs.secrets(gcs, cipher);
+        if (serviceAccount == null || serviceAccount.secret() == null
+                || serviceAccount.secret().isBlank()) {
+            // 没有服务账号 = 这个 catalog 没要求服务端签票。退回「引擎用自己的 ADC」
+            // 那一档，不是失败：绝大多数 GKE 部署就是靠 Workload Identity 直连的。
             return Optional.empty();
         }
+        String source = tokenSource.accessToken(serviceAccount.secret());
         List<CredentialScope> scopes = context.scopes();
         if (scopes.isEmpty()) {
             log.warn("cannot derive a GCS scope from {} for {}; refusing to exchange an"
@@ -96,7 +111,7 @@ public class GcsDownscopedCredentialProvider implements CredentialProvider {
                     + " bucket: {}", context.scopeId(), scopes);
         }
         GcsDownscopedToken token = client.downscope(new GcsDownscopeRequest(
-                source, options, properties.getStorage().getGcp().getStsEndpoint()));
+                source, options, DEFAULT_STS_ENDPOINT));
 
         Map<String, String> keys = new LinkedHashMap<>();
         if (gcs.gcsServiceAccount() != null && !gcs.gcsServiceAccount().isBlank()) {

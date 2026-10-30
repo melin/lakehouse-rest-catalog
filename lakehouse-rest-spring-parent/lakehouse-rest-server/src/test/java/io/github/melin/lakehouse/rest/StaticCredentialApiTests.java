@@ -47,8 +47,10 @@ import tools.jackson.databind.node.JsonNodeFactory;
  *   <li><b>密钥省略即保持，打码值回传也即保持。</b>{@code PUT} 对其余字段是整体替换，
  *       唯独只写不读的凭据不能被替换掉——否则「改个 endpoint」会顺手清掉密钥，
  *       而「把回显的 {@code ******} 当真值存回去」会把密钥对弄错位（G14）；
- *   <li><b>它真的被下发。</b>读表凭据接口回来的必须是 catalog 里那把钥匙，
- *       而不是服务端配置的默认凭据。
+ *   <li><b>它真的被下发。</b>读表凭据接口回来的必须是 catalog 里那把钥匙。
+ *       服务端没有「默认凭据」可回落：{@code lakehouse.rest.storage} 里不再有任何
+ *       对象存储密钥（见 {@code RestServerProperties.Storage}），所以这里下发的一定是
+ *       catalog 那一份，或者一份都没有。
  * </ol>
  *
  * <p>加密密钥通过 {@code properties} 注入而非改 application.yml：这个上下文与其它测试
@@ -57,8 +59,6 @@ import tools.jackson.databind.node.JsonNodeFactory;
  */
 @SpringBootTest(properties = {
         "lakehouse.rest.storage.credential-secret-key=AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
-        "lakehouse.rest.storage.aws.access-key=AKIA-CONFIG",
-        "lakehouse.rest.storage.aws.secret-key=SECRET-CONFIG",
         // 控制台端点默认要求先登录（console.required=true），元数据也不例外；
         // 登记一个静态令牌，省得在一条「顺便验一下元数据」的用例里走一遍登录
         "lakehouse.rest.auth.tokens[0]=static-cred-token"
@@ -132,9 +132,9 @@ class StaticCredentialApiTests {
         assertEquals(SECRET, cipher.reveal(s3.secretAccessKey()));
     }
 
-    /** 端到端：读表凭据接口下发的必须是 catalog 里那把钥匙，而不是服务端配置的默认凭据。 */
+    /** 端到端：读表凭据接口下发的必须是 catalog 里那把钥匙。 */
     @Test
-    void vendsCatalogStaticCredentialsInsteadOfServerConfiguration() throws Exception {
+    void vendsCatalogStaticCredentials() throws Exception {
         String prefix = "static-s3-vend";
         createCatalog(prefix, staticS3Config());
         seedTable(prefix);
@@ -218,10 +218,10 @@ class StaticCredentialApiTests {
         assertEquals("订单仓库", updated.get("properties").get("lakehouse.display-name").asString());
 
         // 库里那把钥匙一个字符都没变，密钥也还是旧的（能解开、且是同一份明文）
-        StorageConfigs.StaticCredentials stored =
-                StorageConfigs.staticCredentials(storedConfig(prefix), cipher);
-        assertEquals(ACCESS_KEY_ID, stored.accessKeyId(), "「只改名字」不该动 AK ID");
-        assertEquals(SECRET, stored.secretAccessKey());
+        StorageConfigs.StorageSecrets stored =
+                StorageConfigs.secrets(storedConfig(prefix), cipher);
+        assertEquals(ACCESS_KEY_ID, stored.id(), "「只改名字」不该动 AK ID");
+        assertEquals(SECRET, stored.secret());
 
         JsonNode token = json(200, "GET", tokenPath(prefix), null).get("token");
         assertEquals(ACCESS_KEY_ID, token.get("s3.access-key-id").asString());
@@ -318,7 +318,13 @@ class StaticCredentialApiTests {
         assertEquals(SECRET, token.get("s3.secret-access-key").asString());
     }
 
-    /** 一对空串是显式清除：之后回到服务端配置的取密钥路径。 */
+    /**
+     * 一对空串是显式清除：之后不再下发任何密钥，引擎走自己的凭据链。
+     *
+     * <p><b>不是「退回服务端配置的那一份」。</b>那一路已经删了——全局配置里没有
+     * 对象存储凭据（见 {@code RestServerProperties.Storage}）。所以清除的语义是
+     * 「这个 catalog 不再由服务端代持钥匙」，对应下发来源 {@code environment}。
+     */
     @Test
     void emptyCredentialPairClearsStaticCredentials() throws Exception {
         String prefix = "static-s3-clear";
@@ -337,12 +343,13 @@ class StaticCredentialApiTests {
                 """.formatted(version));
 
         assertFalse(updated.get("storageConfigInfo").has("accessKeyId"), "清除后不应再给出 accessKeyId");
-        assertFalse(StorageConfigs.hasStaticCredentials(storedConfig(prefix)), "库里不应再留有凭据");
+        assertFalse(StorageConfigs.hasCredentials(storedConfig(prefix)), "库里不应再留有凭据");
 
         JsonNode token = json(200, "GET", tokenPath(prefix), null).get("token");
-        assertEquals("AKIA-CONFIG", token.get("s3.access-key-id").asString(),
-                "清除后应退回服务端配置的默认凭据");
-        assertEquals("SECRET-CONFIG", token.get("s3.secret-access-key").asString());
+        assertFalse(token.has("s3.access-key-id"),
+                "没有任何来源可发：不该凭空冒出密钥 " + token);
+        assertFalse(token.has("s3.secret-access-key"), token.toString());
+        assertEquals("us-east-1", token.get("s3.region").asString(), "定位键仍然照发");
     }
 
     // ------------------------------------------------------------------ 校验
@@ -397,20 +404,27 @@ class StaticCredentialApiTests {
                 """);
     }
 
-    /** 两把钥匙不能同时出现：具名存储与静态凭据都在回答「用哪一组密钥」。 */
+    /**
+     * {@code storageName} 与凭据**可以同时出现**——它现在只是一个标签。
+     *
+     * <p>这两者原先被判为互斥，因为 {@code storageName} 当时指向服务端配置里的
+     * 一组具名密钥，「用哪一组」只能有一个答案。配置面删掉之后它不再参与凭据解析，
+     * 互斥也就失去了依据；保留那条规则会让「我想给这个 catalog 起个名字」
+     * 变成一个 400。
+     */
     @Test
-    void staticCredentialsAndNamedStorageAreMutuallyExclusive() throws Exception {
-        JsonNode error = json(400, "POST", M + "/catalogs", """
-                {"catalog":{"type":"INTERNAL","name":"static-bad-3","properties":{},
-                 "storageConfigInfo":{"storageType":"S3",
-                                      "allowedLocations":["s3://bucket/warehouse/"],
-                                      "storageName":"named-a",
-                                      "accessKeyId":"AKIA-X","secretAccessKey":"SECRET-X"}}}
+    void storageNameIsJustALabelNextToCredentials() throws Exception {
+        JsonNode created = createCatalog("labeled-s3", """
+                {"storageType":"S3",
+                 "allowedLocations":["s3://bucket/warehouse/"],
+                 "storageName":"named-a",
+                 "accessKeyId":"AKIA-X","secretAccessKey":"SECRET-X"}
                 """);
 
-        assertEquals(400, error.get("code").asInt());
-        assertTrue(error.get("message").asString().contains("storageName"),
-                "错误信息应点出两个互斥字段: " + error);
+        assertEquals("named-a",
+                created.get("storageConfigInfo").get("storageName").asString());
+        assertEquals(StorageConfigs.MASKED,
+                created.get("storageConfigInfo").get("accessKeyId").asString());
     }
 
     /** OBS / OSS / COS 复用同一套字段与语义，别只给 S3 接上。 */

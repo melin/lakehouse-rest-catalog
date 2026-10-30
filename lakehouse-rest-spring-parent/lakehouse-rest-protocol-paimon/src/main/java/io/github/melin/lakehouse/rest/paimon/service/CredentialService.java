@@ -65,9 +65,9 @@ public class CredentialService {
         StorageConfigInfo storage = StorageConfigs.of(catalog);
 
         String key = StorageCredentialCache.key(catalog.getId(), storage, target.getPath());
-        long now = System.currentTimeMillis();
-        StorageCredentialCache.Cached cached = cache.get(key).orElseGet(() -> cache.put(key,
-                storagePolicy.credentialManager().vend(storage, target.getId(), target.getPath()), now));
+        // singleflight：一批引擎同时启动时，同一张表只会打一次 AssumeRole
+        StorageCredentialCache.Cached cached = cache.resolve(key,
+                () -> storagePolicy.credentialManager().vend(storage, target.getId(), target.getPath()));
 
         // 端点本身要求 USE_CREDENTIAL（能取票）；票里若有**没有时限的那对长期密钥**，
         // 还要 USE_SECRET（能拿走存着的钥匙）。判据在凭据自己身上，所以只能在这之后判：

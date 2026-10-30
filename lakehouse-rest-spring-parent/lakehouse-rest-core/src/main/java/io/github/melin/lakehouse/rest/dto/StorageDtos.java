@@ -27,22 +27,26 @@ import java.util.List;
  *
  * <p><b>两个非规格子类型。</b>{@code OBS} 与 {@code OSS} 不在 Polaris 规格的
  * {@code discriminator.mapping} 里，是本工程为华为云 OBS 与阿里云 OSS 加的扩展，
- * 理由见 {@link ManagementEnums.StorageType}。它们的字段刻意保持最小：
- * 只接收凭据下发真正要用的定位信息（{@code endpoint}），密钥一律留在服务端配置里，
- * 与 S3 子类型不接收密钥字段的处理保持一致。
+ * 理由见 {@link ManagementEnums.StorageType}。它们的字段只接收凭据下发真正要用的
+ * 定位信息（{@code endpoint}）与<b>这个 catalog 自己的凭据</b>，后者见下一段。
  *
- * <p><b>静态凭据是本工程加的扩展字段。</b>规格里 {@code S3} / {@code OBS} / {@code OSS}
- * 三种子类型都没有「用户直接填写 AK/SK」的位置：Polaris 只从服务端配置
- * （{@code polaris.storage.aws.access-key} / 具名存储）取密钥，因此接入 MinIO、Ceph、
- * Ozone、FlashBlade 这类兼容 S3 协议的对象存储时，密钥必须由部署方写进服务端配置。
- * 本工程给这三种子类型各加了 {@code accessKeyId} 与 {@code secretAccessKey}，
- * 让**建 catalog 的人**能直接指定该 catalog 用哪把钥匙。
+ * <p><b>凭据是本工程加的扩展字段，而且这里是凭据唯一的存放处。</b>规格里
+ * {@code S3} / {@code OBS} / {@code OSS} 三种子类型都没有「用户直接填写 AK/SK」的位置：
+ * Polaris 只从服务端配置（{@code polaris.storage.aws.access-key} / 具名存储）取密钥。
+ * 本工程把那一层删了，改为让**建 catalog 的人**直接指定该 catalog 用哪把钥匙，
+ * 因为每个 catalog 的存储配置本来就不一样。各类型带的凭据字段：
  *
- * <p>两个字段的读写语义与规格里的普通字段不同，写路径由 {@code StorageConfigs}、
- * 加密与回显由 {@code CredentialCipher} 负责，要点是：{@code secretAccessKey} 是
- * **写-only** 的——落库前加密、任何响应中都不回显，因此 {@code PUT} 省略它表示
- * 「保持不变」而不是「清空」（规格的 {@code PUT} 对其余字段是整体替换）。
- * {@code accessKeyId} 不是秘密，读写都保留，控制台靠它显示「已配置哪把钥匙」。
+ * <ul>
+ *   <li>{@code S3} / {@code OBS} / {@code OSS} / {@code COS}：{@code accessKeyId} + {@code secretAccessKey}；
+ *   <li>{@code AZURE}：{@code clientId} + {@code clientSecret}（另有 {@code authority} / {@code scope}
+ *       表达云环境，留空取公有云缺省）；
+ *   <li>{@code GCS}：{@code serviceAccountJson}（服务账号密钥文件，服务端自签 JWT 换令牌）。
+ * </ul>
+ *
+ * <p>读写语义与普通字段不同（由 {@code StorageConfigs} 与 {@code CredentialCipher} 实现）：
+ * 密钥落库前加密、任何响应中都不回显且 id 打码成 {@code ******}，因此 {@code PUT} 省略
+ * 密钥字段表示「保持不变」而不是「清空」（规格的 {@code PUT} 对其余字段是整体替换）。
+ * {@code ******} 同时是回写哨兵：控制台每次提交都带着它，服务端据此沿用库里那份。
  *
  * <p><b>已废弃字段未建模。</b>{@code AwsStorageConfigInfo} 的 {@code currentKmsKey} 与
  * {@code allowedKmsKeys} 在规格里标了 {@code deprecated}，这里不接收也不返回，
@@ -103,7 +107,16 @@ public final class StorageDtos {
         /** 该 catalog 允许写入的位置白名单；首项同时用作仓库根。 */
         List<String> allowedLocations();
 
-        /** 服务端具名存储配置的引用名，可选。 */
+        /**
+         * 人类可读的存储名，**只是标签**，不参与凭据解析。
+         *
+         * <p>它一度指向服务端配置里的具名存储（{@code storage.<云>.storages.<name>}）。
+         * 那条路已经取消：凭据不再有全局配置那一份，只跟着 catalog 走。字段留着
+         * 是为了两件事——已有的 catalog 里存着它，删掉会让人以为数据被改写；以及
+         * 列表页要有一个「这是哪套桶」的短名可显示。
+         *
+         * <p>因此它不再与任何凭据字段互斥：填了名字又填了 AK/SK 是正常配置。
+         */
         String storageName();
 
         /**
@@ -163,13 +176,30 @@ public final class StorageDtos {
         }
     }
 
-    /** {@code AzureStorageConfigInfo}：Azure Blob Storage / ADLS Gen2。{@code tenantId} 必填。 */
+    /**
+     * {@code AzureStorageConfigInfo}：Azure Blob Storage / ADLS Gen2。{@code tenantId} 必填。
+     *
+     * <p><b>后四个字段是本工程的扩展：服务主体 + 云环境。</b>规格里 Azure 配置只有
+     * 「数据在哪个租户/账户」，凭据由服务进程自己的标识提供。本工程没有那层标识，
+     * 签发 User Delegation SAS 必须有一个应用注册，于是把
+     * {@code clientId} / {@code clientSecret} 放到 catalog 上——与 S3 的 AK/SK
+     * 同一个位置、同一套加密与打码（{@code clientSecret} 只写不读）。
+     *
+     * <p>{@code authority} / {@code scope} 也放在这里而不是全局配置：它们必须与
+     * 云环境一致（中国云是 {@code login.chinacloudapi.cn} 与
+     * {@code storage.azure.cn}），而同一个服务端同时服务公有云与中国云的 catalog
+     * 是正常部署形态。留空时取公有云的缺省值。
+     */
     public record AzureStorageConfigInfo(List<String> allowedLocations,
                                          String storageName,
                                          String tenantId,
                                          String multiTenantAppName,
                                          String consentUrl,
-                                         Boolean hierarchical)
+                                         Boolean hierarchical,
+                                         String clientId,
+                                         String clientSecret,
+                                         String authority,
+                                         String scope)
             implements StorageConfigInfo {
 
         @Override
@@ -178,10 +208,22 @@ public final class StorageDtos {
         }
     }
 
-    /** {@code GcpStorageConfigInfo}：Google Cloud Storage。 */
+    /**
+     * {@code GcpStorageConfigInfo}：Google Cloud Storage。
+     *
+     * <p><b>{@code serviceAccountJson} 是本工程的扩展</b>，形态是服务账号密钥文件的
+     * 全文（{@code {"type":"service_account","client_email":...,"private_key":...}}）。
+     * 服务端用它自签一份 JWT assertion 换访问令牌，再把令牌 downscope 成
+     * 「只能读这张表」的令牌下发给引擎。
+     *
+     * <p>为什么是密钥文件而不是访问令牌：访问令牌一小时就过期，把它存进 catalog
+     * 等于存了一份必然失效的配置，而失效现场是「昨天还能读，今天 401」。密钥文件
+     * 没有这个问题。整个字段按密钥对待——加密落库、对外只回 {@code ******}。
+     */
     public record GcpStorageConfigInfo(List<String> allowedLocations,
                                        String storageName,
-                                       String gcsServiceAccount)
+                                       String gcsServiceAccount,
+                                       String serviceAccountJson)
             implements StorageConfigInfo {
 
         @Override
@@ -223,13 +265,22 @@ public final class StorageDtos {
      * <p>没有 {@code region} 字段的理由同 {@link HuaweiObsStorageConfigInfo}：
      * Hadoop 的 aliyun-oss 官方配置表里只有 {@code fs.oss.endpoint} 与两个密钥项，
      * 区域由 endpoint 表达（形如 {@code oss-cn-hangzhou.aliyuncs.com}）。
+     *
+     * <p><b>{@code roleArn} 与 {@code stsEndpoint} 是本工程的扩展</b>，落在 catalog
+     * 而不是服务端配置上：一套部署里不同的 OSS catalog 属于不同的阿里云账号时，
+     * 要 assume 的角色各不相同。语义与 S3 那一组一致——
+     * {@code accessKeyId}/{@code secretAccessKey} 是**服务端据以行动的钥匙**，
+     * {@code roleArn} 是**要换成的身份**；两者并存表示「用这把钥匙去 assume 这个角色」，
+     * 只给钥匙表示「直接把钥匙转发给引擎」。{@code stsEndpoint} 留空取全球化端点。
      */
     public record AliyunOssStorageConfigInfo(List<String> allowedLocations,
                                              String storageName,
                                              String endpoint,
                                              Boolean stsUnavailable,
                                              String accessKeyId,
-                                             String secretAccessKey)
+                                             String secretAccessKey,
+                                             String roleArn,
+                                             String stsEndpoint)
             implements StorageConfigInfo {
 
         @Override

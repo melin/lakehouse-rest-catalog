@@ -32,24 +32,16 @@ import tools.jackson.databind.node.JsonNodeFactory;
  * catalog 的配置是从 JSON 列反序列化出来的，不是内存里的对象；凭据经过缓存再返回。
  * 只有走完整链路才能发现「解析写对了但拿到的是一份空配置」这类问题。
  *
- * <p>配置通过 {@code properties} 注入而不是改 application.yml：
- * 这样这个 Spring 上下文与其它测试的上下文互不影响，也不会给生产配置留下测试用的密钥。
+ * <p><b>所有密钥都写在 {@code storageConfigInfo} 里</b>（这是「配置跟着 catalog 走」的
+ * 落点），所以每个用例都是一份 catalog 配置 + 一次取票。服务端配置只剩加密密钥，
+ * 它通过 {@code properties} 注入而不是改 application.yml：这样这个 Spring 上下文
+ * 与其它测试的上下文互不影响，也不会给生产配置留下测试用的密钥。
  *
  * <p>{@code test} profile 把数据源换成内存 H2，本类不依赖外部服务，也不真的访问任何云存储——
  * 凭据解析不发出网请求，这一点是被测行为的一部分。
  */
 @SpringBootTest(properties = {
-        "lakehouse.rest.storage.aws.access-key=AKIA-CONFIG",
-        "lakehouse.rest.storage.aws.secret-key=SECRET-CONFIG",
-        "lakehouse.rest.storage.aws.storages.named-a.access-key=AKIA-NAMED",
-        "lakehouse.rest.storage.aws.storages.named-a.secret-key=SECRET-NAMED",
-        "lakehouse.rest.storage.gcp.token=ya29.token-from-config",
-        "lakehouse.rest.storage.gcp.lifespan=10m",
-        "lakehouse.rest.storage.obs.access-key=OBS-AK-CONFIG",
-        "lakehouse.rest.storage.obs.secret-key=OBS-SK-CONFIG",
-        "lakehouse.rest.storage.obs.session-token=OBS-TOKEN-CONFIG",
-        "lakehouse.rest.storage.oss.access-key=OSS-AK-CONFIG",
-        "lakehouse.rest.storage.oss.secret-key=OSS-SK-CONFIG"
+        "lakehouse.rest.storage.credential-secret-key=AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="
 })
 @ActiveProfiles("test")
 @AutoConfigureMockMvc
@@ -76,8 +68,9 @@ class StorageCredentialApiTests {
 
     // ------------------------------------------------------------------ S3
 
+    /** catalog 上写什么就发什么；服务端专用的两个地址一个字节都不出去。 */
     @Test
-    void s3CatalogVendsConfiguredCredentials() throws Exception {
+    void s3CatalogVendsItsOwnCredentials() throws Exception {
         String prefix = "s3-cred";
         createCatalog(prefix, """
                 {"storageType":"S3",
@@ -85,13 +78,15 @@ class StorageCredentialApiTests {
                  "region":"ap-east-1",
                  "endpoint":"https://s3.example.com:1234",
                  "endpointInternal":"https://s3.internal.example.com:1234",
-                 "pathStyleAccess":true}
+                 "pathStyleAccess":true,
+                 "accessKeyId":"AKIA-CATALOG",
+                 "secretAccessKey":"SECRET-CATALOG"}
                 """);
         seedTable(prefix);
 
         JsonNode token = token(prefix).get("token");
-        assertEquals("AKIA-CONFIG", token.get("s3.access-key-id").asString());
-        assertEquals("SECRET-CONFIG", token.get("s3.secret-access-key").asString());
+        assertEquals("AKIA-CATALOG", token.get("s3.access-key-id").asString());
+        assertEquals("SECRET-CATALOG", token.get("s3.secret-access-key").asString());
         assertEquals("ap-east-1", token.get("s3.region").asString());
         assertEquals("https://s3.example.com:1234", token.get("s3.endpoint").asString());
         assertEquals("true", token.get("s3.path-style-access").asString());
@@ -102,10 +97,33 @@ class StorageCredentialApiTests {
         assertFalse(token.toString().contains("s3.internal.example.com"));
     }
 
-    /** 具名存储优先于默认凭据：catalog 显式指名时，用的必须是那一组密钥。 */
+    /**
+     * 没填密钥的 catalog 只有定位信息可发。
+     *
+     * <p>这条同时守住了一个反向性质：**服务端没有「默认凭据」可以顶上**。
+     * 早先这一档会回落到 {@code lakehouse.rest.storage.aws.access-key}，
+     * 那份配置已经删了——现在不下发密钥就是不下发，引擎走自己的凭据链。
+     */
     @Test
-    void s3CatalogUsesNamedStorageWhenReferenced() throws Exception {
-        String prefix = "s3-named";
+    void s3CatalogWithoutCredentialsVendsNoSecrets() throws Exception {
+        String prefix = "s3-no-creds";
+        createCatalog(prefix, """
+                {"storageType":"S3",
+                 "allowedLocations":["s3://analytics-bucket/warehouse/"],
+                 "region":"us-west-2"}
+                """);
+        seedTable(prefix);
+
+        JsonNode token = token(prefix).get("token");
+        assertFalse(token.has("s3.access-key-id"));
+        assertFalse(token.has("s3.secret-access-key"));
+        assertEquals("us-west-2", token.get("s3.region").asString(), "定位信息照发");
+    }
+
+    /** {@code storageName} 是纯标签：填了它不会改变任何下发结果。 */
+    @Test
+    void storageNameDoesNotChangeVending() throws Exception {
+        String prefix = "s3-labeled";
         createCatalog(prefix, """
                 {"storageType":"S3",
                  "allowedLocations":["s3://named-bucket/warehouse/"],
@@ -114,24 +132,8 @@ class StorageCredentialApiTests {
         seedTable(prefix);
 
         JsonNode token = token(prefix).get("token");
-        assertEquals("AKIA-NAMED", token.get("s3.access-key-id").asString());
-        assertEquals("SECRET-NAMED", token.get("s3.secret-access-key").asString());
-    }
-
-    /** 具名存储写错时读表接口应当明确报错，而不是悄悄换成默认凭据。 */
-    @Test
-    void s3CatalogWithUnknownStorageNameFailsLoudly() throws Exception {
-        String prefix = "s3-bad-name";
-        createCatalog(prefix, """
-                {"storageType":"S3",
-                 "allowedLocations":["s3://named-bucket/warehouse/"],
-                 "storageName":"not-configured"}
-                """);
-        seedTable(prefix);
-
-        MvcResult result = mockMvc.perform(get(tokenPath(prefix))).andReturn();
-        assertEquals(500, result.getResponse().getStatus(), result.getResponse().getContentAsString());
-        assertTrue(result.getResponse().getContentAsString().contains("not-configured"));
+        assertFalse(token.has("s3.access-key-id"),
+                "标签不指向任何密钥，所以这里什么都不该出现: " + token);
     }
 
     /** {@code stsUnavailable} 表示服务端不代发凭据，但仍应告诉引擎连哪里。 */
@@ -174,27 +176,72 @@ class StorageCredentialApiTests {
         assertFalse(token.has("azure.account-key"));
     }
 
+    /**
+     * 服务主体写在 catalog 上，但**不会**被当成数据面凭据下发。
+     *
+     * <p>它是「服务端去换委托密钥」的身份；真正该出现在 token 里的是 SAS，而 SAS 只在
+     * 启用 {@code azure-sas} 时才有。把 {@code clientSecret} 发出去不仅没用，
+     * 还会让来源字段写成「静态凭据」，看上去一切正常。
+     */
+    @Test
+    void azureServicePrincipalIsNeverVended() throws Exception {
+        String prefix = "azure-principal";
+        createCatalog(prefix, """
+                {"storageType":"AZURE",
+                 "allowedLocations":["abfss://container@myaccount.dfs.core.windows.net/warehouse/"],
+                 "tenantId":"tenant-1",
+                 "clientId":"app-client-id",
+                 "clientSecret":"app-client-secret"}
+                """);
+        seedTable(prefix);
+
+        JsonNode token = token(prefix).get("token");
+        assertFalse(token.has("adls.sas-token"));
+        assertFalse(token.toString().contains("app-client-id"), token.toString());
+        assertFalse(token.toString().contains("app-client-secret"), token.toString());
+        assertEquals("tenant-1", token.get("azure.tenant-id").asString());
+    }
+
     // ------------------------------------------------------------------ GCS
 
-    /** {@code lifespan} 比 {@code credential.ttl-seconds} 短时，响应里的过期时刻要跟着收窄。 */
+    /**
+     * GCS 只发定位信息；服务账号私钥一个字节都不出去。
+     *
+     * <p>没启用 {@code gcs-downscope} 时不存在可下发的令牌，而 {@code serviceAccountJson}
+     * 是能签发令牌的长期私钥——它比一对 AK/SK 更敏感，绝不能出现在响应里。
+     */
     @Test
-    void gcsCatalogVendsTokenAndHonoursLifespan() throws Exception {
+    void gcsCatalogVendsLocatorOnly() throws Exception {
         String prefix = "gcs-cred";
         createCatalog(prefix, """
                 {"storageType":"GCS",
                  "allowedLocations":["gs://analytics-bucket/warehouse/"],
-                 "gcsServiceAccount":"catalog@project.iam.gserviceaccount.com"}
+                 "gcsServiceAccount":"catalog@project.iam.gserviceaccount.com",
+                 "serviceAccountJson":"{\\"client_email\\":\\"catalog@project.iam.gserviceaccount.com\\",\\"private_key\\":\\"-----BEGIN PRIVATE KEY-----\\\\nMIIB\\\\n-----END PRIVATE KEY-----\\\\n\\"}"}
                 """);
         seedTable(prefix);
 
-        JsonNode body = token(prefix);
-        JsonNode token = body.get("token");
-        assertEquals("ya29.token-from-config", token.get("gcs.oauth2.token").asString());
-        assertEquals("catalog@project.iam.gserviceaccount.com", token.get("gcs.service-account").asString());
+        JsonNode token = token(prefix).get("token");
+        assertEquals("catalog@project.iam.gserviceaccount.com",
+                token.get("gcs.service-account").asString());
+        assertFalse(token.has("gcs.oauth2.token"), "没启用签发就不该有令牌: " + token);
+        assertFalse(token.toString().contains("PRIVATE KEY"), "私钥不得下发: " + token);
+    }
 
-        long remaining = body.get("expiresAt").asLong() - System.currentTimeMillis();
-        assertTrue(remaining > 0 && remaining <= 600_000L + 5_000L,
-                "gcs lifespan=10m should cap expiresAt well below the 1h default, remaining=" + remaining);
+    /** 服务账号 JSON 落到响应里必须是打码值：它没有 id 那栏可打，星号就打在它自己身上。 */
+    @Test
+    void gcsServiceAccountJsonIsMaskedInResponses() throws Exception {
+        String prefix = "gcs-masked";
+        JsonNode createdCatalog = createCatalog(prefix, """
+                {"storageType":"GCS",
+                 "allowedLocations":["gs://analytics-bucket/warehouse/"],
+                 "serviceAccountJson":"{\\"client_email\\":\\"svc@project.iam.gserviceaccount.com\\",\\"private_key\\":\\"k\\"}"}
+                """);
+
+        JsonNode storage = createdCatalog.get("storageConfigInfo");
+        assertEquals("******", storage.get("serviceAccountJson").asString());
+        assertFalse(createdCatalog.toString().contains("svc@project.iam.gserviceaccount.com"),
+                "打码后响应里不该残留私钥内容: " + createdCatalog);
     }
 
     // ------------------------------------------------------------------ OBS / OSS
@@ -212,15 +259,17 @@ class StorageCredentialApiTests {
         createCatalog(prefix, """
                 {"storageType":"OBS",
                  "allowedLocations":["obs://analytics-bucket/warehouse/"],
-                 "endpoint":"obs.cn-north-4.myhuaweicloud.com"}
+                 "endpoint":"obs.cn-north-4.myhuaweicloud.com",
+                 "accessKeyId":"OBS-AK","secretAccessKey":"OBS-SK"}
                 """);
         seedTable(prefix);
 
         JsonNode token = token(prefix).get("token");
-        assertEquals("OBS-AK-CONFIG", token.get("fs.obs.access.key").asString());
-        assertEquals("OBS-SK-CONFIG", token.get("fs.obs.secret.key").asString());
-        assertEquals("OBS-TOKEN-CONFIG", token.get("fs.obs.session.token").asString());
+        assertEquals("OBS-AK", token.get("fs.obs.access.key").asString());
+        assertEquals("OBS-SK", token.get("fs.obs.secret.key").asString());
         assertEquals("obs.cn-north-4.myhuaweicloud.com", token.get("fs.obs.endpoint").asString());
+        // catalog 上只有 AK/SK，没有会话令牌可发
+        assertFalse(token.has("fs.obs.session.token"), "长期凭据不该带令牌: " + token);
         // 另两套键名族一个都不能出现
         assertFalse(token.has("s3.access-key-id"));
         assertFalse(token.has("fs.oss.accessKeyId"));
@@ -233,13 +282,14 @@ class StorageCredentialApiTests {
         createCatalog(prefix, """
                 {"storageType":"OSS",
                  "allowedLocations":["oss://analytics-bucket/warehouse/"],
-                 "endpoint":"oss-cn-hangzhou.aliyuncs.com"}
+                 "endpoint":"oss-cn-hangzhou.aliyuncs.com",
+                 "accessKeyId":"OSS-AK","secretAccessKey":"OSS-SK"}
                 """);
         seedTable(prefix);
 
         JsonNode token = token(prefix).get("token");
-        assertEquals("OSS-AK-CONFIG", token.get("fs.oss.accessKeyId").asString());
-        assertEquals("OSS-SK-CONFIG", token.get("fs.oss.accessKeySecret").asString());
+        assertEquals("OSS-AK", token.get("fs.oss.accessKeyId").asString());
+        assertEquals("OSS-SK", token.get("fs.oss.accessKeySecret").asString());
         assertEquals("oss-cn-hangzhou.aliyuncs.com", token.get("fs.oss.endpoint").asString());
         assertFalse(token.has("fs.oss.securityToken"));
         assertFalse(token.has("fs.obs.access.key"));
@@ -287,9 +337,9 @@ class StorageCredentialApiTests {
 
     // ------------------------------------------------------------------ 辅助
 
-    private void createCatalog(String name, String storageConfigInfo) throws Exception {
+    private JsonNode createCatalog(String name, String storageConfigInfo) throws Exception {
         created.add(name);
-        json(201, "POST", M + "/catalogs", """
+        return json(201, "POST", M + "/catalogs", """
                 {"catalog":{"type":"INTERNAL","name":"%s","properties":{"owner":"qa"},
                  "storageConfigInfo":%s}}
                 """.formatted(name, storageConfigInfo));

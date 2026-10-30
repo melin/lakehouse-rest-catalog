@@ -28,6 +28,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 /**
@@ -65,11 +66,13 @@ import org.springframework.stereotype.Component;
  * 不再为访问该 catalog 下发凭据」。这里照此执行：仍然下发定位配置（区域、端点），
  * 但不给密钥，由引擎用自己的身份访问。这是配置意图，不是失败。
  *
- * <p><b>catalog 自带的静态凭据是这一层的最高优先来源</b>，且排在
- * {@code stsUnavailable} 之前——两者的判断依据与取舍写在
+ * <p><b>catalog 上的静态凭据与 {@code roleArn} 共用同一组字段，但身份不同。</b>
+ * 只填钥匙 = 它是发给引擎的数据面凭据（转发档）；钥匙配上 {@code roleArn} = 它是
+ * 服务端拿去 assume 的调用方身份（签发档优先）。因此顺序不是「静态凭据最高」，
+ * 而是 **{@code stsUnavailable} → 签发 → 转发 → 环境链**，逐条理由写在
  * {@link #s3} 的方法注释里。密钥在库中是密文，这里是唯一需要解密的消费点；
- * 解密失败（换了加密密钥）直接 500，不退回服务端配置：退回等于把
- * 「这个 catalog 该用哪把钥匙」从调用方明确指定降级成部署方默认，
+ * 解密失败（换了加密密钥）直接 500，不退回别的档：退回等于把
+ * 「这个 catalog 该用哪把钥匙」从调用方明确指定降级成服务端默认，
  * 而密钥无法解开的真实原因（配置变更）会因此被掩盖成「权限不对」。
  */
 @Component
@@ -197,15 +200,34 @@ public class DefaultStorageCredentialManager implements StorageCredentialManager
      */
     private final List<CredentialProvider> providers;
 
-    private final SecureRandom random = new SecureRandom();
+    /**
+     * 云侧限流的退避器：只包住 provider 那一次远程调用。
+     *
+     * <p>为什么不在更外层包：转发档与文件系统档根本不发请求，套上去只是徒增
+     * 一层「可能会等 0.6 秒」的想象；而真正的远程调用只发生在 provider 里。
+     */
+    private final ThrottlingGuard throttling;
 
+    /** 测试与手工装配用：按配置的默认值自己造一个退避器。 */
     public DefaultStorageCredentialManager(RestServerProperties properties,
                                            CredentialCipher cipher,
                                            List<CredentialProvider> availableProviders) {
+        this(properties, cipher, availableProviders, new ThrottlingGuard(properties));
+    }
+
+    @Autowired
+    public DefaultStorageCredentialManager(RestServerProperties properties,
+                                           CredentialCipher cipher,
+                                           List<CredentialProvider> availableProviders,
+                                           ThrottlingGuard throttling) {
         this.properties = properties;
         this.cipher = cipher;
         this.providers = selectProviders(availableProviders, properties.getCredential().getProviders());
+        this.throttling = throttling;
     }
+
+    /** 文件系统档的随机令牌用它；对象存储的档不用，但这是唯一一处「本地造密钥」的路径。 */
+    private final SecureRandom random = new SecureRandom();
 
     /**
      * 按配置名挑出 provider，顺序照配置里的顺序。
@@ -294,11 +316,11 @@ public class DefaultStorageCredentialManager implements StorageCredentialManager
     /**
      * S3 之外的各类型共用的骨架，顺序与 {@link #s3} 逐条对应。
      *
-     * <p>抽成一条共用路径而不是每家写一遍，是因为「静态凭据优先于 {@code stsUnavailable}」
-     * 「签发排在显式指定之后、服务端配置之前」这两条判断与存储类型无关；
+     * <p>抽成一条共用路径而不是每家写一遍，是因为「{@code stsUnavailable} 先于签发」
+     * 「签发排在转发之前、服务端默认排在最后」这两条判断与存储类型无关；
      * 逐家复制时最先漂移的一定是新加的那一家。各家自己的差异只有两处，
-     * 都在下面的 switch 与 {@link #forwardFromServerConfig} 里：发哪些定位键、
-     * 服务端配置面长什么样。
+     * 都在下面的 switch 与 {@link #forwardOrUnavailable} 里：发哪些定位键、
+     * 有没有可转发的密钥族。
      *
      * <p>{@code COS} 也走这条链：它的 {@code providers} 里没有能接手的实现
      * （COSN 不支持临时凭据，见 {@code COS_KEYS}），链对它是空转——
@@ -322,20 +344,43 @@ public class DefaultStorageCredentialManager implements StorageCredentialManager
             }
             case S3 -> throw new IllegalStateException("S3 is handled before the switch");
         }
-        StorageConfigs.StaticCredentials own = StorageConfigs.staticCredentials(storage, cipher);
-        if (own != null) {
-            putSecrets(token, keysOf(storage), groupOf(storage), own.accessKeyId(),
-                    own.secretAccessKey(), null);
-            return vended(storage, token, VendedStorageCredential.SOURCE_STATIC_CREDENTIALS);
-        }
         if (stsUnavailable(storage)) {
-            return vended(storage, token, VendedStorageCredential.SOURCE_STS_UNAVAILABLE);
+            return vended(storage, token,
+                    forwardOrUnavailable(storage, token, VendedStorageCredential.SOURCE_STS_UNAVAILABLE));
         }
         VendedStorageCredential signed = assumeRole(context);
         if (signed != null) {
             return signed;
         }
-        return vended(storage, token, forwardFromServerConfig(storage, token));
+        return vended(storage, token,
+                forwardOrUnavailable(storage, token, VendedStorageCredential.SOURCE_ENVIRONMENT));
+    }
+
+    /**
+     * 把 catalog 自带的 AK/SK 写进 {@code token} 并报一个来源；写不进去时给出退档来源。
+     *
+     * <p><b>Azure 永远不走这条转发路。</b>它的 {@code clientId}/{@code clientSecret} 是
+     * 签发 SAS 用的身份，不是数据面的凭据——把这对值发给引擎，引擎既没法用它访问
+     * 存储，也没法用它换票，而来源字段会写成「静态凭据」，看上去一切正常。
+     * 因此 Azure 在没有服务主体时明确回「只发定位元数据」。
+     *
+     * <p><b>GCS 也不走。</b>{@code serviceAccountJson} 同理，它只用于服务端换票；
+     * 没有它时引擎用自己的 ADC，来源就是环境。
+     */
+    private String forwardOrUnavailable(StorageConfigInfo storage, Map<String, String> token,
+                                       String fallback) {
+        if (storage.storageType() == ManagementEnums.StorageType.AZURE) {
+            return VendedStorageCredential.SOURCE_AZURE_METADATA_ONLY;
+        }
+        if (storage.storageType() == ManagementEnums.StorageType.GCS) {
+            return VendedStorageCredential.SOURCE_ENVIRONMENT;
+        }
+        StorageConfigs.StorageSecrets own = StorageConfigs.secrets(storage, cipher);
+        if (own == null) {
+            return fallback;
+        }
+        putSecrets(token, keysOf(storage), own.id(), own.secret());
+        return VendedStorageCredential.SOURCE_STATIC_CREDENTIALS;
     }
 
     /**
@@ -420,26 +465,19 @@ public class DefaultStorageCredentialManager implements StorageCredentialManager
     }
 
     /**
-     * S3：密钥来源有四级，优先级为 catalog 静态凭据 → STS 签发 → 具名存储 → 默认配置 → 环境凭据链。
+     * S3：三档，顺序是 **{@code stsUnavailable} → 签发 → 转发 → 环境链**。
      *
-     * <p>具名存储优先于默认配置是必须的：catalog 显式写了 {@code storageName}，
-     * 说明它要的是那一组密钥，而不是服务端的默认密钥。
-     * 找不到该名字时直接失败（500），不退回默认凭据——
-     * 退回会把「本来只能读 a 桶的身份」静默升级成「服务端默认身份」，
-     * 一个拼错的配置不该带来权限扩大。静态凭据与 {@code storageName} 互斥，
-     * 由 {@link StorageConfigs#validate} 在写入口拒绝，所以两者不会真的一起出现。
+     * <p><b>为什么「签发」排在「转发」之前。</b>catalog 上的 AK/SK 现在是**服务端据以
+     * 行动的身份**：配了 {@code roleArn} 表示「用这把钥匙去 assume 这个角色」，
+     * 不配才表示「直接把钥匙交给引擎」。前者是调用方明确要求换一张短期票，
+     * 后者只是没有别的来源。顺序反过来的话，一个「填了角色也填了最低权限钥匙」的
+     * catalog 会永远走转发档，而那正是配置里写着、运行时读不到的一种。
      *
-     * <p><b>静态凭据排在 {@code stsUnavailable} 之前。</b>{@code stsUnavailable}
-     * 表达的是「服务端不去向云申请临时凭据」（规格原文：不再为该 catalog 下发凭据），
-     * 而静态凭据是**建 catalog 的人自己填进这份配置的**，下发它既不是申请临时凭据，
-     * 也不涉及服务端的云侧信任关系。顺序反过来的后果是：兼容 S3 的对象存储
-     * （MinIO / Ceph / Ozone / FlashBlade）通常没有 STS，配置里会照惯例写上
-     * {@code stsUnavailable: true}，于是「填了密钥却收不到密钥」——
-     * 一个看起来像功能坏了的静默行为。
+     * <p>这条顺序不会影响任何存量 catalog：{@code roleArn} 与静态凭据原先被
+     * {@code StorageConfigs#validate} 判为互斥（400），所以「两者并存」的数据不存在。
      *
-     * <p><b>STS 签发排在静态两档之后、配置三档之前</b>，理由是这三档表达的是三种不同意图：
-     * 「用这把钥匙」「不要票」「拿服务身份去换票」。前两者是调用方的明确决定，
-     * 后者是服务端的默认策略，策略不能覆盖决定。
+     * <p>{@code stsUnavailable=true} 仍然排在最前：它表达的是「不要向云申请临时凭据」，
+     * 是调用方的决定，签发只是服务端的默认策略，策略不能覆盖决定。
      */
     private VendedStorageCredential s3(AwsStorageConfigInfo s3, CredentialContext context) {
         Map<String, String> token = new LinkedHashMap<>();
@@ -449,34 +487,30 @@ public class DefaultStorageCredentialManager implements StorageCredentialManager
         if (s3.pathStyleAccess() != null) {
             token.put("s3.path-style-access", s3.pathStyleAccess().toString());
         }
-        StorageConfigs.StaticCredentials own = StorageConfigs.staticCredentials(s3, cipher);
-        if (own != null) {
-            putS3Secrets(token, own.accessKeyId(), own.secretAccessKey());
-            return vended(s3, token, VendedStorageCredential.SOURCE_STATIC_CREDENTIALS);
-        }
         if (Boolean.TRUE.equals(s3.stsUnavailable())) {
-            return vended(s3, token, VendedStorageCredential.SOURCE_STS_UNAVAILABLE);
+            return relay(s3, token, VendedStorageCredential.SOURCE_STS_UNAVAILABLE);
         }
-
-        // 真签发的插入点，必须落在这里：上面两条是「显式指定了钥匙」与「明说不要票」，
-        // 它们与「拿服务身份去换票」是互斥的三种意图，顺序反了就是覆盖调用方的决定。
         VendedStorageCredential signed = assumeRole(context);
         if (signed != null) {
             return signed;
         }
+        return relay(s3, token, VendedStorageCredential.SOURCE_ENVIRONMENT);
+    }
 
-        RestServerProperties.Storage.Aws aws = properties.getStorage().getAws();
-        RestServerProperties.Storage.Keys named = namedKeys(aws.getStorages(), s3.storageName(), "aws");
-        if (named != null) {
-            putS3Secrets(token, named.getAccessKey(), named.getSecretKey());
-            return vended(s3, token,
-                    VendedStorageCredential.SOURCE_NAMED_STORAGE_PREFIX + s3.storageName());
+    /**
+     * 把 catalog 自带的 AK/SK 原样下发；没有则返回 {@code fallbackSource} 那一档。
+     *
+     * <p>抽出来是因为 S3 有两条路会走到它（{@code stsUnavailable} 与「签发没接住」），
+     * 而两处都必须给出同一份「有就用、没有就退回」的语义。
+     */
+    private VendedStorageCredential relay(AwsStorageConfigInfo s3, Map<String, String> token,
+                                          String fallbackSource) {
+        StorageConfigs.StorageSecrets own = StorageConfigs.secrets(s3, cipher);
+        if (own == null) {
+            return vended(s3, token, fallbackSource);
         }
-        if (configured(aws.getAccessKey(), aws.getSecretKey())) {
-            putS3Secrets(token, aws.getAccessKey(), aws.getSecretKey());
-            return vended(s3, token, VendedStorageCredential.SOURCE_CONFIGURATION);
-        }
-        return vended(s3, token, VendedStorageCredential.SOURCE_ENVIRONMENT);
+        putS3Secrets(token, own.id(), own.secret());
+        return vended(s3, token, VendedStorageCredential.SOURCE_STATIC_CREDENTIALS);
     }
 
     /**
@@ -485,13 +519,18 @@ public class DefaultStorageCredentialManager implements StorageCredentialManager
      * <p>返回 {@code null} 表示「这一档没人接」，调用方继续走静态转发。
      * 链为空是默认情形——那时本方法只做一次空循环，不产生任何副作用，
      * 也不会有远程调用。
+     *
+     * <p>每次 {@code provider.vend} 都过一遍 {@link ThrottlingGuard}：限流不是
+     * 「这个 provider 的特性」，而是这条路线上唯一的远程调用点，包在这里就不会
+     * 漏掉将来新加的 provider。冷却键用 provider 名——配额按云账号算，
+     * 一个 catalog 打满了，同 provider 下的别的 catalog 也签不出来。
      */
     private VendedStorageCredential assumeRole(CredentialContext context) {
         if (providers.isEmpty()) {
             return null;
         }
         for (CredentialProvider provider : providers) {
-            var vended = provider.vend(context);
+            var vended = throttling.call(provider.name(), () -> provider.vend(context));
             if (vended.isPresent()) {
                 return vended.get();
             }
@@ -507,46 +546,6 @@ public class DefaultStorageCredentialManager implements StorageCredentialManager
     }
 
     // ------------------------------------------------------------------ OBS / OSS / COS
-
-    /**
-     * 服务端配置面的三级凭据来源：具名存储 → 默认配置 → 环境凭据链。
-     *
-     * <p>三家云的处理完全一致，差异只在「用哪个配置组」与「用哪一族键名」，
-     * 所以合成一个 switch 而不是三段复制。定位键已经在 {@link #vendOther} 里发过了
-     * （端点、区域、{@code useHttps}），这一段只补密钥。
-     *
-     * <p>与 S3 同构，包括「具名存储找不到时失败而非退回默认」这条取舍。
-     * 静态凭据那一级不在这里：它在 {@code stsUnavailable} 之前处理，
-     * 而本方法只管服务端配置面。
-     *
-     * <p>临时凭据（{@code sessionToken}）跟着它所属的那一级一起下发：具名存储里配了
-     * 令牌就用那个，否则用默认配置的。混搭（具名存储的 AK/SK 配默认配置的令牌）
-     * 没有任何合理场景——临时凭据的 AK、SK、令牌是一次签发的同一组。
-     */
-    private String forwardFromServerConfig(StorageConfigInfo storage, Map<String, String> token) {
-        return switch (storage.storageType()) {
-            case OBS -> {
-                HuaweiObsStorageConfigInfo obs = (HuaweiObsStorageConfigInfo) storage;
-                yield objectStoreSecrets("obs", properties.getStorage().getObs(),
-                        obs.storageName(), OBS_KEYS, token);
-            }
-            case OSS -> {
-                AliyunOssStorageConfigInfo oss = (AliyunOssStorageConfigInfo) storage;
-                yield objectStoreSecrets("oss", properties.getStorage().getOss(),
-                        oss.storageName(), OSS_KEYS, token);
-            }
-            case COS -> {
-                TencentCosStorageConfigInfo cos = (TencentCosStorageConfigInfo) storage;
-                yield objectStoreSecrets("cos", properties.getStorage().getCos(),
-                        cos.storageName(), COS_KEYS, token);
-            }
-            case GCS -> gcsToken(token);
-            case AZURE -> VendedStorageCredential.SOURCE_AZURE_METADATA_ONLY;
-            // FILE 在 vendOther 里已经返回；S3 不进这个方法
-            default -> throw new IllegalStateException(
-                    "storage type " + storage.storageType() + " has no server-side fallback");
-        };
-    }
 
     /**
      * 腾讯云 COS 的定位键：区域、端点、是否 HTTPS。
@@ -572,94 +571,23 @@ public class DefaultStorageCredentialManager implements StorageCredentialManager
     }
 
     /**
-     * OBS / OSS / COS 共用的三级凭据来源：具名存储 → 默认配置 → 环境凭据链。
+     * 写入一组密钥。
      *
-     * <p>与 S3 同构，包括「具名存储找不到时失败而非退回默认」这条取舍。
-     * 静态凭据那一级不在这里：它在调用点先于 {@code stsUnavailable} 处理，
-     * 而本方法只管服务端配置面。
-     *
-     * <p>临时凭据（{@code sessionToken}）跟着它所属的那一级一起下发：具名存储里配了
-     * 令牌就用那个，否则用默认配置的。混搭（具名存储的 AK/SK 配默认配置的令牌）
-     * 没有任何合理场景——临时凭据的 AK、SK、令牌是一次签发的同一组。
-     *
-     * <p>{@code group} 同时用于错误信息与「这一族支不支持令牌」的判断：
-     * 见 {@link #putSecrets}。
-     */
-    private String objectStoreSecrets(String group,
-                                      RestServerProperties.Storage.CloudCredentials credentials,
-                                      String storageName,
-                                      KeyFamily keys,
-                                      Map<String, String> token) {
-        RestServerProperties.Storage.Keys named = namedKeys(credentials.getStorages(), storageName, group);
-        if (named != null) {
-            putSecrets(token, keys, group, named.getAccessKey(), named.getSecretKey(), named.getSessionToken());
-            return VendedStorageCredential.SOURCE_NAMED_STORAGE_PREFIX + storageName;
-        }
-        if (configured(credentials.getAccessKey(), credentials.getSecretKey())) {
-            putSecrets(token, keys, group, credentials.getAccessKey(), credentials.getSecretKey(),
-                    credentials.getSessionToken());
-            return VendedStorageCredential.SOURCE_CONFIGURATION;
-        }
-        return VendedStorageCredential.SOURCE_ENVIRONMENT;
-    }
-
-    /**
-     * 写入一组密钥；安全令牌只在「这一族有令牌键」且令牌非空时写入。
-     *
-     * <p><b>配了令牌却没有令牌键，直接失败。</b>COSN 就是这种族（见 {@link #COS_KEYS}）。
-     * 两个更省事的写法都试过、都不该用：
-     * 把令牌静默丢掉——运维在 {@code lakehouse.rest.storage.cos} 里写了令牌，
-     * 读表时却走长期密钥，唯一的痕迹是「权限没有按临时凭据收窄」；
-     * 发一个 {@code fs.cosn.userinfo.sessionToken}——没有任何实现读它，
-     * 于是「发了」与「生效」再次分家。失败消息里点名配置项，才停得下来。
-     *
-     * @throws ApiException 500 配置里有令牌，但这一存储族的 FileIO 不支持临时凭据
+     * <p>{@code sessionToken} 不在这里：本工程的四家对象存储在 catalog 上都只有
+     * AK/SK（COS 的 COSN 根本不认临时凭据，见 {@link #COS_KEYS}），令牌没有来源。
+     * 早先那一版为「服务端配置里的令牌」留了一个失败分支，配置面删掉之后它就成了
+     * 一条永远不会走的路径——留着只会让下一个维护者去找那个不存在的配置项。
      */
     private static void putSecrets(Map<String, String> token,
                                    KeyFamily keys,
-                                   String group,
                                    String accessKey,
-                                   String secretKey,
-                                   String sessionToken) {
+                                   String secretKey) {
         token.put(keys.accessKey(), accessKey);
         token.put(keys.secretKey(), secretKey);
-        if (keys.sessionToken() == null) {
-            if (sessionToken != null && !sessionToken.isBlank()) {
-                throw new ApiException(500, null, null,
-                        "lakehouse.rest.storage." + group + " configures a sessionToken, but the "
-                                + group + " FileIO has no key for it: temporary credentials are not"
-                                + " supported on this storage type. Remove the sessionToken, or use"
-                                + " a catalog with static long-term credentials instead");
-            }
-            return;
+        if (keys.sessionToken() != null) {
+            // COS 这一族没有令牌键，这一支不会进入；其余三家有键但此刻没有值可填
+            putIfPresent(token, keys.sessionToken(), null);
         }
-        putIfPresent(token, keys.sessionToken(), sessionToken);
-    }
-
-    /**
-     * 取出具名存储的密钥。
-     *
-     * @param group 配置组名，仅用于拼错误信息（{@code aws} / {@code obs} / {@code oss} / {@code cos}）
-     * @throws ApiException 500 catalog 引用了配置里不存在的具名存储
-     */
-    private RestServerProperties.Storage.Keys namedKeys(Map<String, RestServerProperties.Storage.Keys> storages,
-                                                        String storageName,
-                                                        String group) {
-        if (storageName == null || storageName.isBlank()) {
-            return null;
-        }
-        RestServerProperties.Storage.Keys keys = storages.get(storageName);
-        if (keys == null || keys.getAccessKey() == null || keys.getAccessKey().isBlank()) {
-            throw new ApiException(500, null, null,
-                    "catalog references storageName '" + storageName
-                            + "' but lakehouse.rest.storage." + group + ".storages has no such entry");
-        }
-        return keys;
-    }
-
-    private static boolean configured(String accessKey, String secretKey) {
-        return accessKey != null && !accessKey.isBlank()
-                && secretKey != null && !secretKey.isBlank();
     }
 
     // ------------------------------------------------------------------ Azure
@@ -700,30 +628,6 @@ public class DefaultStorageCredentialManager implements StorageCredentialManager
 
     // ------------------------------------------------------------------ GCS
 
-    /**
-     * GCS：访问令牌来自服务端配置，未配置时由引擎用自己的凭据链。
-     *
-     * <p>{@code lifespan} 会同时收窄令牌自身的有效期与响应里的 {@code expiresAt}
-     * （见 {@link #ttlSeconds}）：配了 10 分钟的 lifespan 却告诉调用方令牌一小时后过期，
-     * 调用方会在第 11 分钟拿到 401，而它没有任何理由预期这件事。
-     *
-     * <p>这里发的是**配置里的静态令牌**——服务端没有 GCS 的 downscoped token 签发能力
-     * （设计稿 P1-4），所以它排在 {@code providers} 链之后，且不具备任何收窄。
-     */
-    private String gcsToken(Map<String, String> token) {
-        String accessToken = properties.getStorage().getGcp().getToken();
-        if (accessToken == null || accessToken.isBlank()) {
-            return VendedStorageCredential.SOURCE_ENVIRONMENT;
-        }
-        token.put(KEY_GCS_TOKEN, accessToken);
-        Duration lifespan = properties.getStorage().getGcp().getLifespan();
-        if (lifespan != null) {
-            token.put("gcs.oauth2.token-expires-at",
-                    Long.toString(System.currentTimeMillis() + lifespan.toMillis()));
-        }
-        return VendedStorageCredential.SOURCE_CONFIGURATION;
-    }
-
     // ------------------------------------------------------------------ FILE
 
     /**
@@ -753,18 +657,12 @@ public class DefaultStorageCredentialManager implements StorageCredentialManager
     /**
      * 本次下发的有效期（秒）。
      *
-     * <p>基准是 {@code lakehouse.rest.credential.ttl-seconds}；GCS 配置了
-     * {@code lifespan} 时取两者较小值，理由见 {@link #gcsToken}。
+     * <p>基准是 {@code lakehouse.rest.credential.ttl-seconds}。签发档会用自己的
+     * 寿命覆盖它（STS 的角色上限、Azure 的 7 天上限、GCS 的 1 小时上限），
+     * 那些夹紧在各自的 provider 里，因为只有它们知道云侧的硬约束。
      */
     private long ttlSeconds(StorageConfigInfo storage) {
-        long ttl = properties.getCredential().getTtlSeconds();
-        if (storage instanceof GcpStorageConfigInfo) {
-            Duration lifespan = properties.getStorage().getGcp().getLifespan();
-            if (lifespan != null) {
-                return Math.max(1, Math.min(ttl, lifespan.toSeconds()));
-            }
-        }
-        return ttl;
+        return properties.getCredential().getTtlSeconds();
     }
 
     private static void putIfPresent(Map<String, String> token, String key, String value) {

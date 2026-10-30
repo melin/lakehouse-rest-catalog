@@ -188,10 +188,11 @@ CONSOLE_BASE = "/console/"
 EXTENSION_ENDPOINTS = {
     ("GET", "/api/console/v1/meta"): "控制台元数据（枚举取值与服务配置摘要），非 Polaris 规格",
     # 每个可见 catalog 的凭据来源（短期签发 / 转发长期密钥 / 不下发 / 配置有误）。
-    # 判定必须在服务端做：判据要读 lakehouse.rest.storage.*（具名存储、默认凭据）
-    # 与 credential.providers（有没有启用签发），前端拿不到这两份配置；
-    # 把优先级抄进 JS 一定与 DefaultStorageCredentialManager 漂移，
-    # 而漂移的表现是「界面说在签发、实际在转发」——只在出事那天才被发现。
+    # 判定必须在服务端做：判据要读 catalog 自己的 storageConfigInfo
+    # （有没有 roleArn / 静态凭据 / stsUnavailable）与 credential.providers
+    # （有没有启用签发），其中 providers 前端拿不到；把优先级抄进 JS 一定与
+    # DefaultStorageCredentialManager 漂移，而漂移的表现是「界面说在签发、
+    # 实际在转发」——只在出事那天才被发现。
     # 批量返回（一次全部可见 catalog），因此它是一个端点而不是逐 catalog 一条。
     ("GET", "/api/console/v1/catalog-credential-sources"): "控制台：每个 catalog 的凭据来源判定（只读，服务端推算）",
     # 同一套判定，输入换成**表单还没保存的那份配置**（POST 一份 storageConfigInfo）。
@@ -2601,7 +2602,8 @@ check("列表页与详情页共用同一份翻译，且列表页的失败不影�
       "判定接口失败时也不该把 catalog 列表带下水")
 
 # 表单里的预览（`composables/credentialPreview.js`）是同一件事的第三个落点。
-# 它的诱惑比前两个大：表单里正好有 roleArn / storageName / 静态凭据这几项，
+# 它的诱惑比前两个大：表单里正好有 roleArn / stsUnavailable / 各家那套静态凭据
+# （accessKeyId、clientId、serviceAccountJson）这几项，
 # 「顺手 if 一下就推断出档位」看起来比发一次请求便宜——而那正是漂移的起点。
 # 因此这里对它用与翻译层同一套反向断言：只许发请求，不许读判据、不许自带档位取值。
 credential_preview_js = read(os.path.join(CONSOLE_DIR, "src/composables/credentialPreview.js"))

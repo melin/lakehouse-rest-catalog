@@ -247,13 +247,55 @@ class AzureSasVendingTests {
         properties.getCredential().setProviders(List.of(VendedStorageCredential.PROVIDER_AZURE_SAS));
         FakeKeys keys = new FakeKeys();
         DefaultStorageCredentialManager manager = new DefaultStorageCredentialManager(
-                properties, cipher, List.of(new AzureSasCredentialProvider(properties, keys)));
+                properties, cipher, List.of(new AzureSasCredentialProvider(properties, cipher, keys)));
 
-        VendedStorageCredential vended = manager.vend(azure(TABLE), "t", TABLE);
+        VendedStorageCredential vended = manager.vend(azureWithoutIdentity(TABLE), "t", TABLE);
 
         assertTrue(keys.requests.isEmpty());
         assertEquals(VendedStorageCredential.SOURCE_AZURE_METADATA_ONLY, vended.source());
         assertEquals("acct", vended.token().get("azure.account"), "定位元数据仍然照发");
+    }
+
+    /**
+     * 服务主体的两半必须成对：只填 {@code clientId} 不填密钥，等于没有身份。
+     *
+     * <p>半份配置若被当成本地签发档，换票会在 {@code invalid_client} 上失败——
+     * 那句话里没有任何线索指向「catalog 少填了一个字段」。
+     */
+    @Test
+    void declinesWhenTheServicePrincipalIsIncomplete() {
+        properties.getCredential().setProviders(List.of(VendedStorageCredential.PROVIDER_AZURE_SAS));
+        FakeKeys keys = new FakeKeys();
+        DefaultStorageCredentialManager manager = new DefaultStorageCredentialManager(
+                properties, cipher, List.of(new AzureSasCredentialProvider(properties, cipher, keys)));
+        AzureStorageConfigInfo half = new AzureStorageConfigInfo(List.of(TABLE), null,
+                "tenant-from-catalog", null, null, null, "client", null, null, null);
+
+        VendedStorageCredential vended = manager.vend(half, "t", TABLE);
+
+        assertTrue(keys.requests.isEmpty());
+        assertEquals(VendedStorageCredential.SOURCE_AZURE_METADATA_ONLY, vended.source());
+    }
+
+    /**
+     * 云环境（authority / scope）也来自 catalog：中国云与公有云可以并存。
+     *
+     * <p>这两项若退回全局配置，一个部署里就只能有一种 Azure 云——
+     * 而错误现场是一个 audience 不对的令牌，离「配置放错了层」隔着好几步。
+     */
+    @Test
+    void takesTheCloudEnvironmentFromTheCatalog() {
+        FakeKeys keys = new FakeKeys();
+        AzureStorageConfigInfo china = new AzureStorageConfigInfo(List.of(TABLE), null,
+                "tenant-from-catalog", null, null, null, "client",
+                cipher.seal("secret"), "https://login.chinacloudapi.cn",
+                "https://storage.azure.cn/.default");
+
+        manager(keys).vend(china, "t", TABLE);
+
+        AzureDelegationRequest request = keys.requests.get(0);
+        assertEquals("https://login.chinacloudapi.cn", request.authority());
+        assertEquals("https://storage.azure.cn/.default", request.scope());
     }
 
     /** 位置认不出来时同样退档，而不是签一张猜出来的票。 */
@@ -364,18 +406,20 @@ class AzureSasVendingTests {
     /** 控制台的「凭据来源」要跟着变：启用 azure-sas 之后不再是「不下发」。 */
     @Test
     void consoleReportsSignedSasOnlyWhenBothTheProviderAndTheIdentityArePresent() {
-        AzureStorageConfigInfo azure = azure(TABLE);
+        AzureStorageConfigInfo withoutIdentity = azureWithoutIdentity(TABLE);
         assertEquals(CatalogCredentialSource.Mode.NONE,
-                CatalogCredentialSource.of(azure, properties).mode(), "默认不启用");
+                CatalogCredentialSource.of(withoutIdentity, properties).mode(), "默认不启用");
 
         properties.getCredential().setProviders(List.of(VendedStorageCredential.PROVIDER_AZURE_SAS));
-        CatalogCredentialSource.Source withoutIdentity =
-                CatalogCredentialSource.of(azure, properties);
-        assertEquals(CatalogCredentialSource.Mode.NONE, withoutIdentity.mode());
-        assertTrue(withoutIdentity.detail().contains("client-id"), withoutIdentity.detail());
+        CatalogCredentialSource.Source enabledWithoutIdentity =
+                CatalogCredentialSource.of(withoutIdentity, properties);
+        assertEquals(CatalogCredentialSource.Mode.INVALID, enabledWithoutIdentity.mode(),
+                "启用了却没身份是配置错误，不是「短期签发」");
+        assertTrue(enabledWithoutIdentity.detail().contains("clientId"),
+                enabledWithoutIdentity.detail());
 
-        configureIdentity(properties);
-        CatalogCredentialSource.Source signed = CatalogCredentialSource.of(azure, properties);
+        CatalogCredentialSource.Source signed =
+                CatalogCredentialSource.of(azure(TABLE), properties);
         assertEquals(CatalogCredentialSource.Mode.STS, signed.mode());
         assertTrue(signed.detail().contains("没有标准续期"), signed.detail());
     }
@@ -384,21 +428,21 @@ class AzureSasVendingTests {
 
     private DefaultStorageCredentialManager manager(FakeKeys keys) {
         properties.getCredential().setProviders(List.of(VendedStorageCredential.PROVIDER_AZURE_SAS));
-        configureIdentity(properties);
         return new DefaultStorageCredentialManager(properties, cipher,
-                List.of(new AzureSasCredentialProvider(properties, keys)));
+                List.of(new AzureSasCredentialProvider(properties, cipher, keys)));
     }
 
-    private static void configureIdentity(RestServerProperties properties) {
-        RestServerProperties.Storage.Azure azure = properties.getStorage().getAzure();
-        azure.setClientId("client");
-        azure.setClientSecret("secret");
-        azure.setTenantId("tenant-from-config");
-    }
-
-    private static AzureStorageConfigInfo azure(String location) {
+    /** 配齐了服务主体的 catalog（密钥按落库形态密封）。 */
+    private AzureStorageConfigInfo azure(String location) {
         return new AzureStorageConfigInfo(List.of(location), null,
-                "tenant-from-catalog", null, null, null);
+                "tenant-from-catalog", null, null, null,
+                "client", cipher.seal("secret"), null, null);
+    }
+
+    /** 只有定位元数据、没有服务主体的 catalog。 */
+    private static AzureStorageConfigInfo azureWithoutIdentity(String location) {
+        return new AzureStorageConfigInfo(List.of(location), null,
+                "tenant-from-catalog", null, null, null, null, null, null, null);
     }
 
     /** 把 SAS 查询串解成 Map，用于断言参数而不是「有 sig 就行」。 */

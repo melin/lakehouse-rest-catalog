@@ -438,7 +438,7 @@ const SOURCE_OPTIONS = [
     mode: 'RELAY',
     label: '转发长期密钥',
     desc: '把 catalog 里存着的长期 AK/SK 原样发给引擎。能兼容没有 STS 的存储（自建 MinIO / Ceph），但这把钥匙不会过期。',
-    need: '需要：第 2 节填了静态凭据（accessKeyId / secretAccessKey），或引用了具名存储。',
+    need: '需要：第 2 节填了静态凭据——S3 / OBS / OSS / COS 是 accessKeyId + secretAccessKey，Azure 是 clientId + clientSecret。',
   },
   {
     mode: 'NONE',
@@ -457,7 +457,8 @@ const SOURCE_OPTIONS = [
  */
 const missingHint = computed(() => {
   const payload = form.storageConfigInfo || {}
-  if (payload.roleArn || payload.accessKeyId || payload.storageName) {
+  // `storageName` 不再参与判断：它现在只是个标签，填了它不会让任何一档成立
+  if (payload.roleArn || payload.accessKeyId || payload.clientId || payload.serviceAccountJson) {
     return ''
   }
   if (preview.value && verdictMode.value !== 'NONE') {

@@ -152,7 +152,7 @@ class ServerSideCredentialTests {
         FakeSts sts = new FakeSts();
         // providers 保持默认空：这是「默认关闭」的验收点，新入口也要守住
         DefaultStorageCredentialManager manager = new DefaultStorageCredentialManager(
-                properties, cipher, List.of(new S3TokenCredentialProvider(properties, sts)));
+                properties, cipher, List.of(new S3TokenCredentialProvider(properties, cipher, sts)));
         List<String> locations = List.of("s3://wh/db1/t1");
 
         VendedStorageCredential vended = manager.vendForCatalog(
@@ -161,6 +161,47 @@ class ServerSideCredentialTests {
         assertNull(sts.last.get(), "默认链为空时不该有远程调用");
         assertEquals(VendedStorageCredential.PROVIDER_RELAY, vended.provider());
         assertFalse(vended.shortLived());
+    }
+
+    // ------------------------------------------------------------------ 谁在签名
+
+    /**
+     * catalog 上带 AK/SK 时，服务端用**它**去换票，而不是 SDK 的默认链。
+     *
+     * <p>这对钥匙的含义是「这个 catalog 用谁的身份去 assume」——两个 catalog 可能落在
+     * 不同的账号里，而默认链只有一份身份。传错时的报错是 {@code AccessDenied}
+     * （角色信任策略只认某个账号），与「角色不存在」长得一样。
+     */
+    @Test
+    void signsWithTheCatalogsOwnKeysWhenItHasThem() {
+        FakeSts sts = new FakeSts();
+        AwsStorageConfigInfo storage = new AwsStorageConfigInfo(
+                List.of("s3://wh/db/t"), null, "arn:aws:iam::1:role/r", null, null, null, null,
+                "us-east-1", null, null, null, null, null, null, null,
+                "CATALOG-AK", cipher.seal("CATALOG-SK"));
+
+        VendedStorageCredential vended = managerWith(sts)
+                .vendForCatalog(storage, "cat-1", List.of("s3://wh/db/t"), false);
+
+        AssumeRoleCommand command = sts.last.get();
+        assertTrue(command.hasCallerCredentials(), "应当用 catalog 的钥匙签名");
+        assertEquals("CATALOG-AK", command.callerAccessKey());
+        // 签发档下发的是票，不是那把长期钥匙
+        assertEquals(VendedStorageCredential.SOURCE_STS_SESSION, vended.source());
+        assertFalse(vended.token().containsValue("CATALOG-SK"),
+                "签名钥匙不该进下发键: " + vended.token());
+    }
+
+    /** 没给钥匙时交给 SDK 默认链（实例角色 / IRSA）——{@code null} 是「不指定」，不是空串。 */
+    @Test
+    void leavesSigningToTheDefaultChainWhenTheCatalogHasNoKeys() {
+        FakeSts sts = new FakeSts();
+        managerWith(sts).vendForCatalog(
+                aws("arn:aws:iam::1:role/r", List.of("s3://wh/db/t")), "cat-1",
+                List.of("s3://wh/db/t"), false);
+
+        assertFalse(sts.last.get().hasCallerCredentials());
+        assertNull(sts.last.get().callerAccessKey());
     }
 
     // ------------------------------------------------------------------ 缓存
@@ -200,7 +241,7 @@ class ServerSideCredentialTests {
         FakeSts unused = new FakeSts();
         properties.getCredential().setProviders(List.of());
         DefaultStorageCredentialManager relay = new DefaultStorageCredentialManager(
-                properties, cipher, List.of(new S3TokenCredentialProvider(properties, unused)));
+                properties, cipher, List.of(new S3TokenCredentialProvider(properties, cipher, unused)));
         StorageCredentialCache relayCache = new StorageCredentialCache(properties);
         StorageFileIoFactory relayFactory = new StorageFileIoFactory(
                 new StorageRuntimePolicy(properties, List.of(relay)), relayCache);
@@ -219,7 +260,7 @@ class ServerSideCredentialTests {
 
     /** 把 provider 链配成 {@code [s3-token]} 并返回管理器。 */
     private DefaultStorageCredentialManager managerWith(FakeSts sts) {
-        S3TokenCredentialProvider provider = new S3TokenCredentialProvider(properties, sts);
+        S3TokenCredentialProvider provider = new S3TokenCredentialProvider(properties, cipher, sts);
         properties.getCredential().setProviders(List.of(provider.name()));
         return new DefaultStorageCredentialManager(properties, cipher, List.of(provider));
     }

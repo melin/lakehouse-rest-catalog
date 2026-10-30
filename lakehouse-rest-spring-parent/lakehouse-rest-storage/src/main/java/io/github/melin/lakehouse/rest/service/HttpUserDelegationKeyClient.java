@@ -130,8 +130,10 @@ public class HttpUserDelegationKeyClient implements UserDelegationKeyClient {
         throw new ApiException(503, null, null,
                 "could not get an AAD token for tenant " + request.tenantId() + ": "
                         + (error == null ? "HTTP " + response.statusCode() : error)
-                        + "; check lakehouse.rest.storage.azure.{tenant-id,client-id,client-secret,"
-                        + "authority,scope}");
+                        // 点名到 catalog 的字段：那对服务主体跟着某个 catalog 走，
+                        // 不是部署级配置，报错里指错地方会让人去翻一份不存在的配置
+                        + "; check this catalog's storageConfigInfo."
+                        + "{tenantId,clientId,clientSecret,authority,scope}");
     }
 
     // ------------------------------------------------------------------ 解析

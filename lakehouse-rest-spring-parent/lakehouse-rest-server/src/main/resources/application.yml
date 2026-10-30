@@ -235,88 +235,20 @@ lakehouse:
       # AssumeRole 会 AccessDenied，表现为「配置没改、读表全部 503」。所以默认关。
       session-tags: false
     # -----------------------------------------------------------------------
-    # 存储与凭据，对应 Polaris 1.8.0 配置参考的「Storage & Credentials」一节。
-    # 键名逐项对应，只把前缀从 polaris 换成 lakehouse.rest，运维迁配置时可以按名字平移。
-    # 例外是下面 obs / oss / cos 三组：Polaris 没有这三个存储类型（它用 S3 兼容层接入），
-    # 因此没有可平移的键名，是本工程按厂商 FileIO 配置面新加的。
+    # 存储：这里**只有加密密钥与连接参数**，没有任何对象存储凭据。
+    #
+    # 凭据全部跟着 catalog 走——在创建/编辑 catalog 的表单里填，落在
+    # storageConfigInfo 上（accessKeyId / secretAccessKey / Azure 的
+    # clientId+clientSecret / GCS 的 serviceAccountJson / OSS 的 roleArn 与
+    # stsEndpoint），以 credential-secret-key 加密后入库、对外只回六个星号。
+    #
+    # 这么分的理由：每个 catalog 的存储配置本来就不一样。桶不同、账户不同、
+    # 轮转周期不同；把它们塞进同一份全局配置后，只剩 storageName 一条旁路
+    # 来区分「这次用哪把钥匙」，而那条旁路只是把答案挪了个位置，没有消除
+    # 「全局配置里躺着别人的密钥」这件事本身，还多出一层「配了名字但忘了
+    # 在那张表里加键」的静默失配。
     # -----------------------------------------------------------------------
     storage:
-      aws:
-        # 默认 S3 凭据：未指定 storageName 的 S3 catalog 用它。两项留空则退化为
-        # 环境凭据链（实例角色、环境变量、配置文件），与 Polaris 的行为一致
-        access-key: ""
-        secret-key: ""
-        # 具名存储，键为 catalog 的 storageConfigInfo.storageName。
-        # 密钥只留在服务端配置里，不落进 catalog 元数据——这是本工程里唯一
-        # 让 S3 密钥不出现在管理 API 报文中的途径
-        storages: {}
-      gcp:
-        # GCS 访问令牌；留空则交给引擎自己的凭据链
-        token: ""
-        # 令牌有效期；非空时会同时收窄令牌自身与响应里的 expiresAt
-        lifespan: null
-        # 令牌交换端点（provider 名 gcs-downscope，需同时在
-        # lakehouse.rest.credential.providers 里启用）。启用后这个令牌被换成
-        # 「只能碰这张表」的令牌，最长 1 小时；源令牌需要有
-        # roles/iam.serviceAccountTokenCreator 才能换。
-        sts-endpoint: https://sts.googleapis.com
-      # Azure 的**服务身份**：租户 + 应用注册（clientId / clientSecret）。
-      # 它只用于一件事——换用户委托密钥、签 User Delegation SAS（provider 名 azure-sas，
-      # 需同时在 lakehouse.rest.credential.providers 里启用）。
-      # 三项不齐时这一档不会被接，凭据下发退回原来的「只发定位元数据」：
-      # 那不是失败，是「本部署没有那个身份」。
-      # 租户优先取 catalog 的 tenantId（规格自带这个字段），这里只是兜底。
-      azure:
-        tenant-id: ""
-        client-id: ""
-        client-secret: ""
-        # 中国云是 https://login.chinacloudapi.cn；主权云域名不同，所以可填
-        authority: https://login.microsoftonline.com
-        # 必须与云环境一致。中国云填 https://storage.azure.cn/.default
-        scope: https://storage.azure.com/.default
-      # 华为云 OBS 凭据。与 aws 分开而不是共用：三家的 AK/SK 独立签发、独立轮转、
-      # 独立授权，挤进同一个键空间后「给 OBS 换钥匙」与「给生产 S3 换钥匙」就没法区分。
-      # 这一组没有 Polaris 的对应项——Polaris 用 S3 兼容层接入 OBS，本工程单列。
-      obs:
-        # 三项都留空则退化为环境凭据链：引擎用自己的 fs.obs.security.provider
-        # （环境变量 / ECS 委托身份）去取，服务端不下发任何密钥
-        access-key: ""
-        secret-key: ""
-        # 临时凭据的安全令牌（华为的键名是 fs.obs.session.token）。
-        # 临时凭据必须 AK + SK + 令牌成套提供，只给令牌不会失败、只会签名不过
-        session-token: ""
-        # 具名存储，键为 catalog 的 storageConfigInfo.storageName。
-        # 密钥只留在服务端配置里，不落进 catalog 元数据
-        storages: {}
-      # 阿里云 OSS 凭据，结构同 obs
-      oss:
-        access-key: ""
-        secret-key: ""
-        # 阿里云侧的键名是 fs.oss.securityToken，这里沿用同一命名约定
-        session-token: ""
-        storages: {}
-        # 签发档（provider 名 oss-sts，需同时在 lakehouse.rest.credential.providers 里启用）：
-        # 服务端用上面那对 access-key / secret-key 去 AssumeRole 这个 RAM 角色，
-        # 换一张按表收窄、900–3600 秒到期的临时凭据。
-        # 留空 = 本部署不签发，凭据下发退回转发档（老部署升级后不该因此读不了表）。
-        # 收窄靠 RAM policy 完成：角色是上限，policy 才是这张表的边界。
-        role-arn: ""
-        # STS 端点；全球化端点，通常不用改，专有云按需覆盖
-        sts-endpoint: https://sts.aliyuncs.com
-      # 腾讯云 COS 凭据，结构上同 obs / oss，但有一处本质差别：
-      # **这条链上没有临时凭据**。paimon-cosn 的认证包
-      # （org.apache.hadoop.fs.cosn.auth）里只有 SimpleCredentialsProvider 与
-      # EnvironmentVariableCredentialsProvider，没有能消费 sessionToken 的实现，
-      # CosNConfigKeys 里也没有任何令牌项——填进来的令牌没有消费者。
-      # 因此 session-token 在这里能绑定但会被拒绝：下发时明确报错（500），
-      # 而不是发一个没人读的键，让问题延后到「票发了、引擎不认、过一会儿失败」。
-      # 下发键名：fs.cosn.userinfo.secretId / secretKey（仅这两项保留大小写）、
-      # fs.cosn.bucket.region、fs.cosn.bucket.endpoint_suffix、fs.cosn.useHttps。
-      cos:
-        access-key: ""
-        secret-key: ""
-        session-token: ""
-        storages: {}
       # 以下连接参数当前只做取值校验与启动日志输出：JDK 的 HttpClient 没有
       # 对应的调节项，保留它们是为了配置面与 Polaris 一一对应
       clients-cache-max-size: 100

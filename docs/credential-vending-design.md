@@ -250,13 +250,27 @@ catalog 要数据访问权，catalog 判权之后再去云上换一张**只覆�
 
 | storageType | 定位键 | 密钥键 | 过期相关键 | 当前来源 |
 | --- | --- | --- | --- | --- |
-| `S3` | `s3.region`、`s3.endpoint`、`s3.path-style-access` | `s3.access-key-id` + `s3.secret-access-key`（规格名）**与** `s3.access-key` + `s3.secret-key`（Paimon 引擎名） | **无** | catalog 静态 → 具名存储 → 默认配置 → 环境凭据链 |
-| `AZURE` | `azure.tenant-id`、`azure.account`、`azure.multi-tenant-app-name`、`azure.consent-url`、`azure.hierarchical` | **无**（源码注释写明是明确的缺口） | 无 | 只下发定位元数据 |
-| `GCS` | `gcs.service-account` | `gcs.oauth2.token` | `gcs.oauth2.token-expires-at` | `lakehouse.rest.storage.gcp.token`（配置里的静态令牌） |
-| `OBS` | `fs.obs.endpoint` | `fs.obs.access.key` + `fs.obs.secret.key` + `fs.obs.session.token` | 无 | 四级来源同 S3 |
-| `OSS` | `fs.oss.endpoint` | `fs.oss.accessKeyId` + `fs.oss.accessKeySecret` + `fs.oss.securityToken` | 无 | 四级来源同 S3 |
+| `S3` | `s3.region`、`s3.endpoint`、`s3.path-style-access` | `s3.access-key-id` + `s3.secret-access-key`（规格名）**与** `s3.access-key` + `s3.secret-key`（Paimon 引擎名） | **无** | `stsUnavailable` → `s3-token` 签发 → catalog 上的 AK/SK → 环境凭据链 |
+| `AZURE` | `azure.tenant-id`、`azure.account`、`azure.multi-tenant-app-name`、`azure.consent-url`、`azure.hierarchical` | 启用 `azure-sas` 时有 `adls.sas-token*`；服务主体**永不下发** | `adls.sas-token-expires-at-ms` | 只下发定位元数据（服务主体只用于签发） |
+| `GCS` | `gcs.service-account` | 启用 `gcs-downscope` 时有 `gcs.oauth2.token`；`serviceAccountJson` **永不下发** | `gcs.oauth2.token-expires-at` | 没有服务账号 → 引擎的 ADC；有则换票 |
+| `OBS` | `fs.obs.endpoint` | `fs.obs.access.key` + `fs.obs.secret.key`（catalog 上的长期凭据，没有令牌可发） | 无 | catalog 上的 AK/SK → 环境凭据链 |
+| `OSS` | `fs.oss.endpoint` | `fs.oss.accessKeyId` + `fs.oss.accessKeySecret`（启用 `oss-sts` 时另加 `fs.oss.securityToken`） | STS 票自带到期 | `stsUnavailable` → `oss-sts` 签发 → catalog 上的 AK/SK → 环境链 |
 | `FILE` | — | 自签随机串（`PAIMON-<tableId>` / 随机 secret / 随机 token） | `expiration`（ISO8601）+ `tablePath` | 本地文件系统，仅审计用 |
 | `COS` | `fs.cosn.bucket.region`、`fs.cosn.bucket.endpoint_suffix`、`fs.cosn.useHttps` | `fs.cosn.userinfo.secretId` + `fs.cosn.userinfo.secretKey` | **无**（这一族没有令牌键，§6.3.4） | 四级来源同 S3，但**没有 STS 签发那一级** |
+
+> **配置面后记（2026-10-30）**：本表原先的「四级来源」里有三级来自服务端配置
+> （默认凭据 / 具名存储 / `gcp.token`）。那份配置已经整个删掉：**对象存储凭据一律写在
+> catalog 的 `storageConfigInfo` 上**（S3/OBS/OSS/COS 的 AK/SK、Azure 的
+> `clientId`+`clientSecret`+`authority`+`scope`、GCS 的 `serviceAccountJson`、
+> OSS 的 `roleArn`+`stsEndpoint`），以 `credential-secret-key` 加密落库、对外只回 `******`。
+> 理由：每个 catalog 的存储配置本来就不一样，而全局配置只能靠 `storageName` 这个额外字段
+> 区分「这次该用哪把钥匙」——它只是把问题挪了个位置。
+> 因此下文 §5.5 / §6 里凡是写「`lakehouse.rest.storage.aws.access-key`」
+> 「`lakehouse.rest.storage.azure.*`」「`.oss.role-arn`」「`.gcp.token`」的段落，
+> 都应读作**「catalog 上对应的字段」**；P1-1 / P1-2 / P1-4 / P1-12 四行里的
+> 「身份放在服务端配置」也已改为从 catalog 读。行为上唯一新增的一条：
+> 配了 `roleArn` 时，catalog 上那对 AK/SK 是**服务端据以 assume 的身份**
+> （不是转发给引擎的钥匙），所以「静态凭据与 `roleArn` 互斥」这条 400 规则被删除了。
 
 > 本节是**现状**——七种，COS 已按 v7 落地。COS 的键名族见 §6.3.1，
 > 与 OBS / OSS 同构的只有「四级来源」这层结构；**令牌那一列是空的**，
@@ -1291,8 +1305,9 @@ object_store 认的是 `aws_access_key_id` / `aws_secret_access_key` / `aws_sess
 > ```
 >
 > catalog 侧：`storageConfigInfo.roleArn` 必填（服务端会去 assume 它），
-> `region` / `stsEndpoint` 可选。服务自身的身份走
-> `lakehouse.rest.storage.aws.access-key` 或环境凭据链（实例角色 / IRSA）。
+> `region` / `stsEndpoint` 可选；**签名用的那对 AK/SK 也写在同一个 catalog 上**
+> （后记：原先写在这里的 `lakehouse.rest.storage.aws.access-key` 已删除）。
+> catalog 上没有钥匙时才交给 SDK 默认凭据链（实例角色 / IRSA）。
 
 | # | 做什么 | 验收（可机械核对） |
 | --- | --- | --- |

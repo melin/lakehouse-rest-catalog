@@ -21,7 +21,6 @@ import io.github.melin.lakehouse.rest.support.VendedStorageCredential;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -46,8 +45,11 @@ class IcebergDelegationAccessTests {
     private final AuthorizationService authorization = mock(AuthorizationService.class);
 
     private IcebergCredentialService service(VendedStorageCredential credential) {
-        when(cache.get(anyString())).thenReturn(Optional.of(
-                new StorageCredentialCache.Cached(credential, Long.MAX_VALUE, Long.MAX_VALUE)));
+        // 服务层走 singleflight 的 resolve（P2-1），所以打桩的是它而不是 get/put。
+        // 打桩 get 会让 mock 返回 null，用例的失败信息变成 NPE——
+        // 而真正要验的是「判了哪几个 access」，不该被这条噪音挡住。
+        when(cache.resolve(anyString(), any())).thenReturn(
+                new StorageCredentialCache.Cached(credential, Long.MAX_VALUE, Long.MAX_VALUE));
         return new IcebergCredentialService(mock(StorageRuntimePolicy.class), cache, authorization);
     }
 

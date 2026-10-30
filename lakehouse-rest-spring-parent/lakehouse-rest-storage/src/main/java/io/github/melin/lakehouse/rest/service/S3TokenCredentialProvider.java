@@ -2,6 +2,8 @@ package io.github.melin.lakehouse.rest.service;
 
 import io.github.melin.lakehouse.rest.config.RestServerProperties;
 import io.github.melin.lakehouse.rest.dto.StorageDtos.AwsStorageConfigInfo;
+import io.github.melin.lakehouse.rest.support.CredentialCipher;
+import io.github.melin.lakehouse.rest.support.StorageConfigs;
 import io.github.melin.lakehouse.rest.support.VendedStorageCredential;
 import java.time.Duration;
 import java.time.Instant;
@@ -26,11 +28,17 @@ import org.springframework.stereotype.Component;
  * <ol>
  *   <li>存储类型是 S3（其余云各有自己的换票接口，见设计 §6）；</li>
  *   <li>catalog 配了 {@code roleArn}——没有角色可 assume，签不出来；</li>
- *   <li>catalog 没有自带静态凭据，且 {@code stsUnavailable} 不为真。</li>
+ *   <li>catalog 没把 {@code stsUnavailable} 设为真。</li>
  * </ol>
- * 后两条的判定在调用方（{@code DefaultStorageCredentialManager}）按既有优先级做完，
- * 因为「静态凭据优先于一切」与「{@code stsUnavailable} 表达不下发」是那一层的契约，
- * 放在这里会变成两份需要同步的规则。
+ * 第三条的判定在调用方（{@code DefaultStorageCredentialManager}）按既有优先级做完，
+ * 因为「{@code stsUnavailable} 表达不下发」是那一层的契约，放在这里会变成两份需要
+ * 同步的规则。
+ *
+ * <p><b>catalog 上的 AK/SK 不是「让本 provider 让路」的信号。</b>配了 {@code roleArn}
+ * 之后那对钥匙的身份变了：它是服务端拿去 assume 时的调用方身份（自建机房里极常见的
+ * 形态——一把只允许 {@code sts:AssumeRole} 的钥匙），不再是发给引擎的数据面凭据。
+ * 两者并存时签发优先，顺序写在 {@code DefaultStorageCredentialManager#s3}；
+ * 没有 {@code roleArn} 时那对钥匙才退回纯转发。
  *
  * <p><b>发哪些键。</b>短期凭据必须四件套齐全：AK、SK、{@code s3.session-token}、
  * 到期时刻。少发 {@code session-token} 的后果不是「少个可选字段」，而是 Iceberg 的
@@ -56,6 +64,8 @@ public class S3TokenCredentialProvider implements CredentialProvider {
     static final String KEY_SECRET_ENGINE = "s3.secret-key";
 
     private final RestServerProperties properties;
+
+    private final CredentialCipher cipher;
 
     private final AssumeRoleClient assumeRoleClient;
 
@@ -95,6 +105,9 @@ public class S3TokenCredentialProvider implements CredentialProvider {
                             + " not to this table",
                     name(), context.scopeId());
         }
+        // 拿哪把钥匙去 assume：catalog 自己填的那对；没填就交给 SDK 的默认链
+        // （实例角色 / IRSA），那是部署身份，不需要配置项。
+        StorageConfigs.StorageSecrets caller = StorageConfigs.secrets(s3, cipher);
         StsSession session = assumeRoleClient.assumeRole(new AssumeRoleCommand(
                 s3.roleArn(),
                 s3.externalId(),
@@ -105,7 +118,9 @@ public class S3TokenCredentialProvider implements CredentialProvider {
                 s3.stsEndpoint(),
                 // 关掉时给空 Map：客户端据此**不传** tag 集合，请求与改造前逐字节相同。
                 // 打开它是运维动作（信任策略要先放行 sts:TagSession），见配置项说明。
-                properties.getCredential().isSessionTags() ? context.sessionTags() : Map.of()));
+                properties.getCredential().isSessionTags() ? context.sessionTags() : Map.of(),
+                caller == null ? null : caller.id(),
+                caller == null ? null : caller.secret()));
 
         Map<String, String> token = new LinkedHashMap<>();
         putLocators(token, s3);

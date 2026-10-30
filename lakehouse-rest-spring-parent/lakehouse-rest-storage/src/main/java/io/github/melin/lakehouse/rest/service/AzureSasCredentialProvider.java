@@ -2,6 +2,8 @@ package io.github.melin.lakehouse.rest.service;
 
 import io.github.melin.lakehouse.rest.config.RestServerProperties;
 import io.github.melin.lakehouse.rest.dto.StorageDtos.AzureStorageConfigInfo;
+import io.github.melin.lakehouse.rest.support.CredentialCipher;
+import io.github.melin.lakehouse.rest.support.StorageConfigs;
 import io.github.melin.lakehouse.rest.support.VendedStorageCredential;
 import java.time.Duration;
 import java.time.Instant;
@@ -55,11 +57,19 @@ public class AzureSasCredentialProvider implements CredentialProvider {
     /** 起始时刻往前放一点：SAS 的 {@code st} 早于「现在」不会失败，晚了会。 */
     static final Duration CLOCK_SKEW = Duration.ofMinutes(5);
 
+    /** 公有云的 AAD authority；catalog 没填时用它。 */
+    static final String DEFAULT_AUTHORITY = "https://login.microsoftonline.com";
+
+    /** 公有云存储面的 scope；catalog 没填时用它。中国云要填 {@code storage.azure.cn}。 */
+    static final String DEFAULT_SCOPE = "https://storage.azure.com/.default";
+
     static final String KEY_SAS = "adls.sas-token";
     static final String KEY_ACCOUNT_NAME = "adls.account-name";
     static final String KEY_EXPIRES = "adls.sas-token-expires-at-ms";
 
     private final RestServerProperties properties;
+
+    private final CredentialCipher cipher;
 
     private final UserDelegationKeyClient client;
 
@@ -228,25 +238,27 @@ public class AzureSasCredentialProvider implements CredentialProvider {
     }
 
     /**
-     * 本次要用的服务身份；没有配齐时返回 {@code null}。
+     * 本次要用的服务身份；catalog 上没配齐时返回 {@code null}。
      *
-     * <p>租户优先取 catalog 上的 {@code tenantId}（规格自带这个字段，它表达的是
-     * 「这份数据在哪个租户」），缺省才落到配置——多租户部署里两者并不相同。
+     * <p>四样东西全部来自 catalog：{@code tenantId}（规格自带，表达「这份数据在哪个租户」）、
+     * {@code clientId} / {@code clientSecret}（应用注册，按 `credential-secret-key` 加密落库），
+     * 以及 {@code authority} / {@code scope}（云环境，留空取公有云缺省）。
+     *
+     * <p><b>为什么不再有服务端兜底。</b>一套部署里同时存在公有云与中国云的 catalog
+     * 是正常形态，而租户与应用注册也各不相同；把其中任何一项放到全局配置里，
+     * 都会让「另一个 catalog」悄悄用错身份——错误现场是 {@code invalid_resource} 或
+     * 一个 audience 不对的令牌，离「配置放错了层」隔着好几步。
      */
     private ServiceIdentity identityOf(AzureStorageConfigInfo azure) {
-        RestServerProperties.Storage.Azure config = properties.getStorage().getAzure();
-        String clientId = config.getClientId();
-        String clientSecret = config.getClientSecret();
-        String tenantId = azure.tenantId() != null && !azure.tenantId().isBlank()
-                ? azure.tenantId() : config.getTenantId();
-        if (blank(clientId) || blank(clientSecret) || blank(tenantId)) {
+        StorageConfigs.StorageSecrets principal = StorageConfigs.secrets(azure, cipher);
+        if (principal == null || blank(principal.id()) || blank(principal.secret())
+                || blank(azure.tenantId())) {
             return null;
         }
-        String authority = blank(config.getAuthority())
-                ? "https://login.microsoftonline.com" : config.getAuthority();
-        String scope = blank(config.getScope())
-                ? "https://storage.azure.com/.default" : config.getScope();
-        return new ServiceIdentity(tenantId, clientId, clientSecret, authority, scope);
+        String authority = blank(azure.authority()) ? DEFAULT_AUTHORITY : azure.authority();
+        String scope = blank(azure.scope()) ? DEFAULT_SCOPE : azure.scope();
+        return new ServiceIdentity(azure.tenantId(), principal.id(), principal.secret(),
+                authority, scope);
     }
 
     private static boolean blank(String value) {

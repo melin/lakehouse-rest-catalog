@@ -111,34 +111,22 @@ public class StorageRuntimePolicy {
         });
 
         log.info("storage runtime: file-io.type={} (supports {}), credential-manager.type={}, "
-                        + "credential-cache.max-entries={}, aws.default-credentials={}, aws.named-storages={}, "
-                        + "gcp.token={}, obs={}, oss={}, cos={}, read-timeout={}, connect-timeout={}",
+                        + "credential-cache.max-entries={}, storage-credentials=per-catalog, "
+                        + "credential-secret-key={}, providers={}, read-timeout={}, connect-timeout={}",
                 fileIo.wireName(),
                 fileIo.supportedStorageTypes().stream().map(StorageType::wireName).collect(Collectors.joining(",")),
                 credentialManager.type().wireName(),
                 properties.getStorageCredentialCache().getMaxEntries(),
-                storage.getAws().getAccessKey() == null || storage.getAws().getAccessKey().isBlank()
-                        ? "absent" : "configured",
-                storage.getAws().getStorages().keySet(),
-                storage.getGcp().getToken() == null || storage.getGcp().getToken().isBlank()
-                        ? "absent" : "configured",
-                summarize(storage.getObs()),
-                summarize(storage.getOss()),
-                summarize(storage.getCos()),
+                // 这一行以前会逐个打印 aws / gcp / obs / oss / cos 有没有配密钥。配置面删掉之后
+                // 那些键不存在了，改为打印两件仍然与部署有关的事：库里能不能解密密文（加密密钥在本机配置里），
+                // 以及启用了哪些签发档。凭据本身跟着 catalog 走，启动时无从统计，也不该统计。
+                isBlank(storage.getCredentialSecretKey()) ? "absent" : "configured",
+                properties.getCredential().getProviders(),
                 storage.getReadTimeout(),
                 storage.getConnectTimeout());
     }
 
-    /**
-     * 凭据组的可读描述，形如 {@code configured/[warehouse-a]}。
-     *
-     * <p>只给 OBS / OSS / COS 用了这个写法，AWS 与 GCP 仍是展开的两项。不统一是为了不动
-     * 既有的日志行——它已经被抄进了运维记录与本文档，改格式等于让那些记录对不上号。
-     * COS 是后加的，直接沿用这个写法。
-     */
-    private static String summarize(RestServerProperties.Storage.CloudCredentials credentials) {
-        boolean configured = credentials.getAccessKey() != null && !credentials.getAccessKey().isBlank()
-                && credentials.getSecretKey() != null && !credentials.getSecretKey().isBlank();
-        return (configured ? "configured" : "absent") + "/" + credentials.getStorages().keySet();
+    private static boolean isBlank(String value) {
+        return value == null || value.isBlank();
     }
 }

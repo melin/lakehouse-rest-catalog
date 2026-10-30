@@ -212,12 +212,14 @@
 本实现另外支持 `OBS`（华为云）、`OSS`（阿里云）与 `COS`（腾讯云），它们是扩展而非规格内容，
 因此不混进那一行——表格与规格保持可机械核对的一致，差异集中记在下方取舍里。
 同理，`S3` / `OBS` / `OSS` / `COS` 各自的字段列表也是规格原文（`COS` 除外，它整套是本工程定义的）；
-本工程给这四种类型加的 `accessKeyId` / `secretAccessKey`，以及 `S3` 上的 `noInlinePolicy`，
+本工程加的凭据字段——`S3`/`OBS`/`OSS`/`COS` 的 `accessKeyId` + `secretAccessKey`、
+`AZURE` 的 `clientId` + `clientSecret` + `authority` + `scope`、`GCS` 的 `serviceAccountJson`、
+`OSS` 的 `roleArn` + `stsEndpoint`，以及 `S3` 上的 `noInlinePolicy`——
 同样不进表格，只记在下方取舍里。
 
 **七种存储配置均已实现**：`S3` / `AZURE` / `GCS` 的类型专属字段会原样保存并回读，
 `AZURE` 的 `tenantId` 按其 `required` 校验（缺失返回 400）。
-六点实现取舍：
+七点实现取舍：
 
 - `AwsStorageConfigInfo` 中已废弃的 `currentKmsKey` / `allowedKmsKeys` 不接收也不返回，
   统一用 `encryptionKeys` / `decryptionKeys`；传入会被静默忽略。
@@ -240,19 +242,34 @@
   必须对得上（桶名是 `<bucket>-<appid>`），否则建 catalog 成功、第一次读表才 404；
   `useHttps` 缺省按 `true` 处理（COSN 自己的缺省是明文）。**没有 `sessionToken` 字段**：
   COSN 的 FileIO 不认临时凭据，见 `credential-vending-design.md` §6.3.4。
-- `S3` / `OBS` / `OSS` / `COS` 四种类型另各带一对 `accessKeyId` / `secretAccessKey`，
-  让 catalog 直接指定访问对象存储的长期密钥（规格里没有这个位置，密钥只能来自服务端配置）。
-  四点与其他字段不同：
-  1. **`secretAccessKey` 只写不读**，落库前用 AES-GCM 加密，任何响应都不回显，
-     因此 `PUT` 省略它表示保持原值——这是上面「整体替换」的**唯一例外**；要清除需显式提交一对空串。
-  2. **`accessKeyId` 回显为 `******`**（打码，不是省略）。省略了就分不清「没配凭据」与
-     「配了但看不到」，而这两种在 `PUT` 里含义不同：前者什么都不给，后者要回一个哨兵。
-  3. **`******` 是「未修改」哨兵**：写入口收到它就沿用库里那份。
+- **凭据字段一律写在 catalog 上**（规格里没有这个位置：Polaris 只从服务端配置取密钥）。
+  服务端配置那一层已整个删除，因此这些字段是凭据的唯一存放处：
+  - `S3` / `OBS` / `OSS` / `COS`：`accessKeyId` + `secretAccessKey`；
+  - `AZURE`：`clientId` + `clientSecret`，另可给 `authority` / `scope` 表达云环境
+    （留空取公有云缺省 `https://login.microsoftonline.com` / `https://storage.azure.com/.default`），
+    中国云要显式填；
+  - `GCS`：`serviceAccountJson`（服务账号密钥文件全文）；
+  - `OSS`：另加 `roleArn` + `stsEndpoint`（阿里云 RAM STS 的目标角色与端点，
+    专有云可覆盖 `https://sts.aliyuncs.com`）。
+
+  读写语义与其他字段不同，六点：
+  1. **密钥只写不读**（`secretAccessKey` / `clientSecret` / `serviceAccountJson`），
+     落库前用 AES-GCM 加密，任何响应都不回显，因此 `PUT` 省略它表示保持原值——
+     这是上面「整体替换」的**唯一例外**；要清除需显式提交空串。
+  2. **带 id 的字段回显为 `******`**（`accessKeyId` / `clientId`）。省略了就分不清
+     「没配凭据」与「配了但看不到」，而这两种在 `PUT` 里含义不同：前者什么都不给，
+     后者要回一个哨兵。
+  3. **GCS 没有 id 那一栏，所以星号打在 `serviceAccountJson` 上。**「已保存」这个信息
+     必须有地方承载，否则一个配了服务账号的 catalog 与没配的看起来完全一样。
+  4. **`******` 是「未修改」哨兵**：写入口收到它就沿用库里那份。
      `******` + 省略/空密钥 = 两个字段都不动（「只改个名字」的保存走这条）；
-     `******` + 新密钥 = 沿用库里的 ID、只换密钥；库里没有原值却给了 `******` 返回 400
-     （没有可指向的钥匙），`******` 出现在 `secretAccessKey` 位同样 400。
+     `******` + 新密钥 = 沿用库里的 id、只换密钥；库里没有原值却给了 `******` 返回 400
+     （没有可指向的钥匙），`******` 出现在密钥位同样 400。
      **它不等于空串**：打码是「有值但不告诉你」，空串是「这里不要值了」，混用会静默删凭据。
-  4. 与 `storageName` 互斥（同时给返回 400），只有密钥没有 ID 或反之也返回 400。
+  5. 只有密钥没有 id 或反之返回 400。**与 `storageName` 不互斥**——后者现在只是标签，
+     不参与凭据解析（早先它指向服务端配置里的具名密钥，那时两者互斥）。
+  6. **配了 `roleArn`（S3）或 OSS 的 `roleArn` 时，这对 AK/SK 是服务端据以 assume 的身份**，
+     不是转发给引擎的钥匙；没有 `roleArn` 才是「直接发给引擎」。因此两者可以同时出现。
 
   加密密钥由 `lakehouse.rest.storage.credential-secret-key` 提供，未配置时保存这类凭据
   返回 400（fail-closed，不明文落库）。打码只覆盖 catalog 的 `storageConfigInfo`；

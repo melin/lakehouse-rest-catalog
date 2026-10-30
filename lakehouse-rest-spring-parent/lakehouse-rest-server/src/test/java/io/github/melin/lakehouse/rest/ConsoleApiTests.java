@@ -311,8 +311,8 @@ class ConsoleApiTests {
                 () -> "detail 必须点名要开的配置项，否则用户不知道去改什么："
                         + orphanRole.get("detail").asString());
 
-        // ② catalog 自带静态凭据 → 转发档。它同时是「填了 roleArn 也不会签发」的另一种情形：
-        //    静态凭据是调用方的明确决定，STS 只是服务端的默认策略，策略不覆盖决定
+        // ② catalog 自带静态凭据、没填 roleArn → 转发档：这把钥匙没有别的用途，
+        //    它就是发给引擎的数据面凭据
         JsonNode relay = previewDraft(Map.of(
                 "storageType", "S3",
                 "allowedLocations", List.of("s3://bucket/warehouse"),
@@ -329,13 +329,22 @@ class ConsoleApiTests {
         assertEquals("RELAY", masked.get("mode").asString(),
                 "对外那份（已打码）与库里那份必须判出同一档");
 
-        // ④ 引用了不存在的具名存储 → 配置有误。保存时它不报错，取票时才 500，
-        //    因此这是唯一能在保存前说出来的一档
-        JsonNode invalid = previewDraft(Map.of(
+        // ④ storageName 现在只是个标签（凭据与签发材料全部写在 catalog 自己的字段上，
+        //    不再有「服务端具名存储」这一级），因此它既不改变结论、也不会把一份能用的配置
+        //    判成「配置有误」。曾经这里断言的是「引用不存在的具名存储 → INVALID」，
+        //    那条语义随具名存储一起删掉了——`storageName` 现在回到 ① 那种「什么都没有」。
+        JsonNode labelOnly = previewDraft(Map.of(
                 "storageType", "S3",
                 "allowedLocations", List.of("s3://bucket/warehouse"),
                 "storageName", "no-such-storage"));
-        assertEquals("INVALID", invalid.get("mode").asString());
+        assertEquals("NONE", labelOnly.get("mode").asString(),
+                "storageName 是纯标签：不会因为名字不存在而变成 INVALID");
+        assertFalse(labelOnly.get("detail").asString().contains("no-such-storage"),
+                () -> "detail 不该把一个纯标签说成问题来源：" + labelOnly.get("detail").asString());
+        // 注：INVALID 这一档在当前测试 profile 下**无法从这里触发**——它只在
+        //    「provider 已启用、但 catalog 缺签发所需的身份」时成立，而本 profile 的
+        //    providers 是空的。那几条由各自的单元测试覆盖
+        //    （AzureSasVendingTests / OssStsVendingTests 的 console 档位断言）。
 
         // ⑤ 本地文件系统：没有密钥可发
         JsonNode file = previewDraft(Map.of(

@@ -327,7 +327,8 @@ class StorageConfigDtosTests {
     void extensionStorageConfigsSurvivePersistence() {
         AliyunOssStorageConfigInfo oss = new AliyunOssStorageConfigInfo(
                 List.of("oss://analytics-bucket/warehouse/"), "named-oss",
-                "oss-cn-hangzhou.aliyuncs.com", null, null, null);
+                "oss-cn-hangzhou.aliyuncs.com", null, null, null,
+                "acs:ram::1:role/lh", "https://sts.cn-hangzhou.aliyuncs.com");
 
         String stored = Json.write(oss);
 
@@ -372,7 +373,8 @@ class StorageConfigDtosTests {
                 List.of("obs://b/warehouse/"), null, null, null, "obs-ak", "v1:obss");
         assertEquals(obs, Json.read(Json.write(obs), StorageConfigInfo.class));
         AliyunOssStorageConfigInfo oss = new AliyunOssStorageConfigInfo(
-                List.of("oss://b/warehouse/"), null, null, null, "oss-ak", "v1:osss");
+                List.of("oss://b/warehouse/"), null, null, null, "oss-ak", "v1:osss",
+                null, null);
         assertEquals(oss, Json.read(Json.write(oss), StorageConfigInfo.class));
         TencentCosStorageConfigInfo cos = new TencentCosStorageConfigInfo(
                 List.of("cosn://b-1250000000/warehouse/"), null, "cos.ap-guangzhou.myqcloud.com",
@@ -444,7 +446,9 @@ class StorageConfigDtosTests {
         AzureStorageConfigInfo azure = new AzureStorageConfigInfo(
                 List.of("abfss://container@account.blob.core.windows.net/prefix/"),
                 "named-azure", "tenant-1", "polaris-app",
-                "https://login.microsoftonline.com/tenant-1/adminconsent", true);
+                "https://login.microsoftonline.com/tenant-1/adminconsent", true,
+                "app-client-id", "v1:azure-secret",
+                "https://login.chinacloudapi.cn", "https://storage.azure.cn/.default");
 
         String stored = Json.write(azure);
         StorageConfigInfo restored = Json.read(stored, StorageConfigInfo.class);
