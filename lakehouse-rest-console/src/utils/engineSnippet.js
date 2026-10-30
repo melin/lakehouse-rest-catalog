@@ -87,6 +87,12 @@ const pair = (key, value) => ({ kind: 'pair', key, value, text: `${key}=${value}
 
 const plain = (text) => ({ kind: 'plain', text })
 
+/** 治理扩展的类名。片段里要出现两次（Lance 那一行、说明文字），只写一处。 */
+const MGMT_EXTENSION = 'io.github.melin.lakehouse.rest.spark.ManagementSparkExtensions'
+
+/** Lance 面要的两个扩展，逗号拼在同一个 `spark.sql.extensions` 里（这个键不能写两行）。 */
+const LANCE_EXTENSIONS = ['org.lance.spark.extensions.LanceSparkSessionExtensions', MGMT_EXTENSION].join(',')
+
 /**
  * 收尾：补一行仓库位置说明，再把行拼成可复制的文本。
  *
@@ -125,6 +131,44 @@ function manualSecrets({ spark, name }) {
     { key: `${prefix}s3.access-key`, value: '<AK>' },
     { key: `${prefix}s3.secret-key`, value: '<SK>' },
     { key: `${prefix}s3.path-style-access`, value: 'true' },
+  ]
+}
+
+/**
+ * 治理四行：血缘采集 + 行过滤 / 列脱敏。**三个 Spark 面都默认给**（与凭据档位无关）。
+ *
+ * <p>为什么是四行而不是一句「见文档」：这两件能力默认不开，而它们是否生效**只由客户端
+ * 决定**——服务端开着也没用，作业不带上这四行就什么都采不到，症状是「血缘图一直空、
+ * 脱敏看着像没生效」，而治理页面上没有任何一处会说明原因。
+ *
+ * <p>为什么键上**没有** catalog 前缀：它们是 session 级的，描述的是「这批作业往哪报、
+ * 按不按策略改写」，与连哪个 catalog 无关。挂上前缀的症状是**不报错也不生效**——
+ * Spark 把它当成一个没人读的 catalog 属性收下，配置看着完全正当。
+ *
+ * <p>`management.url` 沿用片段自己的服务端地址：两处填成不同机器时 catalog 能连、
+ * 血缘却全丢，而报错只是一条 404。
+ *
+ * <p><b>这里不自己补 `spark.sql.extensions`</b>（除 Lance 面，它本来就有一行）：这个键是
+ * **逗号分隔的整串**，多写一行等于覆盖用户已有的扩展，症状是「Paimon 的过程调用突然都不见了」。
+ * 因此只作为注释提醒，由人合进自己那一串里。
+ *
+ * <p>只给 Spark 面：`spark.lakehouse.rest.*` 由 `ManagementSparkExtensions` 读，
+ * Flink 那一侧没有对应实现，写进 `CREATE CATALOG` 里只会是一条没人认的选项。
+ *
+ * @param {string} serverUrl      与服务端同一个基址（管理 API 前缀由这里补）
+ * @param {boolean} [withExtensionsLine] 片段里已经有 `spark.sql.extensions` 那一行（Lance 面）
+ */
+function governance(serverUrl, withExtensionsLine = false) {
+  const managementUrl = `${String(serverUrl).replace(/\/+$/, '')}/api/management/v1`
+  return [
+    comment('治理（血缘 / 行过滤脱敏）：session 级配置，不挂在 catalog 前缀下；'),
+    ...(withExtensionsLine
+      ? []
+      : [comment('要 spark.sql.extensions 里有 ManagementSparkExtensions 才生效（已有扩展用逗号拼，别覆盖）')]),
+    pair('spark.lakehouse.rest.lineage.enabled', 'true'),
+    pair('spark.lakehouse.rest.policy.enforced', 'true'),
+    pair('spark.lakehouse.rest.management.url', managementUrl),
+    pair('spark.lakehouse.rest.token', '<主体令牌>'),
   ]
 }
 
@@ -197,6 +241,7 @@ export function buildEngineSnippet({
       lines.push(comment('服务端不下发凭据：关了 data-token，密钥自己写'))
       lines.push(...manualSecrets({ spark: true, name }).map(({ key, value }) => pair(key, value)))
     }
+    lines.push(...governance(serverUrl))
     lines.push(...cos())
     return finish(lines, vendored
       ? 'token.provider 的取值是 bear，不是 bearer；写错不报参数错误，只是认证不上。'
@@ -253,6 +298,7 @@ export function buildEngineSnippet({
     }
     // 关元数据缓存：凭据换了它也可能继续拿旧表对象，表现是「改了配置没生效」
     lines.push(pair(`spark.sql.catalog.${name}.cache-enabled`, 'false'))
+    lines.push(...governance(serverUrl))
     lines.push(...cos())
     return finish(lines, (vendored
       ? 'delegation 头靠 header. 前缀注入，不是内置开关；它只在服务端下发了'
@@ -300,8 +346,10 @@ export function buildEngineSnippet({
     lines.push(pair(`spark.sql.catalog.${name}.header.Authorization`, 'Bearer <主体令牌>'))
     // `spark.sql.extensions` 是 **session 级**配置，不是 catalog 属性，因此没有前缀。
     // Lance 的 SQL 能力（含本页那些优化语句）来自这个扩展；缺了它，catalog 能连上，
-    // 但每次 DDL 都报「不认识这个语法」，而错误信息不会提扩展
-    lines.push(pair('spark.sql.extensions', 'org.lance.spark.extensions.LanceSparkSessionExtensions'))
+    // 但每次 DDL 都报「不认识这个语法」，而错误信息不会提扩展。
+    // 这里**一次给全**（Lance 的 + 治理的）：这个键是逗号分隔的整串，分两行写等于后一行
+    // 覆盖前一行，而症状是「Lance 语句又能用了 / 血缘又空了」这种此消彼长
+    lines.push(pair('spark.sql.extensions', LANCE_EXTENSIONS))
     if (vendored) {
       lines.push(comment('存储凭据来自 describe 的 storage_options：aws_access_key_id / aws_secret_access_key /'))
       lines.push(comment('  aws_session_token / expires_at_millis（是 aws_* 键，不是 s3.*）；connector 0.8 只读一次'))
@@ -309,10 +357,11 @@ export function buildEngineSnippet({
     } else {
       lines.push(...manualSecrets({ spark: true, name }).map(({ key, value }) => pair(key, value)))
     }
+    lines.push(...governance(serverUrl, true))
     lines.push(...cos())
     return finish(lines, 'uri 要写到 /lance 为止（这一面没有 /v1/config 握手，也不带 prefix）；delimiter 必须与服务端一致，'
-      + '否则每个请求都会被解析成别的东西。spark.sql.extensions 是 session 级配置——'
-      + '若同时要用本工程的管理语句，用逗号把 ManagementSparkExtensions 拼在一起；'
+      + '否则每个请求都会被解析成别的东西。spark.sql.extensions 那一行已经把 Lance 与治理两个扩展都列上了'
+      + '（这个键是逗号分隔的整串，再加自己的扩展要往里拼，别另起一行）；'
       + '另外 lance-spark-bundle（3.5 / 4.1 对应包）必须已经在 Spark 的 classpath 上。'
       + (vendored ? ' 它今天拿到的仍是「一次性」凭据。' : ''), warehouse)
   }

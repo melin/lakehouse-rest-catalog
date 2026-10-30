@@ -14,7 +14,7 @@ class PaimonS3Test {
       -d client_id="230698be-b91b-4262-b208-179cc530e54c" -d client_secret="nUmM_Y2nvcCLNxqBP7U-TM9uA3bENYFW1_Io2Cjumss" \
       -d scope=PRINCIPAL_ROLE:ALL | jq -r .access_token
    */
-  val token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJwYWltb24tcmVzdCIsInN1YiI6InJvb3QiLCJpYXQiOjE3OTMyNDA0NjUsImV4cCI6MTc5MzI0NDA2NSwianRpIjoiMzJlZTBmMmEtYWQ0NC00MWI2LWFhYjgtZDU5NDE0YWRjNzhjIiwic2NvcGUiOiJQUklOQ0lQQUxfUk9MRTpBTEwifQ.XvNcAjzsJzxclcM0ZM5jcPH9eLTdnHCH4Lpn96N9zfg"
+  val token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJwYWltb24tcmVzdCIsInN1YiI6InJvb3QiLCJpYXQiOjE3OTMzNDc4MTksImV4cCI6MTc5MzM1MTQxOSwianRpIjoiM2E2YWNiMzItODZmZC00OWNkLTk3NDktZjViZDY3OGNkYzJhIiwic2NvcGUiOiJQUklOQ0lQQUxfUk9MRTpBTEwifQ.IMjC4JfMtARHfSzrDi4XbY9_qZJCG5sLCxWbyjYnUfI"
 
   @org.junit.jupiter.api.Test
   def test(): Unit = {
@@ -40,15 +40,15 @@ class PaimonS3Test {
       .config("spark.sql.catalog." + catalog + ".token.provider", "bear")
       .config("spark.sql.catalog." + catalog + ".token", token)
 
-      .config("spark.sql.catalog." + catalog + ".s3.endpoint", "http://172.18.6.181:9330")
-      .config("spark.sql.catalog." + catalog + ".s3.access-key", "McvVnpOziVsWv7Qlyut7")
-      .config("spark.sql.catalog." + catalog + ".s3.secret-key", "PbICbD6H7iyq0PuefHa383YoqJn3JCjedQHSYmbp")
-      .config("spark.sql.catalog." + catalog + ".s3.path.style.access", "true")
+      // .config("spark.sql.catalog." + catalog + ".s3.endpoint", "http://172.18.6.181:9330")
+      // .config("spark.sql.catalog." + catalog + ".s3.access-key", "McvVnpOziVsWv7Qlyut7")
+      // .config("spark.sql.catalog." + catalog + ".s3.secret-key", "PbICbD6H7iyq0PuefHa383YoqJn3JCjedQHSYmbp")
+      // .config("spark.sql.catalog." + catalog + ".s3.path.style.access", "true")
       .config("spark.lakehouse.rest.lineage.enabled", "true")
       .config("spark.lakehouse.rest.policy.enforced", "true")
 
-      .config(PaimonRestManagement.MANAGEMENT_URL, "http://127.0.0.1:8080/api/management/v1")
-      .config(PaimonRestManagement.TOKEN, token)
+      .config("spark.lakehouse.rest.management.url", "http://127.0.0.1:8080/api/management/v1")
+      .config("spark.lakehouse.rest.token", token)
       .getOrCreate()
 
     spark.catalog.setCurrentCatalog(catalog)

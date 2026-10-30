@@ -794,6 +794,22 @@ v3 把 v2 的 `STS` / `RELAY` / `NONE` 收敛成五档，主要是把 `NONE` 拆
 拆分只该发生一次（在页面里 `split('=')` 会把 `s3.access-key` 这种带点的键和注释里的等号一起切坏）。
 Lance 只有 Spark 一个页签：connector 没有 Flink 版，摆一个出来只会让人去找它。
 
+**三个 Spark 面默认各带四行治理配置**（`spark.lakehouse.rest.lineage.enabled` /
+`policy.enforced` / `management.url` / `token`）：这两件事默认不开，而且**是否生效只由客户端决定**——
+服务端开着也没用，作业不带上这四行就什么都采不到，症状是「血缘图一直空、脱敏看着像没生效」，
+治理页面上没有任何一处会说明原因。有四条约束：
+
+- 键上**没有** catalog 前缀（session 级）。挂上前缀不报错也不生效：Spark 把它当成一个没人读的
+  catalog 属性收下，配置看着完全正当。
+- `management.url` 沿用片段自己的服务端地址并补 `/api/management/v1`。两处填成不同机器时
+  catalog 能连、血缘全丢，报错只是一条 404。
+- 片段**不自己补 `spark.sql.extensions`**（Lance 面除外，它本来就有一行）：这个键是逗号分隔的
+  整串，多写一行等于覆盖用户已有的扩展。Paimon / Iceberg 两面只用注释提醒把
+  `ManagementSparkExtensions` 合进自己那一串；Lance 面直接把两个扩展拼在同一个值里，
+  片段里这个键因此只有一行。
+- Flink 面**不给**这四行：`spark.lakehouse.rest.*` 由 Spark 侧扩展读，写进 `CREATE CATALOG`
+  只是一条没人认的选项。
+
 一个纯机器判据容易漏的地方：`/catalogs/new` 与 `/catalogs/:catalogName/edit` **必须排在
 `/catalogs/:catalogName` 之前**。vue-router 按声明顺序匹配，顺序反了 `new` 会被当成一个
 catalog 名，「新建」打开的是「叫 new 的那个 catalog 的详情页」（404），而菜单和按钮看起来

@@ -209,6 +209,66 @@ test('COS 在三个面上是三种说法（Paimon 走 COSN、Iceberg 只能 Hado
   assert.ok(!allText(s3).includes('fs.cosn.'))
 })
 
+test('三个 Spark 面都带治理四行，且它们不带 catalog 前缀', () => {
+  for (const [format, face] of [
+    ['PAIMON', 'spark-paimon'],
+    ['ICEBERG', 'spark-iceberg'],
+    ['LANCE', 'spark-lance'],
+  ]) {
+    const snippet = buildEngineSnippet({
+      format, face, catalog: 'paimon', serverUrl: 'http://host:8080',
+    })
+    assert.equal(pairOf(snippet, 'spark.lakehouse.rest.lineage.enabled'), 'true', `${face} 缺血缘开关`)
+    assert.equal(pairOf(snippet, 'spark.lakehouse.rest.policy.enforced'), 'true', `${face} 缺策略开关`)
+    // 管理 API 的基址要含 `/api/management/v1`：只写主机名时请求打到 catalog 面，
+    // 报的是一条 404，而血缘图只是「一直空着」
+    assert.equal(
+      pairOf(snippet, 'spark.lakehouse.rest.management.url'),
+      'http://host:8080/api/management/v1',
+    )
+    assert.equal(pairOf(snippet, 'spark.lakehouse.rest.token'), '<主体令牌>')
+
+    // 挂上 catalog 前缀不会报错，也不会生效——Spark 当成没人读的 catalog 属性收下。
+    // 这是最像「配好了」的一种错法，所以按字符串直接钉住
+    assert.ok(
+      !allText(snippet).includes('spark.sql.catalog.paimon.spark.lakehouse'),
+      `${face} 的治理配置不该带 catalog 前缀`,
+    )
+  }
+})
+
+test('Flink 面不给治理四行（spark.* 在这边没人读）', () => {
+  for (const [format, face] of [['PAIMON', 'flink-paimon'], ['ICEBERG', 'flink-iceberg']]) {
+    const snippet = buildEngineSnippet({ format, face, catalog: 'paimon' })
+    assert.ok(!allText(snippet).includes('spark.lakehouse.rest'), `${face} 不该出现 spark.* 配置`)
+    assert.ok(!allText(snippet).includes('spark.sql.extensions'), `${face} 不该出现 Spark 的扩展键`)
+  }
+})
+
+test('Lance 面的 spark.sql.extensions 一次给全（这个键写两行会互相覆盖）', () => {
+  const snippet = buildEngineSnippet({ format: 'LANCE', face: 'spark-lance', catalog: 'lance' })
+  const extensions = pairOf(snippet, 'spark.sql.extensions')
+  assert.equal(
+    extensions,
+    'org.lance.spark.extensions.LanceSparkSessionExtensions,'
+      + 'io.github.melin.lakehouse.rest.spark.ManagementSparkExtensions',
+  )
+  // 整个片段里只能有一行这个键：分成两行时后一行覆盖前一行，
+  // 症状是「Lance 语句能用 / 血缘为空」此消彼长
+  assert.equal(
+    snippet.lines.filter((line) => line.key === 'spark.sql.extensions').length,
+    1,
+  )
+})
+
+test('Iceberg 的 delegation 头只在下发凭据时出现（不下发时它是矛盾的）', () => {
+  const manual = buildEngineSnippet({
+    format: 'ICEBERG', face: 'spark-iceberg', catalog: 'ice', vendored: false,
+  })
+  assert.equal(pairOf(manual, 'spark.sql.catalog.ice.header.X-Iceberg-Access-Delegation'), undefined)
+  assert.equal(pairOf(manual, 'spark.sql.catalog.ice.s3.access-key'), '<AK>')
+})
+
 test('续期能力按格式各一份，且都是「能不能自动续」这句话的回答', () => {
   assert.deepEqual(Object.keys(RENEWAL).sort(), ['ICEBERG', 'LANCE', 'PAIMON'])
   assert.equal(RENEWAL.PAIMON.label, '能')

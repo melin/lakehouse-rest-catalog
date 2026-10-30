@@ -1219,7 +1219,7 @@ http://localhost:8080/console/
 | `/browse` | 目录浏览：库/表/视图/函数（语义视图的端点仍在服务端，控制台不再暴露）；工具条常驻在每个页签里，空库时也有新建入口——建库建表、注册表、按表 ID 定位、重命名、删除。表列表六列——表名 / 表格式 / 表类型（Managed 或外部表）/ 创建时间 / 元数据更新时间 / 操作，数据取自 `table-details`（只回表名的 `/tables` 给不出这几列） |
 | `/tables/:prefix/:database/:table` | [表详情](docs/console-table-detail.md)：页签随表格式伸缩——Paimon 表六个（详细信息含字段列表 / 分区列表、**文件列表**、快照、标签、分支、数据访问），Format / Object / Lance 表只有详细信息与**文件列表**，且不向快照端点发请求；三种表都展示字段列表（Object 表是 Paimon 固定的六列，主键 / 分区字段两列不渲染）。**改表结构不在控制台做**：`alter` 端点仍在，走 HTTP 或 Spark SQL |
 | `/catalogs` | Catalog 列表：创建、编辑（带版本）、删除；名称进详情页 |
-| `/catalogs/new`、`/catalogs/:catalogName/edit` | Catalog 表单（新建与编辑共用一页）：基本信息 / 存储 / **凭据来源**（三档状态 + 缺哪一项）/ 引擎接入片段四节；表格式与存储类型都是按钮组，字段名在左、控件在右（`.pc-form-label-left`，列宽只有一个变量） |
+| `/catalogs/new`、`/catalogs/:catalogName/edit` | Catalog 表单（新建与编辑共用一页）：基本信息 / 存储 / **凭据来源**（五档状态 + 缺哪一项）/ 引擎接入片段四节；表格式与存储类型都是按钮组，字段名在左、控件在右（`.pc-form-label-left`，列宽只有一个变量）；页头与卡片同宽（不再把卡片收在 1080 而让「保存」贴在窗口右边缘） |
 | `/catalogs/:catalogName` | [Catalog 详情](docs/console-catalog-detail.md)：概览 / **文件列表**（仓库物理目录，目录名可点下钻、文件可下载、文件名前缀过滤 + 本地分页）/ **配置**（两种格式都编辑新建表的默认参数 `table-default.*`；Iceberg 另附只读的 `/v1/config` `defaults` / `overrides`） |
 | `/principals`、`/principal-roles` | 治理：主体、角色；角色页含「授予 / 撤销 catalog 角色」。**catalog 角色与它的资源授权没有页面**——这两件事的入口是管理 API 与 Spark SQL |
 | `/permissions` | 权限管理：控制台**唯一**的授权页（Paimon 官方权限模型、授权直接挂在主体上），覆盖官方八种资源定位器里的四级——catalog / database / table / view |

@@ -226,6 +226,10 @@ principal e2e_bob lacks TABLE_WRITE_DATA on table ice.orders in catalog iceberg_
   客户端侧的属性名带 `header.` 前缀（`RESTUtil.configHeaders` 就是按这个前缀筛的），
   服务端认出来之后在响应里回 `storage-credentials`，其 `prefix` 指向这张表的位置。
   本服务端「不问不给」：不带头时这一项**缺席**（而不是空数组）——规格里两者含义不同。
+  那一条的 `config` 里除了 `s3.access-key-id` / `s3.secret-access-key`（签发档还有
+  `s3.session-token`）之外，**还带定位配置** `s3.endpoint` / `s3.path-style-access` /
+  `s3.region`。这是「仓库在 MinIO / 自建 S3 上」能跑通的前提：端点和密钥必须同源，
+  只给密钥不给端点，引擎会拿本机凭据链去连 AWS 的默认端点（现象见第 4 节的 301）。
 
 ---
 
@@ -385,6 +389,7 @@ catalog 收到的名字空间是 `["lakehouse", "ice"]`，服务端会回
 | `400 Malformed request: stage-create is not supported by this catalog: multi-table transactions (POST /v1/{prefix}/transactions/commit) are not implemented` | 用了 `CREATE TABLE ... AS SELECT`。Spark 把它翻成 staged create，提交要走未实现的 `transactions/commit` | 拆成 `CREATE TABLE` + `INSERT`（§2.1） |
 | `NoSuchNamespaceException: The given namespace does not exist: <catalog>.<库>` | `ALTER TABLE ... RENAME TO` 的目标写了三段全限定名，Spark 不剥 catalog 前缀 | 目标只写「库.表」（§2.6） |
 | `NoSuchNamespaceException: The given namespace does not exist: <库>.<表>` | 用 SQL 查元数据表（`…<表>.snapshots`），Spark 把「库.表」当成两级 namespace | 元数据表别用 SQL 查（§2.2 末） |
+| `S3Exception: Moved Permanently (Service: S3, Status Code: 301, Request ID: …)` | 读数据文件时打到了 **AWS 的默认端点**：catalog 的仓库在 MinIO / 自建 S3 上，而会话里既没配 `s3.endpoint`，也没有让服务端下发凭据与端点 | 加一行 `spark.sql.catalog.<名>.header.X-Iceberg-Access-Delegation=vended-credentials`（§1.6，服务端会把端点、`path-style`、区域连同 AK/SK 一起下发），或者自己把 `s3.*` 配全。**报错里的 Request ID 是 AWS 的，不是你那个 MinIO 的**——这一点就能确认「请求压根没发到你以为是的那台机器」，不用再猜权限 |
 
 ---
 
