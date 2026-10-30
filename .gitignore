@@ -35,13 +35,25 @@ build/
 ### macOS ###
 .DS_Store
 
-# 控制台的构建产物（lakehouse-rest-spring-parent/.../static/console）**不在这里**。
-# 它随源码入库：构建服务端 jar 因此不需要 Node，而这个仓库的部署路径是
-# 「宿主机构建 jar → 镜像只装 jar」（见 scripts/build-image.sh），
-# 新克隆的仓库必须能直接 mvn package 出一个带 /console 的可执行物。
-# 曾被误加进本文件，结果四处文档说「产物已提交」、实际一个文件都没跟踪，
-# 新克隆的仓库跑 ConsoleApiTests 时「产物自洽」那条直接失败。
-# 是否被误加由 scripts/verify-console.py 第 6 组机械检查。
+# 控制台的构建产物。它由 lakehouse-rest-console 的源码构建而来，落在这条路径上只是
+# 为了让 Spring Boot 把 /console 当 classpath 资源托管，因此**属于构建产物，不入库**。
+#
+# 这里换过一次方向，两边都试过：
+#   - 曾入库（理由是「构建服务端 jar 不需要 Node」）：代价是每改一次前端都要提交
+#     80 多个哈希文件，review 全是 diff 噪音；漏提交一半的表现是「页面白屏、
+#     git status 一片干净」，只有新克隆的仓库跑起来才发现。
+#   - 现在不入库：构建 jar 之前必须先跑 ./scripts/build-console.sh（Node 20+），
+#     而「忘记跑」不会再静默——产物缺失时 verify-console.py 第 6 组、build-image.sh
+#     与 ConsoleApiTests 都会明确失败，并给出该跑哪条命令。
+#
+# 机械检查在 scripts/verify-console.py 第 6 组：它要求这个目录**确实被忽略**、
+# 入口页**确实没被跟踪**。也就是说别用 `git add -f` 把产物塞回来——那等于把上面
+# 那段「不入库」重新变成一句空话。
+#
+# 结尾**不写**斜杠：带尾斜杠的目录模式只有在路径真实存在时才算匹配，
+# 而产物目录在干净检出里本来就不存在——那样 check-ignore 会报「没被忽略」，
+# 把「忘了构建」误诊成「.gitignore 被改坏了」。
+lakehouse-rest-spring-parent/lakehouse-rest-server/src/main/resources/static/console
 
 # 语法文件的生成物。正常构建把它们写到 target/generated-sources/antlr4/（包名由
 # 目录结构推出）；手工跑 antlr4 CLI 容易把它们落在语法文件旁边，这里挡一下，

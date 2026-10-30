@@ -17,9 +17,8 @@ spec/rest-catalog-open-api-iceberg.yaml）。路径写错时前端只表现为�
   4. 无死条目     endpoints.js 里声明的端点都在 src/ 中被调用过
   5. 基址一致     vite 的 base、路由的 base、构建输出目录、服务端静态资源目录四处指向同一处；
                   以及控制台契约表里的令牌端点路径与服务端下发的 tokenEndpoint 是否一致
-  6. 产物完整     已提交的入口页存在，它引用的每个 assets 文件都存在，且产物**确实在版本库里**
-                  （目录没被 .gitignore 排除、入口页已被跟踪——文件在磁盘上而索引里没有，
-                  `git status` 是一片干净，只有新克隆的仓库会露馅）
+  6. 产物完整     入口页存在（已构建），它引用的每个 assets 文件都存在，且产物**确实不进版本库**
+                  （目录被 .gitignore 排除、入口页没被跟踪——反过来防 `git add -f` 又塞回来）
   7. 产物新鲜     构建产物不比控制台源码旧（改了源码没重新构建会在这里暴露）
   8. 对话框       每个 el-dialog 都声明 destroy-on-close（否则编辑时会残留上一次的状态）
   9. 下拉选项     每个 el-select 都声明了候选来源（漏写 el-option 时点开只有「无数据」，
@@ -155,6 +154,11 @@ MANAGEMENT_CATALOG_SERVICE = os.path.join(
 STORAGE_CONFIG_FIELDS = os.path.join(
     CONSOLE_DIR, "src/components/StorageConfigFields.vue")
 CATALOGS_VIEW = os.path.join(CONSOLE_DIR, "src/views/CatalogsView.vue")
+# 新建 / 编辑表单。它曾经是 CatalogsView 里的一个 `el-dialog`，现在是一整页
+# （`/catalogs/new` 与 `/catalogs/:catalogName/edit`）。表单相关的断言因此要盯**这个**文件：
+# 弹窗搬走之后，继续在 CatalogsView 里找 `dialog.catalogFormat` 只会得到一句
+# 「找不到」——那种失败看起来像断言坏了，实际是它指着的那个字段已经不在那儿了。
+CATALOG_FORM_VIEW = os.path.join(CONSOLE_DIR, "src/views/CatalogFormView.vue")
 
 # 表格式（PAIMON / ICEBERG）这条链路的六个落点。与静态凭据那一组同一个理由：
 # 一个字段横跨服务端枚举、meta 下发、前端兜底与四个页面，任何一处漏改都表现为
@@ -494,7 +498,10 @@ check("控制台的令牌端点与服务端下发的 tokenEndpoint 一致",
 print("6. 构建产物完整")
 index_path = os.path.join(CONSOLE_ASSETS, "index.html")
 exists = os.path.isfile(index_path)
-check("入口页 index.html 已提交", exists, index_path)
+# 「已构建」而不是「已提交」：产物不入库（见 .gitignore 那段说明），
+# 这条挡的是「忘了跑 scripts/build-console.sh 就 mvn package」。
+check("入口页 index.html 已构建", exists,
+      f"{index_path}\n  → 先跑 ./scripts/build-console.sh（需要 Node 20+）")
 if exists:
     html = read(index_path)
     referenced = re.findall(r'(?:src|href)="(/console/[^"]+)"', html)
@@ -507,16 +514,19 @@ if exists:
           not missing_assets,
           "\n".join(missing_assets))
 
-# 产物在磁盘上存在，不等于它在版本库里。这两条挡的是另一种「看不见」的缺件：
-# 文件都在，`git status` 一片干净，但一个都没被跟踪——新克隆的仓库构建出的 jar
-# 里没有 /console，ConsoleApiTests 的「产物自洽」也直接失败。
+# 上面三条查「产物在磁盘上是否自洽」；下面两条查「它在不在版本库里」——而期望是
+# **不在**。方向看着反直觉，理由是这个仓库在这件事上翻过两次车：
 #
-# 事情真发生过：`.gitignore` 里有一行 `static/console`，而 docs/console.md §1、
-# README 的「三条约束」、server/pom.xml 的模块说明、build-console.sh 结尾的提示
-# 五处都写着「产物随源码入库」。五处陈述、零处执行，靠读代码是发现不了的。
+#   - 曾经 `.gitignore` 里有一行 `static/console`，而 docs/console.md §1、README、
+#     server/pom.xml 四处都写着「产物随源码入库」。文件都在磁盘上、索引里一个没有，
+#     `git status` 一片干净，只有新克隆的仓库打出没有 /console 的 jar。
+#   - 后来改成入库，机械检查换成「目录没被忽略 + 入口页已被跟踪」。
+#     代价是每次前端改动都要提交 80 多个哈希文件。
+#   - 现在（2026-10-30）改回**不入库**，于是这两条断言跟着反过来。
 #
-# 前一条查「目录没被排除」，后一条查「入口页确实进了版本库」——只查前者会漏掉
-# `git rm -r --cached` 这种把目录留在磁盘上、又从索引里摘掉的做法。
+# 所以这里要挡的不是「漏提交」，而是「有人 `git add -f` 把产物又塞回索引」——
+# 那会让 .gitignore 里那段说明重新变成空话，而且完全看不出异常（多了一批文件而已）。
+# 只加前一条不够：`git add -f` 能绕过 ignore 但绕不过「已跟踪」这条。
 def git(*args):
     """跑一次 git，返回退出码；git 不可用或 ROOT 不在仓库里时返回 None。"""
     if not shutil.which("git"):
@@ -535,15 +545,16 @@ if git("rev-parse", "--git-dir") is None:
     print("  [SKIP] 不在 git 仓库里（或没有 git），跳过「产物是否入库」两条")
 else:
     assets_rel = os.path.relpath(CONSOLE_ASSETS, ROOT)
-    check("产物目录没有被 .gitignore 排除",
-          git("check-ignore", "-q", "--", assets_rel) == 1,
-          f"{assets_rel} 被忽略：产物进不了版本库，新克隆的仓库 mvn package 出来的 jar "
-          "没有 /console，而 docs/console.md、README、POM 注释都写着「产物随源码入库」")
-    check("入口页已被版本库跟踪",
+    check("产物目录已被 .gitignore 排除",
+          git("check-ignore", "-q", "--", assets_rel) == 0,
+          f"{assets_rel} 没有被忽略：构建产物不该入库（见仓库根 .gitignore 那段说明），"
+          "每改一次前端就会多出几十个哈希文件的 diff")
+    check("产物没有被版本库跟踪",
           git("ls-files", "--error-unmatch", "--",
-              os.path.join(assets_rel, "index.html")) == 0,
-          f"{assets_rel}/index.html 未被跟踪：文件在磁盘上、索引里没有，"
-          "`git status` 看不出来（被忽略或曾 `git rm --cached`）")
+              os.path.join(assets_rel, "index.html")) != 0,
+          f"{assets_rel}/index.html 仍被跟踪：文件已入库，.gitignore 对它不再生效"
+          "（ignore 只作用于未跟踪文件）。产物改回不入库时需 `git rm -r --cached` 摘掉索引，"
+          "并确认 jar 构建链会先跑 scripts/build-console.sh")
 
 # ------------------------------------------------------------------ 7. 产物新鲜度
 
@@ -777,9 +788,10 @@ check("服务端在 meta 里声明并如实赋值 staticCredentialsEnabled",
       "ConsoleDtos.Enums 需要声明该字段，ConsoleMetaService.enums() 需要传 cipher.available()")
 
 catalogs_view = read(CATALOGS_VIEW)
+catalog_form_view = read(CATALOG_FORM_VIEW)
 wiring = {
-    "CatalogsView 从 meta 取值": "enums?.staticCredentialsEnabled" in catalogs_view,
-    "CatalogsView 传给表单": ':static-credentials-enabled="staticCredentialsEnabled"' in catalogs_view,
+    "表单页从 meta 取值": "enums?.staticCredentialsEnabled" in catalog_form_view,
+    "表单页传给存储表单": ':static-credentials-enabled="staticCredentialsEnabled"' in catalog_form_view,
     "表单声明该 prop": "staticCredentialsEnabled: { type: Boolean, default: false }" in fields_vue,
 }
 check("能力开关从 meta 一路传到表单的 prop",
@@ -967,17 +979,29 @@ check("服务端 meta 下发的 defaultCatalogFormat 也走同一个枚举",
       "默认值要过 CatalogFormat.of() 归一化，前端拿它预选时才不会与服务端的兜底方向不同")
 
 # --- 12.2 新建表单：候选、默认值、提交体 -----------------------------------
-start = catalogs_view.find("managementApi.updateCatalog(")
-update_call = catalogs_view[start:start + 320] if start >= 0 else ""
+# 「编辑不回传 catalogFormat」这一条原来靠 `updateCatalog(` 之后的 320 字符窗口判断，
+# 弹窗改成页面后那段代码挪了位置、窗口里的内容也变了。改成**读 buildPayload() 的两个分支**：
+# 服务端把格式当不可变列（改就 400），因此这件事的判据只能是「发给更新接口的那份报文里
+# 有没有这个键」，而报文就是这一个函数造的。窗口法看的是「调用点附近像不像」，
+# 分支法看的是「报文里到底有没有」——后者才是会真的 400 的那件事。
+payload_start = catalog_form_view.find("function buildPayload(")
+payload_body = (catalog_form_view[payload_start:].split("\n}\n", 1)[0]
+                if payload_start >= 0 else "")
+create_branch = re.search(r"return \{[^}]*name: form\.name\.trim\(\)[^}]*\}", payload_body, re.S)
+edit_branch = re.search(r"return \{[^}]*currentEntityVersion[^}]*\}", payload_body, re.S)
 create_wiring = {
-    "候选来自 meta 的 enums.catalogFormats": "enums?.catalogFormats" in catalogs_view,
-    "默认值来自 meta 的 service.defaultCatalogFormat": "service?.defaultCatalogFormat" in catalogs_view,
+    "候选来自 meta 的 enums.catalogFormats": "enums?.catalogFormats" in catalog_form_view,
+    "默认值来自 meta 的 service.defaultCatalogFormat": "service?.defaultCatalogFormat" in catalog_form_view,
     # 绑定形式有两种都算过：下拉（`v-model`）与选项卡片（点击赋值）。
     # 效果图用的是卡片，改成卡片时这条断言跟着换，而不是把卡片改回下拉去迁就断言。
-    "表单绑定 dialog.catalogFormat": 'v-model="dialog.catalogFormat"' in catalogs_view
-        or '@click="dialog.catalogFormat = option.value"' in catalogs_view,
-    "提交体带 catalogFormat": "catalogFormat: dialog.catalogFormat" in catalogs_view,
-    "编辑不回传它（格式不可变）": start >= 0 and "catalogFormat" not in update_call,
+    "表单绑定 form.catalogFormat": 'v-model="form.catalogFormat"' in catalog_form_view
+        or '@click="form.catalogFormat = option.value"' in catalog_form_view,
+    "创建分支的报文带 catalogFormat": bool(create_branch)
+        and "catalogFormat: form.catalogFormat" in create_branch.group(0),
+    "编辑分支的报文不带它（格式不可变）": bool(edit_branch)
+        and "catalogFormat" not in edit_branch.group(0),
+    "更新接口发的是同一份报文（buildPayload）":
+        "managementApi.updateCatalog(catalogName, buildPayload())" in catalog_form_view,
 }
 check("新建表单从 meta 取候选与默认值、提交时带上 catalogFormat；编辑不回传它",
       all(create_wiring.values()),
@@ -985,10 +1009,38 @@ check("新建表单从 meta 取候选与默认值、提交时带上 catalogForma
 
 # 选项下方要有一行影响面说明：选 Iceberg 之后客户端只能走 Iceberg 路径、
 # 控制台一期不浏览它的表——这些要**在提交前**看到，而不是建完再发现。
-check("新建表单在选项下方给出影响面说明（选 Iceberg 之前就能看见）",
-      "catalogFormatNote(dialog.catalogFormat)" in catalogs_view
-      and "isIcebergCatalog(dialog.catalogFormat)" in catalogs_view,
-      "CatalogsView 应在格式选择下方渲染 catalogFormatNote，并在选中 Iceberg 时给出额外提示")
+# Lance 那条必须与 Iceberg 分开写：两种格式「控制台没做」的范围不一样
+# （Iceberg 缺表管理与数据浏览，Lance 缺库表浏览但文件列表还在），
+# 合并成一条「不支持」会让人以为 Lance 连数据都看不了。
+check("新建表单在选项下方给出影响面说明（选 Iceberg / Lance 之前都能看见）",
+      "catalogFormatNote(form.catalogFormat)" in catalog_form_view
+      and "isIcebergCatalog(form.catalogFormat)" in catalog_form_view
+      and "isLanceCatalog(form.catalogFormat)" in catalog_form_view,
+      "CatalogFormView 应在格式选择下方渲染 catalogFormatNote，并给 Iceberg / Lance 各一条分开的提示")
+
+# --- 12.2.1 表单是独立页面，不是列表页里的弹窗 ----------------------------
+# 拆成两页之后有两件事会**安静地**回退：
+#  ① 弹窗被加回来——两套表单同时存在，字段一改就漂（改了一处，另一处照旧提交旧字段，
+#     而后者的症状是「保存成功但那个值没变」）；
+#  ② 路由顺序反了——`/catalogs/new` 排在 `/catalogs/:catalogName` 之后时，`new` 会先匹配上
+#     「详情页」，于是「新建」打开的是一个叫 new 的 catalog 的详情（404）。vue-router 按声明
+#     顺序匹配，菜单与按钮看起来都是对的，只有点下去才知道。
+catalog_routes = read(ROUTER)
+new_route = catalog_routes.find("path: '/catalogs/new'")
+detail_route = catalog_routes.find("path: '/catalogs/:catalogName'")
+check("新建 / 编辑是独立页面，且路由排在 /catalogs/:catalogName 之前",
+      0 <= new_route < detail_route
+      and "path: '/catalogs/:catalogName/edit'" in catalog_routes
+      and "name: 'catalogCreate'" in catalog_routes
+      and "name: 'catalogEdit'" in catalog_routes,
+      "router/index.js 里 /catalogs/new 与 /catalogs/:catalogName/edit 必须排在 /catalogs/:catalogName 之前")
+
+check("列表页不再自带表单（只跳转，不出现 el-dialog）",
+      "name: 'catalogCreate'" in catalogs_view
+      and "name: 'catalogEdit'" in catalogs_view
+      and "<el-dialog" not in catalogs_view
+      and "dialog.catalogFormat" not in catalogs_view,
+      "CatalogsView 的新建 / 编辑应 router.push 到独立页；把弹窗加回来就会有两套表单")
 
 # --- 12.3 列表：徽标 + 筛选 ------------------------------------------------
 check("列表有格式徽标与格式筛选",
@@ -1137,7 +1189,7 @@ lance_wiring = {
         'notifySuccess' in lance_browse_view and 'confirmDanger' not in lance_browse_view,
     "目录浏览：describe 带 check_declared（否则「有没有数据集」恒为未探测）":
         'check_declared: true' in lance_api,
-    "新建表单给出 Lance 的提示（与 Iceberg 那条分开）": "isLanceCatalog(dialog.catalogFormat)" in catalogs_view,
+    "新建表单给出 Lance 的提示（与 Iceberg 那条分开）": "isLanceCatalog(form.catalogFormat)" in catalog_form_view,
     "表详情：lance-table 藏掉「数据策略」": 'v-if="!isLanceTable" label="数据策略"' in table_view,
 }
 check("Lance catalog 的三个页面都按格式收敛（基址、发现请求、两个页签、浏览入口）",

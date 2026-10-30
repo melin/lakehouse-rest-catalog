@@ -376,6 +376,18 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
   或 `'STS'` 这类档位字面量，`verify-console.py` 第 24 组就红。
   这条护栏不是形式主义——`roleArn` 就在表单组件里手边，「顺手推断一下」比发一次请求便宜，
   而那正是漂移的起点。判据是「凭据管理器走哪条分支」，不是「配了哪个字段」。
+- **新建 / 编辑 catalog 是一整页**（`CatalogFormView`；路由 `/catalogs/new` 与
+  `/catalogs/:catalogName/edit`），不是列表页里的弹窗。两条会**静默**回退的事：
+  `/catalogs/new` 必须排在 `/catalogs/:catalogName` 之前（vue-router 按声明顺序匹配，反了
+  `new` 会被当成 catalog 名，「新建」打开的是一个 404 的详情页，而菜单与按钮看起来都对）；
+  `CatalogsView` 里不许再出现 `el-dialog`（两套表单并存时改一处忘一处，症状是
+  「保存成功但那个值没变」）。报文也分叉：更新**不带** `catalogFormat`（服务端改格式一律 400），
+  创建**必须带**（不带就用部署默认值，「表单里选 Paimon、建出来是 Iceberg」）。
+  引擎接入片段在 `console/src/utils/engineSnippet.js`，**按面各写一份、不做抽象**——
+  `token.provider=bear` 不是 `bearer`、Iceberg 的 delegation 头靠 `header.*` 注入、
+  Flink 用 `CREATE CATALOG` 而 Spark 用 `spark.sql.catalog.*`、Lance 要多一个 `delimiter`
+  且基址写到 `/lance` 为止；抽象成「通用配置」的结果是每一面都跑不起来。改它要跑
+  `npm run test:snippet`：片段错了不会让控制台报任何错，失败在现场的引擎那边。
 - **schema 与快照都要物化进仓库**（`TableMetadataService`）：`RESTCatalog.supportsVersionManagement()`
   恒返回 `true`，客户端因此走 `CatalogSnapshotCommit`（把快照 POST 给服务端），**自己那份写
   `snapshot-<n>` 的代码根本不会被实例化**；服务端必须替它写 `snapshot-<id>` + `LATEST`
@@ -394,7 +406,7 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
 | **改 JPA 实体 / 加表** | ① 改 `domain/entity`——**先判断放哪个模块**：catalog 侧 12 实体、RBAC 管理侧 7 实体与事件审计 1 实体在 `lakehouse-rest-core`（被协议面复用，下沉避免协议层反向依赖 server），表存储优化 3 实体在 `lakehouse-rest-server`；继承 `AuditedEntity` 才有审计列；② `./scripts/gen-mysql-ddl.sh` 重生成 `sql/schema-mysql.sql`（**必须**）；③ 摘要列（SHA-256）或唯一约束变化时同步 `docs/data-model.md` |
 | **改管理 API / 权限** | ① 实现落在 `lakehouse-rest-server`（`web/` + `service/` + `dto/ManagementDtos`），词表类在 `lakehouse-rest-core`（`dto/ManagementEnums`、`dto/Privilege`）→ 改规格副本与实现后 `python3 scripts/gen-management-contract.py`；② 权限枚举变了 → `scripts/gen-management-privileges.py` 重生成 `dto/Privilege.java`；官方权限词表（access / ResourceType）变了 → 跑 `verify-spark-sql-doc.py`（比对语法/PermissionDtos/客户端三方）；③ 管理语句跟随改动时进 `lakehouse-rest-spark/shared`（语法 + AstBuilder + Command 三处；两个版本模块编译同一份源码，改一处即两边生效） |
 | **跨模块搬类 / 加模块** | ① **先算依赖图再动手**——凭「看起来该属于这里」搬会把方向搬反，本仓实测出现过 46 条反向边；工具在 `outputs/maven-module-refactor/module-graph.py`（分类表 `RULES`、允许方向 `ALLOWED`）；② 包名不动 → 不需要改任何 `import`，`mvn -o -DskipTests clean install` 编译通过＝搬对了，enforcer 红＝方向搬反；③ 同步 `docs/maven-module-design.md`（§8 落地记录）与本文第 3 节的类数 |
-| **改控制台** | ① 按 `docs/console.md` §5.3 清单做（endpoints.js → api/*.js → views/ → router → 构建）；② `./scripts/build-console.sh` 重新构建（**产物必须一起提交**，见第 8 节陷阱 1）；③ 页面渲染不写进服务端测试，服务端侧只覆盖托管机制（`ConsoleApiTests`） |
+| **改控制台** | ① 按 `docs/console.md` §5.3 清单做（endpoints.js → api/*.js → views/ → router → 构建）；② `./scripts/build-console.sh` 重新构建（**产物不入库，但不构建就没有**，见第 8 节陷阱 1）；③ 页面渲染不写进服务端测试，服务端侧只覆盖托管机制（`ConsoleApiTests`） |
 | **改配置项** | ① `lakehouse-rest-core` 的 `config/RestServerProperties.java` 加字段 + javadoc（默认值、留空含义、非法取值行为）；② `lakehouse-rest-server` 的 `application.yml` 加注释示例；③ `README.md` §5 配置表加一行。涉及存储凭据时，`docs/polaris-capabilities-and-design.md` 的「下发优先级」表也加一级 |
 
 ---
@@ -465,15 +477,21 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
 
 ## 8. 陷阱清单（都实测踩过）
 
-1. ~~**控制台产物目录被 `.gitignore` 忽略，但文档说它应当被跟踪**~~ **已修（2026-10-30）**：
-   `.gitignore` 那一行删了，产物已入库，并由 `verify-console.py` 第 6 组两条断言守着
-   （「目录没被忽略」+「`index.html` 已被跟踪」）。**为什么它值得入库**：本仓库的部署路径是
-   「宿主机构建 jar → 镜像只装 jar」，`ConsoleApiTests` 里那条「产物自洽」也直接读
-   `static/console/index.html`——产物不入库，干净检出既打包不出带 `/console` 的 jar，
-   也跑不过服务端测试。**它怎么会发生**：五处文档写着「已提交」，零处执行，
-   而文件本来就在磁盘上，`git status` 一片干净，谁也看不出来。
-2. **改了控制台源码没重建** → 打包的是上一版控制台，**不报错**，只是安静地少一个按钮。
-   `verify-console.py` 第 7 组查产物新鲜度，但要有人跑它。判是否干净：
+1. **控制台产物不入库，但必须被构建出来。** `.gitignore` 排除
+   `lakehouse-rest-spring-parent/lakehouse-rest-server/src/main/resources/static/console`，
+   而 `ConsoleApiTests`、`build-image.sh` 与 `verify-console.py` 第 6 组都要求它存在——
+   所以**出 jar 之前先跑 `./scripts/build-console.sh`**（Node 20+）；`mvn package`
+   不会替你构建前端，产物缺失时它一声不响。
+   这条翻过两次方向，两次都不是笔误：最初文档写「产物已入库」而 `.gitignore` 正挡着它
+   （五处陈述、零处执行，`git status` 干净得像没事，只有干净检出打出的 jar 里没有 `/console`）；
+   随后改成真入库，断言是「目录没被忽略 + `index.html` 已跟踪」；2026-10-30 又改回不入库
+   （每改一次前端就是 80 多个哈希文件的 diff，而漏搬一半的表现是白屏 + `git status` 干净），
+   断言随之反转成「目录确实被忽略 + 入口页确实没被跟踪」，挡的是 `git add -f` 把产物塞回来。
+   **判据始终只有一条**：`.gitignore`、文档、校验脚本对同一件事的说法必须一致。
+2. **忘了构建控制台就打包** → jar 里没有 `/console`（不是「上一版」，是整块没有）：
+   服务端照常启动、`/console/` 只是 404，构建日志一句抱怨都没有。
+   挡它的有三处：`build-image.sh`（`unzip -l` 查 jar）、`ConsoleApiTests`（读 classpath 入口页）、
+   `verify-console.py` 第 6/7 组（在不在、新不新）。判是否干净：
    `ls lakehouse-rest-spring-parent/lakehouse-rest-server/target/classes/static/console/assets | wc -l` 应与源码目录一致。
 3. **`e2e-spark-sql.sh` 里六个测试类必须同批运行**：一个 JVM 只能有一个 SparkContext，
    而 `spark.sql.extensions` 只在建会话时生效（会话里同时注册了 Paimon 与 Iceberg 两个 catalog）。

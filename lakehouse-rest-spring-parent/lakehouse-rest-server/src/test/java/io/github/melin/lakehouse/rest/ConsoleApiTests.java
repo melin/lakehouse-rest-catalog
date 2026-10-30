@@ -44,9 +44,9 @@ import org.springframework.test.web.servlet.MvcResult;
  *   <li><b>单页应用回退</b>。history 路由要求「非文件路径返回入口页」，
  *       而「带扩展名的缺失文件仍然 404」是这条规则的另一半——
  *       少了它，构建产物不同步会变成白屏但状态码 200。
- *   <li><b>已提交的构建产物自洽</b>。控制台的构建产物随源码一起进版本库
- *       （见 {@code lakehouse-rest-console/vite.config.js} 的说明），
- *       因此要有一条断言挡住「重新构建后只提交了 index.html、忘了 assets」这类半提交。
+ *   <li><b>构建产物自洽</b>。产物由 {@code scripts/build-console.sh} 生成、**不入库**
+ *       （见仓库根 {@code .gitignore}），因此要有一条断言挡住「构建被打断 / 只搬了一半
+ *       assets」这类半套产物——它在页面上的表现是白屏，而没有任何东西报错。
  * </ol>
  */
 @SpringBootTest(properties = {
@@ -447,13 +447,16 @@ class ConsoleApiTests {
     // ------------------------------------------------------------------ 构建产物
 
     /**
-     * 已提交的入口页里引用的每个资源都真实存在。
+     * 当前构建出的入口页里引用的每个资源都真实存在。
      *
-     * <p>构建产物的文件名带内容哈希，重新构建会同时换掉入口页与 assets。
-     * 只提交其中一半时页面会 404（或更糟：白屏），而 git 状态看起来是「正常的一次改动」。
+     * <p>构建产物的文件名带内容哈希，重新构建会同时换掉入口页与 assets，两者是一个整体。
+     * 产物**不入库**（见仓库根 {@code .gitignore}），因此这里要挡的不是「只提交了一半」，
+     * 而是三种会留下半套产物的情形：构建被 Ctrl-C 打断、手工清理了 assets 却留下入口页、
+     * 从别处 rsync 了一份不完整的目录。三种情形下 {@code /console/} 都是白屏，
+     * 而服务端、构建日志、{@code git status} 全都无话可说。
      */
     @Test
-    void committedConsoleHtmlReferencesExistingAssets() throws Exception {
+    void consoleHtmlReferencesExistingAssets() throws Exception {
         String html = readClasspathText(CONSOLE_ENTRY);
         Set<String> assets = new LinkedHashSet<>();
         Matcher matcher = CONSOLE_ASSET.matcher(html);
@@ -492,8 +495,21 @@ class ConsoleApiTests {
         return result.getResponse().getContentAsString(StandardCharsets.UTF_8);
     }
 
+    /**
+     * 读 classpath 上的文本；不存在时给一条「该跑哪条命令」的说明。
+     *
+     * <p>控制台产物不入库，所以干净检出直接跑测试必然读不到它。默认的
+     * {@code NoSuchResource} 只会说「资源打不开」，读者要自己推断是路径写错还是
+     * 根本没构建——这里把下一步动作写进消息里。
+     */
     private static String readClasspathText(String path) throws IOException {
-        try (InputStream input = new ClassPathResource(path).getInputStream()) {
+        ClassPathResource resource = new ClassPathResource(path);
+        if (!resource.exists()) {
+            throw new IllegalStateException(
+                    "classpath 里没有 " + path + "：控制台产物不入库（见仓库根 .gitignore），"
+                    + "构建服务端之前要先跑 ./scripts/build-console.sh（需要 Node 20+）");
+        }
+        try (InputStream input = resource.getInputStream()) {
             return new String(input.readAllBytes(), StandardCharsets.UTF_8);
         }
     }

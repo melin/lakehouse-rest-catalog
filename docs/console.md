@@ -16,26 +16,28 @@
 
 ## 1. 快速开始
 
-控制台的构建产物**提交在仓库里**（`lakehouse-rest-spring-parent/lakehouse-rest-server/src/main/resources/static/console`），
-因此**只是启动服务端不需要 Node**：
+控制台的构建产物**不入库**（落在 `lakehouse-rest-spring-parent/lakehouse-rest-server/src/main/resources/static/console`，
+见 [§8.2](#82-产物不入库但必须被构建出来)），因此**从源码构建 jar 之前要先构建前端**，
+需要 Node 20+：
 
 ```bash
-# 1) 构建（不需要 npm）
+# 1) 构建控制台产物：装依赖（按需）→ 构建 → 校验一致性
+./scripts/build-console.sh
+
+# 2) 打包（这一步本身不需要 npm，但依赖上一步的产物）
 ./mvnw -o package -DskipTests
 
-# 2) 启动（h2 profile 用于本地试跑）
+# 3) 启动（h2 profile 用于本地试跑）
 java -jar lakehouse-rest-spring-parent/lakehouse-rest-server/target/lakehouse-rest-server-1.0.0.jar \
   --spring.profiles.active=h2 --server.port=8080
 
-# 3) 打开
+# 4) 打开
 open http://127.0.0.1:8080/console/
 ```
 
-只有**改动控制台源码**时才需要 Node 20+：
-
-```bash
-./scripts/build-console.sh          # 装依赖（按需）→ 构建 → 校验一致性
-```
+只改 Java、不动前端时第 1 步可以跳过，产物还在上一轮的位置；但**干净检出必须先跑一次**——
+否则打出的 jar 里没有 `/console`，而构建过程不会报任何错（守卫见 §8.2）。
+已经有发布好的 jar 或镜像时，直接用即可，不需要 Node。
 
 首次进入控制台**默认要求登录**（`lakehouse.rest.auth.console.required=true`）：
 登录页第一个页签是用户名密码，默认账号密码 `admin/admin`，直接用它进去即可。
@@ -146,7 +148,9 @@ lakehouse-rest-console/
 | `/` | 控制台概览 | 统计块（三个数量）、服务端配置摘要、**连接自检**、catalog 清单、`GET /v1/config` 展示 |
 | `/browse` | 目录浏览 | 按选中 catalog 的**表格式**换一套实现：Paimon catalog 是「左库右对象、三页签（表/视图/函数；语义视图的 4 条端点仍在服务端，控制台不再暴露）」；Iceberg catalog 换成 `IcebergBrowseView`（左命名空间右表/视图，见 §4.6）；Lance catalog 换成 `LanceBrowseView`（左命名空间右表，**可建命名空间**；建表与删除都不给，见 §4.6.1）。Paimon 侧能力：建库、建表（Paimon 表 / Format 表 / Object 表三种表格式，Lance 表留在选项里但禁用，见 [console-catalog-detail.md](console-catalog-detail.md) §3.5）、注册表、按表 ID 定位、重命名、删除、详情抽屉。表页签列出表名 / 表格式 / 表类型（Managed 或外部表）/ 创建时间 / 元数据更新时间 / 操作六列，数据取自 `table-details`（只回表名的 `/tables` 给不出这几列）；「元数据更新时间」是服务端这条表记录的最后改动时间，快照提交与回滚也会推动它。表页签的过滤为空时说明「没有匹配 ×××」，与「库里没有表」区分开。**建表入口在「表」页签工具条的右侧**（页头只留刷新与新建数据库）：三类对象的工具条都写在 `ResourceState` 之外——那个组件命中空态时只渲染 `el-empty`、默认插槽整个不渲染，工具条若在里面，「这个库还是空的」这一刻就正好没有新建按钮 |
 | `/tables/:prefix/:database/:table` | [表详情](console-table-detail.md) | 十页签：详细信息 / **血缘** / 数据预览 / 快照 / 标签 / 分支 / **文件列表** / 数据访问 / **数据策略** / **存储优化**（血缘与数据预览、数据策略都不随表格式伸缩：页签自己判空，见 [console-table-detail.md](console-table-detail.md) §1.1）；含快照与标签的**回滚**。**没有「变更」页签**：改表结构走 HTTP 或 Spark SQL，理由见该文档 §2。详细信息首屏的四张统计卡片取自 `getTableSnapshot`（三个文件统计的来路与「什么时候会空」见该文档 §2.1），内含**字段列表 / 分区列表**二级页签（名称过滤 + 分页：字段表在浏览器里切片，分区列表走远程分页且前缀过滤下推，分区按需加载）。文件列表按表目录物理内容列一层（根是表目录，出不了表外），目录名可点下钻、文件可下载、前缀过滤与页码都下推服务端。存储优化页签承载表级策略与执行历史（见 [table-optimization.md](table-optimization.md) §7）。血缘页签给三视图（图 / 邻接表 / 列映射），图是 Canvas 与「跳数即层号」的纯函数布局（见 [lineage-design.md](lineage-design.md) §9）。授权不在这张表上做——表级权限统一到「权限管理」页 |
-| `/catalogs` | Catalogs | 列出 / 创建 / 详情 / 更新（带版本）/ 删除。名称链到详情页；操作列另有「浏览库与对象」直达 `/browse`。页头带**定时刷新**开关与节拍（默认开启、5 秒，偏好存 localStorage；见 §4.9）。表里有一列**凭据来源**（短期签发 / 转发长期密钥 / 不下发 / 配置有误，见 §4.10）；新建 / 编辑对话框里的存储表单也有一份实时预览（同一判定，输入是还没保存的草稿） |
+| `/catalogs` | Catalogs | 列出 / 创建 / 详情 / 更新（带版本）/ 删除。名称链到详情页；操作列另有「浏览库与对象」直达 `/browse`。页头带**定时刷新**开关与节拍（默认开启、5 秒，偏好存 localStorage；见 §4.9）。表里有一列**凭据来源**（短期签发 / 转发长期密钥 / 不下发 / 配置有误，见 §4.10）；新建 / 编辑跳到独立页面（见 §4.11），那一页的存储表单同样带一份实时预览（同一判定，输入是还没保存的草稿） |
+| `/catalogs/new` | 新建 Catalog | 四节一页：① 基本信息（名称 / 表格式三卡 / 类型）② 存储（`StorageConfigFields`，含静态凭据与折叠的高级参数）③ 凭据来源（三档状态 + 服务端判定的原文 + 允许位置 + 「还缺哪一项」）④ 引擎接入配置（五个面各一份片段，可复制）。右栏常驻「生效摘要」（协议面 / 存储 / 凭据来源 / 作用域 / 风险 / 长作业能不能续）与「将提交的报文」。整页结构见 §4.11 |
+| `/catalogs/:catalogName/edit` | 编辑 Catalog | 与新建共用 `CatalogFormView`：名称与表格式是只读展示（服务端把它们当不可变列，改就 400），保存带 `currentEntityVersion`，报文**不含** `catalogFormat` |
 | `/catalogs/:catalogName` | [Catalog 详情](console-catalog-detail.md) | 四页签：概览 / 存储 / 文件列表 / 配置。**存储**页回答「哪些表该做 compaction」：文件数、存储、平均文件大小、小文件占比（按库聚合），两种格式都支持，口径参考 AWS《Monitoring Iceberg workloads》但取数只用已有端点，见 [console-catalog-detail.md §3.2](console-catalog-detail.md)。文件列表按仓库物理目录列一层，目录名可点下钻、带面包屑与「返回上级」；只读，不提供删除与建目录。**配置页签**两种格式是同一套设计：都编辑「表默认参数」（`table-default.*`，见 [catalog-api-endpoints.md](catalog-api-endpoints.md#catalog-级默认表属性table-default)），Iceberg 另附只读的 `/v1/config` `defaults` / `overrides`（连接参数，非表属性）；其余 catalog 属性不在此页重复展示（概览已有） |
 | `/principals` | 主体 | 列出 / 创建 / 更新 / 删除 / rotate / reset；授予与撤销角色。创建、轮换、重置后的凭据弹窗可一键导出 JSON 文件（`{principal, clientId, clientSecret}`，文件名 `<主体>-credentials.json`），密钥仍只在弹窗期间可见 |
 | `/principal-roles` | 角色 | 列出 / 创建 / 更新 / 删除；查看成员（授予成员要按主体操作，在「主体」页做）。角色是**纯分组**，自身不携带权限；管理规格里的 `federated` 字段控制台不暴露——本服务不接入外部 IdP，勾了只存一个标记，且 PUT 不接受该字段，勾错改不回来 |
@@ -323,8 +327,8 @@ meta 只暴露枚举取值与服务端自身的配置，不含任何主体、cat
 
 三条规则与它们的理由：
 
-- **默认收起，且不自动展开。** 初始值恒为 `false`，不由「是否有值」反推；换类型与
-  换一份配置（打开对话框、切到另一个 catalog）时重置为收起。不自动展开是因为状态会被抢：
+- **默认收起，且不自动展开。** 初始值恒为 `false`，不由「是否有值」反推；  换类型与
+  换一份配置（从新建页切到编辑页、或切到另一个 catalog）时重置为收起。不自动展开是因为状态会被抢：
   用户手动收起后，任何一次父组件回传都会把它再弹开，「我收起来了它自己又开」比
   「我得多点一下」糟得多。代价是收起态**必须看得见有值**——所以折叠头带计数徽标，
   下面还有一行「已填：`roleArn`、…」的摘要。
@@ -573,10 +577,12 @@ Lance 是 `POST /lance/v1/table/{id}/describe` 且 `id` 是拼接串），合在
   看起来像「数据被删了」。
 - **后台标签页暂停，切回前台补一拍。** 页签开着过夜不该继续轮询；而切回来时若还等
   下一个整拍（最长 60 秒），这段时间页面看起来是实时的，其实是最旧的那一刻。
-- **页面可以拦某一拍。** catalogs 在新建/编辑表单打开时不刷（表格在弹层后面没人看，
-  刷新只会让行里的 `entityVersion` 与表单里那份悄悄分叉，保存时得到一个莫名其妙的 409），
-  优化任务页在批次详情抽屉打开时不刷（抽屉里是打开时的快照，背后列表跳动会让人以为
-  「点开的不是这一行」）。展开中的批次明细**照常刷**（那才是「跑到哪张表了」的答案），
+- **页面可以拦某一拍——但更省心的做法是不在同一个页面上。** 优化任务页在批次详情抽屉
+  打开时不刷（抽屉里是打开时的快照，背后列表跳动会让人以为「点开的不是这一行」）。
+  catalogs 原来也这么拦（新建 / 编辑弹窗打开时不刷），改成独立页面（§4.11）之后这条就不需要了：
+  列表页整个卸载，定时器跟着清掉（第 23 组钉着「离开页面时清掉定时器」）。弹窗的代价正在这里——
+  表格还挂在后台，行里的 `entityVersion` 会与表单里那份悄悄分叉，保存时得到一个
+  莫名其妙的 409。展开中的批次明细**照常刷**（那才是「跑到哪张表了」的答案），
   同样走静默路径。
 
 手动「刷新」与它并存：两者是同一件事的自动与手动两种模式，所以控件就摆在刷新按钮左边。
@@ -628,6 +634,53 @@ catalog 列表多一列、详情页多一段，说的都是同一件事：**引�
   发请求与丢弃过期响应，**两者都不许自己推断档位**（脚本第 24 组反向断言：
   不读判据字段、不出现档位字面量）。
 
+### 4.11 新建 / 编辑 catalog：为什么是一整页
+
+这一页原来是一个 `el-dialog`。改成独立页面（`/catalogs/new`、
+`/catalogs/:catalogName/edit`，共用 `CatalogFormView`）的理由只有一条，但足够：
+**弹窗能装下一张表单，装不下一页的「后果」。** 这个对象上真正危险的字段只有一处
+（凭据从哪来），而它的三档在客户端配置上有两档长得完全一样（§4.10）——说不清这件事，
+表单填完也等于没填。页面能给的是一栏**常驻**的摘要和一段可以直接复制给业务方的接入片段，
+这两样在弹窗里一滚就没了。
+
+四节的分工按「这一节错了，下一步会发生什么」排：
+
+| 节 | 内容 | 错了会怎样 |
+| --- | --- | --- |
+| 1 基本信息 | 名称、表格式（三张卡）、类型 | 名称同时是客户端连接用的 prefix，创建后不能改；表格式服务端当不可变列 |
+| 2 存储 | `StorageConfigFields`（含静态凭据与折叠的高级参数） | 同时决定凭据发给哪一家云、用哪一族键名 |
+| 3 凭据来源 | 三档状态 + 服务端判定的原文 + 允许位置 + 「要落到这一档还缺哪一项」 | 两档在客户端完全一样，界面不说清就只能靠猜（§4.10） |
+| 4 引擎接入 | 五个面各一份片段，可复制 | 复制出去的东西错了，失败在业务方那边，控制台不报错 |
+
+三条实现约定：
+
+- **状态只有一个来源：`form.storageConfigInfo`。** 存储表单是子组件，内部副本靠 props
+  同步、靠 `update:modelValue` 回传编译后的提交体；右栏的「将提交的报文」与摘要都直接
+  读它，不另存一份「摘要用的状态」——两份迟早对不上，而对不上的表现是
+  「报文里没有我刚填的那一项」。
+- **判定的东西一律问服务端。** 三档由 `POST /api/console/v1/catalog-credential-source` 答
+  （§4.10），页面不认识 provider 优先级、也不推理会不会签发。**三张卡片不是开关**：
+  真正决定档位的字段在第 2 节里，「点一下就能落到这一档」在缺字段时落不下去——点了
+  「签发」却没有 `roleArn`，判定仍是「不下发」，卡片当场又灭，看起来像坏了。因此把
+  「你现在在哪一档」与「要落到这一档缺什么」分开写，缺的那一项给一个跳回第 2 节的入口。
+- **创建态与编辑态的报文不同。** 更新**不带** `catalogFormat`（服务端改格式一律 400），
+  创建**必须带**（不带的话服务端用部署默认值，会出现「表单里选 Paimon、建出来是 Iceberg」）。
+  右栏的「将提交的报文」照实分叉，免得有人照着它拼一个更新请求却多发了字段。
+
+引擎片段由 `utils/engineSnippet.js` 生成（纯函数，不碰 Vue，用例在 `tools/snippet-tests/`）。
+它**按面各写一份，不做抽象**：`token.provider=bear` 不是 `bearer`、Iceberg 的 delegation 头
+靠 `header.*` 注入、Flink 用 `CREATE CATALOG` 而 Spark 用 `spark.sql.catalog.*`、Lance 要多一个
+`delimiter` 且基址写到 `/lance` 为止——抽象成「通用配置」的结果是每一面都跑不起来。
+行是结构化的（`{kind, key, value, text}`）而不是裸字符串：页面要按 `key=value` 上色，而这个
+拆分只该发生一次（在页面里 `split('=')` 会把 `s3.access-key` 这种带点的键和注释里的等号一起切坏）。
+Lance 只有 Spark 一个页签：connector 没有 Flink 版，摆一个出来只会让人去找它。
+
+一个纯机器判据容易漏的地方：`/catalogs/new` 与 `/catalogs/:catalogName/edit` **必须排在
+`/catalogs/:catalogName` 之前**。vue-router 按声明顺序匹配，顺序反了 `new` 会被当成一个
+catalog 名，「新建」打开的是「叫 new 的那个 catalog 的详情页」（404），而菜单和按钮看起来
+都是对的。第 12 组钉这一条，也钉「列表页里不再出现 `el-dialog`」——两套表单并存时改一处
+忘一处，症状是「保存成功但那个值没变」。
+
 ---
 
 ## 5. 契约表与机械校验
@@ -667,7 +720,7 @@ python3 scripts/verify-console.py      # 退出码 0 通过 / 1 不一致 / 2 �
 PYTHON=/path/to/python3 scripts/verify-console.py   # 多解释器时指定装了 PyYAML 的那个
 ```
 
-它**不构建前端、不启动服务端**，只做静态比对，因此可以放进提交前的检查。26 组 186 项：
+它**不构建前端、不启动服务端**，只做静态比对，因此可以放进提交前的检查。26 组 188 项：
 
 | 组 | 校验内容 |
 | --- | --- |
@@ -676,13 +729,13 @@ PYTHON=/path/to/python3 scripts/verify-console.py   # 多解释器时指定装�
 | 3. 端点引用 | `src/` 里按名字调用的端点都在 `endpoints.js` 中声明 |
 | 4. 无死条目 | `endpoints.js` 里声明的端点都在 `src/` 中被调用过 |
 | 5. 基址一致 | vite `base`、路由 `base`、构建输出目录、服务端静态资源位置、client 默认基址五处指向同一处；令牌端点路径与服务端下发的 `tokenEndpoint` 一致；`buildPath` 拒收既非路径参数也非 `query` 的 `params` 键（静默丢弃会变成无参请求，服务端只回一个缺参 400） |
-| 6. 产物完整 | 入口页存在，且它引用的每个 assets 文件都存在；**产物确实在版本库里**（`static/console` 没被 `.gitignore` 排除、`index.html` 已被跟踪）。后两条挡的是「文件都在磁盘上、一个都没被跟踪」——`git status` 一片干净，只有新克隆的仓库跑 `mvn package` 时才会发现 jar 里没有 `/console` |
+| 6. 产物完整 | 入口页已构建，且它引用的每个 assets 文件都存在；**产物确实不入库**（`static/console` 被 `.gitignore` 排除、`index.html` 没被跟踪）。后两条反过来挡「`git add -f` 把产物又塞回索引」——那会让 `.gitignore` 里那段说明重新变成空话，而症状只是多了一批文件 |
 | 7. 产物新鲜 | 构建产物不比控制台源码旧（改了源码没重新构建会在这里暴露） |
 | 8. 对话框状态 | 每个 `el-dialog` 都声明了 `destroy-on-close`（否则编辑时会残留上一次的状态） |
 | 9. 下拉候选来源 | 每个 `el-select` 都声明了候选来源（`el-option` / `:options` 等）；确属自由输入的要在源码里写 `el-select-free-input` 标记显式豁免（否则「下拉是空的」这类 bug 只有打开页面才看得到） |
 | 10. 静态凭据 | catalog 自带 AK/SK 这条链路横跨四个文件（服务端 DTO 的字段名、`supportsStaticCredentials` 认可的类型、meta 里的能力开关、前端表单），逐处对齐：字段名与三种类型的 record 参数逐字一致、类型集合两侧一致、**规格里确实没有这两个字段**（否则不再是扩展，要先对齐语义）、能力开关从 meta 一路传到表单 prop、能力关着时给的是可操作提示而不是把字段藏起来、读路径仍做脱敏 |
 | 11. 优化参数键 | 存储优化各动作的表单字段名与服务端逐字一致：Paimon 那份对 `OptimizationOptions.KNOWN_KEYS`、Iceberg 那份对 `IcebergOptimizationOptions.KNOWN_KEYS`、Lance 那份对 `LanceOptimizationOptions.KNOWN_KEYS`，并断言三套键**两两不相等**、Lance 的 `orphan` 是空集（键名写错的表现是保存时吃一个 400，而编译、类型检查与单元测试都不会报；三套键混用的表现更糟——`retain-min` / `retain-last` / `target-rows-per-fragment` 被互相收下、然后静默不生效） |
-| 12. catalog 表格式 | `PAIMON` / `ICEBERG` / `LANCE` 这条链路跨六处：服务端 `CatalogFormat` 枚举 ↔ 前端兜底取值逐字一致、meta 下发的候选与默认值都来自枚举本身、新建表单从 meta 取候选与默认值且提交体带 `catalogFormat`、**编辑不回传它**（格式不可变）、列表有徽标与格式筛选（筛选与徽标用同一个归属函数）、三个页面按 catalog 格式伸缩**且在 loader 里就挡住请求**、详情页的能力清单读服务端 `/v1/config` 而不是前端抄一份、**权限页的候选来源按格式分派**（Iceberg 走 `namespaces/**` 并按层递归、Paimon 走 `databases/**`，选错来源的表现是空下拉而不是报错）、**两种格式的「配置」页签是同一套设计**（都编辑 `table-default.*`，标题按格式换名；Iceberg 另附只读的 `/v1/config` 的 `defaults` / `overrides`——那是连接参数，不是表属性；Paimon 不再重复列出概览已有的「其它属性」）。**Lance 另有三处独有**：详情页不发 `/v1/config`（规范里没有这个握手，发了只会拿到 404，而 404 会以「读不到」出现在概览上）、基址换成 `/lance/v1/namespace`、以及那一栏的三个数字（端点 / operation / 恒 406）与 `verify-lance-endpoints.py` 的台账**相加**对账（21 = 6+8+5+2，19 = 21 − 2 条兼容形态，35 = `NOT_IMPLEMENTED_OPERATIONS`）；浏览页对 Lance 挂独立组件 `LanceBrowseView`（`/lance/v1/namespace/{id}/list` + `/table/list` + `describe`，**写只有建命名空间**：端点表里只登记了 `lanceCreateNamespace`，表侧的 declare / register / deregister / rename / drop 一条都没有，组件也不引 `confirmDanger`——「有建、没有删」）、`describe` 带 `check_declared` 以回答「表到底建出来没有」；表详情页对 `lance-table` 藏掉「数据策略」（它的读取路径不经过策略注入层，那一页只能是「存得下、永不生效」），而**真正的 Lance 表走独立详情页 `LanceTableView`**（路由 `/lance-tables/:prefix/:namespace/:table`，整串 id 只在一处拼、共用优化面板时显式传 `format="LANCE"`、不给「数据预览」与「数据策略」两栏） |
+| 12. catalog 表格式 | `PAIMON` / `ICEBERG` / `LANCE` 这条链路跨六处：服务端 `CatalogFormat` 枚举 ↔ 前端兜底取值逐字一致、meta 下发的候选与默认值都来自枚举本身、新建表单从 meta 取候选与默认值且提交体带 `catalogFormat`、**编辑不回传它**（格式不可变；判据读的是 `buildPayload()` 的两个分支，不是「调用点附近像不像」）、**新建 / 编辑是独立页面而不是列表页里的弹窗**（`/catalogs/new` 与 `/catalogs/:catalogName/edit` 必须排在 `/catalogs/:catalogName` 之前，否则 `new` 会被当成 catalog 名；`CatalogsView` 里不许再出现 `el-dialog`——两套表单并存时改一处忘一处，症状是「保存成功但那个值没变」）、列表有徽标与格式筛选（筛选与徽标用同一个归属函数）、三个页面按 catalog 格式伸缩**且在 loader 里就挡住请求**、详情页的能力清单读服务端 `/v1/config` 而不是前端抄一份、**权限页的候选来源按格式分派**（Iceberg 走 `namespaces/**` 并按层递归、Paimon 走 `databases/**`，选错来源的表现是空下拉而不是报错）、**两种格式的「配置」页签是同一套设计**（都编辑 `table-default.*`，标题按格式换名；Iceberg 另附只读的 `/v1/config` 的 `defaults` / `overrides`——那是连接参数，不是表属性；Paimon 不再重复列出概览已有的「其它属性」）。**Lance 另有三处独有**：详情页不发 `/v1/config`（规范里没有这个握手，发了只会拿到 404，而 404 会以「读不到」出现在概览上）、基址换成 `/lance/v1/namespace`、以及那一栏的三个数字（端点 / operation / 恒 406）与 `verify-lance-endpoints.py` 的台账**相加**对账（21 = 6+8+5+2，19 = 21 − 2 条兼容形态，35 = `NOT_IMPLEMENTED_OPERATIONS`）；浏览页对 Lance 挂独立组件 `LanceBrowseView`（`/lance/v1/namespace/{id}/list` + `/table/list` + `describe`，**写只有建命名空间**：端点表里只登记了 `lanceCreateNamespace`，表侧的 declare / register / deregister / rename / drop 一条都没有，组件也不引 `confirmDanger`——「有建、没有删」）、`describe` 带 `check_declared` 以回答「表到底建出来没有」；表详情页对 `lance-table` 藏掉「数据策略」（它的读取路径不经过策略注入层，那一页只能是「存得下、永不生效」），而**真正的 Lance 表走独立详情页 `LanceTableView`**（路由 `/lance-tables/:prefix/:namespace/:table`，整串 id 只在一处拼、共用优化面板时显式传 `format="LANCE"`、不给「数据预览」与「数据策略」两栏） |
 | 13. Iceberg 浏览 | Iceberg catalog 的目录浏览走 `namespaces/**` 而不是 `databases/**`。这一组钉的是**契约形状**，不是像素：13 条 `iceberg*` 端点逐条对 Iceberg 规格（不靠第 1 组的并集蒙混）、浏览页只调 `icebergApi` 不混用 `catalogApi`、namespace 路径段用 `0x1F` 拼（点号只是显示口径）、分页键是 `pageSize` 而不是 `maxResults`、三个列表（表 / 视图 / 函数）都按 `identifiers` 取（逐表 `loadTable` 只许出现在表详情页）、建表体是 Iceberg 的 `schema` / `partition-spec`（`schema-id`、`required`、`source-id`、`field-id`）、浏览页与 API 层都不出现 `/databases`、浏览页不再提供删除命名空间的入口（按钮已移除）、两页共用的骨架样式留在全局；以及 **Iceberg 表详情页**（`IcebergTableView`）：有独立路由、只调 `icebergApi`、文件列表走 catalog 级文件端点（不用 Paimon 的 `tableId` 端点）、快照处理 `-1` 无快照哨兵、存储优化页签复用共用面板并显式传 `format="ICEBERG"`（页签自己调端点会绕过 format 分派）、建表表单的 `format-version` 提供 1/2/3 |
 | 14. 存储字段分层 | catalog 表单的字段拆成「基本 / 高级」两张表，高级那张进默认收起的折叠区。判据对着**服务端 record**，不在前端另抄名单：两张表合并后与 record 的专属字段**不丢不多**、两表之间不重叠、`build()` 既**不读折叠状态**又仍读合并后的视图、`FILE` 没有高级字段、折叠区按「有没有高级字段」出现而非硬编码某类型、默认收起、收起态给出计数与「可以不管它」的说明 |
 | 15. 事件页 | 事件页从「游标增量」改成「远程分页」之后，最容易退化的两件事要钉住：`listEvents` 端点路径与端点名一致、`EventsView` 真的接了 `useRemotePaging`（页码下推、`total` 取自 `page.total`）——游标只能往前看，页码模式才能往回翻历史；**事件类型也跟着下推**（类型只在前端筛时只筛得到当页，筛出空页会被读成「窗口里没有这种事件」）、事件类型清单逐个覆盖 `CatalogEventType` 的 wire 值、**类别清单逐个覆盖 `CatalogEventCategory` 的取值**、类别作为 `category` 参数随页码一起发出、目标类型显示名逐个覆盖 `CatalogEvent` 的 `TARGET_*` 常量（前端另抄名单漏了新类型的表现是那条事件显示成 wire 原文，静默）、`/events` 有独立路由并进侧边菜单 |
@@ -935,25 +988,40 @@ build: {
 }
 ```
 
-这样 `mvn package` 与 `Dockerfile` **都不依赖 npm**（`Dockerfile` 现在只装构建好的
-jar，连 Maven 都不跑，更不涉及 Node），Java 侧构建路径上完全没有 Node。
-代价是产物必须跟着源码一起提交。
+这样 `Dockerfile` 只装构建好的 jar（连 Maven 都不跑，更不涉及 Node），Java 侧构建路径上
+完全没有 Node。但**产物本身不入库**，所以 `mvn package` 之前必须先跑
+`./scripts/build-console.sh`——Maven 不会替你构建前端。
 
-### 8.2 产物要提交
+### 8.2 产物不入库，但必须被构建出来
 
 `lakehouse-rest-console/.gitignore` 忽略的是 `node_modules/`、`dist/`、`.vite/`；
-构建产物不在这个目录里，它落在服务端 `src/main/resources/static/console` 下，
-**属于被跟踪的内容**：
+真正的产物落在服务端 `src/main/resources/static/console` 下，由仓库根的 `.gitignore` 排除。
+**它是构建产物，不进版本库**：
 
-- 改了控制台源码却没重新构建并提交产物 → 服务端打包出来的是上一版控制台；
-- `verify-console.py` 第 7 组会查出产物比源码旧（但只在有人跑它的时候）。
+- 产物文件名带内容哈希，一次前端改动就是 80 多个文件的增删——进库之后每次 review 都是
+  一屏 diff 噪音，真正改动的那几个 `.vue` 反而被淹没；
+- 半个产物比没有产物更难查：`index.html` 提交了、assets 漏了，页面白屏而
+  `git status` 一片干净，只有新克隆的仓库跑起来才发现。
 
-**「属于被跟踪的内容」这句话曾经是假的**：仓库根的 `.gitignore` 里有一行
-`static/console`，把所有产物挡在版本库外，而本文 §1、`README.md` 和 `server/pom.xml`
-的模块说明三处都写着「已提交」。文件本来就在磁盘上，`git status` 一片干净，
-所以一直没人发现——直到有人从干净检出构建，才发现 jar 里没有 `/console`。
-现在由 `verify-console.py` 第 6 组两条断言守着（目录没被忽略 + 入口页已被跟踪），
-`.gitignore` 里那一行换成了说明为什么**不能**忽略它。
+代价是「改了前端」与「打了个能用的 jar」之间隔着一道手工步骤。所以这道步骤有三层守卫，
+都在**产物缺失或半套**时明确失败，而不是让 jar 安静地少一个 `/console`：
+
+| 层 | 时机 | 失败信息 |
+| --- | --- | --- |
+| `verify-console.py` 第 6 组 | 构建前，静态检查 | 入口页不存在 → 提示先跑 `build-console.sh`；入口页引用的 assets 缺失 → 逐个列出 |
+| `build-image.sh` | 出镜像前 | `unzip -l` 查 jar 里有没有 `static/console/index.html`，没有就拒绝构建镜像 |
+| `ConsoleApiTests` | 测试时 | classpath 上读不到入口页 → 提示「产物不入库，先跑 `build-console.sh`」 |
+
+**这件事在两个方向上都翻过车，值得记住**：最初 `.gitignore` 里有一行 `static/console`，
+而本文 §1、`README.md`、`server/pom.xml` 三处都写着「已提交」——文件都在磁盘上、
+索引里一个没有，`git status` 一片干净，直到有人从干净检出构建才发现 jar 里没有 `/console`。
+当时的修法是改成入库，第 6 组两条断言查「目录没被忽略 + 入口页已被跟踪」。
+2026-10-30 又改回不入库（diff 噪音与半套产物的代价更实在），第 6 组随之反转成
+「目录确实被忽略 + 入口页确实没被跟踪」。
+
+两次反转里不变的是那条判据：**文档写的状态必须与 `git` 的实际状态一致**，
+机械检查只是把这句话变成能失败的断言。所以别用 `git add -f` 把产物塞回索引——
+那会让第 6 组第二条立刻失败，而这正是它存在的意义。
 
 `.dockerignore` 排除了 `lakehouse-rest-console/node_modules/`（几十万个文件，
 纯粹的上下文体积），保留源码——镜像不需要它，但留着便于在容器内排查。
@@ -1005,23 +1073,25 @@ ls lakehouse-rest-spring-parent/lakehouse-rest-server/target/classes/static/cons
 
 ## 9. 测试
 
-`ConsoleApiTests`（12 个用例）覆盖服务端侧的行为，重点是**托管机制**而非页面渲染
+`ConsoleApiTests`（14 个用例）覆盖服务端侧的行为，重点是**托管机制**而非页面渲染
 （页面渲染属于前端职责，不适合放在服务端测试里）：
 
 | 用例 | 断言 |
 | --- | --- |
 | `metaExposesEnumsUsedByConsoleForms` | meta 返回了表单需要的全部枚举组 |
-| `metaPrivilegesFollowManagementSpec` | 权限分组与管理规格一致 |
+| `metaAccessesFollowOfficialMatrix` | 权限分组的取值与管理规格的权限矩阵一致 |
 | `authAsksForALoginEvenWhenTheDataPlaneIsOpen` | 默认配置下 `authEnabled=false` 但 `consoleRequired=true`，且 `methods` 以 `password` 开头——两个字段必须同时如实 |
 | `authReportsTheSessionWhenATokenIsPresent` | 同一个端点带上令牌时只多出「你是谁」，不会被 401 挡掉 |
 | `consoleEndpointsRejectAnonymousRequestsWhileTheGateIsOn` | 门禁开着时 `/api/console/v1/**` 拒匿名，而 `/v1/**` 仍匿名可调（门禁不是安全边界） |
 | `authAdvertisesThePolarisCompatibleTokenEndpoint` | 引导下发的令牌端点就是 Polaris 那条路径 |
+| `credentialSourcesCoverEveryVisibleCatalog` | 批量端点对**每个可见 catalog** 都给出一条判定（漏可见性等于用分类信息探测 catalog 是否存在） |
+| `credentialSourcePreviewJudgesTheDraftBeforeItIsSaved` | 草稿判定走的是同一个 `CatalogCredentialSource.of`：还没保存的配置也能答出档位（§4.10） |
 | `consoleRootRedirectsToTrailingSlash` | `/console` → 302 |
 | `consoleDirectoryUrlForwardsToEntryPage` | `/console/` → 200 入口页 |
 | `consoleEntryIsServedAtItsRealUrl` | `/console/index.html` → 200 |
 | `clientSideRoutesFallBackToEntryPage` | 深链回到入口页 |
 | `missingAssetStillReturns404` | 缺失 assets 仍 404（不回退） |
-| `committedConsoleHtmlReferencesExistingAssets` | 已提交的入口页引用的产物都存在 |
+| `consoleHtmlReferencesExistingAssets` | 当前构建的入口页引用的产物都存在（半套产物的表现是白屏） |
 
 登录链路本身另有 `ConsoleAuthEndpointTests`（31 个用例，错误码、接线、门禁范围、
 默认口令与限速）与两个运行期验收脚本，见 §5.2。
@@ -1036,9 +1106,9 @@ ls lakehouse-rest-spring-parent/lakehouse-rest-server/target/classes/static/cons
 两者分开是因为这些错误各自独立：服务能把目录列对，不代表端点拼对了
 （URL 错一位照样 404）；反之端点形状对了，服务也可能把「文件」当成目录列。
 
-最后一条把「产物不同步」变成了服务端测试能抓到的问题，
+最后一条把「产物是半套」变成了服务端测试能抓到的问题，
 与 `verify-console.py` 第 6 组是同一件事的两个入口（前者在 `mvnw test` 里跑，
-后者在提交前跑）。
+后者在 `build-console.sh` 结尾跑）。
 
 一个实现细节：断言中文内容要用 `getContentAsString(StandardCharsets.UTF_8)`。
 静态资源响应头里没有 charset，`getContentAsString()` 会退回 ISO-8859-1，
@@ -1053,13 +1123,16 @@ ls lakehouse-rest-spring-parent/lakehouse-rest-server/target/classes/static/cons
 前端另有一层**纯函数单测**（`node --test`，不需要浏览器也不需要构建）：
 
 ```bash
-cd lakehouse-rest-console && npm test          # tools/*-tests/*.test.mjs
+cd lakehouse-rest-console && npm test          # tools/*-tests/*.test.mjs（目前 89 项）
 npm run test:auto-refresh                      # 只跑定时刷新的判定（7 个用例）
+npm run test:snippet                           # 只跑引擎接入片段（13 个用例）
 ```
 
 放在这一层的都是「看一眼界面验不出来」的性质：血缘的布局是纯函数（同一份数据两次出同一批坐标）、
 定时刷新该不该发这一拍（后台标签页 / 在途请求 / 页面拦截）、偏好收敛（坏 localStorage 不能变成
-`setInterval(fn, NaN)`）。
+`setInterval(fn, NaN)`），以及**复制出去的那十几行对不对**——`token.provider` 是 `bear` 不是
+`bearer`、Flink 的 DDL 只有最后一行不带逗号、Lance 的基址写到 `/lance` 为止、COS 在三个面上是
+三种说法。片段错了不会让控制台报任何错，失败现场在业务方那边。
 
 ---
 
@@ -1099,9 +1172,10 @@ npm run test:auto-refresh                      # 只跑定时刷新的判定（7
   [`console-catalog-detail.md`](console-catalog-detail.md) 与
   [`console-table-detail.md`](console-table-detail.md)。
 - **无 i18n。** 界面为中文单语，文案直接写在组件里。
-- **产物需手工同步。** 没有 CI 钩子强制 `verify-console.py`（见 §8.2）。
+- **产物要手工构建。** 产物不入库，出 jar 之前必须跑 `scripts/build-console.sh`；
+  没有 CI 钩子替你做这一步（守卫是 `build-image.sh` 与 `ConsoleApiTests`，见 §8.2）。
 - **Iceberg 协议面：目录浏览与表详情已通，写路径仍不做。** 已落地：
-  Catalog 列表的「表格式」徽标与格式筛选、新建 Catalog 弹窗的「表格式」选择
+  Catalog 列表的「表格式」徽标与格式筛选、新建 Catalog 页的「表格式」三卡选择
   （默认值取 `meta.service.defaultCatalogFormat`，**创建后不可改**，编辑表单不回传它）、
   catalog 详情的格式展示与「协议与能力」卡片（读 `GET /v1/config?warehouse=` 的
   `endpoints` 原文，不是前端抄的清单）、**目录浏览的 Iceberg 版**（`IcebergBrowseView`：

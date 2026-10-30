@@ -76,7 +76,16 @@ die() { echo "错误：$*" >&2; exit 1; }
 
 [ -f Dockerfile ] || die "请在仓库根目录运行（当前 $ROOT 下没有 Dockerfile）"
 [ -f "$JAR" ] || die "找不到 $JAR —— 镜像只装 jar、不编译，请先执行：
-    mvn -o -pl :lakehouse-rest-server -am clean package -DskipTests"
+    ./scripts/build-console.sh && mvn -o -pl :lakehouse-rest-server -am clean package -DskipTests"
+
+# jar 里必须带控制台。产物不入库（见仓库根 .gitignore），所以「忘了先跑
+# build-console.sh」是很自然的一步，而这种 jar 完全能启动、只是 /console/ 404 ——
+# 镜像打出来、推上去、部署完才会被发现。这里把它提前成构建前的失败。
+command -v unzip >/dev/null 2>&1 || die "找不到 unzip（用来确认 jar 里带控制台）"
+unzip -l "$JAR" | grep -q 'static/console/index.html' || die "$JAR 里没有 static/console/index.html —— 这个 jar 不带控制台。
+    控制台产物不入库，要先构建：./scripts/build-console.sh
+    然后重新打包：mvn -o -pl :lakehouse-rest-server -am clean package -DskipTests
+    （clean 不能省：maven-resources-plugin 只覆写不删除，增量构建会累积旧产物）"
 
 command -v docker >/dev/null 2>&1 || die "找不到 docker"
 docker buildx version >/dev/null 2>&1 || die "找不到 docker buildx"

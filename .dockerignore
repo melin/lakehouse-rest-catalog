@@ -43,8 +43,9 @@ build/
 **/build/
 
 # 控制台前端的依赖目录。node_modules 是纯粹的体积——几十万个文件进不了
-# 构建上下文；源码留着让上下文与仓库状态一致、便于对照排查（镜像不需要它，
-# 控制台的构建产物已经提交在 lakehouse-rest-spring-parent/lakehouse-rest-server/src/main/resources/static/console）。
+# 构建上下文；源码留着让上下文与仓库状态一致、便于对照排查（镜像不需要它：
+# 控制台的构建产物落在 lakehouse-rest-spring-parent/lakehouse-rest-server/src/main/resources/static/console，
+# 不入库，由宿主机的 scripts/build-console.sh 生成后再打进 jar）。
 lakehouse-rest-console/node_modules/
 lakehouse-rest-console/.vite/
 

@@ -36,7 +36,7 @@
 		  domain 的三张优化表 + 三个仓储
 		  dto/Management*、Optimization* 管理 API 与优化的契约
 		  config/DataInitializer 等装配   启动期初始化与调度开关
-		  resources/application*.yml     配置；static/console 是控制台的构建产物（已提交）
+		  resources/application*.yml     配置；static/console 是控制台的构建产物（不入库，打包前跑 scripts/build-console.sh）
 
 		镜像里有什么，看这一个 POM 就够了——这正是把可执行物单独成一个模块的价值。
 	-->

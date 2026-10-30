@@ -77,6 +77,26 @@ const routes = [
     meta: { title: 'Catalogs', icon: 'Coin', group: '治理（Management API）', nav: true },
   },
   {
+    // 新建 catalog 是一页而不是弹窗：这一页要给的不只是表单，还有右栏常驻的
+    // 「保存后会怎样」（凭据来源判定、作用域、风险）与一段可复制的接入配置——
+    // 这三样都要在填的过程中一直看得见，弹窗一滚就没了。
+    //
+    // 必须排在 `/catalogs/:catalogName` 之前：否则 `new` 会被当成一个 catalog 名，
+    // 于是「新建」打开的是「叫 new 的那个 catalog 的详情页」，而它不存在。
+    path: '/catalogs/new',
+    name: 'catalogCreate',
+    component: () => import('@/views/CatalogFormView.vue'),
+    meta: { title: '新建 Catalog', group: '治理（Management API）', parent: 'catalogs' },
+  },
+  {
+    // 编辑与新建共用一页，差别只在「名字与格式是只读的、保存要带 entityVersion」。
+    // 分成两个页面会让「同一个对象的同一份配置」有两处实现，改一处忘一处。
+    path: '/catalogs/:catalogName/edit',
+    name: 'catalogEdit',
+    component: () => import('@/views/CatalogFormView.vue'),
+    meta: { title: '编辑 Catalog', group: '治理（Management API）', parent: 'catalogs' },
+  },
+  {
     // catalog 详情。`catalogName` 就是 catalog 的 prefix（创建后不可改名），
     // 因此它既在路径里也在查询参数里被别的页面引用，是同一件事的两种写法。
     //

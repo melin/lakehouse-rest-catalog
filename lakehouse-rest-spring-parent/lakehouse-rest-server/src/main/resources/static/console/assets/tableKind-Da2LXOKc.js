@@ -1,1 +1,0 @@
-var e={"format-table":`Format 表`,"object-table":`Object 表`,"lance-table":`Lance 表`};function t(e){let t=e?.schema?.options?.type;return typeof t==`string`&&t.trim()?t.trim().toLowerCase():`table`}function n(n){return e[t(n)]||`Paimon 表`}function r(n){return!e[t(n)]}export{n,t as r,r as t};
