@@ -131,6 +131,13 @@ public final class CatalogCredentialSource {
         boolean roleArn = s3.roleArn() != null && !s3.roleArn().isBlank();
         boolean signer = signsShortLived(properties);
         if (roleArn && signer) {
+            // noInlinePolicy 不改变「会不会签发」，只改变票的作用域。必须在同一句里说出来：
+            // 它把这一档从「按表收窄」降成「角色权限范围内」，而界面上那三档本身长得一样。
+            if (Boolean.TRUE.equals(s3.noInlinePolicy())) {
+                return new Source(Mode.STS,
+                        "STS 签发（noInlinePolicy=true）：这个存储不接受 inline policy，"
+                                + "票只受角色自身权限约束，无法按表收窄。有效期到点失效、可续期");
+            }
             return new Source(Mode.STS,
                     "STS 签发：服务端用 roleArn 换一份按表收窄的临时凭据（s3-token），"
                             + "有效期到点失效、可续期");

@@ -78,12 +78,22 @@ public class S3TokenCredentialProvider implements CredentialProvider {
                     context.scopePaths(), context.scopeId());
             return Optional.empty();
         }
-        if (scopes.stream().anyMatch(CredentialScope::bucketRoot)) {
+        if (scopes.stream().anyMatch(CredentialScope::bucketRoot) && !noInlinePolicy(context)) {
             log.warn("{} sits at a bucket root; the session policy can only be scoped to the"
                     + " whole bucket: {}", context.scopeId(), scopes);
         }
         Duration ttl = Duration.ofSeconds(properties.getCredential().getTtlSeconds());
-        String policy = S3SessionPolicy.build(scopes);
+        // noInlinePolicy：VAST 这类 S3 兼容实现的 STS 收到 Policy 直接回 501，
+        // 所以按 catalog 的显式声明省略 policy。省略之后作用域退回角色自身权限
+        // （设计稿 §3.5.3）——**这不是「收窄失败」而是「没有收窄」**，必须留痕，
+        // 否则出事时日志里只有一行正常签发，看不出这张票其实能读整个角色范围。
+        String policy = noInlinePolicy(context) ? null : S3SessionPolicy.build(scopes);
+        if (policy == null) {
+            log.warn("vending provider={} WITHOUT an inline policy for {} (catalog sets"
+                            + " noInlinePolicy=true): the ticket is scoped to the role itself,"
+                            + " not to this table",
+                    name(), context.scopeId());
+        }
         StsSession session = assumeRoleClient.assumeRole(new AssumeRoleCommand(
                 context.storage().roleArn(),
                 context.storage().externalId(),
@@ -91,7 +101,10 @@ public class S3TokenCredentialProvider implements CredentialProvider {
                 ttl,
                 policy,
                 context.storage().region(),
-                context.storage().stsEndpoint()));
+                context.storage().stsEndpoint(),
+                // 关掉时给空 Map：客户端据此**不传** tag 集合，请求与改造前逐字节相同。
+                // 打开它是运维动作（信任策略要先放行 sts:TagSession），见配置项说明。
+                properties.getCredential().isSessionTags() ? context.sessionTags() : Map.of()));
 
         Map<String, String> token = new LinkedHashMap<>();
         putLocators(token, context);
@@ -111,6 +124,16 @@ public class S3TokenCredentialProvider implements CredentialProvider {
         return Optional.of(new VendedStorageCredential(token, ttlSeconds,
                 context.storage().storageType(), VendedStorageCredential.SOURCE_STS_SESSION,
                 name(), session.expireTimeInMs()));
+    }
+
+    /**
+     * catalog 是否显式要求「别带 inline policy」。
+     *
+     * <p>只在 catalog 自己声明时成立，不从 {@code endpoint} 去推测（理由见
+     * {@code StorageDtos.AwsStorageConfigInfo} 的 {@code noInlinePolicy} 说明）。
+     */
+    private static boolean noInlinePolicy(CredentialContext context) {
+        return Boolean.TRUE.equals(context.storage().noInlinePolicy());
     }
 
     /**

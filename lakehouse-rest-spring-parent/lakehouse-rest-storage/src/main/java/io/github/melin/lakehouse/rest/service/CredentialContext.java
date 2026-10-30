@@ -1,7 +1,9 @@
 package io.github.melin.lakehouse.rest.service;
 
 import io.github.melin.lakehouse.rest.dto.StorageDtos.AwsStorageConfigInfo;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 一次签发请求的上下文：给谁、覆盖哪些位置、要不要写。
@@ -119,5 +121,51 @@ public record CredentialContext(AwsStorageConfigInfo storage,
             value = value.substring(value.length() - 64);
         }
         return value.length() < 2 ? "lh" : value;
+    }
+
+    /**
+     * 审计用的 session tags：{@code lh:principal} / {@code lh:scope} / {@code lh:access}。
+     *
+     * <p>与 {@link #roleSessionName()} 是同一件事的两种表达，但**能力不同**：
+     * session name 是一个字符串，云侧只能做前缀/包含匹配；tag 是结构化的键值对，
+     * 能按 {@code lh:principal = alice} 直接过滤，也能被 ABAC 策略当条件引用。
+     * 所以两者都发，不互相替代。
+     *
+     * <p><b>值要规整，理由与 session name 相同但要按 tag 的字符集</b>：STS 允许的
+     * 是字母、数字、空格与 {@code _ . : / = + - @}，逗号、括号、引号都在集合外。
+     * 主体标识常见 {@code user:alice@corp/x}——这个恰好全在集合内，但目录服务里
+     * 带逗号的 DN 不在，直接发会在签名阶段 {@code ValidationError}。
+     * 非法字符一律换成 {@code -}，长度按 STS 上限截断（值 256）。
+     *
+     * <p>**不塞敏感元数据**：tag 会进云侧审计日志，也可能被策略引用。
+     * 这里只放主体标识、作用域标识与读写方向。
+     */
+    public Map<String, String> sessionTags() {
+        Map<String, String> tags = new LinkedHashMap<>();
+        tags.put("lh:principal", tagValue(principal == null || principal.isBlank() ? "service" : principal));
+        tags.put("lh:scope", tagValue(scopeId));
+        // 「读还是写」是最值得单独成键的一维：只读票被拿去写会 403，
+        // 而那 403 发生在存储侧，与「签票时给了什么权限」隔着好几层。
+        tags.put("lh:access", allowWrite ? "write" : "read");
+        return tags;
+    }
+
+    /** 按 STS 的 tag 字符集规整一个值（见 {@link #sessionTags()} 的说明）。 */
+    private static String tagValue(String raw) {
+        String value = raw == null ? "" : raw;
+        StringBuilder sanitized = new StringBuilder(value.length());
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            boolean allowed = c == '_' || c == '.' || c == ':' || c == '/'
+                    || c == '=' || c == '+' || c == '-' || c == '@'
+                    || c == ' ' || Character.isLetterOrDigit(c);
+            sanitized.append(allowed ? c : '-');
+        }
+        String trimmed = sanitized.toString().trim();
+        if (trimmed.isEmpty()) {
+            // tag 的值不能为空串：STS 会拒，而报错只提 value 不提是哪个 tag
+            return "unknown";
+        }
+        return trimmed.length() > 256 ? trimmed.substring(0, 256) : trimmed;
     }
 }

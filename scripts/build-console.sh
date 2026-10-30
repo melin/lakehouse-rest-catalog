@@ -91,5 +91,5 @@ fi
 echo
 echo "完成。产物已就位：$OUT"
 echo "注意：产物不入库（.gitignore 排除，见 verify-console.py 第 6 组），"
-echo "      所以每次要出 jar 之前都要先跑本脚本——`mvn package` 不会替你构建前端，"
+echo "      所以每次要出 jar 之前都要先跑本脚本——mvn package 不会替你构建前端，"
 echo "      而漏掉这一步打出的 jar 里没有 /console，构建过程不会报任何错。"

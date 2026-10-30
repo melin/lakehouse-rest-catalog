@@ -20,6 +20,7 @@ import software.amazon.awssdk.services.sts.StsClient;
 import software.amazon.awssdk.services.sts.StsClientBuilder;
 import software.amazon.awssdk.services.sts.model.AssumeRoleRequest;
 import software.amazon.awssdk.services.sts.model.Credentials;
+import software.amazon.awssdk.services.sts.model.Tag;
 
 /**
  * AWS STS 的真实实现。
@@ -40,6 +41,12 @@ import software.amazon.awssdk.services.sts.model.Credentials;
  * <p>{@code DurationSeconds} 的下限是 STS 的硬约束（900 秒），越界时云侧回
  * {@code ValidationError}；这里提前夹住并说明原因，避免把一个配置问题推迟成一次
  * 远程调用的失败。
+ *
+ * <p><b>带 session tags 时有一个纯运维前提。</b>被 assume 的角色，其信任策略必须放行
+ * {@code sts:TagSession}，否则带 tag 的调用回 {@code AccessDenied}——现象是
+ * 「配置里什么都没改，读表全部 503 且报权限不足」。本类无法区分这种失败与真正的
+ * 授权失败（云侧返回的 code 相同），所以只在日志里带上 session name；开关默认关闭、
+ * 由配置说明写清前提，是唯一能避免「升级即故障」的做法。
  */
 @Component
 @RequiredArgsConstructor
@@ -64,15 +71,21 @@ public class AwsSdkAssumeRoleClient implements AssumeRoleClient {
                     "cannot assume a role without roleArn; set storageConfigInfo.roleArn on the catalog");
         }
         long seconds = clampDuration(command.duration());
-        AssumeRoleRequest request = AssumeRoleRequest.builder()
+        AssumeRoleRequest.Builder request = AssumeRoleRequest.builder()
                 .roleArn(command.roleArn())
                 .roleSessionName(command.roleSessionName())
                 .durationSeconds((int) seconds)
                 .policy(command.policy())
-                .externalId(command.externalId())
-                .build();
+                .externalId(command.externalId());
+        if (!command.tags().isEmpty()) {
+            // 只有真要发的时候才带 tags：传空列表与不传在云侧等价，但「不传」能让
+            // 关闭该特性时的请求与改造前逐字节相同，抓包比对因此还有意义。
+            request.tags(command.tags().entrySet().stream()
+                    .map(tag -> Tag.builder().key(tag.getKey()).value(tag.getValue()).build())
+                    .toList());
+        }
         try {
-            Credentials credentials = clientFor(command).assumeRole(request).credentials();
+            Credentials credentials = clientFor(command).assumeRole(request.build()).credentials();
             if (credentials == null) {
                 throw new ApiException(503, null, null,
                         "STS returned no credentials for role " + command.roleArn());

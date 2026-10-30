@@ -220,7 +220,7 @@ class CatalogCredentialSourceTests {
     private static AwsStorageConfigInfo aws(String accessKeyId, String secretAccessKey,
                                             String roleArn, String storageName, Boolean stsUnavailable) {
         return new AwsStorageConfigInfo(List.of("s3://bucket/wh"), storageName, roleArn, null, null,
-                null, null, "us-east-1", null, null, stsUnavailable, null, null, null,
+                null, null, "us-east-1", null, null, stsUnavailable, null, null, null, null,
                 accessKeyId, secretAccessKey);
     }
 

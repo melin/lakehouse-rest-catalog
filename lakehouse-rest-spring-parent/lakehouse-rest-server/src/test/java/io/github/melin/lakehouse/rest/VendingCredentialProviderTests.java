@@ -168,7 +168,7 @@ class VendingCredentialProviderTests {
 
         AwsStorageConfigInfo config = new AwsStorageConfigInfo(List.of("s3://wh/db/t"),
                 null, "arn:aws:iam::123:role/lakehouse", null, null, null, null, "us-east-1",
-                null, null, null, null, null, null, "AKIA-STATIC", cipher.seal("SECRET-STATIC"));
+                null, null, null, null, null, null, null, "AKIA-STATIC", cipher.seal("SECRET-STATIC"));
 
         VendedStorageCredential vended = manager.vend(config, "t1", "s3://wh/db/t");
 
@@ -188,7 +188,7 @@ class VendingCredentialProviderTests {
 
         AwsStorageConfigInfo config = new AwsStorageConfigInfo(List.of("s3://wh/db/t"),
                 null, "arn:aws:iam::123:role/lakehouse", null, null, null, null, "us-east-1",
-                null, null, Boolean.TRUE, null, null, null, null, null);
+                null, null, Boolean.TRUE, null, null, null, null, null, null);
 
         VendedStorageCredential vended = manager.vend(config, "t1", "s3://wh/db/t");
 
@@ -196,6 +196,115 @@ class VendingCredentialProviderTests {
         assertEquals(VendedStorageCredential.SOURCE_STS_UNAVAILABLE, vended.source());
         assertFalse(vended.token().containsKey("s3.access-key-id"));
         assertEquals("us-east-1", vended.token().get("s3.region"), "定位配置仍要下发");
+    }
+
+    /**
+     * {@code noInlinePolicy=true}：命令里不带 policy，其余一概不变。
+     *
+     * <p>这条断言的就是「省略 policy」这个动作本身。**不能只看「没抛异常」**：
+     * 一个把 policy 传成空串的实现同样不抛，而 VAST 收到空 {@code Policy} 很可能还是 501，
+     * 或者更糟——收到一个语法非法的字符串。所以断言 {@code null}，不是「空」。
+     */
+    @Test
+    void noInlinePolicyOmitsTheSessionPolicyWithoutChangingTheTicket() {
+        FakeSts sts = new FakeSts();
+        DefaultStorageCredentialManager manager = managerWith(new S3TokenCredentialProvider(properties, sts));
+        RequestContext.setPrincipal("alice");
+        try {
+            VendedStorageCredential vended = manager.vend(awsWithoutInlinePolicy(), "t1", "s3://wh/db/t");
+
+            AssumeRoleCommand command = sts.last.get();
+            assertNotNull(command, "noInlinePolicy 只影响 policy，不该让签发本身被跳过");
+            assertNull(command.policy(), "VAST 这类 S3 兼容实现收到 Policy 会回 501");
+            // 四件套照发：少了 session token，Iceberg 在第一次续期时才 checkState 失败
+            assertEquals("TOKEN-SESSION", vended.token().get("s3.session-token"));
+            assertEquals(VendedStorageCredential.SOURCE_STS_SESSION, vended.source());
+            assertTrue(vended.shortLived(), "不发 policy 不等于不发短命票");
+        } finally {
+            RequestContext.clear();
+        }
+    }
+
+    /**
+     * 不带 policy 之后，那个「认不出作用域就不签」的拒绝**更重要**。
+     *
+     * <p>带 policy 时签错了最多是收窄得不准；不带 policy 时把一份角色权限整份发出去，
+     * 而日志里仍然只有一行正常签发。所以这条路径必须继续拒绝，不能因为「反正不带 policy」
+     * 就顺手放过。
+     */
+    @Test
+    void noInlinePolicyStillRefusesLocationsItCannotScope() {
+        FakeSts sts = new FakeSts();
+        DefaultStorageCredentialManager manager = managerWith(new S3TokenCredentialProvider(properties, sts));
+
+        VendedStorageCredential vended = manager.vend(awsWithoutInlinePolicy(), "t1", "/local/warehouse");
+
+        assertNull(sts.last.get(), "认不出作用域时不该去换票");
+        assertEquals(VendedStorageCredential.PROVIDER_RELAY, vended.provider());
+        assertEquals(VendedStorageCredential.SOURCE_ENVIRONMENT, vended.source());
+    }
+
+    // ------------------------------------------------------------------ 审计归因（session tags）
+
+    /**
+     * 默认**不带** tags。
+     *
+     * <p>这条不是「顺手断一下默认值」，而是一个会让升级即故障的外部前提：
+     * 被 assume 的角色信任策略没放行 {@code sts:TagSession} 时，带 tag 的调用回
+     * {@code AccessDenied}，现象是「配置没改、读表全 503」。所以默认必须是「不传」。
+     */
+    @Test
+    void sessionTagsAreLeftOutOfTheRequestUnlessTheDeploymentOptsIn() {
+        FakeSts sts = new FakeSts();
+        DefaultStorageCredentialManager manager = managerWith(new S3TokenCredentialProvider(properties, sts));
+        RequestContext.setPrincipal("alice");
+        try {
+            manager.vend(awsWithRole("arn:aws:iam::123:role/lakehouse"), "t1", "s3://wh/db/t");
+
+            assertTrue(sts.last.get().tags().isEmpty(), "默认必须不带 tags");
+        } finally {
+            RequestContext.clear();
+        }
+    }
+
+    @Test
+    void sessionTagsNameThePrincipalTheScopeAndTheDirection() {
+        properties.getCredential().setSessionTags(true);
+        FakeSts sts = new FakeSts();
+        DefaultStorageCredentialManager manager = managerWith(new S3TokenCredentialProvider(properties, sts));
+        RequestContext.setPrincipal("user:alice@corp/x");
+        try {
+            manager.vend(awsWithRole("arn:aws:iam::123:role/lakehouse"), "db.orders", "s3://wh/db/orders");
+
+            Map<String, String> tags = sts.last.get().tags();
+            assertEquals("user:alice@corp/x", tags.get("lh:principal"), "三个 tag 里只有主体是外部输入");
+            assertEquals("db.orders", tags.get("lh:scope"));
+            assertEquals("read", tags.get("lh:access"), "引擎侧目前一律按只读签");
+        } finally {
+            RequestContext.clear();
+        }
+    }
+
+    /**
+     * tag 值里出现 STS 不认识的字符时不能原样发。
+     *
+     * <p>目录服务的主体标识常带逗号（{@code cn=alice,ou=people}），而逗号**不在**
+     * tag 的字符集里。原样发出去的表现是签名阶段 {@code ValidationError}——
+     * 与「策略不允许」长得完全不一样，排障时会往 IAM 上找。
+     */
+    @Test
+    void sessionTagValuesAreSanitisedToTheStsCharset() {
+        CredentialContext context = new CredentialContext(awsWithRole("arn:aws:iam::1:role/r"),
+                "t1", "s3://wh/db/t", "cn=alice,ou=people", true);
+
+        Map<String, String> tags = context.sessionTags();
+
+        assertEquals("cn=alice-ou=people", tags.get("lh:principal"));
+        assertFalse(tags.get("lh:principal").contains(","), tags.get("lh:principal"));
+        assertEquals("write", tags.get("lh:access"), "服务端自己写元数据时是写票");
+        // 主体为空时给占位值：空串会被 STS 拒，而报错只提 value 不提哪个 tag
+        assertEquals("service", new CredentialContext(awsWithRole("arn:aws:iam::1:role/r"),
+                "t1", "s3://wh/db/t", null, false).sessionTags().get("lh:principal"));
     }
 
     @Test
@@ -371,7 +480,14 @@ class VendingCredentialProviderTests {
 
     private static AwsStorageConfigInfo awsWithRole(String roleArn) {
         return new AwsStorageConfigInfo(List.of("s3://wh/db/t"), null, roleArn, null, null, null, null,
-                "us-east-1", null, null, null, null, null, null, null, null);
+                "us-east-1", null, null, null, null, null, null, null, null, null);
+    }
+
+    /** 同样的 catalog，外加 {@code noInlinePolicy=true}（VAST 那类不接受 policy 的存储）。 */
+    private static AwsStorageConfigInfo awsWithoutInlinePolicy() {
+        return new AwsStorageConfigInfo(List.of("s3://wh/db/t"), null,
+                "arn:aws:iam::123:role/lakehouse", null, null, null, null,
+                "us-east-1", null, null, null, Boolean.TRUE, null, null, null, null, null);
     }
 
     /** 假 STS：只记录最后一次命令，返回一个固定寿命的会话。 */

@@ -206,7 +206,7 @@ class ServerSideCredentialTests {
                 new StorageRuntimePolicy(properties, List.of(relay)), relayCache);
         AwsStorageConfigInfo noSts = new AwsStorageConfigInfo(
                 List.of("s3://wh/db1/t1"), null, "arn:aws:iam::1:role/r", null, null, null, null,
-                "us-east-1", null, null, true, null, null, null, null, null);
+                "us-east-1", null, null, true, null, null, null, null, null, null);
         CatalogEntity plain = catalog("cat-plain", noSts);
         relayFactory.catalogOptionsFor(plain, false);
         relayFactory.catalogOptionsFor(plain, false);
@@ -236,7 +236,7 @@ class ServerSideCredentialTests {
 
     private static AwsStorageConfigInfo aws(String roleArn, List<String> locations) {
         return new AwsStorageConfigInfo(locations, null, roleArn, null, null, null, null,
-                "us-east-1", null, null, null, null, null, null, null, null);
+                "us-east-1", null, null, null, null, null, null, null, null, null);
     }
 
     /** 假 STS：记录最后一次命令与调用次数，返回固定寿命的会话。 */

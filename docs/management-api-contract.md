@@ -212,7 +212,8 @@
 本实现另外支持 `OBS`（华为云）、`OSS`（阿里云）与 `COS`（腾讯云），它们是扩展而非规格内容，
 因此不混进那一行——表格与规格保持可机械核对的一致，差异集中记在下方取舍里。
 同理，`S3` / `OBS` / `OSS` / `COS` 各自的字段列表也是规格原文（`COS` 除外，它整套是本工程定义的）；
-本工程给这四种类型加的 `accessKeyId` / `secretAccessKey` 同样不进表格，只记在下方取舍里。
+本工程给这四种类型加的 `accessKeyId` / `secretAccessKey`，以及 `S3` 上的 `noInlinePolicy`，
+同样不进表格，只记在下方取舍里。
 
 **七种存储配置均已实现**：`S3` / `AZURE` / `GCS` 的类型专属字段会原样保存并回读，
 `AZURE` 的 `tenantId` 按其 `required` 校验（缺失返回 400）。
@@ -256,6 +257,13 @@
   加密密钥由 `lakehouse.rest.storage.credential-secret-key` 提供，未配置时保存这类凭据
   返回 400（fail-closed，不明文落库）。打码只覆盖 catalog 的 `storageConfigInfo`；
   执行集群那套凭据（`ExecutionClusterDtos`）的 `accessKeyId` 仍回显，是另一条契约。
+
+- `AwsStorageConfigInfo` 另带一个 `noInlinePolicy`（boolean，本工程扩展，规格里没有）：
+  为 `true` 时服务端签发临时凭据的 `AssumeRole` 不带 inline session policy，供 VAST 这类
+  「收到 `Policy` 就回 501」的 S3 兼容实现使用；代价是票退回角色自身权限、**无法按表收窄**。
+  缺省/`null` = 带 policy（照旧收窄）。**与 `stsUnavailable` 同时为 `true` 返回 400**：
+  后者表示「根本不申请临时凭据」，两者同时出现时前者永不生效。
+  它同样不进上面那张规格表格——理由与 `accessKeyId` 那对相同。
 
 `ConnectionConfigInfo` 仍只按 Iceberg REST 形态处理。
 

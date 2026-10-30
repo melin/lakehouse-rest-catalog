@@ -124,6 +124,19 @@ public final class StorageDtos {
      * {@code secretAccessKey} 只写不读。它们与 {@code roleArn} 系列是两条互斥的路：
      * 前者是「用这把长期钥匙直接访问」，后者是「服务端去 assume 这个角色」，
      * 两者同时出现在一份配置里没有确定语义，由 {@code StorageConfigs} 拒绝。
+     *
+     * <p><b>{@code noInlinePolicy}（本工程扩展，对照设计稿 §3.5.3）。</b>VAST 等
+     * S3 兼容实现的 STS **不接受** inline session policy，收到 {@code Policy} 参数直接回 501；
+     * 为 {@code true} 时服务端 {@code AssumeRole} 不带 policy，代价是这张票的作用域
+     * 退回角色自身权限（**按表收窄失效**）。
+     *
+     * <p>它是**显式开关、默认 {@code null}=带 policy**，而不是「S3 兼容就默认不带」。
+     * 判据本来就不存在：MinIO / Ceph RGW / Ozone 与 VAST 在本工程里都是
+     * {@code storageType=S3} 加一个自定义 {@code endpoint}，没有字段能把「接受 policy」
+     * 与「拒绝 policy」分开。按「有 endpoint 就不带」去推测，会让所有**接受** policy 的
+     * 自建存储静默失去收窄——那正是本项目反复警告的「看起来生效了、实际什么都没收窄」，
+     * 而它与「真能跑」的表象完全一样。因此宁可让 VAST 的运维先吃一次 501、
+     * 由控制台在那两个字段旁边直接写明这条退路，也不替全部自建存储默认关掉收窄。
      */
     public record AwsStorageConfigInfo(List<String> allowedLocations,
                                        String storageName,
@@ -136,6 +149,7 @@ public final class StorageDtos {
                                        String endpoint,
                                        String stsEndpoint,
                                        Boolean stsUnavailable,
+                                       Boolean noInlinePolicy,
                                        String endpointInternal,
                                        Boolean pathStyleAccess,
                                        Boolean kmsUnavailable,

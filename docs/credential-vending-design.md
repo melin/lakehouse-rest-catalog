@@ -609,6 +609,19 @@ catalog 显式配了 AK/SK 且用户选了那档时才发生，二者**正交**�
 为 true 时省略 policy（牺牲收窄，换取能跑）。落到我们 §6.2 是：**S3 兼容存储默认不带 inline policy，
 界面上要显式告诉用户「此存储下无法按表收窄」**——这比 501 之后才发现好。
 
+**落地时改了默认值（P1-11，2026-10-30）。** 上面那句「默认不带」在本工程里**没有照做**，
+默认是「带」，`noInlinePolicy` 必须由 catalog 显式打开。理由是那条判据根本不存在：
+MinIO / Ceph RGW / Ozone 与 VAST 在这里都是 `storageType=S3` 加一个自定义 `endpoint`，
+**没有字段能把「接受 policy」和「拒绝 policy」分开**。真按「有 endpoint 就不带」去推断，
+所有**接受** policy 的自建存储会静默失去收窄——而表征与「真能跑」完全一样，
+正是本文反复警告的那类「看起来生效了、实际什么都没收窄」。Polaris 能做「默认不带」
+是因为它的 S3-compatible 是一个显式存储类型；我们不是。
+
+代价是 VAST 的运维会先吃一次 501。补偿办法放在界面上，不放在默认值里：
+① 字段边上的 `hint` 直接写「收到 `Policy` 会回 501」；② 打开后折叠区**外面**出现一条
+告警「无法按表收窄」；③ 「保存后凭据来源」那句由服务端判定的原文也改口径，
+不再说「按表收窄」。三处都是「当场说清楚」，而不是替全部自建存储关掉收窄。
+
 #### 3.5.4 Azure 键名第四种形态，与 per-scope 铸 SAS
 
 #4991 补了 bare 键（`adls.sas-token` + `adls.account-name`），#5578 补了 per-scope：
@@ -823,6 +836,28 @@ catalog 级票，那里要显式写明这一点。
 注意文章里那句提醒：**不要把敏感元数据塞进 session tag**，IAM session tag 是常见的泄露点（它会被
 写进云侧审计日志，也可能被 ABAC 策略引用）。
 
+**落地（P1-5）：`RoleSessionName` 已有，session tags 做成可开且默认关。** 两者是同一件事的两种表达，
+能力不同：session name 是一个字符串，云侧只能做前缀/包含匹配；tag 是结构化键值对，能按
+`lh:principal = alice` 直接过滤、也能被 ABAC 当条件引用。落地发三个 tag：
+
+| tag | 值 | 为什么是它 |
+| --- | --- | --- |
+| `lh:principal` | 调用者标识 | 「谁」——唯一来自请求输入的一维，必须按 STS 字符集规整（见下） |
+| `lh:scope` | 表 id，服务端自己取票时是 `catalog:<id>` | 「哪张表」。与 session name 里的后缀同源，便于两边对照 |
+| `lh:access` | `read` / `write` | 「读还是写」。只读票被拿去写会 403，而那 403 在存储侧，与签票时的决定隔着好几层 |
+
+**为什么默认关，而不是默认开。** 这不是保守，是一个会让 `AssumeRole` **直接失败**的外部前提：
+AWS 要求被 assume 的角色信任策略放行 `sts:TagSession`，没放行时带 tag 的调用回 `AccessDenied`。
+默认打开等于把一次纯运维配置塞进升级动作里——升级完所有读表 503，报错还是「权限不足」，
+而配置里什么都没改。所以：先在信任策略里加 `sts:TagSession`，再开
+`lakehouse.rest.credential.session-tags: true`。关闭时**不传 `Tags` 集合**（不是传空数组），
+请求与改造前逐字节相同。
+
+**值的规整按 tag 自己的字符集**（字母、数字、空格与 `_ . : / = + - @`），不是照抄 session name 的
+`[\w+=,.@-]`：两者集合不同（tag 允许 `:` `/` 空格，不允许 `,`）。目录服务的主体标识常带逗号
+（`cn=alice,ou=people`），原样发出去会在签名阶段 `ValidationError`。非法字符换成 `-`，
+空值给 `unknown`/`service` 占位——空串会被 STS 拒，而报错只提 value。
+
 ### 5.7 服务端身份要分层，且服务端自己也是凭据消费者
 
 **先说第二个消费者。** 本文前面所有内容都假设凭据是「发给引擎的」。其实还有一处：服务端自己的 FileIO
@@ -908,7 +943,7 @@ Gravitino #11853 就是在补这件事：把 vended credentials 也注入**服�
 | 阿里云 OSS | RAM STS `AssumeRole` | `Policy` 收窄到 `acs:oss:*:*:<bucket>/<prefix>/*` | `DurationSeconds` 900–3600；角色 `MaxSessionDuration` 最长 12h | `fs.oss.*`（含 `securityToken`） | endpoint 必须与 region 匹配；`securityToken` 走 `x-oss-security-token` 头；Hadoop 侧不续期 |
 | 华为云 OBS | IAM `POST /v3.0/OS-CREDENTIAL/securitytokens`（`CreateTemporaryAccessKeyByAgency`） | `policy` 字段（**仅 OBS 认这条限制**，≤2048 字符，与委托权限取交集） | `duration_seconds` 15 分钟 – 24 小时 | `fs.obs.*`（含 `session.token`） | 得先建委托（agency）；请求头带 `x-security-token`；policy 里用 `obs:prefix` 条件限定前缀 |
 | 腾讯云 COS | ~~腾讯云 STS `AssumeRole`，policy 用 CAM 格式~~ **v7：不做签发**——COSN 的 FileIO 不收临时凭据，签出来没人消费（§6.3.4） | 只能转发长期 AK/SK；CAM policy 的写法留作备查（§6.3.3） | — | `fs.cosn.*`（`secretId` / `secretKey` / 区域 / 端点 / `useHttps`） | **COSN 原生只覆盖 JVM 面**：Iceberg 只能 `HadoopFileIO` 且下发断链、Lance 无 COSN 只能 S3 兼容；**不能设 `fs.cosn.credentials.provider`**（那个类不存在） |
-| S3 兼容（MinIO / Ceph RGW / Ozone / VAST） | 有的实现有 STS、有的没有；有 STS 的也可能**不接受 inline session policy**（VAST 返回 501） | 有则同 S3，但要能关 policy；无则静态 | — | 同 S3 | **必须保留静态转发路径**；有 STS 但拒绝 inline policy 的，默认**不带 policy**（牺牲收窄换能跑，§3.5.3） |
+| S3 兼容（MinIO / Ceph RGW / Ozone / VAST） | 有的实现有 STS、有的没有；有 STS 的也可能**不接受 inline session policy**（VAST 返回 501） | 有则同 S3，但要能关 policy；无则静态 | — | 同 S3 | **必须保留静态转发路径**；有 STS 但拒绝 inline policy 的，由 catalog 显式开 `noInlinePolicy`（默认仍带 policy，牺牲收窄换能跑，§3.5.3 有为什么不是默认） |
 
 ### 6.2 逐条补充
 
@@ -1278,13 +1313,13 @@ object_store 认的是 `aws_access_key_id` / `aws_secret_access_key` / `aws_sess
 | P1-2 | OSS STS（`acs:ram`）+ policy 收窄 | 一个 RAM Role + `AssumeRole` 权限 |
 | P1-3 | OBS `CreateTemporaryAccessKeyByAgency` + `policy` 收窄 | 一个 IAM 委托（agency） |
 | P1-4 | GCS downscoped token（`CredentialAccessBoundary`） | 服务账号 + `serviceAccountTokenCreator` |
-| P1-5 | 审计归因：`RoleSessionName` / session tags | 无 |
+| ✅ P1-5 | 审计归因：`RoleSessionName` / session tags | `RoleSessionName` 随 P0-2 已落地（`lh-<principal>-<scopeId>`，按 STS 字符集规整）；session tags 落在 `lakehouse.rest.credential.session-tags`（**默认 false**），带 `lh:principal` / `lh:scope` / `lh:access` 三个 tag。用例：`sessionTagsAreLeftOutOfTheRequestUnlessTheDeploymentOptsIn`（默认不带）、`sessionTagsNameThePrincipalTheScopeAndTheDirection`、`sessionTagValuesAreSanitisedToTheStsCharset`（逗号规整 + 空值占位）。**默认关的原因写在 §5.6**：信任策略不放行 `sts:TagSession` 时带 tag 会 `AccessDenied`，默认开会把升级变成故障。**未验**：没有真实 STS，`Tag` 集合只在命令对象上断言 |
 | ◑ P1-6 | 控制台：创建页三态来源 + 参数 + 引擎片段；catalog 列表与详情标出「长期凭据 / 短期凭据 / 不下发」 | **已落地「标记」这一半**：判定在服务端（`CatalogCredentialSource`，四档 `STS` / `RELAY` / `NONE` / `INVALID`），经批量端点 `GET /api/console/v1/catalog-credential-sources` 下发；catalog 列表多一列、详情页多一段（含「取票要哪个权限点」与「能否续期」）。**与 §10 的偏差**：原型里那三个**每 catalog 的新字段**（`credentialProviders` / `credentialTtlSeconds` / `credentialReadOnly`）P0 没有采用——来源是由现有 `storageConfigInfo` + 全局 `credential.providers` 推断出来的，因此不需要新字段、也不需要接口形状变更。**已补**：新建 / 编辑表单里的实时预览（`POST /api/console/v1/catalog-credential-source`，输入是还没保存的草稿，服务端用同一个判定）——它替掉了原型的「行内提示」，因为要说的不止 `roleArn` 一条（见 §10.9）。**未做**：创建页的三态选择器、`stsUnavailable` 冲突框、五面引擎片段（§10.2–§10.6），理由是选择器会与「存储配置本身就能表达来源」重复（见 §10.8 / §10.9） |
 | ✅ P1-7 | **判权拆两个权限点**：`CATALOG:USE_CREDENTIAL` 与 `CATALOG:USE_SECRET`（§3.4.3） | 落地形态：`/token` 与 `/credentials` 改判 `USE_CREDENTIAL`（`/auth`、`/plan` 仍是 `SELECT`），票里含长期密钥对时再判 `USE_SECRET`；`VendedStorageCredential#carriesLongTermKeyPair()` 是唯一判据。用例：`CredentialAccessSplitTests` 五条（只有取票权→403 点名 `USE_SECRET`；两个都有→照常下发；只有 `USE_SECRET`→403 点名 `USE_CREDENTIAL`；都没有→403；判据只看载荷不看存储类型）+ `LanceCredentialAccessTests` 四条（Lance 面的两道判定、短期票免 `USE_SECRET`、不带参数不判权也不带密钥）+ `CatalogEndpointAuthorizationTests` 的映射与作用域断言。**行为变更**：细粒度 `SELECT` 授权升级后需补 `USE_CREDENTIAL`，`ALL` 不受影响 |
 | P1-8 | ✅ **AK ID 打码 + 打码回写哨兵**（§3.4.4）：`withoutSecrets` 一个出口打码，`mergeStaticCredentials` 认哨兵；`******` + 空密钥 = 两个都不动，`******` + 新密钥 = 只换密钥，库里没有原值或把哨兵当密钥则 400 | 用例：`StaticCredentialApiTests` 的 `maskedAccessKeyIdSurvivesARenameOnlyUpdate`（设计稿点名的验收）、`maskedAccessKeyIdWithOmittedSecretKeepsBoth`、`maskedAccessKeyIdWithANewSecretRotatesOnlyTheSecret`、`maskedAccessKeyIdOnANewCatalogIsRejected`、`maskedValueAsSecretIsRejected`；范围仅 catalog 的 `storageConfigInfo`，执行集群那套凭据仍回显 |
 | ✅ P1-9 | **服务端自身 FileIO 走独立取票**（§5.7），作用域是 catalog 的允许位置，不复用任何用户的表级票 | 两类作用域分开（`vend` vs `vendForCatalog`）、写权限显式传、缓存键不撞 → `ServerSideCredentialTests`（9 例）；「只配 `roleArn` 的 catalog 上优化任务跑通」**需真实 S3，未跑** |
 | P1-10 | **联邦/多级 catalog 的 header 透传与 refresh 端点回写**（G17，对照 #12950） | 现在没有联邦，留位；做的时候按 #12950 的两条断言写用例 |
-| P1-11 | **S3 兼容存储的 `noInlinePolicy` 选项**（§3.5.3）：为 true 时省略 inline session policy，界面明说「此存储下无法按表收窄」 | VAST 等 STS 不接受 policy 的存储跑通；默认不带 policy |
+| ✅ P1-11 | **S3 兼容存储的 `noInlinePolicy` 选项**（§3.5.3）：为 true 时省略 inline session policy，界面明说「此存储下无法按表收窄」 | 落地：字段加在 `AwsStorageConfigInfo`（record，紧跟 `stsUnavailable`）；`S3TokenCredentialProvider` 在 true 时传 `policy=null` 并打一条 WARN（「票的作用域是角色自身，不是这张表」）；`CatalogCredentialSource` 的 STS 档改成「无法按表收窄」的口径，那条原文直接显示在表单的「保存后凭据来源」里。用例：`noInlinePolicyOmitsTheSessionPolicyWithoutChangingTheTicket`（断言 `policy()` 是 **null**，不是空串）、`noInlinePolicyStillRefusesLocationsItCannotScope`（不带 policy 时「认不出作用域就不签」更重要）、`noInlinePolicyConflictsWithStsUnavailable`（400，语义互斥）、`noInlinePolicySurvivesPersistenceAndEveryRewrite`（`copyWith` / `withCredentials` 漏字段会让它「保存一次就悄悄丢」）。**与设计的偏差**：默认值不是「不带」而是「带」，理由见 §3.5.3 末尾——判据（接受/拒绝 policy）在 `storageType=S3` 上加 `endpoint` 这个形态里根本不存在。**未验**：VAST 真机没跑过，`policy=null` 这一侧只有单测；「省略 policy 后仍 501」只可能是该实现连 `DurationSeconds` 都不支持，那是另一条路 |
 | ✅ P1-12 | **腾讯云 COS 落地**（§6.3.5 六处）：`StorageType.COS` / `TencentCosStorageConfigInfo` / `FileIoType.COS("cosn")` / `COS_KEYS` / `Storage.Cos` / `paimon-cosn` 依赖 | 键名与来源由用例钉住：`cosVendsItsOwnKeyFamilyWithExactCase`（大小写敏感的 `secretId` / `secretKey` + 区域 + 端点 + `useHttps`）/ `cosDefaultsToHttpsUnlessExplicitlyDisabled` / `cosKeepsLocationKeysWhenStsUnavailable` / `cosFallsBackToEnvironmentWhenNothingConfigured` / `cosPrefersNamedStorageAndFailsOnUnknownName` / `cosConfigCarriesEndpointRegionAndAppId` / `cosAppIdMustMatchTheBucketName`；静态凭据的 HTTP 语义并入 `obsOssAndCosAlsoAcceptStaticCredentials`。**「`cosn://` 端到端跑一次」需真实 COS 账号，未跑**（同 P0-8 的偏差） |
 | ❌ P1-13 | **~~COS 临时档必发 `fs.cosn.credentials.provider`~~（G18）——经核查作废**：COSN 的 FileIO 既没有令牌键、也没有 session-token provider，签出来的票没有消费者（§6.3.4） | 反向验收：`cosNeverVendsASessionTokenOrAProviderClass` 断言这两类键一个都不出现；`cosRefusesToVendATemporaryCredential` 断言「配了 `sessionToken` 就 500 并点名 `lakehouse.rest.storage.cos`」。**上游补上这个 provider 之前，本节不能按原样实现** |
 
@@ -1332,7 +1367,19 @@ Iceberg 面连凭据都收不到，所以「TTL 覆盖作业时长」这条对 C
 
 **9.7 `credential-secret-key` 轮换的爆炸半径。** 换了密钥，所有 catalog 的静态凭据都解不开，
 表现为 500（而不是降级）。这是刻意的（不给安全承诺开后门），但轮换流程要写进运维手册：先双密钥
-可解 → 再重写全部密文 → 最后下掉旧密钥。目前没有"双密钥"能力，是第一件要做的基础设施。
+可解 → 再重写全部密文 → 最后下掉旧密钥。~~目前没有"双密钥"能力，是第一件要做的基础设施。~~
+
+**已实现（2026-10-30）。** `lakehouse.rest.storage.credential-secret-key-previous` 补上了
+第一步：解封先试当前钥、再试上一把；**加密永远用当前钥**（若两把都能加密，库里会永远一半新
+一半旧，轮换就永远结束不了）。旧钥解成功的每一次都打一条 INFO——它同时是「这部分密文还没被
+重写」的唯一信号，第三步「删掉 previous」就取决于这条日志有没有了。
+
+两个配置错误启动即失败：配了 previous 却没有当前钥（会造出「新存不了、旧的还能读」的怪状态）、
+两把填成一样（轮换看着配好了、实际什么都没发生）。
+
+**剩下的第二步仍是手动的**：把还带旧密文的 catalog 逐个重新保存（`PUT` 时原样再交一次
+`secretAccessKey`）。没有做批量重写端点——那需要扫全表、逐行解密再加密，是一个独立的后台任务，
+且失败时要不要回滚没有便宜的答案；在那之前，「按日志点名重存」是可执行的做法。
 
 **9.8 凭据进日志。** `VendedStorageCredential` 的 `source` 刻意不进 `token()`，就是为了避免
 "诊断信息混进引擎配置"。新增 provider 时要守住同一条：**密钥只进响应体，不进日志、不进事件

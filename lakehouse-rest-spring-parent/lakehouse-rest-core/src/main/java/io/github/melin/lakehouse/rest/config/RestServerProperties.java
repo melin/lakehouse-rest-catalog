@@ -525,6 +525,26 @@ public class RestServerProperties {
          * 只会让转发档每次读表都重新解析一遍配置，换不到任何安全收益。
          */
         private double cacheExpireRatio = 0.15;
+
+        /**
+         * AssumeRole 时是否带 session tags（审计归因），默认 {@code false}。
+         *
+         * <p>打开后每次签发带三个 tag：{@code lh:principal} / {@code lh:scope} /
+         * {@code lh:access}，云侧的 CloudTrail 与 S3 访问日志里就能直接看出
+         * 「哪个人、读哪张表、读还是写」（设计稿 §5.6）。{@code RoleSessionName}
+         * 只到「谁 + 哪个 scope」，而且它是**字符串**，没法按字段过滤；tag 可以。
+         *
+         * <p><b>为什么默认关：这是一个会让 AssumeRole 直接失败的外部前提。</b>
+         * AWS 要求被 assume 的角色信任策略里放行 {@code sts:TagSession}，
+         * 没有这一句时带 tag 的调用回 {@code AccessDenied}——现象是「升级之后所有读表
+         * 都 503，报错还是权限不足」，而配置里什么都没改。默认打开等于把一个
+         * 纯运维决定塞进升级动作里。要启用：先在信任策略里加 {@code sts:TagSession}，
+         * 再写 {@code lakehouse.rest.credential.session-tags: true}。
+         *
+         * <p>关掉时**不传 tag 集合**（不是传空数组）：两者的云侧行为一样，
+         * 但「不传」能保证与改造前的请求逐字节相同，抓包对比因此还能用。
+         */
+        private boolean sessionTags = false;
     }
 
     /** 启动时预置的 catalog 与 database。 */
@@ -633,6 +653,34 @@ public class RestServerProperties {
          * 取值非法（不是 base64、或解出来不是 32 字节）属于配置错误，启动即失败。
          */
         private String credentialSecretKey;
+
+        /**
+         * 上一把加密密钥（base64 的 32 字节），只在**轮换期间**配置，格式同
+         * {@link #credentialSecretKey}。
+         *
+         * <p><b>为什么需要它。</b>没有这一项时，换密钥是一次「全站立刻失能」的操作：
+         * 所有 catalog 的静态凭据都是旧钥密封的，换完第一秒起每一次下发都 500
+         * （{@code CredentialCipher#reveal} 里那句「sealed with a different key」）。
+         * 于是换钥只能靠「停机 + 批量重写」，而多数团队会因此永远不换——
+         * 一个不敢用的安全措施等于没有。配了上一把之后，轮换变成三步：
+         *
+         * <ol>
+         *   <li>新钥写 {@code credential-secret-key}，旧钥写本项，重启——</li>
+         *       之后新旧密文都能解开；{@code seal} 一律用新钥（写永远是新的）。</li>
+         *   <li>把还带旧密文的 catalog 逐个重新保存一次（`PUT` 时 {@code secretAccessKey}
+         *       原样再交一次，或走一次运维脚本），密文即被新钥重写。</li>
+         *   <li>确认没有旧密文在用之后，删掉本项再重启。</li>
+         * </ol>
+         *
+         * <p><b>它只是「读的兜底」，不是第二把当前钥</b>：加密永远用
+         * {@code credential-secret-key}。若允许「按哪把钥加密都行」，轮换就永远结束不了
+         * ——永远有一半新一半旧的密文，而它们看着完全一样。
+         *
+         * <p>取值非法（不是 base64、或解出来不是 32 字节）同样启动即失败：
+         * 让它带着「旧密文解不开」的状态跑起来，现象是「换钥之后一半 catalog 报 500」，
+         * 而这本来正是这一项要消除的现象。
+         */
+        private String credentialSecretKeyPrevious;
 
         /** STS 客户端缓存上限，对应 Polaris 的 {@code polaris.storage.clients-cache-max-size}。 */
         @Min(1)

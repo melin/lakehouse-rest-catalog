@@ -264,6 +264,19 @@
         （展开可查看；留空的项不会出现在提交体里）
       </p>
 
+      <!-- noInlinePolicy 打开的后果必须留在**折叠区之外**：它是整份配置里唯一一条
+           「安全属性被主动降级」的声明，收进折叠区就等于只有点开的人知道。
+           那句话本身在前面的「凭据来源」里也有一份（服务端判定），两处都留是因为
+           它们回答的问题不同：这里答「我打开了什么」，那里答「这张票长什么样」。 -->
+      <p
+        v-if="form.storageType === 'S3' && form.extras.noInlinePolicy"
+        class="pc-field-note pc-field-note-warn"
+      >
+        <code>noInlinePolicy</code> 已打开：服务端 AssumeRole 时不带 inline policy，
+        这张票的作用域是<b>角色自身权限</b>，<b>无法按表收窄</b>。
+        只有 VAST 这类「收到 <code>Policy</code> 就回 501」的存储才需要它。
+      </p>
+
       <TipAlert
         v-if="carriedKeys.length"
         type="info"
@@ -397,6 +410,14 @@ const ADVANCED_FIELDS = {
     { key: 'stsEndpoint', label: 'stsEndpoint', placeholder: '可选，STS 端点', group: 'STS 与角色' },
     { key: 'endpointInternal', label: 'endpointInternal', placeholder: '可选，内网端点', group: 'STS 与角色' },
     { key: 'stsUnavailable', label: 'stsUnavailable', type: 'bool', group: 'STS 与角色' },
+    {
+      key: 'noInlinePolicy',
+      label: 'noInlinePolicy',
+      type: 'bool',
+      group: 'STS 与角色',
+      hint: '只给「不接受 inline session policy」的 S3 兼容存储（VAST 等，收到 Policy 会回 501）。'
+        + '打开后服务端签发时不带 policy，票的作用域退回角色自身权限——换来能跑，代价是无法按表收窄。',
+    },
     { key: 'pathStyleAccess', label: 'pathStyleAccess', type: 'bool', group: '访问方式' },
     { key: 'kmsUnavailable', label: 'kmsUnavailable', type: 'bool', group: 'KMS 与加密' },
     { key: 'encryptionKeys', label: 'encryptionKeys', type: 'list', placeholder: 'KMS 密钥 ARN', group: 'KMS 与加密' },

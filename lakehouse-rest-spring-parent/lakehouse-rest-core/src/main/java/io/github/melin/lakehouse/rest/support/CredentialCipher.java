@@ -4,10 +4,13 @@ import io.github.melin.lakehouse.rest.config.RestServerProperties;
 import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
 import java.security.SecureRandom;
+import java.util.Arrays;
 import java.util.Base64;
 import javax.crypto.Cipher;
 import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 /**
@@ -38,9 +41,17 @@ import org.springframework.stereotype.Component;
  * <p><b>GCM 的参数由实现固定，不放进配置。</b>IV 长度 12 字节、认证标签 128 位是
  * GCM 的推荐取值；把它们做成配置项只会多出「配错了才炸」的组合，
  * 而版本前缀已经承担了将来换算法/换参数的演化职责。
+ *
+ * <p><b>密钥轮换靠「上一把只解密」。</b>{@code credential-secret-key-previous} 在轮换期间
+ * 兜住旧密文，{@link #seal} 永远用当前钥。这样换钥不再是一次全站失能的操作，
+ * 而是一个可以分三步做完的过程（见 {@link #reveal} 里那条 INFO：它同时是「还有旧密文」
+ * 的信号）。前缀仍是 {@code v1:}——两把钥用的是同一套算法与参数，用不同前缀去区分
+ * 「哪把钥封的」只会让密文多一种形态，而判别密钥本就不是前缀的职责。
  */
 @Component
 public class CredentialCipher {
+
+    private static final Logger log = LoggerFactory.getLogger(CredentialCipher.class);
 
     /** 密文前缀，兼作「这串是密封值而不是明文」的判别依据。 */
     public static final String SEALED_PREFIX = "v1:";
@@ -64,8 +75,33 @@ public class CredentialCipher {
     /** 为 null 表示未配置密钥，静态凭据功能关闭。 */
     private final SecretKeySpec key;
 
+    /**
+     * 上一把密钥：只在轮换期间有值，**只用于解密**。
+     *
+     * <p>加密永远走 {@link #key}。理由见 {@code RestServerProperties} 里
+     * {@code credential-secret-key-previous} 的说明——「两把都能加密」会让轮换永远结束不了。
+     */
+    private final SecretKeySpec previousKey;
+
     public CredentialCipher(RestServerProperties properties) {
         this.key = parseKey(properties.getStorage().getCredentialSecretKey());
+        SecretKeySpec previous = parseKey(properties.getStorage().getCredentialSecretKeyPrevious());
+        if (previous != null && key == null) {
+            // 「有旧钥、没有当前钥」不是一个有意义的中间态：写路径已经关闭（available=false），
+            // 只剩一个能解开旧密文的读路径。运维配成这样几乎一定是漏填了当前钥，
+            // 而现象会是「新存不了、旧的还能读」——比直接报错更难判。
+            throw new IllegalStateException("lakehouse.rest.storage.credential-secret-key-previous is"
+                    + " set but credential-secret-key is not; the previous key only exists to bridge"
+                    + " a rotation, so the new key must be configured too");
+        }
+        if (previous != null && Arrays.equals(previous.getEncoded(), key.getEncoded())) {
+            // 两把填成一样是配置失误：轮换这件事等于没做，而运维会以为「双钥已就位」。
+            // 不静默接受，否则第三步「删掉旧的」永远不会被触发。
+            throw new IllegalStateException("lakehouse.rest.storage.credential-secret-key-previous is"
+                    + " the same as credential-secret-key; during a rotation it must be the key they"
+                    + " are replacing, otherwise nothing is actually rotated");
+        }
+        this.previousKey = previous;
     }
 
     /** 本部署能否保存静态凭据。控制台与写路径都按它决定行为。 */
@@ -138,17 +174,49 @@ public class CredentialCipher {
             throw new ApiException(500, null, null,
                     "stored storage credential is too short to contain an initialization vector");
         }
+        String plain = decrypt(payload, key);
+        if (plain != null) {
+            return plain;
+        }
+        // 轮换期间：旧密文还能用旧钥解开。**成功时打 INFO 是有意的**——
+        // 它同时是「这部分密文还没被新钥重写」的唯一信号，而轮换的第三步
+        // （删掉 previous）就取决于「还有没有这条日志」。
+        String withPrevious = decrypt(payload, previousKey);
+        if (withPrevious != null) {
+            log.info("revealed a storage credential sealed with the PREVIOUS"
+                    + " credential-secret-key; re-save that catalog so it gets re-sealed with the"
+                    + " current key, then drop lakehouse.rest.storage.credential-secret-key-previous");
+            return withPrevious;
+        }
+        // 认证标签校验失败只有两种原因：密钥换了，或密文被改过。两者都要人来处理
+        throw new ApiException(500, null, null,
+                "stored storage credential cannot be decrypted with the configured"
+                        + " lakehouse.rest.storage.credential-secret-key"
+                        + (previousKey == null
+                        ? "; it was sealed with a different key"
+                        : " nor with credential-secret-key-previous; it was sealed with yet another key,"
+                        + " or the value was tampered with"));
+    }
+
+    /**
+     * 用指定密钥解一次；密钥不对（认证标签不匹配）时返回 {@code null} 而不是抛异常。
+     *
+     * <p>轮换兜底需要「试一次、失败就换下一把」，把失败表达成返回值最省事；
+     * 真正的失败（两把都不对）由调用方给出唯一的错误信息——两份错误文本会让
+     * 「用哪把钥解不开」这件事变得像两个不同的问题。
+     */
+    private static String decrypt(byte[] payload, SecretKeySpec candidate) {
+        if (candidate == null) {
+            return null;
+        }
         try {
             Cipher cipher = Cipher.getInstance(TRANSFORMATION);
-            cipher.init(Cipher.DECRYPT_MODE, key,
+            cipher.init(Cipher.DECRYPT_MODE, candidate,
                     new GCMParameterSpec(TAG_BITS, payload, 0, IV_BYTES));
             byte[] plain = cipher.doFinal(payload, IV_BYTES, payload.length - IV_BYTES);
             return new String(plain, StandardCharsets.UTF_8);
-        } catch (GeneralSecurityException failure) {
-            // 认证标签校验失败只有两种原因：密钥换了，或密文被改过。两者都要人来处理
-            throw new ApiException(500, null, null,
-                    "stored storage credential cannot be decrypted with the configured"
-                            + " lakehouse.rest.storage.credential-secret-key; it was sealed with a different key");
+        } catch (GeneralSecurityException mismatch) {
+            return null;
         }
     }
 

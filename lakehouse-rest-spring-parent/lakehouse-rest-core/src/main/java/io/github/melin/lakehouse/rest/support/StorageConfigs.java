@@ -79,7 +79,31 @@ public final class StorageConfigs {
         if (info instanceof TencentCosStorageConfigInfo cos) {
             requireCosBucketMatchesAppId(cos);
         }
+        if (info instanceof AwsStorageConfigInfo s3) {
+            requireInlinePolicyDecisionIsCoherent(s3);
+        }
         requireSingleCredentialSource(info);
+    }
+
+    /**
+     * {@code noInlinePolicy} 与 {@code stsUnavailable} 不能同时为真。
+     *
+     * <p>两者的意思正好相反：{@code stsUnavailable=true} 说「这个存储没有 STS，
+     * 别去申请临时凭据」；{@code noInlinePolicy=true} 说「去申请，但别带 policy」。
+     * 同时成立时，实际行为是**一条都不签发**（前者优先级更高），于是后者是个
+     * 永远不生效的设置。这种「配置里写着、运行时读不到」的组合必须当场拒掉：
+     * 它留在库里，下一个维护者会以为收窄是被有意关掉的，而真正的原因在另一个字段。
+     *
+     * <p>反过来「只开 {@code noInlinePolicy}、没填 {@code roleArn}」不拦：
+     * 那只是暂时用不上，而 {@code roleArn} 大多是后来补的（先建 catalog 再滚角色）。
+     */
+    private static void requireInlinePolicyDecisionIsCoherent(AwsStorageConfigInfo s3) {
+        if (Boolean.TRUE.equals(s3.noInlinePolicy()) && Boolean.TRUE.equals(s3.stsUnavailable())) {
+            throw ApiException.badRequest("storageConfigInfo.noInlinePolicy and stsUnavailable are"
+                    + " mutually exclusive: stsUnavailable=true means \"do not request temporary"
+                    + " credentials at all\", so noInlinePolicy would never take effect; keep"
+                    + " stsUnavailable=false if you want credentials without an inline policy");
+        }
     }
 
     /**
@@ -233,7 +257,7 @@ public final class StorageConfigs {
         List<String> locations = allowedLocations == null ? new ArrayList<>() : allowedLocations;
         return switch (type) {
             case S3 -> new AwsStorageConfigInfo(locations, null, null, null, null,
-                    null, null, null, null, null, null, null, null, null, null, null);
+                    null, null, null, null, null, null, null, null, null, null, null, null);
             case AZURE -> new AzureStorageConfigInfo(locations, null, null, null, null, null);
             case GCS -> new GcpStorageConfigInfo(locations, null, null);
             case OBS -> new HuaweiObsStorageConfigInfo(locations, null, null, null, null, null);
@@ -453,7 +477,7 @@ public final class StorageConfigs {
             return new AwsStorageConfigInfo(s3.allowedLocations(), s3.storageName(),
                     s3.roleArn(), s3.externalId(), s3.userArn(),
                     s3.encryptionKeys(), s3.decryptionKeys(), s3.region(),
-                    s3.endpoint(), s3.stsEndpoint(), s3.stsUnavailable(),
+                    s3.endpoint(), s3.stsEndpoint(), s3.stsUnavailable(), s3.noInlinePolicy(),
                     s3.endpointInternal(), s3.pathStyleAccess(), s3.kmsUnavailable(),
                     accessKeyId, secretAccessKey);
         }
@@ -499,7 +523,7 @@ public final class StorageConfigs {
             return new AwsStorageConfigInfo(locations, storageName,
                     s3.roleArn(), s3.externalId(), s3.userArn(),
                     s3.encryptionKeys(), s3.decryptionKeys(), s3.region(),
-                    s3.endpoint(), s3.stsEndpoint(), s3.stsUnavailable(),
+                    s3.endpoint(), s3.stsEndpoint(), s3.stsUnavailable(), s3.noInlinePolicy(),
                     s3.endpointInternal(), s3.pathStyleAccess(), s3.kmsUnavailable(),
                     s3.accessKeyId(), s3.secretAccessKey());
         }

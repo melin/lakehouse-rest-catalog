@@ -318,7 +318,7 @@ meta 只暴露枚举取值与服务端自身的配置，不含任何主体、cat
 
 | 存储类型 | 主表单 | 折叠区 |
 | --- | --- | --- |
-| `S3` | `region`、`endpoint` | `roleArn`、`externalId`、`userArn`、`stsEndpoint`、`endpointInternal`、`stsUnavailable`、`pathStyleAccess`、`kmsUnavailable`、`encryptionKeys`、`decryptionKeys`（10 项，分「STS 与角色 / 访问方式 / KMS 与加密」三组） |
+| `S3` | `region`、`endpoint` | `roleArn`、`externalId`、`userArn`、`stsEndpoint`、`endpointInternal`、`stsUnavailable`、`noInlinePolicy`、`pathStyleAccess`、`kmsUnavailable`、`encryptionKeys`、`decryptionKeys`（11 项，分「STS 与角色 / 访问方式 / KMS 与加密」三组） |
 | `AZURE` | `tenantId`（必填） | `multiTenantAppName`、`consentUrl`、`hierarchical` |
 | `GCS` | — | `gcsServiceAccount` |
 | `OBS` / `OSS` | `endpoint` | `stsUnavailable` |
@@ -347,11 +347,15 @@ meta 只暴露枚举取值与服务端自身的配置，不含任何主体、cat
   服务端 `StorageConfigInfo` 是判别联合，未知键会被静默丢弃（这一行为有测试钉死：
   `StorageConfigApiTests.fieldsBelongingToAnotherStorageTypeAreIgnored`），
   要做「任意键」得先扩服务端契约。
-- **这 10 项里服务端当前只消费 2 项**（`pathStyleAccess` → 下发 `s3.path-style-access`，
-  `stsUnavailable` → 决定是否下发密钥）。其余 8 项接收、落库、回显，但不参与行为——
+- **这 11 项里服务端当前只消费 3 项**（`pathStyleAccess` → 下发 `s3.path-style-access`，
+  `stsUnavailable` → 决定是否下发密钥，`noInlinePolicy` → 签发时不带 inline policy）。
+  其余 8 项接收、落库、回显，但不参与行为——
   它们仍是管理 API 契约的一部分（形状沿用存档的那份 Polaris 规格），所以不能删控件。前端判断不了「哪几个真的生效」，
   因此折叠区里只给了一句中立说明（「是否影响引擎行为，取决于服务端的凭据实现」），
   不点名字段、不加徽标：把服务端的实现细节抄进前端，正是 §10 反对的做法。
+- **例外：`noInlinePolicy` 打开时那条告警放在折叠区外面。** 它是唯一一条「安全属性被主动
+  降级」的声明（票退回角色权限范围、无法按表收窄），收进折叠区就等于只有点开的人知道。
+  判据是**字段值本身**，不是「谁推断出了什么档位」——它与第 24 组禁的那类前端推断无关。
 
 ### 4.5 `roleArn` 与静态凭据并存时只提示、不拦截
 

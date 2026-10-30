@@ -155,7 +155,7 @@ class StorageCredentialResolutionTests {
         setDefaultAwsKeys("AKIA-DEFAULT", "SECRET-DEFAULT");
         AwsStorageConfigInfo config = new AwsStorageConfigInfo(List.of("s3://bucket-a/prefix"), null,
                 null, null, null, null, null, "us-east-1", null, null,
-                Boolean.TRUE, null, null, null, null, null);
+                Boolean.TRUE, null, null, null, null, null, null);
 
         VendedStorageCredential vended = manager.vend(config, "t1", null);
 
@@ -177,7 +177,7 @@ class StorageCredentialResolutionTests {
         AwsStorageConfigInfo config = new AwsStorageConfigInfo(List.of("s3://bucket-a/prefix"), null,
                 "arn:aws:iam::123:role/r", "ext-id", "arn:aws:iam::123:user/u",
                 List.of("arn:aws:kms:key/1"), List.of("arn:aws:kms:key/2"), "us-east-1",
-                "https://s3.example.com", "https://sts.example.com", null,
+                "https://s3.example.com", "https://sts.example.com", null, null,
                 "https://s3.internal.example.com", Boolean.TRUE, null, null, null);
 
         VendedStorageCredential vended = manager.vend(config, "t1", null);
@@ -230,7 +230,7 @@ class StorageCredentialResolutionTests {
     void s3StaticCredentialsSurviveStsUnavailable() {
         AwsStorageConfigInfo config = new AwsStorageConfigInfo(List.of("s3://minio-bucket/wh"), null,
                 null, null, null, null, null, "us-east-1", "http://minio.internal:9000", null,
-                Boolean.TRUE, null, Boolean.TRUE, null,
+                Boolean.TRUE, null, null, Boolean.TRUE, null,
                 "minioadmin", cipher.seal("minioadmin-secret"));
 
         VendedStorageCredential vended = manager.vend(config, "t1", null);
@@ -910,7 +910,7 @@ class StorageCredentialResolutionTests {
     private static AwsStorageConfigInfo s3(String location, String storageName,
                                            String accessKeyId, String sealedSecret) {
         return new AwsStorageConfigInfo(new ArrayList<>(List.of(location)), storageName,
-                null, null, null, null, null, null, null, null, null, null, null, null,
+                null, null, null, null, null, null, null, null, null, null, null, null, null,
                 accessKeyId, sealedSecret);
     }
 

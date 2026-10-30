@@ -225,6 +225,10 @@ lakehouse:
     credential:
       # 数据访问令牌（凭证下发）有效期
       ttl-seconds: 3600
+      # AssumeRole 时带审计用的 session tags（lh:principal / lh:scope / lh:access）。
+      # **开启前必须**在被 assume 角色的信任策略里放行 sts:TagSession，否则带 tag 的
+      # AssumeRole 会 AccessDenied，表现为「配置没改、读表全部 503」。所以默认关。
+      session-tags: false
     # -----------------------------------------------------------------------
     # 存储与凭据，对应 Polaris 1.8.0 配置参考的「Storage & Credentials」一节。
     # 键名逐项对应，只把前缀从 polaris 换成 lakehouse.rest，运维迁配置时可以按名字平移。
@@ -292,6 +296,12 @@ lakehouse:
       connection-time-to-live: 30m
       expect-continue-enabled: true
       credential-secret-key: mVPu1SDrF2tyq6mIBILyy/0STBS+gUiTcyMQkEEGiX0=
+      # 上一把加密密钥：只在**换钥期间**填，用来解开还没重写的旧密文。
+      # 加密永远用上面那一把。三步走：① 新钥填上面、旧钥填这里并重启；
+      # ② 把仍带旧密文的 catalog 重新保存一次（日志里出现「sealed with the PREVIOUS」的那批）；
+      # ③ 确认日志不再出现之后再删掉这一项、重启。
+      # 配了它却没有 credential-secret-key、或两把填成一样，启动即失败。
+      credential-secret-key-previous: ""
     storage-credential-cache:
       # 已下发凭据的复用上限；条目按各自过期时间失效，这个值只兜住内存占用
       max-entries: 10000

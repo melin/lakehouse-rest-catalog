@@ -30,8 +30,14 @@ class CredentialCipherTests {
     private static final String SECRET = "minio-secret-0123456789";
 
     private static CredentialCipher cipher(String key) {
+        return cipher(key, null);
+    }
+
+    /** 当前钥 + 上一把钥（轮换期间）。{@code previous} 为 {@code null} 表示没有旧钥。 */
+    private static CredentialCipher cipher(String key, String previous) {
         RestServerProperties properties = new RestServerProperties();
         properties.getStorage().setCredentialSecretKey(key);
+        properties.getStorage().setCredentialSecretKeyPrevious(previous);
         return new CredentialCipher(properties);
     }
 
@@ -149,5 +155,76 @@ class CredentialCipherTests {
     void blankKeyMeansDisabled() {
         assertFalse(cipher("").available());
         assertFalse(cipher("   ").available());
+    }
+
+    // ------------------------------------------------------------------ 双密钥轮换
+
+    /**
+     * 轮换期间旧密文必须还能解开。
+     *
+     * <p>没有这条，换钥就是一次全站失能：所有 catalog 的静态凭据都由旧钥密封，
+     * 换完第一秒起每次下发 500。而「不敢换」的密钥等于没有——这正是 §9.7 把它
+     * 列为「第一件要做的基础设施」的原因。
+     */
+    @Test
+    void revealFallsBackToThePreviousKeyDuringARotation() {
+        String sealedWithOldKey = cipher(KEY_A).seal(SECRET);
+
+        CredentialCipher rotating = cipher(KEY_B, KEY_A);
+
+        assertEquals(SECRET, rotating.reveal(sealedWithOldKey), "旧密文在轮换窗口里必须能解");
+    }
+
+    /**
+     * 加密永远用当前钥。
+     *
+     * <p>这是整条轮换链路能否**结束**的判据：若 seal 可能用旧钥，库里就会永远
+     * 一半新一半旧，第三步「删掉 previous」永远等不到。断言方式是「新密文只有
+     * 当前钥能解、旧钥解不开」。
+     */
+    @Test
+    void sealingAlwaysUsesTheCurrentKeyEvenWhenAPreviousOneIsConfigured() {
+        String sealed = cipher(KEY_B, KEY_A).seal(SECRET);
+
+        assertEquals(SECRET, cipher(KEY_B).reveal(sealed), "新密文必须能被当前钥解开");
+        assertEquals(500, assertThrows(ApiException.class, () -> cipher(KEY_A).reveal(sealed)).getStatus(),
+                "旧钥不该能解新密文，否则轮换没有推进");
+    }
+
+    /** 两把都不对时仍然是 500，且信息里同时点出两把钥的位置。 */
+    @Test
+    void revealFailsWhenNeitherKeyMatches() {
+        String sealed = cipher(flipped(KEY_A)).seal(SECRET);
+
+        ApiException failure = assertThrows(ApiException.class, () -> cipher(KEY_B, KEY_A).reveal(sealed));
+
+        assertEquals(500, failure.getStatus());
+        assertTrue(failure.getMessage().contains("credential-secret-key-previous"), failure.getMessage());
+    }
+
+    /**
+     * 「有旧钥、没有当前钥」与「两把填成一样」都是配置错误，启动即失败。
+     *
+     * <p>前者会造出「新存不了、旧的还能读」的怪状态；后者让轮换看起来配好了、
+     * 实际什么都没发生——两种都必须当场说，而不是等到某次下发才暴露。
+     */
+    @Test
+    void incoherentKeyPairsFailFast() {
+        assertThrows(IllegalStateException.class, () -> cipher(null, KEY_A));
+        assertThrows(IllegalStateException.class, () -> cipher(KEY_A, KEY_A));
+        // 旧钥取值非法同样启动即失败：否则「一半 catalog 报 500」这个现象会原样留着
+        assertThrows(IllegalStateException.class, () -> cipher(KEY_A, "c2hvcnQ="));
+    }
+
+    /**
+     * 由给定密钥翻转最后一个比特得到的另一把密钥。
+     *
+     * <p>手写第三把 base64 容易写成「长度对但内容巧合」，而这里要的是**确定不同**：
+     * 翻转一位就保证不同，也不必再维护一个常量。
+     */
+    private static String flipped(String base64Key) {
+        byte[] raw = java.util.Base64.getDecoder().decode(base64Key);
+        raw[raw.length - 1] ^= 0x01;
+        return java.util.Base64.getEncoder().encodeToString(raw);
     }
 }

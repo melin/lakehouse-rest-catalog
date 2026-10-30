@@ -1,6 +1,7 @@
 package io.github.melin.lakehouse.rest.service;
 
 import java.time.Duration;
+import java.util.Map;
 
 /**
  * 一次 {@code AssumeRole} 调用的入参。
@@ -14,6 +15,9 @@ import java.time.Duration;
  *               注意「不带 policy」不等于「用角色全部权限」以外的意思——两者的差别
  *               在审计与追责上很大，所以留空必须显式表达
  * @param stsEndpoint 自定义 STS 端点；{@code null} 表示用区域默认端点
+ * @param tags 审计用的 session tags；**空表示不传 tag 集合**（不是传空数组），
+ *             让关闭该特性时的请求与改造前逐字节相同。键值对须在调用前规整，
+ *             非法的键值会让 STS 在签名阶段直接拒绝
  */
 public record AssumeRoleCommand(String roleArn,
                                 String externalId,
@@ -21,5 +25,10 @@ public record AssumeRoleCommand(String roleArn,
                                 Duration duration,
                                 String policy,
                                 String region,
-                                String stsEndpoint) {
+                                String stsEndpoint,
+                                Map<String, String> tags) {
+
+    public AssumeRoleCommand {
+        tags = tags == null ? Map.of() : Map.copyOf(tags);
+    }
 }

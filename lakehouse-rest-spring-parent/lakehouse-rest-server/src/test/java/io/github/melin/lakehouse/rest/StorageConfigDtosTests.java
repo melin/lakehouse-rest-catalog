@@ -270,6 +270,58 @@ class StorageConfigDtosTests {
                 List.of("cosn://whatever/warehouse/"), null, null, null, null, null, null, null, null));
     }
 
+    /**
+     * {@code noInlinePolicy} 与 {@code stsUnavailable} 互斥。
+     *
+     * <p>同时为真时前者永不生效（{@code stsUnavailable} 先返回），而库里留着
+     * 一个「已声明不收窄」的字段，下一个维护者会据此以为风险已经被告知过了。
+     * 语义互斥要在写入口拒掉，不能靠运行时优先级解释。
+     */
+    @Test
+    void noInlinePolicyConflictsWithStsUnavailable() {
+        AwsStorageConfigInfo both = new AwsStorageConfigInfo(List.of("s3://bucket/warehouse/"),
+                null, "arn:aws:iam::1:role/r", null, null, null, null, "us-east-1",
+                "http://vast.internal", null, Boolean.TRUE, Boolean.TRUE,
+                null, null, null, null, null);
+
+        RuntimeException failure = assertThrows(RuntimeException.class,
+                () -> StorageConfigs.validate(both));
+        assertTrue(failure.getMessage().contains("noInlinePolicy"), failure.getMessage());
+        assertTrue(failure.getMessage().contains("stsUnavailable"), failure.getMessage());
+
+        // 只开 noInlinePolicy（roleArn 还没补上）不拦：那是「暂时用不上」，不是矛盾
+        StorageConfigs.validate(new AwsStorageConfigInfo(List.of("s3://bucket/warehouse/"),
+                null, null, null, null, null, null, "us-east-1", "http://vast.internal",
+                null, null, Boolean.TRUE, null, null, null, null, null));
+    }
+
+    /**
+     * {@code noInlinePolicy} 要活过落库往返与两条改写路径。
+     *
+     * <p><b>这是本轮最容易漏的一条</b>：{@code copyWith} / {@code withCredentials}
+     * 是按字段逐个重拼 record 的，漏一个字段的后果不是报错，而是「保存一次就悄悄丢了」——
+     * 用户以为收窄还关着，实际下一次取票又带上 policy，VAST 那台机器于是第二次 501，
+     * 而这次现象与第一次一模一样、配置看着也没变。
+     */
+    @Test
+    void noInlinePolicySurvivesPersistenceAndEveryRewrite() {
+        AwsStorageConfigInfo s3 = new AwsStorageConfigInfo(List.of("s3://bucket/warehouse/"),
+                null, "arn:aws:iam::1:role/r", null, null, null, null, "us-east-1",
+                "http://vast.internal", null, null, Boolean.TRUE, null, null, null, null, null);
+
+        String stored = Json.write(s3);
+        assertTrue(stored.contains("\"noInlinePolicy\":true"), stored);
+        assertEquals(s3, Json.read(stored, StorageConfigInfo.class));
+
+        // 改写路径一：归一化位置（新建 / 更新都会走）
+        AwsStorageConfigInfo normalised = (AwsStorageConfigInfo) StorageConfigs.normalize(s3, null);
+        assertEquals(Boolean.TRUE, normalised.noInlinePolicy(), "归一化不该抹掉这个字段");
+        // 改写路径二：对外响应脱敏（列表与详情共用同一个出口）
+        AwsStorageConfigInfo masked = (AwsStorageConfigInfo) StorageConfigs.withoutSecrets(s3);
+        assertEquals(Boolean.TRUE, masked.noInlinePolicy(), "打码不该抹掉这个字段");
+        assertEquals(Boolean.TRUE, s3.noInlinePolicy(), "脱敏不能就地改原对象");
+    }
+
     /** 两个扩展子类型也要走一遍落库编解码——它们与规格内类型的差别只在注册名。 */
     @Test
     void extensionStorageConfigsSurvivePersistence() {
@@ -306,7 +358,7 @@ class StorageConfigDtosTests {
     void staticCredentialFieldsSurvivePersistence() {
         AwsStorageConfigInfo s3 = new AwsStorageConfigInfo(
                 List.of("s3://bucket/warehouse/"), null, null, null, null, null, null,
-                "us-east-1", "http://minio.internal:9000", null, Boolean.TRUE,
+                "us-east-1", "http://minio.internal:9000", null, Boolean.TRUE, null,
                 null, Boolean.TRUE, null, "minioadmin", "v1:c2VhbGVkLXNlY3JldA==");
 
         String stored = Json.write(s3);
@@ -344,7 +396,7 @@ class StorageConfigDtosTests {
     void discriminatorIsWrittenExactlyOnce() {
         AwsStorageConfigInfo s3 = new AwsStorageConfigInfo(
                 List.of("s3://bucket/"), "named", "arn:aws:iam::1:role/r",
-                null, null, null, null, "us-east-1", null, null, null, null, null, null, null, null);
+                null, null, null, null, "us-east-1", null, null, null, null, null, null, null, null, null);
 
         String written = mapper.writeValueAsString(s3);
         int first = written.indexOf("\"storageType\"");
