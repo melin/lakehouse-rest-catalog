@@ -12,20 +12,26 @@
             </template>
           </FieldLabel>
         </template>
-        <el-select v-model="form.storageType" class="pc-full" @change="onTypeChange">
-          <el-option
+        <!--
+          按钮组而不是下拉：七种存储之间的差别只在上方那句说明里，下拉把它们藏进
+          一个需要点开的浮层，选完就再也看不到「另外六种是什么」。
+          未接入的类型**仍然列出来**（灰掉），因为「这里能选 S3、不能选 OSS」
+          会让人去查 lakehouse.rest.file-io.type；直接不显示只会像界面漏了一项。
+        -->
+        <div class="pc-seg">
+          <span
             v-if="unknownType"
-            :label="`${unknownType}（服务端取值，控制台未识别）`"
-            :value="unknownType"
-          />
-          <el-option
-            v-for="type in storageTypes"
+            class="pc-seg-item"
+            :class="{ 'is-on': form.storageType === unknownType }"
+          >{{ unknownType }}（未识别）</span>
+          <span
+            v-for="type in orderedTypes"
             :key="type"
-            :label="type"
-            :value="type"
-            :disabled="!supportedTypes.includes(type)"
-          />
-        </el-select>
+            class="pc-seg-item"
+            :class="{ 'is-on': form.storageType === type, 'is-disabled': isUnsupported(type) }"
+            @click="selectType(type)"
+          >{{ storageTypeLabel(type) }}</span>
+        </div>
       </el-form-item>
 
 
@@ -278,6 +284,7 @@ import FieldLabel from '@/components/FieldLabel.vue'
 import SectionTitle from '@/components/SectionTitle.vue'
 import { useCredentialPreview } from '@/composables/credentialPreview.js'
 import { credentialSourceInfo } from '@/utils/credentialSource.js'
+import { isUnsupportedStorageType, storageTypeLabel, sortStorageTypes } from '@/utils/storageType.js'
 
 /**
  * `StorageConfigInfo` 的表单。
@@ -714,6 +721,37 @@ const locationPlaceholder = computed(() => ({
 }[form.storageType] || '存储位置 URI'))
 
 /** 切换类型：只保留该类型的字段，避免把上一个类型的属性带到新配置里。 */
+/** 按钮的排列顺序（原型的排法），与 `storageTypes` 里枚举的定义顺序不是一回事。 */
+const orderedTypes = computed(() => sortStorageTypes(props.storageTypes))
+
+/**
+ * 这个类型在本部署里能不能用。
+ *
+ * <p>换成自绘按钮之后，这条判据必须自己写：原先它是 `el-option` 上的 `disabled`，
+ * Element Plus 替页面挡着；`<span>` 没有这个属性，不判就会让「本部署未接入」的类型
+ * 看起来和能选的一样，直到提交时被服务端以「本部署未接入该存储实现」拒绝。
+ *
+ * <p>判据本身在 `utils/storageType.js`（纯函数，有 utils 用例）：这个分支在界面上
+ * 依赖部署配置——本仓库默认支持全部七种，永远看不到灰态，只靠截图验不到。
+ */
+function isUnsupported(type) {
+  return isUnsupportedStorageType(type, props.supportedTypes)
+}
+
+/**
+ * 点选存储类型。
+ *
+ * <p>先判能不能选，再判是不是同一个：换类型会清空 extras 与静态凭据（见
+ * `onTypeChange`），重复点当前项时清一遍等于把刚填的 AK/SK 悄悄丢掉。
+ */
+function selectType(type) {
+  if (isUnsupported(type) || form.storageType === type) {
+    return
+  }
+  form.storageType = type
+  onTypeChange(type)
+}
+
 function onTypeChange(next) {
   form.extras = collectExtras({}, next)
   // 静态凭据同样不能跨类型沿用：AK/SK 是签发到具体云厂商的，

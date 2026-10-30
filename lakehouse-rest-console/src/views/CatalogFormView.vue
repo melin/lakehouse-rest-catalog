@@ -63,21 +63,19 @@
                   tip="决定这个 prefix 服务哪一套 REST 协议。创建后不可更改，要换格式请删除重建。"
                 />
               </template>
-              <div class="pc-pick-grid pc-pick-grid-three">
-                <div
-                  v-for="option in formatOptions"
-                  :key="option.value"
-                  class="pc-pick"
-                  :class="{ 'is-on': form.catalogFormat === option.value }"
-                  @click="form.catalogFormat = option.value"
-                >
-                  <div class="pc-pick-name">
-                    <span class="pc-pick-dot" />
-                    {{ option.label }}
-                  </div>
-                  <div class="pc-pick-desc">{{ option.desc }}</div>
-                  <div class="pc-pick-meta pc-mono">{{ option.path }}</div>
-                </div>
+              <!--
+                按钮组而不是三张卡：三种格式的差别已经写在下方那句 catalogFormatNote
+                里（一句一格式，随选中项变），卡片里再各写一段就成了同一件事说两遍，
+                而卡片占的高度让下面「存储类型」被推到首屏之外。原型也是按钮组。
+              -->
+              <div class="pc-seg">
+                <span
+                  v-for="option in catalogFormats"
+                  :key="option"
+                  class="pc-seg-item"
+                  :class="{ 'is-on': form.catalogFormat === option }"
+                  @click="form.catalogFormat = option"
+                >{{ option }}</span>
               </div>
               <div class="pc-field-note">{{ catalogFormatNote(form.catalogFormat) }}</div>
             </el-form-item>
@@ -279,52 +277,38 @@
           </div>
 
           <div v-if="snippet.note" class="pc-field-note">{{ snippet.note }}</div>
+          <!--
+            续期这件事贴着片段说，不放进「摘要」：它回答的是「这份配置能不能撑住一个
+            跑几小时的任务」，而读这句话的人此时正对着配置本身。三档答案的差别很大
+            （Paimon 能自动换票 / Iceberg 补三处后能算 / Lance 只读一次），
+            混在一屏摘要里会被当成一行装饰。
+          -->
+          <div v-if="vendored" class="pc-field-note">
+            长作业：<strong>{{ renewal.label }}</strong>——{{ renewal.hint }}
+          </div>
+          <div v-else class="pc-field-note">
+            长作业：服务端不下发凭据，续期由引擎自己的身份提供，与这一页无关。
+          </div>
           <div v-if="faces.length === 1 && isLanceCatalog(form.catalogFormat)" class="pc-field-note">
             Lance 只有 Spark 一个页签：connector（<code class="pc-mono">org.lance.spark</code>）没有 Flink 版，
             摆一个出来只会让人去找它。
           </div>
         </PanelCard>
-      </div>
 
-      <!-- ============================ 右栏 ============================ -->
-      <aside class="pc-form-side">
-        <PanelCard title="生效摘要" hint="保存后会怎样">
-          <dl class="pc-kv">
-            <dt>协议面</dt>
-            <dd>{{ catalogFormatLabel(form.catalogFormat) }}</dd>
-            <dt>存储</dt>
-            <dd>{{ form.storageConfigInfo?.storageType || '—' }}</dd>
-            <dt>凭据来源</dt>
-            <dd>
-              <el-tag v-if="verdict" size="small" :type="verdict.tag" effect="plain">
-                {{ verdict.label }}
-              </el-tag>
-              <span v-else class="pc-dim">判定未就绪</span>
-            </dd>
-            <dt>作用域</dt>
-            <dd>{{ allowedLocations[0] || '—' }}</dd>
-            <dt>风险</dt>
-            <dd>
-              <el-tag size="small" :type="risk.tag" effect="plain">{{ risk.label }}</el-tag>
-              <span class="pc-dim pc-small">{{ risk.hint }}</span>
-            </dd>
-            <dt>长作业</dt>
-            <dd>
-              <template v-if="vendored">{{ renewal.label }}</template>
-              <span v-else class="pc-dim">不适用（引擎自管凭据）</span>
-            </dd>
-          </dl>
-          <div v-if="vendored" class="pc-field-note">{{ renewal.hint }}</div>
-        </PanelCard>
-
-        <PanelCard title="将提交的报文" hint="与下面表单同源">
+        <!-- ============================ 将提交的报文 ============================ -->
+        <!--
+          它是「按上面填的会发出什么」，所以放在最后：读它的时候表单已经填完，
+          往上对照比在右栏窄条里滚动舒服。原型把它放在右栏底部，但那一栏里同时
+          还有一张摘要——摘要去掉之后它自己撑不起一栏，也没必要再挤成 340px。
+        -->
+        <PanelCard title="将提交的报文" hint="与上面的表单同源">
           <pre class="pc-payload">{{ payloadText }}</pre>
           <div class="pc-field-note">
             <code class="pc-mono">******</code> 表示「沿用已保存的那一份」，它不是空串——
             空串才是「清除」。
           </div>
         </PanelCard>
-      </aside>
+      </div>
     </div>
   </div>
 </template>
@@ -347,7 +331,6 @@ import {
   CATALOG_FORMATS,
   catalogFormatLabel,
   catalogFormatNote,
-  catalogFormatOption,
   catalogFormatTagType,
   isIcebergCatalog,
   isLanceCatalog,
@@ -366,13 +349,18 @@ import {
  *
  * <p><b>为什么从弹窗改成页面。</b>弹窗能装下一张表单，装不下一页的「后果」：
  * 这个对象上真正危险的字段只有一处（凭据从哪来），而它的三档在客户端配置上
- * 有两档长得完全一样——说不清这件事，表单填完也等于没填。页面能给的是旁边一栏
- * 常驻摘要（判定、作用域、风险、续期）和一段可以直接复制给业务方的接入片段，
- * 这两样都要在填的过程中一直看得见，弹窗里做不到（一滚就没了）。
+ * 有两档长得完全一样——说不清这件事，表单填完也等于没填。页面能给的是
+ * 一整节把它讲开（第 3 节）+ 一段可以直接复制给业务方的接入片段（第 4 节），
+ * 弹窗里两者都会被滚走。
+ *
+ * <p><b>曾经有一栏「生效摘要」，已去掉。</b>它回答的四个问题现在各自回到更近的地方：
+ * 判定回到第 3 节（那里本来就写着「你现在在哪一档」）、续期回到第 4 节片段下方
+ * （读它的人正对着配置）、报文移到底部（填完之后才需要对照）。
+ * 留在右栏的代价是整页被挤成两栏，而这一页的字段都不长，右栏一半是空白。
  *
  * <p><b>状态只有一个来源：`form.storageConfigInfo`。</b>存储表单是子组件，它的
- * 内部副本靠 props 同步、靠 `update:modelValue` 回传编译后的提交体，因此右栏的
- * 报文与摘要都直接读它——不再另存一份「摘要用的状态」，两份迟早对不上。
+ * 内部副本靠 props 同步、靠 `update:modelValue` 回传编译后的提交体，因此报文与
+ * 第 3 节的判定都直接读它——不再另存一份「摘要用的状态」，两份迟早对不上。
  *
  * <p><b>判定的东西一律问服务端。</b>「保不保存得住」「保存后凭据从哪来」都由
  * 服务端算（`POST /api/console/v1/catalog-credential-source`）。这个页面只做两件事：
@@ -406,10 +394,6 @@ const supportedTypes = computed(() => meta.value?.enums?.supportedStorageTypes |
  */
 const staticCredentialsEnabled = computed(() => meta.value?.enums?.staticCredentialsEnabled === true)
 const catalogFormats = computed(() => meta.value?.enums?.catalogFormats || CATALOG_FORMATS)
-const formatOptions = computed(() => catalogFormats.value.map((value) => ({
-  value,
-  ...catalogFormatOption(value),
-})))
 /** 未指定格式时服务端用的那一种：用它预选，而不是恒选第一项（否则部署改过默认就会错位）。 */
 const defaultCatalogFormat = computed(() => meta.value?.service?.defaultCatalogFormat || PAIMON)
 
@@ -430,8 +414,8 @@ const allowedLocations = computed(() => form.storageConfigInfo?.allowedLocations
 
 /**
  * 草稿的实时判定。**与存储表单里那一行是同一个接口**：那边贴着字段（改完立刻看见），
- * 这边贴在摘要（回答「保存后会怎样」）。两次请求都是配置计算，不查库、不调云，
- * 但确实是两次——值得的代价是「摘要不再自己推理档位」。
+ * 这边贴在第 3 节的三档卡片上（回答「我现在落在哪一档」）。两次请求都是配置计算，
+ * 不查库、不调云，但确实是两次——值得的代价是页面不再自己推理档位。
  */
 const { preview } = useCredentialPreview(() => form.storageConfigInfo)
 const verdict = computed(() => (preview.value ? credentialSourceInfo(preview.value.mode) : null))
@@ -482,22 +466,11 @@ const missingHint = computed(() => {
   return 'roleArn（签发）或静态凭据（转发）'
 })
 
-const risk = computed(() => {
-  if (!preview.value) {
-    return { label: '未知', tag: 'info', hint: '判定未就绪' }
-  }
-  if (preview.value.mode === 'STS') {
-    return { label: '低', tag: 'success', hint: '到期自然失效' }
-  }
-  if (preview.value.mode === 'RELAY') {
-    return { label: '高', tag: 'danger', hint: '永久密钥，泄漏只能轮换' }
-  }
-  if (preview.value.mode === 'INVALID') {
-    return { label: '配置有误', tag: 'danger', hint: '取票时会失败' }
-  }
-  return { label: '中', tag: 'warning', hint: '身份在引擎侧' }
-})
-
+/**
+ * 「这个格式撑不撑得住一个长作业」。三档答案差别很大（见 `RENEWAL`），
+ * 因此不折算成一个「能/不能」的布尔——Iceberg 那一档的答案是「要补三处才成立」，
+ * 折掉之后就只剩一句会误导人的「能」。
+ */
 const renewal = computed(() => RENEWAL[form.catalogFormat] || { label: '未知', hint: '' })
 
 // ------------------------------------------------------------------ 接入片段
@@ -686,47 +659,16 @@ function cancel() {
 </script>
 
 <style scoped>
-/* 两栏：左表单宽、右摘要 340。与原型一致，也保证「判定」与「你正在填的那一项」
-   在同一屏里——摘要掉到下面去之后，它就不再是摘要了 */
+/* 单列。原先这里是「左表单 + 右 340 摘要」的两栏，右栏的「生效摘要」去掉之后
+   报文卡移到底部，页面就是一条直线往下读。
+   宽度收在 1080：这一页的字段都不长（名字、位置、region），超宽屏上拉满会把
+   label 与输入框拽到屏幕两头，读一行要横着跳一次。 */
 .pc-form-cols {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 340px;
-  gap: 14px;
-  align-items: start;
+  max-width: 1080px;
 }
 
 .pc-form-main {
   min-width: 0;
-}
-
-/* 表格式是「三选一」：三张卡必须排在同一行。
- * 全局的 .pc-pick-grid 是 auto-fit（按最小列宽自动折行），窄一点时第三张会被挤到
- * 下一行，看起来像「先二选一、再看情况」——而三种格式在服务端是同一级的。
- * 这里钉死三列，把「一行」变成明确意图；minmax(0, 1fr) 让长路径
- * （/lance/v1/namespace/{id}）在卡片内折行而不是撑破栅格。 */
-.pc-pick-grid-three {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
-@media (max-width: 860px) {
-  .pc-pick-grid-three {
-    grid-template-columns: 1fr;
-  }
-}
-
-.pc-form-side {
-  position: sticky;
-  top: 12px;
-}
-
-@media (max-width: 1180px) {
-  .pc-form-cols {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .pc-form-side {
-    position: static;
-  }
 }
 
 /* 卡片头的序号。用圆形徽标而不是把「1」写进标题文字：
@@ -744,10 +686,6 @@ function cancel() {
   font-family: var(--pc-mono-font, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
   font-size: 11.5px;
   font-weight: 600;
-}
-
-.pc-small {
-  font-size: 11.5px;
 }
 
 /* ---------------- 三档来源 ---------------- */
@@ -958,28 +896,14 @@ function cancel() {
   color: #fff;
 }
 
-/* ---------------- 摘要 ---------------- */
-.pc-kv {
-  display: grid;
-  grid-template-columns: 72px minmax(0, 1fr);
-  gap: 7px 10px;
-  margin: 0;
-  font-size: 12.5px;
-}
-
-.pc-kv dt {
-  color: var(--pc-text-dim);
-}
-
-.pc-kv dd {
-  margin: 0;
-  word-break: break-all;
-}
-
+/* ---------------- 报文 ---------------- */
+/* 铺满整张卡（原来右栏只有 340px，高给到 300 靠滚动）。
+   现在它在页面底部、宽度是整列，报文本身不长，直接展开比让人滚更好读——
+   留一个 420 的上限只为挡住「properties 里塞了几十条」的那种极端。 */
 .pc-payload {
   margin: 0;
   padding: 9px 11px;
-  max-height: 300px;
+  max-height: 420px;
   overflow: auto;
   border: 1px solid var(--pc-border);
   border-radius: var(--pc-radius);

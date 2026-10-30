@@ -992,10 +992,12 @@ edit_branch = re.search(r"return \{[^}]*currentEntityVersion[^}]*\}", payload_bo
 create_wiring = {
     "候选来自 meta 的 enums.catalogFormats": "enums?.catalogFormats" in catalog_form_view,
     "默认值来自 meta 的 service.defaultCatalogFormat": "service?.defaultCatalogFormat" in catalog_form_view,
-    # 绑定形式有两种都算过：下拉（`v-model`）与选项卡片（点击赋值）。
-    # 效果图用的是卡片，改成卡片时这条断言跟着换，而不是把卡片改回下拉去迁就断言。
+    # 绑定形式三种都算过：下拉（`v-model`）、选项卡片（点 `option.value`）、
+    # 按钮组（直接迭代格式字符串，点 `option`）。效果图最新一版是按钮组，
+    # 改样式时这条断言跟着换，而不是把按钮组改回下拉去迁就断言。
     "表单绑定 form.catalogFormat": 'v-model="form.catalogFormat"' in catalog_form_view
-        or '@click="form.catalogFormat = option.value"' in catalog_form_view,
+        or '@click="form.catalogFormat = option.value"' in catalog_form_view
+        or '@click="form.catalogFormat = option"' in catalog_form_view,
     "创建分支的报文带 catalogFormat": bool(create_branch)
         and "catalogFormat: form.catalogFormat" in create_branch.group(0),
     "编辑分支的报文不带它（格式不可变）": bool(edit_branch)
@@ -1017,6 +1019,26 @@ check("新建表单在选项下方给出影响面说明（选 Iceberg / Lance �
       and "isIcebergCatalog(form.catalogFormat)" in catalog_form_view
       and "isLanceCatalog(form.catalogFormat)" in catalog_form_view,
       "CatalogFormView 应在格式选择下方渲染 catalogFormatNote，并给 Iceberg / Lance 各一条分开的提示")
+
+# 存储类型改成按钮组之后，两件事会**安静地**回退：
+#  ① 界面显示裸枚举值（`S3` / `AZURE` / `FILE`）——不认识 ADLS 的人看不出那是 Azure，
+#     `FILE` 也不像「本地文件」；
+#  ② 「本部署未接入」的类型变得可点。这条判据原先由 `el-option` 的 `disabled` 承担，
+#     Element Plus 替页面挡着；换成 `<span>` 之后没人替它挡了，必须自己写
+#     （isUnsupported）。少写不会报错，只会让未接入的类型看起来可选，
+#     直到提交时被服务端拒绝。
+check("存储类型用中文名显示，且「本部署未接入」的类型点不动",
+      "storageTypeLabel(type)" in fields_vue
+      and "isUnsupportedStorageType(type, props.supportedTypes)" in fields_vue,
+      "StorageConfigFields 应用 utils/storageType.js 的 storageTypeLabel 显示、"
+      "用 isUnsupportedStorageType 判定能否点（自绘按钮没有 el-option 的 disabled 兜底）")
+
+# 「将提交的报文」是这一页唯一能自证「填的东西会被翻译成什么」的地方。
+# 它原先在右栏与「生效摘要」并排；摘要去掉后若顺手把它一起删了，
+# 页面上就再没有任何东西能回答这个问题。
+check("表单页在页尾保留「将提交的报文」",
+      "将提交的报文" in catalog_form_view and "payloadText" in catalog_form_view,
+      "CatalogFormView 应保留报文卡片（移到页尾后仍要渲染 payloadText）")
 
 # --- 12.2.1 表单是独立页面，不是列表页里的弹窗 ----------------------------
 # 拆成两页之后有两件事会**安静地**回退：

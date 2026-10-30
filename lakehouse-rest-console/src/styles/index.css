@@ -597,6 +597,57 @@ body {
   overflow-wrap: anywhere;
 }
 
+/* 一排按钮里选一个（catalog 的格式三选一、存储类型七选一）。
+ *
+ * 与 `.pc-pick`（上面那套大卡片）是两个东西，不能合成一套：卡片里有位置放说明
+ * 文字与路径，按钮组只放名字。把七种存储塞进卡片会把「存储」这一节撑到一屏之外，
+ * 而这七种之间的差别恰恰写在它们上方的说明里——离得越远越读不出对比。
+ *
+ * 选中态是实心主色（与原型一致）：七个小按钮并排时，只靠描边分不出选的是哪个。 */
+.pc-seg {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  width: 100%;
+}
+
+.pc-seg-item {
+  padding: 4px 14px;
+  border: 1px solid var(--pc-border);
+  border-radius: 4px;
+  background: var(--pc-surface);
+  color: var(--pc-text);
+  font-size: 12.5px;
+  line-height: 1.7;
+  cursor: pointer;
+  transition: border-color 0.15s, background-color 0.15s, color 0.15s;
+}
+
+.pc-seg-item:hover:not(.is-on):not(.is-disabled) {
+  border-color: var(--el-color-primary);
+  color: var(--el-color-primary);
+}
+
+.pc-seg-item.is-on {
+  border-color: var(--el-color-primary);
+  background: var(--el-color-primary);
+  color: #fff;
+}
+
+/* 本部署没接入的类型：仍然列出来，但点不动。
+ *
+ * 不隐藏是因为「能选 S3、不能选 OSS」本身是有用信息——它会让人去查
+ * `lakehouse.rest.file-io.type`，而不是以为界面漏了一项。放在 `.is-on` 之后，
+ * 于是「选中但它其实不可用」显示成灰底而不是蓝底：那种状态本身就有问题，
+ * 不该看起来像正常选中。 */
+.pc-seg-item.is-disabled {
+  border-color: var(--pc-border);
+  background: var(--pc-surface-2);
+  color: var(--pc-text-dim);
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
 /* 横向栅格：用在「字段数随所选类型变化」的表单上（授权表单：catalog 级只有
  * 一个「权限」，表级还会多出命名空间与表名）。钉死列数时字段变少会留一片
  * 空白，按最小列宽自动折行则始终填满。
