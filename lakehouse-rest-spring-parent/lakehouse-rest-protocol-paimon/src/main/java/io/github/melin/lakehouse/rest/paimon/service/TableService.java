@@ -222,6 +222,11 @@ public class TableService {
         // 客户端指了数据目录就认它的（只对非 Paimon 表，理由见方法注释）
         String clientPath = TableKinds.honorsClientPath(kind) ? TableKinds.explicitPath(schema) : null;
         String tablePath = clientPath == null ? assignedPath : clientPath;
+        // 白名单对**最终**位置判一次，不区分它来自客户端还是目录分配：
+        // 客户端给的那种一眼可见（这就是「越界建表」的入口），而目录分配的那种看似安全，
+        // 实则取决于 path-template——模板把 {warehouse} 去掉时默认值也会跑到白名单外面，
+        // 那种配置错误在第一次建表时就该暴露，而不是等到有人发现表不在仓库目录里。
+        Paths.requireWithin(tablePath, catalog.getAllowedLocations());
         TableKinds.prepareCreate(schema, tablePath, kind);
         if (!defaults.isEmpty()) {
             // 表属性里多出来的键会跟着 schema 进仓库，记一条便于回答「这个参数哪来的」
@@ -267,6 +272,11 @@ public class TableService {
         if (path == null || path.isBlank()) {
             throw ApiException.badRequest("Table path must not be blank");
         }
+        // 注册是「把仓库里已有的目录登记进来」，位置完全由调用方给——这是三个面里
+        // 最容易被用来绕过白名单的入口（另一个是 Iceberg 的 registerTable）。
+        // 判在重名检查之前：位置不合法时，先纠正它比先告诉他「表已存在」更有用。
+        CatalogEntity catalog = catalogService.resolve(prefix);
+        Paths.requireWithin(path, catalog.getAllowedLocations());
         if (tableRepository.existsByDatabaseIdAndName(database.getId(), tableName)) {
             throw ApiException.tableAlreadyExist(tableName);
         }

@@ -145,19 +145,21 @@ public class LanceCatalogSupport {
      * 校验客户端给的 {@code location} 落在 catalog 的白名单内。
      *
      * <p>白名单为空表示不限制（与 catalog 创建时的语义一致）。
+     *
+     * <p><b>比较交给 {@link Paths#isWithin}，错误形状留在这里。</b>两边各持一半是刻意的：
+     * 判定规则必须只有一份（否则 {@code s3://b/ab} 与 {@code s3://b/a} 这种越界会随着实现
+     * 漂移回来），而 Lance 面的错误体是 {@code LanceException}——status 由 code 决定，
+     * 与 Spring 的 400 不是同一条通道，交给 {@code Paths.requireWithin} 抛 {@code ApiException}
+     * 会得到一个形状不对的响应体。
      */
     public void requireAllowedLocation(CatalogEntity catalog, String location) {
         List<String> allowed = catalog.getAllowedLocations();
-        if (allowed == null || allowed.isEmpty() || location == null || location.isBlank()) {
+        if (Paths.isWithin(location, allowed)) {
             return;
         }
-        for (String prefix : allowed) {
-            if (location.startsWith(prefix)) {
-                return;
-            }
-        }
         throw LanceErrors.invalidInput("location \"" + location
-                + "\" is outside the allowed locations of catalog \"" + catalog.getPrefix() + "\"");
+                + "\" is outside the allowed locations of catalog \"" + catalog.getPrefix()
+                + "\": " + allowed);
     }
 
     // ------------------------------------------------------------------ 凭据

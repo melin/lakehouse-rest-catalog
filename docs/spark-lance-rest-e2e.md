@@ -101,7 +101,15 @@ curl -X POST http://host:18081/api/management/v1/catalogs \
 ```
 
 `allowedLocations` 不是可选项：`declare` 时客户端不给 `location`，服务端会按路径模板
-分配 `<warehouse>/<schema>.db/<table>.lance`，那个路径必须落在白名单里。
+分配 `<warehouse>/<schema>.db/<table>.lance`，那个路径必须落在白名单里——`declare`、
+`register`、`CreateTableVersion` 三处都判，越界一律 400（Lance 面是 400 + `LanceException`
+的错误体，不是 Spring 那条通道）。
+
+判定按**段边界**（`Paths.isWithin`，与 Iceberg、Paimon 面同一份实现）：等于白名单某一项，
+或写在它下面（前缀 + `/`）；`scheme` 与 host 大小写不敏感、`path` 敏感，尾斜杠等价。
+`file:///tmp/lance-wh2` 不会被 `file:///tmp/lance-wh` 放行。白名单为空表示不限制，
+但 LANCE 面不建议留空：`declare` 的默认位置就是从 warehouse 推出来的，留空等于让
+「仓库在哪」与「允许写哪」脱钩。
 
 ### 1.4 认证
 

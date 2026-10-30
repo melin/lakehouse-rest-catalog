@@ -388,7 +388,8 @@ class OptimizationApiTests {
         schema.getFields().add(field(0, "payload", "VARCHAR(20)"));
         schema.getOptions().put("type", "format-table");
         schema.getOptions().put("file.format", "csv");
-        schema.getOptions().put("path", "file:///tmp/lakehouse-rest-server-tests/opt-format-dir");
+        // 不指定 path：位置由模板分配到 warehouse 之下（白名单要求，见 Paths.requireWithin）。
+        // 本用例要的是「非 Paimon 表被优化器拒绝」，与表落在哪个目录无关。
         tableService.create(PREFIX, DB, new TableDtos.CreateTableRequest(
                 new CommonDtos.Identifier(DB, formatTable), schema));
 

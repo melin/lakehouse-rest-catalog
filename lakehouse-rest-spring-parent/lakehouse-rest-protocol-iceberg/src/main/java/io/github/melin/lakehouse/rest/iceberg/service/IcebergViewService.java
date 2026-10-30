@@ -176,6 +176,9 @@ public class IcebergViewService {
                 ? Paths.tableLocation(properties.getPathTemplate(), catalog.getWarehouse(),
                         database.getName(), viewName)
                 : request.location();
+        // 视图与表走同一条白名单：视图不写数据，但它会在自己的 location 下写 metadata，
+        // 而引擎取票时同样按这个位置收窄。漏掉视图这一处，等于给「越界写」留了个后门。
+        Paths.requireWithin(location, catalog.getAllowedLocations());
         ViewMetadata metadata = ViewMetadata.builder()
                 .setLocation(location)
                 .setProperties(viewProperties)
@@ -284,6 +287,9 @@ public class IcebergViewService {
         if (metadataLocation == null || metadataLocation.isBlank()) {
             throw ApiException.badRequest("metadata-location is required to register a view");
         }
+        // 与表侧 register 同一条：这是下一个要读、且后续每次提交都要往上写的路径。
+        // 视图实体不存 path（位置只在 ViewMetadata 里），所以判这一处就够了。
+        Paths.requireWithin(metadataLocation, catalog.getAllowedLocations());
         // 文件读不到时 StorageFileAccess 抛 404——先排除位置写错这一种，语义正是它那个 404
         String document = fileAccess.read(catalog.getId(), metadataLocation);
         // 这里的文档是**调用方指来**的：解析不动是它给错了位置（指向了不是视图元数据的文件），

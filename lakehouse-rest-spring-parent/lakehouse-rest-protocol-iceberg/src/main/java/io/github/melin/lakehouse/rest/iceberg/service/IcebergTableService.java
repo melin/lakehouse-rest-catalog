@@ -252,6 +252,10 @@ public class IcebergTableService {
                 ? Paths.tableLocation(properties.getPathTemplate(), catalog.getWarehouse(),
                         database.getName(), tableName)
                 : request.location();
+        // 落在 allowedLocations 之外直接 400。默认位置不豁免：它由 path-template 与
+        // warehouse 推出，模板一旦把 {warehouse} 去掉，默认值同样会跑到白名单外面。
+        // 详见 Paths 的类注释（为什么不在这里手写 startsWith）。
+        Paths.requireWithin(location, catalog.getAllowedLocations());
         TableMetadata metadata = TableMetadata.newTableMetadata(schema, spec, sortOrder, location,
                 tableProperties);
 
@@ -591,9 +595,17 @@ public class IcebergTableService {
         if (metadataLocation == null || metadataLocation.isBlank()) {
             throw ApiException.badRequest("metadata-location is required to register a table");
         }
+        // 两处都要判，理由不同：
+        // ① metadata-location 是我们**下一个要读**的路径——签发档下服务端自己的票只覆盖
+        //    allowedLocations，这里不判的话，越界注册的表现是 S3 403（看起来像权限问题），
+        //    而不是「这个位置不在配置允许的范围内」；
+        // ② metadata 里的 location 决定这张表之后每一次写入与签票的作用域，它才是真正
+        //    意义上的「表落在哪」——注册一张 location 在外的表，等于让引擎拿着票去外面读。
+        Paths.requireWithin(metadataLocation, catalog.getAllowedLocations());
         // 文件读不到时 StorageFileAccess 抛 404——先排除位置写错这一种，语义正是它那个 404
         String document = fileAccess.read(catalog.getId(), metadataLocation);
         TableMetadata metadata = parseMetadata(metadataLocation, document);
+        Paths.requireWithin(metadata.location(), catalog.getAllowedLocations());
 
         TableEntity existing = tableRepository
                 .findByCatalogIdAndDatabaseIdAndName(catalog.getId(), database.getId(), tableName)

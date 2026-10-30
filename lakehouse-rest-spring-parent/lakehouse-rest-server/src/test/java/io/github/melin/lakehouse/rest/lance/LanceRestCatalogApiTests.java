@@ -320,6 +320,15 @@ class LanceRestCatalogApiTests {
         assertLanceError(json(400, "POST", "/lance/v1/table/" + NS_ID + "%24ghost/register",
                 "{\"properties\":{}}"), 13);
 
+        // 白名单之外 → 400，且错误点明的是白名单而不是「数据集不存在」。
+        // 两条规则都回 code 13，只断言 code 分不出是哪一条拒的，而这条用例的价值正在于此：
+        // 改造前这里用的是裸 startsWith，同级目录（lance-api-test 与 lance-api-test2）会被误放行。
+        JsonNode outside = json(400, "POST", "/lance/v1/table/" + NS_ID + "%24ghost/register",
+                "{\"location\":\"" + WAREHOUSE + "2/ghost.lance\"}");
+        assertLanceError(outside, 13);
+        assertTrue(outside.get("error").asString().contains("allowed locations"),
+                "越界位置应报白名单: " + outside);
+
         // 造一个最小数据集（一个 manifest 文件），register 应当接受
         Path dataset = Path.of(URI.create(WAREHOUSE + "/lance.db/registered.lance"));
         Files.createDirectories(dataset.resolve("_versions"));

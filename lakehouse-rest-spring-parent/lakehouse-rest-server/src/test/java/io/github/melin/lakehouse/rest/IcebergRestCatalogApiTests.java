@@ -510,6 +510,43 @@ class IcebergRestCatalogApiTests {
         assertTrue(Files.exists(tableDirectory), "外部表（含刚登记回来的那张）的目录不该被删");
     }
 
+    /**
+     * 越界位置必须 400：建表与注册两条入口都判。
+     *
+     * <p>钉的是**接线**，判定规则与边界在 {@code AllowedLocationTests}：规则写对了却没被调用，
+     * 表现与「根本没有这个校验」完全一样，而白名单变松是唯一一种不会留下任何日志的错误。
+     * 建视图那一支（{@code IcebergViewService.create}）与本用例的建表共用同一份判定与同一个
+     * 400 形状，这里不另造一份 {@code view-version} 夹具。
+     *
+     * <p>自带一个 catalog：存量用例共用 {@code CATALOG} 与它的 warehouse，
+     * 在这上面验「越界」会把别人的断言搅进来。
+     */
+    @Test
+    @Order(50)
+    void locationsOutsideTheAllowedLocationsAreRejected() throws Exception {
+        String catalog = "iceberg-allowed-loc";
+        String warehouse = "file://" + System.getProperty("java.io.tmpdir")
+                + "/lakehouse-rest-server-tests/iceberg-allowed-loc";
+        createIcebergCatalog(catalog, warehouse);
+        String base = "/v1/" + catalog;
+        json(200, "POST", base + "/namespaces", "{\"namespace\":[\"ns\"]}");
+
+        String outside = "file:///tmp/lakehouse-outside-allowed/t1";
+        JsonNode created = json(400, "POST", base + "/namespaces/ns/tables",
+                "{\"name\":\"t1\",\"schema\":" + SCHEMA + ",\"location\":\"" + outside + "\"}");
+        assertTrue(created.get("error").get("message").asString().contains("allowed locations"),
+                "报错要点明白名单: " + created);
+
+        // 同一个报文不给 location 就应当建成——被拒的是「这个位置」，不是「建表」这件事
+        json(200, "POST", base + "/namespaces/ns/tables", createTableBody("t2"));
+
+        // register：metadata-location 越界。判定在读文件之前，所以这里拿到的是 400 而不是 404
+        JsonNode registered = json(400, "POST", base + "/namespaces/ns/register",
+                "{\"name\":\"t3\",\"metadata-location\":\"" + outside + "/metadata/v1.metadata.json\"}");
+        assertTrue(registered.get("error").get("message").asString().contains("allowed locations"),
+                "register 也要判: " + registered);
+    }
+
     // ------------------------------------------------------------------ view
 
     @Test

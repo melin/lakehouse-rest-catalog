@@ -121,7 +121,22 @@ spark.sql.catalog.lakehouse.warehouse=iceberg_demo
 **还有一个容易踩的：不要给建表报文塞 `location`。** 表位置由服务端按
 `lakehouse.rest.path-template` 推（默认 `{warehouse}/{database}.db/{table}`），
 `CREATE TABLE ... LOCATION '...'` 走的路子要求那个位置落在 catalog 的
-`allowedLocations` 里，否则被拒。
+`allowedLocations` 里，否则 **400**（`location "..." is outside the allowed locations of
+this catalog: [...]`，报错里同时给出整份白名单）。
+
+判定按**段边界**：位置等于白名单某一项，或者写在它下面（前缀 + `/`）；`scheme` 与 host
+大小写不敏感、`path` 敏感，两边尾斜杠等价。所以 `s3://bucket/warehouse2` 不会被
+`s3://bucket/warehouse` 放行——这是裸 `startsWith` 做不到的那一步。
+
+校验落在五处，只此一份实现（`Paths.requireWithin`）：Iceberg 的 `createTable` / `createView` /
+`registerTable`（后者的 `metadata-location` 与元数据里的 `location` 都判：前者是我们下一个要读
+的路径，后者决定此后每次签票的作用域），以及 Paimon 面的非 Paimon 表 `create` 与 `register`。
+白名单为空表示不限制（FILE / HDFS 的常态）。
+
+> **白名单是「建表位置」的约束，不是数据面的防线。** `relay` 档（转发 catalog 上那把长期
+> AK/SK）下，引擎拿到的密钥能访问 IAM 允许它的任何路径，
+> `spark.read.parquet("s3://别处/x")` 根本不经过本服务端，白名单无从生效。要让它成为防线，
+> catalog 必须走签发档（`roleArn` + STS）：票按表路径收窄，引擎才只碰得到这一张表。
 
 ### 1.3 认证
 

@@ -797,9 +797,11 @@ class PaimonRestCatalogApiTests {
     void nonPaimonTableHonoursClientPathAsItsLocation() {
         String database = "it_client_path";
         createDatabase(database);
-        // 与测试仓库同处一片临时目录（application-test.yml 里的 default-warehouse 就在这儿）
-        String objectDir = System.getProperty("java.io.tmpdir").replaceAll("/+$", "")
-                + "/lakehouse-rest-server-tests/object-dir-" + UUID.randomUUID().toString().substring(0, 8);
+        // 客户端目录必须落在 catalog 的 allowedLocations 内（Paths.requireWithin，越界 400）。
+        // 因此取仓库下的一个子目录：被测语义是「客户端给的位置优先于模板分配的位置」，
+        // 与「能任意指定到仓库之外」无关——后者是本次去掉的能力。
+        String objectDir = catalogService.resolve(PREFIX).getWarehouse().replaceAll("/+$", "")
+                + "/object-dir-" + UUID.randomUUID().toString().substring(0, 8);
 
         TypeDtos.Schema objectSchema = tableSchema("object-table", null, List.of());
         objectSchema.getOptions().put("path", objectDir);
@@ -825,6 +827,16 @@ class PaimonRestCatalogApiTests {
         assertTrue(blank.path().endsWith("/" + database + ".db/blank_path"),
                 "空白 path 应回落到路径模板，实际: " + blank.path());
         assertEquals(blank.path(), blank.schema().getOptions().get("path"));
+
+        // 越界位置一律 400：非 Paimon 表的 path 是三个面里最容易绕过白名单的入口，
+        // 这条断言钉住「TableService.create 真的调了 Paths.requireWithin」这件事本身——
+        // 判定规则在 AllowedLocationTests 里，这里验的是接线。
+        TypeDtos.Schema outside = tableSchema("object-table", null, List.of());
+        outside.getOptions().put("path", "file:///tmp/lakehouse-outside-wh/object-dir");
+        ApiException rejected = assertThrows(ApiException.class, () -> tableService.create(PREFIX, database,
+                new TableDtos.CreateTableRequest(new CommonDtos.Identifier(database, "outside"), outside)));
+        assertEquals(400, rejected.getStatus());
+        assertTrue(rejected.getMessage().contains("allowed locations"), rejected.getMessage());
     }
 
     /**
