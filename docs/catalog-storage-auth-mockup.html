@@ -1,0 +1,1280 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>创建 Catalog · 存储认证参数 · 交互原型 v2（lakehouse-rest 控制台）</title>
+<style>
+  :root {
+    --sidebar-w: 252px;
+    --sidebar-bg: #0e1626;
+    --sidebar-fg: #c7d2e3;
+    --sidebar-dim: #7b8aa3;
+    --page-bg: #f3f5f9;
+    --surface: #ffffff;
+    --surface-2: #f7f9fc;
+    --border: #e2e7f0;
+    --border-strong: #cdd6e4;
+    --text: #1f2937;
+    --dim: #6b7280;
+    --faint: #98a2b3;
+    --accent: #1d4ed8;
+    --accent-soft: #eef3ff;
+    --radius: 2px;
+    --warn: #b45309;
+    --warn-soft: #fff8eb;
+    --warn-border: #f0d9a8;
+    --danger: #b42318;
+    --danger-soft: #fdf2f2;
+    --danger-border: #f3c7c3;
+    --ok: #047857;
+    --ok-soft: #eefaf4;
+    --ok-border: #bfe5d4;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; }
+  body {
+    font: 13.5px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", sans-serif;
+    color: var(--text);
+    background: var(--page-bg);
+  }
+  .app { display: flex; min-height: 100vh; }
+
+  /* ---------------- 侧边栏 ---------------- */
+  .sidebar {
+    width: var(--sidebar-w); flex: 0 0 var(--sidebar-w);
+    background: var(--sidebar-bg); color: var(--sidebar-fg);
+    padding: 14px 0 20px; position: sticky; top: 0; height: 100vh;
+    display: flex; flex-direction: column;
+  }
+  .brand { display: flex; align-items: center; gap: 10px; padding: 6px 18px 18px; }
+  .brand-mark {
+    width: 30px; height: 30px; border-radius: 3px; background: #1e40af;
+    display: grid; place-items: center; color: #fff; font-weight: 700; font-size: 15px;
+  }
+  .brand-text strong { display: block; color: #eaf1ff; font-size: 14.5px; letter-spacing: .2px; }
+  .brand-text span { font-size: 11.5px; color: var(--sidebar-dim); }
+  .nav-group { font-size: 11px; letter-spacing: .6px; color: #5f6f88; padding: 14px 18px 6px; }
+  .nav-item { padding: 7px 18px; font-size: 13px; color: var(--sidebar-fg); cursor: default; }
+  .nav-item.is-active {
+    background: rgba(59,130,246,.18); color: #fff;
+    box-shadow: inset 2px 0 0 #3b82f6;
+  }
+  .sidebar-foot {
+    margin-top: auto; padding: 14px 18px 0; font-size: 11px; color: #5f6f88;
+    border-top: 1px solid rgba(255,255,255,.06); line-height: 1.7;
+  }
+  .sidebar-foot code { color: #8fa6c8; background: rgba(255,255,255,.06); padding: 0 3px; border-radius: 2px; }
+
+  /* ---------------- 主区 ---------------- */
+  main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .toolbar {
+    background: var(--surface); border-bottom: 1px solid var(--border);
+    padding: 9px 22px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    position: sticky; top: 0; z-index: 20;
+  }
+  .toolbar-label { font-size: 11.5px; color: var(--faint); letter-spacing: .4px; }
+  .tb-btn {
+    font: inherit; font-size: 12.5px; padding: 4px 10px; cursor: pointer;
+    background: var(--surface); border: 1px solid var(--border-strong);
+    color: #344054; border-radius: var(--radius);
+  }
+  .tb-btn:hover { border-color: #9aa8bd; }
+  .tb-btn.is-on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .tb-sep { width: 1px; height: 18px; background: var(--border); margin: 0 4px; }
+  .tb-note { margin-left: auto; font-size: 11.5px; color: var(--faint); }
+
+  .layout {
+    display: grid; grid-template-columns: minmax(0, 1fr) 392px;
+    gap: 20px; padding: 20px 22px 44px; align-items: start;
+  }
+  @media (max-width: 1210px) { .layout { grid-template-columns: minmax(0,1fr); } }
+
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
+  .card-head {
+    padding: 13px 20px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: baseline; gap: 10px;
+  }
+  .card-head h1 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: .2px; }
+  .card-head .sub { font-size: 12px; color: var(--dim); }
+  .card-body { padding: 18px 20px 22px; }
+
+  .section { padding: 18px 0 4px; border-top: 1px solid var(--border); }
+  .section:first-child { border-top: 0; padding-top: 0; }
+  .section-head { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; }
+  .section-no {
+    width: 18px; height: 18px; border-radius: 2px; background: var(--accent-soft);
+    color: var(--accent); font-size: 11px; font-weight: 700; display: grid; place-items: center;
+    flex: 0 0 18px;
+  }
+  .section-title { font-size: 13.5px; font-weight: 600; }
+  .section-hint { font-size: 11.5px; color: var(--faint); margin-left: 2px; }
+  .section-badge {
+    margin-left: auto; font-size: 11px; color: var(--dim);
+    background: var(--surface-2); border: 1px solid var(--border); padding: 1px 7px; border-radius: 10px;
+  }
+
+  .field { margin-bottom: 13px; }
+  .field-label {
+    display: flex; align-items: baseline; gap: 6px; font-size: 12.5px;
+    color: #344054; margin-bottom: 5px; font-weight: 500;
+  }
+  .req { color: var(--danger); font-weight: 700; }
+  .opt { font-size: 11px; color: var(--faint); font-weight: 400; }
+  .field-tip { font-size: 11.5px; color: var(--dim); margin: 0 0 6px; line-height: 1.65; }
+  .field-tip code, .note code, .src-detail code, .aside code, .meth-desc code, .probe code {
+    font-family: var(--mono); font-size: 11.5px;
+    background: #f1f4f9; border: 1px solid #e6ebf3; padding: 0 3px; border-radius: 2px;
+  }
+  input[type=text], input[type=password], textarea {
+    width: 100%; font: inherit; font-size: 12.5px; padding: 6px 9px;
+    border: 1px solid var(--border-strong); border-radius: var(--radius);
+    background: #fff; color: var(--text); outline: none;
+  }
+  input:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  textarea { min-height: 78px; font-family: var(--mono); font-size: 11.5px; resize: vertical; }
+  input[readonly] { background: var(--surface-2); color: var(--dim); }
+
+  .seg { display: flex; flex-wrap: wrap; gap: 6px; }
+  .seg-item {
+    font-size: 12.5px; padding: 4px 12px; border: 1px solid var(--border-strong);
+    border-radius: var(--radius); cursor: pointer; background: #fff; color: #344054;
+    user-select: none;
+  }
+  .seg-item:hover { border-color: #9aa8bd; }
+  .seg-item.is-on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .seg-item.is-off { color: #b6bfcd; background: var(--surface-2); border-style: dashed; }
+
+  /* 用途选择：两张窄卡 */
+  .use-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
+  @media (max-width: 720px) { .use-grid { grid-template-columns: 1fr; } }
+  .use {
+    border: 1px solid var(--border-strong); border-radius: var(--radius);
+    padding: 10px 12px; cursor: pointer; background: #fff;
+  }
+  .use:hover { border-color: #9aa8bd; }
+  .use.is-on { border-color: var(--accent); background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); }
+  .use-title { font-size: 12.5px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
+  .use-desc { font-size: 11.5px; color: var(--dim); margin-top: 3px; line-height: 1.6; }
+
+  /* 认证方式卡片 */
+  .meth-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
+  @media (max-width: 760px) { .meth-grid { grid-template-columns: 1fr; } }
+  .meth {
+    position: relative; border: 1px solid var(--border-strong); border-radius: var(--radius);
+    padding: 10px 12px 11px 34px; cursor: pointer; background: #fff;
+  }
+  .meth:hover { border-color: #9aa8bd; }
+  .meth.is-on { border-color: var(--accent); background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); }
+  .meth.is-dim { background: var(--surface-2); border-style: dashed; cursor: not-allowed; }
+  .meth.is-red { border-color: var(--danger-border); background: var(--danger-soft); }
+  .meth-dot {
+    position: absolute; left: 12px; top: 13px; width: 13px; height: 13px;
+    border: 1.5px solid #b6bfcd; border-radius: 50%; background: #fff;
+  }
+  .meth.is-on .meth-dot { border-color: var(--accent); border-width: 4px; }
+  .meth.is-dim .meth-dot { border-style: dotted; }
+  .meth-title { font-size: 12.5px; font-weight: 600; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .meth-tag {
+    font-size: 10.5px; font-weight: 500; padding: 0 5px; border-radius: 2px;
+    border: 1px solid var(--border); background: #fff; color: var(--dim);
+  }
+  .meth-tag.rec { color: var(--ok); border-color: var(--ok-border); background: var(--ok-soft); }
+  .meth-tag.off { color: var(--dim); border-color: var(--border-strong); background: var(--surface-2); }
+  .meth-tag.red { color: var(--danger); border-color: var(--danger-border); background: #fff; }
+  .meth-desc { font-size: 11.5px; color: var(--dim); margin-top: 3px; line-height: 1.6; }
+  .meth.is-dim .meth-title { color: var(--dim); }
+
+  /* 卡片上的「两侧结果」行 */
+  .side-row {
+    display: flex; gap: 10px; flex-wrap: wrap; margin-top: 6px; padding-top: 6px;
+    border-top: 1px dashed var(--border-strong); font-size: 11px; color: var(--dim);
+  }
+  .side-row span { display: inline-flex; align-items: center; gap: 3px; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; flex: 0 0 7px; }
+  .dot.ok { background: #059669; }
+  .dot.warn { background: #d97706; }
+  .dot.no { background: #dc2626; }
+  .dot.unk { background: #98a2b3; border: 1px solid #6b7280; }
+
+  .fields {
+    margin-top: 14px; padding: 13px 14px 4px; background: var(--surface-2);
+    border: 1px solid var(--border); border-radius: var(--radius);
+  }
+  .fields-head { font-size: 11.5px; color: var(--dim); margin-bottom: 11px; display: flex; gap: 6px; align-items: baseline; }
+  .fields-head b { color: #344054; font-weight: 600; }
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
+  @media (max-width: 720px) { .two-col { grid-template-columns: 1fr; } }
+
+  .note {
+    font-size: 12px; line-height: 1.7; padding: 9px 11px; border-radius: var(--radius);
+    margin: 10px 0 12px; border: 1px solid var(--border); background: var(--surface-2); color: #475467;
+  }
+  .note.is-warn { border-color: var(--warn-border); background: var(--warn-soft); color: #7c4a03; }
+  .note.is-danger { border-color: var(--danger-border); background: var(--danger-soft); color: #7a2018; }
+  .note.is-info { border-color: #cfe0f8; background: #f4f8ff; color: #1e3a5f; }
+  .note.is-ok { border-color: var(--ok-border); background: var(--ok-soft); color: #05603a; }
+  .note-title { font-weight: 600; display: block; margin-bottom: 2px; }
+
+  .collapse { margin-top: 14px; border: 1px solid var(--border); border-radius: var(--radius); background: #fff; }
+  .collapse-head {
+    width: 100%; font: inherit; text-align: left; cursor: pointer; background: none; border: 0;
+    padding: 10px 12px; display: flex; align-items: center; gap: 8px;
+  }
+  .caret {
+    width: 0; height: 0; border-left: 4.5px solid #8b97a8; border-top: 4px solid transparent;
+    border-bottom: 4px solid transparent; transition: transform .12s;
+  }
+  .collapse.is-open .caret { transform: rotate(90deg); }
+  .collapse-title { font-size: 12.5px; font-weight: 600; }
+  .collapse-badge {
+    font-size: 11px; color: var(--dim); background: var(--surface-2);
+    border: 1px solid var(--border); padding: 0 6px; border-radius: 9px;
+  }
+  .collapse-hint { margin-left: auto; font-size: 11.5px; color: var(--faint); }
+  .collapse-body { padding: 2px 14px 14px; border-top: 1px solid var(--border); display: none; }
+  .collapse.is-open .collapse-body { display: block; }
+  .grp { display: flex; align-items: center; gap: 8px; margin: 12px 0 8px; }
+  .grp-title { font-size: 11.5px; color: var(--dim); letter-spacing: .3px; }
+  .grp-line { flex: 1; height: 1px; background: var(--border); }
+  .switch-row { display: flex; align-items: center; gap: 8px; font-size: 12.5px; margin-bottom: 4px; }
+  .sw {
+    width: 30px; height: 16px; border-radius: 9px; background: #d6dde8; position: relative;
+    cursor: pointer; flex: 0 0 30px; transition: background .12s;
+  }
+  .sw::after {
+    content: ""; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px;
+    border-radius: 50%; background: #fff; transition: transform .12s;
+  }
+  .sw.is-on { background: var(--accent); }
+  .sw.is-on::after { transform: translateX(14px); }
+
+  /* 自检 */
+  .probe {
+    margin-top: 14px; border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 12px 14px; background: var(--surface-2);
+  }
+  .probe-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .probe-title { font-size: 12.5px; font-weight: 600; }
+  .btn {
+    font: inherit; font-size: 12.5px; padding: 4px 12px; cursor: pointer;
+    border-radius: var(--radius); border: 1px solid var(--accent); background: var(--accent); color: #fff;
+  }
+  .btn.is-ghost { background: #fff; color: var(--accent); }
+  .btn[disabled] { background: var(--surface-2); border-color: var(--border-strong); color: var(--faint); cursor: not-allowed; }
+  .probe-result { margin-top: 10px; font-size: 12px; line-height: 1.7; display: none; }
+  .probe-result.is-shown { display: block; }
+  .probe-verdict { font-weight: 600; display: flex; align-items: center; gap: 6px; }
+  .probe-verdict.ok { color: var(--ok); }
+  .probe-verdict.no { color: var(--danger); }
+  .probe-hint { color: #475467; margin-top: 4px; }
+
+  /* 右侧 */
+  .aside { position: sticky; top: 62px; display: flex; flex-direction: column; gap: 14px; }
+  .aside .card-body { padding: 14px 16px 16px; }
+  .aside h2 {
+    margin: 0; font-size: 12px; font-weight: 600; color: var(--dim);
+    letter-spacing: .5px; text-transform: uppercase;
+  }
+  .aside-sub { font-size: 11px; color: var(--faint); margin-top: 3px; }
+
+  .matrix { margin-top: 10px; }
+  .matrix-row {
+    display: flex; align-items: flex-start; gap: 8px; padding: 6px 0;
+    border-bottom: 1px dashed var(--border); font-size: 12px;
+  }
+  .matrix-row:last-child { border-bottom: 0; }
+  .matrix-k { flex: 0 0 92px; color: #344054; }
+  .matrix-v { flex: 0 0 52px; font-weight: 600; }
+  .matrix-v.ok { color: var(--ok); }
+  .matrix-v.warn { color: var(--warn); }
+  .matrix-v.no { color: var(--danger); }
+  .matrix-v.unk { color: var(--faint); }
+  .matrix-n { flex: 1; font-size: 11px; color: var(--dim); line-height: 1.55; }
+
+  .cap { margin-top: 10px; }
+  .cap-row {
+    display: flex; align-items: center; gap: 8px; padding: 5px 0; font-size: 12px;
+    border-bottom: 1px dashed var(--border);
+  }
+  .cap-row:last-child { border-bottom: 0; }
+  .cap-name { flex: 1; color: #344054; }
+  .cap-tag { font-size: 10.5px; padding: 0 5px; border-radius: 2px; border: 1px solid; }
+  .cap-tag.ok { color: var(--ok); border-color: var(--ok-border); background: var(--ok-soft); }
+  .cap-tag.warn { color: var(--warn); border-color: var(--warn-border); background: var(--warn-soft); }
+  .cap-tag.no { color: var(--danger); border-color: var(--danger-border); background: var(--danger-soft); }
+  .cap-tag.unk { color: var(--dim); border-color: var(--border-strong); background: var(--surface-2); }
+
+  .chain { margin: 10px 0 0; font-size: 12.5px; }
+  .chain-row { display: flex; gap: 8px; padding: 4px 0; border-bottom: 1px dashed var(--border); }
+  .chain-row:last-child { border-bottom: 0; }
+  .chain-k { color: var(--faint); flex: 0 0 64px; font-size: 11.5px; }
+  .chain-v { color: var(--text); }
+  .kvs { font-family: var(--mono); font-size: 11.5px; line-height: 1.9; color: #344054; word-break: break-all; }
+  .kvs .k { color: #1d4ed8; }
+  .kvs .c { color: #98a2b3; }
+  .empty { font-size: 12px; color: var(--faint); }
+  .why { font-size: 12px; color: #475467; line-height: 1.75; }
+  .why b { color: var(--text); }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">L</div>
+      <div class="brand-text"><strong>Lakehouse</strong><span>REST Catalog 控制台</span></div>
+    </div>
+    <div class="nav-group">目录</div>
+    <div class="nav-item">仪表盘</div>
+    <div class="nav-item is-active">Catalogs</div>
+    <div class="nav-item">表</div>
+    <div class="nav-item">数据策略</div>
+    <div class="nav-group">管理</div>
+    <div class="nav-item">授权</div>
+    <div class="nav-item">存储优化</div>
+    <div class="nav-item">血缘</div>
+    <div class="sidebar-foot">
+      原型 v2 · 存储认证<br />
+      设计稿 <code>catalog-storage-auth-design</code><br />
+      左切存储类型 · 顶部切场景
+    </div>
+  </aside>
+
+  <main>
+    <div class="toolbar">
+      <span class="toolbar-label">演示场景</span>
+      <button class="tb-btn" data-scene="create">新建（只读）</button>
+      <button class="tb-btn" data-scene="role">IAM 角色</button>
+      <button class="tb-btn" data-scene="noSign">部署未启用签发</button>
+      <button class="tb-btn" data-scene="engineWrite">需要引擎写</button>
+      <button class="tb-btn" data-scene="external">环境身份</button>
+      <button class="tb-btn" data-scene="editStatic">编辑已存</button>
+      <button class="tb-btn" data-scene="file">本地文件</button>
+      <span class="tb-note">存储类型与认证方式都能点</span>
+    </div>
+
+    <div class="layout">
+      <div class="card">
+        <div class="card-head">
+          <h1 id="pageTitle">创建 Catalog</h1>
+          <span class="sub" id="pageSub">存储配置在 catalog 上，不在 application.yml 里</span>
+        </div>
+        <div class="card-body">
+
+          <div class="section">
+            <div class="section-head">
+              <span class="section-no">1</span>
+              <span class="section-title">基本信息</span>
+            </div>
+            <div class="two-col">
+              <div class="field">
+                <div class="field-label">catalog 名称 <span class="req">*</span></div>
+                <input type="text" value="demo-catalog" />
+              </div>
+              <div class="field">
+                <div class="field-label">catalog 格式</div>
+                <input type="text" value="Paimon" readonly />
+              </div>
+            </div>
+          </div>
+
+          <div class="section">
+            <div class="section-head">
+              <span class="section-no">2</span>
+              <span class="section-title">存储位置</span>
+              <span class="section-hint">决定引擎能读写哪里，也是凭据作用域的边界</span>
+            </div>
+
+            <div class="field">
+              <div class="field-label">存储类型（storageType） <span class="req">*</span></div>
+              <p class="field-tip">
+                类型决定下面可选哪几种认证方式。灰掉的是本部署没接入的实现，由
+                <code>lakehouse.rest.file-io.type</code> 与插件决定。
+              </p>
+              <div class="seg" id="typeSeg"></div>
+            </div>
+
+            <div class="field">
+              <div class="field-label">允许位置（allowedLocations） <span class="req">*</span></div>
+              <p class="field-tip">首项同时作为仓库根（warehouse）；白名单之外的位置服务端会拒绝读写。</p>
+              <input type="text" id="locInput" />
+            </div>
+
+            <div id="locFields"></div>
+          </div>
+
+          <div class="section">
+            <div class="section-head">
+              <span class="section-no">3</span>
+              <span class="section-title">用途</span>
+              <span class="section-hint">这一项决定认证方式能不能选——先回答「拿它干什么」</span>
+            </div>
+            <div class="use-grid" id="useGrid"></div>
+            <p class="field-tip" style="margin-top:8px" id="useTip"></p>
+          </div>
+
+          <div class="section">
+            <div class="section-head">
+              <span class="section-no">4</span>
+              <span class="section-title">存储认证</span>
+              <span class="section-badge" id="methCount"></span>
+            </div>
+            <p class="field-tip" id="methIntro" style="margin-top:-4px"></p>
+            <div class="meth-grid" id="methGrid"></div>
+            <div id="methodNotes"></div>
+            <div class="fields" id="methodFields" style="display:none"></div>
+
+            <div class="collapse" id="advanced">
+              <button class="collapse-head" type="button" id="advHead">
+                <span class="caret"></span>
+                <span class="collapse-title">高级参数</span>
+                <span class="collapse-badge" id="advBadge">与身份无关</span>
+                <span class="collapse-hint">全部留空即用默认值</span>
+              </button>
+              <div class="collapse-body" id="advBody"></div>
+            </div>
+          </div>
+
+          <div class="section">
+            <div class="section-head">
+              <span class="section-no">5</span>
+              <span class="section-title">保存前自检</span>
+              <span class="section-hint">用草稿配置对仓库根做一次 HEAD</span>
+            </div>
+            <div class="probe">
+              <div class="probe-head">
+                <span class="probe-title">服务端能不能读到这个位置？</span>
+                <button class="btn" id="probeBtn">运行自检</button>
+                <span class="field-tip" style="margin:0">
+                  只做 <code>getFileStatus</code>，不列目录、不读内容
+                </span>
+              </div>
+              <div class="probe-result" id="probeResult"></div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <div class="aside">
+        <div class="card">
+          <div class="card-body">
+            <h2>谁能访问</h2>
+            <div class="aside-sub">四个消费者，不是一个</div>
+            <div class="matrix" id="matrixBox"></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-body">
+            <h2>这个 catalog 能做什么</h2>
+            <div class="aside-sub">功能直接由上面的四行推导</div>
+            <div class="cap" id="capBox"></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-body">
+            <h2>服务端会下发什么</h2>
+            <div class="kvs" id="keysBox"></div>
+            <div class="chain" id="chainBox"></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-body">
+            <h2>为什么这样排</h2>
+            <div class="why" id="whyBox"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script>
+/* =====================================================================
+   这是原型，不是产品代码。所以这里出现了档位/方式字面量与判定逻辑。
+   实现时判定必须在服务端（CatalogCredentialSource 拆成 serverReadable +
+   engineCredential 两个维度），前端只渲染它返回的值。
+   scripts/verify-console.py 第 24 组盯着这条。
+   ===================================================================== */
+
+var DEPLOY = {
+  providers: ['s3-token', 'oss-sts', 'azure-sas', 'gcs-downscope'],
+  schemes: ['s3', 's3a', 'obs', 'oss', 'cosn', 'abfss', 'abfs', 'gs', 'file']
+};
+
+var USES = {
+  read: { label: '只读', desc: '引擎只读这个 catalog；写入由别的 catalog 或 ETL 负责。' },
+  write: { label: '可写', desc: 'Spark / Flink 要往这个 catalog 写。' }
+};
+
+var TYPES = {
+  S3: {
+    label: 'S3',
+    loc: 's3://warehouse-dev/demo',
+    methods: ['static', 'role', 'session', 'external'],
+    locFields: [
+      { key: 'endpoint', label: 'endpoint', val: 'https://s3.us-east-1.amazonaws.com' },
+      { key: 'region', label: 'region', val: 'us-east-1' }
+    ]
+  },
+  OSS: {
+    label: 'OSS',
+    loc: 'oss://warehouse-dev/demo',
+    methods: ['static', 'ramRole', 'ossSession', 'external'],
+    locFields: [
+      { key: 'endpoint', label: 'endpoint', val: 'oss-cn-hangzhou.aliyuncs.com' }
+    ]
+  },
+  OBS: {
+    label: 'OBS',
+    loc: 'obs://warehouse-dev/demo',
+    methods: ['static', 'obsDelegate', 'external'],
+    locFields: [
+      { key: 'endpoint', label: 'endpoint', val: 'obs.cn-north-4.myhuaweicloud.com' }
+    ]
+  },
+  COS: {
+    label: 'COS',
+    loc: 'cosn://warehouse-1250000000/demo',
+    methods: ['static', 'external'],
+    locFields: [
+      { key: 'endpoint', label: 'bucket region', val: 'ap-guangzhou' }
+    ]
+  },
+  AZURE: {
+    label: 'Azure',
+    loc: 'abfss://warehouse@acct.dfs.core.windows.net/dev',
+    methods: ['principal', 'mi'],
+    locFields: [
+      { key: 'tenantId', label: 'tenantId', val: '00000000-0000-0000-0000-000000000000' }
+    ]
+  },
+  GCS: {
+    label: 'GCS',
+    loc: 'gs://warehouse-dev/demo',
+    methods: ['serviceAccount', 'adc'],
+    locFields: []
+  },
+  FILE: {
+    label: '本地',
+    loc: 'file:///data/warehouse/demo',
+    methods: ['none'],
+    locFields: []
+  }
+};
+
+/* 每种方式的画像。server/engine 的取值是「这一类方式」的默认，
+   个别组合由 compute() 细化（例如 B 类在 provider 未启用时退回转发）。 */
+var METHODS = {
+  static: {
+    title: '静态访问密钥', kind: 'A', tag: '',
+    desc: '把一对长期 AK/SK 存在 catalog 上。服务端与引擎用的是同一对钥匙，永久有效。',
+    fields: ['accessKeyId', 'secretAccessKey']
+  },
+  role: {
+    title: 'IAM 角色（服务端代取）', kind: 'B', provider: 's3-token', tag: '推荐',
+    desc: '存一个 roleArn（和一对只允许 AssumeRole 的签名钥匙）。服务端每次读表现签一张只覆盖这张表的票。',
+    fields: ['roleArn', 'accessKeyId', 'secretAccessKey']
+  },
+  session: {
+    title: '临时安全凭证（Session Token）', kind: 'B', notImplemented: true,
+    desc: '直接存一组临时的 AK/SK + SessionToken。DTO 里还没有这个字段，五处要一起改。',
+    fields: []
+  },
+  ramRole: {
+    title: 'RAM 角色扮演', kind: 'B', provider: 'oss-sts', tag: '推荐',
+    desc: '服务端用 catalog 上的 AK/SK 去 AssumeRole，换一份按表收窄的 STS 凭据。',
+    fields: ['roleArn', 'accessKeyId', 'secretAccessKey']
+  },
+  ossSession: {
+    title: '临时 AccessKey', kind: 'B', notImplemented: true,
+    desc: '直接存临时 AccessKey + SecurityToken。与 S3 那一档同样缺字段。',
+    fields: []
+  },
+  obsDelegate: {
+    title: 'IAM 委托（临时 AK/SK）', kind: 'B', notImplemented: true,
+    desc: 'CreateTemporaryAccessKeyByAgency 要先拿 IAM token，需要账号+口令，本工程没接入。',
+    fields: []
+  },
+  principal: {
+    title: '服务主体（换 SAS）', kind: 'B', provider: 'azure-sas', tag: '推荐',
+    desc: '存 tenantId + clientId + clientSecret。服务端用它换 AAD token 再签目录级 SAS。',
+    fields: ['clientId', 'clientSecret']
+  },
+  mi: {
+    title: '托管标识', kind: 'C', notImplemented: true,
+    desc: '由服务端进程所在环境的托管标识换取 SAS。需要引入 Azure SDK 的凭据链。',
+    fields: []
+  },
+  serviceAccount: {
+    title: '服务账号 JSON', kind: 'B', provider: 'gcs-downscope', tag: '推荐',
+    desc: '存服务账号密钥 JSON。服务端自签 JWT 换 access token，再 downscope 到表前缀。',
+    fields: ['serviceAccountJson']
+  },
+  adc: {
+    title: '应用默认凭据（ADC）', kind: 'C', notImplemented: true,
+    desc: '靠服务端与引擎各自环境里的 ADC。控制台无法校验，只能用自检回答。',
+    fields: []
+  },
+  external: {
+    title: '环境身份（不在 catalog 存秘密）', kind: 'C',
+    desc: '一个密钥都不存在 catalog 上（含 stsUnavailable=true）。两边各自用自己的 IAM 身份，成不成看部署。',
+    fields: []
+  },
+  none: {
+    title: '本地文件系统', kind: 'F',
+    desc: '没有凭据概念，这一节整块简化成一句说明。',
+    fields: []
+  }
+};
+
+var FIELD_DEFS = {
+  accessKeyId: { label: 'accessKeyId', secret: true, ph: 'AKIA...' },
+  secretAccessKey: { label: 'secretAccessKey', secret: true, ph: '从密钥文件里读' },
+  roleArn: { label: 'roleArn', ph: 'arn:aws:iam::123456789012:role/lakehouse' },
+  clientId: { label: 'clientId', ph: '服务主体（应用）的 client id' },
+  clientSecret: { label: 'clientSecret', secret: true, ph: '密钥值' },
+  serviceAccountJson: { label: 'serviceAccountJson', area: true, ph: '{ "type": "service_account", ... }' }
+};
+
+var state = {
+  scene: 'create',
+  type: 'S3',
+  use: 'read',
+  method: 'static',
+  keys: { accessKeyId: 'AKIAIOSFODNN7EXAMPLE', secretAccessKey: 'wJalrXUtnFEMI...' },
+  masked: false,
+  probe: null
+};
+
+/* ------------------------------------------------------------------ 判定 */
+
+function availability(type, method) {
+  var m = METHODS[method];
+  if (!m) return 'ok';
+  if (m.notImplemented) return 'notImplemented';
+  if (m.kind === 'C' || m.kind === 'F') return 'ok';
+  if (!m.provider) return 'ok';
+  return DEPLOY.providers.indexOf(m.provider) >= 0 ? 'ok' : 'deployDisabled';
+}
+
+function hasKeys() {
+  return !!(state.keys.accessKeyId && state.keys.secretAccessKey);
+}
+
+/* 返回四个格子的状态：ok / warn / no / unk / na，外加一句原因 */
+function compute() {
+  var t = state.type;
+  var m = state.method;
+  var av = availability(t, m);
+  var def = METHODS[m];
+  var r = {
+    serverRead: { s: 'na', note: '' },
+    serverWrite: { s: 'na', note: '' },
+    engineRead: { s: 'na', note: '' },
+    engineWrite: { s: 'na', note: '' }
+  };
+
+  if (def.kind === 'F') {
+    r.serverRead = { s: 'ok', note: '本地 FileIO，无凭据' };
+    r.serverWrite = { s: 'ok', note: '' };
+    r.engineRead = { s: 'ok', note: '自签令牌' };
+    r.engineWrite = { s: 'ok', note: '' };
+    return r;
+  }
+
+  /* 本工程还没接入：四个格子一律「不适用」，否则会拿现有的转发分支算出一串 ✓ */
+  if (def.notImplemented) {
+    var why = { s: 'na', note: '本工程暂未接入，这条路不存在' };
+    r.serverRead = why; r.serverWrite = why; r.engineRead = why; r.engineWrite = why;
+    return r;
+  }
+
+  if (def.kind === 'C') {
+    var cn = '服务端进程有没有被这个桶认可的 IAM 身份，表单里看不出来';
+    r.serverRead = { s: 'unk', note: cn };
+    r.serverWrite = { s: 'unk', note: '' };
+    r.engineRead = { s: 'unk', note: '引擎侧要有自己的 IRSA / 托管标识 / ADC' };
+    r.engineWrite = { s: 'unk', note: '同上；写权限取决于那个身份' };
+    return r;
+  }
+
+  if (def.kind === 'A') {
+    r.serverRead = { s: 'ok', note: '同一对钥匙' };
+    r.serverWrite = { s: 'ok', note: '' };
+    r.engineRead = { s: 'ok', note: '拿到的是永久密钥' };
+    r.engineWrite = { s: 'ok', note: '永久写权限，泄漏窗口不可控' };
+    return r;
+  }
+
+  /* B 类 */
+  if (av === 'ok') {
+    r.serverRead = { s: 'ok', note: '服务端自己换票' };
+    r.serverWrite = { s: 'ok', note: '写票单独签' };
+    r.engineRead = { s: 'ok', note: '短期票' };
+    r.engineWrite = { s: 'no', note: '票只读：引擎写会 PutObject 403' };
+    return r;
+  }
+
+  /* B 类但 provider 未启用：能转发的只有 S3 / OSS / OBS / COS 的静态钥匙 */
+  var canRelay = (t === 'S3' || t === 'OSS' || t === 'OBS' || t === 'COS') && hasKeys();
+  if (canRelay) {
+    r.serverRead = { s: 'ok', note: '退回转发：用 catalog 上的长期密钥' };
+    r.serverWrite = { s: 'ok', note: '' };
+    r.engineRead = { s: 'ok', note: '拿到的是那对长期密钥，不是票' };
+    r.engineWrite = { s: 'ok', note: '能写，但用的是永久密钥' };
+    return r;
+  }
+  r.serverRead = { s: 'no', note: '既没有签发票，也没有可转发的密钥' };
+  r.serverWrite = { s: 'no', note: '同上。元数据物化会失败' };
+  r.engineRead = { s: 'no', note: '只有定位信息，没有凭据' };
+  r.engineWrite = { s: 'no', note: '' };
+  return r;
+}
+
+var DOT = { ok: 'ok', warn: 'warn', no: 'no', unk: 'unk', na: '' };
+var WORD = { ok: '✓', warn: '!', no: '✗', unk: '?', na: '—' };
+
+function cell(st) {
+  return '<span class="dot ' + DOT[st.s] + '"></span>' + WORD[st.s];
+}
+
+/* ------------------------------------------------------------------ 渲染：左 */
+
+function renderTypes() {
+  var html = '';
+  Object.keys(TYPES).forEach(function (k) {
+    var on = k === state.type ? ' is-on' : '';
+    html += '<span class="seg-item' + on + '" data-type="' + k + '">' + TYPES[k].label + '</span>';
+  });
+  el('typeSeg').innerHTML = html;
+  el('locInput').value = TYPES[state.type].loc;
+  var lf = '';
+  TYPES[state.type].locFields.forEach(function (f) {
+    lf += '<div class="field"><div class="field-label">' + f.label + '</div>'
+      + '<input type="text" value="' + esc(f.val) + '" /></div>';
+  });
+  el('locFields').innerHTML = lf;
+}
+
+function renderUses() {
+  var html = '';
+  Object.keys(USES).forEach(function (k) {
+    var on = k === state.use ? ' is-on' : '';
+    html += '<div class="use' + on + '" data-use="' + k + '">'
+      + '<div class="use-title">' + USES[k].label + '</div>'
+      + '<div class="use-desc">' + USES[k].desc + '</div></div>';
+  });
+  el('useGrid').innerHTML = html;
+  if (state.type === 'FILE') {
+    el('useTip').innerHTML = '本地仓库没有凭据，「用途」在这里只影响写入时的目录权限，不影响认证。';
+    return;
+  }
+  el('useTip').innerHTML = state.use === 'write'
+    ? '选了「可写」：<b>签发档</b>（IAM 角色 / 服务主体 / 服务账号）会被标红——'
+      + '服务端发出去的票今天只有读权限，引擎第一次写入就是 403，见设计稿 §2.3。'
+    : '选了「只读」：三种方式都能用。若这个 catalog 以后要给引擎写，'
+      + '得改回「可写」再挑方式，否则会在第一次写时才发现。';
+}
+
+function renderMethods() {
+  var t = state.type;
+  var list = TYPES[t].methods;
+  el('methCount').textContent = list.length + ' 种';
+  el('methIntro').innerHTML = t === 'FILE'
+    ? ''
+    : '本类型支持 <b>' + list.length + '</b> 种。方式是单选题：它决定下面出哪些字段，也决定两侧各自拿到什么。';
+
+  var html = '';
+  if (t === 'FILE') {
+    el('methCount').textContent = '不适用';
+    el('methGrid').innerHTML = '';
+    renderFields();
+    return;
+  }
+  list.forEach(function (id) {
+    var m = METHODS[id];
+    var av = availability(t, id);
+    var r = null;
+    var wasMethod = state.method;
+    if (id === state.method) { r = compute(); } else {
+      var saved = state.method; state.method = id;
+      r = compute(); state.method = saved;
+    }
+    var cls = 'meth';
+    if (av === 'notImplemented') cls += ' is-dim';
+    else if (state.method === id) cls += ' is-on';
+    if (state.method === id && state.use === 'write' && m.kind === 'B' && av === 'ok') cls += ' is-red';
+
+    var tags = '';
+    if (m.notImplemented) tags += '<span class="meth-tag off">本工程暂未接入</span>';
+    else if (av === 'deployDisabled') tags += '<span class="meth-tag off">本部署未启用</span>';
+    if (m.tag && av === 'ok' && !(state.use === 'write' && m.kind === 'B')) {
+      tags += '<span class="meth-tag rec">' + m.tag + '</span>';
+    }
+    if (state.method === id && state.use === 'write' && m.kind === 'B' && av === 'ok') {
+      tags += '<span class="meth-tag red">引擎写不可用</span>';
+    }
+    if (m.kind) tags += '<span class="meth-tag">' + m.kind + ' 类</span>';
+
+    html += '<div class="' + cls + '" data-method="' + id + '">'
+      + '<span class="meth-dot"></span>'
+      + '<div class="meth-title">' + m.title + tags + '</div>'
+      + '<div class="meth-desc">' + m.desc + '</div>'
+      + '<div class="side-row">'
+      + '<span>服务端读 ' + cell(r.serverRead) + '</span>'
+      + '<span>引擎读 ' + cell(r.engineRead) + '</span>'
+      + '<span>引擎写 ' + cell(r.engineWrite) + '</span>'
+      + '</div></div>';
+  });
+  el('methGrid').innerHTML = html;
+}
+
+function renderFields() {
+  var def = METHODS[state.method];
+  var box = el('methodFields');
+  if (!def.fields || def.fields.length === 0) {
+    box.style.display = 'none';
+    box.innerHTML = '';
+    renderNotes();
+    return;
+  }
+  box.style.display = 'block';
+  var html = '<div class="fields-head">这一种方式的字段 <b>'
+    + METHODS[state.method].title + '</b></div>';
+
+  if (state.method === 'serviceAccount') {
+    html += '<div class="field"><div class="field-label">serviceAccountJson <span class="req">*</span></div>'
+      + '<textarea placeholder="{ &quot;type&quot;: &quot;service_account&quot;, ... }">'
+      + (state.masked ? '' : '{ "type": "service_account", "client_email": "lh@proj.iam.gserviceaccount.com", "private_key": "-----BEGIN PRIVATE KEY-----\\n..." }')
+      + '</textarea>'
+      + '<div class="field-tip">只用于服务端换票，永不下发给引擎。保存后回显 <code>******</code>。</div></div>';
+  } else {
+    var keys = state.method === 'role' || state.method === 'ramRole'
+      ? ['roleArn', 'accessKeyId', 'secretAccessKey'] : def.fields;
+    keys.forEach(function (k) {
+      var f = FIELD_DEFS[k];
+      var val = '';
+      if (k === 'accessKeyId' || k === 'secretAccessKey') {
+        val = state.masked ? '******' : (state.keys[k] || '');
+      }
+      html += '<div class="field"><div class="field-label">' + f.label
+        + (k === 'accessKeyId' ? ' <span class="opt">签名身份</span>' : '')
+        + '</div><input type="' + (f.secret ? 'password' : 'text') + '" value="'
+        + esc(val) + '" placeholder="' + f.ph + '" /></div>';
+    });
+    if (state.method === 'role' || state.method === 'ramRole') {
+      html += '<div class="field-tip" style="margin:-4px 0 10px">'
+        + '配了 <code>roleArn</code> 之后，这对 AK/SK 不再是给引擎的钥匙，而是服务端去 '
+        + 'AssumeRole 时用的<b>调用方身份</b>（可以只授 <code>sts:AssumeRole</code>）。</div>';
+    }
+  }
+  box.innerHTML = html;
+  renderNotes();
+}
+
+function renderNotes() {
+  var t = state.type;
+  var av = availability(t, state.method);
+  var def = METHODS[state.method];
+  var r = compute();
+  var html = '';
+
+  if (def.kind === 'F') {
+    el('methodNotes').innerHTML = '<div class="note is-info">本地仓库不需要认证，也不会有'
+      + '「服务端读不了」这件事。第九组的四种失败在这里都不适用。</div>';
+    return;
+  }
+
+  if (state.use === 'write' && def.kind === 'B' && av === 'ok') {
+    html += '<div class="note is-danger"><span class="note-title">这一选会让引擎写不了</span>'
+      + '服务端发出去的票今天只有读权限（<code>vend(3 参)</code> 默认 <code>allowWrite=false</code>）。'
+      + 'Spark / Flink 读没问题，第一次 <code>PutObject</code> 就是 403。'
+      + '要么改选「静态访问密钥」，要么这个 catalog 只做读、写入交给另一个 catalog。</div>';
+  }
+
+  if (av === 'deployDisabled') {
+    var canRelay = hasKeys() && (t === 'S3' || t === 'OSS' || t === 'OBS' || t === 'COS');
+    if (canRelay) {
+      html += '<div class="note is-warn"><span class="note-title">本部署没启用 ' + def.provider
+        + '，于是退回转发长期密钥</span>配置能用，但引擎拿到的是那对<b>永久</b>密钥，'
+        + '票的收窄与到期都不生效。界面上「来源」会显示「转发」，那是实话。</div>';
+    } else {
+      html += '<div class="note is-danger"><span class="note-title">这一选建完就坏</span>'
+        + '本部署没启用 <code>' + def.provider + '</code>，而 catalog 上又没有任何可转发的密钥。'
+        + '服务端拿不到凭据 → <b>数据预览、文件浏览、文件下载全部 500</b>；'
+        + '引擎也只有定位信息。两条出路：找运维启用该 provider，或改选静态密钥 / 环境身份。</div>';
+    }
+  }
+
+  if (def.kind === 'C') {
+    html += '<div class="note is-warn"><span class="note-title">这一选的可读性无法在表单里判断</span>'
+      + '服务端与引擎各自用自己的环境身份。能不能读取决于「那个身份有没有被这个桶认可」，'
+      + '表单推导不出来——按下面第 5 节的<b>自检</b>跑一次 HEAD 才知道结果。</div>';
+  }
+
+  if (state.method === 'session') {
+    html += '<div class="note is-warn"><span class="note-title">暂时做不了</span>'
+      + '<code>AwsStorageConfigInfo</code> 没有 <code>sessionToken</code> 字段，'
+      + '<code>StorageSecrets</code> 也只有 id+secret 两元组。要落地得五处一起改'
+      + '（DTO、三元组、打码、<code>s3.session-token</code> 下发、编辑态反推）——'
+      + '只改 DTO 会做出「能填但不生效」，比不做更糟。</div>';
+  }
+
+  el('methodNotes').innerHTML = html;
+}
+
+function renderAdvanced() {
+  var t = state.type;
+  var box = el('advanced');
+  if (t === 'FILE') {
+    // 本地仓库没有凭据，也没有与身份相关的调优项——整块折页不出现
+    box.style.display = 'none';
+    el('advBody').innerHTML = '';
+    return;
+  }
+  box.style.display = 'block';
+  var body = '';
+  if (t === 'S3') {
+    body = '<div class="grp"><span class="grp-title">S3 兼容与收窄</span><span class="grp-line"></span></div>'
+      + '<div class="field"><div class="field-label">externalId</div><input type="text" /></div>'
+      + '<div class="field"><div class="field-label">stsEndpoint</div><input type="text" placeholder="默认取 region 对应的端点" /></div>'
+      + '<div class="switch-row"><span class="sw"></span><span class="field-tip" style="margin:0">noInlinePolicy（VAST 这类实现收到 Policy 会 501）</span></div>';
+  } else if (t === 'OSS') {
+    body = '<div class="field"><div class="field-label">stsEndpoint</div><input type="text" placeholder="sts.aliyuncs.com" /></div>';
+  } else if (t === 'AZURE') {
+    body = '<div class="field"><div class="field-label">authority</div><input type="text" placeholder="https://login.microsoftonline.com/" /></div>'
+      + '<div class="field"><div class="field-label">scope</div><input type="text" placeholder="https://storage.azure.com/.default" /></div>';
+  } else if (t === 'COS') {
+    body = '<div class="switch-row"><span class="sw is-on"></span><span class="field-tip" style="margin:0">useHttps（缺省 false，这里强制开）</span></div>';
+  } else {
+    body = '<div class="field-tip">这一类没有与身份相关的高级参数。</div>';
+  }
+  body += '<div class="grp"><span class="grp-title">与身份无关的调优</span><span class="grp-line"></span></div>'
+    + '<div class="field"><div class="field-label">credential TTL（秒）</div><input type="text" value="3600" /></div>';
+  el('advBody').innerHTML = body;
+}
+
+/* ------------------------------------------------------------------ 渲染：右 */
+
+function renderAside() {
+  var r = compute();
+  var rows = [
+    ['服务端读', r.serverRead, '预览 / 浏览 / 下载'],
+    ['服务端写', r.serverWrite, '元数据物化 / 删目录'],
+    ['引擎读', r.engineRead, 'Spark / Flink'],
+    ['引擎写', r.engineWrite, 'Spark / Flink 写入']
+  ];
+  var html = '';
+  rows.forEach(function (row) {
+    var st = row[1];
+    html += '<div class="matrix-row">'
+      + '<div class="matrix-k">' + row[0] + '</div>'
+      + '<div class="matrix-v ' + st.s + '">' + (WORD[st.s] || '—') + '</div>'
+      + '<div class="matrix-n">' + (st.note || row[2]) + '</div></div>';
+  });
+  el('matrixBox').innerHTML = html;
+
+  var caps = [
+    ['数据预览', r.serverRead.s],
+    ['文件浏览 / 下载', r.serverRead.s],
+    ['分区列举', r.serverRead.s],
+    ['元数据物化', r.serverWrite.s],
+    ['Spark / Flink 读', r.engineRead.s],
+    ['Spark / Flink 写', r.engineWrite.s]
+  ];
+  var ch = '';
+  caps.forEach(function (c) {
+    var w = c[1] === 'ok' ? '可用' : c[1] === 'warn' ? '受限' : c[1] === 'no' ? '不可用'
+      : c[1] === 'unk' ? '未验证' : '—';
+    var cls = c[1] === 'ok' ? 'ok' : c[1] === 'warn' ? 'warn' : c[1] === 'no' ? 'no' : 'unk';
+    ch += '<div class="cap-row"><span class="cap-name">' + c[0] + '</span>'
+      + '<span class="cap-tag ' + cls + '">' + w + '</span></div>';
+  });
+  el('capBox').innerHTML = ch;
+
+  el('keysBox').innerHTML = renderKeys();
+
+  var chain = '';
+  chain += row('类型', TYPES[state.type].label);
+  chain += row('用途', USES[state.use].label);
+  chain += row('方式', METHODS[state.method].title);
+  chain += row('服务端读', label(r.serverRead.s));
+  chain += row('引擎拿到', engineLabel(r));
+  el('chainBox').innerHTML = chain;
+
+  el('whyBox').innerHTML = whyText(r);
+}
+
+function row(k, v) {
+  return '<div class="chain-row"><span class="chain-k">' + k + '</span><span class="chain-v">' + v + '</span></div>';
+}
+
+function label(s) {
+  return s === 'ok' ? '可读' : s === 'no' ? '不可读' : s === 'unk' ? '看部署身份' : '不适用';
+}
+
+function engineLabel(r) {
+  if (r.engineRead.s === 'na') return '不适用';
+  if (r.engineRead.s === 'no') return '只有定位信息';
+  if (r.engineRead.s === 'unk') return '引擎自带身份';
+  if (METHODS[state.method].kind === 'A') return '永久密钥';
+  if (METHODS[state.method].kind === 'B' && availability(state.type, state.method) === 'ok') return '短期只读票';
+  if (METHODS[state.method].kind === 'F') return '自签令牌';
+  return '长期密钥（转发）';
+}
+
+function renderKeys() {
+  var t = state.type;
+  var m = state.method;
+  var av = availability(t, m);
+  var def = METHODS[m];
+  var lines = [];
+  if (t === 'FILE') {
+    return '<span class="c">// 本地文件系统：不下发凭据</span><br />'
+      + '<span class="k">accessKeyId</span> = PAIMON-catalog<br />'
+      + '<span class="k">accessKeySecret</span> = 随机值';
+  }
+  if (m === 'static') {
+    var k = (t === 'OSS') ? 'fs.oss.accessKeyId' : (t === 'OBS') ? 'fs.obs.access.key'
+      : (t === 'COS') ? 'fs.cosn.userinfo.secretId' : 's3.access-key-id / s3.access-key';
+    var s = (t === 'OSS') ? 'fs.oss.accessKeySecret' : (t === 'OBS') ? 'fs.obs.secret.key'
+      : (t === 'COS') ? 'fs.cosn.userinfo.secretKey' : 's3.secret-access-key / s3.secret-key';
+    lines.push(['k', k, 'AKIA…（永久）']);
+    lines.push(['k', s, '•••••']);
+  } else if (def.kind === 'B' && av === 'ok') {
+    if (t === 'AZURE') {
+      lines.push(['k', 'azure.sas-token', 'sv=…&se=…（限目录）']);
+      lines.push(['k', 'azure.tenant-id', '定位']);
+    } else if (t === 'GCS') {
+      lines.push(['k', 'gcs.oauth2.token', 'ya29.…（1h）']);
+    } else if (t === 'S3') {
+      lines.push(['k', 's3.access-key-id', 'ASIA…（临时）']);
+      lines.push(['k', 's3.session-token', '•••••']);
+      lines.push(['k', 's3.session-token-expires-at-ms', '1730000000000']);
+    } else {
+      lines.push(['k', 'sts 临时凭据', 'AK / SK / Token 三件']);
+    }
+  } else if (def.kind === 'B' && av !== 'ok' && hasKeys()
+      && (t === 'S3' || t === 'OSS' || t === 'OBS' || t === 'COS')) {
+    lines.push(['c', '// provider 未启用 → 退回转发']);
+    lines.push(['k', '长期 AK / SK', '能写，但不会过期']);
+  } else {
+    lines.push(['c', '// 不下发密钥，只有定位信息']);
+    lines.push(['k', 'region / endpoint', '引擎自己带身份']);
+  }
+  var html = lines.map(function (l) {
+    return l[0] === 'c' ? '<span class="c">' + l[1] + '</span>'
+      : '<span class="k">' + l[1] + '</span> = <span class="c">' + l[2] + '</span>';
+  }).join('<br />');
+  return html || '<span class="c">// 不下发任何键</span>';
+}
+
+function whyText(r) {
+  var m = METHODS[state.method];
+  if (m.kind === 'F') {
+    return '本地仓库没有四个格子的问题。留在这里是为了对照：<b>对象存储的每一条路都要先回答'
+      + '「服务端读得到吗」</b>，因为预览与文件浏览跑在服务端进程里。';
+  }
+  if (m.kind === 'A') {
+    return '静态密钥四个格子全通，代价是<b>引擎拿到永久密钥</b>：泄漏窗口由人决定，不由 TTL 决定。'
+      + '它今天也是「要给引擎写」时唯一可用的方式。';
+  }
+  if (m.kind === 'C') {
+    return '环境身份把可读性交给部署方：服务端靠自己的工作负载身份，引擎靠自己的 IRIS / 托管标识。'
+      + '表单推导不出结果，因此必须有第 5 节的<b>自检</b>——这也是「必须要有认证」这句话唯一'
+      + '可执行的形态。';
+  }
+  if (availability(state.type, state.method) !== 'ok') {
+    return 'provider 未启用时的行为分两种：有可转发的密钥就退回转发（能跑，但永久），'
+      + '没有就<b>两边都读不了</b>。后者必须在保存前拦住，否则一建完预览就 500。';
+  }
+  return '服务端代取短期票：<b>服务端自己也要用它来预览</b>，所以它不能只考虑引擎。'
+    + '代价是引擎侧只有读权限——`vend(3 参)` 默认 `allowWrite=false`，'
+    + '协议上读写又分不开。这一格要么接受，要么改选静态密钥，要么等 §5.3 的提案落地。';
+}
+
+/* ------------------------------------------------------------------ 自检 */
+
+function runProbe() {
+  var t = state.type;
+  var m = state.method;
+  var av = availability(t, m);
+  var def = METHODS[m];
+  var res;
+
+  if (def.kind === 'F') {
+    res = { ok: true, verdict: 'SKIPPED', text: '本地文件系统不探测',
+      hint: '对 file:// 做 HEAD 等于把服务端变成一个「本机文件存在性」预言机，一条硬边界。' };
+  } else if (m === 'static') {
+    res = hasKeys()
+      ? { ok: true, verdict: 'OK', text: 'HEAD 200，服务端可读', hint: '认证没问题。预览、浏览、下载都能用。' }
+      : { ok: false, verdict: 'DENIED', text: '没有填密钥',
+          hint: '静态密钥方式下 catalog 上必须有一对 AK/SK，否则服务端拿不到任何凭据。' };
+  } else if (def.kind === 'B') {
+    if (av === 'ok') {
+      res = { ok: true, verdict: 'OK', text: '换票成功，HEAD 200', hint: '签发链路可用；引擎侧记得开续期。' };
+    } else if (hasKeys() && (t === 'S3' || t === 'OSS' || t === 'OBS' || t === 'COS')) {
+      res = { ok: true, verdict: 'OK', text: '退回转发，HEAD 200',
+        hint: '能读，但用的是永久密钥。要短期票得先启用 ' + def.provider + '。' };
+    } else {
+      res = { ok: false, verdict: 'DENIED', text: '这个位置读不到',
+        hint: '可能是地址不对，也可能是这份身份没有权限——S3 在没有 ListBucket 时对'
+          + '不存在的 key 也回 403，两种在响应里分不出来。' };
+    }
+  } else {
+    res = { ok: false, verdict: 'DENIED', text: '服务端进程没有可用身份',
+      hint: '环境身份方式下「能不能读」取决于部署。要让它可用：给服务端一个被这个桶认可的'
+        + 'IAM 身份，或改选静态密钥 / 签发方式。' };
+  }
+
+  state.probe = res;
+  var box = el('probeResult');
+  box.className = 'probe-result is-shown';
+  box.innerHTML = '<div class="probe-verdict ' + (res.ok ? 'ok' : 'no') + '">'
+    + (res.ok ? '✓' : '✗') + ' ' + res.verdict + ' · ' + res.text + '</div>'
+    + '<div class="probe-hint">' + res.hint + '</div>';
+}
+
+/* ------------------------------------------------------------------ 事件 */
+
+function render() {
+  renderTypes();
+  renderUses();
+  renderMethods();
+  renderFields();
+  renderAdvanced();
+  renderAside();
+  el('probeResult').className = 'probe-result';
+  el('probeResult').innerHTML = '';
+  state.probe = null;
+  el('pageTitle').textContent = state.scene === 'editStatic' || state.scene === 'role' ? '编辑 Catalog' : '创建 Catalog';
+  el('pageSub').textContent = TYPES[state.type].label + ' · 存储配置在 catalog 上，不在 application.yml 里';
+}
+
+function el(id) { return document.getElementById(id); }
+
+function esc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+document.addEventListener('click', function (e) {
+  var t = e.target.closest('[data-type]');
+  if (t) {
+    state.type = t.getAttribute('data-type');
+    state.method = TYPES[state.type].methods[0];
+    state.masked = false;
+    render();
+    return;
+  }
+  var u = e.target.closest('[data-use]');
+  if (u) {
+    state.use = u.getAttribute('data-use');
+    render();
+    return;
+  }
+  var m = e.target.closest('[data-method]');
+  if (m) {
+    var id = m.getAttribute('data-method');
+    if (availability(state.type, id) === 'notImplemented') return;
+    state.method = id;
+    state.masked = false;
+    render();
+    return;
+  }
+  if (e.target.closest('#probeBtn')) {
+    if (state.type === 'FILE') {
+      var box = el('probeResult');
+      box.className = 'probe-result is-shown';
+      box.innerHTML = '<div class="probe-verdict no">✗ SKIPPED · 本地仓库不需要认证</div>'
+        + '<div class="probe-hint">这一档不探测：对 file:// 做 HEAD 会把服务端变成'
+        + '「本机文件存在性」预言机。</div>';
+      return;
+    }
+    runProbe();
+  }
+});
+
+document.addEventListener('click', function (e) {
+  if (e.target.closest('#advHead')) {
+    el('advanced').classList.toggle('is-open');
+  }
+  if (e.target.classList.contains('sw')) {
+    e.target.classList.toggle('is-on');
+  }
+});
+
+/* ------------------------------------------------------------------ 场景 */
+
+var SCENES = {
+  create: function () {
+    state.type = 'S3'; state.use = 'read'; state.method = 'static'; state.masked = false;
+  },
+  role: function () {
+    state.type = 'S3'; state.use = 'read'; state.method = 'role'; state.masked = false;
+  },
+  noSign: function () {
+    state.type = 'S3'; state.use = 'read'; state.method = 'role'; state.masked = false;
+    DEPLOY.providers = ['oss-sts', 'azure-sas', 'gcs-downscope'];
+  },
+  engineWrite: function () {
+    state.type = 'S3'; state.use = 'write'; state.method = 'role'; state.masked = false;
+    DEPLOY.providers = ['s3-token', 'oss-sts', 'azure-sas', 'gcs-downscope'];
+  },
+  external: function () {
+    state.type = 'S3'; state.use = 'read'; state.method = 'external'; state.masked = false;
+  },
+  editStatic: function () {
+    state.type = 'S3'; state.use = 'read'; state.method = 'static'; state.masked = true;
+  },
+  file: function () {
+    state.type = 'FILE'; state.use = 'read'; state.method = 'none'; state.masked = false;
+  }
+};
+
+function applyScene(id) {
+  if (!SCENES[id]) return;
+  SCENES[id]();
+  render();
+  var btns = document.querySelectorAll('[data-scene]');
+  for (var i = 0; i < btns.length; i++) {
+    btns[i].classList.toggle('is-on', btns[i].getAttribute('data-scene') === id);
+  }
+  state.scene = id;
+}
+
+document.querySelectorAll('[data-scene]').forEach(function (b) {
+  b.addEventListener('click', function () { applyScene(b.getAttribute('data-scene')); });
+});
+
+/* 支持 #hash 直开：index.html#noSign / #engineWrite / #OSS */
+(function () {
+  var h = (location.hash || '').replace('#', '');
+  if (SCENES[h]) { applyScene(h); return; }
+  if (TYPES[h]) {
+    state.type = h;
+    state.method = TYPES[h].methods[0];
+    render();
+    applySceneLabel(null);
+    return;
+  }
+  applyScene('create');
+})();
+
+function applySceneLabel(id) {
+  var btns = document.querySelectorAll('[data-scene]');
+  for (var i = 0; i < btns.length; i++) {
+    btns[i].classList.toggle('is-on', btns[i].getAttribute('data-scene') === id);
+  }
+}
+</script>
+</body>
+</html>

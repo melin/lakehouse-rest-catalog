@@ -256,7 +256,7 @@ spec/                   三份 OpenAPI 规格的仓库副本（不随服务端�
                         rest-management-open-api.yaml（Paimon 官方 REST Management API）
 sql/                    MySQL 建表语句（生成物）
 scripts/                验收 / 生成 / 校验 / 镜像构建脚本
-docs/                   30 份设计文档（另有五份配套效果图 HTML）
+docs/                   32 份设计文档（另有七份配套效果图 HTML）
 ```
 
 服务端四模块的**类数**：core 117 · storage 9 · protocol-paimon 38 · server 46（共 210）。
@@ -292,6 +292,7 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
 | `spark-iceberg-rest-e2e.md` | 让 Spark 通过本服务端建 **Iceberg** 表：`spark.sql.catalog.*` 配置（含 `rest.auth.type` 与 `scope=PRINCIPAL_ROLE:ALL` 两个坑）、可执行 SQL、与 Paimon 那套的差异对照、一期不做的 9 个端点会怎么撞上来（含 **CTAS 受 `transactions/commit` 缺失影响**）。**三层都已实测**：协议层、官方 Java 客户端层、Spark 引擎层（`IcebergTableDdlTests`）；第 4 节记着跑出来的四条边界（CTAS / `RENAME TO` 不带 catalog 前缀 / 元数据表不能用四段名 / decimal 规范化） |
 | `spark-lance-rest-e2e.md` | 让 Spark 通过本服务端读写 **Lance** 表：`impl=rest` 的七个配置项（`delimiter` / `parent` / **`single_level_ns=false`** 各自不配会怎样）、可执行的 SQL（含 `OPTIMIZE` / `VACUUM` 两条 parser 级命令的三条语法规则）、**§3 的能力边界：这一面没有服务端建表、也没有 `DROP TABLE`**（清理用 `deregister`）、§4 两侧各自写了什么（V2 版本命名、manifest 是带 footer 的**容器**、`Field` 已无 `type`）、§5 类路径上 arrow 两份（以及 0.4.0 才有的 `NamedArgument` 两份）的坑、§6 报错对照。**Spark 引擎层已实测，3.5 与 4.1 各 7 例**（`LanceCatalogLiveTests` 在 `shared/`，`scripts/e2e-lance-spark.sh` 两版各跑一遍） |
 | `flink-rest-catalog.md` | 让 Flink SQL 读写 Paimon / Iceberg：两个版本模块为什么拆、两套 catalog 选项（`metastore=rest` vs `catalog-type=rest`、`warehouse` 是 prefix、`token.provider=bear`）、实测矩阵、**主键更新必须配 `sequence.field`**（否则同键先后未定义）、缺 Hadoop / `flink-connector-base|files` / JDK17 `add-opens` 的报错对照、Iceberg 无 upsert |
+| `catalog-storage-auth-design.md` | 改创建 catalog 页的「存储认证」区块 / 排查「控制台预览 500、引擎却正常」「引擎能读不能写」——**设计稿，未实现（v2）**：主线是 **catalog 自己也是凭据消费者**（预览 / 浏览 / 下载 / 分区列举 / 元数据物化 / 删表目录六个功能各自走哪条取票入口，两条入口的作用域与缓存不同），能力矩阵的四格是「服务端读 / 服务端写 / 引擎读 / 引擎写」，两个反直觉结论：**签发档引擎写不了**（`vend(3 参)` 默认 `allowWrite=false`）、静态密钥四格全通但给的是永久凭据；交互因此是「先问用途再问方式」，四张方式卡片各带三格结果；保存前自检（probe，只 HEAD，`file://` 必禁）；来源拆 `serverReadable` + `engineCredential` 两维；引擎侧要看续期责任表（Flink 流作业必踩）与写权限缺口 |
 | `authorization.md` | 权限实体链、授权映射、失败关闭的取舍；**多级 namespace 的判定口径在 §2.6**（两条链存的形状不同，按点号拼成路径再比，逐段比会静默不命中） |
 | `console.md` | 改控制台 / 排查「页面空列表」：分层、端点契约表、机械校验、加页面清单 |
 | `console-table-detail.md` | 改表详情页：页签随**表格式**（表级 `schema.options.type`）伸缩的数据来源（详细信息含字段/分区列表、表目录文件列表、「为什么没有权限页签」）、按需加载与非 Paimon 表不问快照端点、破坏性操作 |
