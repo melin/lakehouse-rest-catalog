@@ -1,6 +1,6 @@
 # docs/ 索引
 
-设计文档、契约基线与 SQL 语法参考都在这里。**按「你要做什么」查这张表**——三十二份文档，
+设计文档、契约基线与 SQL 语法参考都在这里。**按「你要做什么」查这张表**——三十三份文档，
 每份在表里都标了落地状态（**已落地** / **设计稿，未实现** / **存档，勿改**）。
 
 根 [`README.md`](../README.md) 讲怎么构建、怎么跑、配置项与实现边界；这份索引回答的是
@@ -21,6 +21,7 @@
 | [`spark-iceberg-rest-e2e.md`](spark-iceberg-rest-e2e.md) | 要让 Spark 通过本服务端建 Iceberg 表——`spark.sql.catalog.*` 配置、可执行的 SQL、与 Paimon 那套的差异对照 |
 | [`spark-lance-rest-e2e.md`](spark-lance-rest-e2e.md) | 要让 Spark 通过本服务端读写 Lance 表——`impl=rest` 的七个配置项、能跑哪些语句（含 `OPTIMIZE` / `VACUUM`）、**哪里跑不了**（这一面无服务端建表、无 `DROP TABLE`）、manifest 容器格式与两侧的版本账。**Spark 3.5 与 4.1 各实测一遍**（connector 0.8.0，两个 bundle 构件分属 `3.5_2.12` / `4.1_2.13`），类路径两个坑的形态两版一致 |
 | [`flink-rest-catalog.md`](flink-rest-catalog.md) | 要让 Flink SQL 读写 Paimon / Iceberg——两个版本模块的划分、两套 catalog 选项（`metastore=rest` vs `catalog-type=rest`）、实测结论（含主键更新要配 `sequence.field`）、缺 Hadoop / connector / `add-opens` 的报错对照 |
+| [`engine-token-refresh-design.md`](engine-token-refresh-design.md) | 排查「作业跑了一小时开始 401」「血缘图后半段没有边」，或要设计引擎侧令牌续期——**设计稿，未实现**：先分清**控制面**（主体令牌，本文件）与**数据面**（存储凭据，见 [`credential-vending-design.md`](credential-vending-design.md)；后者本来就能续）。三个断点各有各的形态：Paimon 的 `bear` provider 只在构造期读一次票（但框架每请求都调 `mergeAuthHeader`，钩子一直空着）、Iceberg **名义上会刷新、实际每次都 400**（它默认走 RFC 8693 token exchange，而服务端只认 `client_credentials`，失败后不再重排）、Spark 治理通道的 `ManagementApiClient` 把令牌存成 `final String`（血缘 fail-open，所以只表现为「边少了」）。定案是**服务端加 token exchange + Paimon 自定义 `AuthProvider`**，引擎配置里始终只有短票；含四个方案的取舍表、`RESTTokenFileIO` 每次刷新都 `new RESTApi` 导致缓存必须进程级、provider jar 与 paimon bundle 必须同 ClassLoader 的部署硬坑、`scope=PRINCIPAL_ROLE:ALL` 为什么不是可选项，以及**唯一有效的验收方法（把 ttl 调到 90 秒跑 5 分钟）** |
 | [`authorization.md`](authorization.md) | 要理解权限怎么判——实体链、授权映射、失败关闭的取舍 |
 | [`console.md`](console.md) | 要改 Web 控制台或排查「页面空列表」——前端分层、端点契约表、机械校验 |
 | [`console-table-detail.md`](console-table-detail.md) | 要改表详情页——页签随表格式（Paimon / Format / Object / Lance）伸缩的数据来源、为什么授权不在这页、破坏性操作与边界 |
