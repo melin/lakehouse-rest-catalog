@@ -140,7 +140,7 @@ public class DefaultStorageCredentialManager implements StorageCredentialManager
      * <p>注意 {@code accessKeyId} / {@code accessKeySecret} 是驼峰，与 OBS 的点分隔小写
      * 不是同一套风格；临时凭据的键也不同（{@code securityToken} 对 {@code session.token}）。
      */
-    private static final KeyFamily OSS_KEYS = new KeyFamily(
+    static final KeyFamily OSS_KEYS = new KeyFamily(
             "fs.oss.accessKeyId", "fs.oss.accessKeySecret", "fs.oss.securityToken", "fs.oss.endpoint");
 
     /**
@@ -254,18 +254,13 @@ public class DefaultStorageCredentialManager implements StorageCredentialManager
     public VendedStorageCredential vend(StorageConfigInfo storage, String tableId, String tablePath,
                                         boolean allowWrite) {
         requireStorage(storage);
-        VendedStorageCredential vended;
-        if (storage.storageType() == ManagementEnums.StorageType.S3) {
-            // 只有 S3 分支可能走到 provider 链上（会调云），因此它自己返回完整结果，
-            // 其余分支仍是「填 token 映射 + 报一个来源」的老形状。
-            AwsStorageConfigInfo s3 = (AwsStorageConfigInfo) storage;
-            vended = s3(s3, new CredentialContext(s3, tableId, tablePath,
-                    RequestContext.principal(), allowWrite));
-        } else {
-            Map<String, String> token = new LinkedHashMap<>();
-            String source = otherSource(storage, tableId, tablePath, token);
-            vended = new VendedStorageCredential(token, ttlSeconds(storage), storage.storageType(), source);
-        }
+        CredentialContext context = CredentialContext.forTable(storage, tableId, tablePath,
+                RequestContext.principal(), allowWrite);
+        // S3 分支自己返回完整结果（它是历史上唯一接 provider 链的类型）；
+        // 其余类型走 vendOther 的统一骨架。
+        VendedStorageCredential vended = storage.storageType() == ManagementEnums.StorageType.S3
+                ? s3((AwsStorageConfigInfo) storage, context)
+                : vendOther(context);
         logVended(storage, tableId, vended);
         return vended;
     }
@@ -273,45 +268,107 @@ public class DefaultStorageCredentialManager implements StorageCredentialManager
     /**
      * 服务端自己访问仓库的票：作用域是 catalog 的允许位置，与用户的表级票分开。
      *
-     * <p>实现上它与 {@link #vend} 走同一条 S3 分支（同样的四级优先级、
+     * <p>实现上它与 {@link #vend} 走同一条分支（同样的四级优先级、
      * 同样的 provider 链），差别只在 {@link CredentialContext}：这里带的是
      * {@code allowedLocations} 一份列表，而不是一张表的路径。因此静态转发档、
      * {@code stsUnavailable} 档的行为与引擎那张票完全一致——「服务端能不能访问」
      * 与「引擎能不能访问」仍是同一个答案。
      *
-     * <p>非 S3 存储暂无 catalog 级收窄（它们本来就不按路径签），沿用与原实现
-     * 相同的转发策略。
+     * <p><b>Azure 的 catalog 级票尤其要用这条通道。</b>它签的是「目录级」SAS，
+     * 而目录由位置决定：用表级票去应答「服务端扫描整个仓库」，票的作用面比动作小，
+     * 表现是列目录 403。
      */
     @Override
     public VendedStorageCredential vendForCatalog(StorageConfigInfo storage, String catalogId,
                                                  List<String> allowedLocations, boolean allowWrite) {
         requireStorage(storage);
-        VendedStorageCredential vended;
-        if (storage.storageType() == ManagementEnums.StorageType.S3) {
-            vended = s3((AwsStorageConfigInfo) storage,
-                    CredentialContext.forCatalog((AwsStorageConfigInfo) storage, catalogId,
-                            allowedLocations, RequestContext.principal(), allowWrite));
-        } else {
-            Map<String, String> token = new LinkedHashMap<>();
-            String source = otherSource(storage, null, null, token);
-            vended = new VendedStorageCredential(token, ttlSeconds(storage), storage.storageType(), source);
-        }
+        CredentialContext context = CredentialContext.forCatalog(storage, catalogId,
+                allowedLocations, RequestContext.principal(), allowWrite);
+        VendedStorageCredential vended = storage.storageType() == ManagementEnums.StorageType.S3
+                ? s3((AwsStorageConfigInfo) storage, context)
+                : vendOther(context);
         logVended(storage, "catalog:" + catalogId, vended);
         return vended;
     }
 
-    /** S3 之外的各分支；返回来源标识，键写进 {@code token}。 */
-    private String otherSource(StorageConfigInfo storage, String tableId, String tablePath,
-                               Map<String, String> token) {
-        return switch (storage.storageType()) {
-            case AZURE -> azure((AzureStorageConfigInfo) storage, token);
-            case GCS -> gcs((GcpStorageConfigInfo) storage, token);
-            case OBS -> obs((HuaweiObsStorageConfigInfo) storage, token);
-            case OSS -> oss((AliyunOssStorageConfigInfo) storage, token);
-            case COS -> cos((TencentCosStorageConfigInfo) storage, token);
-            case FILE -> file((FileStorageConfigInfo) storage, tableId, tablePath, token);
+    /**
+     * S3 之外的各类型共用的骨架，顺序与 {@link #s3} 逐条对应。
+     *
+     * <p>抽成一条共用路径而不是每家写一遍，是因为「静态凭据优先于 {@code stsUnavailable}」
+     * 「签发排在显式指定之后、服务端配置之前」这两条判断与存储类型无关；
+     * 逐家复制时最先漂移的一定是新加的那一家。各家自己的差异只有两处，
+     * 都在下面的 switch 与 {@link #forwardFromServerConfig} 里：发哪些定位键、
+     * 服务端配置面长什么样。
+     *
+     * <p>{@code COS} 也走这条链：它的 {@code providers} 里没有能接手的实现
+     * （COSN 不支持临时凭据，见 {@code COS_KEYS}），链对它是空转——
+     * 但这比在代码里给它开一个例外更诚实：能力边界写在 provider 里，
+     * 不写在调用点上。
+     */
+    private VendedStorageCredential vendOther(CredentialContext context) {
+        StorageConfigInfo storage = context.storage();
+        Map<String, String> token = new LinkedHashMap<>();
+        switch (storage.storageType()) {
+            case AZURE -> putAzureLocators((AzureStorageConfigInfo) storage, token);
+            case GCS -> putIfPresent(token, "gcs.service-account",
+                    ((GcpStorageConfigInfo) storage).gcsServiceAccount());
+            case OBS -> putIfPresent(token, OBS_KEYS.endpoint(),
+                    ((HuaweiObsStorageConfigInfo) storage).endpoint());
+            case OSS -> putIfPresent(token, OSS_KEYS.endpoint(),
+                    ((AliyunOssStorageConfigInfo) storage).endpoint());
+            case COS -> putCosLocators((TencentCosStorageConfigInfo) storage, token);
+            case FILE -> {
+                return file((FileStorageConfigInfo) storage, context, token);
+            }
             case S3 -> throw new IllegalStateException("S3 is handled before the switch");
+        }
+        StorageConfigs.StaticCredentials own = StorageConfigs.staticCredentials(storage, cipher);
+        if (own != null) {
+            putSecrets(token, keysOf(storage), groupOf(storage), own.accessKeyId(),
+                    own.secretAccessKey(), null);
+            return vended(storage, token, VendedStorageCredential.SOURCE_STATIC_CREDENTIALS);
+        }
+        if (stsUnavailable(storage)) {
+            return vended(storage, token, VendedStorageCredential.SOURCE_STS_UNAVAILABLE);
+        }
+        VendedStorageCredential signed = assumeRole(context);
+        if (signed != null) {
+            return signed;
+        }
+        return vended(storage, token, forwardFromServerConfig(storage, token));
+    }
+
+    /**
+     * 各类型是否声明了「不要票」。
+     *
+     * <p>{@code Azure} 与 {@code GCS} 的规格里没有这个字段（Azure 用
+     * {@code skipSasTokenGeneration}、GCS 用 {@code skipCredentialDownscoping}，
+     * 两者都还没落到本工程的 DTO 里），它们的「不签发」由「部署没配服务身份」表达；
+     * 见 {@code RestServerProperties.Storage.Azure} 的注释。
+     */
+    private static boolean stsUnavailable(StorageConfigInfo storage) {
+        return (storage instanceof HuaweiObsStorageConfigInfo obs
+                    && Boolean.TRUE.equals(obs.stsUnavailable()))
+                || (storage instanceof AliyunOssStorageConfigInfo oss
+                    && Boolean.TRUE.equals(oss.stsUnavailable()))
+                || (storage instanceof TencentCosStorageConfigInfo cos
+                    && Boolean.TRUE.equals(cos.stsUnavailable()));
+    }
+
+    /** 一家云一组密钥键名，供 {@link #putSecrets} 使用。 */
+    private static KeyFamily keysOf(StorageConfigInfo storage) {
+        return switch (storage.storageType()) {
+            case OBS -> OBS_KEYS;
+            case OSS -> OSS_KEYS;
+            case COS -> COS_KEYS;
+            default -> throw new IllegalStateException(
+                    "storage type " + storage.storageType() + " has no static key family");
         };
+    }
+
+    /** 配置组名，仅用于错误信息。 */
+    private static String groupOf(StorageConfigInfo storage) {
+        return storage.storageType().name().toLowerCase(java.util.Locale.ROOT);
     }
 
     private static void requireStorage(StorageConfigInfo storage) {
@@ -443,52 +500,58 @@ public class DefaultStorageCredentialManager implements StorageCredentialManager
     }
 
     /** 用一次性的 token 映射与本 catalog 的 TTL 组装结果。 */
-    private VendedStorageCredential vended(AwsStorageConfigInfo storage,
+    private VendedStorageCredential vended(StorageConfigInfo storage,
                                            Map<String, String> token,
                                            String source) {
         return new VendedStorageCredential(token, ttlSeconds(storage), storage.storageType(), source);
     }
 
-    // ------------------------------------------------------------------ OBS / OSS
+    // ------------------------------------------------------------------ OBS / OSS / COS
 
     /**
-     * 华为云 OBS：端点照发，密钥按四级来源取（catalog 静态凭据 → 具名 → 默认 → 环境）。
+     * 服务端配置面的三级凭据来源：具名存储 → 默认配置 → 环境凭据链。
      *
-     * <p>端点放在前面且不受密钥来源影响：即使服务端没有任何 OBS 凭据，
-     * 引擎也需要知道连哪个端点——它可能用自己的 ECS 委托身份或
-     * {@code fs.obs.security.provider} 去取凭据。
+     * <p>三家云的处理完全一致，差异只在「用哪个配置组」与「用哪一族键名」，
+     * 所以合成一个 switch 而不是三段复制。定位键已经在 {@link #vendOther} 里发过了
+     * （端点、区域、{@code useHttps}），这一段只补密钥。
+     *
+     * <p>与 S3 同构，包括「具名存储找不到时失败而非退回默认」这条取舍。
+     * 静态凭据那一级不在这里：它在 {@code stsUnavailable} 之前处理，
+     * 而本方法只管服务端配置面。
+     *
+     * <p>临时凭据（{@code sessionToken}）跟着它所属的那一级一起下发：具名存储里配了
+     * 令牌就用那个，否则用默认配置的。混搭（具名存储的 AK/SK 配默认配置的令牌）
+     * 没有任何合理场景——临时凭据的 AK、SK、令牌是一次签发的同一组。
      */
-    private String obs(HuaweiObsStorageConfigInfo obs, Map<String, String> token) {
-        putIfPresent(token, OBS_KEYS.endpoint(), obs.endpoint());
-        StorageConfigs.StaticCredentials own = StorageConfigs.staticCredentials(obs, cipher);
-        if (own != null) {
-            putSecrets(token, OBS_KEYS, "obs", own.accessKeyId(), own.secretAccessKey(), null);
-            return VendedStorageCredential.SOURCE_STATIC_CREDENTIALS;
-        }
-        if (Boolean.TRUE.equals(obs.stsUnavailable())) {
-            return VendedStorageCredential.SOURCE_STS_UNAVAILABLE;
-        }
-        return objectStoreSecrets("obs", properties.getStorage().getObs(), obs.storageName(), OBS_KEYS, token);
-    }
-
-    /** 阿里云 OSS：处理与 {@link #obs} 相同，只是键名族换成 {@link #OSS_KEYS}。 */
-    private String oss(AliyunOssStorageConfigInfo oss, Map<String, String> token) {
-        putIfPresent(token, OSS_KEYS.endpoint(), oss.endpoint());
-        StorageConfigs.StaticCredentials own = StorageConfigs.staticCredentials(oss, cipher);
-        if (own != null) {
-            putSecrets(token, OSS_KEYS, "oss", own.accessKeyId(), own.secretAccessKey(), null);
-            return VendedStorageCredential.SOURCE_STATIC_CREDENTIALS;
-        }
-        if (Boolean.TRUE.equals(oss.stsUnavailable())) {
-            return VendedStorageCredential.SOURCE_STS_UNAVAILABLE;
-        }
-        return objectStoreSecrets("oss", properties.getStorage().getOss(), oss.storageName(), OSS_KEYS, token);
+    private String forwardFromServerConfig(StorageConfigInfo storage, Map<String, String> token) {
+        return switch (storage.storageType()) {
+            case OBS -> {
+                HuaweiObsStorageConfigInfo obs = (HuaweiObsStorageConfigInfo) storage;
+                yield objectStoreSecrets("obs", properties.getStorage().getObs(),
+                        obs.storageName(), OBS_KEYS, token);
+            }
+            case OSS -> {
+                AliyunOssStorageConfigInfo oss = (AliyunOssStorageConfigInfo) storage;
+                yield objectStoreSecrets("oss", properties.getStorage().getOss(),
+                        oss.storageName(), OSS_KEYS, token);
+            }
+            case COS -> {
+                TencentCosStorageConfigInfo cos = (TencentCosStorageConfigInfo) storage;
+                yield objectStoreSecrets("cos", properties.getStorage().getCos(),
+                        cos.storageName(), COS_KEYS, token);
+            }
+            case GCS -> gcsToken(token);
+            case AZURE -> VendedStorageCredential.SOURCE_AZURE_METADATA_ONLY;
+            // FILE 在 vendOther 里已经返回；S3 不进这个方法
+            default -> throw new IllegalStateException(
+                    "storage type " + storage.storageType() + " has no server-side fallback");
+        };
     }
 
     /**
-     * 腾讯云 COS：定位三项照发，密钥按四级来源取（catalog 静态凭据 → 具名 → 默认 → 环境）。
+     * 腾讯云 COS 的定位键：区域、端点、是否 HTTPS。
      *
-     * <p>与 {@link #obs} 同构，只多两处 COSN 特有的决定：
+     * <p>两处 COSN 特有的决定：
      *
      * <ul>
      *   <li>{@code fs.cosn.bucket.region} 只在非空时发。{@code COSNLoader#requiredOptions}
@@ -498,26 +561,14 @@ public class DefaultStorageCredentialManager implements StorageCredentialManager
      *       这是本工程对 COSN 那个「默认明文」缺省值的唯一纠正点，不发就等于默认明文。</li>
      * </ul>
      *
-     * <p><b>没有第五级「STS 签发」。</b>COSN 这条路走不了临时凭据（理由见
-     * {@link #COS_KEYS}），所以 {@code providers} 链对它不生效——链里只有 S3 的
-     * {@code s3-token}，而它按 {@code AwsStorageConfigInfo} 装配命令。这不是遗漏，
-     * 是上游能力的边界：把 COS 的 {@code stsUnavailable} 之外再造一条「真签发」，
-     * 得到的会是「服务端签了、引擎不认」的半成品。
+     * <p><b>COS 没有第五级「真签发」。</b>COSN 走不了临时凭据（理由见 {@link #COS_KEYS}），
+     * 所以 {@code providers} 链里的任何实现都不会接手它——这不是遗漏，是上游能力的边界：
+     * 造一条「服务端签了、引擎不认」的路径，比不做更糟。
      */
-    private String cos(TencentCosStorageConfigInfo cos, Map<String, String> token) {
+    private static void putCosLocators(TencentCosStorageConfigInfo cos, Map<String, String> token) {
         putIfPresent(token, KEY_COS_REGION, cos.bucketRegion());
         putIfPresent(token, COS_KEYS.endpoint(), cos.endpoint());
         token.put(KEY_COS_USE_HTTPS, Boolean.toString(!Boolean.FALSE.equals(cos.useHttps())));
-
-        StorageConfigs.StaticCredentials own = StorageConfigs.staticCredentials(cos, cipher);
-        if (own != null) {
-            putSecrets(token, COS_KEYS, "cos", own.accessKeyId(), own.secretAccessKey(), null);
-            return VendedStorageCredential.SOURCE_STATIC_CREDENTIALS;
-        }
-        if (Boolean.TRUE.equals(cos.stsUnavailable())) {
-            return VendedStorageCredential.SOURCE_STS_UNAVAILABLE;
-        }
-        return objectStoreSecrets("cos", properties.getStorage().getCos(), cos.storageName(), COS_KEYS, token);
     }
 
     /**
@@ -614,14 +665,17 @@ public class DefaultStorageCredentialManager implements StorageCredentialManager
     // ------------------------------------------------------------------ Azure
 
     /**
-     * Azure：只下发定位元数据。
+     * Azure 的定位元数据：租户、账户、多租户应用、同意链接、是否分层命名空间。
      *
-     * <p>Polaris 的 {@code polaris.storage.*} 没有 Azure 账户密钥这一项，
-     * 它用服务进程自身的标识去签 SAS。本工程没有那层标识，硬造一个 SAS
-     * 只会得到一个签名错误的字符串，比不给更糟。因此这里把租户、账户、
-     * 是否分层命名空间传下去，由引擎用它自己的身份换取访问权。
+     * <p>这些键不发也「能跑」——引擎会用自己那份身份去换访问权；发它们是让引擎知道
+     * 该拿哪个账户/租户去认证。**但 {@code adls.account-host} 不在这里，是有意的**：
+     * 它不是定位信息而是端点开关，一旦给了，fsspec/adlfs 会改走 DFS 端点，
+     * 而 PyIceberg 的默认实现只认 Blob（设计 §3.5.4）。
+     *
+     * <p>包级可见 + 静态，因为 {@code azure-sas} 那个 provider 签完票之后也要带上同一组
+     * 定位键；两处各写一份时，最先漏掉的一定是「新加的那个字段」。
      */
-    private String azure(AzureStorageConfigInfo azure, Map<String, String> token) {
+    static void putAzureLocators(AzureStorageConfigInfo azure, Map<String, String> token) {
         putIfPresent(token, "azure.tenant-id", azure.tenantId());
         putIfPresent(token, "azure.account", accountOf(azure.allowedLocations()));
         putIfPresent(token, "azure.multi-tenant-app-name", azure.multiTenantAppName());
@@ -629,7 +683,6 @@ public class DefaultStorageCredentialManager implements StorageCredentialManager
         if (azure.hierarchical() != null) {
             token.put("azure.hierarchical", azure.hierarchical().toString());
         }
-        return VendedStorageCredential.SOURCE_AZURE_METADATA_ONLY;
     }
 
     /** 从位置白名单的首项里取 Azure 账户名；取不到返回 {@code null}。 */
@@ -653,9 +706,11 @@ public class DefaultStorageCredentialManager implements StorageCredentialManager
      * <p>{@code lifespan} 会同时收窄令牌自身的有效期与响应里的 {@code expiresAt}
      * （见 {@link #ttlSeconds}）：配了 10 分钟的 lifespan 却告诉调用方令牌一小时后过期，
      * 调用方会在第 11 分钟拿到 401，而它没有任何理由预期这件事。
+     *
+     * <p>这里发的是**配置里的静态令牌**——服务端没有 GCS 的 downscoped token 签发能力
+     * （设计稿 P1-4），所以它排在 {@code providers} 链之后，且不具备任何收窄。
      */
-    private String gcs(GcpStorageConfigInfo gcs, Map<String, String> token) {
-        putIfPresent(token, "gcs.service-account", gcs.gcsServiceAccount());
+    private String gcsToken(Map<String, String> token) {
         String accessToken = properties.getStorage().getGcp().getToken();
         if (accessToken == null || accessToken.isBlank()) {
             return VendedStorageCredential.SOURCE_ENVIRONMENT;
@@ -679,17 +734,18 @@ public class DefaultStorageCredentialManager implements StorageCredentialManager
      * 但一个自包含令牌仍有意义——它把这次授权的范围（表 id）与过期时间
      * 落在一处，便于审计。文件系统本身不校验它。
      */
-    private String file(FileStorageConfigInfo file, String tableId, String tablePath, Map<String, String> token) {
+    private VendedStorageCredential file(FileStorageConfigInfo file, CredentialContext context,
+                                         Map<String, String> token) {
         long expiresAt = System.currentTimeMillis() + ttlSeconds(file) * 1000L;
         // catalog 级取票没有表 id；这里给一个可读的别名，避免出现 "PAIMON-null"
-        token.put("accessKeyId", "PAIMON-" + (tableId == null ? "catalog" : tableId));
+        token.put("accessKeyId", "PAIMON-" + (context.tableId() == null ? "catalog" : context.tableId()));
         token.put("accessKeySecret", randomSecret(24));
         token.put("securityToken", randomSecret(48));
         token.put("expiration", Instant.ofEpochMilli(expiresAt).toString());
-        if (tablePath != null) {
-            token.put("tablePath", tablePath);
+        if (context.tablePath() != null) {
+            token.put("tablePath", context.tablePath());
         }
-        return VendedStorageCredential.SOURCE_FILESYSTEM;
+        return vended(file, token, VendedStorageCredential.SOURCE_FILESYSTEM);
     }
 
     // ------------------------------------------------------------------ 公共
@@ -698,7 +754,7 @@ public class DefaultStorageCredentialManager implements StorageCredentialManager
      * 本次下发的有效期（秒）。
      *
      * <p>基准是 {@code lakehouse.rest.credential.ttl-seconds}；GCS 配置了
-     * {@code lifespan} 时取两者较小值，理由见 {@link #gcs}。
+     * {@code lifespan} 时取两者较小值，理由见 {@link #gcsToken}。
      */
     private long ttlSeconds(StorageConfigInfo storage) {
         long ttl = properties.getCredential().getTtlSeconds();

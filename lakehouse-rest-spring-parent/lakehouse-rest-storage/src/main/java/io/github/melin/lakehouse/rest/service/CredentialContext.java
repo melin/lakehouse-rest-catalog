@@ -1,6 +1,7 @@
 package io.github.melin.lakehouse.rest.service;
 
 import io.github.melin.lakehouse.rest.dto.StorageDtos.AwsStorageConfigInfo;
+import io.github.melin.lakehouse.rest.dto.StorageDtos.StorageConfigInfo;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -32,7 +33,7 @@ import java.util.Map;
  * 引擎侧的读写路径在协议上分不开（{@code loadTable} 之后客户端既读也写），
  * 那里仍然一律按只读签——先收紧，等有了「写请求」的判据再放开。
  */
-public record CredentialContext(AwsStorageConfigInfo storage,
+public record CredentialContext(StorageConfigInfo storage,
                                 String scopeId,
                                 List<String> scopePaths,
                                 String principal,
@@ -54,9 +55,40 @@ public record CredentialContext(AwsStorageConfigInfo storage,
                              String tablePath,
                              String principal,
                              boolean allowWrite) {
-        this(storage, tableId,
+        this((StorageConfigInfo) storage, tableId,
                 tablePath == null || tablePath.isBlank() ? List.<String>of() : List.of(tablePath),
                 principal, allowWrite);
+    }
+
+    /**
+     * 表级作用域的通用构造：存储类型不必是 S3。
+     *
+     * <p>做成静态工厂而不是第二个构造器，是为了避开一个安静的重载陷阱：
+     * 「表级」的第三个参数是 {@code String}，「catalog 级」的是 {@code List<String>}，
+     * 两者写成同一个名字的构造器时，任何传 {@code null} 的调用点都会变成编译歧义
+     * （或者更糟——按某个版本的选择规则静默选中另一个）。名字分开就没有这个问题。
+     */
+    public static CredentialContext forTable(StorageConfigInfo storage,
+                                             String tableId,
+                                             String tablePath,
+                                             String principal,
+                                             boolean allowWrite) {
+        return new CredentialContext(storage, tableId,
+                tablePath == null || tablePath.isBlank() ? List.<String>of() : List.of(tablePath),
+                principal, allowWrite);
+    }
+
+    /**
+     * S3 那份配置；存储不是 S3 时返回 {@code null}。
+     *
+     * <p>本类的作用域、会话名、审计 tag 是**各云通用**的（谁、哪张表、读还是写），
+     * 只有「怎么换票」是各云自己的事——所以存储配置按共用父类型持有，
+     * 需要 {@code roleArn} / {@code region} 这类 S3 专有字段的 provider 从本方法取。
+     * 返回 {@code null} 而不是抛异常：一个 provider 被链调起来时，
+     * 「类型不对」是最正常不过的一条路由（写错存储类型的人不该看到 500）。
+     */
+    public AwsStorageConfigInfo aws() {
+        return storage instanceof AwsStorageConfigInfo aws ? aws : null;
     }
 
     /**
@@ -69,7 +101,7 @@ public record CredentialContext(AwsStorageConfigInfo storage,
      * @param allowedLocations catalog 的允许位置；为空时 {@link #scopes()} 返回空，
      *                         签发方应当拒绝签发而不是发一张不收窄的票
      */
-    public static CredentialContext forCatalog(AwsStorageConfigInfo storage,
+    public static CredentialContext forCatalog(StorageConfigInfo storage,
                                               String catalogId,
                                               List<String> allowedLocations,
                                               String principal,

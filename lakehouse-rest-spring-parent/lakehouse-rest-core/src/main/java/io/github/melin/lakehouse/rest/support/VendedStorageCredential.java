@@ -86,11 +86,44 @@ public record VendedStorageCredential(Map<String, String> token,
     public static final String SOURCE_STS_SESSION = "sts-session";
 
     /**
+     * 密钥来源为服务端用 Azure 用户委托密钥现签的 SAS。
+     *
+     * <p>与 {@link #SOURCE_STS_SESSION} 并列而不是复用：两者的语义相同（现签、短期、
+     * 收窄到这张表），但排障时「这 403 是哪一家云的问题」是第一个要回答的问题，
+     * 而 {@code source} 正是日志里唯一会带出来的那个字段。把它合并成
+     * {@code sts-session} 会让 Azure 的排障从「看 source」变成「看 provider」。
+     */
+    public static final String SOURCE_AZURE_SAS = "azure-sas-session";
+
+    /**
+     * 密钥来源为阿里云 RAM STS {@code AssumeRole} 换来的临时凭据。
+     *
+     * <p>与 {@code sts-session} 分开的理由同 {@link #SOURCE_AZURE_SAS}：排障第一句话是
+     * 「哪家云」。另外这两家的**续期能力不同**——S3 能续、OSS 的 hadoop-aliyun
+     * 不会自己去换票（设计 §9.4），所以不能靠同一个 source 值去回答「能不能撑过长作业」。
+     */
+    public static final String SOURCE_OSS_STS = "oss-sts-session";
+
+    /**
+     * 密钥来源为 GCS 令牌交换（downscoped token）的结果。
+     *
+     * <p>与其它三家的短期来源并列：它同样是「现签、短期、收窄到这张表」，
+     * 但**没有角色**这一层——换来的是「源令牌的更小权限投影」，不是另一个身份。
+     * 排障时这个差别很重要：GCS 这一档失败通常出在源凭据缺
+     * {@code roles/iam.serviceAccountTokenCreator}，而不是「角色信任关系」。
+     */
+    public static final String SOURCE_GCS_DOWNSCOPED = "gcs-downscoped";
+
+    /**
      * Azure 只下发定位元数据。
      *
      * <p>Polaris 的 {@code polaris.storage.*} 里没有 Azure 账户密钥这一项——它靠服务进程
      * 自身的 Azure 标识签 SAS。本工程没有那层标识，因此只能把库、账户、租户传下去，
      * 由引擎用自己那份身份去换 SAS。这是明确的缺口，不是遗漏。
+     *
+     * <p>部署配了 {@code lakehouse.rest.storage.azure} 时不再走这一档，
+     * 改由 {@code azure-sas} 签真 SAS；这一档保留给「没有服务身份」的部署，
+     * 以及位置认不出来（跨容器、跨账户）时明确退回的路径。
      */
     public static final String SOURCE_AZURE_METADATA_ONLY = "metadata-only";
 
@@ -100,6 +133,15 @@ public record VendedStorageCredential(Map<String, String> token,
     /** provider 名：AWS STS {@code AssumeRole}。 */
     public static final String PROVIDER_S3_TOKEN = "s3-token";
 
+    /** provider 名：Azure 用户委托 SAS。 */
+    public static final String PROVIDER_AZURE_SAS = "azure-sas";
+
+    /** provider 名：阿里云 RAM STS。 */
+    public static final String PROVIDER_OSS_STS = "oss-sts";
+
+    /** provider 名：GCS downscoped token。 */
+    public static final String PROVIDER_GCS_DOWNSCOPE = "gcs-downscope";
+
     /** 取值是否来自具名存储。 */
     public boolean namedStorage() {
         return source != null && source.startsWith(SOURCE_NAMED_STORAGE_PREFIX);
@@ -108,15 +150,17 @@ public record VendedStorageCredential(Map<String, String> token,
     /**
      * 是否真的下发了密钥（而非只给定位信息）。
      *
-     * <p>按 {@link #source} 判断，而不是遍历 {@link #token} 里有没有密钥键。
-     * 早先的写法是硬编码「含 {@code s3.secret-access-key} 或 {@code gcs.oauth2.token}」，
-     * 每加一种存储类型就要回来补一个字符串，漏补时表现为「明明发了密钥却报没发」——
-     * 一处与存储类型数量同步的清单，是最容易忘的地方。
-     * 而「密钥从哪一级取到」这个信息，下发方本来就已经算出来了。
+     * <p><b>短期凭据一律算「发了密钥」</b>，不再逐个来源列举。原来的写法是
+     * 「{@code configuration} / 具名 / 静态 / 一个 STS 常量」，每加一家云就要回来补一个
+     * 字符串——漏补的表现恰好是「明明发了密钥却报没发」：{@code USE_SECRET} 判权
+     * 因此把一张真票当成空响应放行，或者反过来。而「是不是短期」这个信息
+     * {@link #expireTimeInMs()} 本来就已经说清楚了：只有真签了票的路径会填非零值。
+     *
+     * <p>剩下的三种静态来源仍然是显式列举——它们没有到期时刻，也就没有别的判据。
      */
     public boolean hasSecrets() {
-        return SOURCE_CONFIGURATION.equals(source) || namedStorage()
-                || SOURCE_STATIC_CREDENTIALS.equals(source) || SOURCE_STS_SESSION.equals(source);
+        return shortLived() || SOURCE_CONFIGURATION.equals(source) || namedStorage()
+                || SOURCE_STATIC_CREDENTIALS.equals(source);
     }
 
     /**

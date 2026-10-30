@@ -655,6 +655,11 @@ MinIO / Ceph RGW / Ozone 与 VAST 在这里都是 `storageType=S3` 加一个自�
 
 ## 4. 差距清单
 
+> **本节是写文档时的快照**（2026 年 8 月），逐条的状态以 §8 的 P0/P1 表为准。
+> 下面几行已经闭环，保留原文是为了记住「当时是怎么错的」：G6 → P1-1（Azure SAS）、
+> G7 → P1-4（GCS downscope）、G8 → P1-2（OSS STS；OBS 仍缺，见 P1-3）、
+> G9 → P1-5（session tags）、G10/G11 → 见 P2-2/P2-3。
+
 按「会不会让现有实现作废」排序。每条都能用代码或抓包证伪，不是感觉。
 
 | # | 缺口 | 具体形态 | 后果 | 级别 |
@@ -1309,10 +1314,10 @@ object_store 认的是 `aws_access_key_id` / `aws_secret_access_key` / `aws_sess
 
 | # | 做什么 | 关键前提 |
 | --- | --- | --- |
-| P1-1 | Azure User Delegation SAS（四种键名一起发；`write.data.path` / `write.metadata.path` 跨 account/container 时按 scope 各签一张，bare 键只在单账户时发） | 服务端身份 + `generateUserDelegationKey` 权限 |
-| P1-2 | OSS STS（`acs:ram`）+ policy 收窄 | 一个 RAM Role + `AssumeRole` 权限 |
-| P1-3 | OBS `CreateTemporaryAccessKeyByAgency` + `policy` 收窄 | 一个 IAM 委托（agency） |
-| P1-4 | GCS downscoped token（`CredentialAccessBoundary`） | 服务账号 + `serviceAccountTokenCreator` |
+| ✅ P1-1 | Azure User Delegation SAS（四种键名一起发；`write.data.path` / `write.metadata.path` 跨 account/container 时按 scope 各签一张，bare 键只在单账户时发） | 落地：`AzureSasCredentialProvider` + `HttpUserDelegationKeyClient`（AAD 令牌缓存 1h、提前 2 分钟刷新）+ `AzureSasToken`（`sv=2020-12-06`，24 段待签串一个字段不省）+ `AzureLocation`（abfs/abfss/wasb/wasbs 四种 scheme 解析，`blobHost()` 把 dfs 换成 blob）。**与设计的偏差**：①作用域按**账户**收敛——同一账户多个位置取共同父目录，跨容器时拒绝签发（一个账户一个下发槽位，签两张会互相覆盖且不报错）；②`adls.account-host` 故意不发（会把 fsspec 导去 DFS 端点，PyIceberg 只认 Blob）；③服务身份放在 `lakehouse.rest.storage.azure`（租户优先取 catalog 的 `tenantId`），不是 catalog 字段。用例：`AzureSasVendingTests` 17 条（键名四形态 / 目录级 `sdd=3` / `sr=c` 无 `sdd` / 跨账户发多张且不发 bare / 三条齐全才报「签发」/ 签名随路径与密钥变化） |
+| ✅ P1-2 | OSS STS（`acs:ram`）+ policy 收窄 | 落地：`OssStsCredentialProvider` + `HttpOssStsClient` + `OssStsPolicy` + `AliyunRpcSignature`（percentEncode / 规范化查询串 / `HMAC-SHA1(secret + "&")`，全脱网可测）。角色放在 `lakehouse.rest.storage.oss.role-arn`（部署级，与 Azure 同一理由）。**三处必须记住的边界**：①`DurationSeconds` 只收 900–3600，超出**夹紧**并打 INFO（TTL 是部署级配置，不该被一个存储类型反过来限制别的类型）；②hadoop-aliyun 不会自己换票 → 票到期后长作业 403，调大 TTL 也不行；③policy 的资源是 `acs:oss:*:*:<bucket>/<prefix>/*`，`ListObjects` 的资源是**桶**、前缀走 `Condition.StringLike."oss:Prefix"`。用例：`OssStsVendingTests` 18 条 |
+| P1-3 | OBS `CreateTemporaryAccessKeyByAgency` + `policy` 收窄 | **未做，且不是「照着 OSS 抄一遍」的活**：这条链要先拿 IAM token（`POST /v3/auth/tokens`，需要**账号名 + 用户名 + 口令**），再用 `X-Auth-Token` 调 `securitytokens`。也就是说它给部署引入了一类新密钥（口令），而不是复用 AK/SK——这与前面三家的姿势不同，需要单独决定「口令存哪、怎么加密、怎么轮换」。在有一套真实 IAM 与委托（agency）之前硬写，得到的最多是「看起来实现了」：签名对不对、token 寿命怎么缓存，都无法验证。**建议按 Azure 那套形状落地**（`IamTokenClient` + `ObsAgencyClient` + policy 复用 `OssStsPolicy` 的资源拼法，只把 `acs:oss:` 换成 OBS 的资源写法） |
+| ✅ P1-4 | GCS downscoped token（`CredentialAccessBoundary`） | 落地：`GcsDownscopedCredentialProvider` + `HttpGcsDownscopeClient` + `GcsBoundary`。**唯一不需要新凭据的一家**：交换的是 `lakehouse.rest.storage.gcp.token` 这个已经在配置里的令牌，所以启用条件只有「有源令牌」。三处反直觉：`options` 是 **JSON 文本**不是对象；`availableResource` 必须写到**对象层**且协议相对（`//storage.googleapis.com/projects/_/buckets/<b>/objects/<prefix>*`）；权限用 `inRole:roles/storage.objectViewer`（写再加 `objectCreator`，**不是** `objectAdmin`）。规则上限 10 条，超了在本地拒绝签发而不是让 STS 拒整份。用例：`GcsDownscopeVendingTests` 11 条 |
 | ✅ P1-5 | 审计归因：`RoleSessionName` / session tags | `RoleSessionName` 随 P0-2 已落地（`lh-<principal>-<scopeId>`，按 STS 字符集规整）；session tags 落在 `lakehouse.rest.credential.session-tags`（**默认 false**），带 `lh:principal` / `lh:scope` / `lh:access` 三个 tag。用例：`sessionTagsAreLeftOutOfTheRequestUnlessTheDeploymentOptsIn`（默认不带）、`sessionTagsNameThePrincipalTheScopeAndTheDirection`、`sessionTagValuesAreSanitisedToTheStsCharset`（逗号规整 + 空值占位）。**默认关的原因写在 §5.6**：信任策略不放行 `sts:TagSession` 时带 tag 会 `AccessDenied`，默认开会把升级变成故障。**未验**：没有真实 STS，`Tag` 集合只在命令对象上断言 |
 | ◑ P1-6 | 控制台：创建页三态来源 + 参数 + 引擎片段；catalog 列表与详情标出「长期凭据 / 短期凭据 / 不下发」 | **已落地「标记」这一半**：判定在服务端（`CatalogCredentialSource`，四档 `STS` / `RELAY` / `NONE` / `INVALID`），经批量端点 `GET /api/console/v1/catalog-credential-sources` 下发；catalog 列表多一列、详情页多一段（含「取票要哪个权限点」与「能否续期」）。**与 §10 的偏差**：原型里那三个**每 catalog 的新字段**（`credentialProviders` / `credentialTtlSeconds` / `credentialReadOnly`）P0 没有采用——来源是由现有 `storageConfigInfo` + 全局 `credential.providers` 推断出来的，因此不需要新字段、也不需要接口形状变更。**已补**：新建 / 编辑表单里的实时预览（`POST /api/console/v1/catalog-credential-source`，输入是还没保存的草稿，服务端用同一个判定）——它替掉了原型的「行内提示」，因为要说的不止 `roleArn` 一条（见 §10.9）。**未做**：创建页的三态选择器、`stsUnavailable` 冲突框、五面引擎片段（§10.2–§10.6），理由是选择器会与「存储配置本身就能表达来源」重复（见 §10.8 / §10.9） |
 | ✅ P1-7 | **判权拆两个权限点**：`CATALOG:USE_CREDENTIAL` 与 `CATALOG:USE_SECRET`（§3.4.3） | 落地形态：`/token` 与 `/credentials` 改判 `USE_CREDENTIAL`（`/auth`、`/plan` 仍是 `SELECT`），票里含长期密钥对时再判 `USE_SECRET`；`VendedStorageCredential#carriesLongTermKeyPair()` 是唯一判据。用例：`CredentialAccessSplitTests` 五条（只有取票权→403 点名 `USE_SECRET`；两个都有→照常下发；只有 `USE_SECRET`→403 点名 `USE_CREDENTIAL`；都没有→403；判据只看载荷不看存储类型）+ `LanceCredentialAccessTests` 四条（Lance 面的两道判定、短期票免 `USE_SECRET`、不带参数不判权也不带密钥）+ `CatalogEndpointAuthorizationTests` 的映射与作用域断言。**行为变更**：细粒度 `SELECT` 授权升级后需补 `USE_CREDENTIAL`，`ALL` 不受影响 |

@@ -1,6 +1,7 @@
 package io.github.melin.lakehouse.rest.service;
 
 import io.github.melin.lakehouse.rest.config.RestServerProperties;
+import io.github.melin.lakehouse.rest.dto.StorageDtos.AwsStorageConfigInfo;
 import io.github.melin.lakehouse.rest.support.VendedStorageCredential;
 import java.time.Duration;
 import java.time.Instant;
@@ -65,8 +66,8 @@ public class S3TokenCredentialProvider implements CredentialProvider {
 
     @Override
     public Optional<VendedStorageCredential> vend(CredentialContext context) {
-        if (context.storage() == null || context.storage().roleArn() == null
-                || context.storage().roleArn().isBlank()) {
+        AwsStorageConfigInfo s3 = context.aws();
+        if (s3 == null || s3.roleArn() == null || s3.roleArn().isBlank()) {
             return Optional.empty();
         }
         List<CredentialScope> scopes = context.scopes();
@@ -95,19 +96,19 @@ public class S3TokenCredentialProvider implements CredentialProvider {
                     name(), context.scopeId());
         }
         StsSession session = assumeRoleClient.assumeRole(new AssumeRoleCommand(
-                context.storage().roleArn(),
-                context.storage().externalId(),
+                s3.roleArn(),
+                s3.externalId(),
                 context.roleSessionName(),
                 ttl,
                 policy,
-                context.storage().region(),
-                context.storage().stsEndpoint(),
+                s3.region(),
+                s3.stsEndpoint(),
                 // 关掉时给空 Map：客户端据此**不传** tag 集合，请求与改造前逐字节相同。
                 // 打开它是运维动作（信任策略要先放行 sts:TagSession），见配置项说明。
                 properties.getCredential().isSessionTags() ? context.sessionTags() : Map.of()));
 
         Map<String, String> token = new LinkedHashMap<>();
-        putLocators(token, context);
+        putLocators(token, s3);
         token.put(KEY_ACCESS, session.accessKeyId());
         token.put(KEY_SECRET, session.secretAccessKey());
         token.put(KEY_SESSION, session.sessionToken());
@@ -119,10 +120,10 @@ public class S3TokenCredentialProvider implements CredentialProvider {
         // 客户端于是在第 16 分钟拿着过期票继续用，拿到一个没有凭据线索的 403。
         long ttlSeconds = ttlSecondsOf(session);
         log.info("vended provider={} credentials for {} (role {}, session {}, expiresIn={}s)",
-                name(), context.scopeId(), context.storage().roleArn(),
+                name(), context.scopeId(), s3.roleArn(),
                 context.roleSessionName(), ttlSeconds);
         return Optional.of(new VendedStorageCredential(token, ttlSeconds,
-                context.storage().storageType(), VendedStorageCredential.SOURCE_STS_SESSION,
+                s3.storageType(), VendedStorageCredential.SOURCE_STS_SESSION,
                 name(), session.expireTimeInMs()));
     }
 
@@ -133,7 +134,8 @@ public class S3TokenCredentialProvider implements CredentialProvider {
      * {@code StorageDtos.AwsStorageConfigInfo} 的 {@code noInlinePolicy} 说明）。
      */
     private static boolean noInlinePolicy(CredentialContext context) {
-        return Boolean.TRUE.equals(context.storage().noInlinePolicy());
+        AwsStorageConfigInfo s3 = context.aws();
+        return s3 != null && Boolean.TRUE.equals(s3.noInlinePolicy());
     }
 
     /**
@@ -142,8 +144,7 @@ public class S3TokenCredentialProvider implements CredentialProvider {
      * <p>{@code stsEndpoint} / {@code endpointInternal} / {@code roleArn} 一律不发——
      * 前两个是服务端自己的网络位置，后者是服务端去 assume 的材料，都不是客户端的凭据。
      */
-    private static void putLocators(Map<String, String> token, CredentialContext context) {
-        var storage = context.storage();
+    private static void putLocators(Map<String, String> token, AwsStorageConfigInfo storage) {
         if (storage.region() != null && !storage.region().isBlank()) {
             token.put("s3.region", storage.region());
         }

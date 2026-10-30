@@ -605,6 +605,17 @@ public class RestServerProperties {
         private final Gcp gcp = new Gcp();
 
         /**
+         * Azure 的**服务身份**：签 User Delegation SAS 时用它去换 AAD 令牌。
+         *
+         * <p>与 S3 的 {@code aws.access-key} 是同一个位置上的两件事——「服务端自己是谁」。
+         * catalog 里的 {@code AzureStorageConfigInfo} 只描述「数据在哪个账户里」，
+         * 不带任何凭据；这是规格的形状，也不是缺项：Azure 的 SAS 必须由持有
+         * {@code Microsoft.Storage/storageAccounts/blobServices/generateUserDelegationKey/action}
+         * 的主体签发，那个主体属于部署，不属于某一个 catalog。
+         */
+        private final Azure azure = new Azure();
+
+        /**
          * 华为云 OBS 凭据。
          *
          * <p><b>为什么与 {@code aws} 分开而不是共用。</b>华为 OBS 与阿里云 OSS 都兼容
@@ -618,8 +629,8 @@ public class RestServerProperties {
          */
         private final CloudCredentials obs = new CloudCredentials();
 
-        /** 阿里云 OSS 凭据，结构与 {@link #obs} 相同。 */
-        private final CloudCredentials oss = new CloudCredentials();
+        /** 阿里云 OSS 凭据，结构与 {@link #obs} 相同，另加签发用的 {@link Oss}。 */
+        private final Oss oss = new Oss();
 
         /**
          * 腾讯云 COS 凭据，结构与 {@link #obs} 相同。
@@ -786,6 +797,35 @@ public class RestServerProperties {
         }
 
         /**
+         * 阿里云 OSS 的配置：通用凭据 + 一个可 assume 的 RAM 角色。
+         *
+         * <p><b>为什么角色放在部署配置而不是 catalog 上。</b>与 Azure 那组同一个理由：
+         * 角色 ARN 一旦写进 {@code storageConfigInfo}，就会出现在每一次管理 API 的
+         * 报文里；而它描述的是「这个部署以谁的身份签发」，属于部署。代价写清楚：
+         * 一套部署只能签发到一个角色，多租户想要「每租户一个角色」时得先加 DTO 字段。
+         * 收窄仍然按表做——角色是上限，policy 才是这张表的边界。
+         *
+         * <p><b>调用者身份就是上面那对 {@code accessKey} / {@code secretKey}。</b>
+         * 阿里云的 STS 不认识别的凭据链，所以服务端没有 AK/SK 时这一档不会被接
+         * （`oss-sts` 返回空，链继续往下走，退回转发档）。
+         */
+        @Getter
+        @Setter
+        public static class Oss extends CloudCredentials {
+
+            /**
+             * 被 assume 的 RAM 角色，形如 {@code acs:ram::1234567890:role/lakehouse-vending}。
+             *
+             * <p>留空 = 本部署没有签发能力。这不是错误：老部署升级后不该因为少配一个
+             * 角色就读不了表。
+             */
+            private String roleArn;
+
+            /** STS 端点。全球化端点，通常不需要改；专有云按需覆盖。 */
+            private String stsEndpoint = "https://sts.aliyuncs.com";
+        }
+
+        /**
          * GCP 凭据。
          *
          * <p>{@code token} 是访问令牌明文；{@code lifespan} 是它的有效期，
@@ -799,6 +839,59 @@ public class RestServerProperties {
             private String token;
 
             private Duration lifespan;
+
+            /**
+             * 令牌交换端点，默认 {@code https://sts.googleapis.com}。
+             *
+             * <p>与 {@code azure.authority} 同一个理由：专有环境与部分合规部署会把
+             * STS 也代理掉，写死会让这些部署只能改代码。
+             */
+            private String stsEndpoint = "https://sts.googleapis.com";
+        }
+
+        /**
+         * Azure 服务身份（应用注册 + 客户端密钥）。
+         *
+         * <p><b>为什么是「服务端全局」而不是 catalog 字段。</b>Polaris 的 Azure 配置面里
+         * {@code clientId} / {@code clientSecret} 也在 catalog 上，但那是它把「凭据」与
+         * 「位置」放进了同一份配置。本工程不这么做：catalog 的 {@code storageConfigInfo}
+         * 会经管理 API 回显给任何能读 catalog 的人，把应用密钥放进去等于让它出现在
+         * 每一次 {@code GET} 的响应里；而 {@code storage_credential} 的加密机制是为
+         * 「非填不可的长期 AK/SK」准备的，不是给一个本来就可以留在服务端配置里的
+         * 身份用的。租户可以从 catalog 的 {@code tenantId} 取（那个字段规格本来就有），
+         * 本组只在 catalog 没写时作为兜底。
+         *
+         * <p><b>三项都配齐才算启用。</b>缺任何一项时 {@code azure-sas} 这一档不会被接，
+         * 凭据下发退回原来的「只给定位元数据」——这不是失败，是「本部署没有那个身份」。
+         * 若把它当成错误，所有 S3/GCS 之外的历史 catalog 会在升级后直接读不了表。
+         */
+        @Getter
+        @Setter
+        public static class Azure {
+
+            private String tenantId;
+
+            private String clientId;
+
+            private String clientSecret;
+
+            /**
+             * AAD 的 authority，默认公有云。
+             *
+             * <p>中国云是 {@code https://login.chinacloudapi.cn}；主权云的域名各不相同，
+             * 所以是可填项而不是枚举——写死两个值会让第三个环境的部署只能改代码。
+             */
+            private String authority = "https://login.microsoftonline.com";
+
+            /**
+             * 换 AAD 令牌时请求的 scope，默认公有云的存储面。
+             *
+             * <p><b>必须与云环境一致。</b>用公有云的 scope 去请求中国云的令牌，AAD 回的
+             * 是 {@code invalid_resource} 或一个 audience 不对的令牌，而后者会在调用
+             * {@code generateUserDelegationKey} 时变成 401——错误现场离原因隔着一层。
+             * 中国云填 {@code https://storage.azure.cn/.default}。
+             */
+            private String scope = "https://storage.azure.com/.default";
         }
     }
 

@@ -225,6 +225,11 @@ lakehouse:
     credential:
       # 数据访问令牌（凭证下发）有效期
       ttl-seconds: 3600
+      # 签发者名单，默认空 = 只有 relay（转发）一档。
+      # 已知实现：s3-token（AWS STS）/ azure-sas（Azure 用户委托 SAS）/ oss-sts（阿里云 RAM STS）。
+      # 名字写错会在启动时失败，而不是悄悄不生效——一个拼错的 provider 名
+      # 会让「我明明开了签发」变成「一直下发长期密钥」，而两者在日志里都只有一行正常。
+      providers: []
       # AssumeRole 时带审计用的 session tags（lh:principal / lh:scope / lh:access）。
       # **开启前必须**在被 assume 角色的信任策略里放行 sts:TagSession，否则带 tag 的
       # AssumeRole 会 AccessDenied，表现为「配置没改、读表全部 503」。所以默认关。
@@ -250,6 +255,25 @@ lakehouse:
         token: ""
         # 令牌有效期；非空时会同时收窄令牌自身与响应里的 expiresAt
         lifespan: null
+        # 令牌交换端点（provider 名 gcs-downscope，需同时在
+        # lakehouse.rest.credential.providers 里启用）。启用后这个令牌被换成
+        # 「只能碰这张表」的令牌，最长 1 小时；源令牌需要有
+        # roles/iam.serviceAccountTokenCreator 才能换。
+        sts-endpoint: https://sts.googleapis.com
+      # Azure 的**服务身份**：租户 + 应用注册（clientId / clientSecret）。
+      # 它只用于一件事——换用户委托密钥、签 User Delegation SAS（provider 名 azure-sas，
+      # 需同时在 lakehouse.rest.credential.providers 里启用）。
+      # 三项不齐时这一档不会被接，凭据下发退回原来的「只发定位元数据」：
+      # 那不是失败，是「本部署没有那个身份」。
+      # 租户优先取 catalog 的 tenantId（规格自带这个字段），这里只是兜底。
+      azure:
+        tenant-id: ""
+        client-id: ""
+        client-secret: ""
+        # 中国云是 https://login.chinacloudapi.cn；主权云域名不同，所以可填
+        authority: https://login.microsoftonline.com
+        # 必须与云环境一致。中国云填 https://storage.azure.cn/.default
+        scope: https://storage.azure.com/.default
       # 华为云 OBS 凭据。与 aws 分开而不是共用：三家的 AK/SK 独立签发、独立轮转、
       # 独立授权，挤进同一个键空间后「给 OBS 换钥匙」与「给生产 S3 换钥匙」就没法区分。
       # 这一组没有 Polaris 的对应项——Polaris 用 S3 兼容层接入 OBS，本工程单列。
@@ -271,6 +295,14 @@ lakehouse:
         # 阿里云侧的键名是 fs.oss.securityToken，这里沿用同一命名约定
         session-token: ""
         storages: {}
+        # 签发档（provider 名 oss-sts，需同时在 lakehouse.rest.credential.providers 里启用）：
+        # 服务端用上面那对 access-key / secret-key 去 AssumeRole 这个 RAM 角色，
+        # 换一张按表收窄、900–3600 秒到期的临时凭据。
+        # 留空 = 本部署不签发，凭据下发退回转发档（老部署升级后不该因此读不了表）。
+        # 收窄靠 RAM policy 完成：角色是上限，policy 才是这张表的边界。
+        role-arn: ""
+        # STS 端点；全球化端点，通常不用改，专有云按需覆盖
+        sts-endpoint: https://sts.aliyuncs.com
       # 腾讯云 COS 凭据，结构上同 obs / oss，但有一处本质差别：
       # **这条链上没有临时凭据**。paimon-cosn 的认证包
       # （org.apache.hadoop.fs.cosn.auth）里只有 SimpleCredentialsProvider 与

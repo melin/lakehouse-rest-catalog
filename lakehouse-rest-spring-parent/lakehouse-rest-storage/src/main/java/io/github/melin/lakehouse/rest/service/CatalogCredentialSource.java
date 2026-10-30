@@ -3,6 +3,7 @@ package io.github.melin.lakehouse.rest.service;
 import io.github.melin.lakehouse.rest.config.RestServerProperties;
 import io.github.melin.lakehouse.rest.dto.StorageDtos.AliyunOssStorageConfigInfo;
 import io.github.melin.lakehouse.rest.dto.StorageDtos.AwsStorageConfigInfo;
+import io.github.melin.lakehouse.rest.dto.StorageDtos.AzureStorageConfigInfo;
 import io.github.melin.lakehouse.rest.dto.StorageDtos.HuaweiObsStorageConfigInfo;
 import io.github.melin.lakehouse.rest.dto.StorageDtos.StorageConfigInfo;
 import io.github.melin.lakehouse.rest.dto.StorageDtos.TencentCosStorageConfigInfo;
@@ -37,7 +38,7 @@ public final class CatalogCredentialSource {
     /** 凭据来源的三种形态，外加一种「配置本身有问题」。 */
     public enum Mode {
 
-        /** 现签短期凭据：按表收窄、到期失效，可续期。 */
+        /** 现签短期凭据：按表收窄、到期失效、可续期。STS 与 Azure 的 SAS 都算这一档。 */
         STS,
 
         /** 转发服务端存着的长期密钥（catalog 自己的、具名的、或服务端默认的）。 */
@@ -81,34 +82,88 @@ public final class CatalogCredentialSource {
         return switch (storage.storageType()) {
             case FILE -> new Source(Mode.NONE,
                     "本地文件系统：没有密钥可发，只回一个自包含令牌（内容是表 id 与过期时刻）");
-            case AZURE -> new Source(Mode.NONE,
-                    "Azure：只发定位元数据（tenantId / account / hierarchical），SAS 由引擎用自己的身份换"
-                            + "（服务端不出具 SAS，见设计稿 §6.2）");
+            case AZURE -> azure((AzureStorageConfigInfo) storage, properties);
             case GCS -> gcs(properties);
             case S3 -> aws((AwsStorageConfigInfo) storage, properties);
             case OBS -> objectStore((HuaweiObsStorageConfigInfo) storage, "obs",
-                    properties.getStorage().getObs());
+                    properties.getStorage().getObs(), null);
             case OSS -> objectStore((AliyunOssStorageConfigInfo) storage, "oss",
-                    properties.getStorage().getOss());
+                    properties.getStorage().getOss(), ossSts(properties));
             case COS -> cos((TencentCosStorageConfigInfo) storage, properties);
         };
     }
 
     /**
-     * GCS：只有一条路——把配置里的访问令牌透传下去。
+     * GCS：有令牌就能换小，没令牌就让引擎用自己的 ADC。
      *
-     * <p>没有令牌时引擎用自己的 ADC，与服务端无关；因此这一档是 {@link Mode#NONE}，
-     * 而不是「签发」（服务端不会替任何人去换令牌）。令牌本身是长期访问令牌，
-     * 透传它的性质与转发 AK/SK 相同，所以归 {@link Mode#RELAY}。
+     * <p>三档的判据只有两条（是否启用 {@code gcs-downscope}、是否有源令牌），
+     * 因为这一家**不需要角色**：downscoped token 是「源令牌的更小投影」，
+     * 换不换得成取决于源凭据有没有 {@code roles/iam.serviceAccountTokenCreator}，
+     * 而那不是配置能表达的事。
+     *
+     * <p>所以「启用但没有令牌」这一档要专门说：它看起来是「开了签发」，
+     * 实际 provider 会返回空、链继续走到「引擎用 ADC」。
      */
     private static Source gcs(RestServerProperties properties) {
+        boolean enabled = properties.getCredential().getProviders()
+                .contains(VendedStorageCredential.PROVIDER_GCS_DOWNSCOPE);
         String token = properties.getStorage().getGcp().getToken();
-        if (token == null || token.isBlank()) {
-            return new Source(Mode.NONE,
-                    "GCS：服务端没有配置访问令牌，引擎用自己的 ADC（gcloud 凭据 / 服务账号文件）");
+        boolean hasToken = token != null && !token.isBlank();
+        if (enabled && hasToken) {
+            return new Source(Mode.STS,
+                    "GCS downscoped token：服务端把配置里的访问令牌换成一张只覆盖这张表的令牌"
+                            + "（boundary 写在对象层，最长 1 小时）。**没有续期**——"
+                            + "作业时长要小于有效期");
         }
-        return new Source(Mode.RELAY,
-                "GCS：下发服务端配置的访问令牌（lakehouse.rest.storage.gcp.token，长期）");
+        if (enabled) {
+            return new Source(Mode.NONE,
+                    "gcs-downscope 已启用，但 lakehouse.rest.storage.gcp.token 是空的："
+                            + "没有源令牌可换，仍然让引擎用自己的 ADC");
+        }
+        if (hasToken) {
+            return new Source(Mode.RELAY,
+                    "GCS：下发服务端配置的访问令牌（lakehouse.rest.storage.gcp.token，长期）。"
+                            + "要按表收窄，把 gcs-downscope 加进 lakehouse.rest.credential.providers");
+        }
+        return new Source(Mode.NONE,
+                "GCS：服务端没有配置访问令牌，引擎用自己的 ADC（gcloud 凭据 / 服务账号文件）");
+    }
+
+    /**
+     * Azure：能签 SAS 就签，签不了就还是「只给定位元数据」。
+     *
+     * <p><b>两个条件缺一不可</b>：部署的 {@code credential.providers} 里有 {@code azure-sas}，
+     * 且三项服务身份（租户、clientId、clientSecret）齐全——租户可以来自 catalog，
+     * 也可以是配置兜底。只满足了「启用」而没配身份时，真正的取票会**退回**定位元数据
+     * （provider 返回空、链继续往下走），所以界面必须说「启用但没身份」，
+     * 而不是显示「短期签发」——后者会让人以为已经收窄了。
+     *
+     * <p>与 S3 那一档的差别值得写在界面上：Azure 的 SAS **没有标准续期端点**
+     * （Iceberg 的 ADLSFileIO 不会自己去换票），平台上限 7 天。所以这里不能像 S3 那样
+     * 说「可续期」——说了的话，长作业会在中途开始 403，而它没有任何理由预期这件事。
+     */
+    private static Source azure(AzureStorageConfigInfo azure, RestServerProperties properties) {
+        boolean enabled = properties.getCredential().getProviders()
+                .contains(VendedStorageCredential.PROVIDER_AZURE_SAS);
+        if (!enabled) {
+            return new Source(Mode.NONE,
+                    "Azure：只发定位元数据（tenantId / account / hierarchical），SAS 由引擎用自己的身份换"
+                            + "。要服务端签 SAS，把 azure-sas 加进 lakehouse.rest.credential.providers"
+                            + " 并配好 lakehouse.rest.storage.azure");
+        }
+        String tenantId = azure.tenantId() != null && !azure.tenantId().isBlank()
+                ? azure.tenantId() : properties.getStorage().getAzure().getTenantId();
+        if (tenantId == null || tenantId.isBlank()
+                || !configured(properties.getStorage().getAzure().getClientId(),
+                        properties.getStorage().getAzure().getClientSecret())) {
+            return new Source(Mode.NONE,
+                    "azure-sas 已启用，但 lakehouse.rest.storage.azure 里的 tenant-id / client-id /"
+                            + " client-secret 没配齐：仍然只发定位元数据（不会失败，也不会签发）");
+        }
+        return new Source(Mode.STS,
+                "Azure 用户委托 SAS：服务端换委托密钥后按目录签发，覆盖这张表的路径，"
+                        + "有效期到点失效。**没有标准续期端点**，平台上限 7 天——"
+                        + "作业时长要小于有效期");
     }
 
     /**
@@ -167,11 +222,17 @@ public final class CatalogCredentialSource {
     }
 
     /**
-     * OBS / OSS：与 S3 同构，但**没有签发档**——两家的临时凭据接口还没接
-     * （P1-2 / P1-3），因此 {@code roleArn} 在这里不产生 STS。
+     * OBS / OSS：与 S3 同构。
+     *
+     * <p>{@code sts} 是调用方给出的「签发档」判定（OSS 有，OBS 还没有，见 P1-2 / P1-3）。
+     * 它插在 {@code stsUnavailable} 之后、转发之前——这正是
+     * {@code DefaultStorageCredentialManager#vendOther} 的顺序：静态凭据与
+     * {@code stsUnavailable} 是调用方的明确决定，签发是服务端的默认策略，
+     * 转发是最后一档。**两处顺序必须一致**，否则界面上写着「签发」而取票走的是转发。
      */
     private static Source objectStore(StorageConfigInfo storage, String group,
-                                      RestServerProperties.Storage.CloudCredentials credentials) {
+                                      RestServerProperties.Storage.CloudCredentials credentials,
+                                      Source sts) {
         if (StorageConfigs.hasStaticCredentials(storage)) {
             return new Source(Mode.RELAY,
                     "转发 catalog 自带的静态凭据（长期，轮换要改这个 catalog）");
@@ -179,6 +240,9 @@ public final class CatalogCredentialSource {
         if (stsUnavailable(storage)) {
             return new Source(Mode.NONE,
                     "stsUnavailable=true：只发端点，不申请临时凭据，引擎用自己的身份");
+        }
+        if (sts != null) {
+            return sts;
         }
         if (sessionTokenConfigured(credentials)) {
             return new Source(Mode.RELAY,
@@ -219,7 +283,40 @@ public final class CatalogCredentialSource {
                     "lakehouse.rest.storage.cos 里配了 sessionToken，但 COSN 没有令牌位："
                             + "取票会 500。要么删掉令牌改用长期密钥，要么换 S3 类型的 catalog");
         }
-        return objectStore(cos, "cos", credentials);
+        return objectStore(cos, "cos", credentials, null);
+    }
+
+    /**
+     * 阿里云的签发档：{@code oss-sts} 启用 + 配了角色 + 配了调用者 AK/SK 才成立。
+     *
+     * <p><b>三条缺一不可</b>，因为这三件事分别在三个地方：能力（provider 名单）、
+     * 上限（RAM 角色）、调用者身份（服务端 AK/SK）。只差最后一条时的现象很容易误判：
+     * 界面说「会签发」，取票时 provider 却返回空、链继续走到转发——
+     * 于是「为什么还是长期密钥」变成一道猜谜。所以缺调用者身份时这里也明确说。
+     *
+     * <p>返回 {@code null} 表示「这一档不适用」，交给转发档的正常判定；
+     * 这与 Azure 那档不同——Azure 没有转发可选，只能退回「只给定位元数据」。
+     */
+    private static Source ossSts(RestServerProperties properties) {
+        if (!properties.getCredential().getProviders()
+                .contains(VendedStorageCredential.PROVIDER_OSS_STS)) {
+            return null;
+        }
+        RestServerProperties.Storage.Oss oss = properties.getStorage().getOss();
+        if (oss.getRoleArn() == null || oss.getRoleArn().isBlank()) {
+            // 启用了但没配角色：能力不存在，退回转发档（它的文案会指出服务端用了哪对密钥）
+            return null;
+        }
+        if (!configured(oss.getAccessKey(), oss.getSecretKey())) {
+            return new Source(Mode.NONE,
+                    "oss-sts 已启用、也配了 roleArn，但 lakehouse.rest.storage.oss 里没有"
+                            + " access-key / secret-key：阿里云的 STS 必须用一对 AK/SK 签名，"
+                            + "因此不会签发（会退回下面的转发档，或让引擎用自己身份）");
+        }
+        return new Source(Mode.STS,
+                "阿里云 RAM STS 签发：服务端用 oss-sts 换一份按表收窄的临时凭据，"
+                        + "有效期 900–3600 秒（超出会被夹紧）。**没有续期**——"
+                        + "hadoop-aliyun 不会自动换票，作业时长要小于有效期");
     }
 
     /** 本部署是否会去签短期凭据：只看 provider 名单，不看 catalog。 */
