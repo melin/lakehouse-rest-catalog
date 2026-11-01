@@ -582,7 +582,7 @@ CatalogExecutionClusterRepository  →  ExecutionClientFactory
 </dependency>
 ```
 
-- 本仓父 POM 是 **Spring Boot 4.1.1 + Java 17**。fabric8 内部用 Jackson 2（`com.fasterxml`），
+- 本仓父 POM 是 **Spring Boot 4.1.2 + Java 17**。fabric8 内部用 Jackson 2（`com.fasterxml`），
   而 Boot 4 的 MVC 侧已经走 Jackson 3（`tools.jackson`）——两套并存，互不干涉，但镜像里会多一份
   JSON 栈（约 3 MB）。这是引入 fabric8 的真实代价，写在这里以免被当成「零成本」。
 - **锁一个具体 minor，不要用区间**：fabric8 的 `Version` / `Serialization` 在小版本间有过行为

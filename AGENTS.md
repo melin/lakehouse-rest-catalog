@@ -170,7 +170,7 @@ python3 scripts/verify-lance-endpoints.py                  # Lance 面：规格�
 
 ```
 pom.xml                      lakehouse-rest-parent：纯聚合器（spring-parent + spark + optimizer）
-lakehouse-rest-spring-parent/   服务端世界的父 POM（继承 Boot 4.1.1）
+lakehouse-rest-spring-parent/   服务端世界的父 POM（继承 Boot 4.1.2）
   pom.xml                    只有 POM、无源码；<modules> 列出下面四个（相对本文件解析，不带 ../）
 
   lakehouse-rest-core/     与表格式无关的地基（86 个类）——唯一不依赖任何格式库的服务端模块
