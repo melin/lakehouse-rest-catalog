@@ -73,4 +73,4 @@
 | `verify-lineage-doc.py` / `verify-iceberg-endpoints.py` / `verify-lance-endpoints.py` | 血缘、Iceberg、Lance 三份文档声明的端点与实现台账 |
 | `verify-k8s-manifests.py` | `deploy/kubernetes/` 清单内部引用自洽 |
 
-生成物**不要手改**：`sql/schema-mysql.sql`、`management-api-contract.md` 由脚本重生成。
+生成物**不要手改**：`sql/schema-mysql.sql`、`sql/schema-postgres.sql`、`management-api-contract.md` 由脚本重生成。

@@ -1,10 +1,17 @@
-# PostgreSQL：未随本次变更做端到端验证，建表依赖 ddl-auto: update。
+# PostgreSQL：元数据存储的备用方言，与 MySQL 共用同一套 JPA 实体。
 #
-# 使用方式：java -jar lakehouse-rest-server.jar --spring.profiles.active=postgresql
+# 建表语句由脚本生成，见 sql/schema-postgres.sql（scripts/gen-postgres-ddl.sh），
+# 请勿手工修改该文件。应用启动时的 ddl-auto 是 validate：schema 与实体不一致会
+# 直接启动失败，而不是悄悄改表，因此升级代码后若实体有变，需要重新生成并迁移。
+#
+# 使用方式：
+#   createdb lakehouse_catalog                       # 库需预先建好
+#   psql -d lakehouse_catalog -f sql/schema-postgres.sql
+#   java -jar lakehouse-rest-server.jar --spring.profiles.active=postgresql
 #
 # 与 MySQL 的差别：唯一约束里的 namespace_hash / spec_hash 是为 MySQL 的
 # 3072 字节索引键上限引入的，在 PostgreSQL 上同样可用（定长 64 字符），
-# 但 PostgreSQL 实例上的行为没有实机验证过，请自行确认后再用于生产。
+# 但 PostgreSQL 对索引键长度没有该上限，原文字段也可直接建唯一索引。
 spring:
   datasource:
     url: jdbc:postgresql://127.0.0.1:5432/lakehouse_catalog
@@ -15,5 +22,6 @@ spring:
       maximum-pool-size: 20
   jpa:
     hibernate:
-      ddl-auto: update
+      # 与 MySQL 一致的 validate：依赖 sql/schema-postgres.sql 先建好库
+      ddl-auto: validate
     # 方言由 JDBC 连接自动探测，无需显式指定

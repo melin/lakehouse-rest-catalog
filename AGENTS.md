@@ -73,8 +73,9 @@ REST Management API**（RBAC 管理面）与一个 **Vue 3 管理控制台**；�
      服务端共用 webmvc / data-jpa / validation / lombok，写在 `spring-parent` 里；
      `paimon-core` 一旦也写进去，`core` 会连带拿到 Paimon，enforcer 立刻红（见第 10 条）。
 5. **`sql/schema-mysql.sql` 是生成物，不要手改**（`scripts/gen-mysql-ddl.sh` 从 JPA 实体生成，
-   27 表 / 24 唯一约束 / 31 索引，下次生成会覆盖）。**改了实体就必须重跑生成**，
-   否则启动时 `ddl-auto=validate` 直接失败。
+   28 表 / 25 唯一约束 / 32 索引，下次生成会覆盖）。PostgreSQL 同源生成物 `sql/schema-postgres.sql`
+   由 `scripts/gen-postgres-ddl.sh` 生成（28 张表，唯一约束内联、自增列用 `identity`）。
+   **改了实体就必须重跑对应生成**，否则启动时 `ddl-auto=validate` 直接失败。
 6. **构建服务端 jar（含控制台）用 `clean package`，不要裸 `package`。** 控制台产物按内容哈希命名，
    `maven-resources-plugin` 只覆写不删除 → `target/classes/static/console` 累积历次旧产物
    （jar 里出现多个 `index-*.js`）。服务端 POM 已把一次 `clean` 绑到 `initialize` 兜底。
@@ -153,6 +154,7 @@ python3 scripts/verify-k8s-manifests.py                   # K8s 清单
 python3 scripts/verify-lineage-doc.py                     # 血缘文档 ↔ 控制器映射 / 配置键
 python3 scripts/verify-lance-endpoints.py                  # Lance 面：规格副本 ↔ 控制器 ↔ 授权登记
 ./scripts/gen-mysql-ddl.sh                                # 重生成 sql/schema-mysql.sql
+./scripts/gen-postgres-ddl.sh                           # 重生成 sql/schema-postgres.sql（PostgreSQL）
 ```
 
 - 这些 Python 脚本除 `verify-lineage-doc.py` 外都解析 OpenAPI 规格，依赖 **PyYAML**
@@ -266,7 +268,7 @@ deploy/kubernetes/      单文件三文档：configmap / deployment / service（
 spec/                   三份 OpenAPI 规格的仓库副本（不随服务端分发）：
                         rest-catalog-open-api-paimon.yaml / -iceberg.yaml /
                         rest-management-open-api.yaml（Paimon 官方 REST Management API）
-sql/                    MySQL 建表语句（生成物）
+sql/                    MySQL / PostgreSQL 建表语句（生成物，分别对应 schema-mysql.sql / schema-postgres.sql）
 scripts/                验收 / 生成 / 校验 / 镜像构建脚本
 docs/                   33 份设计文档（另有七份配套效果图 HTML）
 ```
@@ -502,7 +504,7 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
   不要在控制器里手写响应体。
 - **文档里的代码块要与代码同步**——`SparkSqlDocExamplesTests` 会真跑
   `docs/spark-sql-reference.md` 第 10 节示例，**改坏示例会让构建失败**。
-- **生成物一律不要手改**：`sql/schema-mysql.sql`、`docs/management-api-contract.md`、
+- **生成物一律不要手改**：`sql/schema-mysql.sql`、`sql/schema-postgres.sql`、`docs/management-api-contract.md`、
   `dto/Privilege.java`。要改就改生成器或规格再重跑。
 - **控制台里「表格式」有两个层级，别混**：catalog 级是 `catalogFormat`（`PAIMON` / `ICEBERG`，
   `utils/catalogFormat.js`，创建后不可改），表级是 `schema.options.type`（`table` /

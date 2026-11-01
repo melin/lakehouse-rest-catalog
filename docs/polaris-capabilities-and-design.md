@@ -54,7 +54,7 @@ Paimon 的 REST Catalog 规格遵循同一范式，但对象模型不同：Polar
 | 查询鉴权与策略下推 | `POST .../tables/{table}/auth` | `CredentialService.auth()`：返回行过滤表达式与列脱敏映射；请求列不在 schema 中时返回 403 |
 | RBAC 细粒度权限 | 由 REST Management API 承担权限面 | 已实现：主体 → principal role → catalog role → 资源授权的完整链路，并作为 `/v1/**` 的判定依据。见第六节 |
 | 治理面（实体标签 / 行过滤 / 列脱敏策略） | REST Management API（独立规格） | 实体标签未实现；行过滤与列脱敏未实现，`auth` 端点返回空规则。见第八节 |
-| 元数据持久化可插拔 | 规格未约束 | JPA + MySQL 8.0（默认，DDL 见 `sql/schema-mysql.sql`）/ H2 内存库 / PostgreSQL profile |
+| 元数据持久化可插拔 | 规格未约束 | JPA + MySQL 8.0（默认，DDL 见 `sql/schema-mysql.sql`）/ H2 内存库 / PostgreSQL profile（DDL 见 `sql/schema-postgres.sql`） |
 | 版本化与向后兼容 | 规格 `version: "1.0"`，路径以 `/v1` 开头 | 错误响应严格按规格（`{message, resourceType, resourceName, code}`），未知变更 action 返回 400 |
 
 ---

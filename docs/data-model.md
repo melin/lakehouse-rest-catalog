@@ -24,10 +24,12 @@
   INTERNAL / EXTERNAL，与格式正交；混用会让「外部 Iceberg 仓库的入口」这种状态没有地方表达）。
   详见 [`iceberg-rest-catalog-design.md`](iceberg-rest-catalog-design.md) §3.1–3.2
 - 建表语句：[`../sql/schema-mysql.sql`](../sql/schema-mysql.sql)（由实体生成，改实体后必须重跑）。
+  PostgreSQL 走同一套实体，建表语句见 [`../sql/schema-postgres.sql`](../sql/schema-postgres.sql)
+  （`scripts/gen-postgres-ddl.sh` 生成；自增列用 `identity`，唯一约束内联，注释为独立的 `comment on` 语句）。
   **表与列的注释也在实体上**（`@Table(comment = ...)` / `@Column(comment = ...)`）：
-  注释随 DDL 一起生成，`show create table` 看到的就是实体里写的那句话。
+  注释随 DDL 一起生成，`show create table`（MySQL）/ `\\d+`（PostgreSQL）看到的就是实体里写的那句话。
   新增实体或列时漏写注释不会让构建失败，因此 `MysqlDdlGeneratorTests.everyTableAndColumnIsCommented`
-  会把它挡在生成侧。
+  （MySQL）与 `PostgresDdlGeneratorTests.everyTableAndColumnIsCommented`（PostgreSQL）会把它挡在生成侧。
 - 库结构由 `ddl-auto: validate` 守住：实体与库不一致时应用**直接启动失败**，
   代价是实体变更后要自行迁移存量数据（见 [`../README.md`](../README.md) 第 6 节「实现说明与已知边界」第 14 条）
 
