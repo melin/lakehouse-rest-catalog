@@ -285,6 +285,11 @@ data:
         credential:
           # 数据访问令牌（凭证下发）有效期
           ttl-seconds: 3600
+          # 签发者名单，默认启用这三家：s3-token（AWS STS）/ azure-sas（Azure 用户委托 SAS）/
+          # oss-sts（阿里云 RAM STS）。填了 roleArn 的 catalog 会由这里签短期票；
+          # 名单为空（[]）时退回「转发 catalog 上的长期密钥」，即控制台上标「转发长期密钥」的那一档。
+          # 名字写错启动即失败，不会悄悄不生效。
+          providers: ["s3-token", "azure-sas", "oss-sts"]
         # -----------------------------------------------------------------------
         # 存储与凭据，对应 Polaris 1.8.0 配置参考的「Storage & Credentials」一节。
         # 键名逐项对应，只把前缀从 polaris 换成 lakehouse.rest，运维迁配置时可以按名字平移。

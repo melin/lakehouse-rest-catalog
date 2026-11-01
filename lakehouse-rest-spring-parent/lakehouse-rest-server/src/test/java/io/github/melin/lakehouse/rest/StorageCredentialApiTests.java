@@ -41,7 +41,12 @@ import tools.jackson.databind.node.JsonNodeFactory;
  * 凭据解析不发出网请求，这一点是被测行为的一部分。
  */
 @SpringBootTest(properties = {
-        "lakehouse.rest.storage.credential-secret-key=AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="
+        "lakehouse.rest.storage.credential-secret-key=AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+        // 本类测的是「原样转发 / 只发定位元数据」这一层的解析，不测签发。缺省已开
+        // 三家签发器，那样 Azure 那条用例会真的去要 AAD token（tenant 是假的 → 503），
+        // 而它要验的是「服务主体本身永不下发」。签发那一半由 AzureSasVendingTests /
+        // OssStsVendingTests 用假客户端覆盖。空串在这里绑成空列表（不传任何 provider）。
+        "lakehouse.rest.credential.providers="
 })
 @ActiveProfiles("test")
 @AutoConfigureMockMvc

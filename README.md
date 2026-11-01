@@ -431,7 +431,7 @@ Catalog 侧与鉴权：
 | `lakehouse.rest.auth.console.client-credentials.rate-limit.max-failures` / `.window` | `10` / `1m` | 该方式的失败限速 |
 | `lakehouse.rest.auth.console.oidc.*` | 关闭 | 外部身份提供方（OIDC + PKCE）登录，见 [`console-auth.md`](docs/console-auth.md) |
 | `lakehouse.rest.credential.ttl-seconds` | `3600` | 数据访问令牌有效期 |
-| `lakehouse.rest.credential.providers` | 空（= 只有转发） | 启用的签发器：`s3-token` / `azure-sas` / `oss-sts` / `gcs-downscope`；写错名字启动即失败 |
+| `lakehouse.rest.credential.providers` | `s3-token, azure-sas, oss-sts` | 启用的签发器。默认这三家：填了 `roleArn` 的 catalog 会去换短期票。**写成 `[]` 才回到「只转发长期密钥」**（那时 `roleArn` 是个不被读的字段）。`gcs-downscope` 不在默认里，要用显式加。写错名字启动即失败 |
 | `lakehouse.rest.credential.cache-expire-ratio` | `0.15` | 短期票在缓存里留多久（占寿命的比例）。只对短期票生效 |
 | `lakehouse.rest.credential.session-tags` | `false` | AssumeRole 时带 `lh:principal` / `lh:scope` / `lh:access`。**开启前**角色信任策略要放行 `sts:TagSession` |
 | `lakehouse.rest.credential.retry-attempts` | `3` | 云侧**限流**时的尝试次数（含第一次）。权限错 / 网络错不重试 |

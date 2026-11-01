@@ -150,7 +150,9 @@ class ServerSideCredentialTests {
     @Test
     void disabledProviderChainKeepsCatalogVendingUnchanged() {
         FakeSts sts = new FakeSts();
-        // providers 保持默认空：这是「默认关闭」的验收点，新入口也要守住
+        // 显式清空：缺省是**开**（三家签发器），本用例测的是「没启用签发」那一档，
+        // 不能靠缺省值——靠了就会在缺省值变化时变成「测了另一件事但仍然是绿的」
+        properties.getCredential().setProviders(List.of());
         DefaultStorageCredentialManager manager = new DefaultStorageCredentialManager(
                 properties, cipher, List.of(new S3TokenCredentialProvider(properties, cipher, sts)));
         List<String> locations = List.of("s3://wh/db1/t1");
@@ -158,9 +160,27 @@ class ServerSideCredentialTests {
         VendedStorageCredential vended = manager.vendForCatalog(
                 aws("arn:aws:iam::1:role/r", locations), "cat-1", locations, false);
 
-        assertNull(sts.last.get(), "默认链为空时不该有远程调用");
+        assertNull(sts.last.get(), "链为空时不该有远程调用");
         assertEquals(VendedStorageCredential.PROVIDER_RELAY, vended.provider());
         assertFalse(vended.shortLived());
+    }
+
+    /**
+     * 代码里的缺省值：三家签发器都开。
+     *
+     * <p>与 {@code PaimonRestServerApplicationTests#credentialProvidersAreOnAtStartup} 有意重复，
+     * 但读的东西不同：这里 {@code new} 一个空对象，验的是**纯代码默认**；那条读 Spring
+     * 绑定后的值，验的是「代码默认 + application.yml 合起来的结果」。两层都要——这个
+     * 缺省值曾经是空的，而它造成的后果是静默的：填了 {@code roleArn} 却没签过一张票，
+     * 引擎拿到的仍是库里的永久密钥。
+     */
+    @Test
+    void codeDefaultEnablesTheThreeProviders() {
+        assertEquals(List.of(
+                        VendedStorageCredential.PROVIDER_S3_TOKEN,
+                        VendedStorageCredential.PROVIDER_AZURE_SAS,
+                        VendedStorageCredential.PROVIDER_OSS_STS),
+                new RestServerProperties().getCredential().getProviders());
     }
 
     // ------------------------------------------------------------------ 谁在签名

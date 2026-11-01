@@ -347,7 +347,8 @@ class VendingCredentialProviderTests {
     @Test
     void disabledProviderChainKeepsTheRelayBehaviour() {
         FakeSts sts = new FakeSts();
-        // 不写 providers：默认空链。provider bean 在容器里，但没启用
+        // 显式清空：缺省是开（三家签发器）。本用例要的是「provider bean 在容器里但没启用」
+        properties.getCredential().setProviders(List.of());
         DefaultStorageCredentialManager manager = new DefaultStorageCredentialManager(
                 properties, cipher, List.of(new S3TokenCredentialProvider(properties, cipher, sts)));
 

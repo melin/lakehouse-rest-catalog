@@ -55,8 +55,7 @@ class StorageCredentialResolutionTests {
 
     private final CredentialCipher cipher = configuredCipher(properties);
 
-    private final DefaultStorageCredentialManager manager =
-            new DefaultStorageCredentialManager(properties, cipher, List.of());
+    private final DefaultStorageCredentialManager manager = managerWithoutProviders();
 
     /**
      * 配好密钥的 cipher。
@@ -72,6 +71,19 @@ class StorageCredentialResolutionTests {
 
     private StorageCredentialCache cache() {
         return new StorageCredentialCache(properties);
+    }
+
+    /**
+     * 本类不测签发，因此管理器里一个 provider bean 都没有。
+     *
+     * <p>**必须显式清空 {@code providers}**：它的缺省值已经改成三家签发器，而
+     * 「配了名字但容器里没有对应 bean」在启动校验里是失败（那里判的是「拼错的名字
+     * 不能静默不生效」）。不清空的话本类会在字段初始化时就抛
+     * {@code unknown provider 's3-token'}，35 条用例一条都跑不到。
+     */
+    private DefaultStorageCredentialManager managerWithoutProviders() {
+        properties.getCredential().setProviders(List.of());
+        return new DefaultStorageCredentialManager(properties, cipher, List.of());
     }
 
     // ------------------------------------------------------------------ S3

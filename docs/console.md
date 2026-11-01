@@ -658,7 +658,7 @@ v3 把 v2 的 `STS` / `RELAY` / `NONE` 收敛成五档，主要是把 `NONE` 拆
 | 档 | 界面标签 | 什么时候出现 |
 | --- | --- | --- |
 | `VENDED` | 短期签发 | S3 + `roleArn` + 签名 AK/SK + 启用了 `s3-token`；OSS + `roleArn` + AK/SK + 启用了 `oss-sts`；Azure + 服务主体 + `azure-sas`；GCS + `serviceAccountJson` + `gcs-downscope` |
-| `STATIC` | 转发长期密钥 | catalog 上有密钥、但**没有**能接手的签发：没 `roleArn`、provider 未启用（含「填了 `roleArn` 但本部署没开 `s3-token`」——行为真的退回转发），或 `stsUnavailable=true` |
+| `STATIC` | 转发长期密钥 | catalog 上有密钥、但**没有**能接手的签发：没 `roleArn`、provider 未启用（含「填了 `roleArn` 但部署把 `providers` 写成 `[]`」——行为真的退回转发；**默认已开 `s3-token` / `azure-sas` / `oss-sts`，所以这一档要显式关掉才会出现**），或 `stsUnavailable=true` |
 | `LOCAL` | 本地文件系统 | `FILE`：没有凭据这回事，服务端回一个自包含令牌。**它不是「缺配置」** |
 | `LEGACY_ENV` | 无可用凭据 | 对象存储上一个密钥都没配（v3 之前的存量）、`stsUnavailable=true` 且无密钥、Azure 没有服务主体、GCS 没有服务账号且未启用签发。**只读状态**：编辑时选一种方式补上 |
 | `INVALID` | 配置有误 | 声明了身份却缺签名材料：有 `roleArn` 却没 AK/SK（新配置在写入口就 400）、启用了 `azure-sas` 却缺服务主体、启用了 `gcs-downscope` 却没有 `serviceAccountJson`、没有 `storageConfigInfo` |

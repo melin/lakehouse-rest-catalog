@@ -233,11 +233,14 @@ lakehouse:
     credential:
       # 数据访问令牌（凭证下发）有效期
       ttl-seconds: 3600
-      # 签发者名单，默认空 = 只有 relay（转发）一档。
-      # 已知实现：s3-token（AWS STS）/ azure-sas（Azure 用户委托 SAS）/ oss-sts（阿里云 RAM STS）。
+      # 签发者名单，默认启用这三家：s3-token（AWS STS）/ azure-sas（Azure 用户委托 SAS）/
+      # oss-sts（阿里云 RAM STS）。默认开是为了让「填了 roleArn」不再静默退回转发永久密钥；
+      # 代价是读表路径上多一次远程调用，roleArn 填错时会 503 而不是「看起来能读」。
+      # 要回到只有 relay（只转发、不调云），显式写 providers: []。
+      # gcs-downscope 不在默认名单里（排障入口与另外三家不同），要用请显式补上。
       # 名字写错会在启动时失败，而不是悄悄不生效——一个拼错的 provider 名
       # 会让「我明明开了签发」变成「一直下发长期密钥」，而两者在日志里都只有一行正常。
-      providers: []
+      providers: ["s3-token", "azure-sas", "oss-sts"]
       # AssumeRole 时带审计用的 session tags（lh:principal / lh:scope / lh:access）。
       # **开启前必须**在被 assume 角色的信任策略里放行 sts:TagSession，否则带 tag 的
       # AssumeRole 会 AccessDenied，表现为「配置没改、读表全部 503」。所以默认关。

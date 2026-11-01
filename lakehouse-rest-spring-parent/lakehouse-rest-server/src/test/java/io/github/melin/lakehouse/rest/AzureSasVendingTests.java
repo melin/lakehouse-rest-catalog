@@ -406,10 +406,13 @@ class AzureSasVendingTests {
     /** 控制台的「凭据来源」要跟着变：启用 azure-sas 之后不再是「不下发」。 */
     @Test
     void consoleReportsSignedSasOnlyWhenBothTheProviderAndTheIdentityArePresent() {
+        // 显式清空：缺省已开 azure-sas，而本条第一段要验的正是「没启用」那一档
+        properties.getCredential().setProviders(List.of());
+
         AzureStorageConfigInfo withoutIdentity = azureWithoutIdentity(TABLE);
         assertEquals(CatalogCredentialSource.Mode.LEGACY_ENV,
                 CatalogCredentialSource.of(withoutIdentity, properties).mode(),
-                "默认不启用，且没有服务主体：环境身份那一档");
+                "没启用且没有服务主体：环境身份那一档");
 
         properties.getCredential().setProviders(List.of(VendedStorageCredential.PROVIDER_AZURE_SAS));
         CatalogCredentialSource.Source enabledWithoutIdentity =

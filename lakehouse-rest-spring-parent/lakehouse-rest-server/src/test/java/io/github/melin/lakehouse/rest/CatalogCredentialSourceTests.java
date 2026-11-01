@@ -95,6 +95,9 @@ class CatalogCredentialSourceTests {
      */
     @Test
     void roleArnWithoutTheProviderFallsBackToForwardingTheKeys() {
+        // 显式清空：缺省是开，而本用例要验的正是「没开」这一档
+        properties.getCredential().setProviders(List.of());
+
         CatalogCredentialSource.Source source =
                 CatalogCredentialSource.of(aws(AK, SK, ROLE, null, null), properties);
 
@@ -199,6 +202,9 @@ class CatalogCredentialSourceTests {
     /** 没开 azure-sas：服务端签不出 SAS，只能发定位元数据——对用户等于「补一个身份」。 */
     @Test
     void azureWithoutTheProviderHasNoUsableCredential() {
+        // 显式清空：缺省开了 azure-sas，而本用例要验的是「没开」时只剩定位元数据
+        properties.getCredential().setProviders(List.of());
+
         CatalogCredentialSource.Source source = CatalogCredentialSource.of(
                 azure("tenant", "client", "secret"), properties);
 

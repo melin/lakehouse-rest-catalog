@@ -409,19 +409,21 @@ class ConsoleApiTests {
                 () -> "detail 必须点名缺的字段，否则用户不知道去补什么："
                         + orphanRole.get("detail").asString());
 
-        // ①b 三样齐全、但本部署没启用 s3-token（测试 profile 的 providers 是空的）。
-        //    这是整件事的由头：它与「只填了 AK/SK」的结果一模一样，字段上看不出来，
-        //    保存后要回列表页才看得见——而那时用户已经在另一步上了
-        JsonNode roleWithoutProvider = previewDraft(Map.of(
+        // ①b 三样齐全、且本部署默认启用了 s3-token → 签发档。
+        //    与 ① 是「同一张表单、只差那对钥匙」的对照：补上签名身份之后服务端就会去
+        //    AssumeRole，引擎拿到的将是按表路径收窄的短期票，而不是那把永久钥匙。
+        //    （「三样齐全但本部署没启用签发」那一档现在只能靠改配置触发，由
+        //     CatalogCredentialSourceTests#roleArnWithoutTheProviderFallsBackToForwardingTheKeys 覆盖）
+        JsonNode roleWithSigningIdentity = previewDraft(Map.of(
                 "storageType", "S3",
                 "allowedLocations", List.of("s3://bucket/warehouse"),
                 "roleArn", "arn:aws:iam::123456789012:role/lakehouse",
                 "accessKeyId", "AKIAEXAMPLE",
                 "secretAccessKey", "s3cr3t"));
-        assertEquals("STATIC", roleWithoutProvider.get("mode").asString());
-        assertTrue(roleWithoutProvider.get("detail").asString().contains("s3-token"),
-                () -> "detail 必须点名要开的配置项，否则用户不知道去改什么："
-                        + roleWithoutProvider.get("detail").asString());
+        assertEquals("VENDED", roleWithSigningIdentity.get("mode").asString());
+        assertTrue(roleWithSigningIdentity.get("detail").asString().contains("s3-token"),
+                () -> "detail 要点名是谁在签，否则用户不知道这张票从哪来："
+                        + roleWithSigningIdentity.get("detail").asString());
 
         // ② catalog 自带静态凭据、没填 roleArn → 转发档：这把钥匙没有别的用途，
         //    它就是发给引擎的数据面凭据
@@ -453,10 +455,9 @@ class ConsoleApiTests {
                 "storageName 是纯标签：不会因为名字不存在而变成 INVALID");
         assertFalse(labelOnly.get("detail").asString().contains("no-such-storage"),
                 () -> "detail 不该把一个纯标签说成问题来源：" + labelOnly.get("detail").asString());
-        // 注：VENDED 这一档在当前测试 profile 下**无法从这里触发**——它要求
-        //    providers 里启用对应的签发器，而本 profile 的 providers 是空的。
-        //    那几条由各自的单元测试覆盖
-        //    （AzureSasVendingTests / OssStsVendingTests / GcsDownscopeVendingTests）。
+        // 注：VENDED 这一档在 ①b 已经触发；这里不能再指望「填了就签」——
+        //    签发只在 roleArn（Azure 是服务主体）+ 签名身份 + 本部署启用了对应 provider
+        //    三者齐备时发生，缺一项的结果见上面几条。
 
         // ⑤ 本地文件系统：没有密钥可发
         JsonNode file = previewDraft(Map.of(

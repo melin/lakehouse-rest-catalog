@@ -1,5 +1,6 @@
 package io.github.melin.lakehouse.rest.config;
 
+import io.github.melin.lakehouse.rest.support.VendedStorageCredential;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
 import java.time.Duration;
@@ -563,17 +564,31 @@ public class RestServerProperties {
         private long ttlSeconds = 3600;
 
         /**
-         * 启用的签发 provider 名，默认**空**（等价于只有 {@code relay}）。
+         * 启用的签发 provider 名，默认 {@code s3-token} / {@code azure-sas} / {@code oss-sts}。
          *
-         * <p>为什么默认空而不是默认全开：{@code s3-token} 会在读表的路径上引入一次
-         * 远程调用（有配额、会超时、会因 IAM 配错而失败）。默认打开等于把
-         * 「今天能正常读表」的部署升级成一个可能读不了的部署，而且失败信息来自
-         * 另一个系统。要启用请显式写 {@code lakehouse.rest.credential.providers: s3-token}。
+         * <p>{@code gcs-downscope} 不在默认名单里：GCS 下发的是「源凭据的更小权限投影」，
+         * 排障入口与另外三家完全不同（{@code serviceAccountTokenCreator} 角色），
+         * 而它不是这台服务的常见存储面。要用请显式写全这一项。
+         *
+         * <p><b>默认开是有代价的，写在这里免得下次被当成「没人用的开关」删掉</b>：
+         * 开了签发之后，catalog 上填了 {@code roleArn}（Azure 是服务主体）的那些表会在
+         * 读表路径上多一次远程调用——有配额、会超时、会因 IAM 或角色信任策略配错而失败，
+         * 而失败信息来自另一个系统（STS 的 {@code AccessDenied} 看起来像权限问题，
+         * 不像配置问题）。也就是：**一把填上但没验过的角色，会把「今天能读」变成「今天 503」**。
+         * 要回到纯转发，显式写 {@code providers: []}——那时 {@code roleArn} 只是一个
+         * 不会被读的字段，引擎拿到的仍是库里那把长期密钥。
+         *
+         * <p>反过来的代价更贵，这也是默认改成开的原因：关着的时候 {@code roleArn} 被
+         * 静默忽略，引擎拿到的是永久钥匙（控制台标「转发长期密钥」），而部署者以为
+         * 自己配了角色就已经在签发。要让默认配置不产生永久凭据，只能默认开。
          *
          * <p>写了不存在的名字启动即失败，与 {@code credential-manager.type} 同一取舍：
          * 一个拼错的 provider 名若被静默忽略，表现是「明明配了 STS，出来的还是长期密钥」。
          */
-        private List<String> providers = new ArrayList<>();
+        private List<String> providers = new ArrayList<>(List.of(
+                VendedStorageCredential.PROVIDER_S3_TOKEN,
+                VendedStorageCredential.PROVIDER_AZURE_SAS,
+                VendedStorageCredential.PROVIDER_OSS_STS));
 
         /**
          * 短期凭据在缓存里保留的比例，默认 {@code 0.15}。

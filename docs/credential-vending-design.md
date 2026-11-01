@@ -58,8 +58,11 @@
 > 1. **`VendedStorageCredential` 多两个分量**：`provider`（`relay` / `s3-token`）与
 >    `expireTimeInMs`（静态 `0`、短期真实到期毫秒）。保留 4 参构造器，既有调用点零改动。
 >    `shortLived()` 与 `remainingMillis(now)` 由它派生——**「静态还是短期」现在只有一个判据**。
-> 2. **新增 `CredentialProvider` 链**，默认**空**（等价于只有 `relay`）。启用方式：
->    `lakehouse.rest.credential.providers: s3-token`。写了不认识的名字**启动即失败**
+> 2. **新增 `CredentialProvider` 链**，默认启用 `s3-token` / `azure-sas` / `oss-sts` 三家
+>    （早期版本默认**空**、等价于只有 `relay`；后来改成默认开，理由见
+>    `RestServerProperties.Credential#providers`：默认空会让填了 `roleArn` 的 catalog
+>    静默退回永久密钥）。要回到只转发的行为显式写 `lakehouse.rest.credential.providers: []`。
+>    写了不认识的名字**启动即失败**
 >    （与 `credential-manager.type` 同一取舍）。链只在 S3 分支上尝试，且插在
 >    「静态凭据 / `stsUnavailable`」之后、「具名存储 / 默认配置 / 环境」之前——
 >    前两者是调用方的明确决定，策略不能覆盖决定。
@@ -181,7 +184,7 @@
 
 | 问题 | 一句话回答 |
 | --- | --- |
-| ① 有没有考虑 | **有，P0 已落地**：三条协议面的下发通道、七种存储的键名族、TTL 缓存、静态凭据的加密落库都在；**S3 的「向云申请短期凭据」也已接通**（`s3-token` provider + session policy 收窄），但**默认关闭**（`lakehouse.rest.credential.providers` 为空）。其余五家的签发器仍是 P1（§8） |
+| ① 有没有考虑 | **有，P0 已落地**：三条协议面的下发通道、七种存储的键名族、TTL 缓存、静态凭据的加密落库都在；**S3 的「向云申请短期凭据」也已接通**（`s3-token` provider + session policy 收窄），**默认开启**（`lakehouse.rest.credential.providers` 默认就是 `s3-token` / `azure-sas` / `oss-sts`；早期版本默认空）。其余五家的签发器仍是 P1（§8） |
 | ② 七种存储 | S3 / OSS / OBS / COS 走 STS `AssumeRole`（OSS、OBS、COS 各有自己的接口与 policy 收窄方式，COS 用 CAM policy），Azure 走 User Delegation SAS，GCS 走 downscoped token，**S3 兼容存储（MinIO / Ceph / Ozone）多数没有 STS，必须保留现在的静态转发**。逐种见 §6；腾讯云 COS 定案用 **COSN 原生**，见 §6.3。**COS 的 `AssumeRole` 那半句已被 v7 推翻**：COSN 的 FileIO 不认临时凭据（没有令牌键、没有 session-token provider），所以 COS 只能转发长期 AK/SK |
 | ③ Spark 能不能不配 AK/SK | **Paimon 能（现在就能）、Iceberg 能但有三处卡点、Lance 今天不能**；Flink 只有 Paimon 面能，且没验过。逐条结论与那段配置的逐行点评见 §7。**COS 要单独看**：只有 Paimon 面能用 COSN 原生接到下发凭据、Iceberg 面下发断链、Lance 面根本没有 COSN（§6.3） |
 | ④ 控制台怎么配 | **三选一，不是一个开关**：不下发 / 转发长期密钥 / 签发短期凭据。后两档的客户端配置**完全一样**，所以标记必须做在控制台上。见 §10 与原型 [`credential-vending-mockup.html`](credential-vending-mockup.html) |
@@ -458,8 +461,9 @@ credentials.stream()
 3. **协议适配层的判据从「配置」变成「凭据」。** 发几个键、要不要广告 refresh 端点，
    都由这一份凭据自己的到期时刻决定——不存在「配置说 sts、其实没签」的错位。
 
-所以 P0-1 改写成：**新增 `credential-providers` 列表（默认只有一个 relay 实现），
-并给 `VendedStorageCredential` 加 `expireTimeInMs()`**；§5.8 的表据此重写。
+所以 P0-1 改写成：**新增 `credential-providers` 列表**（当时默认只有一个 relay 实现，
+后来改成默认开 `s3-token` / `azure-sas` / `oss-sts` 三家），
+**并给 `VendedStorageCredential` 加 `expireTimeInMs()`**；§5.8 的表据此重写。
 
 #### 3.4.2 自动探测：填了 roleArn 就升到 STS
 
@@ -1294,12 +1298,12 @@ object_store 认的是 `aws_access_key_id` / `aws_secret_access_key` / `aws_sess
 > `lakehouse-rest-protocol-lance`（`LanceStorageOptions`）。
 > 用例：`VendingCredentialProviderTests`（19 例）。
 >
-> **开启方式**（默认关闭，关闭时输出与改造前逐字节相同）：
+> **开启方式**（默认已开 `s3-token` / `azure-sas` / `oss-sts`；写成 `[]` 时输出与改造前逐字节相同）：
 >
 > ```yaml
 > lakehouse.rest:
 >   credential:
->     providers: [s3-token]      # 默认空 = 只有 relay
+>     providers: [s3-token, azure-sas, oss-sts]   # 默认就是这三家；写 [] 回到只有 relay
 >     ttl-seconds: 3600          # 同时是 STS 的 DurationSeconds 与下发的 ttl
 >     cache-expire-ratio: 0.15   # 短期凭据在缓存里只留 15%
 > ```
@@ -1311,7 +1315,7 @@ object_store 认的是 `aws_access_key_id` / `aws_secret_access_key` / `aws_sess
 
 | # | 做什么 | 验收（可机械核对） |
 | --- | --- | --- |
-| ✅ P0-1 | 新增 `credential-providers` 列表（默认只有 relay 一个实现），并给 `VendedStorageCredential` 加 `expireTimeInMs()`（静态 `0`、短期真实到期） | 两种实现各一个测试类；默认配置下输出与今天逐字节相同；断言「静态的 `expireTimeInMs()` 恒为 `0`」→ `VendingCredentialProviderTests` 的 `disabledProviderChainKeepsTheRelayBehaviour` / `stsProviderIsSkippedWhenCatalogCarriesStaticCredentials` |
+| ✅ P0-1 | 新增 `credential-providers` 列表（当时默认只有 relay 一个实现，**现已默认开 `s3-token` / `azure-sas` / `oss-sts`**），并给 `VendedStorageCredential` 加 `expireTimeInMs()`（静态 `0`、短期真实到期） | 两种实现各一个测试类；`providers: []` 时输出与改造前逐字节相同；断言「静态的 `expireTimeInMs()` 恒为 `0`」→ `VendingCredentialProviderTests` 的 `disabledProviderChainKeepsTheRelayBehaviour` / `stsProviderIsSkippedWhenCatalogCarriesStaticCredentials` |
 | ✅ P0-2 | `S3CredentialProvider`：`AssumeRole` + session policy（§5.5 三组路径）+ `RoleSessionName` | 单测断言 policy JSON 的三段（GetObject / ListBucket 带 `s3:prefix` / 写分离）；抓包断言 `DurationSeconds` → `policyKeepsListBucketResourceAtBucketLevel` / `policyAddsWriteStatementOnlyWhenWriteIsRequested` / `stsProviderVendsFourKeysAndAdvertisesItsOwnName` |
 | ✅ P0-3 | S3 分支按凭据自己的 `expireTimeInMs()` 产出：短期给四件套，静态只给两件套（不编 session token） | 断言两种实现的键集合；静态那份不出现 `s3.session-token` → `stsProviderIsSkippedWhenCatalogCarriesStaticCredentials` |
 | ✅ P0-4 | `loadTable` 的 `config` 给 `client.refresh-credentials-endpoint`（相对路径） | 断言 `config` 非空且键名逐字一致 → `refreshEndpointIsAdvertisedOnlyForShortLivedCredentials` / `multiLevelNamespaceIsEncodedWithTheSpecSeparator` |
