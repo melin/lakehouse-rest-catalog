@@ -373,6 +373,7 @@ USE `lakehouse_catalog`;
         client_id varchar(255) comment 'OAuth2 client id，全局唯一',
         created_by varchar(255) comment '创建者主体名（写入前已按列宽归一化）',
         display_name varchar(255) comment '显示名（email / preferred_username），仅展示用，不参与授权',
+        email varchar(255) comment '邮箱，OIDC 主体来自令牌 email claim，本地主体由创建请求提供',
         name varchar(255) not null comment '主体名，全局唯一',
         owner varchar(255) comment '记录归属主体（展示与过滤用，不参与授权判定）',
         updated_by varchar(255) comment '最后更新者主体名（写入前已按列宽归一化）',

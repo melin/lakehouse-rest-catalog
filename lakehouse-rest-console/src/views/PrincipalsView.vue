@@ -67,6 +67,12 @@
               <span v-else class="pc-dim">—</span>
             </template>
           </el-table-column>
+          <el-table-column label="邮箱" min-width="200">
+            <template #default="{ row }">
+              <span v-if="row.email" class="pc-mono pc-break">{{ row.email }}</span>
+              <span v-else class="pc-dim">—</span>
+            </template>
+          </el-table-column>
           <el-table-column label="属性" min-width="150">
             <template #default="{ row }">
               <span class="pc-mono pc-dim pc-break">{{ inlineMap(row.properties) }}</span>
@@ -128,6 +134,9 @@
             />
           </template>
           <el-switch v-model="createDialog.rotationRequired" />
+        </el-form-item>
+        <el-form-item label="邮箱">
+          <el-input v-model="createDialog.email" placeholder="可选，用于标识该主体的联系人" />
         </el-form-item>
       </el-form>
       <SectionTitle title="属性（properties）" />
@@ -366,12 +375,13 @@ const createDialog = reactive({
   open: false,
   name: '',
   rotationRequired: false,
+  email: '',
   properties: {},
   saving: false,
 })
 
 function openCreate() {
-  Object.assign(createDialog, { open: true, name: '', rotationRequired: false, properties: {} })
+  Object.assign(createDialog, { open: true, name: '', rotationRequired: false, email: '', properties: {} })
   rolesResource.load()
 }
 
@@ -383,8 +393,9 @@ async function saveCreate() {
   }
   createDialog.saving = true
   try {
+    const email = createDialog.email.trim()
     const payload = await managementApi.createPrincipal(
-      { name, properties: createDialog.properties },
+      { name, email: email || null, properties: createDialog.properties },
       createDialog.rotationRequired,
     )
     createDialog.open = false

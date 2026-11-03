@@ -171,6 +171,7 @@ public class OidcLoginService {
         entity.setSource(PrincipalSource.OIDC);
         entity.setExternalId(externalId);
         entity.setDisplayName(identity.displayName());
+        entity.setEmail(identity.email());
         entity.setLastLoginAt(now);
         // 人不是机器：JIT 主体没有凭据，也不要求轮换
         entity.setCredentialRotationRequired(false);
@@ -206,6 +207,7 @@ public class OidcLoginService {
             principal.setSource(PrincipalSource.OIDC);
             principal.setExternalId(externalId);
             principal.setDisplayName(identity.displayName());
+            principal.setEmail(identity.email());
             return;
         }
         if (!Objects.equals(principal.getExternalId(), externalId)) {

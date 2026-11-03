@@ -107,6 +107,8 @@ public class PrincipalService {
         PrincipalEntity entity = new PrincipalEntity();
         entity.setId(Paging.newId());
         entity.setName(name);
+        String email = request.principal() == null ? null : blankToNull(request.principal().email());
+        entity.setEmail(email);
         entity.setProperties(properties == null
                 ? new LinkedHashMap<>() : new LinkedHashMap<>(properties));
         entity.setCredentialRotationRequired(Boolean.TRUE.equals(request.credentialRotationRequired()));
@@ -337,5 +339,9 @@ public class PrincipalService {
         credentials.put("clientId", entity.getClientId());
         credentials.put("clientSecret", secret);
         return new PrincipalWithCredentials(toDto(entity), credentials);
+    }
+
+    private static String blankToNull(String value) {
+        return value == null || value.isBlank() ? null : value;
     }
 }

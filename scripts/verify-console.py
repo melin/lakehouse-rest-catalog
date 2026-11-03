@@ -2995,6 +2995,14 @@ check("OIDC 主体不显示「轮换 / 重置凭据」两个动作",
       "row.source !== 'OIDC'" in principals_view,
       "IdP 来的主体没有 clientId 与密钥，这两个动作对它没有意义")
 
+# --- 27.9.x 主体列表与新建表单都暴露邮箱字段 --------------------------------
+# 主体创建时要能带上 email：列表该有一列「邮箱」，新建表单该有一个 email 输入，
+# 且提交的载荷要把邮箱带上去（与后端 Principal.email 字段对齐）。
+check("主体列表展示邮箱列、新建表单含邮箱输入，且提交载荷带 email",
+      "邮箱" in principals_view and "createDialog.email" in principals_view
+      and "email: email || null" in principals_view,
+      "新增的 Principal.email 字段没有在前端落地：列表看不到、新建填不进、或提交没带上")
+
 # --- 27.10 登录页与回调页都把失败交给同一张诊断卡 --------------------------
 # 两处各写一份提示文案，同一个原因会有两种说法；而失败信息绝大多数时候是给
 # 「找管理员的人」看的，说法不一致意味着他照着做会做错。

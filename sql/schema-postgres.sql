@@ -1234,6 +1234,7 @@
         client_id varchar(255),
         created_by varchar(255),
         display_name varchar(255),
+        email varchar(255),
         name varchar(255) not null,
         owner varchar(255),
         updated_by varchar(255),
@@ -1286,6 +1287,9 @@
 
     comment on column lakehouse_principal.display_name is
         '显示名（email / preferred_username），仅展示用，不参与授权';
+
+    comment on column lakehouse_principal.email is
+        '邮箱，OIDC 主体来自令牌 email claim，本地主体由创建请求提供';
 
     comment on column lakehouse_principal.name is
         '主体名，全局唯一';

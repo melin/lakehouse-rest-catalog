@@ -893,7 +893,7 @@ python3 scripts/verify-console.py      # 退出码 0 通过 / 1 不一致 / 2 �
 PYTHON=/path/to/python3 scripts/verify-console.py   # 多解释器时指定装了 PyYAML 的那个
 ```
 
-它**不构建前端、不启动服务端**，只做静态比对，因此可以放进提交前的检查。28 组 215 项：
+它**不构建前端、不启动服务端**，只做静态比对，因此可以放进提交前的检查。28 组 216 项：
 
 | 组 | 校验内容 |
 | --- | --- |

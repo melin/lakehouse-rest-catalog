@@ -31,6 +31,7 @@ public final class ManagementMappers {
                 entity.getSource() == null ? null : entity.getSource().name(),
                 entity.getExternalId(),
                 entity.getDisplayName(),
+                entity.getEmail(),
                 entity.getLastLoginAt());
     }
 

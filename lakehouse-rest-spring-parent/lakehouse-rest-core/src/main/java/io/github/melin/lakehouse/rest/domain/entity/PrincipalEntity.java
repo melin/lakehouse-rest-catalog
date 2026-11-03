@@ -101,6 +101,16 @@ public class PrincipalEntity extends AuditedEntity {
     private String displayName;
 
     /**
+     * 邮箱：OIDC 主体来自令牌的 email claim，本地主体由创建请求提供。
+     *
+     * <p>不参与授权、不作为主体名，仅用于管理员在控制台识别「这个人是谁」。
+     * 可空——本地主体不一定有邮箱，OIDC 令牌也可能不带 email claim（此时与 displayName 脱钩）。
+     */
+    @Column(name = "email", length = 255,
+            comment = "邮箱，OIDC 主体来自令牌 email claim，本地主体由创建请求提供")
+    private String email;
+
+    /**
      * 最后一次成功 SSO 认证的时刻（epoch 毫秒）。
      *
      * <p>与 {@code AuditedEntity} 的 {@code created_at} / {@code updated_at} 同单位：

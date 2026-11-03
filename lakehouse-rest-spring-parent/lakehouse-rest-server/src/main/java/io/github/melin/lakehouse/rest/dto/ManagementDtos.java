@@ -134,6 +134,9 @@ public final class ManagementDtos {
                             String source,
                             String externalId,
                             String displayName,
+                            // 邮箱：OIDC 主体由服务端从令牌 email claim 写入；本地主体由创建请求携带。
+                            // 与上面四项不同，它**可写**——本地主体创建时能从请求体带进来。
+                            String email,
                             Long lastLoginAt) {
     }
 
