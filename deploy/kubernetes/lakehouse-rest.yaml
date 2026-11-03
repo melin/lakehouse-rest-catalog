@@ -249,7 +249,7 @@ data:
             # 方式三（可选）：OpenID Connect 授权码 + PKCE，令牌由外部 IdP 签发，
             # 本服务端只验签（RS256 / ES256，公钥从 IdP 的 JWKS 取）。
             oidc:
-              enabled: false
+              enabled: true
               # IdP 的 issuer URL，服务端据此拉 /.well-known/openid-configuration，
               # 把授权端点、令牌端点与 JWKS 地址一并发现出来，并转告控制台。
               # 例如：https://keycloak.example.com/realms/EXTERNAL
