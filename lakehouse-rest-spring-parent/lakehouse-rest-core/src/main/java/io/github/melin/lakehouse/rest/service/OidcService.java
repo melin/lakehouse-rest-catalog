@@ -75,6 +75,23 @@ public class OidcService {
                            String jwksUri, String endSessionEndpoint) {
     }
 
+    /**
+     * 一个通过验证的外部身份，连同「登录之后要用到的那些 claim」。
+     *
+     * <p>与 {@link AuthenticatedToken} 的分工：后者是<b>每个请求</b>都需要的
+     * 最小信息（主体名 + 失效时刻），本记录是<b>登录那一刻</b>才需要的
+     * 供给输入（issuer / sub / 显示名 / 组）。
+     *
+     * <p>{@code groupsClaimPresent} 单独存在而不是用「组列表为空」表示：
+     * 「令牌里没有 {@code groups}」与「有但一个人都不在组里」是两件完全不同的事，
+     * 前者默认<b>不能</b>当成后者处理，否则一次 scope 配置错误就会清空全员权限
+     * （{@code docs/sso-catalog-identity-design.md} §5.3）。
+     */
+    public record OidcIdentity(String principal, String issuer, String subject, String email,
+                               String displayName, List<String> groups, boolean groupsClaimPresent,
+                               Long expiresAtMillis) {
+    }
+
     private record Cached<T>(T value, long fetchedAtMillis) {
     }
 
@@ -145,6 +162,22 @@ public class OidcService {
      * 提供这个重载是为了让一次请求只解析一遍 JWT。
      */
     public Optional<AuthenticatedToken> verify(Jwt.Decoded decoded) {
+        return identity(decoded)
+                .map(identity -> new AuthenticatedToken(identity.principal(), identity.expiresAtMillis()));
+    }
+
+    /**
+     * 验证一个已经解析过的令牌，并把「登录之后要用到的 claim」一并取出来。
+     *
+     * <p>{@link #verify(Jwt.Decoded)} 只回主体名与失效时刻，那是<b>每个请求</b>的需要；
+     * 而首次登录要建主体、要按组授角色，需要 issuer / sub / 显示名 / 组。
+     * 两者共用同一段验证逻辑——分成两份实现的话，早晚会出现「一个放行、另一个拒绝」
+     * 这种最难排查的差异。
+     *
+     * <p>顺序与判据见 {@link #verify(Jwt.Decoded)} 上的说明；本方法只是把结果
+     * 摊开成更宽的形状，没有新增任何放行条件。
+     */
+    public Optional<OidcIdentity> identity(Jwt.Decoded decoded) {
         if (!enabled()) {
             return Optional.empty();
         }
@@ -186,7 +219,20 @@ public class OidcService {
             return Optional.empty();
         }
         Long expiresAt = decoded.numericClaim("exp");
-        return Optional.of(new AuthenticatedToken(principal, expiresAt == null ? null : expiresAt * 1000L));
+        OidcIdentity identity = new OidcIdentity(
+                principal,
+                document.issuer(),
+                decoded.claim("sub"),
+                // email 单独取一份、不受 display-name-claim 影响：允许登录的邮箱域
+                // 是按「邮箱」判的，而显示名字段可以配成 preferred_username
+                blankToNull(decoded.claim("email")),
+                blankToNull(decoded.claim(oidc().getDisplayNameClaim())),
+                // 组名按配置的 claim 取。缺失时返回空列表，但「缺没缺」要单独告诉调用方：
+                // 一个空列表既可能是「不在任何组」，也可能是「这个令牌根本没带组信息」
+                decoded.listClaim(oidc().getGroupClaim()),
+                decoded.claims().containsKey(oidc().getGroupClaim()),
+                expiresAt == null ? null : expiresAt * 1000L);
+        return Optional.of(identity);
     }
 
     /** 清掉两处缓存。测试用来构造「密钥轮换」「IdP 换地址」这类场景。 */
@@ -337,5 +383,10 @@ public class OidcService {
 
     private static boolean hasText(String value) {
         return value != null && !value.isBlank();
+    }
+
+    /** 空串与 null 在这里是同一个意思：这个 claim 没有值。 */
+    private static String blankToNull(String value) {
+        return value == null || value.isBlank() ? null : value;
     }
 }

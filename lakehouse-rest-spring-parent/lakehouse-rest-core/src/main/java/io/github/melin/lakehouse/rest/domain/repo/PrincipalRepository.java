@@ -1,6 +1,7 @@
 package io.github.melin.lakehouse.rest.domain.repo;
 
 import io.github.melin.lakehouse.rest.domain.entity.PrincipalEntity;
+import io.github.melin.lakehouse.rest.domain.entity.PrincipalSource;
 import java.util.List;
 import java.util.Optional;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -23,4 +24,14 @@ public interface PrincipalRepository extends JpaRepository<PrincipalEntity, Stri
     boolean existsByName(String name);
 
     List<PrincipalEntity> findAllByOrderByNameAsc();
+
+    /**
+     * 按来源过滤。
+     *
+     * <p>控制台「主体清单」要能把「IdP 来的」与「本地建的」分开看：
+     * 前者不能在这里改密码（它没有凭据），后者不能靠登录自动产生。
+     * 排序键仍是名称，与 {@link #findAllByOrderByNameAsc()} 一致，
+     * 这样加不加过滤都得到同一个相对顺序。
+     */
+    List<PrincipalEntity> findBySourceOrderByNameAsc(PrincipalSource source);
 }

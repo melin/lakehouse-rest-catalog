@@ -13,6 +13,7 @@ import io.github.melin.lakehouse.rest.config.RestServerProperties;
 import io.github.melin.lakehouse.rest.domain.repo.PrincipalRepository;
 import io.github.melin.lakehouse.rest.dto.ConsoleDtos;
 import io.github.melin.lakehouse.rest.service.ConsolePasswordService;
+import io.github.melin.lakehouse.rest.service.OidcLoginService;
 import io.github.melin.lakehouse.rest.service.OidcService;
 import io.github.melin.lakehouse.rest.service.TokenAuthenticationService;
 import io.github.melin.lakehouse.rest.web.ConsoleAuthController;
@@ -132,6 +133,8 @@ class ConsoleAuthOidcConfigTests {
                 properties,
                 tokens,
                 new OidcService(properties, Clock.systemUTC()),
+                // 供给服务在这里不参与：请求没带令牌，认证链连 OIDC 那一段都走不到
+                mock(OidcLoginService.class),
                 passwords,
                 mock(PrincipalRepository.class));
 

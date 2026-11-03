@@ -101,12 +101,32 @@ public class TokenAuthenticationService {
      *         {@link #rejectionOf(String)} 单独回答，它不参与判定
      */
     public Optional<AuthenticatedToken> authenticate(String token) {
+        return authenticateDetailed(token).map(Authenticated::token);
+    }
+
+    /**
+     * 认证一个令牌，并说明它来自哪条来源。
+     *
+     * <p>{@link #authenticate(String)} 只回身份——下游（授权判定、审计）只需要那个。
+     * 但<b>登录引导端点</b>需要更多：它要告诉浏览器「你手上这张票是哪来的」，
+     * 而在 OIDC 这一路上还要顺手完成首次登录的供给（建主体、按组授角色）。
+     * 那些动作需要 issuer / sub / 组这些 claim，也就是 {@link OidcService.OidcIdentity}。
+     *
+     * <p>把来源与身份一起返回，是为了让调用方<b>只验一次</b>：先前那种
+     * 「先 authenticate 再 sourceOf」的写法会把 RSA 验签做两遍，
+     * 而登录路径正是每次打开控制台都要走的。
+     *
+     * @param token 原始令牌串
+     * @return 认证通过时的来源与身份；否则为空
+     */
+    public Optional<Authenticated> authenticateDetailed(String token) {
         if (token == null || token.isBlank()) {
             return Optional.empty();
         }
         if (matchesStaticToken(token)) {
             // 静态令牌没有失效时刻：它在配置里，运维删掉它才算失效
-            return Optional.of(new AuthenticatedToken(resolveStaticPrincipal(token), null));
+            return Optional.of(new Authenticated(
+                    new AuthenticatedToken(resolveStaticPrincipal(token), null), SOURCE_STATIC, null));
         }
 
         // 走到这里令牌必须是 JWT 形状。解析一次，三个来源共用
@@ -120,28 +140,27 @@ public class TokenAuthenticationService {
 
         Optional<AuthenticatedToken> fromConsole = accessTokens.verify(decoded);
         if (fromConsole.isPresent()) {
-            return fromConsole;
+            return Optional.of(new Authenticated(fromConsole.get(), SOURCE_CONSOLE, null));
         }
-        return oidc.verify(decoded);
+        return oidc.identity(decoded)
+                .map(identity -> new Authenticated(
+                        new AuthenticatedToken(identity.principal(), identity.expiresAtMillis()),
+                        SOURCE_OIDC, identity));
+    }
+
+    /**
+     * 一次认证的完整结果：身份、来源，以及「来自 OIDC 时的那些 claim」。
+     *
+     * <p>{@code source} 只用于诊断展示（登录引导端点与日志），不参与任何判定；
+     * {@code oidc} 仅当来源是 OIDC 时非空。
+     */
+    public record Authenticated(AuthenticatedToken token, String source,
+                                OidcService.OidcIdentity oidc) {
     }
 
     /** 令牌来源标识，只用于诊断展示。 */
     public String sourceOf(String token) {
-        if (matchesStaticToken(token)) {
-            return SOURCE_STATIC;
-        }
-        try {
-            Jwt.Decoded decoded = Jwt.decode(token);
-            if (accessTokens.verify(decoded).isPresent()) {
-                return SOURCE_CONSOLE;
-            }
-            if (oidc.verify(decoded).isPresent()) {
-                return SOURCE_OIDC;
-            }
-        } catch (IllegalArgumentException ignored) {
-            // 解析不了就没有来源可言
-        }
-        return null;
+        return authenticateDetailed(token).map(Authenticated::source).orElse(null);
     }
 
     /**

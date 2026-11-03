@@ -218,6 +218,30 @@ lakehouse:
           jwks-cache-ttl: 1h
           # IdP 与本服务端的时钟不可能完全一致，留一点余量
           clock-skew: 60s
+          # ---- 登录之后的供给（docs/sso-catalog-identity-design.md）----
+          # 认证通过之后要发生什么：建主体（JIT）、按组授角色。这几项默认开着，
+          # 因为关掉就回到「装好 OIDC 但没人能进」——登录成功、每页 403，
+          # 而原因（主体不存在）在服务端一行日志都没有。
+          #
+          # 组名从哪个 claim 取。Keycloak / Auth0 是 groups，Cognito 是 cognito:groups，
+          # 有的 IdP 只在 access_token 里给。填错不报错，只表现为「一个角色都没有」
+          group-claim: groups
+          # 显示名从哪个 claim 取；只用于展示与审计，不参与授权
+          display-name-claim: email
+          # 组同步时机。差别只在「这次令牌没带 groups」时：
+          #   on-login（默认）→ 什么都不动，避免一次 scope 配错清空全员权限
+          #   strict          → 当成「不在任何组」，清空 IDP 来源的角色
+          #   off             → 不同步（灰度 / 排障）
+          sync-mode: on-login
+          # 首次登录是否自动建主体。开不等于放权：新主体没有任何授权
+          auto-provision: true
+          # 是否允许外部身份接管同名本地主体。默认 false——
+          # 打开意味着任何能让 IdP 签发 sub=root 的人继承本地 root 的全部授权
+          allow-adopt-local: false
+          # 允许登录的邮箱域（空 = 不限）。配了而令牌里没有 email 时一律拒绝
+          allowed-email-domains: []
+          # 所有 SSO 主体都会得到的基线角色（取并集，按 IDP 来源记录，手工授权不受影响）
+          default-roles: []
     # 管理 API（/api/management/v1/**）的 RBAC 授权，默认开启（fail-closed）：
     # 与 auth.enabled 同开同关——认证认出「你是谁」，授权判定「你能干什么」，
     # 只开一个要么形同虚设、要么把所有请求记到 anonymous 名下

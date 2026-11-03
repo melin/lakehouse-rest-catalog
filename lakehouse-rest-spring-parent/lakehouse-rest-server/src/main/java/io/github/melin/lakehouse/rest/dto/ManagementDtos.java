@@ -254,6 +254,92 @@ public final class ManagementDtos {
     // `PermissionDtos` 里，端点挂在 catalog 前缀下（`/v1/{prefix}/permissions`）。
     // 这里曾有一套 Polaris 形状的 catalog role / grant 模型，已随 catalog role 一并移除。
 
+    // ------------------------------------------------------------------ 身份接入
+    //
+    // 「IdP 组 → 主体角色」的映射。它不是 Polaris 的一部分（Polaris 没有这个概念），
+    // 是本服务端自己的扩展，因此形状按本工程的习惯来，不去凑一个不存在的规范。
+
+    /**
+     * 一条组映射。
+     *
+     * <p>{@code group} 是 IdP 里的组名，<b>精确匹配</b>（区分大小写、不 trim）。
+     * {@code provider} 在单 IdP 部署下恒为 {@code default}，字段先留着，
+     * 免得将来接第二个 IdP 时要改一次对外形状。
+     *
+     * <p>{@code enabled} 停用而不删：映射配错时的第一反应是删，但删掉之后
+     * 「当时是怎么配的」就没了，回滚只能凭记忆。
+     */
+    public record GroupMapping(String id,
+                               String provider,
+                               String group,
+                               String role,
+                               Boolean enabled,
+                               Long createTimestamp,
+                               Long lastUpdateTimestamp,
+                               Integer entityVersion) {
+    }
+
+    /** {@code GET /group-mappings}。 */
+    public record GroupMappings(List<GroupMapping> mappings, PageMeta page) {
+    }
+
+    /**
+     * {@code POST /group-mappings}。
+     *
+     * <p>{@code confirmAdminMapping} 是「危险映射」的二次确认：目标角色如果正被
+     * 服务管理员持有，保存会要求显式置真。这不是防误操作的花招——把一组人映射到
+     * 管理员角色，等于把「谁能进 IdP 的这个组」变成「谁能管理整个服务」。
+     */
+    public record CreateGroupMappingRequest(String provider,
+                                            String group,
+                                            String role,
+                                            Boolean enabled,
+                                            Boolean confirmAdminMapping) {
+    }
+
+    /** {@code PUT /group-mappings/{id}}：只改角色与启停，组名与 provider 不可变。 */
+    public record UpdateGroupMappingRequest(Integer currentEntityVersion,
+                                            String role,
+                                            Boolean enabled,
+                                            Boolean confirmAdminMapping) {
+    }
+
+    /** {@code POST /group-mappings/preview}：给定一组成员，回会得到哪些角色。 */
+    public record GroupMappingPreviewRequest(String provider, List<String> groups) {
+    }
+
+    /**
+     * 预览结果。**不写库**，只是把登录时会做的计算跑一遍。
+     *
+     * <p>{@code unmappedGroups} 与 {@code warnings} 分开：前者是「这些组没有配映射」，
+     * 后者是「配了但有别的问题」（角色不存在、映射被停用）。
+     * 合并成一句会让管理员分不清该新建还是该启用。
+     */
+    public record GroupMappingPreview(List<String> desiredRoles,
+                                      List<String> unmappedGroups,
+                                      List<String> unknownRoles,
+                                      List<String> warnings) {
+    }
+
+    /** {@code POST /principals/{name}/sync} 的结果：这次动了哪些角色。 */
+    public record PrincipalSyncResult(String principal,
+                                      List<String> added,
+                                      List<String> removed,
+                                      Integer groupsCount,
+                                      String skippedReason) {
+    }
+
+    /**
+     * {@code POST /principals/{name}/sync} 的请求体。
+     *
+     * <p><b>为什么要显式传组名。</b>服务端不保存「这个人上次登录时在哪些组」——
+     * 那是一次快照，存下来就多一份会过期的状态，而它唯一的用途是省掉这一次参数。
+     * 因此手动重算要求调用方把组名带上：管理员的场景通常是「刚加完一条映射，
+     * 想立刻生效」，而那条映射的组名就在他手上。
+     */
+    public record PrincipalSyncRequest(List<String> groups) {
+    }
+
     /** catalog 类型的判别值，供校验错误信息复用。 */
     public static CatalogType parseCatalogType(String value) {
         return CatalogType.parse(value).orElse(CatalogType.INTERNAL);

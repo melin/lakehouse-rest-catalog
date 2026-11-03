@@ -73,8 +73,8 @@ REST Management API**（RBAC 管理面）与一个 **Vue 3 管理控制台**；�
      服务端共用 webmvc / data-jpa / validation / lombok，写在 `spring-parent` 里；
      `paimon-core` 一旦也写进去，`core` 会连带拿到 Paimon，enforcer 立刻红（见第 10 条）。
 5. **`sql/schema-mysql.sql` 是生成物，不要手改**（`scripts/gen-mysql-ddl.sh` 从 JPA 实体生成，
-   28 表 / 25 唯一约束 / 32 索引，下次生成会覆盖）。PostgreSQL 同源生成物 `sql/schema-postgres.sql`
-   由 `scripts/gen-postgres-ddl.sh` 生成（28 张表，唯一约束内联、自增列用 `identity`）。
+   29 表 / 26 唯一约束 / 33 索引，下次生成会覆盖）。PostgreSQL 同源生成物 `sql/schema-postgres.sql`
+   由 `scripts/gen-postgres-ddl.sh` 生成（29 张表，唯一约束内联、自增列用 `identity`）。
    **改了实体就必须重跑对应生成**，否则启动时 `ddl-auto=validate` 直接失败。
 6. **构建服务端 jar（含控制台）用 `clean package`，不要裸 `package`。** 控制台产物按内容哈希命名，
    `maven-resources-plugin` 只覆写不删除 → `target/classes/static/console` 累积历次旧产物
@@ -270,7 +270,7 @@ spec/                   三份 OpenAPI 规格的仓库副本（不随服务端�
                         rest-management-open-api.yaml（Paimon 官方 REST Management API）
 sql/                    MySQL / PostgreSQL 建表语句（生成物，分别对应 schema-mysql.sql / schema-postgres.sql）
 scripts/                验收 / 生成 / 校验 / 镜像构建脚本
-docs/                   33 份设计文档（另有七份配套效果图 HTML）
+docs/                   34 份设计文档（另有八份配套效果图 HTML）
 ```
 
 服务端四模块的**类数**：core 117 · storage 9 · protocol-paimon 38 · server 46（共 210）。
@@ -291,7 +291,7 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
 | `catalog-api-endpoints.md` | Catalog API 的端点、基址、前缀、授权映射；**两个协议面各一章**——Paimon 的 60 个与 Iceberg 的 30 个（含 5 个不声明的、各端点的成功码、错误模型） |
 | `management-api-overview.md` | Paimon 官方权限端点与服务端扩展端点落在哪几个控制器、易读错的语义 |
 | `management-api-contract.md` | **存档**（勿手改）：由已移除的 Polaris 管理规格生成的字段与权限枚举；catalog role 与 64 项 privilege 已不存在 |
-| `data-model.md` | 改实体 / 看 27 张表划分、摘要列与审计列的理由、实体与仓储分在哪两个模块、Iceberg 协议面新增的 9 个列（§1.1）、血缘三表（§2.3） |
+| `data-model.md` | 改实体 / 看 29 张表划分、摘要列与审计列的理由、实体与仓储分在哪两个模块、Iceberg 协议面新增的 9 个列（§1.1）、血缘三表（§2.3） |
 | `table-optimization.md` | 改表存储优化：三层配置合并、批次与调度游标、组批与提交、前后指标；**三种表格式共用一套策略表与批次表**，参数键与动作能力按格式分派（§2.5 是 Iceberg 的对应物，§6.5 是执行侧差异，Lance 见 `lance-table-optimization-design.md`） |
 | `optimization-multi-instance-design.md` | 多副本部署优化调度 / 排查「同一任务被两台机器发起」（**设计稿，未实现**）：现状审计（出批与提交已有 CAS，收尾、崩溃回收、配额闸门、手动入口四处没有）、三类重复的实际后果、租约表 + 代理（fencing）提交租约 + 终态收尾 CAS、锁顺序与事务拆分、部署七条前提、双实例验收 SQL |
 | `catalog-execution-cluster-design.md` | 给 catalog 配执行集群 / 评审该方案（**已实现**，偏差见其 §15）：配置从 `optimization.*` 下移到 catalog、kubeconfig 逐 context 解析（`exec:` 硬拒）、探活五问与状态机、fabric8 要点（禁 autoConfigure 回落、client 缓存必关、AKS scope 用 AKS 的 audience 而不是管理面） |
@@ -315,6 +315,7 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
 | `row-filter-column-mask-design.md` | 做行过滤 / 列脱敏（行级安全、列脱敏）或评审该方案——**服务端 P0、Spark 引擎侧与 AST 求值器均已实现**（服务端 `DataPolicyApiTests` / `DataPolicyDisabledTests`；引擎侧 `PolicySparkTests`，3.5.9 与 4.1.2 双版本全绿，三个版本差异实测结论见 §9.1.1；求值器 `PolicyExpressionEvaluatorTests` / `PolicyPreviewTests`——预览按策略逐行求值，行过滤读原值、同层 mask 不链式，用户条件落到被脱敏列指名拒绝，分区列举与文件下载维持 403）；**元数据打码已实现**（§7.3：带 mask 时快照 `statistics` 置空、预览分区回显对被脱敏分区列打码、catalog 级文件下载补上收口）；**§13 的七条 SQL 管理语句已实现**（引擎侧 `PolicySqlTests`，3.5 / 4.1 同一份用例；保留字加了 `ROW` / `FILTER` / `MASK` / `POLICY`，参考文档与 `verify-spark-sql-doc.py` 同步）；**`$principal_roles` 已实现**（`PolicyExpressions` 折叠 + `AuthorizationService.principalRoleNames`，引擎/求值器零改动、各留防御分支）；**控制台「数据策略」页签已实现**（表详情新页签 + 结构化编辑器 `TablePolicyPanel`，保存即整份替换、409 不自动重试；verify-console 白名单同步）；**控制台三屏已实现**（总览 `/policies`、向导 `/policies/new`——与页签共用 `src/utils/policyAst.js`、主体试算 dry-run 端点 + 四态横幅）；**P3 两项已实现**（`hiddenColumns` 整列不可见——引擎侧 `PolicyHiddenColumnsRule`：形状判据裁星号 + 显式引用指名失败 + 兜底裁剪，写路径按 `Command` 基类跳过，SQL 的 GET→PUT 原样带回 `PolicySqlCommands.hidden(detail)`，服务端 `hidden_json` 列 + 预览收口 `TablePreviewService.visibleOutput`；`EXPLAIN` 打码——`PolicyOpaque` 恒等包装，物理计划输出 `policy_expr(N literals masked)`）；**P2 两项外部阻塞**（`SupportsAccessControl` 需 Spark 5.0 公开 API、工程无 Trino 模块，升级路径 §14.6），ABAC 出设计草案（§14，未实现）。设计内容：Spark 3.5.9 / 4.1.2 / 4.2.0 的 `spark-catalyst` 里都没有 `RowFilter` / `ColumnMask` / `SupportsAccessControl`（jar 实测），官方 SPIP SPARK-59726 才指向 5.0.0 → 只能靠 `SparkSessionExtensions` 注入；为什么必须用**自定义逻辑节点**而不是裸 `Project`（优化器会把 mask 吃掉或把谓词挪到 mask 下面）；AST 表达式白名单 + `$principal` 占位符（不注册 UDF，两版共用一份源码）；策略下发 TTL 60s 与 **fail-closed**；服务端读路径（预览求值 / 文件下载 / 列统计）各自怎么处理；**能力边界**：凭据一旦下发到客户端，`spark.read.parquet(...)` 直读就是明文，本层拦不住（§7.1）；三家生产实现（Databricks / Kyuubi+Ranger / EMR+Lake Formation）横向对照与**强制等级 L0–L3**（§2.2、§2.3）、Kyuubi #3186 的 DSv2 静默放行教训（§3.4）、**Spark SQL 管理语句的语法设计**（§13：7 条语句进 `ManagementSql.g4`、表达式片段走 `parseExpression` 再按白名单转 AST、`current_user()` 折成 `$principal`、`DROP POLICY` 的会话级防呆）、与 SPIP 的逐条差距清单（附录 A） |
 | `console-catalog-detail.md` | 改 Catalog 详情页 / 仓库文件浏览：四页签（概览 / **存储** / 文件列表 / 配置；存储页的口径与来源见 §3.2）、下钻与路径防护、单文件下载、只读取舍、「配置」页的默认表属性（`table-default.*`）编辑与并发冲突处理；建表表单里的默认参数预填（§3.5）与为什么不给 Lance 表建表入口（§3.6）；**「协议与能力」卡片**（§3.1.1：客户端基址、端点清单、不声明支持）以及 Iceberg catalog 下只剩「概览」与「文件列表」两页可用（§9） |
 | `console-auth.md` | 配控制台登录：三种登录方式、两个开关的边界、令牌链、**令牌交换（RFC 8693）**、安全考量 |
+| `sso-catalog-identity-design.md` | 把平台 SSO 接到 catalog 主体 / 评审「一套用户还是两套用户」（**MVP 已落地**，控制台五画面仍是原型）：`TokenAuthenticationService` 三源合流 ⇒ A+C 的桥已通，缺的是供给；身份模型（`sub` vs email、同名本地主体不可劫持、`external_id`）、JIT 幂等与安全默认、组→角色同步的三条不变量与「`groups` 缺失默认不删」、交换侧收尾（audience 收窄、错误分类、引擎模板）、管理端点与 4 个审计事件、15 条测试矩阵、MVP 与 P1/P2 分期；配套原型 `sso-catalog-identity-mockup.html`（五画面） |
 | `semantic-layer-design.md` | 做语义层 / 语义模型 / 给 agent 供语义上下文，或评审该方案——**设计稿，未实现**：参照 Polaris 1.7.0 的 Ossie（OSI）语义模型与它的三条社区批评（drift / 复用 / 只存不消费）——格式跟随 Ossie 不发明、模型挂 catalog 不挂 namespace、**引用校验**（source 必须解析到真实表，字段对 schema，建时 fail-closed 读时标 stale）、描述分层（表/列注释是权威源，模型只存增量）；八类使用场景与 text-to-SQL 的四类错误对照（§3）；**agent 上下文包端点 + 只读 MCP + OpenAPI 三通道**（§6）、ai_context 是数据不是指令的注入对策、语义层 fail-open 与策略层 fail-closed 的方向对比（§5.4）、13 条验收断言；配套原型 `semantic-layer-mockup.html`（六画面：列表 / 详情 / 编辑·校验 / 上下文包 / Agent 接入 / 表详情联动） |
 | `polaris-capabilities-and-design.md` | 对比 Polaris、看整体设计与已知缺口 |
 | `iceberg-rest-catalog-design.md` | 让同一基址、同一份元数据同时服务原生 Iceberg REST 客户端：双协议方案、两套面的差异与代价、catalog 建时区分格式；**已落地的实测记录与与方案不一致的十六处**（§11） |

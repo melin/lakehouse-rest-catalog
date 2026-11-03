@@ -188,6 +188,21 @@ USE `lakehouse_catalog`;
         primary key (id)
     ) comment='函数定义（sql / file / lambda）' engine=InnoDB;
 
+    create table lakehouse_group_role_mapping (
+        enabled bit not null comment '是否生效；停用不删除',
+        entity_version integer not null comment '乐观并发版本号，每次变更自增',
+        created_at bigint comment '创建时刻（epoch 毫秒）',
+        updated_at bigint comment '最后更新时刻（epoch 毫秒）',
+        id varchar(64) not null comment '主键',
+        provider_name varchar(128) not null comment '身份提供方标识，单 IdP 部署恒为 default',
+        created_by varchar(255) comment '创建者主体名（写入前已按列宽归一化）',
+        idp_group varchar(255) not null comment 'IdP 组名，精确匹配（区分大小写、不 trim）',
+        owner varchar(255) comment '记录归属主体（展示与过滤用，不参与授权判定）',
+        role_name varchar(255) not null comment '目标主体角色名',
+        updated_by varchar(255) comment '最后更新者主体名（写入前已按列宽归一化）',
+        primary key (id)
+    ) comment='IdP 组到主体角色的映射（组同步的翻译表）' engine=InnoDB;
+
     create table lakehouse_lance_table_version (
         created_at bigint comment '创建时刻（epoch 毫秒）',
         manifest_size bigint comment 'manifest 字节数（客户端给了才记）',
@@ -349,16 +364,20 @@ USE `lakehouse_catalog`;
         credential_rotation_required bit not null comment '是否要求下次使用时轮换凭据',
         entity_version integer not null comment '乐观并发版本号，每次变更自增',
         created_at bigint comment '创建时刻（epoch 毫秒）',
+        last_login_at bigint comment '最后一次成功 SSO 认证时刻（epoch 毫秒）',
         updated_at bigint comment '最后更新时刻（epoch 毫秒）',
         id varchar(64) not null comment '主键',
         secret_salt varchar(64) comment '密钥盐，与 secret_hash 配套',
         secret_hash varchar(128) comment '密钥摘要 SHA-256(salt || secret)，不存明文',
+        external_id varchar(512) comment '外部身份标识 issuer + "|" + sub，仅 OIDC 主体有值',
         client_id varchar(255) comment 'OAuth2 client id，全局唯一',
         created_by varchar(255) comment '创建者主体名（写入前已按列宽归一化）',
+        display_name varchar(255) comment '显示名（email / preferred_username），仅展示用，不参与授权',
         name varchar(255) not null comment '主体名，全局唯一',
         owner varchar(255) comment '记录归属主体（展示与过滤用，不参与授权判定）',
         updated_by varchar(255) comment '最后更新者主体名（写入前已按列宽归一化）',
         properties_json text comment '主体属性（JSON 对象）',
+        source varchar(16) default 'LOCAL' not null comment '主体来源：LOCAL（管理面创建）/ OIDC（首次 SSO 登录自动创建）',
         primary key (id)
     ) comment='管理主体（访问服务的身份）' engine=InnoDB;
 
@@ -385,6 +404,7 @@ USE `lakehouse_catalog`;
         created_by varchar(255) comment '创建者主体名（写入前已按列宽归一化）',
         owner varchar(255) comment '记录归属主体（展示与过滤用，不参与授权判定）',
         updated_by varchar(255) comment '最后更新者主体名（写入前已按列宽归一化）',
+        granted_by varchar(16) default 'MANUAL' not null comment '授予来源：MANUAL（管理面手工）/ IDP（登录时组同步）',
         primary key (id)
     ) comment='主体与主体角色的成员关系（多对多）' engine=InnoDB;
 
@@ -575,6 +595,12 @@ USE `lakehouse_catalog`;
 
     alter table lakehouse_function 
        add constraint uk_function unique (catalog_id, database_id, name);
+
+    create index ix_group_role_mapping_group 
+       on lakehouse_group_role_mapping (provider_name, idp_group);
+
+    alter table lakehouse_group_role_mapping 
+       add constraint uk_group_role_mapping unique (provider_name, idp_group, role_name);
 
     create index ix_lance_table_version_table 
        on lakehouse_lance_table_version (table_id);

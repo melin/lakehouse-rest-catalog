@@ -117,11 +117,12 @@ class PostgresDdlGeneratorTests {
     /**
      * 实体的表数量；新增/删除实体时应同步调整，否则本测试会失败提醒。
      *
-     * <p>与 MySQL 脚本共用同一套实体，因此数量同为 28（见
+     * <p>与 MySQL 脚本共用同一套实体，因此数量同为 29（见
      * {@code MysqlDdlGeneratorTests#EXPECTED_TABLES} 的演进注释：从 23 经行过滤/列脱敏
-     * 到 25，加 catalog 级执行集群到 26，加调度通道租约到 27，加 Lance 版本账到 28）。
+     * 到 25，加 catalog 级执行集群到 26，加调度通道租约到 27，加 Lance 版本账到 28，
+     * 加身份接入的组映射表到 29）。
      */
-    private static final int EXPECTED_TABLES = 28;
+    private static final int EXPECTED_TABLES = 29;
 
     /** 表级注释：{@code comment on table X is '...'}。 */
     private static final Pattern TABLE_COMMENT = Pattern.compile(

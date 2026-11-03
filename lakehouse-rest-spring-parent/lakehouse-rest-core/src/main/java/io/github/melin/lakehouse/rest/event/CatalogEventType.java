@@ -133,6 +133,34 @@ public enum CatalogEventType {
     /** 收回主体的角色。对标 {@code AFTER_REVOKE_PRINCIPAL_ROLE}。 */
     PRINCIPAL_ROLE_REVOKED(CatalogEventCategory.PRINCIPAL, "principal.role_revoked"),
 
+    /**
+     * 一次 SSO 登录（成功与失败都记）。
+     *
+     * <p><b>这是 PRINCIPAL 类别里唯一的「读」事件</b>，与「只收变更」那条判据不一致，
+     * 因此单独说明：身份接入的问题全都是靠它回答的——「这个人为什么没有权限」
+     * 要能看出「他登录过吗、用的哪个 issuer、供给成功了吗」。
+     * 没有这条事件时，这类问题的唯一线索是服务端日志，而日志会被轮转掉。
+     *
+     * <p><b>属性里不放 claim 的值</b>（邮箱、组名原样进事件表等于复制一份通讯录），
+     * 只放个数与分类原因。
+     */
+    PRINCIPAL_LOGIN(CatalogEventCategory.PRINCIPAL, "principal.login"),
+
+    /** 首次 SSO 登录自动创建主体（JIT）。属性里有 issuer 与 externalId。 */
+    PRINCIPAL_PROVISIONED(CatalogEventCategory.PRINCIPAL, "principal.provisioned"),
+
+    /** 组 → 角色同步完成。属性里有增加/删除的角色名、同步模式与组数。 */
+    PRINCIPAL_ROLES_SYNCED(CatalogEventCategory.PRINCIPAL, "principal.roles_synced"),
+
+    /**
+     * 组映射本身变了（增、改、删、启停）。
+     *
+     * <p>与 {@link #PRINCIPAL_ROLES_SYNCED} 分开：那一条记「某个人现在有哪些角色」，
+     * 这一条记「规则变了」。两者合在一起时，事后要回答「这批人的权限为什么变了」
+     * 就得从一堆同步事件里反推规则变更，而规则变更往往只有一次。
+     */
+    GROUP_MAPPING_CHANGED(CatalogEventCategory.PRINCIPAL, "group_mapping.changed"),
+
     // ------------------------------------------------------------------ PRINCIPAL_ROLE
 
     /** 建主体角色。对标 {@code AFTER_CREATE_PRINCIPAL_ROLE}。 */

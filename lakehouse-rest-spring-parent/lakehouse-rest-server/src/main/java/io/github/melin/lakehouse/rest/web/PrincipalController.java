@@ -6,10 +6,15 @@ import io.github.melin.lakehouse.rest.dto.ManagementDtos.Principal;
 import io.github.melin.lakehouse.rest.dto.ManagementDtos.PrincipalRoles;
 import io.github.melin.lakehouse.rest.dto.ManagementDtos.PrincipalWithCredentials;
 import io.github.melin.lakehouse.rest.dto.ManagementDtos.Principals;
+import io.github.melin.lakehouse.rest.dto.ManagementDtos.PrincipalSyncRequest;
+import io.github.melin.lakehouse.rest.dto.ManagementDtos.PrincipalSyncResult;
 import io.github.melin.lakehouse.rest.dto.ManagementDtos.ResetPrincipalRequest;
 import io.github.melin.lakehouse.rest.dto.ManagementDtos.UpdatePrincipalRequest;
 import io.github.melin.lakehouse.rest.service.AuthorizationService;
+import io.github.melin.lakehouse.rest.service.GroupRoleSyncService;
 import io.github.melin.lakehouse.rest.service.PrincipalService;
+import io.github.melin.lakehouse.rest.support.ApiException;
+import java.util.List;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -36,6 +41,7 @@ public class PrincipalController {
 
     private final PrincipalService principalService;
     private final AuthorizationService authorizationService;
+    private final GroupRoleSyncService groupRoleSync;
 
     /** {@code GET /principals}。 */
     /**
@@ -44,11 +50,22 @@ public class PrincipalController {
      * <p>不传分页参数时行为不变（一次给全量、{@code page} 为 {@code null}），
      * 脚本与 Spark 客户端照旧。
      */
+    /**
+     * {@code GET /principals?source=&page=&pageSize=}：控制台的表格走远程分页。
+     *
+     * <p>不传分页参数时行为不变（一次给全量、{@code page} 为 {@code null}），
+     * 脚本与 Spark 客户端照旧。
+     *
+     * <p>{@code source} 是本次身份接入新增的过滤：{@code OIDC} 只列 IdP 登录自动建出来的主体，
+     * {@code LOCAL} 只列管理面创建的。不传即全部——既有调用方不传它，
+     * 因此这个参数对它们是零影响。
+     */
     @GetMapping
     public Principals list(@RequestParam(name = "page", required = false) Integer page,
-                           @RequestParam(name = "pageSize", required = false) Integer pageSize) {
+                           @RequestParam(name = "pageSize", required = false) Integer pageSize,
+                           @RequestParam(name = "source", required = false) String source) {
         authorizationService.requireServiceAdmin("list principals");
-        return principalService.list(page, pageSize);
+        return principalService.list(source, page, pageSize);
     }
 
     /** {@code POST /principals}：响应含明文密钥，仅此一次。 */
@@ -123,5 +140,29 @@ public class PrincipalController {
         authorizationService.requireServiceAdmin("remove a role from the principal");
         principalService.revokeRole(principalName, principalRoleName);
         return ResponseEntity.noContent().build();
+    }
+
+    /**
+     * {@code POST /principals/{principalName}/sync}：用给定的一组 IdP 组名重算角色。
+     *
+     * <p><b>为什么组名必须由调用方给。</b>服务端不保存「上次登录时这个人属于哪些组」——
+     * 那是一次快照，存下来就多一份会过期的状态，而它唯一的用途是省掉这一次参数。
+     * 也正因为不保存，这个端点<b>不会</b>在缺参数时退化成「按空组重算」：
+     * 那是撤权，不是同步，方向只有一个且不可逆。
+     *
+     * <p>幂等：同样的组名跑两次，第二次不增不删。
+     */
+    @PostMapping("/{principalName}/sync")
+    public PrincipalSyncResult sync(@PathVariable String principalName,
+                                    @RequestBody(required = false) PrincipalSyncRequest request) {
+        authorizationService.requireServiceAdmin("sync a principal's IdP roles");
+        List<String> groups = request == null ? null : request.groups();
+        if (groups == null) {
+            throw ApiException.badRequest("groups is required: the server does not remember"
+                    + " the groups seen at the last login");
+        }
+        GroupRoleSyncService.SyncResult result = groupRoleSync.syncPrincipal(principalName, groups);
+        return new PrincipalSyncResult(principalName, result.added(), result.removed(),
+                result.groups(), result.skippedReason());
     }
 }

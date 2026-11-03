@@ -1,0 +1,1042 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>SSO 身份接入与主体供给 · 交互原型（lakehouse-rest 控制台）</title>
+<style>
+  :root {
+    --sidebar-w: 252px;
+    --sidebar-bg: #0e1626;
+    --sidebar-fg: #c7d2e3;
+    --sidebar-dim: #7b8aa3;
+    --page-bg: #f3f5f9;
+    --surface: #ffffff;
+    --surface-2: #f7f9fc;
+    --border: #e2e7f0;
+    --border-strong: #cdd6e4;
+    --text: #1f2937;
+    --dim: #6b7280;
+    --faint: #98a2b3;
+    --accent: #1d4ed8;
+    --accent-soft: #eef3ff;
+    --radius: 2px;
+    --warn: #b45309;
+    --warn-soft: #fff8eb;
+    --warn-border: #f0d9a8;
+    --danger: #b42318;
+    --danger-soft: #fdf2f2;
+    --danger-border: #f3c7c3;
+    --ok: #047857;
+    --ok-soft: #eefaf4;
+    --ok-border: #bfe5d4;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; }
+  body {
+    font: 13.5px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", sans-serif;
+    color: var(--text);
+    background: var(--page-bg);
+  }
+  .app { display: flex; min-height: 100vh; }
+
+  /* ---------------- 侧边栏 ---------------- */
+  .sidebar {
+    width: var(--sidebar-w); flex: 0 0 var(--sidebar-w);
+    background: var(--sidebar-bg); color: var(--sidebar-fg);
+    padding: 14px 0 20px; position: sticky; top: 0; height: 100vh;
+    display: flex; flex-direction: column;
+  }
+  .brand { display: flex; align-items: center; gap: 10px; padding: 6px 18px 18px; }
+  .brand-mark {
+    width: 30px; height: 30px; border-radius: 3px; background: #1e40af;
+    display: grid; place-items: center; color: #fff; font-weight: 700; font-size: 15px;
+  }
+  .brand-text strong { display: block; color: #eaf1ff; font-size: 14.5px; letter-spacing: .2px; }
+  .brand-text span { font-size: 11.5px; color: var(--sidebar-dim); }
+  .nav-group { font-size: 11px; letter-spacing: .6px; color: #5f6f88; padding: 14px 18px 6px; }
+  .nav-item { padding: 7px 18px; font-size: 13px; color: var(--sidebar-fg); cursor: default; }
+  .nav-item.is-link { cursor: pointer; }
+  .nav-item.is-link:hover { background: rgba(59,130,246,.09); }
+  .nav-item.is-active {
+    background: rgba(59,130,246,.18); color: #fff;
+    box-shadow: inset 2px 0 0 #3b82f6;
+  }
+  .sidebar-foot {
+    margin-top: auto; padding: 14px 18px 0; font-size: 11px; color: #5f6f88;
+    border-top: 1px solid rgba(255,255,255,.06); line-height: 1.7;
+  }
+  .sidebar-foot code { color: #8fa6c8; background: rgba(255,255,255,.06); padding: 0 3px; border-radius: 2px; }
+
+  /* ---------------- 主区 ---------------- */
+  main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .toolbar {
+    background: var(--surface); border-bottom: 1px solid var(--border);
+    padding: 9px 22px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    position: sticky; top: 0; z-index: 20;
+  }
+  .toolbar-label { font-size: 11.5px; color: var(--faint); letter-spacing: .4px; }
+  .tb-btn {
+    font: inherit; font-size: 12.5px; padding: 4px 10px; cursor: pointer;
+    background: var(--surface); border: 1px solid var(--border-strong);
+    color: #344054; border-radius: var(--radius);
+  }
+  .tb-btn:hover { border-color: #9aa8bd; }
+  .tb-btn.is-on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .tb-note { margin-left: auto; font-size: 11.5px; color: var(--faint); }
+
+  .screen { display: none; padding: 20px 22px 44px; }
+  .screen.is-active { display: block; }
+
+  .layout {
+    display: grid; grid-template-columns: minmax(0, 1fr) 392px;
+    gap: 20px; align-items: start;
+  }
+  @media (max-width: 1210px) { .layout { grid-template-columns: minmax(0,1fr); } }
+
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
+  .card-head {
+    padding: 13px 20px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: baseline; gap: 10px;
+  }
+  .card-head h1 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: .2px; }
+  .card-head .sub { font-size: 12px; color: var(--dim); }
+  .card-body { padding: 18px 20px 22px; }
+
+  .section { padding: 18px 0 4px; border-top: 1px solid var(--border); }
+  .section:first-child { border-top: 0; padding-top: 0; }
+  .section-head { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; }
+  .section-no {
+    width: 18px; height: 18px; border-radius: 2px; background: var(--accent-soft);
+    color: var(--accent); font-size: 11px; font-weight: 700; display: grid; place-items: center;
+    flex: 0 0 18px;
+  }
+  .section-title { font-size: 13.5px; font-weight: 600; }
+  .section-hint { font-size: 11.5px; color: var(--faint); margin-left: 2px; }
+  .section-badge {
+    margin-left: auto; font-size: 11px; color: var(--dim);
+    background: var(--surface-2); border: 1px solid var(--border); padding: 1px 7px; border-radius: 10px;
+  }
+
+  .field { margin-bottom: 13px; }
+  .field-label {
+    display: flex; align-items: baseline; gap: 6px; font-size: 12.5px;
+    color: #344054; margin-bottom: 5px; font-weight: 500;
+  }
+  .req { color: var(--danger); font-weight: 700; }
+  .opt { font-size: 11px; color: var(--faint); font-weight: 400; }
+  .field-tip { font-size: 11.5px; color: var(--dim); margin: 0 0 6px; line-height: 1.65; }
+  code {
+    font-family: var(--mono); font-size: 11.5px;
+    background: #f1f4f9; border: 1px solid #e6ebf3; padding: 0 3px; border-radius: 2px;
+  }
+  input[type=text], select {
+    width: 100%; font: inherit; font-size: 12.5px; padding: 6px 9px;
+    border: 1px solid var(--border-strong); border-radius: var(--radius);
+    background: #fff; color: var(--text); outline: none;
+  }
+  input:focus, select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  input[readonly] { background: var(--surface-2); color: var(--dim); }
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 760px) { .grid-2 { grid-template-columns: 1fr; } }
+
+  .seg { display: flex; flex-wrap: wrap; gap: 6px; }
+  .seg-item {
+    font-size: 12.5px; padding: 4px 12px; border: 1px solid var(--border-strong);
+    border-radius: var(--radius); cursor: pointer; background: #fff; color: #344054;
+    user-select: none;
+  }
+  .seg-item:hover { border-color: #9aa8bd; }
+  .seg-item.is-on { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+  .switch-row {
+    display: flex; align-items: flex-start; gap: 10px; padding: 9px 0;
+    border-top: 1px dashed var(--border);
+  }
+  .switch-row:first-of-type { border-top: 0; }
+  .sw {
+    width: 34px; height: 20px; border-radius: 10px; background: #cfd7e3;
+    position: relative; cursor: pointer; flex: 0 0 34px; margin-top: 2px; transition: background .15s;
+  }
+  .sw::after {
+    content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px;
+    border-radius: 50%; background: #fff; transition: transform .15s;
+  }
+  .sw.is-on { background: var(--accent); }
+  .sw.is-on::after { transform: translateX(14px); }
+  .sw.is-danger.is-on { background: var(--danger); }
+  .switch-text strong { display: block; font-size: 12.5px; font-weight: 500; }
+  .switch-text span { font-size: 11.5px; color: var(--dim); line-height: 1.6; }
+
+  .banner {
+    display: flex; align-items: flex-start; gap: 10px;
+    padding: 11px 14px; margin: 0 0 16px; border-radius: var(--radius);
+    border: 1px solid var(--warn-border); background: var(--warn-soft); color: #7c4a03;
+    font-size: 12.5px; line-height: 1.7;
+  }
+  .banner b { display: block; margin-bottom: 2px; }
+  .banner.danger { border-color: var(--danger-border); background: var(--danger-soft); color: #7a1c14; }
+  .banner.ok { border-color: var(--ok-border); background: var(--ok-soft); color: #04543c; }
+  .banner.info { border-color: #cfdff5; background: #f3f8ff; color: #1e3a8a; }
+
+  .table-wrap { overflow: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+  th { font-size: 11.5px; color: var(--dim); font-weight: 600; background: var(--surface-2); white-space: nowrap; }
+  tr:last-child td { border-bottom: 0; }
+  tbody tr.is-selectable { cursor: pointer; }
+  tbody tr.is-selectable:hover { background: #f8faff; }
+  tbody tr.is-selected { background: var(--accent-soft); }
+  td.mono, .mono { font-family: var(--mono); font-size: 11.5px; }
+
+  .badge {
+    display: inline-block; font-size: 10.5px; padding: 0 6px; border-radius: 2px;
+    border: 1px solid var(--border-strong); background: var(--surface-2); color: var(--dim);
+    line-height: 18px; white-space: nowrap;
+  }
+  .badge.oidc { border-color: #c7d7f5; background: #eef4ff; color: #1e40af; }
+  .badge.local { border-color: #d6dde8; background: #f6f8fb; color: #475467; }
+  .badge.jit { border-color: #bfe5d4; background: var(--ok-soft); color: var(--ok); }
+  .badge.danger { border-color: var(--danger-border); background: var(--danger-soft); color: var(--danger); }
+  .badge.ok { border-color: var(--ok-border); background: var(--ok-soft); color: var(--ok); }
+  .badge.warn { border-color: var(--warn-border); background: var(--warn-soft); color: var(--warn); }
+
+  .chip {
+    display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 10px;
+    border: 1px solid var(--border); background: #fff; color: #344054; margin: 1px 3px 1px 0;
+  }
+  .chip.manual { border-color: #d6dde8; background: #f6f8fb; color: #475467; }
+  .chip.idp { border-color: #c7d7f5; background: #eef4ff; color: #1e40af; }
+  .chip.add { border-color: var(--ok-border); background: var(--ok-soft); color: var(--ok); }
+  .chip.remove { border-color: var(--danger-border); background: var(--danger-soft); color: var(--danger); text-decoration: line-through; }
+
+  .filters { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+  .filters .seg-item { font-size: 12px; padding: 3px 10px; }
+
+  /* 右侧栏 */
+  .aside { display: flex; flex-direction: column; gap: 14px; }
+  .aside .card-body { padding: 14px 16px 16px; }
+  .aside h2 { margin: 0 0 10px; font-size: 13px; font-weight: 600; }
+  .kv { display: flex; justify-content: space-between; gap: 12px; padding: 4px 0; font-size: 12px; }
+  .kv span:first-child { color: var(--dim); white-space: nowrap; }
+  .kv span:last-child { text-align: right; word-break: break-all; }
+  .check { display: flex; gap: 8px; padding: 5px 0; font-size: 12px; line-height: 1.6; }
+  .check .ico { flex: 0 0 16px; font-weight: 700; }
+  .check.ok .ico { color: var(--ok); }
+  .check.bad .ico { color: var(--danger); }
+  .check.warn .ico { color: var(--warn); }
+
+  .code-box {
+    font-family: var(--mono); font-size: 11px; line-height: 1.7;
+    background: #0f172a; color: #d7e3f4; padding: 10px 12px; border-radius: 2px;
+    overflow: auto; white-space: pre;
+  }
+  .code-box .k { color: #93c5fd; }
+  .code-box .s { color: #86efac; }
+  .code-box .c { color: #7b8aa3; }
+
+  .muted { color: var(--dim); font-size: 12px; }
+  .tiny { font-size: 11px; color: var(--faint); }
+  .hr { height: 1px; background: var(--border); margin: 12px 0; }
+  .row-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+  .btn {
+    font: inherit; font-size: 12.5px; padding: 5px 12px; cursor: pointer;
+    border-radius: var(--radius); border: 1px solid var(--border-strong);
+    background: #fff; color: #344054;
+  }
+  .btn:hover { border-color: #9aa8bd; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn.primary:hover { background: #1e40af; }
+
+  /* ---------- 登录页 ---------- */
+  .login-wrap { display: grid; place-items: center; padding: 28px 20px 60px; }
+  .login-card { width: 100%; max-width: 520px; }
+  .tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin-bottom: 18px; }
+  .tab {
+    padding: 8px 14px; font-size: 12.5px; color: var(--dim); cursor: default;
+    border-bottom: 2px solid transparent; margin-bottom: -1px;
+  }
+  .tab.is-on { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+  .sso-box {
+    border: 1px solid var(--border); background: var(--surface-2);
+    padding: 18px; text-align: center; border-radius: var(--radius);
+  }
+  .sso-box .btn { min-width: 220px; padding: 8px 16px; }
+  .login-notes { margin-top: 16px; font-size: 11.5px; color: var(--dim); line-height: 1.8; }
+  .fail-box {
+    display: none; margin-top: 14px; padding: 11px 14px; border-radius: var(--radius);
+    border: 1px solid var(--danger-border); background: var(--danger-soft); color: #7a1c14;
+    font-size: 12.5px; line-height: 1.7;
+  }
+  .fail-box.is-shown { display: block; }
+  .fail-box code { background: #fff; }
+
+  /* 同步预览 */
+  .preview-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  @media (max-width: 760px) { .preview-grid { grid-template-columns: 1fr; } }
+  .preview-col { border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; background: var(--surface-2); }
+  .preview-col h3 { margin: 0 0 8px; font-size: 11.5px; color: var(--dim); font-weight: 600; letter-spacing: .3px; }
+  .preview-out { margin-top: 10px; font-size: 12px; line-height: 1.8; }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">L</div>
+      <div class="brand-text"><strong>Lakehouse Catalog</strong><span>控制台 · 身份接入</span></div>
+    </div>
+    <div class="nav-group">目录</div>
+    <div class="nav-item">总览</div>
+    <div class="nav-item">Catalogs</div>
+    <div class="nav-item">浏览</div>
+    <div class="nav-group">治理</div>
+    <div class="nav-item is-link" data-nav="principals">主体</div>
+    <div class="nav-item">权限</div>
+    <div class="nav-item">数据策略</div>
+    <div class="nav-group">身份</div>
+    <div class="nav-item is-link" data-nav="idp">身份接入</div>
+    <div class="nav-item is-link" data-nav="groups">组映射</div>
+    <div class="nav-item is-link" data-nav="audit">审计</div>
+    <div class="nav-group">系统</div>
+    <div class="nav-item">设置</div>
+    <div class="sidebar-foot">
+      原型 · 五画面<br />
+      <code>#login</code> <code>#idp</code> <code>#principals</code><br />
+      <code>#groups</code> <code>#audit</code>
+    </div>
+  </aside>
+
+  <main>
+    <div class="toolbar">
+      <span class="toolbar-label">画面</span>
+      <button class="tb-btn" data-scene="login">登录页</button>
+      <button class="tb-btn" data-scene="idp">身份接入</button>
+      <button class="tb-btn" data-scene="principals">主体清单</button>
+      <button class="tb-btn" data-scene="groups">组映射</button>
+      <button class="tb-btn" data-scene="audit">审计</button>
+      <span class="tb-sep"></span>
+      <span class="tb-note">设计稿 · 未实现 · 对应 sso-catalog-identity-design.md</span>
+    </div>
+
+    <!-- ============================ 1 登录页 ============================ -->
+    <section class="screen" data-screen="login">
+      <div class="login-wrap">
+        <div class="login-card card">
+          <div class="card-head">
+            <h1>登录</h1>
+            <span class="sub">三种方式可同时开启，没开启的不出现</span>
+          </div>
+          <div class="card-body">
+            <div class="tabs">
+              <div class="tab">账号密码</div>
+              <div class="tab">客户端凭据</div>
+              <div class="tab is-on">企业 SSO</div>
+            </div>
+            <div class="sso-box">
+              <p class="muted" style="margin:0 0 12px">使用组织统一身份登录，不需要在 catalog 里另建账号。</p>
+              <button class="btn primary" id="ssoBtn">使用企业 SSO 登录</button>
+              <p class="tiny" style="margin:10px 0 0">浏览器会跳转到 IdP，授权码回来后由服务端验签并建立登录态。</p>
+            </div>
+
+            <div class="fail-box" id="loginFail">
+              <b>登录失败：令牌受众不匹配</b>
+              IdP 签发的令牌 <code>aud</code> 是 <code>other-app</code>，而本服务端期望
+              <code>paimon-console</code>。<br />
+              排查：确认控制台 OIDC 的 <code>client-id</code> 与 <code>audience</code>
+              是否与 IdP 侧登记一致。<br />
+              <span class="tiny">错误分类只回 coarse reason，不回 claim 原文。correlationId: <span class="mono">a41f-9c2</span></span>
+            </div>
+
+            <div class="login-notes">
+              <b>登录成功 ≠ 有权限。</b> 第一次 SSO 登录会自动创建主体（JIT），
+              但新主体默认没有任何授权——进不去目录是预期行为，需要管理员在「组映射」里配置 IdP 组 → 角色，或手工授权。<br />
+              <b>门禁只挡住界面。</b> 数据面是否受保护看 <code>auth.enabled</code>，与登录页无关。
+            </div>
+
+            <div class="row-actions">
+              <button class="btn" id="failToggle">模拟一次登录失败</button>
+              <button class="btn" data-scene="idp">去身份接入</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================ 2 身份接入 ============================ -->
+    <section class="screen" data-screen="idp">
+      <div class="layout">
+        <div class="card">
+          <div class="card-head">
+            <h1>身份接入</h1>
+            <span class="sub">OIDC · 一个 IdP 作为唯一身份源</span>
+          </div>
+          <div class="card-body">
+
+            <div class="banner info">
+              <div>
+                <b>这一页决定「谁能进来」；不决定「进来能看什么」。</b>
+                后者由主体与角色决定——见「组映射」。保存前先做一次连通性测试，
+                重点确认 <code>groups</code> claim 是否真的出现。
+              </div>
+            </div>
+
+            <div class="section">
+              <div class="section-head">
+                <span class="section-no">1</span>
+                <span class="section-title">身份提供方</span>
+                <span class="section-hint">issuer 必须与发现文档里的一致</span>
+              </div>
+              <div class="field">
+                <div class="field-label">Issuer URI <span class="req">*</span></div>
+                <input type="text" value="https://keycloak.example.com/realms/EXTERNAL" readonly />
+                <div class="field-tip">发现文档从 <code>/.well-known/openid-configuration</code> 拉取；不一致会被拒绝（防 mix-up）。</div>
+              </div>
+              <div class="grid-2">
+                <div class="field">
+                  <div class="field-label">Client ID <span class="req">*</span></div>
+                  <input type="text" value="paimon-console" readonly />
+                </div>
+                <div class="field">
+                  <div class="field-label">Audience <span class="opt">强烈建议填</span></div>
+                  <input type="text" value="paimon-console" readonly />
+                  <div class="field-tip">留空不校验受众；同一 issuer 下还有别的应用时，别的应用令牌也能进来。</div>
+                </div>
+              </div>
+              <div class="field">
+                <div class="field-label">Scope</div>
+                <input type="text" value="openid profile email groups" readonly />
+                <div class="field-tip">要让 <code>groups</code> 出现，通常必须在这里显式加上；Keycloak 还需打开 client 的 group membership mapper。</div>
+              </div>
+            </div>
+
+            <div class="section">
+              <div class="section-head">
+                <span class="section-no">2</span>
+                <span class="section-title">Claim 映射</span>
+                <span class="section-hint">决定主体名与组从哪来</span>
+              </div>
+              <div class="grid-2">
+                <div class="field">
+                  <div class="field-label">主体名 claim <span class="req">*</span></div>
+                  <select>
+                    <option selected>sub（稳定，推荐）</option>
+                    <option>email（可读，但改名会丢授权）</option>
+                    <option>preferred_username</option>
+                  </select>
+                  <div class="field-tip">主体名参与授权绑定。用 <code>sub</code> 最稳；可读性由 <code>display_name</code> 补。</div>
+                </div>
+                <div class="field">
+                  <div class="field-label">组 claim <span class="req">*</span></div>
+                  <input type="text" value="groups" readonly />
+                  <div class="field-tip">通常是字符串数组；单个字符串按一元组处理。精确匹配，不做通配。</div>
+                </div>
+              </div>
+              <div class="field">
+                <div class="field-label">显示名 claim <span class="opt">P1</span></div>
+                <input type="text" value="email" readonly />
+                <div class="field-tip">只用于列表与审计展示，不参与授权。</div>
+              </div>
+            </div>
+
+            <div class="section">
+              <div class="section-head">
+                <span class="section-no">3</span>
+                <span class="section-title">供给与同步</span>
+                <span class="section-badge">安全默认</span>
+              </div>
+
+              <div class="switch-row">
+                <div class="sw is-on" data-toggle="autoProvision"></div>
+                <div class="switch-text">
+                  <strong>首次登录自动创建主体（JIT）</strong>
+                  <span>新建主体没有任何授权，因此默认开启不构成风险；关掉会回到「登录成功但全 403」。</span>
+                </div>
+              </div>
+
+              <div class="switch-row">
+                <div class="sw is-danger" data-toggle="adoptLocal"></div>
+                <div class="switch-text">
+                  <strong>允许接管同名的本地主体</strong>
+                  <span>默认关闭。同名 <code>root</code> / <code>admin</code> 若被接管，等于把本地主体的全部授权交给一个 IdP 用户。</span>
+                </div>
+              </div>
+
+              <div class="switch-row">
+                <div class="sw is-on" data-toggle="groupSync"></div>
+                <div class="switch-text">
+                  <strong>登录时同步组 → 角色</strong>
+                  <span>只增删 <code>granted_by=IDP</code> 的成员行，永远不动手工授权。</span>
+                </div>
+              </div>
+
+              <div class="field" style="margin-top:12px">
+                <div class="field-label">groups 缺失时</div>
+                <div class="seg" id="syncModeSeg">
+                  <div class="seg-item is-on" data-mode="ON_LOGIN">ON_LOGIN · 不动（默认）</div>
+                  <div class="seg-item" data-mode="STRICT">STRICT · 清空 IDP 角色</div>
+                  <div class="seg-item" data-mode="OFF">OFF · 不同步</div>
+                </div>
+                <div class="field-tip">
+                  默认 <code>ON_LOGIN</code>：很多 IdP 只在特定 scope / 令牌类型里带 <code>groups</code>，
+                  把「这次没带」当成「不在任何组」会在一次配错后削掉所有人的权限。
+                </div>
+              </div>
+
+              <div class="field">
+                <div class="field-label">默认角色 <span class="opt">可选</span></div>
+                <input type="text" value="" placeholder="例如 readonly（留空 = 新主体零权限）" readonly />
+                <div class="field-tip">给所有人生成的基线角色。留空是推荐值：先零权限，再用组映射精确给。</div>
+              </div>
+            </div>
+
+            <div class="row-actions">
+              <button class="btn primary" id="testBtn">测试连接</button>
+              <button class="btn">保存</button>
+              <span class="tiny" id="saveHint" style="align-self:center">改动保存后立即生效，不需要重启</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="aside">
+          <div class="card">
+            <div class="card-body">
+              <h2>连通性</h2>
+              <div id="testIdle">
+                <p class="muted" style="margin:0 0 10px">还没有测试过。点「测试连接」会依次检查发现文档、JWKS、签名算法与 claim 结构。</p>
+                <div class="check warn"><span class="ico">○</span><span>发现文档 · 未验证</span></div>
+                <div class="check warn"><span class="ico">○</span><span>JWKS · 未验证</span></div>
+                <div class="check warn"><span class="ico">○</span><span>groups claim · 未验证</span></div>
+              </div>
+              <div id="testResult" style="display:none">
+                <div class="check ok"><span class="ico">✓</span><span>发现文档 · <code>issuer</code> 一致</span></div>
+                <div class="check ok"><span class="ico">✓</span><span>JWKS · 2 把钥匙，<code>RS256</code></span></div>
+                <div class="check ok"><span class="ico">✓</span><span><code>groups</code> · 3 个值</span></div>
+                <div class="check bad"><span class="ico">!</span><span><code>email</code> · 令牌里没有这个 claim（显示名会退化成主体名）</span></div>
+                <div class="hr"></div>
+                <h2>最近一次令牌（脱敏）</h2>
+                <div class="kv"><span>sub</span><span class="mono">9f3c…a71b</span></div>
+                <div class="kv"><span>iss</span><span class="mono">keycloak.example.com/…/EXTERNAL</span></div>
+                <div class="kv"><span>aud</span><span class="mono">paimon-console</span></div>
+                <div class="kv"><span>groups</span><span>analysts, data-eng, contractors</span></div>
+                <div class="kv"><span>exp</span><span>还剩 47 分钟</span></div>
+                <p class="tiny" style="margin:10px 0 0">只展示 claim 名与个数，不展示可被拿去重放的原文。</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-body">
+              <h2>接入检查</h2>
+              <div class="check ok"><span class="ico">✓</span><span>IdP 侧登记了回调地址 <code>/console/auth/callback</code></span></div>
+              <div class="check ok"><span class="ico">✓</span><span>公开客户端 + PKCE，前端不存密钥</span></div>
+              <div class="check warn"><span class="ico">!</span><span>登出回跳地址也要登记（<code>post_logout_redirect_uri</code>），否则停在 IdP 的「已退出」页</span></div>
+              <div class="check warn"><span class="ico">!</span><span>映射到管理员角色的组，必须是管理员维护的组</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================ 3 主体清单 ============================ -->
+    <section class="screen" data-screen="principals">
+      <div class="layout">
+        <div class="card">
+          <div class="card-head">
+            <h1>主体</h1>
+            <span class="sub">OIDC 主体由登录自动创建；这里不建密码</span>
+          </div>
+          <div class="card-body">
+            <div class="filters" id="principalFilters">
+              <div class="seg-item is-on" data-filter="all">全部</div>
+              <div class="seg-item" data-filter="oidc">仅 OIDC</div>
+              <div class="seg-item" data-filter="jit">仅 JIT 新建</div>
+            </div>
+            <div class="table-wrap">
+              <table id="principalTable">
+                <thead>
+                  <tr>
+                    <th>主体名</th><th>来源</th><th>外部标识</th><th>角色</th><th>最后登录</th><th>标记</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr class="is-selectable is-selected" data-source="oidc" data-jit="true">
+                    <td>alice</td>
+                    <td><span class="badge oidc">OIDC</span></td>
+                    <td class="mono">keycloak|9f3c…a71b</td>
+                    <td><span class="chip manual">analyst</span><span class="chip idp">editor</span></td>
+                    <td>今天 10:12</td>
+                    <td><span class="badge jit">JIT</span></td>
+                  </tr>
+                  <tr class="is-selectable" data-source="local">
+                    <td>root</td>
+                    <td><span class="badge local">本地</span></td>
+                    <td class="mono">—</td>
+                    <td><span class="chip manual">platform-admin</span></td>
+                    <td>今天 09:03</td>
+                    <td><span class="badge">手工</span></td>
+                  </tr>
+                  <tr class="is-selectable" data-source="oidc" data-jit="true">
+                    <td>carol</td>
+                    <td><span class="badge oidc">OIDC</span></td>
+                    <td class="mono">keycloak|1b8e…c042</td>
+                    <td><span class="chip idp">viewer</span></td>
+                    <td>今天 09:40</td>
+                    <td><span class="badge jit">JIT</span></td>
+                  </tr>
+                  <tr class="is-selectable" data-source="local">
+                    <td>svc-etl</td>
+                    <td><span class="badge local">本地</span></td>
+                    <td class="mono">—</td>
+                    <td><span class="chip manual">etl-role</span></td>
+                    <td>—</td>
+                    <td><span class="badge">机器</span></td>
+                  </tr>
+                  <tr class="is-selectable" data-source="oidc" data-jit="true">
+                    <td>dave</td>
+                    <td><span class="badge oidc">OIDC</span></td>
+                    <td class="mono">keycloak|7a10…ff31</td>
+                    <td><span class="badge warn">无角色</span></td>
+                    <td>昨天 18:22</td>
+                    <td><span class="badge jit">JIT</span></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p class="tiny" style="margin:12px 0 0">
+              「无角色」不是异常：JIT 建出来的主体零权限，符合预期。要给它权限，去「组映射」或手工授权。
+            </p>
+          </div>
+        </div>
+
+        <div class="aside">
+          <div class="card">
+            <div class="card-body">
+              <h2>alice</h2>
+              <div class="kv"><span>来源</span><span><span class="badge oidc">OIDC</span></span></div>
+              <div class="kv"><span>external_id</span><span class="mono">keycloak|9f3c…a71b</span></div>
+              <div class="kv"><span>首次出现</span><span>2026-11-03 10:12（JIT）</span></div>
+              <div class="kv"><span>凭据</span><span class="muted">无（人，不是机器）</span></div>
+              <div class="hr"></div>
+              <h2>角色来源</h2>
+              <div style="margin-bottom:8px">
+                <span class="chip manual">analyst · 手工</span>
+                <span class="chip idp">editor · 组 data-eng</span>
+              </div>
+              <p class="tiny" style="margin:0">手工授权不会被组同步删掉；只有 <code>granted_by=IDP</code> 的行参与差集。</p>
+              <div class="hr"></div>
+              <h2>最近一次同步</h2>
+              <div class="kv"><span>groups</span><span>analysts, data-eng, contractors</span></div>
+              <div class="kv"><span>结果</span><span><span class="badge ok">+1 / −1</span></span></div>
+              <div class="kv"><span>未映射</span><span class="badge warn">contractors</span></div>
+              <div class="row-actions">
+                <button class="btn">重新同步</button>
+                <button class="btn" data-scene="groups">查看组映射</button>
+              </div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-body">
+              <h2>为什么不在这里新建</h2>
+              <p class="muted" style="margin:0">
+                OIDC 主体是「IdP 里有这个人」的投影。在这里手工新建会制造一个
+                IdP 里不存在的身份，之后没人能判断它该不该被清理。
+                机器主体仍走原有的主体页（带 client_id / secret）。
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================ 4 组映射 ============================ -->
+    <section class="screen" data-screen="groups">
+      <div class="layout">
+        <div class="card">
+          <div class="card-head">
+            <h1>组映射</h1>
+            <span class="sub">IdP 组 → principal role · 精确匹配</span>
+          </div>
+          <div class="card-body">
+
+            <div class="banner">
+              <div>
+                <b>映射只在登录时生效。</b>
+                改完不会立刻影响已登录的人；对方下一次登录才会重算。
+                撤销权限也一样——但授权本身是每请求查库，所以同步过之后立即生效。
+              </div>
+            </div>
+
+            <div class="field">
+              <div class="field-label">groups 缺失时</div>
+              <div class="seg" id="syncModeSeg2">
+                <div class="seg-item is-on" data-mode="ON_LOGIN">ON_LOGIN · 不动</div>
+                <div class="seg-item" data-mode="STRICT">STRICT · 清空</div>
+                <div class="seg-item" data-mode="OFF">OFF</div>
+              </div>
+            </div>
+
+            <div class="switch-row" style="border-top:1px solid var(--border)">
+              <div class="sw" id="missingToggle"></div>
+              <div class="switch-text">
+                <strong>模拟「这次登录没有 groups claim」</strong>
+                <span>用来验证 sync-mode 的后果：默认什么都不删；STRICT 会清空该主体的 IDP 角色。</span>
+              </div>
+            </div>
+
+            <div class="table-wrap" style="margin-top:14px">
+              <table>
+                <thead>
+                  <tr><th>IdP 组</th><th>映射到角色</th><th>状态</th><th>风险</th><th></th></tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td class="mono">data-eng</td><td><span class="chip idp">editor</span></td>
+                    <td><span class="badge ok">启用</span></td><td class="muted">—</td>
+                    <td><button class="btn">编辑</button></td>
+                  </tr>
+                  <tr>
+                    <td class="mono">analysts</td><td><span class="chip idp">analyst</span></td>
+                    <td><span class="badge ok">启用</span></td><td class="muted">—</td>
+                    <td><button class="btn">编辑</button></td>
+                  </tr>
+                  <tr>
+                    <td class="mono">platform-admins</td><td><span class="chip idp">service-admins</span></td>
+                    <td><span class="badge ok">启用</span></td>
+                    <td><span class="badge danger">高权角色</span></td>
+                    <td><button class="btn">编辑</button></td>
+                  </tr>
+                  <tr>
+                    <td class="mono">contractors</td><td class="muted">未映射</td>
+                    <td><span class="badge">—</span></td><td class="muted">不会带来权限</td>
+                    <td><button class="btn">添加映射</button></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div class="banner danger" style="margin:16px 0 0">
+              <div>
+                <b>把组映射到 service-admins 需要二次确认。</b>
+                保存时会弹确认框，并列出该角色当前带的 access 词。
+                「全员只读」是合理的；「全员管理员」几乎总是配错。
+              </div>
+            </div>
+
+            <div class="banner info" style="margin:12px 0 0">
+              <div>
+                <b>令牌里出现了 2 个未映射的组：</b>
+                <code>contractors</code>、<code>data-science</code>。
+                它们不会带来任何权限——这是预期行为，不是错误。需要的话在上表添加。
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="aside">
+          <div class="card">
+            <div class="card-body">
+              <h2>同步预览 · alice</h2>
+              <p class="tiny" style="margin:0 0 10px">这就是登录时会写库的结果（预览不写库，与登录共用同一个纯函数）。</p>
+              <div class="preview-grid">
+                <div class="preview-col">
+                  <h3>当前</h3>
+                  <span class="chip manual">analyst · 手工</span>
+                  <span class="chip idp" id="curViewer">viewer · 组</span>
+                </div>
+                <div class="preview-col">
+                  <h3>期望</h3>
+                  <span class="chip manual">analyst</span>
+                  <span class="chip idp">editor</span>
+                </div>
+              </div>
+              <div class="preview-out" id="previewOut">
+                <div>将新增：<span class="chip add">editor</span></div>
+                <div>将移除：<span class="chip remove">viewer</span></div>
+                <div class="muted">保留：<span class="chip manual">analyst</span>（手工，不参与差集）</div>
+              </div>
+              <div class="hr"></div>
+              <h2>后果</h2>
+              <div class="check ok"><span class="ico">✓</span><span>只动 <code>granted_by=IDP</code> 的两行</span></div>
+              <div class="check ok"><span class="ico">✓</span><span>幂等：再跑一次是 +0 / −0</span></div>
+              <div class="check warn" id="strictNote" style="display:none"><span class="ico">!</span><span>STRICT + groups 缺失：会清空 <code>viewer</code></span></div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-body">
+              <h2>为什么不是「组即角色」</h2>
+              <p class="muted" style="margin:0">
+                IdP 的组名是组织语言（<code>data-eng</code>），catalog 的角色名是权限语言
+                （<code>editor</code>）。中间必须有一层映射，否则改一次组织架构就要改一遍授权。
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================ 5 审计 ============================ -->
+    <section class="screen" data-screen="audit">
+      <div class="layout">
+        <div class="card">
+          <div class="card-head">
+            <h1>登录与令牌审计</h1>
+            <span class="sub">登录 / 供给 / 同步 / 换票</span>
+          </div>
+          <div class="card-body">
+            <div class="filters" id="auditFilters">
+              <div class="seg-item is-on" data-filter="all">全部</div>
+              <div class="seg-item" data-filter="login">登录</div>
+              <div class="seg-item" data-filter="sync">角色同步</div>
+              <div class="seg-item" data-filter="exchange">令牌交换</div>
+            </div>
+            <div class="table-wrap">
+              <table id="auditTable">
+                <thead>
+                  <tr><th>时间</th><th>主体</th><th>事件</th><th>来源</th><th>结果</th><th>原因 / 细节</th></tr>
+                </thead>
+                <tbody>
+                  <tr data-kind="login">
+                    <td class="mono">10:12:04</td><td>alice</td>
+                    <td><span class="badge oidc">principal.login</span></td>
+                    <td>oidc</td><td><span class="badge ok">成功</span></td>
+                    <td class="muted">groups=3 · jitCreated=false</td>
+                  </tr>
+                  <tr data-kind="sync">
+                    <td class="mono">10:12:04</td><td>alice</td>
+                    <td><span class="badge oidc">principal.roles.synced</span></td>
+                    <td>oidc</td><td><span class="badge ok">成功</span></td>
+                    <td class="muted">+1 editor / −1 viewer · mode=ON_LOGIN</td>
+                  </tr>
+                  <tr data-kind="login">
+                    <td class="mono">10:07:51</td><td>dave</td>
+                    <td><span class="badge oidc">principal.provisioned</span></td>
+                    <td>oidc</td><td><span class="badge ok">成功</span></td>
+                    <td class="muted">JIT 建主体 · external_id=keycloak|7a10…</td>
+                  </tr>
+                  <tr data-kind="login">
+                    <td class="mono">10:06:18</td><td class="muted">—</td>
+                    <td><span class="badge oidc">principal.login</span></td>
+                    <td>oidc</td><td><span class="badge danger">失败</span></td>
+                    <td class="muted">audience_mismatch · correlationId a41f-9c2</td>
+                  </tr>
+                  <tr data-kind="exchange">
+                    <td class="mono">09:58:31</td><td>carol</td>
+                    <td><span class="badge">token.exchange</span></td>
+                    <td>engine</td><td><span class="badge ok">成功</span></td>
+                    <td class="muted">parent jti=8c1e… · expires 3600s</td>
+                  </tr>
+                  <tr data-kind="exchange">
+                    <td class="mono">09:57:02</td><td>carol</td>
+                    <td><span class="badge">token.exchange</span></td>
+                    <td>engine</td><td><span class="badge warn">拒绝</span></td>
+                    <td class="muted">invalid_grant · session older than max-session</td>
+                  </tr>
+                  <tr data-kind="sync">
+                    <td class="mono">09:40:11</td><td>carol</td>
+                    <td><span class="badge oidc">principal.roles.synced</span></td>
+                    <td>oidc</td><td><span class="badge ok">成功</span></td>
+                    <td class="muted">+1 viewer / −0 · mode=ON_LOGIN</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div class="aside">
+          <div class="card">
+            <div class="card-body">
+              <h2>401 分三态，不是一句「没权限」</h2>
+              <div class="check ok"><span class="ico">1</span><span><b>缺失</b> · 没带 Bearer，补上即可</span></div>
+              <div class="check warn"><span class="ico">2</span><span><b>过期</b> · 去换票或重新登录</span></div>
+              <div class="check bad"><span class="ico">3</span><span><b>无效</b> · 签名 / issuer / audience / claim 不对，查服务端日志</span></div>
+              <p class="tiny" style="margin:10px 0 0">登录失败只回分类，不回 claim 原文——避免把 IdP 令牌结构暴露给未认证的调用方。</p>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-body">
+              <h2>事件不发什么</h2>
+              <p class="muted" style="margin:0">
+                不发「每次请求的授权判定」——那是访问日志。这里只记领域事件：
+                登录、供给、角色同步、令牌交换。
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<script>
+(function () {
+  var SCREENS = ['login', 'idp', 'principals', 'groups', 'audit'];
+
+  function el(id) { return document.getElementById(id); }
+
+  function show(id, updateHash) {
+    if (SCREENS.indexOf(id) < 0) return;
+    SCREENS.forEach(function (s) {
+      var sec = document.querySelector('[data-screen="' + s + '"]');
+      if (sec) sec.classList.toggle('is-active', s === id);
+    });
+    document.querySelectorAll('[data-scene]').forEach(function (b) {
+      if (b.classList.contains('tb-btn')) {
+        b.classList.toggle('is-on', b.getAttribute('data-scene') === id);
+      }
+    });
+    if (updateHash !== false && location.hash !== '#' + id) {
+      history.replaceState(null, '', '#' + id);
+    }
+    window.scrollTo(0, 0);
+  }
+
+  document.querySelectorAll('[data-scene]').forEach(function (b) {
+    b.addEventListener('click', function () { show(b.getAttribute('data-scene')); });
+  });
+
+  document.querySelectorAll('[data-nav]').forEach(function (b) {
+    b.addEventListener('click', function () { show(b.getAttribute('data-nav')); });
+  });
+
+  /* ---------------- 登录页：模拟失败 ---------------- */
+  el('failToggle').addEventListener('click', function () {
+    var box = el('loginFail');
+    var on = box.classList.toggle('is-shown');
+    el('failToggle').textContent = on ? '收起失败示例' : '模拟一次登录失败';
+  });
+  el('ssoBtn').addEventListener('click', function () {
+    el('loginFail').classList.remove('is-shown');
+    el('failToggle').textContent = '模拟一次登录失败';
+  });
+
+  /* ---------------- 身份接入：测试连接 ---------------- */
+  el('testBtn').addEventListener('click', function () {
+    el('testIdle').style.display = 'none';
+    el('testResult').style.display = 'block';
+    el('testBtn').textContent = '重新测试';
+    el('saveHint').textContent = '测试通过；保存后立即生效';
+  });
+
+  /* ---------------- 开关 ---------------- */
+  document.querySelectorAll('.sw[data-toggle]').forEach(function (sw) {
+    sw.addEventListener('click', function () { sw.classList.toggle('is-on'); });
+  });
+
+  /* ---------------- 组映射：sync mode + 缺失模拟 ---------------- */
+  var state = { mode: 'ON_LOGIN', missing: false };
+
+  function bindMode(containerId) {
+    var box = el(containerId);
+    if (!box) return;
+    box.querySelectorAll('[data-mode]').forEach(function (item) {
+      item.addEventListener('click', function () {
+        state.mode = item.getAttribute('data-mode');
+        document.querySelectorAll('#syncModeSeg [data-mode], #syncModeSeg2 [data-mode]')
+          .forEach(function (x) { x.classList.toggle('is-on', x.getAttribute('data-mode') === state.mode); });
+        renderPreview();
+      });
+    });
+  }
+  bindMode('syncModeSeg');
+  bindMode('syncModeSeg2');
+
+  var missingToggle = el('missingToggle');
+  if (missingToggle) {
+    missingToggle.addEventListener('click', function () {
+      state.missing = missingToggle.classList.toggle('is-on');
+      renderPreview();
+    });
+  }
+
+  function renderPreview() {
+    var out = el('previewOut');
+    var strictNote = el('strictNote');
+    var curViewer = el('curViewer');
+    if (!out) return;
+
+    if (state.mode === 'OFF') {
+      out.innerHTML = '<div class="muted">同步已关闭：登录不会读写任何角色。</div>';
+      strictNote.style.display = 'none';
+      curViewer.style.display = '';
+      return;
+    }
+
+    if (state.missing && state.mode === 'STRICT') {
+      out.innerHTML =
+        '<div>将新增：<span class="muted">无</span></div>' +
+        '<div>将移除：<span class="chip remove">viewer</span></div>' +
+        '<div class="muted">保留：<span class="chip manual">analyst</span>（手工）</div>' +
+        '<div class="tiny" style="margin-top:6px;color:var(--danger)">groups claim 缺失 + STRICT = 清空 IDP 角色</div>';
+      strictNote.style.display = 'flex';
+      curViewer.style.display = '';
+      return;
+    }
+
+    if (state.missing && state.mode === 'ON_LOGIN') {
+      out.innerHTML =
+        '<div>将新增：<span class="muted">无</span></div>' +
+        '<div>将移除：<span class="muted">无</span></div>' +
+        '<div class="muted">groups 缺失，<b>什么都不动</b>（这是默认行为）</div>';
+      strictNote.style.display = 'none';
+      curViewer.style.display = '';
+      return;
+    }
+
+    out.innerHTML =
+      '<div>将新增：<span class="chip add">editor</span></div>' +
+      '<div>将移除：<span class="chip remove">viewer</span></div>' +
+      '<div class="muted">保留：<span class="chip manual">analyst</span>（手工，不参与差集）</div>';
+    strictNote.style.display = 'none';
+    curViewer.style.display = '';
+  }
+
+  /* ---------------- 主体筛选 ---------------- */
+  document.querySelectorAll('#principalFilters [data-filter]').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      document.querySelectorAll('#principalFilters [data-filter]')
+        .forEach(function (x) { x.classList.toggle('is-on', x === btn); });
+      var f = btn.getAttribute('data-filter');
+      document.querySelectorAll('#principalTable tbody tr').forEach(function (tr) {
+        var src = tr.getAttribute('data-source');
+        var jit = tr.getAttribute('data-jit') === 'true';
+        var showRow = f === 'all' || (f === 'oidc' && src === 'oidc') || (f === 'jit' && jit);
+        tr.style.display = showRow ? '' : 'none';
+      });
+    });
+  });
+
+  /* 主体行选中 */
+  document.querySelectorAll('#principalTable tbody tr').forEach(function (tr) {
+    tr.addEventListener('click', function () {
+      document.querySelectorAll('#principalTable tbody tr').forEach(function (x) {
+        x.classList.remove('is-selected');
+      });
+      tr.classList.add('is-selected');
+    });
+  });
+
+  /* ---------------- 审计筛选 ---------------- */
+  document.querySelectorAll('#auditFilters [data-filter]').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      document.querySelectorAll('#auditFilters [data-filter]')
+        .forEach(function (x) { x.classList.toggle('is-on', x === btn); });
+      var f = btn.getAttribute('data-filter');
+      document.querySelectorAll('#auditTable tbody tr').forEach(function (tr) {
+        tr.style.display = (f === 'all' || tr.getAttribute('data-kind') === f) ? '' : 'none';
+      });
+    });
+  });
+
+  /* ---------------- 启动 ---------------- */
+  var initial = (location.hash || '').replace('#', '');
+  show(SCREENS.indexOf(initial) >= 0 ? initial : 'login', false);
+})();
+</script>
+</body>
+</html>

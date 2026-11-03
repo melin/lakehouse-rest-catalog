@@ -4,6 +4,7 @@ import io.github.melin.lakehouse.rest.config.RequestContext;
 import io.github.melin.lakehouse.rest.domain.entity.PrincipalEntity;
 import io.github.melin.lakehouse.rest.domain.entity.PrincipalRoleAssignmentEntity;
 import io.github.melin.lakehouse.rest.domain.entity.PrincipalRoleEntity;
+import io.github.melin.lakehouse.rest.domain.entity.PrincipalSource;
 import io.github.melin.lakehouse.rest.domain.repo.PrincipalRepository;
 import io.github.melin.lakehouse.rest.domain.repo.PrincipalRoleAssignmentRepository;
 import io.github.melin.lakehouse.rest.domain.repo.PrincipalRoleRepository;
@@ -62,8 +63,27 @@ public class PrincipalService {
      */
     @Transactional(readOnly = true)
     public Principals list(Integer page, Integer pageSize) {
+        return list(null, page, pageSize);
+    }
+
+    /**
+     * {@code GET /principals?source=&page=&pageSize=}：按来源过滤的远程分页。
+     *
+     * <p>控制台要能把「IdP 来的」与「本地建的」分开看：前者没有凭据、
+     * 不能在这里改密码，后者不会因为登录自动出现。过滤在内存里做，
+     * 因为主体表本来就一次性全取——加一个派生查询只是把同样的工作挪进数据库。
+     *
+     * @param source {@code LOCAL} / {@code OIDC}；空表示不过滤。
+     *               取值不认识时按「不过滤」处理，而不是 400：
+     *               这是控制台的一个下拉框，写错不该让整页打不开
+     */
+    @Transactional(readOnly = true)
+    public Principals list(String source, Integer page, Integer pageSize) {
+        PrincipalSource filter = parseSource(source);
         List<Principal> result = new ArrayList<>();
-        for (PrincipalEntity entity : principalRepository.findAllByOrderByNameAsc()) {
+        for (PrincipalEntity entity : filter == null
+                ? principalRepository.findAllByOrderByNameAsc()
+                : principalRepository.findBySourceOrderByNameAsc(filter)) {
             result.add(toDto(entity));
         }
         Paging.Paged<Principal> paged = Paging.paged(result, page, pageSize);
@@ -291,6 +311,18 @@ public class PrincipalService {
         }
         return principalRoleRepository.findByName(name)
                 .orElseThrow(() -> ApiException.managementNotExist(ResourceType.PRINCIPAL_ROLE, name));
+    }
+
+    /** 来源过滤值 → 枚举。空或认不出都是「不过滤」。 */
+    private static PrincipalSource parseSource(String source) {
+        if (source == null || source.isBlank()) {
+            return null;
+        }
+        try {
+            return PrincipalSource.valueOf(source.trim().toUpperCase(java.util.Locale.ROOT));
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
     }
 
     private void applyCredential(PrincipalEntity entity, String clientId, String secret) {

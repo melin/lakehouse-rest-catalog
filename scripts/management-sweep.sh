@@ -167,7 +167,7 @@ ok 204 "DELETE /catalogs/gcs-demo" -X DELETE "$M/catalogs/gcs-demo"
 ok 204 "DELETE /catalogs/obs-demo" -X DELETE "$M/catalogs/obs-demo"
 ok 204 "DELETE /catalogs/oss-demo" -X DELETE "$M/catalogs/oss-demo"
 
-echo "========== 2. principals（10 个 operation） =========="
+echo "========== 2. principals（11 个 operation，sync 见第 5 组） =========="
 ok 201 "POST   /principals (alice)" -X POST -H "$J" \
   -d '{"principal":{"name":"alice","properties":{"dept":"data"}}}' "$M/principals"
 SECRET=$(field "['credentials']['clientSecret']")
@@ -219,7 +219,33 @@ ok 404 "PUT    未知角色 -> 404" -X PUT -H "$J" \
 ok 200 "GET    /principals/alice/principal-roles" "$M/principals/alice/principal-roles"
 ok 200 "GET    /principal-roles/data_engineer/principals（应含 alice）" "$M/principal-roles/data_engineer/principals"
 
-echo "========== 5. 权限端点（官方 /v1/{prefix}/permissions） =========="
+echo "========== 5. 组映射与手动同步（5 + 1 个 operation） =========="
+ok 201 "POST   /group-mappings (data → data_engineer)" -X POST -H "$J" \
+  -d '{"group":"data","role":"data_engineer"}' "$M/group-mappings"
+GMID=$(field "['id']")
+ok 409 "POST   同一组同一角色重复 -> 409" -X POST -H "$J" \
+  -d '{"group":"data","role":"data_engineer"}' "$M/group-mappings"
+ok 404 "POST   映射到不存在的角色 -> 404" -X POST -H "$J" \
+  -d '{"group":"data","role":"ghost"}' "$M/group-mappings"
+ok 400 "POST   缺 group -> 400" -X POST -H "$J" \
+  -d '{"role":"data_engineer"}' "$M/group-mappings"
+ok 200 "GET    /group-mappings" "$M/group-mappings"
+ok 200 "GET    ?group=dat（包含匹配）" "$M/group-mappings?group=dat"
+ok 200 "POST   /group-mappings/preview（不写库）" -X POST -H "$J" \
+  -d '{"groups":["data","ops"]}' "$M/group-mappings/preview"
+GMVER=$(fetch "$M/group-mappings" "['mappings'][0]['entityVersion']")
+ok 200 "PUT    /group-mappings/{id}（停用）" -X PUT -H "$J" \
+  -d "{\"currentEntityVersion\":$GMVER,\"enabled\":false}" "$M/group-mappings/$GMID"
+ok 409 "PUT    版本不符 -> 409" -X PUT -H "$J" \
+  -d '{"currentEntityVersion":9999,"enabled":true}' "$M/group-mappings/$GMID"
+ok 400 "POST   /principals/bob/sync 缺 groups -> 400" -X POST -H "$J" \
+  -d '{}' "$M/principals/bob/sync"
+ok 200 "POST   /principals/bob/sync（幂等）" -X POST -H "$J" \
+  -d '{"groups":["data"]}' "$M/principals/bob/sync"
+ok 404 "POST   /principals/nope/sync -> 404" -X POST -H "$J" \
+  -d '{"groups":[]}' "$M/principals/nope/sync"
+
+echo "========== 6. 权限端点（官方 /v1/{prefix}/permissions） =========="
 P="$B/v1/mgmt/permissions"
 ok 201 "POST   grant CATALOG_ALL/SELECT -> role:data_engineer" -X POST -H "$J" \
   -d '{"resource":{"type":"CATALOG_ALL"},"access":"SELECT","principal":"role:data_engineer"}' "$P/grant"
@@ -248,7 +274,13 @@ ok 201 "POST   revoke 不存在的授权（幂等）" -X POST -H "$J" \
   -d '{"resource":{"type":"VIEW","database":"silver","view":"v"},"access":"SELECT","principal":"user:alice"}' \
   "$P/revoke"
 
-echo "========== 6. 清理（删除 204 语义） =========="
+echo "========== 7. 清理（删除 204 语义） =========="
+ok 204 "DELETE /group-mappings/{id}（已同步的成员关系保留）" -X DELETE "$M/group-mappings/$GMID"
+ok 404 "DELETE 重复删除 -> 404" -X DELETE "$M/group-mappings/$GMID"
+# 删除映射不会回收已授出的角色；Bob 那份 IDP 来源的成员关系要显式清掉，
+# 否则下一步删 principal role 时会挂在上面
+ok 200 "POST   /principals/bob/sync（组清空 → 撤 IDP 角色）" -X POST -H "$J" \
+  -d '{"groups":[]}' "$M/principals/bob/sync"
 ok 204 "DELETE /principals/alice/principal-roles/data_engineer" -X DELETE \
   "$M/principals/alice/principal-roles/data_engineer"
 ok 404 "DELETE 重复撤销 -> 404" -X DELETE \
@@ -260,7 +292,7 @@ ok 204 "DELETE /principals/bob" -X DELETE "$M/principals/bob"
 ok 204 "DELETE /catalogs/mgmt（级联，规格 204）" -X DELETE "$M/catalogs/mgmt"
 ok 404 "GET    /catalogs/mgmt（已删除）-> 404" "$M/catalogs/mgmt"
 
-echo "========== 7. 两套 API 并存 =========="
+echo "========== 8. 两套 API 并存 =========="
 ok 200 "GET    /v1/config（管理 API 不影响 catalog API）" "$B/v1/config"
 # 两份规格副本不再随服务端分发（在仓库根 spec/ 下），静态路径应为 404。
 ok 404 "GET    /rest-catalog-open-api.yaml（已不下发）" "$B/rest-catalog-open-api.yaml"

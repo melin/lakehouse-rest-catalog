@@ -508,6 +508,100 @@ public class RestServerProperties {
              */
             @NotNull
             private Duration clockSkew = Duration.ofSeconds(60);
+
+            /**
+             * 组名从哪个 claim 取。
+             *
+             * <p>默认 {@code groups}，但<b>这个值因 IdP 而异</b>：
+             * Keycloak 与 Auth0 是 {@code groups}，Cognito 是 {@code cognito:groups}，
+             * 有些 IdP 只在 access_token 里放它。填错不会报错，只会表现为
+             * 「登录成功、一个角色都没有」——所以接入页要把最近一次令牌里
+             * 实际出现了哪些 claim 展示出来。
+             */
+            private String groupClaim = "groups";
+
+            /** 显示名从哪个 claim 取。取不到就留空，不影响登录。 */
+            private String displayNameClaim = "email";
+
+            /**
+             * 组同步的时机语义。
+             *
+             * <p>三个取值的差别<b>只在「这次令牌没带 groups」时体现</b>：
+             * 是当成「这个人不在任何组」（{@link SyncMode#STRICT}），
+             * 还是当成「这次没拿到，别动」（{@link SyncMode#ON_LOGIN}）。
+             * 默认后者——把「scope 少配了一项」误判成「全员退组」，后果是所有人
+             * 同时失去权限，而现象看起来像「IdP 挂了」。
+             */
+            @NotNull
+            private SyncMode syncMode = SyncMode.ON_LOGIN;
+
+            /**
+             * 首次登录是否自动创建主体（JIT）。
+             *
+             * <p>默认开启。<b>开启不等于放权</b>：新建主体没有任何授权，
+             * 能做的只有「让主体表多一行」。真正要防的是主体表被刷，
+             * 那由 {@link #allowedEmailDomains} 与登录限速兜住。
+             *
+             * <p>关掉就回到老行为：装了 OIDC 但没人能进——新用户登录成功、
+             * 每个页面 403，而原因是一条服务端日志里都没有的「主体不存在」。
+             */
+            private boolean autoProvision = true;
+
+            /**
+             * 是否允许 OIDC 用户接管<b>同名</b>的本地主体。
+             *
+             * <p>默认 {@code false}，而且不该轻易打开：本地主体的名字是管理员起的，
+             * 一旦允许接管，任何能让 IdP 签发 {@code sub=root} 的人都会继承
+             * 本地 {@code root} 的全部授权——这是提权，不是便利。
+             * 确需绑定应走管理面的显式操作（P2），而不是登录时自动发生。
+             */
+            private boolean allowAdoptLocal = false;
+
+            /**
+             * 允许登录的邮箱域，例如 {@code corp.example.com}。空表示不限。
+             *
+             * <p>多租户或对公网开放时用它收口：主体表被陌生人刷满本身不构成
+             * 数据风险（新主体零权限），但会让「主体清单」变成一份通讯录，
+             * 也会让按名字排查问题时多出一堆噪声。
+             *
+             * <p>判据是邮箱的域部分精确相等（含子域不自动放行），
+             * 且忽略大小写——{@code Alice@Corp.example.com} 与
+             * {@code alice@corp.example.com} 是同一个域。
+             */
+            private List<String> allowedEmailDomains = new ArrayList<>();
+
+            /**
+             * 每个通过 SSO 登录的主体都会自动获得的角色（取并集、按 IDP 来源记）。
+             *
+             * <p>默认空。典型用法是给一个 {@code readonly} 基线角色，
+             * 让新人在没有任何组映射时也能进来看一眼。留空则新主体零权限，
+             * 这是更安全的默认。
+             */
+            private List<String> defaultRoles = new ArrayList<>();
+
+            /** 组同步的时机语义，取值见 {@link Oidc#syncMode}。 */
+            public enum SyncMode {
+
+                /**
+                 * 只有令牌里带了组信息才同步；没带就<b>什么都不动</b>。
+                 *
+                 * <p>默认值。绝大多数 IdP 的 {@code groups} 只在特定 scope 或
+                 * 特定令牌类型里出现，「这次没带」不等于「这个人退出了所有组」。
+                 */
+                ON_LOGIN,
+
+                /**
+                 * 把「没带组」当成「不在任何组」，清空 IDP 来源的角色。
+                 *
+                 * <p>只在「IdP 恒定下发 groups」已被验证过、且合规要求
+                 * 「离开组必须立刻失去权限」时才开。开错的后果是一次
+                 * scope 配置变更让所有人同时失去权限。
+                 */
+                STRICT,
+
+                /** 不同步。用于灰度与排障：映射照常配置，只是不生效。 */
+                OFF
+            }
         }
     }
 

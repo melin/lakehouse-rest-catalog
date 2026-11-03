@@ -1,17 +1,19 @@
 # 数据模型
 
-服务端把 catalog 元数据与授权关系全部放进关系库，共 **27 张表、27 个 JPA 仓储接口**。
+服务端把 catalog 元数据与授权关系全部放进关系库，共 **29 张表、29 个 JPA 仓储接口**。
 本文件说明表的划分，以及三个容易看错或踩坑的设计点：摘要列、审计列、JSON 文档列。
 
 - 实体与仓储按模块分两处（模块划分见 [`maven-module-design.md`](maven-module-design.md) §8，
   目录层级见其 §9.1；下面两个路径里的 `lakehouse-rest-spring-parent/` 就是那层嵌套）：
-  - `lakehouse-rest-spring-parent/lakehouse-rest-core/.../domain/entity/` —— **22 个实体**
-    （catalog 侧 12 + 管理侧 4 + 事件审计 1 + 血缘 3 + 行过滤/列脱敏 2），
-    另含 `AuditedEntity` 基类与 `JsonConverters`；同级 `domain/repo/` 有 **22 个仓储接口**
-  - `lakehouse-rest-spring-parent/lakehouse-rest-server/.../domain/entity/` —— **4 个实体**
+  - `lakehouse-rest-spring-parent/lakehouse-rest-core/.../domain/entity/` —— **24 个实体**
+    （catalog 侧 12 + 管理侧 5 + 事件审计 1 + 血缘 3 + 行过滤/列脱敏 2 + Lance 版本账 1），
+    另含 `AuditedEntity` 基类、`JsonConverters` 与两个取值枚举（`PrincipalSource` / `GrantSource`）；
+    同级 `domain/repo/` 有 **24 个仓储接口**
+  - `lakehouse-rest-spring-parent/lakehouse-rest-server/.../domain/entity/` —— **5 个实体**
     （表存储优化 3：`TableOptimization` / `OptimizationJob` / `OptimizationJobItem`；
-    加 catalog 执行集群 1：`CatalogExecutionCluster`）；同级 `domain/repo/` 有 4 个仓储接口
-  - 合计 27 个实体 + 27 个仓储接口。分家的依据是**谁读它**而不是谁写它：
+    加 catalog 执行集群 1：`CatalogExecutionCluster`；加调度通道租约 1：`SchedulerLease`）；
+    同级 `domain/repo/` 有 5 个仓储接口
+  - 合计 29 个实体 + 29 个仓储接口。分家的依据是**谁读它**而不是谁写它：
     优化三表只有 server 侧的调度与控制器会读，留在 server；执行集群表只被提交与探活链路读，
     同样留在 server；其余实体被协议层（`protocol-paimon`）的面复用，所以下沉到 core，
     否则协议层要反向依赖 server。血缘三表虽然只由 core 的
@@ -86,19 +88,39 @@
 在 Iceberg 侧不写：分区由 manifest 决定（REST catalog 不逐分区登记）、Iceberg 没有消费位点、
 没有语义视图，`FunctionMetadata` 的只读投影是二期。
 
-## 2. 管理侧（4 张）
+## 2. 管理侧（5 张）
 
 | 表 | 对应资源 | 说明 |
 | --- | --- | --- |
-| `lakehouse_principal` | principal | 主体；只保存密钥摘要，明文仅在创建 / 轮换时返回一次 |
+| `lakehouse_principal` | principal | 主体；只保存密钥摘要，明文仅在创建 / 轮换时返回一次。另有 4 列服务身份接入：`source`（`LOCAL` / `OIDC`）、`external_id`（`issuer\|sub`）、`display_name`、`last_login_at` |
 | `lakehouse_principal_role` | principal role | 纯分组，自己不携带任何权限 |
-| `lakehouse_principal_role_grant` | 主体 ↔ principal role | 多对多关联 |
+| `lakehouse_principal_role_grant` | 主体 ↔ principal role | 多对多关联；`granted_by`（`MANUAL` / `IDP`）决定组同步能不能删它 |
+| `lakehouse_group_role_mapping` | IdP 组 → principal role | 身份接入的**翻译表**（`provider_name` + `idp_group` + `role_name` 唯一、`enabled` 停用不删）。同步的产物不落这里，而是上面那张 grant 表里 `granted_by=IDP` 的行 |
 | `lakehouse_permission_assignment` | **唯一的授权表** | 官方三元组 `(resource, access, principal)`：8 种资源定位符 + 14 项 access（官方 12 + 两个凭据扩展词）+ principal 原文 + 过期时间 + 列范围 |
 
 **改造前这里有 7 张表**（另含 `lakehouse_catalog_role` / `lakehouse_catalog_role_grant` /
 `lakehouse_resource_grant`，即 Polaris 的 RBAC 链），已随 catalog role 整层移除。
 授权现在只有一条链路：主体凭成员关系得到 `role:<名>` 候选串，再与裸名、`user:<名>`
 一起参与判定，见 [`authorization.md`](authorization.md) §2.4。
+
+### 2.0 身份接入新增的 5 列 + 1 表
+
+身份接入（[`sso-catalog-identity-design.md`](sso-catalog-identity-design.md)）改的是
+「谁该有哪些角色」，**授权判定链一行都没动**：同步的结果仍然写进
+`lakehouse_principal_role_grant`，因此判定逻辑不需要知道「这条成员关系是人给的还是 IdP 给的」。
+
+| 表 | 列 | 默认 | 作用 |
+| --- | --- | --- | --- |
+| `lakehouse_principal` | `source` | `'LOCAL'`（DDL 默认值） | 同名主体能不能被外部身份接管：`LOCAL` 一律拒绝，`OIDC` 才比对 `external_id` |
+| `lakehouse_principal` | `external_id` | `null` | `issuer + "\|" + sub`，只回答「同名的两个主体是不是同一个人」 |
+| `lakehouse_principal` | `display_name` | `null` | email / preferred_username，只用于展示与审计，不参与授权 |
+| `lakehouse_principal` | `last_login_at` | `null` | 最后一次成功 SSO 认证（epoch 毫秒，与 `created_at` 同单位） |
+| `lakehouse_principal_role_grant` | `granted_by` | `'MANUAL'`（DDL 默认值） | 组同步**只删 `IDP` 的行**，手工授权永远不参与差集 |
+
+两个默认值是这次升级「对线上纯增量」的全部依仗：存量主体自动算本地主体（不会被同名接管），
+存量授权自动算手工授权（不会被同步删掉）。加列语句因此带 `default`，
+`ALTER TABLE ... ADD COLUMN ... NOT NULL` 在有存量行的表上才跑得通。
+
 
 ## 2.1 表存储优化（3 张）
 
@@ -122,7 +144,7 @@
 
 | 表 | 对应资源 | 说明 |
 | --- | --- | --- |
-| `lakehouse_audit_event` | 目录领域事件 | 10 类 38 个领域事件（catalog / 库 / 表 / 视图 / 授权 / 主体与角色 / 优化）的 append-only 事实记录；自增 `id` 兼作增量拉取的游标，`(catalog, id)` 与 `(category, id)` 两条联合索引分别支撑按目录、按类别增量拉 |
+| `lakehouse_audit_event` | 目录领域事件 | 9 类 39 个领域事件（catalog / 库 / 表 / 视图 / 授权 / 主体与角色 / 策略 / 优化）的 append-only 事实记录；自增 `id` 兼作增量拉取的游标，`(catalog, id)` 与 `(category, id)` 两条联合索引分别支撑按目录、按类别增量拉 |
 
 两种表格式的事件在**同一张表、同一个流**里（`catalog` 只是查询参数）；`attributes_json`
 用 JSON 单列承载开放属性，`category` 是 `type` 的冗余列（存下来让「只看权限变更」

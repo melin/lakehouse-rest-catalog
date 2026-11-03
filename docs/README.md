@@ -1,6 +1,6 @@
 # docs/ 索引
 
-设计文档、契约基线与 SQL 语法参考都在这里。**按「你要做什么」查这张表**——三十三份文档，
+设计文档、契约基线与 SQL 语法参考都在这里。**按「你要做什么」查这张表**——三十四份文档，
 每份在表里都标了落地状态（**已落地** / **设计稿，未实现** / **存档，勿改**）。
 
 根 [`README.md`](../README.md) 讲怎么构建、怎么跑、配置项与实现边界；这份索引回答的是
@@ -14,7 +14,7 @@
 | [`catalog-api-endpoints.md`](catalog-api-endpoints.md) | 要查 Catalog API 有哪些端点——Paimon 的 60 个与 Iceberg 的 30 个按资源分组，含基址、前缀与授权映射说明（Lance 面走 `/lance/v1/**`，端点清单见 [`lance-rest-catalog-design.md`](lance-rest-catalog-design.md) 与 `scripts/verify-lance-endpoints.py` 的台账） |
 | [`management-api-overview.md`](management-api-overview.md) | 要读 Management API——Paimon 官方权限端点与服务端扩展端点各落在哪几个控制器上、几处容易读错的语义 |
 | [`management-api-contract.md`](management-api-contract.md) | **存档**：由已移除的 Polaris 管理规格生成的字段与权限枚举（catalog role、64 项 privilege 已不存在）；当前契约看上一行与 [`authorization.md`](authorization.md) |
-| [`data-model.md`](data-model.md) | 要改实体或看表结构——27 张表的划分、摘要列与审计列的设计理由、实体与仓储分在哪两个模块 |
+| [`data-model.md`](data-model.md) | 要改实体或看表结构——29 张表的划分、摘要列与审计列的设计理由、实体与仓储分在哪两个模块 |
 | [`spark-sql-reference.md`](spark-sql-reference.md) | 要用 SQL 管理主体与授权——语句级参考，含完整示例 |
 | [`spark-sql-extension.md`](spark-sql-extension.md) | 要改这个 Spark 扩展——语法扩展的做法、两个必须知道的约束、测试分层 |
 | [`spark-paimon-rest-e2e.md`](spark-paimon-rest-e2e.md) | 要让 Spark 通过本服务端建 Paimon 表——连接配置、可执行的 SQL、报错对照表 |
@@ -27,6 +27,7 @@
 | [`console-table-detail.md`](console-table-detail.md) | 要改表详情页——页签随表格式（Paimon / Format / Object / Lance）伸缩的数据来源、为什么授权不在这页、破坏性操作与边界 |
 | [`console-catalog-detail.md`](console-catalog-detail.md) | 要改 Catalog 详情页或仓库文件浏览——四个页签（概览 / 存储 / 文件列表 / 配置）、下钻与路径防护、只读的取舍、「配置」页的默认表属性（`table-default.*`）编辑与并发冲突处理；建表表单里的默认参数预填与为什么不给 Lance 表建表入口 |
 | [`console-auth.md`](console-auth.md) | 要给浏览器访问控制台配登录——三种登录方式、两个开关的边界、令牌与认证链、**令牌交换（RFC 8693，引擎长作业续期用）**、安全考量 |
+| [`sso-catalog-identity-design.md`](sso-catalog-identity-design.md) | 要把平台 SSO 登录接到 catalog 主体上（JIT / 组→角色 / 引擎换票），或评审「一套用户还是两套用户」——**MVP 已落地**（`OidcLoginService` / `GroupRoleSyncService` / `GroupMappingController`）：先给代码级事实（`TokenAuthenticationService` 三源合流 ⇒ A+C 的桥已通，缺的是供给）；身份模型（`sub` vs email、同名本地主体不可劫持、`external_id`）、JIT 幂等与安全默认、组→角色同步的三条不变量与「`groups` 缺失默认不删」、交换侧收尾（audience 收窄、错误分类、引擎模板）、管理端点与 4 个审计事件、15 条测试矩阵、MVP 与 P1/P2 分期（控制台五画面仍是原型，未接前端）；配套原型 [`sso-catalog-identity-mockup.html`](sso-catalog-identity-mockup.html)（五画面：登录 / 身份接入 / 主体 / 组映射 / 审计） |
 | [`semantic-layer-design.md`](semantic-layer-design.md) | 要做语义层（语义模型 / 指标口径 / 给 AI agent 供上下文）或评审该方案——**设计稿，未实现**：参照 Polaris 1.7.0 的 Ossie 语义模型并把社区批评的三件事补上（引用校验、描述复用、发现与消费）；八类使用场景、text-to-SQL 四类错误的语义对策、agent 三条接入通道（上下文包 / 只读 MCP / OpenAPI）、ai_context 提示注入对策、「语义 fail-open、策略 fail-closed」的方向对比；配套原型 [`semantic-layer-mockup.html`](semantic-layer-mockup.html)（六画面，含上下文包逐表判权与 Agent 工作流的交互演示） |
 | [`polaris-capabilities-and-design.md`](polaris-capabilities-and-design.md) | 要对比 Polaris 或看整体设计——核心能力提取、映射关系、已知缺口 |
 | [`credential-vending-design.md`](credential-vending-design.md) | 要判断「引擎能不能不配 AK/SK」、要给七种存储（S3 / Azure / GCS / OSS / OBS / COS / S3 兼容）接短期凭据，或评审凭据下发方案、设计创建 catalog 页的凭据配置——**P0 已实现、P1 部分实现**（P1-9 服务端取票已落；`lakehouse.rest.credential.providers` **默认开 `s3-token` / `azure-sas` / `oss-sts`**（写 `[]` 才只走 relay））：先分清「凭据转发」（把配置里的长期 AK/SK 原样发出去，TTL 只是建议重取时间）与「凭据下发」（用服务端身份去 STS 现签、按表路径收窄）；Gravitino 与 Polaris 的三层抽象、三个 IAM 身份与键名参考页；**2026 年 7–10 月 Gravitino `vended` 相关 PR 的九条改动逐条对照**（用 `expireTimeInMs()==0` 表达静态而不是 mode 开关、`USE_CREDENTIAL` / `USE_SECRET` 两个权限点、打码值回写、Flink 在非 REST 后端只取一次凭据、联邦 loadTable 要透传 delegation 头、服务端自身 FileIO 是第二个消费者、ADLS 多路径归一、腾讯云 COS）；本工程已落地的三条通道（Paimon `/token`、Iceberg `storage-credentials` + `/credentials`、Lance `storage_options`）与七种存储的键名族（COS 定案用 **COSN 原生** `fs.cosn.*`，且**只在 Paimon 面成立**：Iceberg 只能 `HadoopFileIO` 收不到下发凭据、Lance 是 Rust 没有 COSN 只能 S3 兼容）；**18 条缺口**（含 5 个「看起来在跑其实没生效」的：缺 `s3.session-token`、`loadTable` 的 `config` 恒为 `null`、`/credentials` 字段名与 iceberg-java 对不上、Flink 面一次都没跑过、G18 曾以为 COSN 能收临时凭据（实测 jar 后作废））；七种存储的签发 API / 收窄方式 / TTL 上限 / 坑；引擎侧四面矩阵与那段「十行配置里有四行是同一对密钥」的逐行点评；**§10 控制台三态（不下发 / 转发 / 签发）的字段、冲突、校验分工与引擎片段生成规则**；P0/P1/P2 路线与验收（P0 八项已标 ✅ 并给出对应用例名）；配套原型 [`credential-vending-mockup.html`](credential-vending-mockup.html)（可切存储类型与三态来源，右侧摘要与五段引擎片段实时变化，查询串可直开某状态） |
@@ -60,6 +61,7 @@
 | [`job-self-healing-mockup.html`](job-self-healing-mockup.html) | [`job-self-healing-design.md`](job-self-healing-design.md)（五画面） |
 | [`credential-vending-mockup.html`](credential-vending-mockup.html) | [`credential-vending-design.md`](credential-vending-design.md) §10（创建 catalog 页的凭据下发配置；可切存储类型与三态来源，查询串直开某状态，见 §10.7） |
 | [`catalog-storage-auth-mockup.html`](catalog-storage-auth-mockup.html) | [`catalog-storage-auth-design.md`](catalog-storage-auth-design.md)（v3：四节表单——基本信息 / 存储位置 / 存储认证 / 保存前自检，**没有「用途」这一节**；七种存储 × 部署状态可切，单方式的类型（Azure / GCS / COS）只出一张卡并标「唯一方式」；右侧「三条准入线」「谁拿到什么」「会下发什么」「为什么这样排」联动；第 4 节自检可勾「连写入一起验」，结果分「读 ✓ 写 ✓ / 读 ✓ 写 ✗ / 未验写」三态，本地类型两档都禁用。直达：`#create` / `#role` / `#noSign` / `#azure` / `#gcs` / `#write` / `#edit` / `#legacy` / `#file`，`#COS` 这类直接切类型） |
+| [`sso-catalog-identity-mockup.html`](sso-catalog-identity-mockup.html) | [`sso-catalog-identity-design.md`](sso-catalog-identity-design.md)（五画面：`#login` 登录页含失败诊断、`#idp` 身份接入含连通性测试与令牌样例、`#principals` 主体清单含来源/JIT/角色来源、`#groups` 组映射含 sync-mode 联动与同步预览、`#audit` 登录与换票审计） |
 
 ## 文档与代码的一致性靠脚本守
 

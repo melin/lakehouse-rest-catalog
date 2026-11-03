@@ -605,6 +605,58 @@
     comment on column lakehouse_function.updated_by is
         '最后更新者主体名（写入前已按列宽归一化）';
 
+    create table lakehouse_group_role_mapping (
+        enabled boolean not null,
+        entity_version integer not null,
+        created_at bigint,
+        updated_at bigint,
+        id varchar(64) not null,
+        provider_name varchar(128) not null,
+        created_by varchar(255),
+        idp_group varchar(255) not null,
+        owner varchar(255),
+        role_name varchar(255) not null,
+        updated_by varchar(255),
+        primary key (id),
+        constraint uk_group_role_mapping unique (provider_name, idp_group, role_name)
+    );
+
+    comment on table lakehouse_group_role_mapping is
+        'IdP 组到主体角色的映射（组同步的翻译表）';
+
+    comment on column lakehouse_group_role_mapping.enabled is
+        '是否生效；停用不删除';
+
+    comment on column lakehouse_group_role_mapping.entity_version is
+        '乐观并发版本号，每次变更自增';
+
+    comment on column lakehouse_group_role_mapping.created_at is
+        '创建时刻（epoch 毫秒）';
+
+    comment on column lakehouse_group_role_mapping.updated_at is
+        '最后更新时刻（epoch 毫秒）';
+
+    comment on column lakehouse_group_role_mapping.id is
+        '主键';
+
+    comment on column lakehouse_group_role_mapping.provider_name is
+        '身份提供方标识，单 IdP 部署恒为 default';
+
+    comment on column lakehouse_group_role_mapping.created_by is
+        '创建者主体名（写入前已按列宽归一化）';
+
+    comment on column lakehouse_group_role_mapping.idp_group is
+        'IdP 组名，精确匹配（区分大小写、不 trim）';
+
+    comment on column lakehouse_group_role_mapping.owner is
+        '记录归属主体（展示与过滤用，不参与授权判定）';
+
+    comment on column lakehouse_group_role_mapping.role_name is
+        '目标主体角色名';
+
+    comment on column lakehouse_group_role_mapping.updated_by is
+        '最后更新者主体名（写入前已按列宽归一化）';
+
     create table lakehouse_lance_table_version (
         created_at bigint,
         manifest_size bigint,
@@ -1171,13 +1223,17 @@
         credential_rotation_required boolean not null,
         entity_version integer not null,
         created_at bigint,
+        last_login_at bigint,
         updated_at bigint,
+        source varchar(16) default 'LOCAL' not null check ((source in ('LOCAL','OIDC'))),
         id varchar(64) not null,
         secret_salt varchar(64),
         secret_hash varchar(128),
+        external_id varchar(512),
         properties_json varchar(65535),
         client_id varchar(255),
         created_by varchar(255),
+        display_name varchar(255),
         name varchar(255) not null,
         owner varchar(255),
         updated_by varchar(255),
@@ -1198,8 +1254,14 @@
     comment on column lakehouse_principal.created_at is
         '创建时刻（epoch 毫秒）';
 
+    comment on column lakehouse_principal.last_login_at is
+        '最后一次成功 SSO 认证时刻（epoch 毫秒）';
+
     comment on column lakehouse_principal.updated_at is
         '最后更新时刻（epoch 毫秒）';
+
+    comment on column lakehouse_principal.source is
+        '主体来源：LOCAL（管理面创建）/ OIDC（首次 SSO 登录自动创建）';
 
     comment on column lakehouse_principal.id is
         '主键';
@@ -1210,6 +1272,9 @@
     comment on column lakehouse_principal.secret_hash is
         '密钥摘要 SHA-256(salt || secret)，不存明文';
 
+    comment on column lakehouse_principal.external_id is
+        '外部身份标识 issuer + "|" + sub，仅 OIDC 主体有值';
+
     comment on column lakehouse_principal.properties_json is
         '主体属性（JSON 对象）';
 
@@ -1218,6 +1283,9 @@
 
     comment on column lakehouse_principal.created_by is
         '创建者主体名（写入前已按列宽归一化）';
+
+    comment on column lakehouse_principal.display_name is
+        '显示名（email / preferred_username），仅展示用，不参与授权';
 
     comment on column lakehouse_principal.name is
         '主体名，全局唯一';
@@ -1279,6 +1347,7 @@
     create table lakehouse_principal_role_grant (
         created_at bigint,
         updated_at bigint,
+        granted_by varchar(16) default 'MANUAL' not null check ((granted_by in ('MANUAL','IDP'))),
         id varchar(64) not null,
         principal_id varchar(64) not null,
         principal_role_id varchar(64) not null,
@@ -1297,6 +1366,9 @@
 
     comment on column lakehouse_principal_role_grant.updated_at is
         '最后更新时刻（epoch 毫秒）';
+
+    comment on column lakehouse_principal_role_grant.granted_by is
+        '授予来源：MANUAL（管理面手工）/ IDP（登录时组同步）';
 
     comment on column lakehouse_principal_role_grant.id is
         '主键';
@@ -1834,6 +1906,9 @@
 
     create index ix_function_database 
        on lakehouse_function (database_id);
+
+    create index ix_group_role_mapping_group 
+       on lakehouse_group_role_mapping (provider_name, idp_group);
 
     create index ix_lance_table_version_table 
        on lakehouse_lance_table_version (table_id);

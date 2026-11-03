@@ -10,7 +10,7 @@
 
 ---
 
-## 1. 领域事件清单（10 类 38 型）
+## 1. 领域事件清单（9 类 39 型）
 
 事件按**类别**（{@code CatalogEventCategory}）分组，类别是监听器订阅的粒度（§5）；
 每个类别下是若干个**类型**（{@code CatalogEventType}），类型是事件流里的契约字符串。
@@ -89,13 +89,24 @@ Polaris 的 `PolarisEventType` 有 15 个类别、一百多个常量，是 **CRU
 收权方一律是 principal 字符串，属性里带 `grantee` / `resourceType` / `database` /
 `object` / `access`。`role:<名>` 形式的收权方表示「这条赋权由该分组的成员共享」。
 
-**PRINCIPAL**（7）
+**PRINCIPAL**（11）
 
 | wire 值 | 含义 |
 | --- | --- |
 | `principal.created` / `principal.updated` / `principal.dropped` | 主体的增删改 |
 | `principal.credentials_rotated` / `principal.credentials_reset` | 轮换 / 重置凭据（**不含 clientId 与密钥**） |
 | `principal.role_granted` / `principal.role_revoked` | 把主体角色授予 / 收回主体 |
+| `principal.login` | 一次 SSO 登录（**成功与失败都记**，属性里只有分类原因，不含 claim 值） |
+| `principal.provisioned` | 首次 SSO 登录自动建主体（JIT） |
+| `principal.roles_synced` | 组 → 角色同步完成（只在实际增删了角色时发） |
+| `group_mapping.changed` | 组映射本身变化（增 / 改 / 删 / 启停）——记「规则变了」，与「某人现在有哪些角色」分开 |
+
+> `principal.login` 是 PRINCIPAL 里唯一的「读路径」事件，与 §1.1「只收变更」的判据不一致。
+> 单独说明：身份接入的问题全靠它回答——「这个人为什么没有权限」要能看出
+> 「他登录过吗、用的哪个 issuer、供给成功了吗」。没有它，这类问题的唯一线索是会被轮转掉的服务端日志。
+> 同理 `group_mapping.changed` 与 `principal.roles_synced` 刻意分成两条：
+> 前者是规则变更（一次），后者是结果（每次登录都可能变），合起来就没法回答
+> 「这批人的权限为什么变了」。
 
 **PRINCIPAL_ROLE**（3）
 

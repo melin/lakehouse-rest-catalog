@@ -5,7 +5,7 @@
 | 半边 | 基址 | 依据 | operation |
 | --- | --- | --- | --- |
 | **权限端点**（官方） | `/v1/{prefix}/permissions` | Paimon REST Management API 的 Permission model | 3 |
-| **扩展端点**（本服务端） | `/api/management/v1/**` | catalog / principal / principal role 的生命周期 + 存储优化 + 表统计聚合 | 35 |
+| **扩展端点**（本服务端） | `/api/management/v1/**` | catalog / principal / principal role 的生命周期 + 组映射 + 存储优化 + 表统计聚合 | 41 |
 
 官方 Paimon 管理 API 只有 10 个 operation（labels / permissions / policies），其中
 labels 与 policies 本服务端未实现；权限那 3 个是**当前唯一的契约**，规格见
@@ -34,8 +34,9 @@ labels 与 policies 本服务端未实现；权限那 3 个是**当前唯一的�
 | 控制器 | operation | 覆盖 |
 | --- | --- | --- |
 | `PermissionController` | 3 | **官方**：列赋权、授予、撤销（`/v1/{prefix}/permissions**`）。另有 1 条**控制台自己的**聚合视图 `GET /permissions/scopes`（折叠 + 分页，见 §2 最后一条） |
-| `PrincipalController` | 10 | 主体的增删改查、`reset` / `rotate` 凭据、主体 ↔ principal role 装配 |
+| `PrincipalController` | 11 | 主体的增删改查、`reset` / `rotate` 凭据、主体 ↔ principal role 装配、`POST /principals/{principalName}/sync`（用一组 IdP 组名重算该主体的 IDP 来源角色，组名**必须**由调用方给，缺 `groups` 回 400） |
 | `PrincipalRoleController` | 6 | principal role 的增删改查、其下的主体查询 |
+| `GroupMappingController` | 5 | IdP 组 → principal role 的映射：列表（`provider` 精确、`group` 包含匹配）、创建、更新（乐观锁）、删除、`POST /group-mappings/preview`（只算不写）。全部只认服务管理员，理由见 §2 末条 |
 | `ManagementCatalogController` | 8 | 管理面的 catalog 列表、创建、查询、更新、删除，`POST /catalogs/{catalogName}/credentials/revoke`（判 `CATALOG:ALTER`，清掉该 catalog 的凭据缓存；**已发出的票到期前仍然有效**，理由见 `credential-vending-design.md` §8 的 P2-3），以及存储页的两个聚合端点：`GET /catalogs/{catalogName}/table-stats`（KPI / 按库 / Top 10 / 直方图 SQL 聚合一次算完，全量；可选 `database` 参数只下钻 KPI / Top 10 / 直方图，按库聚合不随它过滤）与 `GET …/table-stats/tables`（逐表明细远程分页，按库 / 关键字 / onlyPaimon 过滤与排序下推 SQL，`maxResults` 默认 2000 / 上限 5000）。替代控制台逐表 snapshot / loadTable 的扫描 |
 | `OptimizationController` | 12 | 存储优化的 catalog 设置、表策略、批次与回调 |
 
@@ -74,6 +75,11 @@ labels 与 policies 本服务端未实现；权限那 3 个是**当前唯一的�
   官方那 3 个端点只给平铺的逐条赋权。
 - **catalog 详情的读权限落在 `CATALOG_ALL:DESCRIBE`**：官方对照表里 `CATALOG` 只有
   `ALL / ALTER / DROP / GRANT / CREATEDATABASE`，没有任何读权限。
+- **组映射端点只认服务管理员**，不判 catalog access。身份接入是全局配置，不属于任何
+  catalog；现有 14 项 access 词表是资源级的，没有一项能表达「改这条组映射」，硬套一个
+  相近的词反而会让「谁有权改身份接入」变成一条需要解释的规则。组同步只增删
+  `granted_by=IDP` 的成员关系，手工授权对它不可见——语义见
+  [`console-auth.md`](console-auth.md) §6.5。
 - **存储配置支持七种类型**。`storageConfigInfo` 是按 `storageType` 判别的联合，
   Java 侧也按子类型建模（`S3` / `AZURE` / `GCS` / `OBS` / `OSS` / `COS` / `FILE` 各有自己的字段集合），
   非法组合在类型层面就不成立。`AZURE` 的 `tenantId` 按 `required` 校验（缺失返回 400）；

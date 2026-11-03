@@ -369,7 +369,7 @@ curl -s -X POST http://localhost:8080/v1/oauth/tokens \
 - **没有开关。** 不提供 `exchange.enabled`：它唯一能产出的东西是与调用方手里的票
   **等权**的另一张票，关掉不增加任何安全性，却会让长作业在一小时后失败——
   正是本功能要消除的那种故障。需要「作业不能永久持有访问权」应该做**总时长上限**
-  （设计稿里的 P2 `max-session`），不是关掉续期。
+  （已实现：`lakehouse.rest.auth.access-token.max-session`，默认关），不是关掉续期。
 - **寿命上界在 `subject_token` 上。** 那张票必须仍然有效，所以作业挂起超过一个 TTL
   就续不上、必须重新拿票。「一张泄露的票被无限续期」因此不成立——上界是「持有者一直活着」。
 - **它只管控制面。** 数据面（存储凭据）本来就是另一套、本来就能续：
@@ -459,6 +459,38 @@ IdP 的令牌响应里可能同时有 `id_token` 与 `access_token`。控制台*
 - `lakehouse.rest.authorization.service-admins` 里的名字（服务管理员）。
 
 这一条是最常见的配置陷阱，启动日志会就此告警。
+
+### 6.5 登录之后：JIT 建主体与组同步
+
+> 完整设计见 [`sso-catalog-identity-design.md`](sso-catalog-identity-design.md)；
+> 这一节只讲**运维会观察到的**三件事。
+
+认证通过之后服务端还会做两件事，都发生在 `GET /api/console/v1/auth` 那一次请求里
+（控制台是静态资源，OIDC 的授权码流程在浏览器里完成，服务端没有回调端点）：
+
+1. **JIT 建主体**：库里没有这个 `name` 就建一行（`source=OIDC`、`external_id=issuer|sub`、
+   **没有 clientId 与密钥**）。关掉用 `auto-provision: false`，关掉就回到老行为——
+   登录成功、每页 403。
+2. **组 → 角色同步**：按 `group-claim`（默认 `groups`）取组名，查组映射表，
+   把对应的 principal role 授给这个主体，记 `granted_by=IDP`。
+
+四个必须知道的边界：
+
+- **同名本地主体默认拒绝登录**（`principal_conflict`）。OIDC 用户的 `sub` 若等于某个本地主体名
+  （例如 `root`），复用那一行等于把它的全部授权送出去。确需绑定请看 `allow-adopt-local`——
+  打开它就是允许这条提权路径，默认关闭。
+- **`groups` 缺失时默认不删角色**（`sync-mode: on-login`）。很多 IdP 只在特定 scope 或
+  只在 access_token 里给 `groups`；把「这次没带」当成「不在任何组」，一次 scope 配错
+  就会削掉所有人的权限，而现象看起来像「IdP 挂了」。
+- **同步只动 `granted_by=IDP` 的行**。管理员手工授的角色永远不参与差集，因此
+  IdP 里少一个组不会把手工会员一起删掉。
+- **`last_login_at` 是「最近一次会话校验」，不是「最近一次输密码」**。控制台每次刷新页面
+  都会重问一次 `/auth`（浏览器端没有服务端会话），每一次都算是这个人的一次身份确认；
+  想统计真正的登录次数，看 `principal.login` 事件而不是这一列。
+
+组映射的增删改查与预览在 `/api/management/v1/group-mappings`（服务管理员），
+保存前可以先 `POST /group-mappings/preview` 看「这组人最终会拿到什么」——
+它和登录时用的是**同一段计算**。
 
 ---
 
@@ -750,10 +782,12 @@ curl -s -X POST http://localhost:8080/api/management/v1/principals \
   引入刷新流程会带来「刷新令牌怎么存、怎么撤销」一整串问题，收益不抵。
   注意这与[§5.4](#54-令牌交换rfc-8693长作业的续期)的令牌交换不是同一件事：
   那一套是给**引擎的长作业**用的（Iceberg 客户端自带刷新调度），控制台自己不用它。
-- **令牌交换只有「等权换新」，没有总时长上限。** 交换不放大 `sub`、TTL、`scope`，
-  但链条本身可以一直续下去——上界是「父票仍然有效」，而父票由客户端自己不断换新。
-  需要「作业跑满 N 小时必须重新取票」的合规场景要等 P2 的 `max-session`（当前未实现）。
-  同理，`actor_token`（代他人操作）不支持，出现即 400。
+- **令牌交换只做「等权换新」，总时长上限由 `max-session` 控制（已实现，默认关）。**
+  交换不放大 `sub`、TTL、`scope`。打开 `lakehouse.rest.auth.access-token.max-session` 后，
+  每张票带一个 `ses` claim，整条续期链共享同一个起点；链龄超限即拒绝**再换一张**，
+  而**已签发的票仍可用到期**——否则长作业会在没有预兆的情况下 401，那时它既没有新票
+  也没有告警，只能重启。需要「作业跑满 N 小时必须重新取票」的合规场景用它，
+  而不是调大 `ttl`。同理，`actor_token`（代他人操作）不支持，出现即 400。
 - **`scope` 只有 `PRINCIPAL_ROLE:ALL`。** 见 [§5.3](#53-scope-只接受-principal_roleall)。
 - **`token-principals` 与 `password.principals` 都是静态配置。** 令牌 / 账号 → 主体名的
   映射写在配置文件里，改映射要重启。

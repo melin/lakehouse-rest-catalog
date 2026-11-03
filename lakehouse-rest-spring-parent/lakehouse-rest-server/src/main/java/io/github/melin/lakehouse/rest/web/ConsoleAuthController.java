@@ -4,9 +4,9 @@ import io.github.melin.lakehouse.rest.config.RestServerProperties;
 import io.github.melin.lakehouse.rest.domain.repo.PrincipalRepository;
 import io.github.melin.lakehouse.rest.dto.ConsoleDtos;
 import io.github.melin.lakehouse.rest.service.ConsolePasswordService;
+import io.github.melin.lakehouse.rest.service.OidcLoginService;
 import io.github.melin.lakehouse.rest.service.OidcService;
 import io.github.melin.lakehouse.rest.service.TokenAuthenticationService;
-import io.github.melin.lakehouse.rest.support.AuthenticatedToken;
 import jakarta.servlet.http.HttpServletRequest;
 import java.util.ArrayList;
 import java.util.List;
@@ -56,6 +56,8 @@ public class ConsoleAuthController {
     private final TokenAuthenticationService tokens;
 
     private final OidcService oidc;
+
+    private final OidcLoginService oidcLogin;
 
     private final ConsolePasswordService passwords;
 
@@ -170,24 +172,47 @@ public class ConsoleAuthController {
     }
 
     /**
-     * 当前令牌的状态。
+     * 当前令牌的状态，并在 OIDC 这一路上完成「登录后的供给」。
      *
      * <p>不通过拦截器拿主体：本端点不在鉴权范围内，拦截器不会运行，因此这里
      * 直接认证一次请求头里的令牌——这样「令牌无效」也只是一个字段为 false，
      * 而不是整个请求 401（登录页需要能读到认证方式，即使手上拿的是个废令牌）。
+     *
+     * <h2>为什么供给挂在这里</h2>
+     *
+     * <p>控制台是静态资源，OIDC 的授权码流程在浏览器里完成，服务端<b>没有回调端点</b>：
+     * 前端拿到令牌后做的第一件事就是带上它请求本端点，问「我是谁、还能干什么」。
+     * 那就是服务端能观察到的「登录时刻」——把 JIT 建主体与组同步放在这里，
+     * 语义正好落在「这个人刚登录」上，而不是「他每发一个请求」。
+     *
+     * <p>挂在认证链（{@code TokenAuthenticationService}）里是另一种做法，但那里
+     * 同时服务数据面请求与令牌交换：前者会让每次查表都同步一遍角色，
+     * 后者明确<b>不该</b>触发供给（交换不是登录，没有组 claim 可用）。
+     *
+     * <p>冲突（同名本地主体、{@code external_id} 不一致、邮箱域不在白名单）会
+     * 以 403 抛出，而不是降级成「匿名」——放行一个身份不属于这里的人，
+     * 换来的是他每个页面都 403，而没人知道原因。
      */
     private ConsoleDtos.CurrentSession session(HttpServletRequest request) {
         String token = bearerToken(request);
-        AuthenticatedToken identity = tokens.authenticate(token).orElse(null);
-        if (identity == null) {
+        // 一次认证拿到「身份 + 来源 + OIDC claim」：分开调用会把 RSA 验签做两三遍，
+        // 而登录引导是每次打开控制台都要走的路径
+        TokenAuthenticationService.Authenticated authenticated =
+                tokens.authenticateDetailed(token).orElse(null);
+        if (authenticated == null) {
             return new ConsoleDtos.CurrentSession(false, null, null, null, false);
+        }
+        if (authenticated.oidc() != null) {
+            // 认证已经通过，这里只做供给；失败语义见 OidcLoginService（冲突拒绝登录，
+            // 同步失败只记 partial 并照常登录）
+            oidcLogin.onLogin(authenticated.oidc());
         }
         return new ConsoleDtos.CurrentSession(
                 true,
-                identity.principal(),
-                tokens.sourceOf(token),
-                identity.expiresAtMillis(),
-                rotationRequired(identity.principal()));
+                authenticated.token().principal(),
+                authenticated.source(),
+                authenticated.token().expiresAtMillis(),
+                rotationRequired(authenticated.token().principal()));
     }
 
     /**
