@@ -271,7 +271,13 @@ public final class ConsoleDtos {
             /** 令牌失效时刻（毫秒）；静态令牌没有失效时刻，为 null。 */
             Long expiresAtMillis,
             /** 该主体的凭据是否被标记为待轮换，供控制台提醒。未认证时为 false。 */
-            boolean credentialRotationRequired) {
+            boolean credentialRotationRequired,
+            /**
+             * 主体的展示名；来自 OIDC 令牌的 display-name-claim，取不到时退回
+             * {@code preferred_username}。未认证、或非 OIDC 令牌、或令牌里两者皆无时为 null。
+             * 前端优先显示它，没有再退回 {@code principal}（通常是 sub 那串 UUID）。
+             */
+            String displayName) {
     }
 
     /**

@@ -72,6 +72,8 @@ const state = reactive({
   authenticated: false,
   /** 令牌对应的主体名；未认证时为空串。 */
   principal: '',
+  /** 主体的展示名（OIDC 下通常是登录用户名）；没有时为空串，界面退回显示 principal。 */
+  displayName: '',
   /** 令牌来源；未认证时为空串。 */
   source: '',
   /** 令牌来源的可读名。 */
@@ -124,6 +126,7 @@ function apply(payload) {
   const session = payload?.session || {}
   state.authenticated = Boolean(session.authenticated)
   state.principal = session.principal || ''
+  state.displayName = session.displayName || ''
   state.source = session.source || ''
   state.sourceLabel = SOURCE_LABELS[session.source] || session.source || ''
   state.expiresAtMillis = session.expiresAtMillis || null
@@ -136,6 +139,7 @@ function apply(payload) {
 function resetSession() {
   state.authenticated = false
   state.principal = ''
+  state.displayName = ''
   state.source = ''
   state.sourceLabel = ''
   state.expiresAtMillis = null

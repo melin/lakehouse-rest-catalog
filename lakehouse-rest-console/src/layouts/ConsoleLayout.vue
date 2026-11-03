@@ -84,7 +84,7 @@
           <el-tooltip :content="`令牌来源：${auth.state.sourceLabel}`" placement="bottom">
             <el-icon class="pc-header-user-icon"><UserFilled /></el-icon>
           </el-tooltip>
-          <span class="pc-header-user-name">{{ auth.state.principal }}</span>
+          <span class="pc-header-user-name">{{ auth.state.displayName || auth.state.principal }}</span>
           <el-tooltip :content="logoutHint" placement="bottom">
             <el-button size="small" text circle @click="logout">
               <el-icon><SwitchButton /></el-icon>

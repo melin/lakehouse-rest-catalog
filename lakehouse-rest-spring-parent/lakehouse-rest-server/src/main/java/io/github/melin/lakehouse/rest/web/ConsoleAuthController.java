@@ -200,19 +200,23 @@ public class ConsoleAuthController {
         TokenAuthenticationService.Authenticated authenticated =
                 tokens.authenticateDetailed(token).orElse(null);
         if (authenticated == null) {
-            return new ConsoleDtos.CurrentSession(false, null, null, null, false);
+            return new ConsoleDtos.CurrentSession(false, null, null, null, false, null);
         }
         if (authenticated.oidc() != null) {
             // 认证已经通过，这里只做供给；失败语义见 OidcLoginService（冲突拒绝登录，
             // 同步失败只记 partial 并照常登录）
             oidcLogin.onLogin(authenticated.oidc());
         }
+        // OIDC 主体的展示名来自令牌的 display-name-claim（取不到时退回 preferred_username），
+        // 已经在 OidcService 里算好；非 OIDC 令牌没有这一项，前端会退回显示 principal。
+        String displayName = authenticated.oidc() != null ? authenticated.oidc().displayName() : null;
         return new ConsoleDtos.CurrentSession(
                 true,
                 authenticated.token().principal(),
                 authenticated.source(),
                 authenticated.token().expiresAtMillis(),
-                rotationRequired(authenticated.token().principal()));
+                rotationRequired(authenticated.token().principal()),
+                displayName);
     }
 
     /**

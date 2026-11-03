@@ -219,6 +219,15 @@ public class OidcService {
             return Optional.empty();
         }
         Long expiresAt = decoded.numericClaim("exp");
+        // 展示名：优先用配置的 display-name-claim（默认 email）；取不到时退回 OIDC 标准的
+        // preferred_username——那是 Keycloak 等 IdP 里的登录用户名（profile scope 下必有），
+        // 比 sub（往往是一串 UUID）更适合做界面与审计里的「谁」。display_name 只用于展示与
+        // 审计、不参与授权，因此这里宽容地补一个可读性更好的值；email / preferred_username
+        // 都没有时才退回到 null（前端届时退回显示 principal 本身）。
+        String displayName = blankToNull(decoded.claim(oidc().getDisplayNameClaim()));
+        if (displayName == null) {
+            displayName = blankToNull(decoded.claim("preferred_username"));
+        }
         OidcIdentity identity = new OidcIdentity(
                 principal,
                 document.issuer(),
@@ -226,7 +235,7 @@ public class OidcService {
                 // email 单独取一份、不受 display-name-claim 影响：允许登录的邮箱域
                 // 是按「邮箱」判的，而显示名字段可以配成 preferred_username
                 blankToNull(decoded.claim("email")),
-                blankToNull(decoded.claim(oidc().getDisplayNameClaim())),
+                displayName,
                 // 组名按配置的 claim 取。缺失时返回空列表，但「缺没缺」要单独告诉调用方：
                 // 一个空列表既可能是「不在任何组」，也可能是「这个令牌根本没带组信息」
                 decoded.listClaim(oidc().getGroupClaim()),

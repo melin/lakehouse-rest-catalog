@@ -215,6 +215,16 @@ public class OidcLoginService {
                     principal.getName());
             throw conflict();
         }
+        // 已存在的 OIDC 主体、且 external_id 一致：允许登录。顺手把展示名 / 邮箱刷成
+        // 令牌里的最新值——两者只用于展示与审计，IdP 侧可能改过；name / external_id /
+        // source 是身份，不在这里变动。只在令牌确实给了值时才写，避免一次缺字段的令牌
+        // 把库里已有的展示名洗掉。
+        if (identity.displayName() != null) {
+            principal.setDisplayName(identity.displayName());
+        }
+        if (identity.email() != null) {
+            principal.setEmail(identity.email());
+        }
     }
 
     /**
