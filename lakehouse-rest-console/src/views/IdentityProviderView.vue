@@ -1,7 +1,7 @@
 <template>
   <div class="pc-page">
     <PageHeader
-      title="身份接入（SSO）"
+      title="OIDC 配置（SSO）"
       subtitle="平台 SSO 登录之后要发生什么，取决于这几项配置：谁来签令牌、主体名取哪个 claim、组名从哪儿读、登录时建不建主体。这一页把它们摊开，并回答「现在能不能连上」与「最近登录的人实际带回来了什么 claim」。"
     >
       <template #actions>
@@ -247,7 +247,7 @@ import TipAlert from '@/components/TipAlert.vue'
 import { onConsoleRefresh, useResource } from '@/composables/index.js'
 
 /**
- * 身份接入页（原型 `#idp`）。
+ * OIDC 配置页（原型 `#idp`）。
  *
  * <p><b>为什么是只读页。</b>这一页的每一项都是部署配置。让它可写意味着「一个登录进来的人
  * 能改掉自己的准入规则」，而配错的表现是所有人都登不上——那需要重启与回滚，

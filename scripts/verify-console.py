@@ -81,7 +81,7 @@ spec/rest-catalog-open-api-iceberg.yaml）。路径写错时前端只表现为�
                   当场失败）、Iceberg 两面的 scope 必须与服务端 SCOPE_ALL 逐字相同
                   （否则第一次刷新才报 invalid_scope）、续期能力分控制面/数据面两列、
                   片段里不得出现真实密钥
- 27. SSO 身份    身份接入 / 组映射 / 身份审计三页。钉的是「不该有的能力」与「两个不可逆
+ 27. SSO 身份    OIDC 配置 / 组映射 / 身份审计三页。钉的是「不该有的能力」与「两个不可逆
                   动作的确认」：配置页没有保存动作、端点只有读与探活、探活五步与四档对着
                   Java 源比对、危险映射与空组同步的确认都来自服务端信号。这些错法全都不
                   报错——多一个保存按钮要等有人真的改坏准入规则那天才知道
@@ -284,9 +284,9 @@ EXTENSION_ENDPOINTS = {
     # `/identity-provider` 只有读与探活，**没有 PUT**：
     # 可在线修改等于「登录进来的人可以改自己的准入规则」，配错一次是全员登不上。
     # 这不是还没做，是不做——所以这里也看不到改配置的端点。
-    ("GET", "/api/management/v1/identity-provider"): "身份接入：生效配置（只读，无密钥字段）",
-    ("POST", "/api/management/v1/identity-provider/probe"): "身份接入：连通性探活（不走缓存，五步分类）",
-    ("GET", "/api/management/v1/identity-provider/claim-samples"): "身份接入：最近登录的 claim 形状（打码，进程内）",
+    ("GET", "/api/management/v1/identity-provider"): "OIDC 配置：生效配置（只读，无密钥字段）",
+    ("POST", "/api/management/v1/identity-provider/probe"): "OIDC 配置：连通性探活（不走缓存，五步分类）",
+    ("GET", "/api/management/v1/identity-provider/claim-samples"): "OIDC 配置：最近登录的 claim 形状（打码，进程内）",
     # 组 → 角色。预览与登录时的同步**共用服务端的同一段计算**（`desired()`）：
     # 分开实现的话，表现是「预览说会加两个，保存后只加了一个」。
     ("GET", "/api/management/v1/group-mappings"): "组映射：列表（组名精确匹配，关键字下推）",
@@ -2861,7 +2861,7 @@ print("27. SSO 身份接入与主体供给（配置只读、探活五步、危�
 # 表现是一个组名填错的提交把自己和所有人一起提权。
 #
 # 所以这里的断言分成三类：
-#   1. **不该有的能力**（身份接入页的保存、可改配置的端点）——断言它不存在；
+#   1. **不该有的能力**（OIDC 配置页的保存、可改配置的端点）——断言它不存在；
 #   2. **必须与服务端同一份的清单**（探活步骤名、判定四档、诊断分类）——对着
 #      Java 源与 JS 源各解析一遍再比，而不是写死字面量；
 #   3. **两个不可逆动作的确认**（危险映射、空组同步）——断言那个判据来自
@@ -2886,7 +2886,7 @@ principals_view = read(PRINCIPALS_VIEW)
 identity_service_source = read(IDENTITY_SERVICE)
 
 # --- 27.1 三条路由都进侧边菜单 ---------------------------------------------
-# 不进菜单的身份页等于不存在：管理员要在「身份接入」里查一次登录为什么失败，
+# 不进菜单的身份页等于不存在：管理员要在「OIDC 配置」里查一次登录为什么失败，
 # 得先知道有个地址能打开它。下钻页（表详情那类）才不进菜单。
 sso_route_views = {
     "/identity": "IdentityProviderView",
@@ -2909,11 +2909,11 @@ unlisted = [path for path in sso_route_views if "nav: true" not in route_block(p
 check("三条身份路由都进侧边菜单（meta.nav 为真）", not unlisted,
       f"这些路由没有 nav: true，侧边栏里看不到：{unlisted}")
 
-# --- 27.2 身份接入页没有保存入口 -------------------------------------------
+# --- 27.2 OIDC 配置页没有保存入口 -------------------------------------------
 # 这不是「还没做」：这些字段来自 yml / ConfigMap，能在线改就等于「已经登录进来
 # 的人可以改自己的准入规则」，配错一次是全员登不上。所以页面只给读与探活。
-check("身份接入页没有保存入口（配置只在部署文件里改）",
-      "身份接入" in identity_view and not re.search(r'@click="save', identity_view)
+check("OIDC 配置页没有保存入口（配置只在部署文件里改）",
+      "OIDC 配置" in identity_view and not re.search(r'@click="save', identity_view)
       and "updateIdentityProvider" not in identity_view,
       "页面出现了保存动作；配置可在线修改等于让人改自己的准入规则")
 
@@ -2928,7 +2928,7 @@ ALLOWED_IDENTITY_ENDPOINTS = {
 identity_writes = sorted(f"{method} {path}" for (method, path) in endpoints.values()
                          if path.startswith(identity_endpoint_prefix)
                          and (method, path) not in ALLOWED_IDENTITY_ENDPOINTS)
-check("身份接入端点只有读与探活（没有能改配置的端点）", not identity_writes,
+check("OIDC 配置端点只有读与探活（没有能改配置的端点）", not identity_writes,
       f"多出了这些端点：{identity_writes}")
 
 # --- 27.4 探活五步与服务端逐字对应 -----------------------------------------

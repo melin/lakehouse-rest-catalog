@@ -175,7 +175,7 @@ const routes = [
     meta: { title: '优化任务', icon: 'Histogram', group: '治理（Management API）', nav: true },
   },
   {
-    // 身份接入：SSO 的**生效配置** + 连通性测试 + 令牌样例。
+    // OIDC 配置：SSO 的**生效配置** + 连通性测试 + 令牌样例。
     //
     // <p>整页只读，没有编辑框——这些字段来自部署配置（yml / K8s ConfigMap）。
     // 允许在线改等于「已经登录进来的人可以改自己的准入规则」，而配错一次就是
@@ -184,12 +184,12 @@ const routes = [
     path: '/identity',
     name: 'identityProvider',
     component: () => import('@/views/IdentityProviderView.vue'),
-    meta: { title: '身份接入', icon: 'Connection', group: '身份', nav: true },
+    meta: { title: 'OIDC 配置', icon: 'Connection', group: '身份', nav: true },
   },
   {
     // 组映射：IdP 组 → 角色。
     //
-    // <p>与「身份接入」分成两页而不是一页两组表单：前者改一次要重新部署，
+    // <p>与「OIDC 配置」分成两页而不是一页两组表单：前者改一次要重新部署，
     // 后者是日常运维（人来了、组改了），两者的频次差一个量级，混在一页会让
     // 「我今天要做什么」变得不清楚。
     path: '/group-mappings',

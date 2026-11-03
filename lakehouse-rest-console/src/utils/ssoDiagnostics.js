@@ -63,13 +63,13 @@ export const SSO_DIAGNOSIS = {
   oidc_disabled: {
     title: '服务端没有启用 SSO 登录',
     why: 'oidc.enabled 是 false，或 issuer-uri / client-id 没配全，因此 IdP 把浏览器送回来也换不到令牌。',
-    action: '让管理员按「身份接入」页的提示补齐配置并重启；本地登录方式在此期间仍然可用。',
+    action: '让管理员按「OIDC 配置」页的提示补齐配置并重启；本地登录方式在此期间仍然可用。',
     tone: 'blocked',
   },
   client_auth: {
     title: '服务端在 IdP 那边没通过认证',
     why: 'client-id / client-secret 与 IdP 应用里登记的不一致，或这个 client 没被允许使用授权码流程。',
-    action: '核对「身份接入」页的 clientId 与 IdP 应用配置；密钥错了只能改部署配置后重启，控制台改不了。',
+    action: '核对「OIDC 配置」页的 clientId 与 IdP 应用配置；密钥错了只能改部署配置后重启，控制台改不了。',
     tone: 'blocked',
   },
   redirect: {
@@ -93,7 +93,7 @@ export const SSO_DIAGNOSIS = {
   unknown: {
     title: 'SSO 登录未完成',
     why: '没有命中已知的失败分类，下面保留原始错误。',
-    action: '把原始错误发给服务管理员；同时看「身份接入」页的连通性测试与 claim 样例。',
+    action: '把原始错误发给服务管理员；同时看「OIDC 配置」页的连通性测试与 claim 样例。',
     tone: 'retry',
   },
 }

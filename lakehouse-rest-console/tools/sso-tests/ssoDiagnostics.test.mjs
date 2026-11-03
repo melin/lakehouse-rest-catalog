@@ -91,7 +91,7 @@ describe('diagnoseSsoError', () => {
     assert.equal(result.code, 'unknown')
     assert.equal(result.raw, 'something odd happened')
     // 未知也要给出两个去处，否则卡片上只有一句「出了点问题」
-    assert.ok(result.action.includes('身份接入'))
+    assert.ok(result.action.includes('OIDC 配置'))
   })
 
   it('detail 与 message 一起进原文、一起参与匹配', () => {

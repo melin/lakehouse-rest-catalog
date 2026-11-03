@@ -286,7 +286,7 @@
   <aside class="sidebar">
     <div class="brand">
       <div class="brand-mark">L</div>
-      <div class="brand-text"><strong>Lakehouse Catalog</strong><span>控制台 · 身份接入</span></div>
+      <div class="brand-text"><strong>Lakehouse Catalog</strong><span>控制台 · OIDC 配置</span></div>
     </div>
     <div class="nav-group">目录</div>
     <div class="nav-item">总览</div>
@@ -297,7 +297,7 @@
     <div class="nav-item">权限</div>
     <div class="nav-item">数据策略</div>
     <div class="nav-group">身份</div>
-    <div class="nav-item is-link" data-nav="idp">身份接入</div>
+    <div class="nav-item is-link" data-nav="idp">OIDC 配置</div>
     <div class="nav-item is-link" data-nav="groups">组映射</div>
     <div class="nav-item is-link" data-nav="audit">审计</div>
     <div class="nav-group">系统</div>
@@ -313,7 +313,7 @@
     <div class="toolbar">
       <span class="toolbar-label">画面</span>
       <button class="tb-btn" data-scene="login">登录页</button>
-      <button class="tb-btn" data-scene="idp">身份接入</button>
+      <button class="tb-btn" data-scene="idp">OIDC 配置</button>
       <button class="tb-btn" data-scene="principals">主体清单</button>
       <button class="tb-btn" data-scene="groups">组映射</button>
       <button class="tb-btn" data-scene="audit">审计</button>
@@ -358,19 +358,19 @@
 
             <div class="row-actions">
               <button class="btn" id="failToggle">模拟一次登录失败</button>
-              <button class="btn" data-scene="idp">去身份接入</button>
+              <button class="btn" data-scene="idp">去OIDC 配置</button>
             </div>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- ============================ 2 身份接入 ============================ -->
+    <!-- ============================ 2 OIDC 配置 ============================ -->
     <section class="screen" data-screen="idp">
       <div class="layout">
         <div class="card">
           <div class="card-head">
-            <h1>身份接入</h1>
+            <h1>OIDC 配置</h1>
             <span class="sub">OIDC · 一个 IdP 作为唯一身份源</span>
           </div>
           <div class="card-body">
@@ -915,7 +915,7 @@
     el('failToggle').textContent = '模拟一次登录失败';
   });
 
-  /* ---------------- 身份接入：测试连接 ---------------- */
+  /* ---------------- OIDC 配置：测试连接 ---------------- */
   el('testBtn').addEventListener('click', function () {
     el('testIdle').style.display = 'none';
     el('testResult').style.display = 'block';

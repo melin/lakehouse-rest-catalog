@@ -12,7 +12,7 @@
 | §6 C 侧收尾 | 未改：`TokenExchangeService` 一行都没动，且**不调用**供给（§5.6） |
 | §7 管理面 | `GroupMappingController`、`PrincipalController#sync`、`PrincipalService#list(source, …)` |
 | §7.3 审计 | `principal.login` / `principal.provisioned` / `principal.roles_synced` / `group_mapping.changed` |
-| §8 控制台 | `lakehouse-rest-console/` 的五个画面（`#login` / `#idp` / `#principals` / `#groups` / `#audit`）；身份接入只读，见 §8.4 |
+| §8 控制台 | `lakehouse-rest-console/` 的五个画面（`#login` / `#idp` / `#principals` / `#groups` / `#audit`）；OIDC 配置只读，见 §8.4 |
 | §9 测试 | `SsoIdentityProvisioningTests`（16 例）+ `GroupMappingApiTests`（9 例） |
 
 > 与本文的两处偏差，都在实现时定下的，理由写在各节：
@@ -495,14 +495,14 @@ POST /api/management/v1/group-mappings/preview
 | # | 画面 | hash | 要点 |
 | --- | --- | --- | --- |
 | 1 | 登录页 | `#login` | SSO 页签 + **失败诊断**（分类原因，不回 claim 值） |
-| 2 | 身份接入 | `#idp` | issuer / clientId / audience / claim 映射 / sync-mode / auto-provision；右侧「连通性测试」 |
+| 2 | OIDC 配置 | `#idp` | issuer / clientId / audience / claim 映射 / sync-mode / auto-provision；右侧「连通性测试」 |
 | 3 | 主体清单 | `#principals` | 来源徽标（OIDC / 本地）、外部标识、最后登录、角色、JIT 标记 |
 | 4 | 组映射 | `#groups` | 组 → 角色表、未映射组提示、**同步预览**（当前 → 期望，含 MANUAL 保护） |
 | 5 | 审计 | `#audit` | 登录 / 供给 / 同步三类事件，失败带原因 |
 
 ### 8.2 关键交互
 
-- **身份接入页的「令牌样例」**：把最近一次登录的 claim 结构脱敏展示
+- **OIDC 配置页的「令牌样例」**：把最近一次登录的 claim 结构脱敏展示
   （`sub` / `email` / `groups` 的**个数**与示例值），让管理员当场确认
   「`group-claim` 填对了没有」——这是最高频的配置错误。
 - **组映射页的 sync-mode 切换**要联动预览：切到 `STRICT` 时，
@@ -525,12 +525,12 @@ POST /api/management/v1/group-mappings/preview
 | --- | --- | --- | --- |
 | 登录（SSO 页签 + 失败诊断） | `/login` | `LoginView` + `SsoDiagnosis` | `GET /api/console/v1/auth` |
 | 回调（失败诊断） | `/auth/callback` | `AuthCallbackView` + `SsoDiagnosis` | `POST /api/catalog/v1/oauth/tokens` |
-| 身份接入 | `/identity` | `IdentityProviderView` | 三条，只读 |
+| OIDC 配置 | `/identity` | `IdentityProviderView` | 三条，只读 |
 | 主体清单 | `/principals` | `PrincipalsView`（来源列 / 外部标识 / 最后登录 / 按组同步） | 列表带 `?source=`，同步走 `POST …/principals/{name}/sync` |
 | 组映射 | `/group-mappings` | `GroupMappingsView` | CRUD 四条 + `POST …/preview` |
 | 审计 | `/identity-audit` | `IdentityAuditView` | `GET /api/console/v1/events`（`category` / `type` 下推） |
 
-**身份接入页为什么只有读。** 这三条端点（配置、探活、claim 样例）里没有一条能改配置：
+**OIDC 配置页为什么只有读。** 这三条端点（配置、探活、claim 样例）里没有一条能改配置：
 
 | 端点 | 用途 | 为什么不能写 |
 | --- | --- | --- |
@@ -555,7 +555,7 @@ POST /api/management/v1/group-mappings/preview
 并回一个 `skippedReason`，`STRICT` 下才是按「不在任何组」重算。控制台因此把两种后果
 都写在确认框里，回执再按 `skippedReason` 区分「刻意跳过」与「跑完了没变化」。
 
-**身份接入页与组映射页分成两页。** 前者改一次要重新部署，后者是日常运维（人来了、组改了），
+**OIDC 配置页与组映射页分成两页。** 前者改一次要重新部署，后者是日常运维（人来了、组改了），
 两者频次差一个量级；混在一页会让「我今天要做什么」变得不清楚。侧边栏因此多一个「身份」分组，
 审计页归到已有的「审计」组（它与「事件」是同一张 `audit_event` 表、同一个端点）。
 
