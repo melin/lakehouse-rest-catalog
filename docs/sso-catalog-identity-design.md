@@ -593,7 +593,8 @@ POST /api/management/v1/group-mappings/preview
 | 11–12 | 既有 `TokenExchangeTests` / `TokenSessionLimitTests` **未改动**——正因为交换链路一行代码都没改，它们继续有效就是最好的回归 |
 
 > 用例只用「构造出来的 `OidcIdentity` + H2」，不连真实 IdP：要验证的是供给与同步，
-> 而验签已由 `OidcServiceTests` 覆盖。真实 IdP 的那一次人工联调见 §10 的验收口径。
+> 而验签已由 `OidcServiceTests` 覆盖。真实 IdP 的那一次联调已做成可复现脚本（§10.1），
+> 它证明的是另一件事——**真实 Keycloak 的令牌形状与服务端期望的形状一致**。
 
 ---
 
@@ -601,13 +602,83 @@ POST /api/management/v1/group-mappings/preview
 
 | 阶段 | 内容 | 验收 |
 | --- | --- | --- |
-| **MVP（已落地）** | 5 列 + 1 表；JIT + 组同步（`ON_LOGIN`）；组映射 CRUD + 预览 + 手动同步；4 个审计事件；5 个控制台画面 | §9 的 1–10、13–15 全绿；真实 Keycloak 跑通一次登录→建主体→拿角色→换票（**待做**，需要一次人工联调） |
+| **MVP（已落地）** | 5 列 + 1 表；JIT + 组同步（`ON_LOGIN`）；组映射 CRUD + 预览 + 手动同步；4 个审计事件；5 个控制台画面 | §9 的 1–10、13–15 全绿；真实 Keycloak 跑通一次登录→建主体→拿角色→换票（**已跑通**，`scripts/e2e-keycloak-sso.sh` 65 项，见 §10.1） |
 | **P1** | IdP 配置入库（`lakehouse_identity_provider`）、多 IdP 按 `iss` 路由、`display_name`、`last_sync_at`、`audience/resource` 收窄 | 两套 IdP 同时接入；旧 yml 配置仍可读（迁移开关） |
 | **P2** | SCIM / 定时同步、停用与删除的收敛、组名通配、显式绑定本地主体 | 离职账号在 N 分钟内失去权限 |
 
 **MVP 为什么不含多 IdP。** 多 IdP 的难点不在表，在**认证链要先按未验签的 `iss`
 选 provider、再验签**（否则拿 A 的密钥验 B 的票）。这是一次认证链重构，
 和 JIT 混在一起做会让两边都测不透。
+
+### 10.1 真实 Keycloak 联调（已跑通，可复现）
+
+单测里的 OIDC 令牌是**自己拿本地 RSA 密钥签的**：它能证明「验签分支写得对」，
+证明不了「真实 IdP 签出来的令牌长什么样」。而后者才是配置错的来源——`aud` 到底
+是客户端还是资源、`groups` 是不是数组、组名带不带前导斜杠，每一项配错的表现**一模一样**：
+登录成功、一个角色都没有、每个页面 403。因此这一步看代码没用，只能对真实 IdP 发真实请求。
+
+`scripts/e2e-keycloak-sso.sh` 把这次联调固化下来（**65 项断言**，任一项不一致即非 0 退出）。
+它做两件事：先用 Keycloak 管理 API **重建**一个 realm（客户端 / 组映射器 / 组 / 用户），
+清理服务端上一轮的痕迹，然后逐段验证下面这条链。
+
+```bash
+# 1) Keycloak 26.x（管理账号 admin/admin）
+docker run -d --name kc-dev -p 8081:8080 \
+  -e KC_BOOTSTRAP_ADMIN_USERNAME=admin -e KC_BOOTSTRAP_ADMIN_PASSWORD=admin \
+  quay.io/keycloak/keycloak:26.7.4 start-dev
+
+# 2) 服务端：认证 + 授权 + OIDC 全开（完整命令见脚本头部注释）
+#    两个参数不显然，理由在上面那个脚本里：--server.port 与 principals[admin]=root
+java -jar lakehouse-rest-server-*.jar --server.port=8080 --spring.profiles.active=h2 \
+  --lakehouse.rest.auth.enabled=true --lakehouse.rest.authorization.enabled=true \
+  --lakehouse.rest.auth.console.oidc.enabled=true \
+  --lakehouse.rest.auth.console.oidc.issuer-uri=http://127.0.0.1:8081/realms/lakehouse \
+  --lakehouse.rest.auth.console.oidc.client-id=paimon-console \
+  --lakehouse.rest.auth.console.oidc.principal-claim=preferred_username \
+  --lakehouse.rest.auth.console.oidc.audience=paimon-console
+
+# 3) 跑
+./scripts/e2e-keycloak-sso.sh
+```
+
+脚本的七段与它证明的事：
+
+| 段 | 内容 |
+| --- | --- |
+| 1 | 在 Keycloak 里建 realm / **公开客户端（强制 S256）** / **组映射器** / 组 / 用户 |
+| 2 | 服务端侧：`admin→root` 拿到服务管理员、建 principal role 与组映射、**预览与登录用同一段计算** |
+| 3 | 浏览器侧：不打开浏览器，但完整走**授权码 + PKCE**（取登录页表单 → 提交 → 拿 `code` → 换令牌），断言 `state` 原样返回 |
+| 4 | 服务端认领：带 `id_token` 请求 `GET /api/console/v1/auth`，断言 JIT 建出主体、`external_id = issuer\|sub`、`last_login_at` 被刷新 |
+| 5 | 组 → 角色：主体名下出现 `analyst`；审计里 `principal.login` / `principal.provisioned` / `principal.roles_synced` 三类都在 |
+| 6 | 换票：`token-exchange` 换出的票 `sub` 不变、`iss` 变成本服务端，拿它能读到 `/v1/paimon/databases` |
+| 7 | 再登录一次：`jitCreated=false`、主体清单仍只有一行（幂等） |
+
+**四个只有真 IdP 才暴露的结论**（都写进了脚本的注释与断言里）：
+
+1. **id_token 与 access_token 不是一个受众。** Keycloak 的 id_token `aud` 是 client_id，
+   而 access_token 是 `account`。控制台优先取 id_token（`src/api/oidc.js` 的注释）不是偏好，
+   而是配了 `audience` 之后**唯一能过的那条路**：脚本第 6 段专门断言拿 access_token 换票
+   会被 400 `invalid_grant` 拒掉。反过来说，`audience` 留空时两者都能过——
+   那等于让「发给别的应用的票」也能拿来访问本服务端。
+2. **组名可能带前导斜杠。** 组映射器的 `full.path` 关掉产出 `sso-analysts`，打开就是
+   `/sso-analysts`——同一个 realm 下各建一个 mapper 实测过两种都成立。而映射表的组名匹配
+   是**精确**的（不 trim、不加前缀），差这一个斜杠就是一个角色都同步不过去，
+   而现象与「没配映射」完全一样。脚本把 `full.path=false` 显式写死：不是因为它是默认，
+   而是因为这个开关能把「同一个人在 IdP 与映射表里的名字」变成两个值。
+3. **`SERVER_PORT` 会抢走端口。** 如果环境里有这个变量，即使 yml 写了 `server.port: 8080`，
+   Tomcat 也会去绑它。而 Keycloak 侧登记的 `redirect_uri` 是写死的 8080，
+   两边对不上时浏览器只会看到一句 `invalid_redirect_uri`。启动命令里显式给 `--server.port`。
+4. **控制台密码账号默认映射成 `admin`，而 `admin` 不是服务管理员。**
+   `service-admins` 默认只有 `root`。配置 `principals[admin]=root` 之前，
+   校验脚本拿到的令牌能登录、但每个管理端点 403——很像「授权没生效」。
+
+**与单测的分工**（三者不重叠，缺一个都会漏）：`OidcServiceTests` 证明验签分支
+（算法白名单 / iss / aud / 时间窗 / 未知 kid 重取）；`SsoIdentityProvisioningTests`
+证明供给的准入判定（同名本地主体、`external_id` 不一致、邮箱域）；本脚本证明
+**真实 IdP 的令牌形状与服务端期望一致**，以及这四步连起来是通的。
+
+> 脚本会删掉并重建 realm，只该指向本地开发用的 Keycloak；服务端侧它会自己清理上一轮的
+> 角色 / 映射 / 主体，所以对着同一个 h2 实例可以反复跑。
 
 ---
 

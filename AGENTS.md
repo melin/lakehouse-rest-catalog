@@ -141,6 +141,7 @@ BASE=http://127.0.0.1:8080 ./scripts/api-sweep.sh            # Catalog API 全�
 BASE=http://127.0.0.1:8080 ./scripts/management-sweep.sh     # 管理面扩展端点 + 权限端点
 ./scripts/e2e-spark-sql.sh                                   # 自起 h2 实例，跑 Spark 四件套
 ./scripts/e2e-flink-sql.sh                                   # 自起 h2 实例，Flink 1.20 与 2.3 各跑 Paimon + Iceberg
+./scripts/e2e-keycloak-sso.sh                                # 真实 Keycloak（脚本头部有 docker run）：登录→建主体→拿角色→换票，65 项
 BASE=... CLIENT_ID=... CLIENT_SECRET=... STATIC_TOKEN=... ./scripts/sweep-console-auth.sh
 cd lakehouse-rest-console && BASE=... CLIENT_ID=... CLIENT_SECRET=... npm run check:login
 

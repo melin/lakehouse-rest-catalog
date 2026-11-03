@@ -971,6 +971,18 @@ CLIENT_ID=<引导主体 clientId> CLIENT_SECRET=<明文密钥> \
   npm run check:login
 ```
 
+**SSO 全链路**要一个真实 IdP，脚本自带 realm 的建与拆（会**删掉并重建**同名 realm，
+只该指向本地开发用的 Keycloak），65 项断言覆盖：授权码 + PKCE、JIT 建主体、
+组 → 角色、组映射预览、令牌交换、再登录的幂等。前置与四条实测结论见
+[`docs/sso-catalog-identity-design.md`](docs/sso-catalog-identity-design.md) §10.1。
+
+```bash
+docker run -d --name kc-dev -p 8081:8080 \
+  -e KC_BOOTSTRAP_ADMIN_USERNAME=admin -e KC_BOOTSTRAP_ADMIN_PASSWORD=admin \
+  quay.io/keycloak/keycloak:26.7.4 start-dev
+./scripts/e2e-keycloak-sso.sh        # 服务端需按脚本头部的方式以 OIDC 启动
+```
+
 `api-sweep.sh` 与 `management-sweep.sh` 每行输出
 `<标记>[实际状态码/期望状态码] 说明 响应片段`，末尾汇总通过 / 失败项数，
 存在失败时以非 0 退出；请求体形状与规格字段名一致，可直接作为接口调用示例。
