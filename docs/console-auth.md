@@ -658,6 +658,14 @@ lakehouse:
           metadata-cache-ttl: 10m
           jwks-cache-ttl: 1h
           clock-skew: 60s
+          # ---- 登录之后的供给（§6.5）----
+          group-claim: groups        # Cognito 是 cognito:groups
+          display-name-claim: email  # 只用于展示与审计，不参与授权
+          sync-mode: on-login        # on-login | strict | off
+          auto-provision: true       # 首次登录建主体（新主体零授权）
+          allow-adopt-local: false   # 打开 = 允许外部身份接管同名本地主体
+          allowed-email-domains: []  # 空 = 不限；配了而令牌无 email 则拒绝
+          default-roles: []          # 所有 SSO 主体都得到的基线角色
 ```
 
 `signed-key` 留空时进程启动随机生成：**本地单机调试可用，但重启会让所有人掉线、
