@@ -26,9 +26,9 @@
 	<!--
 		本模块是**唯一产出可执行 jar 与镜像**的模块。装什么：
 
-		  PaimonRestServerApplication    启动类（组件扫描从 io.github.melin.lakehouse.rest 起，
-		                                 因此 core / storage / protocol-* 里的 bean、实体与
-		                                 仓储在哪个 jar 里都能被扫到——这是拆分不需要改包名的原因）
+		  LakehouseRestServerApplication    启动类（组件扫描从 io.github.melin.lakehouse.rest 起，
+		                                     因此 core / storage / protocol-* 里的 bean、实体与
+		                                     仓储在哪个 jar 里都能被扫到——这是拆分不需要改包名的原因）
 		  web/Management*、Console*      管理 API（/api/management/v1/**，33 个 operation）
 		                                 与控制台自己的端点
 		  service/Optimization*          优化任务的记账与调度：批次、明细、抢占、提交 k8s

@@ -13,9 +13,9 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
  */
 @SpringBootApplication
 @EnableConfigurationProperties(RestServerProperties.class)
-public class PaimonRestServerApplication {
+public class LakehouseRestServerApplication {
 
     public static void main(String[] args) {
-        SpringApplication.run(PaimonRestServerApplication.class, args);
+        SpringApplication.run(LakehouseRestServerApplication.class, args);
     }
 }

@@ -217,7 +217,7 @@ lakehouse-rest-spring-parent/   服务端世界的父 POM（继承 Boot 4.1.2）
     ↑ 不引任何 Lance / 格式库；认证与授权两条拦截器都要登记这个基址，见第 1 节第 10 条
 
   lakehouse-rest-server/   可执行服务端（39 个类；测试也在这一模块：47 个测试类 + `TestClock` 支撑类）
-    PaimonRestServerApplication.java   启动类（组件扫描按**包**不按 jar，见第 7 节）
+    LakehouseRestServerApplication.java   启动类（组件扫描按**包**不按 jar，见第 7 节）
     web/                  Management API 4 个（Principal / PrincipalRole / CatalogRole /
                         ManagementCatalog）+ PermissionController；控制台 4 个（ConsoleAuth /
                         ConsoleMeta / ConsoleFile / Optimization）

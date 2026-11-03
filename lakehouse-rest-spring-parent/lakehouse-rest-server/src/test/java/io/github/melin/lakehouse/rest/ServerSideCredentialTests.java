@@ -168,7 +168,7 @@ class ServerSideCredentialTests {
     /**
      * 代码里的缺省值：三家签发器都开。
      *
-     * <p>与 {@code PaimonRestServerApplicationTests#credentialProvidersAreOnAtStartup} 有意重复，
+     * <p>与 {@code LakehouseRestServerApplicationTests#credentialProvidersAreOnAtStartup} 有意重复，
      * 但读的东西不同：这里 {@code new} 一个空对象，验的是**纯代码默认**；那条读 Spring
      * 绑定后的值，验的是「代码默认 + application.yml 合起来的结果」。两层都要——这个
      * 缺省值曾经是空的，而它造成的后果是静默的：填了 {@code roleArn} 却没签过一张票，
