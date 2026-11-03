@@ -251,6 +251,12 @@ lakehouse:
       # 管理规格的权限枚举没有覆盖「管理主体」的层级，故用名单表达
       service-admins:
         - root
+        # 本地密码账号 admin 直接作为服务管理员（dev 便利）
+        - admin
+        # OIDC（Keycloak）用户 admin 经 principal-claim: sub 映射成的主体名（UUID）。
+        # 加入名单即成为服务管理员。UUID 随 IdP 用户/重新供给而变化，仅适合本地 dev；
+        # 生产应改用组→角色映射（group-claim），不要把 IdP 账号直接放进服务管理员。
+        - eb025a04-f162-4a7f-adab-17553e217958
       # 启动时预置的引导主体与引导角色链（主体 → 角色 → 各 catalog 的 catalog_admin）
       bootstrap-principal: root
       bootstrap-principal-role: service_admin

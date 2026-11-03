@@ -211,15 +211,6 @@
                而 SSO 起不来的原因分属三方（IdP / 服务端 / 网络），原文对用户没有意义 -->
           <SsoDiagnosis v-if="error" :diagnosis="ssoDiagnosis" />
 
-          <dl class="pc-login-kv">
-            <dt>身份提供方</dt>
-            <dd class="pc-mono pc-break">{{ auth.state.oidc?.issuer || '—' }}</dd>
-            <dt>客户端</dt>
-            <dd class="pc-mono">{{ auth.state.oidc?.clientId || '—' }}</dd>
-            <dt>回调地址</dt>
-            <dd class="pc-mono pc-break">{{ redirectUri || '—' }}</dd>
-          </dl>
-
           <el-button
             type="primary"
             class="pc-login-submit"
@@ -229,13 +220,6 @@
           >
             使用 SSO 登录
           </el-button>
-
-          <p class="pc-login-foot">
-            将跳转到上面的身份提供方完成认证，再回到本控制台。
-            本控制台是公开客户端，用 PKCE 换令牌，不保存任何客户端密钥。<br />
-            服务端按 <code class="pc-mono">lakehouse.rest.auth.console.oidc.audience</code>
-            校验令牌受众，用 ID token 时应填 IdP 里的 client-id。
-          </p>
         </template>
 
         <!-- 降级入口：直接填一个静态令牌 -->
