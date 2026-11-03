@@ -19,6 +19,11 @@
     <PanelCard flush>
       <div class="pc-list-head">
         <span class="pc-list-title">主体（{{ total }}）</span>
+        <el-select v-model="sourceFilter" size="small" class="pc-principal-filter">
+          <el-option label="全部来源" value="" />
+          <el-option label="本地（LOCAL）" value="LOCAL" />
+          <el-option label="IdP 登录（OIDC）" value="OIDC" />
+        </el-select>
       </div>
       <ResourceState
         :loading="loading"
@@ -34,9 +39,32 @@
         </template>
         <el-table v-loading="loading" :data="rows" size="small">
           <el-table-column prop="name" label="名称" min-width="150" />
+          <el-table-column label="来源" width="100">
+            <template #default="{ row }">
+              <!-- 来源决定这一行能做什么：OIDC 主体没有 clientId / 密钥，
+                   因此不给「轮换」「重置」两个动作——点了也只会得到一份没人用的凭据 -->
+              <el-tooltip
+                :content="row.source === 'OIDC'
+                  ? '首次 SSO 登录时自动创建（JIT），没有 clientId 与密钥'
+                  : '在控制台或管理 API 里创建，持有 clientId 与密钥'"
+                placement="top"
+              >
+                <el-tag size="small" effect="plain" :type="row.source === 'OIDC' ? 'warning' : 'info'">
+                  {{ row.source === 'OIDC' ? 'IdP 登录' : '本地' }}
+                </el-tag>
+              </el-tooltip>
+            </template>
+          </el-table-column>
           <el-table-column label="Client ID" min-width="190">
             <template #default="{ row }">
-              <CopyText :text="row.clientId" />
+              <CopyText v-if="row.clientId" :text="row.clientId" />
+              <span v-else class="pc-dim">—</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="外部标识" min-width="200">
+            <template #default="{ row }">
+              <span v-if="row.externalId" class="pc-mono pc-dim pc-break">{{ row.externalId }}</span>
+              <span v-else class="pc-dim">—</span>
             </template>
           </el-table-column>
           <el-table-column label="属性" min-width="150">
@@ -44,14 +72,29 @@
               <span class="pc-mono pc-dim pc-break">{{ inlineMap(row.properties) }}</span>
             </template>
           </el-table-column>
+          <el-table-column label="最后登录" width="170">
+            <template #default="{ row }">
+              <TimeText v-if="row.lastLoginAt" :millis="row.lastLoginAt" />
+              <span v-else class="pc-dim">—</span>
+            </template>
+          </el-table-column>
           <el-table-column label="创建时间" width="170">
             <template #default="{ row }"><TimeText :millis="row.createTimestamp" /></template>
           </el-table-column>
-          <el-table-column label="操作" width="124" fixed="right">
+          <el-table-column label="操作" width="150" fixed="right">
             <template #default="{ row }">
               <IconAction icon="Avatar" label="角色" type="primary" @click="openRoles(row)" />
-              <IconAction icon="Refresh" label="轮换密钥" @click="rotate(row)" />
-              <IconAction icon="Key" label="重置 clientId 与密钥" @click="openReset(row)" />
+              <!-- 同步只对 IdP 来的主体有意义：本地主体没有 IDP 来源的成员关系可收敛 -->
+              <IconAction
+                v-if="row.source === 'OIDC'"
+                icon="RefreshRight"
+                label="按组同步角色"
+                @click="openSync(row)"
+              />
+              <template v-if="row.source !== 'OIDC'">
+                <IconAction icon="Refresh" label="轮换密钥" @click="rotate(row)" />
+                <IconAction icon="Key" label="重置 clientId 与密钥" @click="openReset(row)" />
+              </template>
               <IconAction icon="Delete" label="删除" type="danger" @click="confirmDelete(row)" />
             </template>
           </el-table-column>
@@ -145,15 +188,52 @@
             </template>
           </el-table-column>
         </el-table>
-        <TablePager
-          :total="total"
-          :page="page"
-          :page-size="pageSize"
-          @page-change="onPageChange"
-          @size-change="onSizeChange"
-        />
       </ResourceState>
     </el-drawer>
+
+    <!-- 按组同步角色（只对 IdP 来的主体） -->
+    <el-dialog
+      v-model="syncDialog.open"
+      :title="`按组同步角色：${syncDialog.principal}`"
+      width="520px"
+      :close-on-click-modal="false"
+      destroy-on-close
+    >
+      <TipAlert type="warning" class="pc-hint">
+        <template #title>组名必须由你给出</template>
+        服务端<b>不保存</b>「这个人上次登录时在哪些组」，它只会在下次登录时按令牌重新算，
+        所以这里要你把组名填上。同样的组名跑两次是幂等的。<br />
+        <b>留空的后果由服务端的 sync-mode 决定</b>：<code>ON_LOGIN</code>（默认）下是
+        「只补默认角色、<b>一个都不删</b>」；<code>STRICT</code> 下才是按「不在任何组」重算，
+        也就是撤掉 IDP 来源的全部角色。手工授的角色两种情况都不受影响。
+        具体是哪一种由服务端判，这里不猜。
+      </TipAlert>
+      <el-form label-position="top" size="small" class="pc-form">
+        <el-form-item label="IdP 组名">
+          <el-input
+            v-model="syncDialog.groups"
+            type="textarea"
+            :rows="3"
+            placeholder="用逗号或换行分隔，例如 data-engineers, ops"
+          />
+        </el-form-item>
+      </el-form>
+      <p v-if="syncDialog.result" class="pc-dim pc-sync-result">
+        新增 <b>{{ syncDialog.result.added.join('、') || '无' }}</b>；
+        撤销 <b>{{ syncDialog.result.removed.join('、') || '无' }}</b>
+        <!-- 这个分支必须单独说：它与「跑完了没有变化」在界面上长得一样，
+             但原因完全不同（服务端刻意什么都没做），回一句「幂等」会让人以为规则生效了 -->
+        <template v-if="syncDialog.result.skippedReason">
+          <br />
+          这次<b>刻意没有改动</b>（{{ syncDialog.result.skippedReason }}）：没带组成员时，
+          <code>ON_LOGIN</code> 模式只补默认角色、不删任何角色。
+        </template>
+      </p>
+      <template #footer>
+        <el-button @click="syncDialog.open = false">关闭</el-button>
+        <el-button type="primary" :loading="syncDialog.saving" @click="saveSync">同步</el-button>
+      </template>
+    </el-dialog>
 
     <CredentialDialog
       v-model="credentialDialog.open"
@@ -164,7 +244,7 @@
 </template>
 
 <script setup>
-import { computed, reactive } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 
 import TipAlert from '@/components/TipAlert.vue'
 import CopyText from '@/components/CopyText.vue'
@@ -184,6 +264,11 @@ import { confirmDanger, notifyError, notifySuccess, onConsoleRefresh, useRemoteP
 import { inlineMap } from '@/utils/format.js'
 
 // 主体表走远程分页：`total` 由服务端数，页面不再自己数已经拿到的那一批。
+//
+// 来源过滤也下推服务端（`?source=LOCAL|OIDC`）：本地筛只筛得到当页，
+// 「筛 OIDC 得到 0 条」会被读成「没有人用 SSO 登录过」，而实际上他们在第 3 页。
+const sourceFilter = ref('')
+
 const {
   rows,
   total,
@@ -196,13 +281,82 @@ const {
   onPageChange,
   onSizeChange,
 } = useRemotePaging(({ page: current, pageSize: size }) => managementApi
-  .listPrincipals({ page: current, pageSize: size })
+  .listPrincipals({ source: sourceFilter.value, page: current, pageSize: size })
   .then((payload) => ({ items: payload.principals || [], total: payload.page?.total ?? 0 })))
+
+// 换来源回第一页重取
+watch(sourceFilter, () => reload())
 
 // 授予角色用的候选**不分页**：那是一个下拉框，需要「所有能授予的角色」，
 // 拿到一页会让另一半角色选不到。角色数量本身是个位数到几十的量级。
 const rolesResource = useResource(() => managementApi.listPrincipalRoles(), { immediate: false })
 const allRoles = computed(() => rolesResource.data.value?.roles || [])
+
+// ------------------------------------------------------------------ 按组同步角色
+
+/**
+ * 手动重算一个 OIDC 主体的 IDP 来源角色。
+ *
+ * <p><b>为什么组名要人填</b>：服务端不保存「上次登录时这个人在哪些组」——那是一次快照，
+ * 存下来就多一份会过期的状态，而它唯一的用途是省掉这一次参数。
+ *
+ * <p><b>留空不是「什么都不做」</b>，但也不是一律「撤权」——后果由服务端的 sync-mode 决定：
+ * `ON_LOGIN`（默认）下服务端会**刻意一个都不删**、只补默认角色，并回一个 `skippedReason`；
+ * `STRICT` 下才是按「不在任何组」重算，也就是撤掉 IdP 来源的全部角色。
+ * 前端拿不到这个判据（它要读部署配置），所以这里既不静默提交、也不假装知道是哪一种：
+ * 空输入走一次红色确认把两种后果都说清楚，回执里再按 `skippedReason` 说出实际发生了什么。
+ */
+const syncDialog = reactive({
+  open: false,
+  principal: '',
+  groups: '',
+  result: null,
+  saving: false,
+})
+
+function openSync(row) {
+  Object.assign(syncDialog, { open: true, principal: row.name, groups: '', result: null })
+}
+
+/** 逗号 / 顿号 / 换行都算分隔符：管理员从别处抄过来时格式不统一。 */
+function parseGroups(text) {
+  return text
+    .split(/[,，、\n\r]+/)
+    .map((value) => value.trim())
+    .filter(Boolean)
+}
+
+async function saveSync() {
+  const groups = parseGroups(syncDialog.groups)
+  if (!groups.length) {
+    const ok = await confirmDanger({
+      title: '空组提交：后果由 sync-mode 决定',
+      target: `把「${syncDialog.principal}」按「一个人都不在任何组」提交？`,
+      detail: 'ON_LOGIN（默认）下服务端只补默认角色、一个都不删；STRICT 下会撤掉 IDP 来源的全部角色。'
+        + '手工授的角色两种情况都不受影响。',
+      confirmText: '提交',
+    })
+    if (!ok) {
+      return
+    }
+  }
+  syncDialog.saving = true
+  try {
+    syncDialog.result = await managementApi.syncPrincipal(syncDialog.principal, groups)
+    const result = syncDialog.result
+    if (result.skippedReason) {
+      // 「刻意什么都没做」与「跑完了没变化」不是一回事，提示语不能合并
+      notifySuccess('服务端按 sync-mode 跳过了这次同步，没有删除任何角色')
+    } else if (!result.added?.length && !result.removed?.length) {
+      notifySuccess('没有变化（同样的组名跑两次是幂等的）')
+    }
+    load()
+  } catch (cause) {
+    notifyError(cause)
+  } finally {
+    syncDialog.saving = false
+  }
+}
 
 const credentialDialog = reactive({ open: false, principal: '', credentials: {} })
 
@@ -378,3 +532,18 @@ async function revokeRole(name) {
 
 onConsoleRefresh(() => load())
 </script>
+
+<style scoped>
+/* 与「主体（N）」同处一行：标题自带 `margin-right: auto`，会把它推到右端，
+ * 与其它列表页把工具放右侧的排布一致。定宽是为了切换选项时标题不被挤动。 */
+.pc-principal-filter {
+  width: 150px;
+}
+
+/* 同步结果贴在表单下方，字号小一号——它是「刚才那次操作的结果」，
+ * 不属于表单本身的输入。 */
+.pc-sync-result {
+  margin: 12px 0 0;
+  font-size: 12px;
+}
+</style>

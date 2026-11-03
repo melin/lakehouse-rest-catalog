@@ -26,7 +26,12 @@ public final class ManagementMappers {
                 new LinkedHashMap<>(entity.getProperties()),
                 entity.getCreatedAt(),
                 entity.getUpdatedAt(),
-                entity.getEntityVersion());
+                entity.getEntityVersion(),
+                // 来源三项按枚举名回（`LOCAL` / `OIDC`），与库里那一列、事件里的属性同一个词表
+                entity.getSource() == null ? null : entity.getSource().name(),
+                entity.getExternalId(),
+                entity.getDisplayName(),
+                entity.getLastLoginAt());
     }
 
     /** 实体 → 规格 {@code PrincipalRole}。 */

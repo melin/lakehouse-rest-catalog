@@ -125,7 +125,16 @@ public final class ManagementDtos {
                             Map<String, String> properties,
                             Long createTimestamp,
                             Long lastUpdateTimestamp,
-                            Integer entityVersion) {
+                            Integer entityVersion,
+                            // ---- 身份接入（docs/sso-catalog-identity-design.md §4）----
+                            // 这四项只读：控制台据此把「IdP 来的」与「本地建的」分开显示。
+                            // 它们不出现在任何请求体里——来源是服务端在 JIT 时写的事实，
+                            // 不是调用方能声明的属性（能声明就等于能自己挑一个 `source=LOCAL`
+                            // 来躲开同名接管判定）。
+                            String source,
+                            String externalId,
+                            String displayName,
+                            Long lastLoginAt) {
     }
 
     /** {@code PrincipalWithCredentials}：创建、轮换、重置主体时返回，明文密钥仅此一次。 */
@@ -338,6 +347,77 @@ public final class ManagementDtos {
      * 想立刻生效」，而那条映射的组名就在他手上。
      */
     public record PrincipalSyncRequest(List<String> groups) {
+    }
+
+    /**
+     * {@code GET /identity-provider}：把生效中的身份接入配置如实回给管理员。
+     *
+     * <p><b>没有写端点。</b>这些是部署配置（`application.yml` / ConfigMap / 环境变量），
+     * 把它们做成可在线修改意味着「一个登录页的开关可以被另一个登录进来的人改掉」，
+     * 而配置错误的表现是所有人都登不上——那需要重启与回滚能力，不是浏览器能承担的操作。
+     */
+    public record IdentityProvider(boolean enabled,
+                                   boolean consoleRequired,
+                                   String issuer,
+                                   String clientId,
+                                   String audience,
+                                   String redirectUri,
+                                   String scope,
+                                   String principalClaim,
+                                   String groupClaim,
+                                   String displayNameClaim,
+                                   String syncMode,
+                                   boolean autoProvision,
+                                   boolean allowAdoptLocal,
+                                   List<String> allowedEmailDomains,
+                                   List<String> defaultRoles) {
+    }
+
+    /**
+     * 连通性测试的一步。
+     *
+     * @param step   {@code discovery} / {@code endpoints} / {@code jwks} / {@code mapping} /
+     *               {@code provisioning}
+     * @param status {@code OK} / {@code WARN} / {@code FAIL} / {@code SKIPPED}
+     * @param detail 人话结论。<b>只含配置与错误分类，不含任何令牌或 claim 值</b>
+     */
+    public record IdentityProviderProbeStep(String step, String status, String detail) {
+    }
+
+    /**
+     * {@code POST /identity-provider/probe} 的结果。
+     *
+     * @param verdict 总判：{@code OK} / {@code WARN} / {@code FAIL}（任一步 FAIL 即 FAIL）
+     */
+    public record IdentityProviderProbe(List<IdentityProviderProbeStep> steps, String verdict) {
+    }
+
+    /**
+     * 一次登录的 claim 形状（**打码后的**，见 `OidcClaimSampleStore`）。
+     *
+     * @param groups             最多三个打码后的组名；总数看 {@code groupCount}
+     * @param groupsClaimPresent 令牌里到底有没有那个 claim（空数组算「有」）
+     * @param outcome            {@code success} / {@code not-provisioned} / {@code partial} /
+     *                           {@code refused}
+     */
+    public record IdentityClaimSample(String principal,
+                                      String issuer,
+                                      String subject,
+                                      String email,
+                                      List<String> groups,
+                                      int groupCount,
+                                      boolean groupsClaimPresent,
+                                      String outcome,
+                                      long at) {
+    }
+
+    /**
+     * {@code GET /identity-provider/claim-samples}。
+     *
+     * @param processLocal 恒为 true：样本存在**本进程内存**里。多副本部署时每个副本
+     *                     只记得自己处理过的那几次登录，看到的人少不等于别人没登录过
+     */
+    public record IdentityClaimSamples(List<IdentityClaimSample> samples, boolean processLocal) {
     }
 
     /** catalog 类型的判别值，供校验错误信息复用。 */

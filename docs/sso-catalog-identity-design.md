@@ -12,7 +12,7 @@
 | §6 C 侧收尾 | 未改：`TokenExchangeService` 一行都没动，且**不调用**供给（§5.6） |
 | §7 管理面 | `GroupMappingController`、`PrincipalController#sync`、`PrincipalService#list(source, …)` |
 | §7.3 审计 | `principal.login` / `principal.provisioned` / `principal.roles_synced` / `group_mapping.changed` |
-| §8 控制台 | **未做**：前端不在本仓库，原型仍是评审产物 |
+| §8 控制台 | `lakehouse-rest-console/` 的五个画面（`#login` / `#idp` / `#principals` / `#groups` / `#audit`）；身份接入只读，见 §8.4 |
 | §9 测试 | `SsoIdentityProvisioningTests`（16 例）+ `GroupMappingApiTests`（9 例） |
 
 > 与本文的两处偏差，都在实现时定下的，理由写在各节：
@@ -23,7 +23,7 @@
 [`authorization.md`](authorization.md)（授权链）、
 [`engine-token-refresh-design.md`](engine-token-refresh-design.md)（令牌交换）、
 [`data-model.md`](data-model.md)（表结构）。
-配套原型：[`sso-catalog-identity-mockup.html`](sso-catalog-identity-mockup.html)（五画面，评审用，未接入前端）。
+配套原型：[`sso-catalog-identity-mockup.html`](sso-catalog-identity-mockup.html)（五画面，评审产物；真实实现在 `lakehouse-rest-console/`，落地位置见 §8.4）。
 
 ---
 
@@ -517,6 +517,48 @@ POST /api/management/v1/group-mappings/preview
 - 不做「一键把本地主体转 OIDC」（P2 的显式绑定）；
 - 不做主体删除的级联提示以外的事——删主体仍然走现有管理面。
 
+### 8.4 落地位置
+
+原型里的 `#hash` 在控制台是一个真实路由，五个画面摊成**三页 + 两个已有页面**：
+
+| 画面 | 路由 | 组件 | 端点 |
+| --- | --- | --- | --- |
+| 登录（SSO 页签 + 失败诊断） | `/login` | `LoginView` + `SsoDiagnosis` | `GET /api/console/v1/auth` |
+| 回调（失败诊断） | `/auth/callback` | `AuthCallbackView` + `SsoDiagnosis` | `POST /api/catalog/v1/oauth/tokens` |
+| 身份接入 | `/identity` | `IdentityProviderView` | 三条，只读 |
+| 主体清单 | `/principals` | `PrincipalsView`（来源列 / 外部标识 / 最后登录 / 按组同步） | 列表带 `?source=`，同步走 `POST …/principals/{name}/sync` |
+| 组映射 | `/group-mappings` | `GroupMappingsView` | CRUD 四条 + `POST …/preview` |
+| 审计 | `/identity-audit` | `IdentityAuditView` | `GET /api/console/v1/events`（`category` / `type` 下推） |
+
+**身份接入页为什么只有读。** 这三条端点（配置、探活、claim 样例）里没有一条能改配置：
+
+| 端点 | 用途 | 为什么不能写 |
+| --- | --- | --- |
+| `GET /identity-provider` | 当前生效配置（15 个字段，不含任何密钥） | 字段来自 yml / ConfigMap；在线可改等于「已登录的人改自己的准入规则」 |
+| `POST /identity-provider/probe` | 五步探活：`discovery` / `endpoints` / `jwks` / `mapping` / `provisioning` | 纯读，且**跳过缓存**——登录页要缓存（否则闪），探活要「现在」 |
+| `GET /identity-provider/claim-samples` | 最近 20 次登录的 claim **形状**（打码） | 只读替身数据，`processLocal=true` 说明多副本各记各的 |
+
+探活的判据里有两处是刻意的：**配置类步骤不因连接失败而跳过**（IdP 连不上时仍要能看见
+「redirect-uri 没配」），`jwks` 依赖发现文档、失败时给 `SKIPPED` 而不是 `FAIL`（那不是它的错）。
+
+**失败分类是纯函数。** `utils/ssoDiagnostics.js` 把服务端 / IdP 的原文映射成
+`{code, title, why, action, tone}`，**原文一律保留在 `raw` 里并显示在折叠区**——分类是为了
+给出下一步，不是为了把证据删掉。`tone` 只有 `blocked`（要改配置）与 `retry`（再试一次）两档。
+登录页与回调页共用这一个函数和同一张卡：两处各写一份文案时，同一个原因会有两种说法，
+而照着做的人只会做错。单测在 `tools/sso-tests/`（19 例，`npm run test:sso`）。
+
+**两个不可逆动作都要二次确认。** 组映射保存到 `service-admins` 时服务端回 400 且消息含
+`confirmAdminMapping`，前端据此弹红色确认后带 `confirmAdminMapping=true` 重试——判据必须来自
+服务端（要读「这个角色是不是 service-admins 持有」），前端自己写一份名单，漂移的方向是
+**少确认一次**。手动同步留空同理：服务端不保存「上次登录在哪些组」，留空的自然读法是「不填」。
+但它的后果**不是一律撤权**——`ON_LOGIN`（默认）下服务端刻意一个都不删、只补默认角色
+并回一个 `skippedReason`，`STRICT` 下才是按「不在任何组」重算。控制台因此把两种后果
+都写在确认框里，回执再按 `skippedReason` 区分「刻意跳过」与「跑完了没变化」。
+
+**身份接入页与组映射页分成两页。** 前者改一次要重新部署，后者是日常运维（人来了、组改了），
+两者频次差一个量级；混在一页会让「我今天要做什么」变得不清楚。侧边栏因此多一个「身份」分组，
+审计页归到已有的「审计」组（它与「事件」是同一张 `audit_event` 表、同一个端点）。
+
 ---
 
 ## 9. 测试矩阵
@@ -559,7 +601,7 @@ POST /api/management/v1/group-mappings/preview
 
 | 阶段 | 内容 | 验收 |
 | --- | --- | --- |
-| **MVP（已落地）** | 5 列 + 1 表；JIT + 组同步（`ON_LOGIN`）；组映射 CRUD + 预览 + 手动同步；3 个审计事件；5 个控制台画面**（未做）** | §9 的 1–10、13–15 全绿；真实 Keycloak 跑通一次登录→建主体→拿角色→换票（**待做**，需要一次人工联调） |
+| **MVP（已落地）** | 5 列 + 1 表；JIT + 组同步（`ON_LOGIN`）；组映射 CRUD + 预览 + 手动同步；4 个审计事件；5 个控制台画面 | §9 的 1–10、13–15 全绿；真实 Keycloak 跑通一次登录→建主体→拿角色→换票（**待做**，需要一次人工联调） |
 | **P1** | IdP 配置入库（`lakehouse_identity_provider`）、多 IdP 按 `iss` 路由、`display_name`、`last_sync_at`、`audience/resource` 收窄 | 两套 IdP 同时接入；旧 yml 配置仍可读（迁移开关） |
 | **P2** | SCIM / 定时同步、停用与删除的收敛、组名通配、显式绑定本地主体 | 离职账号在 N 分钟内失去权限 |
 

@@ -61,7 +61,7 @@
 | [`job-self-healing-mockup.html`](job-self-healing-mockup.html) | [`job-self-healing-design.md`](job-self-healing-design.md)（五画面） |
 | [`credential-vending-mockup.html`](credential-vending-mockup.html) | [`credential-vending-design.md`](credential-vending-design.md) §10（创建 catalog 页的凭据下发配置；可切存储类型与三态来源，查询串直开某状态，见 §10.7） |
 | [`catalog-storage-auth-mockup.html`](catalog-storage-auth-mockup.html) | [`catalog-storage-auth-design.md`](catalog-storage-auth-design.md)（v3：四节表单——基本信息 / 存储位置 / 存储认证 / 保存前自检，**没有「用途」这一节**；七种存储 × 部署状态可切，单方式的类型（Azure / GCS / COS）只出一张卡并标「唯一方式」；右侧「三条准入线」「谁拿到什么」「会下发什么」「为什么这样排」联动；第 4 节自检可勾「连写入一起验」，结果分「读 ✓ 写 ✓ / 读 ✓ 写 ✗ / 未验写」三态，本地类型两档都禁用。直达：`#create` / `#role` / `#noSign` / `#azure` / `#gcs` / `#write` / `#edit` / `#legacy` / `#file`，`#COS` 这类直接切类型） |
-| [`sso-catalog-identity-mockup.html`](sso-catalog-identity-mockup.html) | [`sso-catalog-identity-design.md`](sso-catalog-identity-design.md)（五画面：`#login` 登录页含失败诊断、`#idp` 身份接入含连通性测试与令牌样例、`#principals` 主体清单含来源/JIT/角色来源、`#groups` 组映射含 sync-mode 联动与同步预览、`#audit` 登录与换票审计） |
+| [`sso-catalog-identity-mockup.html`](sso-catalog-identity-mockup.html) | [`sso-catalog-identity-design.md`](sso-catalog-identity-design.md)（原型五画面，真实实现在控制台：`/identity` / `/group-mappings` / `/identity-audit`；画面：`#login` 登录页含失败诊断、`#idp` 身份接入含连通性测试与令牌样例、`#principals` 主体清单含来源/JIT/角色来源、`#groups` 组映射含 sync-mode 联动与同步预览、`#audit` 登录与换票审计） |
 
 ## 文档与代码的一致性靠脚本守
 

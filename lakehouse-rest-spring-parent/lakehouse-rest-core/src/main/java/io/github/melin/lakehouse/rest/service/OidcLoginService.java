@@ -62,6 +62,8 @@ public class OidcLoginService {
 
     private final GroupRoleSyncService sync;
 
+    private final OidcClaimSampleStore samples;
+
     private final CatalogEventPublisher events;
 
     private final RestServerProperties properties;
@@ -74,8 +76,10 @@ public class OidcLoginService {
      * @param principal 主体名（等于令牌里的 principal claim）
      * @param created   这次是否新建了主体
      * @param synced    是否真的执行了组同步
-     * @param outcome   {@code provisioned} / {@code existing} / {@code not-provisioned} /
-     *                  {@code partial}（同步失败，登录仍然成立）
+     * @param outcome   {@code success}（含首次登录建主体）/
+     *                  {@code not-provisioned}（关掉了 JIT，认证成功但没建主体）/
+     *                  {@code partial}（组同步失败，登录仍然成立）。被准入判定拒绝时
+     *                  本记录不会返回——那是异常，但 claim 样本会记成 {@code refused}
      */
     public record LoginResult(String principal, boolean created, boolean synced, String outcome) {
     }
@@ -89,6 +93,20 @@ public class OidcLoginService {
      *                      都零权限，而用户会以为这是权限配置问题
      */
     public LoginResult onLogin(OidcService.OidcIdentity identity) {
+        try {
+            LoginResult result = doLogin(identity);
+            samples.record(identity, result.outcome());
+            return result;
+        } catch (RuntimeException e) {
+            // 被准入判定拒绝的人**最**需要这条样本：他的 claim 形状就是「为什么进不来」
+            // 的答案。记完再抛，登录失败的行为不变
+            samples.record(identity, "refused");
+            throw e;
+        }
+    }
+
+    /** {@link #onLogin} 的主体；分开只是为了在出口处统一取样，判定逻辑一行未动。 */
+    private LoginResult doLogin(OidcService.OidcIdentity identity) {
         RestServerProperties.Auth.Oidc oidc = properties.getAuth().getConsole().getOidc();
         String name = identity.principal();
 

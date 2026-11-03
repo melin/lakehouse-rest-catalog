@@ -93,6 +93,45 @@ export const managementApi = {
   revokePrincipalRole: (principalName, principalRoleName) => del('revokePrincipalRole', {
     params: { principalName, principalRoleName },
   }),
+  /**
+   * 用一组 IdP 组名重算该主体的 IDP 来源角色。
+   *
+   * <p>`groups` **必须给**（空数组是合法的，表示「这个人不在任何组」= 撤掉 IDP 角色）。
+   * 服务端刻意不做「不传就按上次登录的组算」——它没存那个快照，而退化成空组等于撤权，
+   * 那是单向且不可逆的。缺参数时回 400。
+   *
+   * <p>返回 `{ added, removed, groups, skippedReason }`：幂等，第二次跑两个数组都空。
+   */
+  syncPrincipal: (principalName, groups) => post('syncPrincipal', {
+    params: { principalName },
+    body: { groups },
+  }),
+
+  // ------------------------------------------------------------------ 身份接入
+  /** 生效中的身份接入配置（只读，**没有写端点**：那是部署配置）。 */
+  getIdentityProvider: () => get('identityProvider'),
+  /**
+   * 连通性测试：五步（discovery / endpoints / jwks / mapping / provisioning），
+   * 每步一个结论。会真的向 IdP 发请求，因此只在用户点按钮时调。
+   */
+  probeIdentityProvider: () => post('probeIdentityProvider'),
+  /** 最近若干次登录的 claim 形状（已打码、最多 20 条、进程内）。 */
+  identityClaimSamples: () => get('identityClaimSamples'),
+
+  // ------------------------------------------------------------------ 组映射
+  /** `query` 给 `provider`（精确）/ `group`（包含）/ `page` / `pageSize`。 */
+  listGroupMappings: (query = {}) => get('listGroupMappings', { params: { query } }),
+  /** `{ provider?, group, role, enabled?, confirmAdminMapping? }`；重复映射回 409。 */
+  createGroupMapping: (body) => post('createGroupMapping', { body }),
+  /** `{ currentEntityVersion, role?, enabled?, confirmAdminMapping? }`；组名与 provider 不可变。 */
+  updateGroupMapping: (id, body) => put('updateGroupMapping', { params: { id }, body }),
+  /** 只删规则，**不回收已经同步出去的成员关系**。 */
+  deleteGroupMapping: (id) => del('deleteGroupMapping', { params: { id } }),
+  /**
+   * 预览「这组人最终会拿到什么」：`{ provider?, groups: [] }` →
+   * `{ desiredRoles, unmappedGroups, unknownRoles, warnings }`。不写库。
+   */
+  previewGroupMappings: (body) => post('previewGroupMappings', { body }),
 
   // ------------------------------------------------------------------ principal role
   /** 角色列表。`query` 给 `page` / `pageSize`。 */

@@ -20,6 +20,7 @@ import io.github.melin.lakehouse.rest.domain.repo.PrincipalRoleAssignmentReposit
 import io.github.melin.lakehouse.rest.domain.repo.PrincipalRoleRepository;
 import io.github.melin.lakehouse.rest.event.CatalogEventPublisher;
 import io.github.melin.lakehouse.rest.service.GroupRoleSyncService;
+import io.github.melin.lakehouse.rest.service.OidcClaimSampleStore;
 import io.github.melin.lakehouse.rest.service.OidcLoginService;
 import io.github.melin.lakehouse.rest.service.OidcService;
 import io.github.melin.lakehouse.rest.support.ApiException;
@@ -82,11 +83,15 @@ class SsoIdentityProvisioningTests {
 
     private OidcLoginService login;
 
+    /** 取样器本身的行为由 `IdentityProviderApiTests` 覆盖，这里只负责把它传进去。 */
+    private final OidcClaimSampleStore claimSamples = new OidcClaimSampleStore();
+
     @BeforeEach
     void setUp() {
         properties = new RestServerProperties();
         sync = new GroupRoleSyncService(mappings, roles, assignments, principals, events, properties);
-        login = new OidcLoginService(principals, sync, events, properties, Clock.systemUTC());
+        login = new OidcLoginService(principals, sync, claimSamples, events, properties,
+                Clock.systemUTC());
 
         // 每个用例从空表出发。注意引导主体（root）只在 authorization.enabled=true 时才建，
         // 而测试 profile 关着它——所以「同名本地主体」这条用例自己造一个，

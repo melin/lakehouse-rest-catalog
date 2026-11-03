@@ -175,6 +175,29 @@ const routes = [
     meta: { title: '优化任务', icon: 'Histogram', group: '治理（Management API）', nav: true },
   },
   {
+    // 身份接入：SSO 的**生效配置** + 连通性测试 + 令牌样例。
+    //
+    // <p>整页只读，没有编辑框——这些字段来自部署配置（yml / K8s ConfigMap）。
+    // 允许在线改等于「已经登录进来的人可以改自己的准入规则」，而配错一次就是
+    // 全员登不上；服务端因此只提供读与探活两个端点，前端也就不假装能改。
+    // 页面上的「怎么改」写成操作指引，指向具体配置键。
+    path: '/identity',
+    name: 'identityProvider',
+    component: () => import('@/views/IdentityProviderView.vue'),
+    meta: { title: '身份接入', icon: 'Connection', group: '身份', nav: true },
+  },
+  {
+    // 组映射：IdP 组 → 角色。
+    //
+    // <p>与「身份接入」分成两页而不是一页两组表单：前者改一次要重新部署，
+    // 后者是日常运维（人来了、组改了），两者的频次差一个量级，混在一页会让
+    // 「我今天要做什么」变得不清楚。
+    path: '/group-mappings',
+    name: 'groupMappings',
+    component: () => import('@/views/GroupMappingsView.vue'),
+    meta: { title: '组映射', icon: 'Share', group: '身份', nav: true },
+  },
+  {
     // 目录事件流：两种表格式的事件在同一个流里（一张 audit_event 表、一个端点），
     // 页面只做「看」——刷新是带游标的增量拉取（`?since=`，契约见
     // docs/event-framework.md §4），不做往回翻页；要回看历史就「重置游标」
@@ -184,6 +207,19 @@ const routes = [
     name: 'events',
     component: () => import('@/views/EventsView.vue'),
     meta: { title: '事件', icon: 'Bell', group: '审计', nav: true },
+  },
+  {
+    // 身份审计：登录 / 供给 / 组同步三类事件。
+    //
+    // <p>与「事件」同一分组、同一张 `audit_event` 表、同一个端点
+    // （`/api/console/v1/events`）——这一页只是把游标范围收窄到身份相关的
+    // 事件类型，并把 `attributes` 里的结果/角色差集翻译成人话。
+    // 分成两页是因为「查一次登录为什么失败」和「翻整体变更」的检索方式不同：
+    // 前者按主体名找，后者按时间扫。
+    path: '/identity-audit',
+    name: 'identityAudit',
+    component: () => import('@/views/IdentityAuditView.vue'),
+    meta: { title: '身份审计', icon: 'Tickets', group: '审计', nav: true },
   },
   {
     path: '/settings',

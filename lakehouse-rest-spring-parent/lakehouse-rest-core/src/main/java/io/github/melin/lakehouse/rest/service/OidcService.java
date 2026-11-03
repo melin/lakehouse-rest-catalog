@@ -241,6 +241,47 @@ public class OidcService {
         jwksCache = null;
     }
 
+    /**
+     * 主动探一次发现文档与 JWKS，**跳过两处缓存**。
+     *
+     * <p>与 {@link #metadata()} 的区别是「要结论还是要原因」：那条路为了让登录页不因
+     * IdP 抖动而闪烁，失败时返回空、有旧值就沿用旧值；而控制台的「连通性测试」
+     * 要的是**现在**能不能连上、连不上是哪一步——沿用旧值恰恰会把问题藏起来。
+     *
+     * <p>因此这里失败就抛（消息即原因，不含任何令牌内容），由调用方分类成步骤结论。
+     * 刻意不走 {@code enabled()} 的短路：没配齐时也要让管理员看到「缺的是哪一项」。
+     *
+     * @return 发现文档与 JWKS 里的公钥把数
+     * @throws IllegalStateException 未启用、发现文档取不到 / 不合法、JWKS 取不到
+     */
+    public Probe probe() {
+        RestServerProperties.Auth.Oidc configured = oidc();
+        if (!configured.isEnabled()) {
+            throw new IllegalStateException("oidc.enabled is false");
+        }
+        if (!hasText(configured.getIssuerUri())) {
+            throw new IllegalStateException("issuer-uri is empty");
+        }
+        if (!hasText(configured.getClientId())) {
+            throw new IllegalStateException("client-id is empty");
+        }
+        Metadata fetched = fetchMetadata(configured.getIssuerUri());
+        Map<String, PublicKey> keys = fetchJwks(fetched.jwksUri());
+        if (keys == null) {
+            throw new IllegalStateException("cannot load JWKS from " + fetched.jwksUri());
+        }
+        return new Probe(fetched, keys.size());
+    }
+
+    /**
+     * 探活结果。
+     *
+     * <p>只回「发现到了什么」，不回任何 claim 或令牌——这个端点给的是运维判断依据，
+     * 不是凭据。
+     */
+    public record Probe(Metadata metadata, int keyCount) {
+    }
+
     // ------------------------------------------------------------------ 内部
 
     private boolean verifySignature(Jwt.Decoded decoded, Metadata document) {

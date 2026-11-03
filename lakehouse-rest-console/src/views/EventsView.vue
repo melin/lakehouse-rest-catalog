@@ -180,7 +180,6 @@ const CATEGORIES = [
   { value: 'POLICY', label: '策略' },
   { value: 'PRINCIPAL', label: '主体' },
   { value: 'PRINCIPAL_ROLE', label: '主体角色' },
-  { value: 'CATALOG_ROLE', label: 'Catalog 角色' },
   { value: 'OPTIMIZATION', label: '优化' },
 ]
 
@@ -219,14 +218,17 @@ const TYPES = [
   { value: 'principal.role_granted', label: '授予角色', tag: 'primary', category: 'PRINCIPAL' },
   { value: 'principal.role_revoked', label: '收回角色', tag: 'warning', category: 'PRINCIPAL' },
   { value: 'principal.dropped', label: '删主体', tag: 'danger', category: 'PRINCIPAL' },
+  // --- SSO 身份供给（同一个 PRINCIPAL 类别：它们都是「这个人的身份发生了什么」） ---
+  // `login` 是唯一一条「认证」事件，其余都是状态变化——因此它用 info 而不是 success：
+  // 登录成功不等于配置正确（JIT 建出零权限主体也算成功）。
+  { value: 'principal.login', label: 'SSO 登录', tag: 'info', category: 'PRINCIPAL' },
+  { value: 'principal.provisioned', label: '自动建主体', tag: 'success', category: 'PRINCIPAL' },
+  { value: 'principal.roles_synced', label: '角色同步', tag: 'info', category: 'PRINCIPAL' },
+  // 映射变更与「某人被同步」是两件事：前者改规则、后者是规则的结果，分开才追得清
+  { value: 'group_mapping.changed', label: '组映射变更', tag: 'warning', category: 'PRINCIPAL' },
   { value: 'principal_role.created', label: '建主体角色', tag: 'success', category: 'PRINCIPAL_ROLE' },
   { value: 'principal_role.updated', label: '改主体角色', tag: 'warning', category: 'PRINCIPAL_ROLE' },
-  { value: 'principal_role.catalog_role_granted', label: '绑定 Catalog 角色', tag: 'primary', category: 'PRINCIPAL_ROLE' },
-  { value: 'principal_role.catalog_role_revoked', label: '解绑 Catalog 角色', tag: 'warning', category: 'PRINCIPAL_ROLE' },
   { value: 'principal_role.dropped', label: '删主体角色', tag: 'danger', category: 'PRINCIPAL_ROLE' },
-  { value: 'catalog_role.created', label: '建 Catalog 角色', tag: 'success', category: 'CATALOG_ROLE' },
-  { value: 'catalog_role.updated', label: '改 Catalog 角色', tag: 'warning', category: 'CATALOG_ROLE' },
-  { value: 'catalog_role.dropped', label: '删 Catalog 角色', tag: 'danger', category: 'CATALOG_ROLE' },
   { value: 'optimization.policy_updated', label: '优化策略变更', tag: 'info', category: 'POLICY' },
   { value: 'policy.changed', label: '数据策略变更', tag: 'warning', category: 'POLICY' },
   { value: 'optimization.job_succeeded', label: '优化成功', tag: 'success', category: 'OPTIMIZATION' },

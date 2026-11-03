@@ -17,10 +17,11 @@
       </template>
 
       <template v-else-if="phase === 'failed'">
-        <el-alert type="error" :closable="false" show-icon class="pc-callback-alert">
-          <template #title>SSO 登录未完成</template>
-          <div class="pc-callback-alert-body">{{ error }}</div>
-        </el-alert>
+        <!-- 分类结论 + 为什么 + 下一步；原文收在折叠区。
+             这里不再用 el-alert：它的正文是「一句说明」，而失败要交代三件事。
+             本页的所有失败都发生在一个刚被整页跳转过来的空白页面上，
+             没有别的地方能看到这些信息的上下文 -->
+        <SsoDiagnosis :diagnosis="diagnosis" />
         <el-button type="primary" class="pc-callback-submit" size="large" @click="backToLogin">
           返回登录页
         </el-button>
@@ -30,12 +31,14 @@
 </template>
 
 <script setup>
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { Loading } from '@element-plus/icons-vue'
 import { useRoute, useRouter } from 'vue-router'
 
+import SsoDiagnosis from '@/components/SsoDiagnosis.vue'
 import { clearPending, completeAuthorization } from '@/api/oidc.js'
 import { auth } from '@/store/auth.js'
+import { diagnoseSsoError } from '@/utils/ssoDiagnostics.js'
 
 /**
  * OIDC 回调页。
@@ -56,6 +59,21 @@ const router = useRouter()
 const phase = ref('working')
 const status = ref('正在换取令牌…')
 const error = ref('')
+/**
+ * 已知的分类码。本页**明确知道**原因的几种（拿到了 `error=access_denied`、
+ * 查询串里没有 `code`）直接给码；说不清的留给 `ssoDiagnostics` 的规则去匹配原文——
+ * 猜错分类比不分类更糟，因为它会把人引向错误的下一步。
+ */
+const errorCode = ref('')
+
+const diagnosis = computed(() => diagnoseSsoError({ code: errorCode.value, detail: error.value }))
+
+/** 统一的失败出口：三处状态必须一起改，散着写迟早漏一个。 */
+function fail(code, message) {
+  errorCode.value = code
+  error.value = message
+  phase.value = 'failed'
+}
 
 function backToLogin() {
   router.replace({ name: 'login' })
@@ -72,20 +90,22 @@ async function complete() {
   const idpError = query('error')
   if (idpError) {
     clearPending()
-    // 用户主动取消不是故障，措辞上不要说得像出错
+    // 用户主动取消不是故障，措辞上不要说得像出错；分类码两种都给 access_denied
+    // （那是这一族唯一的分类），具体区别留在原文里
     const description = query('error_description')
-    error.value = idpError === 'access_denied'
-      ? '身份提供方拒绝了这次授权（通常是点了取消，或该账号未被允许使用此应用）'
-      : `${idpError}${description ? `：${description}` : ''}`
-    phase.value = 'failed'
+    fail(
+      'access_denied',
+      idpError === 'access_denied'
+        ? '身份提供方拒绝了这次授权（通常是点了取消，或该账号未被允许使用此应用）'
+        : `${idpError}${description ? `：${description}` : ''}`,
+    )
     return
   }
 
   const code = query('code')
   if (!code) {
     clearPending()
-    error.value = '回调地址里没有授权码。直接访问本地址是无效的，请从登录页发起 SSO 登录。'
-    phase.value = 'failed'
+    fail('callback', '回调地址里没有授权码。直接访问本地址是无效的，请从登录页发起 SSO 登录。')
     return
   }
 
@@ -93,14 +113,12 @@ async function complete() {
   // 所以这一步得自己做
   if (!(await auth.ensureChecked(true))) {
     clearPending()
-    error.value = `无法读取服务端的 OIDC 配置：${auth.state.error}`
-    phase.value = 'failed'
+    fail('unreachable', `无法读取服务端的 OIDC 配置：${auth.state.error}`)
     return
   }
   if (!auth.state.oidc) {
     clearPending()
-    error.value = '服务端当前没有启用 OIDC 登录方式，无法完成这次回调。'
-    phase.value = 'failed'
+    fail('oidc_disabled', '服务端当前没有启用 OIDC 登录方式，无法完成这次回调。')
     return
   }
 
@@ -108,16 +126,16 @@ async function complete() {
   try {
     issued = await completeAuthorization(auth.state.oidc, { code, state: query('state') })
   } catch (cause) {
-    error.value = cause?.message || String(cause)
-    phase.value = 'failed'
+    // 换令牌失败：原文里通常带 IdP 的 error（invalid_grant / invalid_client / …），
+    // 交给规则匹配比这里再判一遍准
+    fail('', cause?.message || String(cause))
     return
   }
 
   status.value = '正在让服务端确认这个令牌…'
   const adopted = await auth.adopt(issued.token)
   if (!adopted.ok) {
-    error.value = adopted.error
-    phase.value = 'failed'
+    fail('', adopted.error)
     return
   }
 
@@ -192,14 +210,6 @@ onMounted(complete)
   gap: 8px;
   color: var(--pc-text-dim);
   font-size: 14px;
-}
-
-.pc-callback-alert {
-  margin-bottom: 16px;
-}
-
-.pc-callback-alert-body {
-  word-break: break-word;
 }
 
 .pc-callback-submit {

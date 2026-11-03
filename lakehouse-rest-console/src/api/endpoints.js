@@ -256,6 +256,30 @@ export const ENDPOINTS = {
   listPrincipalRolesOfPrincipal: { method: 'GET', path: '/api/management/v1/principals/{principalName}/principal-roles' },
   grantPrincipalRole: { method: 'PUT', path: '/api/management/v1/principals/{principalName}/principal-roles' },
   revokePrincipalRole: { method: 'DELETE', path: '/api/management/v1/principals/{principalName}/principal-roles/{principalRoleName}' },
+  // 手动重算一个主体的 IDP 来源角色。组名**必须**由调用方给：服务端不保存
+  // 「上次登录时这个人在哪些组」——存下来就多一份会过期的状态，而它唯一的用途
+  // 是省掉这一次参数。缺参数时是 400，不是「按空组重算」（那是撤权）。
+  syncPrincipal: { method: 'POST', path: '/api/management/v1/principals/{principalName}/sync' },
+
+  // ------------------------------------------------------------------ 管理 API：身份接入
+  // 三件一组，缺一件都会让「登录成功但没有权限」只能靠翻日志：
+  // 配置说「我以为什么」、连通性说「现在连不连得上」、claim 样例说「令牌里实际有什么」。
+  // 整组**只读**：这几项是部署配置，改它们等于改准入规则，得走 yml + 重启。
+  identityProvider: { method: 'GET', path: '/api/management/v1/identity-provider' },
+  // 主动探活（会真的向 IdP 发请求）：POST 而非 GET，避免被缓存或预览链接触发
+  probeIdentityProvider: { method: 'POST', path: '/api/management/v1/identity-provider/probe' },
+  // 最近若干次登录的 claim 形状（打码、有界、进程内）。多副本时每个副本只看得到自己处理过的
+  identityClaimSamples: { method: 'GET', path: '/api/management/v1/identity-provider/claim-samples' },
+
+  // ------------------------------------------------------------------ 管理 API：组映射
+  // IdP 组 → principal role 的翻译表。`group` 是**包含**匹配（搜索框语义），
+  // 而同步时的匹配是精确的——两件事不要混用一个约定。
+  listGroupMappings: { method: 'GET', path: '/api/management/v1/group-mappings' },
+  createGroupMapping: { method: 'POST', path: '/api/management/v1/group-mappings' },
+  updateGroupMapping: { method: 'PUT', path: '/api/management/v1/group-mappings/{id}' },
+  deleteGroupMapping: { method: 'DELETE', path: '/api/management/v1/group-mappings/{id}' },
+  // 预览：与登录时同步调用的是**同一段计算**，因此不会出现「预览说两个、保存后没有」
+  previewGroupMappings: { method: 'POST', path: '/api/management/v1/group-mappings/preview' },
 
   // ------------------------------------------------------------------ 管理 API：principal role
   // 纯分组。它自己不带任何权限：授予 `role:<name>` 的赋权由服务端按成员关系转发给成员，

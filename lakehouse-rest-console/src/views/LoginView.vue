@@ -207,10 +207,9 @@
 
         <!-- 方式三：OpenID Connect 授权码 + PKCE -->
         <template v-else-if="activeTab === 'oidc'">
-          <el-alert v-if="error" type="error" :closable="false" show-icon class="pc-login-alert">
-            <template #title>无法发起 SSO 登录</template>
-            <div class="pc-login-alert-body">{{ error }}</div>
-          </el-alert>
+          <!-- 只有这个页签的失败需要分类：另外两个是「凭据不对」一句话就能说清，
+               而 SSO 起不来的原因分属三方（IdP / 服务端 / 网络），原文对用户没有意义 -->
+          <SsoDiagnosis v-if="error" :diagnosis="ssoDiagnosis" />
 
           <dl class="pc-login-kv">
             <dt>身份提供方</dt>
@@ -286,7 +285,9 @@ import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { beginAuthorization, resolveRedirectUri } from '@/api/oidc.js'
 import { AUTH_METHOD, auth } from '@/store/auth.js'
 import { theme } from '@/store/theme.js'
+import SsoDiagnosis from '@/components/SsoDiagnosis.vue'
 import TipAlert from '@/components/TipAlert.vue'
+import { diagnoseSsoError } from '@/utils/ssoDiagnostics.js'
 
 const route = useRoute()
 const router = useRouter()
@@ -295,6 +296,15 @@ const form = reactive({ username: '', password: '', clientId: '', clientSecret: 
 const submitting = ref(false)
 const error = ref('')
 const activeTab = ref(AUTH_METHOD.PASSWORD)
+
+/**
+ * SSO 页签的失败诊断。
+ *
+ * <p>本页能说清原因的只有 `access_denied` 那一种（IdP 直接把错误写在查询串里，
+ * 但那是在回调页处理的）；这里拿到的是「发起授权失败」，所以不预设分类码，
+ * 交给规则按原文匹配——`unknown` 也是可接受的结果，它至少会指出该去看哪两页。
+ */
+const ssoDiagnosis = computed(() => diagnoseSsoError({ detail: error.value }))
 
 const TAB_LABELS = {
   [AUTH_METHOD.PASSWORD]: '用户名密码',

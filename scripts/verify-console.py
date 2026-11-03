@@ -81,7 +81,11 @@ spec/rest-catalog-open-api-iceberg.yaml）。路径写错时前端只表现为�
                   当场失败）、Iceberg 两面的 scope 必须与服务端 SCOPE_ALL 逐字相同
                   （否则第一次刷新才报 invalid_scope）、续期能力分控制面/数据面两列、
                   片段里不得出现真实密钥
- 27. 文档计数     文档里写的「N 组 M 项」与脚本实际一致——加校验组的人要顺手改文档，
+ 27. SSO 身份    身份接入 / 组映射 / 身份审计三页。钉的是「不该有的能力」与「两个不可逆
+                  动作的确认」：配置页没有保存动作、端点只有读与探活、探活五步与四档对着
+                  Java 源比对、危险映射与空组同步的确认都来自服务端信号。这些错法全都不
+                  报错——多一个保存按钮要等有人真的改坏准入规则那天才知道
+ 28. 文档计数     文档里写的「N 组 M 项」与脚本实际一致——加校验组的人要顺手改文档，
                   而这条约定此前没人执行（真漂过一次：docs/console.md 37、实际 38）
 
 用法：
@@ -273,6 +277,26 @@ EXTENSION_ENDPOINTS = {
     ("GET", "/api/management/v1/principals/{principalName}/principal-roles"): "管理面扩展：主体所属的角色",
     ("PUT", "/api/management/v1/principals/{principalName}/principal-roles"): "管理面扩展：装配主体的角色（整体替换）",
     ("DELETE", "/api/management/v1/principals/{principalName}/principal-roles/{principalRoleName}"): "管理面扩展：解除单个角色绑定",
+    # ---- SSO 身份接入与主体供给（本工程扩展，三份规格都没有身份这一层）----
+    # 这一组全部是「控制台需要、但规格里没有」的东西：IdP 的接入参数是部署配置，
+    # 组映射是本工程自己的一张表，claim 样例是最近一次登录的替身数据。
+    #
+    # `/identity-provider` 只有读与探活，**没有 PUT**：
+    # 可在线修改等于「登录进来的人可以改自己的准入规则」，配错一次是全员登不上。
+    # 这不是还没做，是不做——所以这里也看不到改配置的端点。
+    ("GET", "/api/management/v1/identity-provider"): "身份接入：生效配置（只读，无密钥字段）",
+    ("POST", "/api/management/v1/identity-provider/probe"): "身份接入：连通性探活（不走缓存，五步分类）",
+    ("GET", "/api/management/v1/identity-provider/claim-samples"): "身份接入：最近登录的 claim 形状（打码，进程内）",
+    # 组 → 角色。预览与登录时的同步**共用服务端的同一段计算**（`desired()`）：
+    # 分开实现的话，表现是「预览说会加两个，保存后只加了一个」。
+    ("GET", "/api/management/v1/group-mappings"): "组映射：列表（组名精确匹配，关键字下推）",
+    ("POST", "/api/management/v1/group-mappings"): "组映射：新建（映射到 service-admins 需二次确认）",
+    ("PUT", "/api/management/v1/group-mappings/{id}"): "组映射：修改",
+    ("DELETE", "/api/management/v1/group-mappings/{id}"): "组映射：删除（不回收已同步的成员关系）",
+    ("POST", "/api/management/v1/group-mappings/preview"): "组映射：同步预览（与登录同步同一段计算）",
+    # 手动重算一个主体的 IDP 来源角色。`groups` 必须给：服务端不保存「上次登录在哪些组」，
+    # 留空就是「按不在任何组重算」——那是一次撤权，因此控制台对此单独走红色确认。
+    ("POST", "/api/management/v1/principals/{principalName}/sync"): "主体：按组同步角色（幂等，空组即撤权）",
     # 表存储优化（本工程扩展，挂管理 API 基址）。三份规格里都没有它：策略与批次是
     # 服务端自己的资源，不是 Paimon 元数据的一部分。服务端实现见 OptimizationController。
     #
@@ -2826,10 +2850,184 @@ check("CatalogFormView 把 renewable 传给了片段生成器，且开关只为 
       and "renewSwitchable" in form_view,
       "页面没接上开关，或开关对所有格式都显示（Iceberg 本来就会续，摆开关会误导）")
 
-# ------------------------------------------------------------------ 27. 文档计数
+# ------------------------------------------------------------------ 27. SSO 身份页
 
 print()
-print("27. 文档计数（文档写的「N 组 M 项」必须与脚本实际一致）")
+print("27. SSO 身份接入与主体供给（配置只读、探活五步、危险的两次确认）")
+
+# 这一组的起因：身份相关的东西**全都不会报错**。配置页多了一个保存按钮，只有
+# 「有人真的用它改坏了准入规则」那天才知道；探活少了一步「端点与回调地址」，
+# 表现是四个绿勾之下仍然登不上；组映射映射到 service-admins 少了二次确认，
+# 表现是一个组名填错的提交把自己和所有人一起提权。
+#
+# 所以这里的断言分成三类：
+#   1. **不该有的能力**（身份接入页的保存、可改配置的端点）——断言它不存在；
+#   2. **必须与服务端同一份的清单**（探活步骤名、判定四档、诊断分类）——对着
+#      Java 源与 JS 源各解析一遍再比，而不是写死字面量；
+#   3. **两个不可逆动作的确认**（危险映射、空组同步）——断言那个判据来自
+#      服务端信号而不是前端自己猜。
+
+SSO_DIAG_SOURCE = os.path.join(CONSOLE_DIR, "src/utils/ssoDiagnostics.js")
+IDENTITY_VIEW = os.path.join(CONSOLE_DIR, "src/views/IdentityProviderView.vue")
+GROUP_MAPPINGS_VIEW = os.path.join(CONSOLE_DIR, "src/views/GroupMappingsView.vue")
+IDENTITY_AUDIT_VIEW = os.path.join(CONSOLE_DIR, "src/views/IdentityAuditView.vue")
+AUTH_CALLBACK_VIEW = os.path.join(CONSOLE_DIR, "src/views/AuthCallbackView.vue")
+LOGIN_VIEW = os.path.join(CONSOLE_DIR, "src/views/LoginView.vue")
+PRINCIPALS_VIEW = os.path.join(CONSOLE_DIR, "src/views/PrincipalsView.vue")
+IDENTITY_SERVICE = os.path.join(SERVER_JAVA, "service/IdentityProviderService.java")
+
+sso_diag_source = read(SSO_DIAG_SOURCE)
+identity_view = read(IDENTITY_VIEW)
+group_mappings_view = read(GROUP_MAPPINGS_VIEW)
+identity_audit_view = read(IDENTITY_AUDIT_VIEW)
+auth_callback_view = read(AUTH_CALLBACK_VIEW)
+login_view = read(LOGIN_VIEW)
+principals_view = read(PRINCIPALS_VIEW)
+identity_service_source = read(IDENTITY_SERVICE)
+
+# --- 27.1 三条路由都进侧边菜单 ---------------------------------------------
+# 不进菜单的身份页等于不存在：管理员要在「身份接入」里查一次登录为什么失败，
+# 得先知道有个地址能打开它。下钻页（表详情那类）才不进菜单。
+sso_route_views = {
+    "/identity": "IdentityProviderView",
+    "/group-mappings": "GroupMappingsView",
+    "/identity-audit": "IdentityAuditView",
+}
+missing_route = [path for path, view in sso_route_views.items()
+                 if f"path: '{path}'" not in router_source or view not in router_source]
+check("三条身份路由都登记并指向对应页面", not missing_route,
+      f"router/index.js 缺 {missing_route}")
+
+
+def route_block(path):
+    """取路由声明里某一条的片段（到下一个 `},` 为止）。"""
+    start = router_source.index(f"path: '{path}'")
+    return router_source[start:router_source.index("},", start)]
+
+
+unlisted = [path for path in sso_route_views if "nav: true" not in route_block(path)]
+check("三条身份路由都进侧边菜单（meta.nav 为真）", not unlisted,
+      f"这些路由没有 nav: true，侧边栏里看不到：{unlisted}")
+
+# --- 27.2 身份接入页没有保存入口 -------------------------------------------
+# 这不是「还没做」：这些字段来自 yml / ConfigMap，能在线改就等于「已经登录进来
+# 的人可以改自己的准入规则」，配错一次是全员登不上。所以页面只给读与探活。
+check("身份接入页没有保存入口（配置只在部署文件里改）",
+      "身份接入" in identity_view and not re.search(r'@click="save', identity_view)
+      and "updateIdentityProvider" not in identity_view,
+      "页面出现了保存动作；配置可在线修改等于让人改自己的准入规则")
+
+# --- 27.3 同一条约束在端点层也成立 -----------------------------------------
+# 页面不给按钮但端点存在，等于只是把入口藏起来——下一个人照着规格调一次就能改。
+identity_endpoint_prefix = "/api/management/v1/identity-provider"
+ALLOWED_IDENTITY_ENDPOINTS = {
+    ("GET", identity_endpoint_prefix),
+    ("GET", identity_endpoint_prefix + "/claim-samples"),
+    ("POST", identity_endpoint_prefix + "/probe"),
+}
+identity_writes = sorted(f"{method} {path}" for (method, path) in endpoints.values()
+                         if path.startswith(identity_endpoint_prefix)
+                         and (method, path) not in ALLOWED_IDENTITY_ENDPOINTS)
+check("身份接入端点只有读与探活（没有能改配置的端点）", not identity_writes,
+      f"多出了这些端点：{identity_writes}")
+
+# --- 27.4 探活五步与服务端逐字对应 -----------------------------------------
+# 前端给步骤起了中文名（`discovery` → 「发现文档」）。服务端改名而前端没跟上时，
+# 那一行会显示成 wire 原文 `provisioning`——不报错，只是看着像没翻译完；
+# 反过来前端多写一步，那个步骤永远不会出现，看起来像「这一步总能过」。
+server_steps = set(re.findall(r'new IdentityProviderProbeStep\("([a-z]+)"', identity_service_source))
+step_block_match = re.search(r"const STEP_LABELS = \{(.*?)\n\}", identity_view, re.S)
+ui_steps = (set(re.findall(r"^\s{2}([a-z]+):", step_block_match.group(1), re.M))
+            if step_block_match else set())
+check(f"探活步骤的标签覆盖服务端全部 {len(server_steps)} 个步骤",
+      bool(server_steps) and ui_steps == server_steps,
+      f"服务端 {sorted(server_steps)}，前端 {sorted(ui_steps)}")
+
+# --- 27.5 判定四档 ---------------------------------------------------------
+# 少一档的表现：那个取值落到 `verdictLabel` 的兜底分支，界面上出现英文 `SKIPPED`。
+# 它不是错误，只是「跳过」这一档在最需要解释的时候（IdP 连不上）露出了原文。
+server_verdicts = set(re.findall(r'"(OK|WARN|FAIL|SKIPPED)"', identity_service_source))
+verdict_block_match = re.search(r"const VERDICT_LABELS = \{\s*(.*?)\}", identity_view)
+ui_verdicts = (set(re.findall(r"([A-Z]+):", verdict_block_match.group(1)))
+               if verdict_block_match else set())
+check("探活判定四档与页面的中文标签一一对应",
+      server_verdicts == {"OK", "WARN", "FAIL", "SKIPPED"} and ui_verdicts == server_verdicts,
+      f"服务端 {sorted(server_verdicts)}，前端 {sorted(ui_verdicts)}")
+
+# --- 27.6 claim 样例标明是进程内的 -----------------------------------------
+# 样例存在 JVM 内存里，多副本各记各的。不写这一句，运维会把「这台是空的」
+# 读成「没人用 SSO 登录过」，然后去查错方向。
+check("claim 样例页说明了「存在本进程内存、多副本各记各的」",
+      "processLocal" in identity_view and "本进程内存" in identity_view
+      and "多副本" in identity_view,
+      "页面上没有进程内提示；多副本下「样例为空」会被误读成「没人登录过」")
+
+# --- 27.7 危险映射的二次确认来自服务端信号 ---------------------------------
+# 判据要读「这个角色是不是 service-admins 所持有的那一批」，那要查授权关系，
+# 前端拿不到。前端自己写一份名单，必然与服务端漂移，而漂移的方向是**少确认**
+# 一次——那就等于没有确认。
+check("组映射把「映射到管理员角色」的确认建立在服务端的 confirmAdminMapping 上",
+      "confirmAdminMapping" in group_mappings_view and "confirmDanger" in group_mappings_view,
+      "页面要么没做二次确认，要么自己在 JS 里判断哪个角色算管理员")
+
+# --- 27.8 空组同步：两种后果都要写明，回执要区分「跳过」与「没变化」--------
+# 服务端不保存「上次登录时在哪些组」，所以这个动作的入参只能由人给。而「留空」的
+# 后果**取决于 sync-mode**：`ON_LOGIN`（默认）下刻意一个都不删、只补默认角色；
+# `STRICT` 下才是按「不在任何组」重算。前端拿不到那个判据（要读部署配置），
+# 所以这里断言的不是某句文案，而是三件更难糊弄的事：
+#   ① 空输入仍要走一次确认（不许静默提交）；
+#   ② 文案把两种模式都点到（只写一种就是**说错**，不是说得不全）；
+#   ③ 回执认 `skippedReason`（否则「服务端刻意没做」会被说成「跑完了没变化」）。
+check("主体页的「按组同步」把空组的两种后果都写明，且按 skippedReason 区分回执",
+      "confirmDanger" in principals_view and "function parseGroups" in principals_view
+      and "ON_LOGIN" in principals_view and "STRICT" in principals_view
+      and "skippedReason" in principals_view,
+      "缺其中之一：要么空组会静默提交，要么只写了一种模式的后果（默认模式恰好是"
+      "「一个都不删」，写反了会让人以为撤权成功了），要么把「刻意跳过」说成「没有变化」")
+
+# --- 27.9 主体清单：来源过滤下推 + OIDC 主体不给凭据动作 --------------------
+# 本地筛只筛得到当页：「筛 OIDC 得到 0 条」会被读成「没人用 SSO」，而他们在第 3 页。
+# 而 OIDC 主体本来就没有 clientId 与密钥，给它「轮换」「重置」只会生成一份没人用的凭据。
+check("主体清单的来源过滤下推服务端（不全量拉到前端再筛）",
+      "source: sourceFilter.value" in principals_view,
+      "listPrincipals 没带上 source 参数；本地筛出来的空页会被读成「没有这类主体」")
+check("OIDC 主体不显示「轮换 / 重置凭据」两个动作",
+      "row.source !== 'OIDC'" in principals_view,
+      "IdP 来的主体没有 clientId 与密钥，这两个动作对它没有意义")
+
+# --- 27.10 登录页与回调页都把失败交给同一张诊断卡 --------------------------
+# 两处各写一份提示文案，同一个原因会有两种说法；而失败信息绝大多数时候是给
+# 「找管理员的人」看的，说法不一致意味着他照着做会做错。
+check("登录页与回调页都用同一个诊断组件（而不是各自写文案）",
+      "SsoDiagnosis" in login_view and "SsoDiagnosis" in auth_callback_view
+      and 'diagnoseSsoError' in login_view and 'diagnoseSsoError' in auth_callback_view,
+      "有一处还在自己拼提示语；同一个原因会在两个页面里说法不同")
+
+# --- 27.11 诊断分类表自洽 --------------------------------------------------
+# 规则指向一个不存在的分类时，`diagnoseSsoError` 会在 `SSO_DIAGNOSIS[resolved]`
+# 上取到 undefined，然后 `{...undefined}` 得到一张**只有 raw 的卡**——页面不报错，
+# 只是结论、为什么、下一步三行全是空白。这类自洽性只能在这里查。
+diag_keys = set(re.findall(r"^  ([a-z_]+): \{", sso_diag_source, re.M))
+rule_codes = set(re.findall(r"\{ code: '([a-z_]+)'", sso_diag_source))
+diag_tones = set(re.findall(r"tone: '([a-z]+)'", sso_diag_source))
+check("诊断分类表自洽（规则都有对应分类、语气只有两档、unknown 兜底在）",
+      bool(rule_codes) and rule_codes <= diag_keys
+      and diag_tones == {"blocked", "retry"} and "unknown" in diag_keys,
+      f"规则 {sorted(rule_codes - diag_keys)} 找不到分类；语气 {sorted(diag_tones)}；"
+      f"unknown {'在' if 'unknown' in diag_keys else '不在'}")
+
+# --- 27.12 身份审计页把范围映射成服务端过滤参数 ----------------------------
+# 与前一组「类别筛选走服务端参数」同源：本地筛只筛得到当页，而这一页的用法是
+# 「查一次登录为什么失败」——筛不到就等于那次登录没发生过。
+check("身份审计页把四个范围映射成 category/type 下推服务端",
+      "category: 'PRINCIPAL'" in identity_audit_view and "type:" in identity_audit_view
+      and "listEvents" in identity_audit_view,
+      "范围没有下推成查询参数；本地筛出来的空页会被读成「没有这类事件」")
+
+# ------------------------------------------------------------------ 28. 文档计数
+
+print()
+print("28. 文档计数（文档写的「N 组 M 项」必须与脚本实际一致）")
 
 # 这一组是**元校验**，起因是一次真实的漂移：docs/console.md 写「12 组 37 项」、
 # README 写「12 组 38 项」，而脚本实际是 38——两个数字都没人核对，因为脚本此前

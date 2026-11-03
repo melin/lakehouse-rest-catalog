@@ -143,8 +143,8 @@ lakehouse-rest-console/
 
 | 路由 | 页面 | 覆盖的能力 |
 | --- | --- | --- |
-| `/login` | 登录 | 按服务端下发的登录方式渲染页签：用户名密码（默认）/ 主体凭据（OAuth 2.0 客户端凭据）/ SSO（OIDC）/ 静态令牌（需配 `auth.tokens`）。**未开启的方式不渲染**；一个可用方式都没有时说明该开哪个配置项。门禁单开时先显示一句「只挡住界面」。不套管理布局 |
-| `/auth/callback` | SSO 回调 | 校验 `state` → 用授权码换令牌 → 让服务端确认 → 回跳原页面。不套管理布局 |
+| `/login` | 登录 | 按服务端下发的登录方式渲染页签：用户名密码（默认）/ 主体凭据（OAuth 2.0 客户端凭据）/ SSO（OIDC）/ 静态令牌（需配 `auth.tokens`）。**未开启的方式不渲染**；一个可用方式都没有时说明该开哪个配置项。门禁单开时先显示一句「只挡住界面」。SSO 页签发起失败时不出 `el-alert`，改出**诊断卡**（`SsoDiagnosis`：结论 + 为什么 + 下一步 + 可展开的原文，见 §4.12）。不套管理布局 |
+| `/auth/callback` | SSO 回调 | 校验 `state` → 用授权码换令牌 → 让服务端确认 → 回跳原页面。失败时同样走诊断卡，并由本页给出三种只有它才知道的原因：回调地址里没有授权码（直接打开 / 从历史重开）、服务端没启用 OIDC、服务端在 IdP 那边 client 认证没过。不套管理布局 |
 | `/` | 控制台概览 | 统计块（三个数量）、服务端配置摘要、**连接自检**、catalog 清单、`GET /v1/config` 展示 |
 | `/browse` | 目录浏览 | 按选中 catalog 的**表格式**换一套实现：Paimon catalog 是「左库右对象、三页签（表/视图/函数；语义视图的 4 条端点仍在服务端，控制台不再暴露）」；Iceberg catalog 换成 `IcebergBrowseView`（左命名空间右表/视图，见 §4.6）；Lance catalog 换成 `LanceBrowseView`（左命名空间右表，**可建命名空间**；建表与删除都不给，见 §4.6.1）。Paimon 侧能力：建库、建表（Paimon 表 / Format 表 / Object 表三种表格式，Lance 表留在选项里但禁用，见 [console-catalog-detail.md](console-catalog-detail.md) §3.5）、注册表、按表 ID 定位、重命名、删除、详情抽屉。表页签列出表名 / 表格式 / 表类型（Managed 或外部表）/ 创建时间 / 元数据更新时间 / 操作六列，数据取自 `table-details`（只回表名的 `/tables` 给不出这几列）；「元数据更新时间」是服务端这条表记录的最后改动时间，快照提交与回滚也会推动它。表页签的过滤为空时说明「没有匹配 ×××」，与「库里没有表」区分开。**建表入口在「表」页签工具条的右侧**（页头只留刷新与新建数据库）：三类对象的工具条都写在 `ResourceState` 之外——那个组件命中空态时只渲染 `el-empty`、默认插槽整个不渲染，工具条若在里面，「这个库还是空的」这一刻就正好没有新建按钮 |
 | `/tables/:prefix/:database/:table` | [表详情](console-table-detail.md) | 十页签：详细信息 / **血缘** / 数据预览 / 快照 / 标签 / 分支 / **文件列表** / 数据访问 / **数据策略** / **存储优化**（血缘与数据预览、数据策略都不随表格式伸缩：页签自己判空，见 [console-table-detail.md](console-table-detail.md) §1.1）；含快照与标签的**回滚**。**没有「变更」页签**：改表结构走 HTTP 或 Spark SQL，理由见该文档 §2。详细信息首屏的四张统计卡片取自 `getTableSnapshot`（三个文件统计的来路与「什么时候会空」见该文档 §2.1），内含**字段列表 / 分区列表**二级页签（名称过滤 + 分页：字段表在浏览器里切片，分区列表走远程分页且前缀过滤下推，分区按需加载）。文件列表按表目录物理内容列一层（根是表目录，出不了表外），目录名可点下钻、文件可下载、前缀过滤与页码都下推服务端。存储优化页签承载表级策略与执行历史（见 [table-optimization.md](table-optimization.md) §7）。血缘页签给三视图（图 / 邻接表 / 列映射），图是 Canvas 与「跳数即层号」的纯函数布局（见 [lineage-design.md](lineage-design.md) §9）。授权不在这张表上做——表级权限统一到「权限管理」页 |
@@ -152,14 +152,17 @@ lakehouse-rest-console/
 | `/catalogs/new` | 新建 Catalog | 四节一页（单列）：① 基本信息（名称 / 表格式按钮组 / 类型）② 存储（`StorageConfigFields`，存储类型也是按钮组，**先选认证方式再出那条路的字段**，高级参数折叠）③ 凭据来源（五档状态 + 服务端判定的原文 + 允许位置 + 「还缺哪一项」+ 保存前自检）④ 引擎接入配置（五个面各一份片段 + 长作业能不能续，可复制）。**字段名在左、控件在右**（`.pc-form-label-left`），页尾不再有报文卡片。结构见 §4.11 |
 | `/catalogs/:catalogName/edit` | 编辑 Catalog | 与新建共用 `CatalogFormView`：名称与表格式是只读展示（服务端把它们当不可变列，改就 400），保存带 `currentEntityVersion`，报文**不含** `catalogFormat` |
 | `/catalogs/:catalogName` | [Catalog 详情](console-catalog-detail.md) | 四页签：概览 / 存储 / 文件列表 / 配置。**存储**页回答「哪些表该做 compaction」：文件数、存储、平均文件大小、小文件占比（按库聚合），两种格式都支持，口径参考 AWS《Monitoring Iceberg workloads》但取数只用已有端点，见 [console-catalog-detail.md §3.2](console-catalog-detail.md)。文件列表按仓库物理目录列一层，目录名可点下钻、带面包屑与「返回上级」；只读，不提供删除与建目录。**配置页签**两种格式是同一套设计：都编辑「表默认参数」（`table-default.*`，见 [catalog-api-endpoints.md](catalog-api-endpoints.md#catalog-级默认表属性table-default)），Iceberg 另附只读的 `/v1/config` `defaults` / `overrides`（连接参数，非表属性）；其余 catalog 属性不在此页重复展示（概览已有） |
-| `/principals` | 主体 | 列出 / 创建 / 更新 / 删除 / rotate / reset；授予与撤销角色。创建、轮换、重置后的凭据弹窗可一键导出 JSON 文件（`{principal, clientId, clientSecret}`，文件名 `<主体>-credentials.json`），密钥仍只在弹窗期间可见 |
+| `/principals` | 主体 | 列出 / 创建 / 更新 / 删除 / rotate / reset；授予与撤销角色。创建、轮换、重置后的凭据弹窗可一键导出 JSON 文件（`{principal, clientId, clientSecret}`，文件名 `<主体>-credentials.json`），密钥仍只在弹窗期间可见。列表另有**来源**列（`IdP 登录` / `本地`）、**外部标识**、**最后登录**三列，以及一个来源过滤器（`?source=LOCAL` / `?source=OIDC`，**下推服务端**——本地筛只筛得到当页，「筛 OIDC 得到 0 条」会被读成「没人用 SSO」，而他们在第 3 页）。**动作按来源分岔**：OIDC 主体给「按组同步角色」，**不给**「轮换密钥」「重置 clientId 与密钥」（它没有这两样，点了只会生成一份没人用的凭据）；本地主体反过来。按组同步要人填组名（服务端不保存上次登录的组）。**留空的后果取决于 sync-mode**：`ON_LOGIN`（默认）下服务端刻意一个都不删、只补默认角色并回一个 `skippedReason`；`STRICT` 下才是按「不在任何组」重算，也就是撤掉 IDP 来源的全部角色。前端拿不到这个判据，所以空输入走一次红色确认把两种后果都说清楚，回执再按 `skippedReason` 区分「刻意跳过」与「跑完了没变化」 |
 | `/principal-roles` | 角色 | 列出 / 创建 / 更新 / 删除；查看成员（授予成员要按主体操作，在「主体」页做）。角色是**纯分组**，自身不携带权限；管理规格里的 `federated` 字段控制台不暴露——本服务不接入外部 IdP，勾了只存一个标记，且 PUT 不接受该字段，勾错改不回来 |
 | `/permissions` | 权限管理 | 控制台**唯一**的授权入口（Paimon 官方权限模型，principal 直授）：页头「添加授权」按钮开弹窗填表——多选授权对象（`user:` / `role:`，可手输任意 principal）、选**作用范围**（Catalog / Database / Table / View，四级就是官方的四种资源类型；**Iceberg catalog 下 `Database` 这一级显示为 `Namespace`**，候选与文案都跟着换，见 §4.8；catalog 不需要选库，表 / 视图还要选具体对象）、权限项按范围给（catalog：Create database/Alter/Drop/Grant；db：Create table/Alter/Drop/Describe；表：Select/Insert/Delete/Describe/Alter/Drop + 两个凭据点 Use credential/Use stored key，判权语义见 [`authorization.md` §3.7](authorization.md)；视图：Select/Describe/Alter/Drop）、**有效期**默认长期有效，可选「指定日期」（按所选当天 23:59:59 本地时区换算成官方的 UTC instant；日历与手输都挡掉过去的时间）；主界面是授权清单——一行 = 一个主体 × 一个作用范围，同范围的权限并列成标签、点标签上的 × 逐项撤销，过期时间按日期显示（完整时刻在悬浮提示，7 天内到期标「N 天后」，过期条目不隐藏但标注「已过期」，多项不一致取最早并标注），资源合成「作用范围」一列（`整个 catalog` / `库` / `库.对象`，标注整 catalog/整库/单表），权限用与表单一致的词（UPDATE 显示为 Insert / Delete），空态给「添加授权」入口；支持过滤与幂等撤销 |
 | `/policies` | 数据保护 | 行过滤与列脱敏策略的总览页（数据来自扩展端点 `GET /api/management/v1/policies`）。四张统计卡（受保护表 / 带行过滤 / 脱敏列 / 豁免主体）与列表共用**一次全量拉取**：策略量级是「几十」（`DataPolicyService.list` 的注释口径），要跨页 KPI 与组合过滤，只有整份列表在手才数得准——这是「先过滤再切页」规则的又一实例，与「全站远程分页」的例外判据（有没有列表端点之外的整份列表需求）一致；此处列表端点本身支持分页，但页面刻意不传 `page`。列表列：表（三段名拆解，链接到表详情 `?tab=policy` 深链接）/ 行过滤 SQL（`code` 展示）/ 脱敏列（tags）/ 状态 / 版本 / 更新时间与操作者；操作列「试算」跳主体视角试算页、「详情」跳表详情的数据策略页签。表详情的「数据策略」页签见 [row-filter-column-mask-design.md](row-filter-column-mask-design.md) §8.3 |
 | `/policies/new` | 新建策略向导 | 目标表三段级联（catalog / database / table，watch 级联清空）→ 拿表 schema 做候选列 → 主体范围与豁免（fail-closed 不可关）→ 行过滤 / 列脱敏编辑器（与表详情页签共用 `src/utils/policyAst.js`，保证两处建出的 AST 形状一致）→ 发布（PUT 整份替换）。**已绑定策略的表不给新建**：PUT 是整份替换，向导里再建一次会静默顶掉现有策略，此时给红色提示并引导去表详情编辑 |
 | `/policies/:catalog/:database/:table/dryrun` | 主体视角试算 | 按**被模拟主体**（不是当前调用者）跑 `POST .../policies/tables/{c}/{d}/{t}/dry-run`，四态横幅：FOUND（生效中，附折叠后的行过滤 SQL）/ EXEMPT（豁免，明文）/ DISABLED（策略停用）/ NONE（无策略或白名单外——**红色**，提示「按默认放行，全部为明文」）。结果表按返回列渲染，脱敏列单元格带「脱敏 / 置空」角标。被模拟主体**不需要存在**（`$principal` 折名字字面量、角色名单查不到折 false），这正是「新建主体还没挂角色」要试算的场景。端点判权 TABLE:ALTER——试算结果本身就是策略内容，放宽到 SELECT 等于任何能读表的人可看策略文本 |
 | `/optimization-jobs` | 优化任务 | 表存储优化的批次运维页（数据来自管理 API `/api/management/v1/optimization/**`，策略配置在表详情的「存储优化」页签）。四张统计卡（运行中 / 排队中 / 今日批次 / 失败 24h）与列表共用**最近 200 个批次**这个窗口，但统计卡**不随筛选变化**：卡片回答「这个系统现在什么状态」，筛选回答「我在找某个批次」——两者绑在一起时一筛状态卡片就全变 0，读起来像系统出故障。状态 / 动作 / Catalog / 触发方式四个过滤器**下推服务端**（只筛当前页等于没筛，`total` 也来自 `page.total`）。批次表展开行按需拉表级明细（每行指标摘要与失败原因），「批次详情」抽屉给键值对 + 时间线 + 回调令牌 + 原始响应；操作列的重试（只重跑失败表，原批次保留）与取消都带确认框。`?job=` 查询参数用于从表详情的历史点批次号跳过来直接展开。页头带**定时刷新**开关与节拍（默认开启、5 秒；展开中的批次明细跟着静默刷新，见 §4.9） |
-| `/events` | 事件 | 目录事件流（数据来自控制台扩展端点 `/api/console/v1/events`，事件语义见 [event-framework.md](event-framework.md)）。**这里的「刷新」是带游标的增量拉取而不是全量重拉**：首次进入显示当前最新的一页（最近 200 条，游标落在「现在」），之后每次刷新只取比游标新的事件、插到列表最前面——事件是只增不改的事实，增量流保证每个事件至少被看到一次，全量重拉的间隙会漏事件。列表头右侧显示当前游标；「重置游标」清掉游标重新取最新一页（不是回放全部历史，更早的记录去查库）；顶栏的全局「刷新」也走同一条增量路径。**Catalog 与类别过滤在服务端做**（都是查询参数，换挡会重置游标——换筛选要的是「这个范围现在最新的一页」），事件类型过滤在本地做、候选按类别分组（38 个类型平铺太长），换类别时会清掉不属于该类的类型筛选。列表列：时间 / 事件（38 类中文标签）/ 目录 / 目标（类型 + 定位符）/ 主体 / 属性摘要；展开行给事件 ID、**请求 ID**（同一次 API 调用产生的所有事件共享它，按它串起「这次调用到底动了什么」）、类型与类别、完整属性 JSON |
+| `/identity` | 身份接入 | SSO 的**生效配置**（15 个字段：enabled / issuer / clientId / audience / claim 映射 / sync-mode / auto-provision / 邮箱域白名单 / 默认角色 / redirect-uri / end-session 端点，**不含任何密钥**）、右侧的「连通性测试」与「令牌样例」。整页**只读、没有保存按钮**：这些字段来自 yml / K8s ConfigMap，在线可改等于「已经登录进来的人改自己的准入规则」，配错一次是全员登不上——服务端因此只给三条 （`GET /identity-provider`、`POST …/probe`、`GET …/claim-samples`），页面也就不假装能改，改为把「改哪个配置键」写成操作指引。探活五步（`discovery` / `endpoints` / `jwks` / `mapping` / `provisioning`）各给 `OK/WARN/FAIL/SKIPPED` 与原文，任一步 FAIL 则总判 FAIL；**配置类步骤不因 IdP 连不上而跳过**（那时最该看见的恰恰是「redirect-uri 没配」），`jwks` 依赖发现文档、失败时给 SKIPPED 而不是 FAIL。claim 样例存的是**打码后的形状**（组名前 3 字符、邮箱只留域名、sub 打码），有界 20 条、同一主体只留最近一次、**进程内**（响应带 `processLocal`，页面写明「多副本各记各的」——不写就会把「这台为空」读成「没人用过 SSO」） |
+| `/group-mappings` | 组映射 | IdP 组 → 角色的表：组名（**精确匹配**，tooltip 写明）、角色、启停、更新时间、编辑 / 删除；关键字只做包含匹配并**下推服务端**。右侧「同步预览」把一组组名（逗号 / 顿号 / 换行分隔）算成「当前 → 期望」的增删，**与登录时的同步共用服务端同一段 `desired()`**（分成两处实现时，症状是「预览说加两个、保存后只加一个」）。sync-mode 风险横幅随模式变：切到 `STRICT` 要显示「`groups` 缺失会清空 IDP 来源的角色」，而不是只改一个单选。**映射到 `service-admins` 保存时，服务端回 400 且消息含 `confirmAdminMapping`，前端据此弹红色确认、再带 `confirmAdminMapping=true` 重试**——判据必须来自服务端（要读「这个角色是不是 service-admins 持有」），前端自己写名单的漂移方向是**少确认一次**。删除只删规则，**不回收已同步的成员关系**（文案里写明，否则会被当成「把人踢出去」） |
+| `/events` | 事件 | 目录事件流（数据来自控制台扩展端点 `/api/console/v1/events`，事件语义见 [event-framework.md](event-framework.md)）。**这里的「刷新」是带游标的增量拉取而不是全量重拉**：首次进入显示当前最新的一页（最近 200 条，游标落在「现在」），之后每次刷新只取比游标新的事件、插到列表最前面——事件是只增不改的事实，增量流保证每个事件至少被看到一次，全量重拉的间隙会漏事件。列表头右侧显示当前游标；「重置游标」清掉游标重新取最新一页（不是回放全部历史，更早的记录去查库）；顶栏的全局「刷新」也走同一条增量路径。**Catalog 与类别过滤在服务端做**（都是查询参数，换挡会重置游标——换筛选要的是「这个范围现在最新的一页」），事件类型过滤在本地做、候选按类别分组（39 个类型平铺太长），换类别时会清掉不属于该类的类型筛选。列表列：时间 / 事件（38 类中文标签）/ 目录 / 目标（类型 + 定位符）/ 主体 / 属性摘要；展开行给事件 ID、**请求 ID**（同一次 API 调用产生的所有事件共享它，按它串起「这次调用到底动了什么」）、类型与类别、完整属性 JSON |
+| `/identity-audit` | 身份审计 | 登录 / 供给 / 组同步 / 映射变更四类身份事件，数据同样来自 `/api/console/v1/events`，但把 `category` 与 `type` **下推服务端**（本地筛只筛得到当页，而「查一次登录为什么失败」筛不到就等于那次登录没发生过）。四个范围映射成查询参数（`all` 之外）：登录 `principal.login`、供给 `principal.provisioned`、组同步 `principal.roles_synced`、映射变更 `group_mapping.changed`。结果列把 `attributes` 翻成人话：成功 / 失败（带原因）、增删了哪些角色、`action`；展开行给完整属性与请求 ID。主体名链到 `/principals?name=`。**服务端不按 attributes 过滤**（那是 JSON 列，为它加派生列得不偿失），因此「只看失败」要先按范围筛再往下翻 |
 | `/settings` | 连接设置 | API 基址、访问令牌、登录状态、主题；`/api/console/v1/meta` 原始响应 |
 | `/:pathMatch(.*)*` | 未找到 | 兜底 |
 
@@ -816,6 +819,41 @@ catalog 名，「新建」打开的是「叫 new 的那个 catalog 的详情页�
 都是对的。第 12 组钉这一条，也钉「列表页里不再出现 `el-dialog`」——两套表单并存时改一处
 忘一处，症状是「保存成功但那个值没变」。
 
+### 4.12 SSO 失败的分类：一张卡说三件事
+
+OIDC 失败在浏览器里几乎只有一张脸——「登录没成」。而实际原因至少十二种，且分属三方
+（IdP 的配置、服务端的配置、这个人的身份本身）。没有分类时，用户只能把原文截图发给人看，
+而原文常常是 `invalid_grant` 这种对谁都无意义的字符串。
+
+因此登录页的 SSO 页签与回调页共用**一个纯函数 + 一个组件**：
+
+- `src/utils/ssoDiagnostics.js`：规则表把原文映射成 `{code, title, why, action, tone}`，
+  **原文一律保留在 `raw` 里**——分类是为了给出下一步，不是为了把证据删掉。
+  规则**顺序敏感**（`email_domain_not_allowed` 同时含 `domain` 与 `allowed`，要排在通用的
+  `domain` 之前；`invalid_client` 排在 `state` 之前）。
+- `src/components/SsoDiagnosis.vue`：结论 + 「为什么」+ 「下一步」+ 折叠的原文。
+  不套 `el-alert`（它的正文是一句说明，而这里要同时给三条不同性质的信息），
+  也不套 `TipAlert`（错误不能收进气泡——那要求人多点一次才知道出了什么事）。
+
+`tone` 只有两档，**左边框颜色之外还有文字标签**，不是只靠颜色传达：
+
+| tone | 含义 | 典型分类 |
+| --- | --- | --- |
+| `blocked` | 这个人进不来，要改配置或找管理员 | `principal_conflict` / `email_domain` / `audience` / `issuer` / `redirect` / `oidc_disabled` / `client_auth` / `not_provisioned` |
+| `retry` | 多半是时序或网络问题，再试一次可能就好 | `state` / `callback` / `access_denied` / `unreachable` / `unknown` |
+
+**分类码什么时候由调用方给。** 页面明确知道原因的那几种（回调页拿到了 `error=access_denied`、
+查询串里没有 `code`）直接给码、跳过规则匹配；说不清的留给规则去匹配原文。
+猜错分类比不分类更糟，因为它会把人引向错误的下一步。
+
+**为什么两个页面必须共用。** 各写一份提示文案时，同一个原因会有两种说法，
+而照着做的人只会做错。第 27 组钉这一条（`SsoDiagnosis` 与 `diagnoseSsoError` 必须在两个文件里都出现），
+同时钉分类表的自洽：规则指向不存在的分类时，`{...undefined}` 会得到一张**只有原文的卡**——
+页面不报错，只是结论、为什么、下一步三行全是空白。
+
+单测在 `tools/sso-tests/ssoDiagnostics.test.mjs`（19 例，`npm run test:sso`）：
+每条规则拿一句真实会出现的错误串钉住，包括「`statement` 不算 state 失败」这种正则边界。
+
 ---
 
 ## 5. 契约表与机械校验
@@ -855,7 +893,7 @@ python3 scripts/verify-console.py      # 退出码 0 通过 / 1 不一致 / 2 �
 PYTHON=/path/to/python3 scripts/verify-console.py   # 多解释器时指定装了 PyYAML 的那个
 ```
 
-它**不构建前端、不启动服务端**，只做静态比对，因此可以放进提交前的检查。27 组 201 项：
+它**不构建前端、不启动服务端**，只做静态比对，因此可以放进提交前的检查。28 组 215 项：
 
 | 组 | 校验内容 |
 | --- | --- |
@@ -885,7 +923,8 @@ PYTHON=/path/to/python3 scripts/verify-console.py   # 多解释器时指定装�
 | 24. 凭据来源 | catalog 列表与详情页的「凭据来源」（五档：短期签发 / 转发长期密钥 / 本地文件系统 / 无可用凭据 / 配置有误）。这一组钉的是**分层**而不是像素：判定只有服务端一份（`CatalogCredentialSource`，判据是 `DefaultStorageCredentialManager` 走哪条分支，要读 `lakehouse.rest.storage.*` 与 `credential.providers`）、四档取值与控制台的词表逐字对应、**翻译层与方式表里不读判据字段**（`roleArn` / `stsUnavailable` / `providers` 一旦出现在「可用性判定」里，就说明有人开始在前端算来源——那份逻辑会与凭据管理器漂移，症状是「列表说在签发、实际在转发」）、列表页与详情页共用同一份翻译且判定失败不影响表格本身（catalog 列表是好的，缺的只是一个标注） |
 | 25. 登出 | 「退出登录」什么时候要离开本应用去 IdP 结束 SSO 会话（RP-initiated logout）。三条判据都不报错：必须只在 **IdP 发过票** 时跳（否则把口令登录的人扔到别人的登录页上，本机令牌却已清）、地址只能来自服务端下发的 `end_session_endpoint`（`issuer + "/logout"` 在 Keycloak 上碰巧对，在 Auth0 / Azure 上是另一条路径，拼错就是一个 404 页面）、且必须在清令牌**之前**算（它要读令牌与来源，顺序反了就永远算不出地址，现象是登出悄悄退回「只清本机」） |
 | 26. 引擎片段 | catalog 详情页「引擎接入配置」那几行**复制出去**的配置里的续期契约。四条判据，错法全都不报错（片段照常显示、照常复制成功，只是粘进引擎后行为不对，而且要跑满一个令牌 TTL 才现形）：Paimon 两面的 `token.provider` **默认仍是 `bear`**（默认 `oauth2` 会让还没有 provider jar 的部署在建 catalog 时直接失败，报的是「找不到 factory」）、Iceberg 两面的 `scope` 与服务端 `ClientCredentialsService.SCOPE_ALL` **逐字相同**（脚本直接读 Java 常量，不抄第二份——抄了就会漂，而漂的表现是「配置永远 400 invalid_scope」，且发生在第一次刷新之后）、`RENEWAL` 分**控制面 / 数据面**两列（合成一列时「数据票能续」会被读成「主体令牌也能续」，而后者才是长作业真正挂掉的那条）、`oauth2.credential` 只以注释出现且片段里只有占位符（`<主体令牌>` / `<AK>` / `<SK>`）；另加一条接线判据：详情页真的把 `renewable` 传给了片段生成器，且开关只为 Paimon 面显示 |
-| 27. 文档计数 | 本节这张表上方的「N 组 M 项」与脚本实际一致（`docs/console.md` 与 `README.md` 各一条）。期望值由脚本自身推出——组数是源码里分组标题的条数，项数是本次校验的总条数——因此加/删校验项时这里不用改，但**文档必须跟着改** |
+| 27. SSO 身份 | 身份接入 / 组映射 / 身份审计三页。这一组钉的是**不该有的能力**与**两个不可逆动作的确认**，因为它们的错法全都不报错：身份接入页没有保存动作、`/identity-provider` 下只有读与探活（`GET`、`GET /claim-samples`、`POST /probe`）——这些字段来自 yml / ConfigMap，能在线改就等于「已经登录进来的人改自己的准入规则」，配错一次是全员登不上，所以不是还没做，是不做；探活五步的中文标签逐个覆盖服务端 `IdentityProviderService` 里的步骤名、判定四档对 `OK/WARN/FAIL/SKIPPED`（少一档的表现是那一行露出英文原文，而它恰恰是 IdP 连不上、最需要解释的时候）；claim 样例页写明「存在本进程内存、多副本各记各的」（不写就会把「这台为空」读成「没人用过 SSO」）；组映射对「映射到管理员角色」的二次确认建立在服务端的 `confirmAdminMapping` 上（判据要读授权关系，前端拿不到；自己写一份的漂移方向是**少确认一次**）；主体页对「空组同步」既走红色确认、又把**两种模式的后果都写明**（服务端不保存「上次登录在哪些组」；而留空的后果取决于 sync-mode：`ON_LOGIN` 下刻意一个都不删、`STRICT` 下才是撤权——只写一种就是说错，且错的方向正好是让人以为撤权成功了），回执还认 `skippedReason`（否则「刻意跳过」会被说成「跑完了没变化」）；主体清单的来源过滤下推服务端、OIDC 主体不显示「轮换 / 重置」（它没有 clientId 与密钥）；登录页与回调页共用同一张诊断卡（各写一份文案时，同一个原因在两个页面里说法不同）；诊断分类表自洽（每条规则都指向存在的分类、语气只有 `blocked` / `retry`、`unknown` 兜底在——规则指向不存在的分类时，卡片上只剩原文，结论与下一步全是空白）；身份审计页把四个范围映射成 `category` / `type` 下推；另有两条路由层面的判据：三条路由都登记、都进侧边菜单 |
+| 28. 文档计数 | 本节这张表上方的「N 组 M 项」与脚本实际一致（`docs/console.md` 与 `README.md` 各一条）。期望值由脚本自身推出——组数是源码里分组标题的条数，项数是本次校验的总条数——因此加/删校验项时这里不用改，但**文档必须跟着改** |
 
 第 7 组是这套机制里最实用的一条：**产物过期不会让任何东西报错**，
 它只是安静地少一个按钮。
@@ -1259,10 +1298,11 @@ ls lakehouse-rest-spring-parent/lakehouse-rest-server/target/classes/static/cons
 前端另有一层**纯函数单测**（`node --test`，不需要浏览器也不需要构建）：
 
 ```bash
-cd lakehouse-rest-console && npm test          # tools/*-tests/*.test.mjs（目前 96 项）
+cd lakehouse-rest-console && npm test          # tools/*-tests/*.test.mjs（目前 122 项）
 npm run test:auto-refresh                      # 只跑定时刷新的判定（7 个用例）
 npm run test:snippet                           # 只跑引擎接入片段（13 个用例）
 npm run test:storage                           # 只跑存储类型的显示名 / 顺序 / 可选性（7 个用例）
+npm run test:sso                               # 只跑 SSO 失败的分类（19 个用例）
 ```
 
 放在这一层的都是「看一眼界面验不出来」的性质：血缘的布局是纯函数（同一份数据两次出同一批坐标）、
@@ -1271,6 +1311,10 @@ npm run test:storage                           # 只跑存储类型的显示名 
 `bearer`、Flink 的 DDL 只有最后一行不带逗号、Lance 的基址写到 `/lance` 为止、COS 在三个面上是
 三种说法（片段错了不会让控制台报任何错，失败现场在业务方那边），以及**「这个存储类型在本部署
 能不能选」**——这一条在界面上验不到，因为默认部署支持全部七种、永远看不到灰态。
+
+`sso-tests` 属于同一类：它验的是**一句话被归到哪一类**（见 §4.12）。分类错了不会报错，
+只会把人引向错误的下一步——把「IdP 侧没登记回调地址」说成「网络不通」，于是所有人去查网络。
+因此每条规则都拿一句真实会出现的错误串钉住，包括「`statement` 不算 state 失败」这种正则边界。
 
 ---
 
