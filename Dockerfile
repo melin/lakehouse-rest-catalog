@@ -4,7 +4,7 @@ FROM docker.1ms.run/eclipse-temurin:17-jdk
 #
 #   ./scripts/build-console.sh                                 # 控制台产物；不入库，必须先构建
 #   mvn -o -pl :lakehouse-rest-server -am clean package -DskipTests
-#   docker build -t registry.cn-hangzhou.aliyuncs.com/melin1204/lakehouse-rest-catalog:1.0.0 .
+#   docker buildx build -t registry.cn-hangzhou.aliyuncs.com/melin1204/lakehouse-rest-catalog:1.0.0 --platform linux/amd64 . --push
 #
 # 第一条漏了也不会让第二条失败——只是打进镜像的 jar 里没有 /console。
 # scripts/build-image.sh 会在 buildx 之前用 unzip 查一次，把这件事提前成构建前的失败。
