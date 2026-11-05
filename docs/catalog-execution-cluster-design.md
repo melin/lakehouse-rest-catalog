@@ -6,7 +6,7 @@
 >
 > 配套效果图：[`catalog-execution-cluster-mockup.html`](catalog-execution-cluster-mockup.html)（六个画面，
 > 可直接在浏览器里点）。**M1–M3 已落地**（表与端点、fabric8 提交器与按 catalog 调度、列表列与抽屉），
-> 落地过程中与原稿不一致的五处见文末 §15；分期见 §13。
+> 落地过程中与原稿不一致的六处见文末 §15；分期见 §13。
 
 ---
 
@@ -30,6 +30,12 @@
    `KubernetesClient`，不必自己维护 TLS + Bearer + 云厂商签名三条 HTTP 路径。
 3. **界面不动一级菜单**：catalog 列表加一列「执行集群」、操作列加一格「执行集群」按钮，
    抽屉里配完整份配置。
+
+> **后续扩列（敏感数据识别引入，见 `sensitive-data-design.md` §5.6.6 / §5.6.7）**：同一份配置
+> 后来不只服务表优化——敏感识别的下推 Spark 路线复用同一条提交链路。因此批次策略从一组扩成
+> **两组并列**（表优化 / 敏感识别各一套），并新增两个 Spark 参数 JSON 列（两类任务各一组）。
+> **连接与运行位置段落不动**（同一个 k8s、同一个镜像、同一份凭据），只有策略与参数按任务类型分开。
+> 本稿 §4 / §9 已按此回填；这一段是本次改动与原稿的差异入口。
 
 ---
 
@@ -93,6 +99,10 @@ fabric8 的 `OAuthTokenProvider` 正好是「每次请求现取一个令牌」�
 | `max-tables-per-job` | 下移 | 跟集群算力与镜像启动开销绑在一起 |
 | `max-concurrent-jobs` | 下移 | 「一个集群同时跑几个批次」——按集群计才有意义 |
 | `job-timeout` | 下移 | 同上 |
+
+这三个键只覆盖**表优化**那一组；敏感识别那一组（`maxScanTablesPerJob` / `maxConcurrentScans` /
+`scanJobTimeoutSeconds`）没有对应的 yml 键可下移——它们随下推路线一起来，直接以 catalog 列的形态诞生
+（默认 200 / 2 / 3600）。
 
 **`application.yml` 里 `optimization` 整段删除**（不留空注释块）。三个节拍键改为只在
 `RestServerProperties` 里有默认值，要调的部署用启动参数覆盖：
@@ -246,7 +256,7 @@ AWS CLI」。所以它必须是硬拒，而且拒绝文案要给出替代路径�
 
 ## 4. 抽屉的表单结构
 
-宽度 760px，右侧滑出，四段（效果图画面 2）：
+宽度 760px，右侧滑出，七段（编号与原型 `data-screen="2"` 一致）：
 
 ```
 ┌ 执行集群配置 — paimon                                     [未配置] ✕ ┐
@@ -254,19 +264,36 @@ AWS CLI」。所以它必须是硬拒，而且拒绝文案要给出替代路径�
 │  ① 集群类型   [自建/托管 · kubeconfig] [EKS · 令牌] [AKS · 令牌]     │
 │                                                                     │
 │  ② 连接       kubeconfig（粘贴）  [解析]                             │
-│               context 列表（逐行结论）                               │
 │               apiServer（只读回显） CA（来自 kubeconfig）            │
 │                                                                     │
-│  ③ 运行位置   namespace*  image*  imagePullPolicy  serviceAccount   │
-│               callbackBaseUrl*                                      │
+│  ③ 选择 context  列表逐行结论（不可用行禁用但不隐藏）                │
 │                                                                     │
-│  ④ 批次策略   maxTablesPerJob  maxConcurrentJobs  jobTimeout        │
-│               catalogToken（可选，留空表示沿用）                     │
+│  ④ 运行位置   namespace*  image*  imagePullPolicy  serviceAccount   │
+│               callbackBaseUrl*  catalogToken（可选，留空表示沿用）   │
+│                                                                     │
+│  ⑤ 表优化批次策略   maxTablesPerJob  maxConcurrentJobs              │
+│                     jobTimeoutSeconds                                │
+│                                                                     │
+│  ⑥ 敏感识别批次策略 maxScanTablesPerJob  maxConcurrentScans          │
+│                     scanJobTimeoutSeconds                            │
+│                                                                     │
+│  ⑦ Spark 参数      optimizationSparkConf（textarea）                 │
+│                    scanSparkConf（textarea）                         │
 │                                                                     │
 ├─────────────────────────────────────────────────────────────────────┤
 │ [停用]                                           [验证连接]  [保存]  │
 └─────────────────────────────────────────────────────────────────────┘
 ```
+
+> ② 连接 与 ③ 选择 context 在原型里是两个 `<div class="sec">`（EKS / AKS 两种类型下 ③ 不存在，
+> 由 ② 顶替）——所以编号会随集群类型变化，这里按自建类型（段数最多）列出。
+
+> **为什么是「一张表、两组策略」而不是两类任务各配一个集群**：同一个 k8s、同一份镜像、同一组探活结论
+> 与凭据，差别只在**批次策略**（几表一批 / 几个并发 / 超时多久）与 **Spark 参数**。拆成两份配置会让
+> 「连哪个集群」这件事出现两个来源，而它们必须一致，否则「验证通过的那个集群」与「实际提交去的那个」
+> 会是两个——这类不一致比多几列难查得多。两组策略**各算各的配额**（扫描不占优化的并发额度）；
+> 叠加的驱动器数量由**集群侧 ResourceQuota** 兜，服务端不做交叉校验（见敏感数据设计稿 §5.6.6 末段）。
+> 详见 [`sensitive-data-design.md`](sensitive-data-design.md) §5.6.6 / §5.6.7。
 
 ### 4.1 字段表
 
@@ -293,7 +320,32 @@ AWS CLI」。所以它必须是硬拒，而且拒绝文案要给出替代路径�
 | `catalogToken` | 否 | 空 | — | 留空 = 不改 |
 | `maxTablesPerJob` | 是 | 20 | 1–500 | — |
 | `maxConcurrentJobs` | 是 | 2 | 1–50 | — |
-| `jobTimeout` | 是 | 2h | 5m–24h | — |
+| `jobTimeoutSeconds` | 是 | 7200（2h） | 300–86400 | — |
+| `maxScanTablesPerJob` | 是 | 200 | 1–500 | — |
+| `maxConcurrentScans` | 是 | 2 | 1–50 | — |
+| `scanJobTimeoutSeconds` | 是 | 3600（1h） | 300–86400 | — |
+| `optimizationSparkConf` | 否 | 见下 | 逐行 `k=v`；**前缀白名单** | 空 = 只有镜像级 `--conf` |
+| `scanSparkConf` | 否 | 见下 | 同上 | 同上 |
+
+> 字段名与既有代码对齐（`ExecutionClusterDtos` 里就是 `jobTimeoutSeconds`，列名 `job_timeout_seconds`），
+> 新增的三个沿用同一命名法：`scanJobTimeoutSeconds` / 列 `scan_job_timeout_seconds`。原型上显示成
+> `2h` / `1h` 只是人读的形式，落库是秒。
+
+**`catalogToken` 为什么不跟着任何一组策略**：它下发给任务用于访问 `/v1/{prefix}`，**表优化与敏感识别
+都要用它**。放进「敏感识别批次策略」组会读成「只有扫描用」——列名分组即文档，分组放错就是把读者
+带偏（与 §5.6.6 的「列名不能省类型前缀」是同一条理由的镜像）。
+
+**两组策略的默认值为什么不同**：`maxTablesPerJob=20` 是「一批待优化表」的量级；扫描的 `maxScanTablesPerJob=200`
+是因为一个 catalog 几千张表是常态，扫描天然要一次抓更多。`maxConcurrentScans=2` 与
+`maxConcurrentJobs=2` 同值不是巧合——两者争的是同一台集群的算力，给同一个量级才不会失衡。
+`scanJobTimeoutSeconds=3600` 比优化的 `7200` 短：扫描是只读采样，比 compaction 更快收敛。
+
+**`*SparkConf` 默认就带参**（不是「空即无」）：`spark.driver.memory=4g` / `spark.driver.cores=4`
+（容器即 driver，`--master local[*]`）/ `spark.sql.shuffle.partitions=200`（显式写出，便于按表数调小）;
+`spark.executor.*` **故意不配**（local 模式下是死配置）;`spark.sql.session.timeZone=UTC`
+**是任务代码里钉死的、不在这里配**（Iceberg 的 `older_than` 按它折算）。扫描那组多一行
+`spark.sql.files.maxPartitionBytes`（按列分区读样本时定并行粒度）。详见
+[`sensitive-data-design.md`](sensitive-data-design.md) §5.6.7。
 
 `image` 为什么必填而不是有部署级默认值：集群可以多个，镜像只可能有一个「对的那个」；给个默认值
 只会让「填错集群的镜像」更难发现（表现是 `ErrImagePull`，看起来像网络问题）。
@@ -433,7 +485,7 @@ tooltip。
 | 方法 | 路径 | 语义 |
 | --- | --- | --- |
 | `GET` | `/api/management/v1/catalogs/{catalog}/execution-cluster` | 读配置（密文只回 `has*`），404 = 未配置 |
-| `PUT` | `/api/management/v1/catalogs/{catalog}/execution-cluster` | 整份替换（含 `enabled`），带 `entityVersion` 乐观锁 |
+| `PUT` | `/api/management/v1/catalogs/{catalog}/execution-cluster` | 整份替换（含 `enabled`），带 `entityVersion` 乐观锁。**含两组策略**（`maxTablesPerJob` / `maxConcurrentJobs` / `jobTimeoutSeconds` 与 `maxScanTablesPerJob` / `maxConcurrentScans` / `scanJobTimeoutSeconds`）与**两组 Spark 参数**（`optimizationSparkConf` / `scanSparkConf`）。**不新增端点**——它们与「连哪个集群」是同一份配置的不同段，拆成两个端点会让「保存了连接但没保存策略」变成一个用户看得见、却说不清为什么的状态 |
 | `DELETE` | `/api/management/v1/catalogs/{catalog}/execution-cluster` | 删除（要 `confirm-destructive`，与既有约定一致） |
 | `POST` | `/api/management/v1/catalogs/{catalog}/execution-cluster/kubeconfig/parse` | 解析 kubeconfig，**不落库**，供表单即时反馈 |
 | `POST` | `/api/management/v1/catalogs/{catalog}/execution-cluster/probe` | 五问探活；`?full=false` 只做 1–3 |
@@ -502,6 +554,13 @@ CREATE TABLE lakehouse_catalog_execution_cluster (
   max_tables_per_job  INT          NOT NULL DEFAULT 20,
   max_concurrent_jobs INT          NOT NULL DEFAULT 2,
   job_timeout_seconds INT          NOT NULL DEFAULT 7200,
+  -- 敏感识别（下推 Spark 路线）那一组策略：与上面三个各算各的，不共用配额（§4.1；§5.6.6）
+  max_scan_tables_per_job INT      NOT NULL DEFAULT 200,
+  max_concurrent_scans    INT      NOT NULL DEFAULT 2,
+  scan_job_timeout_seconds INT     NOT NULL DEFAULT 3600,
+  -- 两类任务各一组 Spark 参数（JSON 文本，逐行 k=v）；前缀白名单过滤，见 §4.1 与 sensitive-data-design.md §5.6.7
+  optimization_spark_conf TEXT     DEFAULT NULL,
+  scan_spark_conf         TEXT     DEFAULT NULL,
   config_hash         CHAR(64)     NOT NULL,
   probe_status        VARCHAR(8)   DEFAULT NULL,      -- PASS / FAIL / NULL
   probe_reason        VARCHAR(32)  DEFAULT NULL,      -- 短因，列表用
@@ -522,6 +581,13 @@ CREATE TABLE lakehouse_catalog_execution_cluster (
 - `probe_*` 放同一张表而不是单独一张探活历史表：界面上只用到「最近一次」，留历史是给自己加
   一张只有写入没有读取的表。（真要趋势，那是 metrics 的事，见 `metrics-design.md`。）
 - 凭据列全部 `_sealed` 后缀，一眼能看出「这列不是明文」。
+- **批次策略那六列（含两组策略）不进 `config_hash`**：改一次并发数不需要重新证明「这个集群连得上」。
+  因此**只改 `max_scan_tables_per_job` 不会把 `probe_status` 打回「待验证」**——这是既有实现的
+  行为，新增的两组列沿用同一条口径，不要顺手把它们算进 hash。
+- **两组策略为什么在同一行而不是各自建表**：读它们的代码（提交器、扫描器）本来就都要先拿到这一行
+  （`resolve(catalog)` 的产物），拆表只会把「取一份配置」变成一次 join，并为两个已知类型各写一套
+  乐观锁。列名前缀（`max_*` vs `max_scan_*`）承担「这列归谁读」的说明职责——**是给读代码的人看的，
+  不是给数据库看的**。反方案与取舍见 `sensitive-data-design.md` §5.6.6。
 
 实体放在 `lakehouse-rest-core`（被协议面复用）还是 `lakehouse-rest-server`（只有运维面用）？
 ——**server**，与 `OptimizationJobEntity` 同侧。协议面不需要读它。
@@ -745,6 +811,7 @@ kubeconfig 与 AKS 的 client secret 都是「服务端持有的一份长期凭�
 | M2 | `ExecutionClientFactory` + fabric8 提交器 + 两个 TokenProvider + 调度接线 | 删 `KubernetesJobSubmitter` / `LoggingJobSubmitter` | ✅ |
 | M3 | 前端：列表列 + 抽屉 + 三种类型表单 + 探活结果面板 + 横幅 | 按效果图六画面 | ✅ |
 | M4 | 文档回填（`table-optimization.md` §9.2 / `console.md` / `README` / 计数）与 `verify-console` 新守卫 | 见 §14 | ✅（23 组 150 项） |
+| M5 | **随敏感数据识别引入**：批次策略扩两组 + 两个 Spark 参数列 + 抽屉两段（原型已回填，本节 §4 / §9 已同步） | 兑现 `sensitive-data-design.md` §5.6.6 / §5.6.7；**依赖下推路线（该稿 P4）**，不单独排期 | 待做 |
 
 未决，需要拍板的三件：
 
@@ -754,6 +821,10 @@ kubeconfig 与 AKS 的 client secret 都是「服务端持有的一份长期凭�
    功能，那时再加，且它会是可选字段而不是认证字段。
 3. **GKE**：等有真实环境再写（§2.4）。
 
+> M5 另有两处已随 `sensitive-data-design.md` **拍板但未决**：两组策略放同一行还是各自建表（本稿选
+> 同一行）、以及 `*SparkConf` 默认值（4g / local[4] / 显式 200 分区）是否按真实集群资源再调一轮。
+> 均见该稿 §13「仍未决」第 4、5 条。
+
 ---
 
 ## 14. 验收清单
@@ -761,11 +832,12 @@ kubeconfig 与 AKS 的 client secret 都是「服务端持有的一份长期凭�
 **前端**
 
 - [ ] catalog 列表 9 列，`执行集群` 在两行内表达「状态 + 类型·namespace」，五种状态各有样例
-- [ ] 操作列 5 格（编辑 / 执行集群 / 浏览 / 权限 / 删除），宽度 232，1280 宽下不折行
+- [ ] 操作列 5 格（编辑 / 执行集群 / 浏览 / 权限 / 删除），宽度 240，1280 宽下不折行
 - [ ] 抽屉三种类型切换时，第二段整体替换（EKS 不出现 kubeconfig 输入框）
 - [ ] kubeconfig 解析后逐 context 给结论，不可用的行禁用但不隐藏
 - [ ] 探活结果五步，第 5 步带「只说了一个方向」的声明与手工验证命令
 - [ ] 未配置时行内按钮是主色（待办），不是灰色次要按钮
+- [ ] **抽屉出现两组批次策略（⑤ 表优化 / ⑥ 敏感识别）与两段 Spark 参数（⑦），且 `catalogToken` 在 ④ 运行位置段**（原型 `catalog-execution-cluster-mockup.html`）
 
 **服务端**
 
@@ -774,6 +846,8 @@ kubeconfig 与 AKS 的 client secret 都是「服务端持有的一份长期凭�
 - [ ] 未配置 / 停用 / 异常三种情况下派发跳过、`PENDING` 不判失败、游标不推进
 - [ ] `client.close()` 在淘汰与配置变更时被调用（测试守线程数）
 - [ ] `exec:` 的 kubeconfig 被硬拒，错误文案给出替代路径
+- [ ] **只改 `maxScanTablesPerJob` 不改 `probe_status`**（两组策略列不进 `config_hash`）
+- [ ] **`scanSparkConf` 里塞 `spark.sql.catalog.*.token` 被丢弃并记审计**，扫描仍用服务端构造的会话
 
 **文档与机械校验**
 
@@ -784,7 +858,7 @@ kubeconfig 与 AKS 的 client secret 都是「服务端持有的一份长期凭�
 
 ---
 
-## 15. 落地记录：与原稿不一致的五处
+## 15. 落地记录：与原稿不一致的六处
 
 M1–M3 按本稿实现，下列五处**刻意偏离**，原因都写在这里，免得后来者以为是漏做：
 
@@ -807,6 +881,16 @@ M1–M3 按本稿实现，下列五处**刻意偏离**，原因都写在这里�
    「前端代码里不出现 `configHash` / `probeConfigHash`」（状态只在服务端判定，前端只翻译）、
    「旧的两种提交器已删除」（防有人把 `KubernetesJobSubmitter` 捡回来）、
    「yml 的 `optimization` 段没有残留键」（上一版的 12 个提交参数不许写回来）。
+6. **批次策略由一组扩为两组，并新增两个 Spark 参数列**（本轮，随 `sensitive-data-design.md` §5.6.6 / §5.6.7）。
+   起因是敏感识别的下推路线复用同一条提交链路，但**策略参数不能共用**——原因不是洁癖：
+   `maxConcurrentJobs` 按「一批待优化表」的语义取值（20/2/2h），而扫描一个 catalog 几千张表是常态
+   （200/2/1h）。共用一个数会让其中一类任务永远配得不对。
+   三处刻意的形状选择：**同表扩列而不是建子表**（读它们的代码本来就都要先 `resolve(catalog)`，
+   拆表只换来一次 join 和两套乐观锁）；**列名带类型前缀**（`maxScanTablesPerJob`，是给读代码的人
+   看的）；**不进 `config_hash`**（改一次并发数不需要重新证明集群连得上，与 M4 已落地的三列同口径）。
+   抽屉里 `catalogToken` 一并从「批次策略」段挪回「运行位置」段——它两类任务都用，留在扫描组会读成
+   「只有扫描用」。原型 [`catalog-execution-cluster-mockup.html`](catalog-execution-cluster-mockup.html)
+   已改成七段（①–⑦）。
 
 **测试落点**：`ExecutionClusterApiTests`（10 例，含「凭据只进不出」「留空不改且密文不变」
 「409 版本冲突」「kubeconfig 解析不落库」「`exec:` 硬拒」）与 `KubeconfigParserTests`（12 例，纯单元）；

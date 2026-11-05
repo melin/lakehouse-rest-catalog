@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>数据质量 · 控制台原型（五画面）</title>
+<style>
+  :root{
+    --bg:#f5f7fa; --panel:#fff; --border:#e4e7ed; --text:#303133;
+    --sub:#909399; --primary:#409eff; --green:#67c23a; --red:#f56c6c;
+    --orange:#e6a23c; --gray:#c0c4cc; --row-hover:#f5f7fa; --nav:#1f2d3d;
+  }
+  *{box-sizing:border-box;font-family:-apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;}
+  body{margin:0;background:var(--bg);color:var(--text);font-size:13px;}
+  .app{display:flex;min-height:100vh;}
+  .side{width:208px;background:var(--nav);color:#c0c4cc;padding:14px 0;flex-shrink:0;}
+  .side .logo{padding:0 18px 14px;color:#fff;font-weight:600;font-size:15px;border-bottom:1px solid #34495e;margin-bottom:8px;}
+  .side .group{padding:9px 18px 6px;color:#7f8c9b;font-size:11px;}
+  .side .item{padding:9px 18px;cursor:pointer;display:block;color:#c0c4cc;text-decoration:none;}
+  .side .item.active{background:var(--primary);color:#fff;}
+  .side .item:hover:not(.active){background:#2a3a4d;}
+  .main{flex:1;display:flex;flex-direction:column;min-width:0;}
+  .topbar{height:48px;background:var(--panel);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 18px;gap:10px;}
+  .topbar .crumb{color:var(--sub);}
+  .topbar .spacer{flex:1;}
+  .topbar .user{display:flex;align-items:center;gap:6px;}
+  .content{padding:18px;}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:14px;margin-bottom:16px;}
+  .card h3{margin:0 0 12px;font-size:14px;display:flex;align-items:center;gap:8px;}
+  .muted{color:var(--sub);}
+  .toolbar{display:flex;gap:10px;margin-bottom:12px;align-items:center;flex-wrap:wrap;}
+  .btn{background:var(--primary);color:#fff;border:none;padding:7px 14px;border-radius:4px;cursor:pointer;font-size:13px;}
+  .btn.ghost{background:#ecf5ff;color:var(--primary);}
+  .btn.plain{background:#fff;color:var(--text);border:1px solid var(--border);}
+  .btn.danger{background:#fef0f0;color:var(--red);}
+  .sel{border:1px solid var(--border);border-radius:4px;padding:6px 10px;background:#fff;color:var(--text);}
+  table{width:100%;border-collapse:collapse;}
+  th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--border);vertical-align:middle;}
+  th{color:var(--sub);font-weight:500;background:#fafafa;}
+  tr:hover td{background:var(--row-hover);}
+  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;}
+  .tag{display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;}
+  .t-err{background:#fef0f0;color:var(--red);}
+  .t-warn{background:#fdf6ec;color:var(--orange);}
+  .t-info{background:#f4f4f5;color:var(--sub);}
+  .t-green{background:#f0f9eb;color:var(--green);}
+  .t-blue{background:#ecf5ff;color:var(--primary);}
+  .t-gray{background:#f4f4f5;color:var(--sub);}
+  .bar{height:6px;border-radius:3px;background:#ebeef5;overflow:hidden;width:110px;display:inline-block;vertical-align:middle;}
+  .bar > i{display:block;height:100%;background:var(--green);}
+  .bar.low > i{background:var(--red);}
+  .bar.mid > i{background:var(--orange);}
+  .switch{width:34px;height:18px;border-radius:9px;background:var(--green);display:inline-block;position:relative;cursor:pointer;}
+  .switch.off{background:var(--gray);}
+  .switch::after{content:"";position:absolute;top:2px;right:2px;width:14px;height:14px;border-radius:50%;background:#fff;}
+  .switch.off::after{right:auto;left:2px;}
+  .screen{display:none;}
+  .screen.active{display:block;}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
+  .kpi{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px;}
+  .kpi .box{background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:14px;}
+  .kpi .num{font-size:22px;font-weight:600;margin-top:4px;}
+  /* edit form */
+  .form{max-width:760px;}
+  .field{margin-bottom:14px;}
+  .field label{display:block;margin-bottom:5px;color:var(--sub);}
+  .field input,.field select,.field textarea{width:100%;border:1px solid var(--border);border-radius:4px;padding:7px 9px;font-size:13px;color:var(--text);}
+  .field .hint{color:var(--gray);font-size:11px;margin-top:4px;}
+  .cascade{display:flex;gap:8px;}
+  .cascade > *{flex:1;}
+  .inline{display:flex;gap:16px;flex-wrap:wrap;}
+  .inline .field{flex:1;min-width:160px;}
+  /* tabs */
+  .tabs{display:flex;gap:4px;border-bottom:1px solid var(--border);margin-bottom:14px;}
+  .tabs .tab{padding:8px 14px;cursor:pointer;color:var(--sub);border-bottom:2px solid transparent;}
+  .tabs .tab.active{color:var(--primary);border-bottom-color:var(--primary);}
+  .note-banner{background:#ecf5ff;border:1px solid #d9ecff;color:#337ecc;padding:8px 12px;border-radius:4px;margin-bottom:14px;font-size:12px;}
+  .badge-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--green);margin-right:5px;vertical-align:middle;}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="side">
+    <div class="logo">Lakehouse 控制台</div>
+    <div class="group">数据治理</div>
+    <a class="item" href="#rules" data-nav="rules">主体与权限</a>
+    <a class="item" href="#rules" data-nav="rules">行过滤 / 列脱敏</a>
+    <a class="item active" href="#rules" data-nav="rules">数据质量</a>
+    <a class="item" href="#rules" data-nav="rules">数据血缘</a>
+    <a class="item" href="#rules" data-nav="rules">审计日志</a>
+    <div class="group">Catalog</div>
+    <a class="item" href="#table" data-nav="table">库 / 表 / 分区</a>
+    <a class="item" href="#rules" data-nav="rules">凭据与存储</a>
+    <a class="item" href="#rules" data-nav="rules">执行集群</a>
+  </div>
+
+  <div class="main">
+    <div class="topbar">
+      <span class="crumb" id="crumb">数据治理 / 数据质量</span>
+      <span class="spacer"></span>
+      <span class="user">admin <span class="tag t-blue">OIDC</span></span>
+    </div>
+
+    <div class="content">
+
+      <!-- ============ 1. 规则列表 ============ -->
+      <div class="screen active" id="screen-rules">
+        <div class="kpi">
+          <div class="box"><div class="muted">规则总数</div><div class="num">12</div></div>
+          <div class="box"><div class="muted">启用中</div><div class="num" style="color:var(--green)">10</div></div>
+          <div class="box"><div class="muted">近 7 天通过率</div><div class="num">97.6%</div></div>
+          <div class="box"><div class="muted">近 7 天失败 run</div><div class="num" style="color:var(--red)">3</div></div>
+        </div>
+
+        <div class="card">
+          <h3>质量规则 <span class="tag t-gray">12 条 · 10 启用</span></h3>
+          <div class="toolbar">
+            <a class="btn" href="#edit">+ 新建规则</a>
+            <select class="sel"><option>全部格式</option><option>Paimon</option><option>Iceberg</option><option>Lance</option></select>
+            <select class="sel"><option>全部维度</option><option>完整性</option><option>唯一性</option><option>有效性</option><option>一致性</option><option>准确性</option><option>时效性</option></select>
+            <select class="sel"><option>全部动作</option><option>FAIL</option><option>DROP</option><option>QUARANTINE</option><option>FLAG</option></select>
+            <span class="muted" style="margin-left:auto;">规则集中存 catalog，对 Paimon / Iceberg / Lance 同源生效</span>
+          </div>
+          <table>
+            <thead><tr><th>规则名</th><th>目标 (catalog.db.table[.col])</th><th>维度</th><th>严重级</th><th>动作</th><th>触发</th><th>最近通过率</th><th>状态</th><th></th></tr></thead>
+            <tbody>
+              <tr>
+                <td>user_email_not_null</td><td class="mono">lakehouse.ods.user.email</td>
+                <td><span class="tag t-blue">完整性</span></td><td><span class="tag t-err">ERROR</span></td>
+                <td><span class="tag t-gray">QUARANTINE</span></td><td>ON_WRITE</td>
+                <td><span class="bar"><i style="width:98%"></i></span> 98.2%</td>
+                <td><span class="switch" onclick="this.classList.toggle('off')"></span></td>
+                <td><a href="#runs">历史</a></td>
+              </tr>
+              <tr>
+                <td>order_id_unique</td><td class="mono">lakehouse.ods.order.id</td>
+                <td><span class="tag t-blue">唯一性</span></td><td><span class="tag t-err">ERROR</span></td>
+                <td><span class="tag t-gray">FAIL</span></td><td>ON_WRITE</td>
+                <td><span class="bar"><i style="width:100%"></i></span> 100%</td>
+                <td><span class="switch" onclick="this.classList.toggle('off')"></span></td>
+                <td><a href="#runs">历史</a></td>
+              </tr>
+              <tr>
+                <td>amount_nonneg</td><td class="mono">lakehouse.ods.order.amount</td>
+                <td><span class="tag t-blue">有效性</span></td><td><span class="tag t-warn">WARN</span></td>
+                <td><span class="tag t-gray">FLAG</span></td><td>ON_WRITE</td>
+                <td><span class="bar mid"><i style="width:96%"></i></span> 96.0%</td>
+                <td><span class="switch" onclick="this.classList.toggle('off')"></span></td>
+                <td><a href="#runs">历史</a></td>
+              </tr>
+              <tr>
+                <td>total_eq_qty_price</td><td class="mono">lakehouse.dwd.order.total</td>
+                <td><span class="tag t-blue">一致性</span></td><td><span class="tag t-err">ERROR</span></td>
+                <td><span class="tag t-gray">FAIL</span></td><td>ON_WRITE</td>
+                <td><span class="bar"><i style="width:99.8%"></i></span> 99.8%</td>
+                <td><span class="switch" onclick="this.classList.toggle('off')"></span></td>
+                <td><a href="#runs">历史</a></td>
+              </tr>
+              <tr>
+                <td>freshness_5m</td><td class="mono">lakehouse.ods.event.ts</td>
+                <td><span class="tag t-blue">时效性</span></td><td><span class="tag t-info">INFO</span></td>
+                <td><span class="tag t-gray">FLAG</span></td><td>ON_READ</td>
+                <td><span class="bar low"><i style="width:71%"></i></span> 71.4%</td>
+                <td><span class="switch off" onclick="this.classList.toggle('off')"></span></td>
+                <td><a href="#runs">历史</a></td>
+              </tr>
+              <tr>
+                <td>doc_embedding_dim</td><td class="mono">lakehouse.ai.docs.embedding</td>
+                <td><span class="tag t-blue">有效性</span></td><td><span class="tag t-warn">WARN</span></td>
+                <td><span class="tag t-gray">QUARANTINE</span></td><td>ON_WRITE</td>
+                <td><span class="bar"><i style="width:99.1%"></i></span> 99.1%</td>
+                <td><span class="switch" onclick="this.classList.toggle('off')"></span></td>
+                <td><a href="#runs">历史</a></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- ============ 2. 新建 / 编辑规则 ============ -->
+      <div class="screen" id="screen-edit">
+        <div class="card">
+          <h3>新建质量规则</h3>
+          <div class="note-banner">规则保存在 catalog 元数据中，带版本与审计；同一套规则对 Paimon / Iceberg / Lance 生效。</div>
+          <div class="form">
+            <div class="field">
+              <label>规则名</label>
+              <input value="user_email_valid" />
+            </div>
+            <div class="field">
+              <label>作用目标（catalog / db / table / 列）</label>
+              <div class="cascade">
+                <select class="sel"><option>lakehouse</option></select>
+                <select class="sel"><option>ods</option></select>
+                <select class="sel"><option>user</option></select>
+                <select class="sel"><option>email</option><option>— 表级 —</option></select>
+              </div>
+              <div class="hint">表级规则（唯一性 / 跨列一致性）把「列」留空。</div>
+            </div>
+            <div class="field">
+              <label>质量维度</label>
+              <select class="sel">
+                <option>有效性 Validity</option><option>完整性 Completeness</option>
+                <option>唯一性 Uniqueness</option><option>一致性 Consistency</option>
+                <option>准确性 Accuracy</option><option>时效性 Timeliness</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>校验表达式（Spark SQL 布尔式，走白名单 AST）</label>
+              <textarea rows="2">email LIKE '%@%' AND email NOT LIKE '%@%@%'</textarea>
+              <div class="hint">唯一性改用「列集」；时效性改用「时间列 + 最大延迟」。</div>
+            </div>
+            <div class="inline">
+              <div class="field"><label>严重级</label><select class="sel"><option>ERROR</option><option>WARN</option><option>INFO</option></select></div>
+              <div class="field"><label>违规处理动作</label><select class="sel"><option>QUARANTINE（坏行隔离）</option><option>FAIL（整批阻断）</option><option>DROP（丢弃）</option><option>FLAG（保留+标记）</option></select></div>
+              <div class="field"><label>批量通过率阈值</label><input value="0.95" /><div class="hint">可空；低于则按 FAIL 处理</div></div>
+            </div>
+            <div class="inline">
+              <div class="field"><label>触发方式</label><select class="sel"><option>ON_WRITE（写前校验）</option><option>ON_READ（读后画像）</option><option>SCHEDULED</option><option>AD_HOC</option></select></div>
+              <div class="field"><label>定时 Cron（SCHEDULED 时）</label><input placeholder="0 */1 * * *" /></div>
+            </div>
+            <div style="display:flex;gap:10px;margin-top:6px;">
+              <a class="btn" href="#rules">创建</a>
+              <a class="btn plain" href="#rules">取消</a>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ============ 3. 运行历史 + 违规 ============ -->
+      <div class="screen" id="screen-runs">
+        <div class="card">
+          <h3>运行历史 · order_id_unique <span class="tag t-gray">最近 5 次</span></h3>
+          <div class="toolbar">
+            <select class="sel"><option>全部状态</option><option>SUCCESS</option><option>FAILED</option></select>
+            <select class="sel"><option>近 7 天</option><option>近 30 天</option></select>
+          </div>
+          <table>
+            <thead><tr><th>运行 ID</th><th>触发</th><th>引擎</th><th>总行数</th><th>违规行</th><th>通过率</th><th>状态</th><th>时间</th></tr></thead>
+            <tbody>
+              <tr><td class="mono">run_a91f</td><td>ON_WRITE</td><td>Spark</td><td>1,204,882</td><td>0</td><td><span class="bar"><i style="width:100%"></i></span>100%</td><td><span class="tag t-green">SUCCESS</span></td><td>11-05 11:02</td></tr>
+              <tr><td class="mono">run_7c20</td><td>ON_WRITE</td><td>Spark</td><td>1,198,010</td><td>0</td><td><span class="bar"><i style="width:100%"></i></span>100%</td><td><span class="tag t-green">SUCCESS</span></td><td>11-05 10:02</td></tr>
+              <tr><td class="mono">run_44bd</td><td>SCHEDULED</td><td>Spark</td><td>1,190,334</td><td>3</td><td><span class="bar mid"><i style="width:99.9%"></i></span>99.9%</td><td><span class="tag t-green">SUCCESS</span></td><td>11-05 09:00</td></tr>
+              <tr><td class="mono">run_9d1a</td><td>ON_WRITE</td><td>Spark</td><td>1,176,220</td><td>0</td><td><span class="bar"><i style="width:100%"></i></span>100%</td><td><span class="tag t-green">SUCCESS</span></td><td>11-05 08:00</td></tr>
+              <tr><td class="mono">run_0e7c</td><td>AD_HOC</td><td>Spark</td><td>1,020,441</td><td>1,020</td><td><span class="bar low"><i style="width:99.9%"></i></span>99.9%</td><td><span class="tag t-err">FAILED</span></td><td>11-04 22:10</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="card">
+          <h3>违规明细 · run_44bd <span class="tag t-gray">采样 3 / 共 3</span></h3>
+          <table>
+            <thead><tr><th>行定位</th><th>命中规则</th><th>表达式</th><th>严重级</th><th>检测时间</th></tr></thead>
+            <tbody>
+              <tr><td class="mono">partition=dt=20261105/offset=88213</td><td>order_id_unique</td><td class="mono">count over (id) &gt; 1</td><td><span class="tag t-err">ERROR</span></td><td>11-05 09:00:12</td></tr>
+              <tr><td class="mono">partition=dt=20261105/offset=88214</td><td>order_id_unique</td><td class="mono">count over (id) &gt; 1</td><td><span class="tag t-err">ERROR</span></td><td>11-05 09:00:12</td></tr>
+              <tr><td class="mono">partition=dt=20261105/offset=88215</td><td>order_id_unique</td><td class="mono">count over (id) &gt; 1</td><td><span class="tag t-err">ERROR</span></td><td>11-05 09:00:12</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- ============ 4. 通过率趋势 ============ -->
+      <div class="screen" id="screen-monitor">
+        <div class="card">
+          <h3>通过率趋势 <span class="tag t-gray">lakehouse.dwd.order · 近 14 天</span></h3>
+          <div class="toolbar">
+            <select class="sel"><option>通过率 pass_rate</option><option>空值率 null_ratio</option><option>新鲜度 freshness_ms</option><option>行数 row_count</option></select>
+            <select class="sel"><option>近 14 天</option><option>近 30 天</option></select>
+            <span class="muted">数据来自 catalog 的 metric snapshot</span>
+          </div>
+          <svg viewBox="0 0 700 220" width="100%" height="220" style="background:#fff;">
+            <g stroke="#ebeef5" stroke-width="1">
+              <line x1="50" y1="20" x2="680" y2="20"/><line x1="50" y1="70" x2="680" y2="70"/>
+              <line x1="50" y1="120" x2="680" y2="120"/><line x1="50" y1="170" x2="680" y2="170"/>
+            </g>
+            <text x="12" y="24" fill="#909399" font-size="11">100%</text>
+            <text x="12" y="74" fill="#909399" font-size="11">99%</text>
+            <text x="12" y="124" fill="#909399" font-size="11">98%</text>
+            <text x="12" y="174" fill="#909399" font-size="11">97%</text>
+            <polyline fill="none" stroke="#409eff" stroke-width="2" points="60,120 105,110 150,125 195,95 240,100 285,90 330,92 375,85 420,88 465,80 510,84 555,82 600,86 645,90" />
+            <polyline fill="none" stroke="#e6a23c" stroke-width="2" stroke-dasharray="4 3" points="60,128 105,120 150,132 195,118 240,124 285,116 330,120 375,112 420,118 465,110 510,116 555,112 600,118 645,120" />
+            <g fill="#409eff">
+              <circle cx="645" cy="90" r="3.5"/><circle cx="60" cy="120" r="3.5"/>
+            </g>
+          </svg>
+          <div class="muted" style="margin-top:8px;">
+            <span style="color:#409eff;">━</span> 实际通过率 &nbsp;&nbsp; <span style="color:#e6a23c;">┄</span> 阈值 95%
+          </div>
+        </div>
+        <div class="card">
+          <h3>指标快照（最近一次 run）</h3>
+          <table>
+            <thead><tr><th>表</th><th>null_ratio</th><th>distinct_ratio</th><th>row_count</th><th>freshness_ms</th><th>采集时间</th></tr></thead>
+            <tbody>
+              <tr><td class="mono">lakehouse.dwd.order</td><td>0.0012</td><td>0.9987</td><td>1,204,882</td><td>12,400</td><td>11-05 11:02</td></tr>
+              <tr><td class="mono">lakehouse.ods.user</td><td>0.0180</td><td>0.9971</td><td>840,221</td><td>8,900</td><td>11-05 11:02</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- ============ 5. 表详情联动 ============ -->
+      <div class="screen" id="screen-table">
+        <div class="card">
+          <h3>表详情 · lakehouse.dwd.order</h3>
+          <div class="tabs">
+            <div class="tab">详细信息</div>
+            <div class="tab">数据预览</div>
+            <div class="tab">优化</div>
+            <div class="tab">血缘</div>
+            <div class="tab active">数据质量</div>
+            <div class="tab">数据策略</div>
+          </div>
+          <div class="toolbar">
+            <a class="btn" href="#edit">+ 给本表加规则</a>
+            <span class="muted">该表 4 条规则 · 4 启用 · 最近通过率 99.8%</span>
+          </div>
+          <table>
+            <thead><tr><th>规则名</th><th>维度</th><th>动作</th><th>最近通过率</th><th>状态</th></tr></thead>
+            <tbody>
+              <tr><td>order_id_unique</td><td><span class="tag t-blue">唯一性</span></td><td>FAIL</td><td><span class="bar"><i style="width:100%"></i></span>100%</td><td><span class="badge-dot"></span>正常</td></tr>
+              <tr><td>total_eq_qty_price</td><td><span class="tag t-blue">一致性</span></td><td>FAIL</td><td><span class="bar"><i style="width:99.8%"></i></span>99.8%</td><td><span class="badge-dot"></span>正常</td></tr>
+              <tr><td>amount_nonneg</td><td><span class="tag t-blue">有效性</span></td><td>FLAG</td><td><span class="bar mid"><i style="width:96%"></i></span>96.0%</td><td><span class="tag t-warn">观察</span></td></tr>
+              <tr><td>freshness_5m</td><td><span class="tag t-blue">时效性</span></td><td>FLAG</td><td><span class="bar low"><i style="width:71%"></i></span>71.4%</td><td><span class="tag t-err">告警</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="card">
+          <h3>ON_READ 画像 <span class="tag t-gray">最近一次</span></h3>
+          <p class="muted">读取时只统计不写数据；指标落 <span class="mono">lakehouse_quality_metric</span>，供上页趋势使用。</p>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<script>
+  const titles = {
+    rules: '数据治理 / 数据质量',
+    edit: '数据治理 / 数据质量 / 新建规则',
+    runs: '数据治理 / 数据质量 / 运行历史',
+    monitor: '数据治理 / 数据质量 / 通过率趋势',
+    table: 'Catalog / 表详情 / 数据质量'
+  };
+  function show(hash){
+    const key = (hash || '#rules').replace('#','');
+    const id = 'screen-' + key;
+    if(!document.getElementById(id)) return;
+    document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+    document.getElementById(id).classList.add('active');
+    document.getElementById('crumb').textContent = titles[key] || titles.rules;
+    document.querySelectorAll('.side .item').forEach(a => {
+      a.classList.toggle('active', a.getAttribute('data-nav') === key);
+    });
+    window.scrollTo(0,0);
+  }
+  window.addEventListener('hashchange', () => show(location.hash));
+  show(location.hash);
+</script>
+</body>
+</html>

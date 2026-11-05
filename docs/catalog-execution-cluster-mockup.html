@@ -976,10 +976,19 @@ users:
             同集群用 Service 名（不是 pod 名，driver 可能起在别的节点），跨集群用内网 LB 或对外域名。
           </div>
         </div>
+        <div class="fld span2">
+          <label>catalog 数据面令牌（catalogToken，可选）</label>
+          <input type="password" value="............" />
+          <div class="note">
+            下发给任务用于访问 <span class="mono">/v1/{prefix}</span>。它<b>不归任何一类任务</b>——
+            表优化与敏感识别都用它，所以放在这一段而不是下面那两组策略里。它会以命令行参数出现在
+            Pod spec 里，同一命名空间能读 pod 定义的人就能读到它；作用域限于数据面读取。
+          </div>
+        </div>
       </div>
 
       <div class="sec">
-        <span class="idx">5</span><h3>批次策略</h3>
+        <span class="idx">5</span><h3>表优化批次策略</h3>
         <span class="hint">跟着集群算力走，所以放在这里而不是服务端</span>
       </div>
       <div class="grid3">
@@ -996,11 +1005,79 @@ users:
           <label>批次超时</label>
           <input type="text" value="2h" />
         </div>
-        <div class="fld span3">
-          <label>catalog 数据面令牌（catalogToken，可选）</label>
-          <input type="password" value="............" />
-          <div class="note">下发给任务用于访问 <span class="mono">/v1/{prefix}</span>。它会以命令行参数出现在 Pod spec 里——
-            同一命名空间能读 pod 定义的人就能读到它；作用域限于数据面读取。</div>
+      </div>
+
+      <div class="sec">
+        <span class="idx">6</span><h3>敏感识别批次策略</h3>
+        <span class="hint">与上面那一组<b>各算各的</b>：扫描不占用优化的并发额度，反之亦然</span>
+      </div>
+      <div class="banner" style="border-left-color:var(--accent);background:#eef4ff;color:#1e3a8a">
+        <span>ⓘ</span>
+        <div>
+          两组合法但不能自相矛盾：若这里配 <span class="mono">20</span>、上面也配 <span class="mono">20</span>，
+          同一台集群可能同时收到 <b>40 个 Spark 驱动</b>。服务端<b>不做交叉校验</b>——它不知道那台集群有多少 CPU，
+          编一个「加起来不超过 X」只会得到一个 X 猜错的系统。这张账由<b>集群侧的 ResourceQuota / 调度器队列</b>兜，
+          部署时那份配额<b>必须显式设</b>，空着就是敞口。
+        </div>
+      </div>
+      <div class="grid3">
+        <div class="fld">
+          <label>扫描作业最多几张表</label>
+          <input type="text" value="200" />
+          <div class="note">扫描的表通常远多于「一批待优化表」——一个 catalog 几千张表是常态。</div>
+        </div>
+        <div class="fld">
+          <label>同时几个扫描作业</label>
+          <input type="text" value="2" />
+          <div class="note">与全局默认 <span class="mono">max-concurrent</span> 同源；catalog 级覆盖它。</div>
+        </div>
+        <div class="fld">
+          <label>扫描作业超时</label>
+          <input type="text" value="1h" />
+        </div>
+      </div>
+
+      <div class="sec">
+        <span class="idx">7</span><h3>Spark 参数</h3>
+        <span class="hint">两类任务各一组；默认已带参，不配也能跑</span>
+      </div>
+      <div class="grid2">
+        <div class="fld">
+          <label>表优化的 Spark 参数</label>
+          <textarea rows="5">spark.driver.memory=4g
+spark.driver.cores=4
+spark.sql.shuffle.partitions=200
+# 容器即 driver（--master local[*]），local[N] 的 N 是表内并行度；
+# executor.* 在 local 模式下是死配置，故意不配。</textarea>
+        </div>
+        <div class="fld">
+          <label>敏感识别的 Spark 参数</label>
+          <textarea rows="5">spark.driver.memory=4g
+spark.driver.cores=4
+spark.sql.shuffle.partitions=200
+spark.sql.files.maxPartitionBytes=134217728
+# 按列分区读样本时，单分区大小决定并行粒度。</textarea>
+        </div>
+        <div class="fld span2">
+          <div class="banner bad" style="margin:0">
+            <span>⚠</span>
+            <div>
+              <b>这一栏不承载安全语义。</b>只允许调内存 / 并行度 / 分区这类键（白名单前缀
+              <span class="mono">spark.driver.*</span> / <span class="mono">spark.executor.*</span> /
+              <span class="mono">spark.sql.shuffle.*</span> / <span class="mono">spark.sql.files.*</span> /
+              <span class="mono">spark.memory.*</span> / <span class="mono">spark.default.parallelism</span>）。
+              <b>白名单外一律丢弃并记审计</b>——尤其是
+              <span class="mono">spark.sql.catalog.*.token</span> / <span class="mono">.storage.*</span> /
+              <span class="mono">.rest.auth.type</span> 这类<b>连接与认证键</b>：那些由服务端按本次扫描自己构造。
+              用黑名单挡不住（<span class="mono">spark.sql.catalog.*</span> 是通配前缀，写不全）。
+            </div>
+          </div>
+        </div>
+        <div class="fld span2">
+          <div class="note">
+            <span class="mono">spark.sql.session.timeZone=UTC</span> 是任务代码里钉死的，<b>不在这里配</b>——
+            Iceberg 的 <span class="mono">older_than</span> 按它折算时刻。用户传同名键会被<b>忽略并告警</b>，不静默生效。
+          </div>
         </div>
       </div>
 

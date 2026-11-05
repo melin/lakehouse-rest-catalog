@@ -1,0 +1,1193 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>敏感数据识别与分类 · 控制台原型（八画面）</title>
+<style>
+  :root{
+    --bg:#f5f7fa; --panel:#fff; --border:#e4e7ed; --text:#303133;
+    --sub:#909399; --primary:#409eff; --green:#67c23a; --red:#f56c6c;
+    --orange:#e6a23c; --gray:#c0c4cc; --row-hover:#f5f7fa; --nav:#1f2d3d;
+  }
+  *{box-sizing:border-box;font-family:-apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;}
+  body{margin:0;background:var(--bg);color:var(--text);font-size:13px;}
+  .app{display:flex;min-height:100vh;}
+  .side{width:208px;background:var(--nav);color:#c0c4cc;padding:14px 0;flex-shrink:0;}
+  .side .logo{padding:0 18px 14px;color:#fff;font-weight:600;font-size:15px;border-bottom:1px solid #34495e;margin-bottom:8px;}
+  .side .group{padding:9px 18px 6px;color:#7f8c9b;font-size:11px;}
+  .side .item{padding:9px 18px;cursor:pointer;display:block;color:#c0c4cc;text-decoration:none;}
+  .side .item.active{background:var(--primary);color:#fff;}
+  .side .item:hover:not(.active){background:#2a3a4d;}
+  .main{flex:1;display:flex;flex-direction:column;min-width:0;}
+  .topbar{height:48px;background:var(--panel);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 18px;gap:10px;}
+  .topbar .crumb{color:var(--sub);}
+  .topbar .spacer{flex:1;}
+  .topbar .user{display:flex;align-items:center;gap:6px;}
+  .content{padding:18px;}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:14px;margin-bottom:16px;}
+  .card h3{margin:0 0 12px;font-size:14px;display:flex;align-items:center;gap:8px;}
+  .muted{color:var(--sub);}
+  .toolbar{display:flex;gap:10px;margin-bottom:12px;align-items:center;flex-wrap:wrap;}
+  .btn{background:var(--primary);color:#fff;border:none;padding:7px 14px;border-radius:4px;cursor:pointer;font-size:13px;text-decoration:none;display:inline-block;}
+  .btn.ghost{background:#ecf5ff;color:var(--primary);}
+  .btn.plain{background:#fff;color:var(--text);border:1px solid var(--border);}
+  .btn.danger{background:#fef0f0;color:var(--red);}
+  .btn.sm{padding:3px 9px;font-size:12px;border-radius:3px;}
+  .sel{border:1px solid var(--border);border-radius:4px;padding:6px 10px;background:#fff;color:var(--text);}
+  table{width:100%;border-collapse:collapse;}
+  th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--border);vertical-align:middle;}
+  th{color:var(--sub);font-weight:500;background:#fafafa;}
+  tr:hover td{background:var(--row-hover);}
+  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;}
+  .tag{display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;white-space:nowrap;}
+  .t-err{background:#fef0f0;color:var(--red);}
+  .t-warn{background:#fdf6ec;color:var(--orange);}
+  .t-info{background:#f4f4f5;color:var(--sub);}
+  .t-green{background:#f0f9eb;color:var(--green);}
+  .t-blue{background:#ecf5ff;color:var(--primary);}
+  .t-gray{background:#f4f4f5;color:var(--sub);}
+  .l4{background:#fef0f0;color:var(--red);}
+  .l3{background:#fdf6ec;color:var(--orange);}
+  .l2{background:#ecf5ff;color:var(--primary);}
+  .l1{background:#f4f4f5;color:var(--sub);}
+  .bar{height:6px;border-radius:3px;background:#ebeef5;overflow:hidden;width:96px;display:inline-block;vertical-align:middle;}
+  .bar > i{display:block;height:100%;background:var(--green);}
+  .bar.low > i{background:var(--red);}
+  .bar.mid > i{background:var(--orange);}
+  .switch{width:34px;height:18px;border-radius:9px;background:var(--green);display:inline-block;position:relative;cursor:pointer;}
+  .switch.off{background:var(--gray);}
+  .switch::after{content:"";position:absolute;top:2px;right:2px;width:14px;height:14px;border-radius:50%;background:#fff;}
+  .switch.off::after{right:auto;left:2px;}
+  .screen{display:none;}
+  .screen.active{display:block;}
+  .grid2{display:grid;grid-template-columns:1.6fr 1fr;gap:16px;}
+  .grid2f{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:16px;}
+  .grid2e{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
+  .kpi{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px;}
+  .kpi .box{background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:14px;}
+  .kpi .num{font-size:22px;font-weight:600;margin-top:4px;}
+  .kpi .sub{font-size:11px;color:var(--sub);margin-top:2px;}
+  .form{max-width:820px;}
+  .field{margin-bottom:14px;}
+  .field label{display:block;margin-bottom:5px;color:var(--sub);}
+  .field input,.field select,.field textarea{width:100%;border:1px solid var(--border);border-radius:4px;padding:7px 9px;font-size:13px;color:var(--text);background:#fff;}
+  .field .hint{color:var(--gray);font-size:11px;margin-top:4px;}
+  .cascade{display:flex;gap:8px;}
+  .cascade > *{flex:1;}
+  .inline{display:flex;gap:16px;flex-wrap:wrap;}
+  .inline .field{flex:1;min-width:160px;}
+  .tabs{display:flex;gap:4px;border-bottom:1px solid var(--border);margin-bottom:14px;}
+  .tabs .tab{padding:8px 14px;cursor:pointer;color:var(--sub);border-bottom:2px solid transparent;}
+  .tabs .tab.active{color:var(--primary);border-bottom-color:var(--primary);}
+  .note-banner{background:#ecf5ff;border:1px solid #d9ecff;color:#337ecc;padding:8px 12px;border-radius:4px;margin-bottom:14px;font-size:12px;}
+  .warn-banner{background:#fdf6ec;border:1px solid #faecd8;color:#b88230;padding:8px 12px;border-radius:4px;margin-bottom:14px;font-size:12px;}
+  .danger-banner{background:#fef0f0;border:1px solid #fde2e2;color:#c45656;padding:8px 12px;border-radius:4px;margin-bottom:14px;font-size:12px;}
+  .badge-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--green);margin-right:5px;vertical-align:middle;}
+  /* detector chips */
+  .chip{display:inline-block;padding:1px 7px;border-radius:3px;font-size:11px;background:#f4f4f5;color:#606266;margin-right:4px;white-space:nowrap;}
+  .chip.hit{background:#f0f9eb;color:var(--green);}
+  .chip.part{background:#fdf6ec;color:var(--orange);}
+  .chip.miss{background:#fafafa;color:var(--gray);text-decoration:line-through;}
+  /* level distribution */
+  .lvrow{display:flex;align-items:center;gap:10px;margin-bottom:10px;}
+  .lvrow .nm{width:96px;color:var(--sub);}
+  .lvrow .track{flex:1;height:14px;background:#f2f3f5;border-radius:3px;overflow:hidden;}
+  .lvrow .track > i{display:block;height:100%;}
+  .lvrow .val{width:74px;text-align:right;font-size:12px;color:var(--sub);}
+  .stack{display:flex;height:20px;border-radius:4px;overflow:hidden;margin-bottom:8px;}
+  .stack > i{display:block;height:100%;}
+  .legend{display:flex;gap:14px;font-size:11px;color:var(--sub);flex-wrap:wrap;}
+  .legend span::before{content:"";display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:4px;vertical-align:middle;background:currentColor;}
+  .kbd{font-family:ui-monospace,Menlo,monospace;background:#f4f4f5;border:1px solid var(--border);border-bottom-width:2px;border-radius:3px;padding:0 5px;font-size:11px;color:#606266;}
+  .colbox{border:1px solid var(--border);border-radius:6px;overflow:hidden;}
+  .colbox .hd{padding:8px 12px;background:#fafafa;border-bottom:1px solid var(--border);color:var(--sub);font-size:12px;}
+  .colbox .bd{padding:12px;}
+  .sample{font-family:ui-monospace,Menlo,monospace;font-size:11.5px;color:#606266;line-height:1.9;}
+  .why li{margin-bottom:8px;line-height:1.6;color:#606266;}
+  .why b{color:var(--text);}
+  /* config editor */
+  .grid2cfg{display:grid;grid-template-columns:minmax(0,1fr) minmax(430px,1.05fr);gap:16px;align-items:start;}
+  .opt{border:1px solid var(--border);border-radius:5px;padding:9px 11px;cursor:pointer;flex:1;min-width:200px;background:#fff;color:var(--text);font-weight:400;}
+  .opt .hint{margin-top:5px;}
+  .opt:has(input:checked){border-color:var(--primary);background:#f4f9ff;}
+  .selrow{cursor:pointer;}
+  .selrow.on td{background:#ecf5ff;}
+  .det{display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px dashed var(--border);}
+  .det:last-of-type{border-bottom:none;}
+  .det .dn{width:104px;flex-shrink:0;}
+  .det .dw{width:62px;flex-shrink:0;}
+  .det .dw input{width:100%;border:1px solid var(--border);border-radius:3px;padding:3px 5px;font-size:12px;text-align:right;font-family:ui-monospace,Menlo,monospace;}
+  .det .dsum{flex:1;color:var(--sub);font-size:11.5px;line-height:1.5;}
+  .det.off .dn,.det.off .dsum{opacity:.5;}
+  .locked{background:#fafafa;color:var(--sub);cursor:not-allowed;}
+  .sumline{display:flex;align-items:center;gap:10px;padding:8px 10px;background:#fafafa;border-radius:4px;font-size:12px;}
+  .hdr{display:flex;align-items:center;gap:8px;padding:10px 12px;background:#fafafa;border-bottom:1px solid var(--border);}
+  .hdr b{font-size:13px;}
+  .mini{font-size:11px;color:var(--sub);}
+  code.cmd{display:block;background:#1f2d3d;color:#d7e2ee;border-radius:4px;padding:10px 12px;font-family:ui-monospace,Menlo,monospace;font-size:11.5px;line-height:1.8;overflow-x:auto;white-space:pre;}
+  code.cmd .k{color:#7fd1ff;}
+  code.cmd .c{color:#7f8c9b;}
+  /* 窄视口降级：两栏配置屏与两栏网格改为单栏，避免表格被挤成竖排 */
+  .h3t{white-space:nowrap;}
+  @media (max-width:1180px){
+    .grid2cfg{grid-template-columns:1fr;}
+    .grid2cfg > div > .card[style*="sticky"]{position:static !important;}
+    .grid2f,.grid2e,.grid2{grid-template-columns:1fr;}
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="side">
+    <div class="logo">Lakehouse 控制台</div>
+    <div class="group">数据治理</div>
+    <a class="item" href="#overview" data-nav="overview">敏感数据识别</a>
+    <a class="item" href="#overview">数据质量</a>
+    <a class="item" href="#overview">行过滤 / 列脱敏</a>
+    <a class="item" href="#overview">数据血缘</a>
+    <a class="item" href="#overview">审计日志</a>
+    <div class="group">Catalog</div>
+    <a class="item" href="#table" data-nav="table">库 / 表 / 分区</a>
+    <a class="item" href="#overview">凭据与存储</a>
+  </div>
+
+  <div class="main">
+    <div class="topbar">
+      <span class="crumb" id="crumb">数据治理 / 敏感数据识别</span>
+      <span class="spacer"></span>
+      <span class="user">admin <span class="tag t-blue">OIDC</span></span>
+    </div>
+
+    <div class="content">
+
+      <!-- ============ 1. 总览 ============ -->
+      <div class="screen active" id="screen-overview">
+        <div class="kpi">
+          <div class="box">
+            <div class="muted">列分类覆盖率</div>
+            <div class="num">86.4%</div>
+            <div class="sub">已分类 41,238 / 47,720 列</div>
+          </div>
+          <div class="box">
+            <div class="muted">敏感列</div>
+            <div class="num" style="color:var(--red)">1,847</div>
+            <div class="sub">L4 机密 213 · L3 敏感 1,102 · L2 内部 532</div>
+          </div>
+          <div class="box">
+            <div class="muted">待人审</div>
+            <div class="num" style="color:var(--orange)">126</div>
+            <div class="sub">置信度 0.60–0.85，最早 3 天前</div>
+          </div>
+          <div class="box">
+            <div class="muted">自动应用占比</div>
+            <div class="num">72.1%</div>
+            <div class="sub">仅强格式类型可自动，其余必过人审</div>
+          </div>
+        </div>
+
+        <div class="grid2">
+          <div class="card" style="margin-bottom:0">
+            <h3>分级分布 <span class="tag t-gray">按列计 · 对齐《网络数据分类分级指引》1–4 级</span></h3>
+            <div class="lvrow"><span class="nm">L4 机密</span><span class="track"><i style="width:12%;background:var(--red)"></i></span><span class="val">213 列</span></div>
+            <div class="lvrow"><span class="nm">L3 敏感</span><span class="track"><i style="width:60%;background:var(--orange)"></i></span><span class="val">1,102 列</span></div>
+            <div class="lvrow"><span class="nm">L2 内部</span><span class="track"><i style="width:29%;background:var(--primary)"></i></span><span class="val">532 列</span></div>
+            <div class="lvrow"><span class="nm">L1 公开</span><span class="track"><i style="width:22%;background:var(--gray)"></i></span><span class="val">38,391 列</span></div>
+            <div style="margin-top:12px;padding-top:10px;border-top:1px dashed var(--border)">
+              <div class="muted" style="margin-bottom:6px">
+                <b>CORE</b> 核心 / <b>IMPORTANT</b> 重要（GB/T 43697-2024）：<b>0 列自动识别</b>
+              </div>
+              <div class="muted" style="line-height:1.7">
+                这两档按<b>国家与行业目录</b>认定，不由扫描产出——把「一张含身份证的业务表」自动判成重要数据，是把监管责任当算法输出。
+                catalog 预留这两个取值供<b>人工</b>打标。
+              </div>
+            </div>
+            <div style="margin-top:14px;padding-top:12px;border-top:1px dashed var(--border)">
+              <div class="muted" style="margin-bottom:8px">敏感类型 Top 6</div>
+              <span class="tag t-blue">手机号 612</span>
+              <span class="tag t-blue">姓名 487</span>
+              <span class="tag t-err">身份证 213</span>
+              <span class="tag t-warn">邮箱 178</span>
+              <span class="tag t-err">银行卡 96</span>
+              <span class="tag t-warn">地址 84</span>
+            </div>
+          </div>
+
+          <div class="card" style="margin-bottom:0">
+            <h3>未分类缺口 <span class="tag t-warn">3 类</span></h3>
+            <table>
+              <tr><th>来源</th><th>列数</th><th>说明</th></tr>
+              <tr><td>新增列待扫</td><td>184</td><td class="muted">ALTER ADD COLUMN 后未扫描</td></tr>
+              <tr><td>采样失败</td><td>42</td><td class="muted">无权限 / 空表</td></tr>
+              <tr><td>元数据缺失</td><td>16</td><td class="muted">Lance 外部表 schema 未刷新</td></tr>
+            </table>
+            <div class="warn-banner" style="margin:12px 0 0">
+              「元数据缺失」不计入覆盖率分子，也不当成「已扫无敏感」——它单独计数。
+            </div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-top:16px">
+          <h3>最近扫描 <span class="tag t-gray">「触发方式」「执行位置」两列，用来回答「谁在什么时候读了明文」</span></h3>
+          <table>
+            <tr><th>扫描</th><th>范围</th><th>模式</th><th>执行位置</th><th>触发</th><th>表 / 列</th><th>新增命中</th><th>状态</th><th>发起人</th><th>耗时</th></tr>
+            <tr>
+              <td class="mono">scn-8f3a</td><td>warehouse</td>
+              <td><span class="tag t-blue">SAMPLED</span></td>
+              <td><span class="tag t-gray">进程内</span></td>
+              <td><span class="tag t-blue">手动</span></td>
+              <td>312 / 9,840</td><td>87</td>
+              <td><span class="badge-dot"></span>SUCCEEDED</td>
+              <td>admin</td><td class="muted">6m 12s</td>
+            </tr>
+            <tr>
+              <td class="mono">scn-7e11</td><td>warehouse.sales</td>
+              <td><span class="tag t-gray">METADATA_ONLY</span></td>
+              <td><span class="tag t-gray">进程内</span></td>
+              <td><span class="tag t-warn">新增列钩子</span></td>
+              <td>48 / 1,206</td><td>12</td>
+              <td><span class="badge-dot"></span>SUCCEEDED</td>
+              <td>system</td><td class="muted">11s</td>
+            </tr>
+            <tr>
+              <td class="mono">scn-6c02</td><td>lake.lance_prod</td>
+              <td><span class="tag t-blue">SAMPLED</span></td>
+              <td><span class="tag t-warn">下推 Spark</span></td>
+              <td><span class="tag t-green">定时</span></td>
+              <td>9 / 214</td><td>0</td>
+              <td><span class="tag t-warn">FAILED</span></td>
+              <td class="mono">sch-daily</td><td class="muted">2m 03s</td>
+            </tr>
+          </table>
+          <div class="note-banner" style="margin:12px 0 0">
+            第三行是下推 Spark 的失败：<span class="mono">error_message</span> 来自作业侧回读，形状与进程内路线不同——
+            「提交成功但作业失败」要能区别于「根本没提交」，所以两条审计链必须都带 <span class="mono">scanId</span>。
+          </div>
+        </div>
+
+        <div class="card" style="margin-top:16px">
+          <h3>catalog 级设置 <span class="tag t-gray">GET / PUT /sensitivity-settings · 变更进审计</span></h3>
+          <table>
+            <tr><th>项</th><th>本 catalog 生效值</th><th>全局默认</th><th>说明</th></tr>
+            <tr>
+              <td>默认执行位置 <span class="mono muted">defaultExecution</span></td>
+              <td><span class="tag t-gray">IN_PROCESS</span></td>
+              <td class="mono">IN_PROCESS</td>
+              <td class="muted">三层覆盖：全局 &lt; 此处 &lt; 单次请求。改这里不影响「已发起」的扫描</td>
+            </tr>
+            <tr>
+              <td>并发上限 <span class="mono muted">maxConcurrentScans</span></td>
+              <td class="mono">2</td>
+              <td class="mono">2</td>
+              <td class="muted">守的是存储侧并行读压力，不是服务端 CPU；<b>单次不能提额</b></td>
+            </tr>
+            <tr>
+              <td>血缘传播深度 <span class="mono muted">propagationMaxDepth</span></td>
+              <td class="mono">5</td>
+              <td class="mono">5</td>
+              <td class="muted">yml 键 <span class="mono">sensitivity.propagation.max-depth</span>；深链数仓可调到 8–10，同时应收紧自动应用白名单</td>
+            </tr>
+          </table>
+          <div class="note-banner" style="margin:12px 0 0">
+            三项都是「catalog 自己的默认」，不是「全世界唯一的开关」——同一个服务端下，
+            <span class="mono">warehouse</span> 走进程内、<span class="mono">lake</span>（几千张表）默认下推，
+            两边都不需要改别人的设置。
+          </div>
+        </div>
+      </div>
+
+      <!-- ============ 2. 发起扫描 ============ -->
+      <div class="screen" id="screen-scan">
+        <div class="card">
+          <h3>发起扫描</h3>
+          <div class="form">
+            <div class="field">
+              <label>扫描范围</label>
+              <div class="cascade">
+                <select class="sel"><option>warehouse</option><option>lake</option></select>
+                <select class="sel"><option>全部库</option><option>sales</option><option>user_center</option></select>
+                <select class="sel"><option>全部表</option><option>dwd_user_wide</option></select>
+              </div>
+              <div class="hint">范围越窄越快；表级扫描用于「新列刚加」的即时归类。</div>
+            </div>
+
+            <div class="field">
+              <label>识别模式</label>
+              <select class="sel">
+                <option>METADATA_ONLY · 只跑列名/注释/类型，秒级，不读数据</option>
+                <option selected>SAMPLED · 增加值模式与统计特征，需要读样本</option>
+              </select>
+              <div class="hint">METADATA_ONLY 不会命中「列名叫 <span class="mono">c1</span> 但内容是身份证」这类情况。</div>
+            </div>
+
+            <div class="field">
+              <label>执行位置 <span class="tag t-gray">默认 A · 可全局切</span></label>
+              <div class="inline" style="gap:10px">
+                <label class="opt"><input type="radio" name="exec" checked style="width:auto" /> <b>进程内</b>（默认）<div class="hint">复用表预览读通道；不新增读路径；限额内并发</div></label>
+                <label class="opt"><input type="radio" name="exec" style="width:auto" /> <b>下推 Spark</b><div class="hint">并行、可按列分区；需该 catalog 已配执行集群（未配则<b>拒绝</b>，不静默退回进程内）</div></label>
+              </div>
+              <div class="hint">
+                这里显示的是<b>生效值</b>，来自三层覆盖：全局默认
+                <span class="mono">lakehouse.rest.sensitivity.scan.execution</span> &lt; catalog 的
+                <span class="mono">defaultExecution</span> &lt; 本次请求。不是三个独立开关——只配一层也能跑。
+                METADATA_ONLY 恒走进程内（下推没有收益，只多一次作业调度）；下推复用表优化任务的提交链路，一个扫描 = 一个 Job。
+              </div>
+            </div>
+
+            <div class="inline">
+              <div class="field">
+                <label>采样行数 / 列</label>
+                <input value="2000" />
+                <div class="hint">上限 10000；有效样本 &lt; 200 行时置信度 × 0.7</div>
+              </div>
+              <div class="field">
+                <label>置信度阈值（自动应用）</label>
+                <input value="0.85" />
+                <div class="hint">仅对 <span class="mono">auto_apply = true</span> 的类型生效</div>
+              </div>
+              <div class="field">
+                <label>血缘传播深度</label>
+                <input value="5" />
+                <div class="hint">
+                  yml 可配 <span class="mono">sensitivity.propagation.max-depth</span>（默认 5）；
+                  超过深度停在「待确认」，不自动打标
+                </div>
+              </div>
+              <div class="field">
+                <label>本 catalog 并发上限</label>
+                <input value="2" />
+                <div class="hint">
+                  默认 2（全局 <span class="mono">scan.max-concurrent</span>），catalog 级可覆盖；<b>单次不能提额</b>——它是资源保护不是本次参数
+                </div>
+              </div>
+            </div>
+
+            <div class="danger-banner">
+              <b>本次扫描将以服务身份读取 9,840 列的明文样本。</b><br/>
+              需要 <span class="mono">CATALOG:SENSITIVE_SCAN</span> 权限（与 <span class="mono">TABLE:SELECT</span> 独立）。
+              采样结果不会返回给调用方，只会留下打码样本与命中率；全过程写审计。
+            </div>
+
+            <div class="danger-banner" style="background:#fdf6ec;border-color:#faecd8;color:#b88230">
+              <b>切到「下推 Spark」后，上一条收口要换一种说法。</b>
+              绕过脱敏的读点从「服务端一条链」变成「作业侧读」，§5.4 的四条不再逐字成立——
+              下推路线的替代口径是<b>「原始行不出 Pod」</b>：值层抽样在作业内跑、只回落打码样本与命中率，
+              且任务侧禁止把样本值写进日志（§5.6.5）。所以它不是「更好的一条路」，而是<b>吞吐换可审计性</b>的一笔明确交易。
+            </div>
+
+            <div class="inline" style="align-items:center;margin-top:6px">
+              <label style="color:var(--sub)"><input type="checkbox" checked style="width:auto" /> 同时做血缘传播（复用现有列级边）</label>
+              <label style="color:var(--sub)"><input type="checkbox" style="width:auto" /> 跳过人工已拒绝的列（推荐，默认开）</label>
+            </div>
+
+            <div style="margin-top:18px;display:flex;gap:10px">
+              <a class="btn" href="#overview">开始扫描</a>
+              <a class="btn plain" href="#overview">取消</a>
+              <a class="btn plain" href="#schedules">改为定时？去配置调度 →</a>
+              <span class="muted" style="align-self:center;font-size:12px">进程内：预估 6–8 分钟 · 读取约 2.1 GB 样本</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid2e">
+          <div class="card" style="margin-bottom:0">
+            <h3>两种执行位置对比</h3>
+            <table>
+              <tr><th>维度</th><th>进程内</th><th>下推 Spark</th></tr>
+              <tr><td>读通道</td><td class="muted">服务端 process 内</td><td class="muted">提交 Spark 作业</td></tr>
+              <tr><td>§5.4 收口</td><td><span class="tag t-green">完整覆盖</span></td><td><span class="tag t-warn">改为「不出 Pod」</span></td></tr>
+              <tr><td>吞吐</td><td class="muted">单机，与预览争池</td><td class="muted">并行、按列分区</td></tr>
+              <tr><td>审计链</td><td class="muted">一条</td><td class="muted">提交 + 作业实读，两条须拼</td></tr>
+              <tr><td>前置依赖</td><td class="muted">无</td><td class="muted">已配执行集群</td></tr>
+              <tr><td>作业形状</td><td class="muted">—</td><td class="muted">复用表优化任务提交链路：<b>一个扫描 = 一个 Job</b>，不组批</td></tr>
+              <tr><td>逐表回调</td><td class="muted">内部循环</td><td class="muted"><b>没命中也要回</b>，否则「扫完没发现」≠「漏扫」</td></tr>
+            </table>
+          </div>
+          <div class="card" style="margin-bottom:0">
+            <h3>触发方式 <span class="tag t-gray">四种并存</span></h3>
+            <table>
+              <tr><th>触发</th><th>范围</th><th>落地期</th></tr>
+              <tr><td>手动 <span class="mono muted">MANUAL</span></td><td class="muted">任意</td><td class="mono">P0</td></tr>
+              <tr><td>新增列钩子 <span class="mono muted">LIFECYCLE</span></td><td class="muted">恒为该表</td><td class="mono">P2</td></tr>
+              <tr><td>定时 <span class="mono muted">SCHEDULE</span></td><td class="muted">逐调度项</td><td class="mono">P4</td></tr>
+              <tr><td colspan="3" class="muted">本次是手动触发（<span class="mono">trigger_type=MANUAL</span>），落库后可在扫描历史里按触发方式过滤。</td></tr>            </table>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>本次会跳过什么</h3>
+          <table>
+            <tr><th>情形</th><th>处置</th><th>计数</th></tr>
+            <tr><td>人工已拒绝的列</td><td class="muted">永久抑制，不再产生 finding</td><td>37</td></tr>
+            <tr><td>Lance 表且 <span class="mono">schema_doc</span> 缺失</td><td class="muted">跳过并标 <span class="mono">METADATA_MISSING</span>，不猜</td><td>16</td></tr>
+            <tr><td>无 <span class="mono">TABLESAMPLE</span> 能力</td><td class="muted">降级 <span class="mono">LIMIT</span>，标 <span class="mono">sampling_mode=HEAD</span> 且置信度 × 0.85</td><td>9</td></tr>
+          </table>
+        </div>
+      </div>
+
+      <!-- ============ 3. 识别结果审核 ============ -->
+      <div class="screen" id="screen-findings">
+        <div class="note-banner">
+          待确认 <b>126</b> 条。确认后立即落标签，并在 <b>60 秒内</b>影响该表的脱敏结果；拒绝会写永久抑制项，下次扫描不再复现。
+        </div>
+
+        <div class="toolbar">
+          <select class="sel"><option>全部类型</option><option>身份证</option><option>手机号</option><option>姓名</option></select>
+          <select class="sel"><option>全部来源</option><option>值模式命中</option><option>仅列名命中</option></select>
+          <select class="sel"><option>置信度不限</option><option>≥ 0.8</option><option>0.6 – 0.8</option></select>
+          <span class="spacer" style="flex:1"></span>
+          <button class="btn ghost">批量确认（3）</button>
+          <button class="btn danger">批量拒绝（3）</button>
+        </div>
+
+        <div class="grid2f">
+          <div class="card" style="margin-bottom:0">
+            <h3>命中清单 <span class="tag t-gray">第 1 页 / 共 126 条</span></h3>
+            <table>
+              <tr>
+                <th style="width:28px"><input type="checkbox" checked /></th>
+                <th>列</th><th>判定类型</th><th>置信度</th><th>命中探测器</th><th>样本（打码）</th>
+              </tr>
+              <tr>
+                <td><input type="checkbox" checked /></td>
+                <td class="mono">warehouse.user_center.<br/>dwd_user_wide.id_no</td>
+                <td><span class="tag t-err">L4 身份证</span></td>
+                <td><span class="bar"><i style="width:98%"></i></span> <span class="mono">0.98</span></td>
+                <td><span class="chip hit">名称</span><span class="chip hit">值模式</span><span class="chip hit">校验位</span><span class="chip hit">字典</span></td>
+                <td class="sample">110***********1234<br/>310***********0056</td>
+              </tr>
+              <tr>
+                <td><input type="checkbox" checked /></td>
+                <td class="mono">warehouse.sales.<br/>dim_customer.mobile</td>
+                <td><span class="tag t-warn">L3 手机号</span></td>
+                <td><span class="bar"><i style="width:94%"></i></span> <span class="mono">0.94</span></td>
+                <td><span class="chip hit">名称</span><span class="chip hit">值模式</span><span class="chip miss">字典</span></td>
+                <td class="sample">138****5678<br/>159****0012</td>
+              </tr>
+              <tr>
+                <td><input type="checkbox" checked /></td>
+                <td class="mono">warehouse.sales.<br/>dim_goods.goods_name</td>
+                <td><span class="tag t-warn">L3 姓名</span> <span class="tag t-warn">存疑</span></td>
+                <td><span class="bar mid"><i style="width:68%"></i></span> <span class="mono">0.68</span></td>
+                <td><span class="chip hit">名称</span><span class="chip part">值模式 0.55</span><span class="chip hit">统计</span></td>
+                <td class="sample">无线**** 鼠标<br/>保温**** 500ml</td>
+              </tr>
+              <tr>
+                <td><input type="checkbox" /></td>
+                <td class="mono">lake.app.<br/>user_profile.addr</td>
+                <td><span class="tag t-warn">L3 地址</span></td>
+                <td><span class="bar mid"><i style="width:74%"></i></span> <span class="mono">0.74</span></td>
+                <td><span class="chip hit">名称</span><span class="chip hit">字典</span></td>
+                <td class="sample">北京市朝**** 3 号<br/>上海市浦**** 1201</td>
+              </tr>
+              <tr>
+                <td><input type="checkbox" /></td>
+                <td class="mono">warehouse.fin.<br/>pay_log.card_no</td>
+                <td><span class="tag t-err">L4 银行卡</span></td>
+                <td><span class="bar"><i style="width:91%"></i></span> <span class="mono">0.91</span></td>
+                <td><span class="chip hit">名称</span><span class="chip hit">Luhn</span></td>
+                <td class="sample">6222********1234<br/>4532********8890</td>
+              </tr>
+            </table>
+          </div>
+
+          <div class="card" style="margin-bottom:0">
+            <h3>为什么这么判 <span class="tag t-blue">id_no</span></h3>
+            <div class="colbox" style="margin-bottom:12px">
+              <div class="hd">探测器得分</div>
+              <div class="bd">
+                <div class="stack">
+                  <i style="width:35%;background:#409eff"></i>
+                  <i style="width:10%;background:#79bbff"></i>
+                  <i style="width:40%;background:#67c23a"></i>
+                  <i style="width:10%;background:#e6a23c"></i>
+                  <i style="width:5%;background:#c0c4cc"></i>
+                </div>
+                <div class="legend">
+                  <span style="color:#409eff">名称 0.35</span>
+                  <span style="color:#79bbff">类型 0.10</span>
+                  <span style="color:#67c23a">值模式 0.40</span>
+                  <span style="color:#e6a23c">字典 0.10</span>
+                  <span style="color:#c0c4cc">统计 0.05</span>
+                </div>
+              </div>
+            </div>
+            <ul class="why" style="padding-left:18px;margin:0">
+              <li><b>列名</b> <span class="mono">id_no</span> 命中内置别名表（身份证）→ 1.00</li>
+              <li><b>类型</b> <span class="mono">char(18)</span> 与证件号长度一致 → 1.00</li>
+              <li><b>值模式</b> 命中 2,000 / 2,000 非空行，且 <b>校验位通过率 100%</b> → 1.00</li>
+              <li><b>字典</b> 前 6 位全部落在省份码表内 → 1.00</li>
+              <li><b>统计</b> 长度恒为 18、无空值，但基数高不具区分度 → 0.60</li>
+              <li><b>采样</b> <span class="mono">TABLESAMPLE(10 PERCENT)</span>，未降级</li>
+              <li><b>结论</b> 0.35×1.00 + 0.10×1.00 + 0.40×1.00 + 0.10×1.00 + 0.05×0.60 = <b>0.980</b></li>
+            </ul>
+            <div class="note-banner" style="margin:14px 0 0">
+              身份证属于 <b>强格式 + 校验位</b> 类型，默认允许自动应用；但这次仍进人审，因为
+              <span class="mono">warehouse</span> 把这类阈值从 0.85 上调到了 <b>0.99</b>，
+              0.98 差 0.01 卡在门外——<b>阈值按 catalog 可覆盖</b>，见「敏感类型」那屏。
+            </div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-top:16px">
+          <h3>拒绝时会发生什么（<span class="mono">goods_name</span> 那个例子）</h3>
+          <table>
+            <tr><th>步骤</th><th>落库</th></tr>
+            <tr><td>点「拒绝」</td><td class="muted">finding 置 <span class="mono">REJECTED</span>，记 <span class="mono">decided_by</span></td></tr>
+            <tr><td>同时写抑制项</td><td class="muted"><span class="mono">(column_ref_hash, PERSON_NAME)</span> 永久抑制</td></tr>
+            <tr><td>下一次扫描</td><td class="muted">跳过该列该类型，<b>不再进人审队列</b></td></tr>
+            <tr><td>失效条件</td><td class="muted">列被重命名（哈希变了）或治理员显式解禁</td></tr>
+          </table>
+        </div>
+      </div>
+
+      <!-- ============ 4. 标签清单 ============ -->
+      <div class="screen" id="screen-tags">
+        <div class="toolbar">
+          <select class="sel"><option>warehouse</option><option>lake</option></select>
+          <select class="sel"><option>全部级别</option><option>L4 机密</option><option>L3 敏感</option><option>L2 内部</option></select>
+          <select class="sel"><option>全部来源</option><option>自动应用</option><option>人工打标</option><option>血缘继承</option></select>
+          <input class="sel" style="width:220px" placeholder="过滤 catalog.db.table.column" />
+          <span style="flex:1"></span>
+          <a class="btn" href="#bindings">按标签配置脱敏</a>
+          <button class="btn plain">导出</button>
+        </div>
+
+        <div class="card">
+          <h3>列级标签 <span class="tag t-gray">1,847 行 · 仅命中列落行，不按「列 × 类型」展开</span></h3>
+          <table>
+            <tr>
+              <th>列</th><th>标签键</th><th>级别</th><th>来源</th><th>置信度</th><th>匹配到的脱敏</th><th>更新时间</th><th>操作</th>
+            </tr>
+            <tr>
+              <td class="mono">user_center.dwd_user_wide.id_no</td>
+              <td><span class="tag t-gray mono">PII.CN_ID_CARD</span></td>
+              <td><span class="tag l4">L4</span></td>
+              <td><span class="tag t-blue">自动</span></td>
+              <td><span class="mono">0.98</span></td>
+              <td class="muted">keep_last(4) <span class="tag t-blue">标签绑定</span></td>
+              <td class="muted">11-05 10:22</td>
+              <td><button class="btn sm plain">编辑</button> <button class="btn sm danger">删除</button></td>
+            </tr>
+            <tr>
+              <td class="mono">sales.dim_customer.mobile</td>
+              <td><span class="tag t-gray mono">PII.CN_MOBILE</span></td>
+              <td><span class="tag l3">L3</span></td>
+              <td><span class="tag t-green">人工</span></td>
+              <td class="muted">—</td>
+              <td class="muted">keep_last(4) <span class="tag t-blue">标签绑定</span></td>
+              <td class="muted">11-04 16:08</td>
+              <td><button class="btn sm plain">编辑</button> <button class="btn sm danger">删除</button></td>
+            </tr>
+            <tr>
+              <td class="mono">sales.dwd_order.id_no_enc</td>
+              <td><span class="tag t-gray mono">PII.CN_ID_CARD</span></td>
+              <td><span class="tag l4">L4</span></td>
+              <td><span class="tag t-warn">继承</span></td>
+              <td><span class="mono">0.88</span></td>
+              <td class="muted">keep_last(4) <span class="tag t-blue">标签绑定</span></td>
+              <td class="muted">11-05 10:24</td>
+              <td><button class="btn sm plain">编辑</button> <button class="btn sm danger">删除</button></td>
+            </tr>
+            <tr>
+              <td class="mono">fin.pay_log.card_no</td>
+              <td><span class="tag t-gray mono">PCI.BANK_CARD</span></td>
+              <td><span class="tag l4">L4</span></td>
+              <td><span class="tag t-blue">自动</span></td>
+              <td><span class="mono">0.91</span></td>
+              <td class="muted"><span class="tag t-warn">未绑定</span> 该 catalog 没有 PCI.* 绑定</td>
+              <td class="muted">11-05 10:22</td>
+              <td><button class="btn sm plain">编辑</button> <button class="btn sm danger">删除</button></td>
+            </tr>
+            <tr>
+              <td class="mono">fin.pay_log.<span class="muted">（表级）</span></td>
+              <td><span class="tag t-gray mono">sensitivity.level</span></td>
+              <td><span class="tag l4">L4</span></td>
+              <td><span class="tag t-gray">聚合</span></td>
+              <td class="muted">—</td>
+              <td class="muted">不参与策略展开（仅检索）</td>
+              <td class="muted">11-05 10:22</td>
+              <td><button class="btn sm plain">编辑</button></td>
+            </tr>
+          </table>
+        </div>
+
+        <div class="card">
+          <h3>血缘继承的细节 <span class="tag t-warn">1 条需要人工复核</span></h3>
+          <table>
+            <tr><th>上游列</th><th>下游列</th><th>transform</th><th>继承判定</th><th>置信度</th></tr>
+            <tr>
+              <td class="mono">dwd_user_wide.id_no</td><td class="mono">dwd_order.id_no_enc</td>
+              <td><span class="tag t-green">DIRECT</span></td>
+              <td>继承</td><td class="mono">0.98 × 0.9 = 0.88</td>
+            </tr>
+            <tr>
+              <td class="mono">dwd_user_wide.id_no</td><td class="mono">dwd_order.id_md5</td>
+              <td><span class="tag t-warn">DERIVED</span></td>
+              <td>继承但标「需复核」</td><td class="mono">0.98 × 0.6 = 0.59</td>
+            </tr>
+            <tr>
+              <td class="mono">dwd_user_wide.id_no</td><td class="mono">ads_user_cnt.cnt</td>
+              <td><span class="tag t-gray">AGGREGATE</span></td>
+              <td>不继承，生成待确认建议</td><td class="muted">—</td>
+            </tr>
+          </table>
+          <div class="warn-banner" style="margin:12px 0 0">
+            <b>AGGREGATE 一律不自动继承</b>：<span class="mono">count(id_no)</span> 不敏感，但
+            <span class="mono">max(salary)</span> 敏感——规则区分不了，交给人。
+          </div>
+        </div>
+      </div>
+
+      <!-- ============ 5. 类型与探测器配置 ============ -->
+      <div class="screen" id="screen-types">
+        <div class="note-banner">
+          <b>两个独立开关</b>：<span class="mono">auto_apply</span> 决定「这类能不能自动」，阈值决定「多确定才自动」。两者同时满足才自动落标。
+          左侧点一行，右侧编辑它的五层探测器——<b>配置就在这一屏，不在别处</b>。
+        </div>
+
+        <div class="grid2cfg">
+          <!-- 左：类型清单 -->
+          <div>
+            <div class="card" style="margin-bottom:16px">
+              <h3>
+                敏感类型 <span class="tag t-gray h3t">12 内置 · 不可删只可停用</span>
+                <span style="flex:1"></span>
+                <button class="btn sm">新建自定义类型</button>
+              </h3>
+              <table>
+                <tr><th>类型</th><th>类别</th><th>级别</th><th>自动应用</th><th>阈值</th><th>探测器</th><th>启用</th></tr>
+                <tr class="selrow on">
+                  <td>身份证 <span class="mono muted">CN_ID_CARD</span></td>
+                  <td><span class="tag t-gray">PII</span></td><td><span class="tag l4">L4</span></td>
+                  <td><span class="tag t-green">开</span></td><td class="mono">0.99 <span class="tag t-blue">覆盖</span></td>
+                  <td><span class="chip hit">名称</span><span class="chip hit">值</span><span class="chip hit">校验位</span></td>
+                  <td><span class="switch"></span></td>
+                </tr>
+                <tr class="selrow">
+                  <td>银行卡号 <span class="mono muted">BANK_CARD</span></td>
+                  <td><span class="tag t-gray">PCI</span></td><td><span class="tag l4">L4</span></td>
+                  <td><span class="tag t-green">开</span></td><td class="mono">0.85</td>
+                  <td><span class="chip hit">名称</span><span class="chip hit">Luhn</span></td>
+                  <td><span class="switch"></span></td>
+                </tr>
+                <tr class="selrow">
+                  <td>手机号 <span class="mono muted">CN_MOBILE</span></td>
+                  <td><span class="tag t-gray">PII</span></td><td><span class="tag l3">L3</span></td>
+                  <td><span class="tag t-green">开</span></td><td class="mono">0.85</td>
+                  <td><span class="chip hit">名称</span><span class="chip hit">号段</span></td>
+                  <td><span class="switch"></span></td>
+                </tr>
+                <tr class="selrow">
+                  <td>姓名 <span class="mono muted">PERSON_NAME</span></td>
+                  <td><span class="tag t-gray">PII</span></td><td><span class="tag l3">L3</span></td>
+                  <td><span class="tag t-err">关（永不开）</span></td><td class="mono">—</td>
+                  <td><span class="chip hit">名称</span><span class="chip hit">统计</span><span class="chip miss">值</span></td>
+                  <td><span class="switch"></span></td>
+                </tr>
+                <tr class="selrow">
+                  <td>密码 / 密钥 <span class="mono muted">CREDENTIAL</span></td>
+                  <td><span class="tag t-gray">SECRET</span></td><td><span class="tag l4">L4</span></td>
+                  <td><span class="tag t-green">开</span></td><td class="mono">0.90</td>
+                  <td><span class="chip hit">名称</span></td>
+                  <td><span class="switch"></span></td>
+                </tr>
+                <tr class="selrow">
+                  <td>收货地址 <span class="mono muted">ADDRESS</span></td>
+                  <td><span class="tag t-gray">PII</span></td><td><span class="tag l3">L3</span></td>
+                  <td><span class="tag t-err">关（永不开）</span></td><td class="mono">—</td>
+                  <td><span class="chip hit">名称</span><span class="chip hit">字典</span></td>
+                  <td><span class="switch"></span></td>
+                </tr>
+              </table>
+              <div class="danger-banner" style="margin:14px 0 0">
+                <b>姓名 / 地址 / 薪资 / 病历诊断永不允许自动应用。</b>
+                这几类误报率天然高（<span class="mono">goods_name</span> 就是活例子：置信度 0.68，实际是商品名）。
+                一旦自动应用就是「静默误脱敏」——业务只看到值突然变成 <span class="mono">****</span>，没人知道为什么。
+              </div>
+            </div>
+
+            <div class="card" style="margin-bottom:0">
+              <h3>探测器权重（全局默认） <span class="tag t-gray">类型级可覆盖</span></h3>
+              <div class="stack" style="height:24px">
+                <i style="width:35%;background:#409eff"></i>
+                <i style="width:10%;background:#79bbff"></i>
+                <i style="width:40%;background:#67c23a"></i>
+                <i style="width:10%;background:#e6a23c"></i>
+                <i style="width:5%;background:#c0c4cc"></i>
+              </div>
+              <div class="legend" style="margin-bottom:14px">
+                <span style="color:#409eff">D1 名称 0.35</span>
+                <span style="color:#79bbff">D2 类型 0.10</span>
+                <span style="color:#67c23a">D3 值模式 0.40</span>
+                <span style="color:#e6a23c">D4 字典 0.10</span>
+                <span style="color:#c0c4cc">D5 统计 0.05</span>
+              </div>
+              <div class="muted" style="line-height:1.8">
+                值模式权重最高，因为「列名叫 <span class="mono">c1</span> 但内容是身份证」只有值层能发现；
+                名称权重不低，因为值层扫不到的表（空表、权限不足、采样失败）只能靠名字。
+              </div>
+            </div>
+
+            <div class="card" style="margin-bottom:0">
+              <h3>决策带 <span class="tag t-gray">全局默认，可按 catalog 覆盖</span></h3>
+              <table>
+                <tr><th>置信度</th><th>处置</th></tr>
+                <tr><td class="mono">≥ 0.85 且允许自动</td><td><span class="tag t-green">直接落标</span></td></tr>
+                <tr><td class="mono">0.60 – 0.85</td><td><span class="tag t-warn">待人审</span></td></tr>
+                <tr><td class="mono">&lt; 0.60</td><td class="muted">丢弃（只进统计）</td></tr>
+              </table>
+              <div class="muted" style="margin-top:12px;line-height:1.8">
+                有效样本 &lt; 200 行 → 整体 × 0.7；<br/>
+                校验位通过率 &lt; 0.99 → 该样本按未命中计。
+              </div>
+            </div>
+          </div>
+
+          <!-- 右：探测器编辑器 -->
+          <div class="card" style="margin-bottom:0;position:sticky;top:16px">
+            <div class="hdr">
+              <b>编辑：中国大陆居民身份证</b>
+              <span class="tag t-gray mono">CN_ID_CARD</span>
+              <span class="tag t-blue">内置</span>
+              <span style="flex:1"></span>
+              <button class="btn sm plain">停用</button>
+            </div>
+            <div style="padding:14px 0 0">
+              <div class="inline" style="gap:12px;margin-bottom:4px">
+                <div class="field" style="margin-bottom:10px">
+                  <label>类别</label>
+                  <select class="sel"><option>PII</option><option>PCI</option><option>PHI</option><option>SECRET</option><option>FINANCIAL</option></select>
+                </div>
+                <div class="field" style="margin-bottom:10px">
+                  <label>默认分级</label>
+                  <select class="sel"><option>L4 机密</option><option>L3 敏感</option><option>L2 内部</option><option>L1 公开</option></select>
+                  <div class="hint">对齐《网络数据分类分级指引》1–4 级；<b>CORE / IMPORTANT 不在此列</b>，只能人工打标</div>
+                </div>
+              </div>
+              <div class="inline" style="gap:12px;margin-bottom:14px">
+                <div class="field" style="margin-bottom:10px">
+                  <label><span class="mono">auto_apply</span> · 允许自动应用</label>
+                  <div><span class="switch"></span> <span class="tag t-green">开</span> <span class="muted" style="font-size:11.5px">本 catalog 阈值 <span class="mono">0.99</span>（全局默认 0.85）</span></div>
+                </div>
+                <div class="field" style="margin-bottom:10px">
+                  <label>自动应用阈值</label>
+                  <input class="mono" value="0.99" />
+                  <div class="hint">仅对本类型生效；改这个值进审计</div>
+                </div>
+              </div>
+
+              <label style="display:block;color:var(--sub);margin-bottom:8px">五层探测器 <span class="muted" style="font-size:11.5px">（权重和为 1.00，右侧实时归一化）</span></label>
+
+              <div class="det">
+                <span class="dn"><input type="checkbox" checked style="width:auto"/> D1 名称</span>
+                <span class="dw"><input value="0.35" /></span>
+                <span class="dsum">列名 / 列注释命中别名表：<span class="mono">id_card</span> · <span class="mono">id_no</span> · <span class="mono">身份证</span> · <span class="mono">证件号</span></span>
+              </div>
+              <div class="det">
+                <span class="dn"><input type="checkbox" checked style="width:auto"/> D2 类型</span>
+                <span class="dw"><input value="0.10" /></span>
+                <span class="dsum">SQL 类型 <span class="mono">char(18)</span> / <span class="mono">varchar(18)</span> 与证件号长度一致</span>
+              </div>
+              <div class="det">
+                <span class="dn"><input type="checkbox" checked style="width:auto"/> D3 值模式</span>
+                <span class="dw"><input value="0.40" /></span>
+                <span class="dsum">
+                  正则 <span class="mono">^[1-9]\d{5}(18|19|20)\d{2}…[\dXx]$</span><br/>
+                  校验器 <span class="tag t-green">模 11 加权</span> 通过率 ≥ 0.99 才给满分
+                </span>
+              </div>
+              <div class="det">
+                <span class="dn"><input type="checkbox" checked style="width:auto"/> D4 字典</span>
+                <span class="dw"><input value="0.10" /></span>
+                <span class="dsum">前 6 位落在省份码表内：<span class="tag t-blue">内置字典 34 项</span></span>
+              </div>
+              <div class="det off">
+                <span class="dn"><input type="checkbox" style="width:auto"/> D5 统计</span>
+                <span class="dw"><input class="locked" value="0.05" readonly /></span>
+                <span class="dsum">本类型不启用（长度恒 18、无区分度，开了反而稀释强信号）</span>
+              </div>
+
+              <div class="sumline" style="margin-top:12px">
+                <span>启用 4 层 · 权重合计 <b class="mono">0.95</b> → 归一化为 <b class="mono">0.37 / 0.11 / 0.42 / 0.11</b></span>
+              </div>
+
+              <div class="warn-banner" style="margin:14px 0 0">
+                <b>内置类型的字段默认只读</b>，点「编辑」才解锁——避免误改内置规则。
+                改完后下一轮扫描生效，改动本身进审计（谁把身份证阈值从 0.85 调到了 0.99）。
+              </div>
+
+              <div style="display:flex;gap:8px;margin-top:14px">
+                <button class="btn">保存</button>
+                <button class="btn plain">恢复内置默认</button>
+                <button class="btn danger">删除</button>
+                <span class="mini" style="align-self:center">内置类型删除会返 <span class="mono">409</span></span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ============ 6. 扫描任务与调度 ============ -->
+      <div class="screen" id="screen-schedules">
+        <div class="danger-banner">
+          <b>本屏形态取决于一个部署期决定：调度放外部还是自建。</b>
+          推荐<b>外部</b>——catalog 保持无状态，多实例下不必再养一套分布式租约；此时本屏是只读的「调度建议」页。
+          选<b>自建</b>时才出现下面的新建/编辑按钮，并且要落第 6 张表、端点计数 +3。
+        </div>
+
+        <div class="card">
+          <h3>调度项 <span class="tag t-green">当前路线：外部调度（建议）</span></h3>
+          <table>
+            <tr><th>名称</th><th>cron</th><th>范围</th><th>模式</th><th>执行位置</th><th>上次运行</th><th>下次运行</th><th>状态</th></tr>
+            <tr>
+              <td class="mono">sch-daily</td><td class="mono">0 3 * * *</td>
+              <td>warehouse（全库）</td><td><span class="tag t-blue">SAMPLED</span></td>
+              <td><span class="tag t-gray">进程内</span></td>
+              <td class="muted">11-05 03:00 <span class="tag t-warn">失败</span></td>
+              <td class="muted">11-06 03:00</td>
+              <td><span class="switch"></span></td>
+            </tr>
+            <tr>
+              <td class="mono">sch-weekly-lake</td><td class="mono">0 4 * * 0</td>
+              <td>lake（全库）</td><td><span class="tag t-blue">SAMPLED</span></td>
+              <td><span class="tag t-warn">下推 Spark</span></td>
+              <td class="muted">11-02 04:00 <span class="badge-dot"></span>成功</td>
+              <td class="muted">11-09 04:00</td>
+              <td><span class="switch"></span></td>
+            </tr>
+            <tr>
+              <td class="mono">sch-meta-fast</td><td class="mono">*/30 * * * *</td>
+              <td>全部 catalog</td><td><span class="tag t-gray">METADATA_ONLY</span></td>
+              <td><span class="tag t-gray">进程内</span></td>
+              <td class="muted">11-05 14:30 <span class="badge-dot"></span>成功</td>
+              <td class="muted">11-05 15:00</td>
+              <td><span class="switch off"></span></td>
+            </tr>
+          </table>
+          <div class="note-banner" style="margin:12px 0 0">
+            下推 Spark 的调度项必须确认目标 catalog 已配执行集群；<span class="mono">sch-weekly-lake</span> 是
+            <span class="mono">lake</span>，已配；若未配，调度器在发起时就应拒（<span class="mono">400</span>），而不是拖到作业提交才失败。
+          </div>
+        </div>
+
+        <div class="grid2">
+          <div class="card" style="margin-bottom:0">
+            <h3>外部调度器接法 <span class="tag t-gray">唯一入口：POST /sensitivity-scans</span></h3>
+            <code class="cmd"><span class="c"># Airflow / k8s CronJob 都只是拼这个请求</span>
+curl -X POST <span class="k">"$HOST/api/catalogs/warehouse/sensitivity-scans"</span> \
+  -H <span class="k">"Authorization: Bearer $TOKEN"</span> \
+  -H <span class="k">"Content-Type: application/json"</span> \
+  -d <span class="k">'{ "scope":"CATALOG",
+       "mode":"SAMPLED",
+       "execution":"IN_PROCESS",
+       "sampleSize":2000 }'</span>
+<span class="c"># → 202 {"scanId":"scn-9a1f"}</span></code>
+            <div class="muted" style="margin-top:12px;line-height:1.8">
+              调度器只负责「按时打这一发」；重试、超时、补跑都是调度器的职责。
+              服务端<b>不假设</b>调度器一定只发一次——同表并发重入仍返 <span class="mono">409</span>（§5.6.4）。
+            </div>
+          </div>
+
+          <div class="card" style="margin-bottom:0">
+            <h3>两条路线的差别</h3>
+            <table>
+              <tr><th>项</th><th>外部调度</th><th>自建调度</th></tr>
+              <tr><td>新增表</td><td><span class="tag t-green">无（仍 5 张）</span></td><td><span class="tag t-warn">第 6 张</span></td></tr>
+              <tr><td>新增端点</td><td><span class="tag t-green">0</span></td><td><span class="tag t-warn">+3</span></td></tr>
+              <tr><td>多实例</td><td class="muted">天然无冲突</td><td class="muted">要分布式租约</td></tr>
+              <tr><td>cron 管理</td><td class="muted">外部系统</td><td class="muted">本服务</td></tr>
+              <tr><td>控制台</td><td class="muted">只读建议页</td><td class="muted">完整 CRUD</td></tr>
+            </table>
+            <div class="warn-banner" style="margin:12px 0 0">
+              这条不是风格问题：<b>端点计数 +3 会直接影响守卫脚本</b>（运行时端点数 == 登记数）。
+              切换路线必须同步改登记表，否则守卫直接红。
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>下推 Spark 时，服务端把这一发变成什么 <span class="tag t-gray">复用表优化任务的提交链路（§5.6.5）</span></h3>
+          <table>
+            <tr><th>环节</th><th>复用程度</th><th>与本方案不同的语义</th></tr>
+            <tr>
+              <td>执行集群配置 / 客户端</td>
+              <td><span class="tag t-green">原样复用</span></td>
+              <td class="muted">不引入第二套「集群配置」概念；<b>但配额不共用</b>（见下两行）</td>
+            </tr>
+            <tr>
+              <td>五问探活 / k8s 报文 / 幂等提交 / 状态折算 / 取消</td>
+              <td><span class="tag t-green">原样复用</span></td>
+              <td class="muted">前缀改 <span class="mono">paimon-scan-</span>、容器名 <span class="mono">scanner</span>；<span class="mono">backoffLimit=0</span>、TTL 与 <span class="mono">jobTimeoutSeconds</span> 取<b>扫描自己那组策略</b></td>
+            </tr>
+            <tr>
+              <td>批次策略（同一张表，两组并列）</td>
+              <td><span class="tag t-warn">新增一组</span></td>
+              <td class="muted"><span class="mono">maxScanTablesPerJob=200</span> / <span class="mono">maxConcurrentScans=2</span> / <span class="mono">scanJobTimeoutSeconds=3600</span>，<b>与优化那组各算各的</b>（§5.6.6）</td>
+            </tr>
+            <tr>
+              <td>Spark 参数</td>
+              <td><span class="tag t-warn">复用注入位置，取值独立</span></td>
+              <td class="muted">优化改参数不该悄悄改变扫描的资源诉求；<span class="mono">scanSparkConf</span> 走前缀白名单，认证键一律丢弃（§5.6.7）</td>
+            </tr>
+            <tr>
+              <td>调度租约</td>
+              <td><span class="tag t-warn">复用模式，新增通道</span></td>
+              <td class="muted">必须登记进通道清单，否则多副本各提交一遍</td>
+            </tr>
+            <tr>
+              <td>回调通道</td>
+              <td><span class="tag t-warn">复用形状，另开两端点</span></td>
+              <td class="muted">令牌换 <span class="mono">X-Sensitivity-Scan-Token</span>，作用域 = 这一次扫描</td>
+            </tr>
+            <tr>
+              <td>Spark 会话构建</td>
+              <td><span class="tag t-err">抽公共类，不许复制</span></td>
+              <td class="muted">三套 catalog 配置与镜像里 arrow 的类路径排序是编译器看不见的约定，复制必分叉</td>
+            </tr>
+            <tr>
+              <td>作业粒度</td>
+              <td class="muted">—</td>
+              <td><b>一个扫描 = 一个 Job，不组批</b>：组批会让两个调度周期各自抓走同一张表，绕过「同表互斥」</td>
+            </tr>
+            <tr>
+              <td>逐表回报</td>
+              <td class="muted">—</td>
+              <td><b>没命中也要回</b>：不然「扫完没发现」与「漏扫」在覆盖率上长得一样（<span class="mono">tables_failed</span> 单列）</td>
+            </tr>
+            <tr>
+              <td>进度条</td>
+              <td class="muted">—</td>
+              <td>状态多两态：<span class="mono">PENDING</span> → <span class="mono">SUBMITTING</span> → <span class="mono">RUNNING</span>，并需回收「提交中」的孤儿扫描</td>
+            </tr>
+          </table>
+          <div class="note-banner" style="margin:12px 0 0">
+            右侧一列才是要点：<b>能复用的是「怎么把作业放出去、怎么知道它跑到哪」，不能复用的是「作业干什么、回来什么」。</b>
+            §5.4 的收口在下推路线上换一种说法——<b>原始行不出 Pod</b>，值层抽样在作业内跑、只回落打码样本与命中率，且任务侧禁止把样本值写进日志。
+          </div>
+          <div class="warn-banner" style="margin:12px 0 0">
+            <b>两组配额各算各的，叠加风险由集群侧兜。</b>
+            扫描用 <span class="mono">maxConcurrentScans</span>、优化用 <span class="mono">maxConcurrentJobs</span>，
+            服务端<b>不做交叉校验</b>（它不知道那台集群有多少 CPU）。同一台集群可能同时收到两者之和个 Spark 驱动——
+            <b>部署时 ResourceQuota / 调度器队列必须显式设，空着就是敞口</b>。
+          </div>
+        </div>
+      </div>
+
+      <!-- ============ 7. 标签驱动脱敏 ============ -->
+      <div class="screen" id="screen-bindings">
+        <div class="note-banner">
+          绑定是 <b>catalog 级规则</b>：一次配置，覆盖所有带该标签的列。新列被识别打标后<b>自动纳入</b>，不需要回来改任何表的策略。
+        </div>
+
+        <div class="card">
+          <h3>标签 → 脱敏绑定 <span class="tag t-gray">warehouse · 4 条</span></h3>
+          <table>
+            <tr><th>标签</th><th>脱敏动作</th><th>覆盖列</th><th>优先级</th><th>状态</th><th>操作</th></tr>
+            <tr>
+              <td><span class="tag t-gray mono">PII.CN_ID_CARD</span></td>
+              <td class="mono">keep_last(4) → string</td>
+              <td><b>213</b> 列 <span class="tag t-warn">其中 6 列被显式 mask 覆盖</span></td>
+              <td class="mono">100</td>
+              <td><span class="switch"></span></td>
+              <td><button class="btn sm plain">编辑</button> <a class="btn sm ghost" href="#tags">看覆盖</a></td>
+            </tr>
+            <tr>
+              <td><span class="tag t-gray mono">PII.CN_MOBILE</span></td>
+              <td class="mono">keep_last(4)</td>
+              <td><b>612</b> 列</td>
+              <td class="mono">90</td>
+              <td><span class="switch"></span></td>
+              <td><button class="btn sm plain">编辑</button></td>
+            </tr>
+            <tr>
+              <td><span class="tag t-gray mono">PHI.*</span> <span class="muted">（任意 PHI 类型）</span></td>
+              <td class="mono">replace_with_null</td>
+              <td><b>48</b> 列</td>
+              <td class="mono">120</td>
+              <td><span class="switch"></span></td>
+              <td><button class="btn sm plain">编辑</button></td>
+            </tr>
+            <tr>
+              <td><span class="tag t-gray mono">PCI.BANK_CARD</span></td>
+              <td class="muted">未配置</td>
+              <td><b>96</b> 列 <span class="tag t-err">无保护</span></td>
+              <td class="muted">—</td>
+              <td><span class="switch off"></span></td>
+              <td><a class="btn sm" href="#types">去配置</a></td>
+            </tr>
+          </table>
+        </div>
+
+        <div class="grid2">
+          <div class="card" style="margin-bottom:0">
+            <h3>冲突与优先级 <span class="tag t-warn">6 处</span></h3>
+            <div class="muted" style="margin-bottom:12px;line-height:1.8">
+              解析顺序：<b>显式 mask</b> &gt; <b>标签绑定</b>（level 降序 → priority 降序 → tagKey 升序）。冲突不静默吞掉，列在响应里。
+            </div>
+            <table>
+              <tr><th>列</th><th>显式 mask</th><th>标签绑定</th><th>结果</th></tr>
+              <tr>
+                <td class="mono">user_center.dwd_user_wide.id_no</td>
+                <td class="mono">sha256</td>
+                <td class="mono">keep_last(4)</td>
+                <td><span class="tag t-blue">显式赢</span></td>
+              </tr>
+              <tr>
+                <td class="mono">sales.dim_customer.mobile</td>
+                <td class="mono">—</td>
+                <td class="mono">keep_last(4)</td>
+                <td><span class="tag t-green">标签生效</span></td>
+              </tr>
+              <tr>
+                <td class="mono">fin.pay_log.card_no</td>
+                <td class="mono">—</td>
+                <td class="muted">无绑定</td>
+                <td><span class="tag t-err">明文</span></td>
+              </tr>
+            </table>
+          </div>
+
+          <div class="card" style="margin-bottom:0">
+            <h3>生效链路 <span class="tag t-gray">引擎零改动</span></h3>
+            <div class="colbox" style="margin-bottom:12px">
+              <div class="bd sample" style="line-height:2">
+                masks = 显式 mask（现状）<br/>
+                <span style="color:#409eff">for tag in columnTags(表):</span><br/>
+                &nbsp;&nbsp;<span style="color:#409eff">for b in bindings(catalog, tag):</span><br/>
+                &nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#67c23a">if 列 not in masks: masks[列] = b.mask</span><br/>
+                &nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#e6a23c">else: conflicts += (列, b, 显式赢)</span>
+              </div>
+            </div>
+            <div class="muted" style="line-height:1.8">
+              下发给 Spark 的仍是「列名 → mask」的既有形状，<span class="mono">PolicyProjectRule</span> 不知道「标签」存在。
+            </div>
+            <div class="warn-banner" style="margin:12px 0 0">
+              策略下发有 60 秒 TTL；标签变更会<b>主动失效</b>该表缓存（与凭据缓存的
+              <span class="mono">invalidateCatalog</span> 同构），否则「刚确认完页面还是明文」会被当成 bug。
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ============ 7. 表详情联动 ============ -->
+      <div class="screen" id="screen-table">
+        <div class="card">
+          <h3>warehouse.user_center.dwd_user_wide <span class="tag t-blue">Paimon</span> <span class="tag l4">表级 L4</span></h3>
+          <div class="tabs">
+            <span class="tab">概览</span>
+            <span class="tab">Schema</span>
+            <span class="tab">分区</span>
+            <span class="tab">数据预览</span>
+            <span class="tab">血缘</span>
+            <span class="tab">数据质量</span>
+            <span class="tab active">敏感数据</span>
+            <span class="tab">数据策略</span>
+          </div>
+          <table>
+            <tr><th>列</th><th>类型</th><th>敏感标签</th><th>级别</th><th>来源</th><th>当前脱敏</th></tr>
+            <tr>
+              <td class="mono">user_id</td><td class="mono muted">bigint</td>
+              <td><span class="muted">—</span></td><td><span class="tag l1">L1</span></td>
+              <td class="muted">—</td><td class="muted">明文</td>
+            </tr>
+            <tr>
+              <td class="mono">id_no</td><td class="mono muted">char(18)</td>
+              <td><span class="tag t-gray mono">PII.CN_ID_CARD</span></td><td><span class="tag l4">L4</span></td>
+              <td><span class="tag t-blue">自动</span></td>
+              <td class="muted">sha256 <span class="tag t-blue">显式</span></td>
+            </tr>
+            <tr>
+              <td class="mono">mobile</td><td class="mono muted">varchar(20)</td>
+              <td><span class="tag t-gray mono">PII.CN_MOBILE</span></td><td><span class="tag l3">L3</span></td>
+              <td><span class="tag t-green">人工</span></td>
+              <td class="muted">keep_last(4) <span class="tag t-blue">标签绑定</span></td>
+            </tr>
+            <tr>
+              <td class="mono">real_name</td><td class="mono muted">varchar(64)</td>
+              <td><span class="tag t-warn">待确认 · 0.72</span></td><td><span class="tag l3">L3?</span></td>
+              <td class="muted">—</td><td class="muted">明文 <span class="tag t-err">风险</span></td>
+            </tr>
+            <tr>
+              <td class="mono">addr_detail</td><td class="mono muted">varchar(512)</td>
+              <td><span class="tag t-gray mono">PII.ADDRESS</span></td><td><span class="tag l3">L3</span></td>
+              <td><span class="tag t-blue">自动</span></td>
+              <td class="muted">keep_last(6) <span class="tag t-blue">标签绑定</span></td>
+            </tr>
+            <tr>
+              <td class="mono">created_at</td><td class="mono muted">timestamp</td>
+              <td class="muted">—</td><td><span class="tag l1">L1</span></td>
+              <td class="muted">—</td><td class="muted">明文</td>
+            </tr>
+            <tr style="background:#fafafa">
+              <td class="mono" style="color:var(--gray)">promo_channel</td><td class="mono muted">varchar(32)</td>
+              <td><span class="tag t-gray">未分类</span></td><td class="muted">—</td>
+              <td class="muted">—</td>
+              <td class="muted">明暗未知 <span class="tag t-warn">覆盖率缺口</span></td>
+            </tr>
+          </table>
+          <div class="note-banner" style="margin:14px 0 0">
+            未分类列显式标灰，而不是当成「扫过、没敏感」——<b>覆盖率是分母问题，不能靠沉默掩盖</b>。
+          </div>
+        </div>
+
+        <div class="grid2e">
+          <div class="card" style="margin-bottom:0">
+            <h3>这张表能对外吗</h3>
+            <table>
+              <tr><th>判据</th><th>结果</th></tr>
+              <tr><td>表级最高级别</td><td><span class="tag l4">L4</span></td></tr>
+              <tr><td>L4 列数</td><td class="mono">1</td></tr>
+              <tr><td>L4 列是否全部受保护</td><td><span class="tag t-green">是（1/1）</span></td></tr>
+              <tr><td>未分类列</td><td><span class="tag t-warn">1 列</span></td></tr>
+              <tr><td>结论</td><td class="muted">可内部共享；<b>对外需先补齐未分类列</b></td></tr>
+            </table>
+          </div>
+          <div class="card" style="margin-bottom:0">
+            <h3>操作</h3>
+            <div style="display:flex;flex-direction:column;gap:10px">
+              <button class="btn plain">重新扫描这张表（METADATA_ONLY）</button>
+              <button class="btn plain">手工新增标签</button>
+              <a class="btn" href="#tags">去审核这张表的 3 条待确认</a>
+            </div>
+            <div class="muted" style="margin-top:12px;line-height:1.8">
+              表级标签 <span class="mono">sensitivity.level=L4</span> 只用于检索与粗判，
+              <b>不参与策略展开</b>——脱敏始终按列。
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<script>
+  const titles = {
+    overview: '数据治理 / 敏感数据识别',
+    scan: '数据治理 / 敏感数据识别 / 发起扫描',
+    findings: '数据治理 / 敏感数据识别 / 识别结果审核',
+    tags: '数据治理 / 敏感数据识别 / 标签清单',
+    types: '数据治理 / 敏感数据识别 / 敏感类型与探测器配置',
+    schedules: '数据治理 / 敏感数据识别 / 扫描任务与调度',
+    bindings: '数据治理 / 敏感数据识别 / 标签驱动脱敏',
+    table: 'Catalog / 表详情 / 敏感数据'
+  };
+  function show(hash){
+    const key = (hash || '#overview').replace('#','');
+    const id = 'screen-' + key;
+    if(!document.getElementById(id)) return;
+    document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+    document.getElementById(id).classList.add('active');
+    document.getElementById('crumb').textContent = titles[key] || titles.overview;
+    const navKey = {scan:'overview', findings:'overview', tags:'overview', types:'overview', schedules:'overview', bindings:'overview'}[key] || key;
+    document.querySelectorAll('.side .item').forEach(a => {
+      a.classList.toggle('active', a.getAttribute('data-nav') === navKey);
+    });
+    window.scrollTo(0,0);
+  }
+  window.addEventListener('hashchange', () => show(location.hash));
+  show(location.hash);
+</script>
+</body>
+</html>

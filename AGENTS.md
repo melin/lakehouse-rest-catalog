@@ -271,7 +271,7 @@ spec/                   三份 OpenAPI 规格的仓库副本（不随服务端�
                         rest-management-open-api.yaml（Paimon 官方 REST Management API）
 sql/                    MySQL / PostgreSQL 建表语句（生成物，分别对应 schema-mysql.sql / schema-postgres.sql）
 scripts/                验收 / 生成 / 校验 / 镜像构建脚本
-docs/                   34 份设计文档（另有八份配套效果图 HTML）
+docs/                   36 份设计文档（另有十份配套效果图 HTML）
 ```
 
 服务端四模块的**类数**：core 117 · storage 9 · protocol-paimon 38 · server 46（共 210）。
@@ -295,7 +295,7 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
 | `data-model.md` | 改实体 / 看 29 张表划分、摘要列与审计列的理由、实体与仓储分在哪两个模块、Iceberg 协议面新增的 9 个列（§1.1）、血缘三表（§2.3） |
 | `table-optimization.md` | 改表存储优化：三层配置合并、批次与调度游标、组批与提交、前后指标；**三种表格式共用一套策略表与批次表**，参数键与动作能力按格式分派（§2.5 是 Iceberg 的对应物，§6.5 是执行侧差异，Lance 见 `lance-table-optimization-design.md`） |
 | `optimization-multi-instance-design.md` | 多副本部署优化调度 / 排查「同一任务被两台机器发起」（**设计稿，未实现**）：现状审计（出批与提交已有 CAS，收尾、崩溃回收、配额闸门、手动入口四处没有）、三类重复的实际后果、租约表 + 代理（fencing）提交租约 + 终态收尾 CAS、锁顺序与事务拆分、部署七条前提、双实例验收 SQL |
-| `catalog-execution-cluster-design.md` | 给 catalog 配执行集群 / 评审该方案（**已实现**，偏差见其 §15）：配置从 `optimization.*` 下移到 catalog、kubeconfig 逐 context 解析（`exec:` 硬拒）、探活五问与状态机、fabric8 要点（禁 autoConfigure 回落、client 缓存必关、AKS scope 用 AKS 的 audience 而不是管理面） |
+| `catalog-execution-cluster-design.md` | 给 catalog 配执行集群 / 评审该方案（**已实现**，偏差见其 §15）：配置从 `optimization.*` 下移到 catalog、kubeconfig 逐 context 解析（`exec:` 硬拒）、探活五问与状态机、fabric8 要点（禁 autoConfigure 回落、client 缓存必关、AKS scope 用 AKS 的 audience 而不是管理面）；**批次策略一张表两组**（表优化 vs 敏感识别各一套 + 各一组 Spark 参数 JSON 列，不进 `config_hash`）——**M5，随敏感识别下推路线待做** |
 | `event-framework.md` | 加事件 / 接 listener：9 类 33 个领域事件与触发点、与 Polaris 枚举的映射、`audit_event` 表、发布监听链路、按监听器的类别/类型订阅、增量拉取契约（`?since=` / `?category=`）与不发清单 |
 | `generic-table-design.md` | parquet / orc / lance / vortex 纳入目录（**设计稿，未实现**）：格式能力矩阵、`table_kind` 方案取舍、端点与权限、Spark 接入、影响面与风险 |
 | `metrics-design.md` | 加指标 / 接 Prometheus / 排查「指标太贵」：**设计稿，未实现**——Polaris telemetry 的事实基线（四类来源、realm 基数闸门、SLO 桶、Iceberg 用量报告与运维指标的区别）、`lakehouse.*` 指标目录与基数预算（<1500）、标签黑名单与 catalog 折叠规则、切面替代逐端点 `@Timed`、管理端口暴露与 ServiceMonitor、告警/看板示例、`verify-metrics-doc.py` 一致性校验 |
@@ -322,6 +322,8 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
 | `iceberg-rest-catalog-design.md` | 让同一基址、同一份元数据同时服务原生 Iceberg REST 客户端：双协议方案、两套面的差异与代价、catalog 建时区分格式；**已落地的实测记录与与方案不一致的十六处**（§11） |
 | `lance-rest-catalog-design.md` | 支持 Lance（Lance Namespace / REST Catalog 协议面）或评审该方案（**P0 + P1 + P2 里能做的都已落地**，含控制台的浏览与建命名空间；未做：`BatchCreateTableVersions`、索引只读）：规范自己划的「最小集 + 两条降级许可」为什么正好覆盖我们（§1.5）、54 个 operation 的三档取舍（19 做 / 35 恒 406）、为什么不做 `CreateTable`/数据面/`managed_versioning`（§3）、三种「Lance」的区分（Paimon `lance-table` / 通用表 / 本面，§2）、基址与 id 解析、`catalog_format=LANCE` 加 3 列 1 张新表、授权与凭据的落点、P0/P1/P2 需求清单与 `verify-lance-endpoints.py`、待拍板决策与实测偏差（§8 / §12）、控制台三面发现端点的差异（§12.9） |
 | `lance-table-optimization-design.md` | 给 Lance 表做存储优化（compaction）或评审该方案（**已落地**，前置是上一条的 P0）：为什么只有两条维护语句（`OPTIMIZE` / `VACUUM`）→ 三动作变两动作、`orphan` 恒不可用；Daft 那两层参数（`num_partitions`/`concurrency`/`micro_commit_batch_size`）在 Spark 侧不存在；指标是**增量四元组**不是前后快照；`VACUUM` 无干跑的三层补偿；`isIceberg()` 与 `actionsFor()` 两处二元分派不改就静默走 Paimon（§5.1 / §7.2）；`--add-opens` 只能进镜像 ENV（§5.6）；三条抓包门禁与 P0/P1 需求清单 |
+| `data-quality-design.md` | 做数据质量规则管理 / 评审 DQ 方案（**设计稿，未实现**）：规则集中存 catalog 元数据而非管道代码、Spark 在 DataFrame 层执行所以对 Paimon / Iceberg / Lance 同源生效、**但强制点只在 enforcer 写路径上**（沿用行过滤 L0–L3 口径、比 L0 还低一档；三格式约束能力不对等，仅「非空」勉强对齐）；六维 + 四动作（FAIL / DROP / QUARANTINE / FLAG）、四实体（rule / run / violation / metric）、ON_WRITE / ON_READ 两个挂载点、表达式复用行过滤的白名单 AST、端点与 `quality.run.completed` 事件、控制台五画面、P0–P3 分期与验收；配套原型 `data-quality-mockup.html`（五画面） |
+| `sensitive-data-design.md` | 做敏感数据自动识别 / 分级打标，或评审「谁来回答哪一列是身份证」（**设计稿，未实现**）：识别落成 catalog 内的列级标签，再驱动按标签脱敏 / 血缘传播 / 对外检索，三格式零改动；五层探测器 + 加权打分（类型级可编辑）+ 三条决策带；`auto_apply` 与阈值是**两个独立开关**，姓名 / 地址 / 薪资 / 病历永不自动应用（防静默误脱敏）；**扫描执行位置（进程内 / 下推 Spark）与触发方式（手动 / 钩子 / 定时）是两个独立可配置项**，定时推荐外部调度以免 catalog 变有状态；**下推 Spark 复用表优化任务的提交 / 探活 / 跟踪 / 取消链路**（一个扫描 = 一个 Job 不组批；逐表回调「没命中也要回」，否则「扫完没发现」与「漏扫」不可分；`execution=SPARK` 对不可派发 catalog 返 400 而不静默退回进程内）；采样只存打码样本、需独立权限 `CATALOG:SENSITIVE_SCAN`；`transform_kind` 决定继承（DIRECT 0.9 / DERIVED 0.6 / AGGREGATE 不自动）；人工拒绝写永久抑制项，重扫不复活；**`lakehouse_tag` 是快照标签，不可复用**；标签本身按级别可见；**分级对齐国标**（`L1–L4` ↔《网络数据分类分级指引》1–4 级；`CORE` / `IMPORTANT` 只人工打标、不进自动识别）；**执行集群「一张表两组策略」**（表优化 / 敏感识别各一套批次策略 + 各一组 Spark 参数，`scan_spark_conf` 走前缀白名单、防成改认证目标的旁路）；**三层配置覆盖**（全局 yml < catalog `/sensitivity-settings` < 单次请求；并发上限只两层）；八画面原型、P0–P4 分期 |
 
 ---
 
