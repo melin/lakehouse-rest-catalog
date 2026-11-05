@@ -83,7 +83,10 @@ USE `lakehouse_catalog`;
         entity_version integer not null comment '乐观并发版本号，对应管理 API 的 entityVersion',
         job_timeout_seconds integer not null comment '批次超时秒数',
         max_concurrent_jobs integer not null comment '该 catalog 同时运行几个批次',
+        max_concurrent_scans integer default 2 not null comment '敏感识别同时运行几个扫描',
+        max_scan_tables_per_job integer default 200 not null comment '敏感识别单批最多扫描几张表',
         max_tables_per_job integer not null comment '单批最多几张表',
+        scan_job_timeout_seconds integer default 3600 not null comment '敏感识别批次超时秒数',
         created_at bigint comment '创建时刻（epoch 毫秒）',
         probe_status varchar(8) comment '最近一次探活 PASS / FAIL；空 = 从未探过',
         probed_at bigint comment '最近一次探活时刻（epoch 毫秒）',
@@ -108,7 +111,9 @@ USE `lakehouse_catalog`;
         image varchar(255) not null comment '优化任务镜像（含 Spark 运行时）',
         image_pull_secrets varchar(255) comment 'imagePullSecrets，逗号分隔的 Secret 名',
         kubeconfig_sealed text comment 'kubeconfig 原文（CredentialCipher 密封），仅 SELF_HOSTED',
+        optimization_spark_conf text comment '表优化 Spark 参数（逐行 k=v，前缀白名单过滤）',
         owner varchar(255) comment '记录归属主体（展示与过滤用，不参与授权判定）',
+        scan_spark_conf text comment '敏感识别 Spark 参数（逐行 k=v，前缀白名单过滤）',
         updated_by varchar(255) comment '最后更新者主体名（写入前已按列宽归一化）',
         primary key (id)
     ) comment='catalog 的执行集群配置（优化任务提交到哪里、用什么身份），一行一 catalog' engine=InnoDB;

@@ -108,9 +108,10 @@ class FlywayBaselineTests {
                 .load();
 
         MigrateResult first = flyway.migrate();
-        assertEquals(1, first.migrationsExecuted,
-                "空库上执行迁移应当是「应用了 V1 这一条」；条数为 0 说明脚本没被发现，"
-                        + "条数更多说明基线被拆成了多个版本（不该发生）");
+        assertEquals(2, first.migrationsExecuted,
+                "空库上执行迁移应当是「V1 建表 + V2 加列」两条。条数为 0 说明脚本没被发现；"
+                        + "条数与预期不符说明有人加了/删了版本文件却没同步这条断言——"
+                        + "注意 V1 的 checksum 不可再变，加结构一律新增 V2+。");
 
         List<String> declared = declaredTables("mysql");
         assertEquals(MysqlDdlGeneratorTests.EXPECTED_TABLES, declared.size(),
@@ -149,7 +150,7 @@ class FlywayBaselineTests {
                 .load();
 
         MigrateResult first = flyway.migrate();
-        assertEquals(1, first.migrationsExecuted, "空库上执行 PostgreSQL 基线应当应用 V1 这一条");
+        assertEquals(2, first.migrationsExecuted, "空库上执行 PostgreSQL 迁移应当应用 V1 + V2 两条");
 
         List<String> declared = declaredTables("postgresql");
         assertEquals(MysqlDdlGeneratorTests.EXPECTED_TABLES, declared.size(),
@@ -162,6 +163,67 @@ class FlywayBaselineTests {
         }
 
         assertEquals(0, flyway.migrate().migrationsExecuted, "重复执行 PostgreSQL 迁移应当是 no-op");
+    }
+
+    /**
+     * V2 的**存量库升级路径**：先只应用 V1（模拟「上线 M5 之前就建好的库」），
+     * 插一行旧结构的数据，再应用 V2，验证「加列成功 + 存量行拿到 DEFAULT 而非 NULL」。
+     *
+     * <p><b>为什么不能只测「空库跑到最新」。</b>空库路径是 V1 + V2 连着跑，
+     * 那条路永远见不到「表里已有数据」这一态；而 V2 的三个 {@code NOT NULL} 列
+     * 恰恰只在存量行上才可能失败——`ALTER TABLE ... ADD COLUMN ... NOT NULL`
+     * 没有 DEFAULT 时会直接拒绝执行。这条用例就是那一句的守卫。
+     *
+     * <p>分两次 Flyway 配置：第一次 {@code target("1")} 只到 V1，第二次放开到最新。
+     * Flyway 会记 {@code flyway_schema_history}，因此第二次只补跑 V2——
+     * 这正是真机上的行为。
+     */
+    @Test
+    void mysqlV2UpgradesAPreExistingV1Database() throws SQLException {
+        String url = "jdbc:h2:mem:flyway-mysql-upgrade;MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1";
+        Flyway v1Only = Flyway.configure()
+                .dataSource(url, USER, PASSWORD)
+                .locations(MYSQL_LOCATION)
+                .baselineOnMigrate(true)
+                .baselineVersion("1")
+                .target("1")
+                .load();
+        assertEquals(1, v1Only.migrate().migrationsExecuted, "第一次应当只应用 V1");
+
+        // 造一行「旧结构」的数据：新列此时还不存在，因此不能出现在 insert 里
+        try (Connection connection = DriverManager.getConnection(url, USER, PASSWORD)) {
+            try (PreparedStatement insert = connection.prepareStatement(
+                    "insert into lakehouse_catalog_execution_cluster"
+                            + " (id, catalog_id, enabled, entity_version, cluster_type, api_server,"
+                            + " namespace, image, image_pull_policy, callback_base_url, config_hash,"
+                            + " max_tables_per_job, max_concurrent_jobs, job_timeout_seconds)"
+                            + " values (?, ?, 1, 0, 'SELF_HOSTED', 'https://k8s:6443',"
+                            + " 'default', 'img:1', 'IfNotPresent', 'https://srv:8080', 'hash', 20, 2, 7200)")) {
+                insert.setString(1, "existing");
+                insert.setString(2, "cat");
+                insert.executeUpdate();
+            }
+        }
+
+        Flyway toLatest = Flyway.configure()
+                .dataSource(url, USER, PASSWORD)
+                .locations(MYSQL_LOCATION)
+                .baselineOnMigrate(true)
+                .baselineVersion("1")
+                .load();
+        assertEquals(1, toLatest.migrate().migrationsExecuted,
+                "存量库上只应补跑 V2 这一条（V1 已记录，不重放）");
+
+        try (Connection connection = DriverManager.getConnection(url, USER, PASSWORD);
+             PreparedStatement query = connection.prepareStatement(
+                     "select max_scan_tables_per_job, max_concurrent_scans, scan_job_timeout_seconds"
+                             + " from lakehouse_catalog_execution_cluster where id = 'existing'");
+             ResultSet rows = query.executeQuery()) {
+            assertTrue(rows.next(), "存量行在升级后应当还在");
+            assertEquals(200, rows.getInt(1), "存量行的 max_scan_tables_per_job 应当拿到 DEFAULT 200，而不是 0/NULL");
+            assertEquals(2, rows.getInt(2), "存量行的 max_concurrent_scans 应当拿到 DEFAULT 2");
+            assertEquals(3600, rows.getInt(3), "存量行的 scan_job_timeout_seconds 应当拿到 DEFAULT 3600");
+        }
     }
 
     /**
@@ -183,6 +245,11 @@ class FlywayBaselineTests {
                     vendor + " 基线缺少派生说明头，可能被手工改过或未经过派生脚本生成");
             assertTrue(CREATE_TABLE.matcher(sql).find(),
                     vendor + " 基线里没有任何 create table，脚本内容可疑");
+            // V2 是手写的增量，也必须跟着 jar 走，否则存量库启动时不会加列
+            String v2 = readClasspath("/db/migration/" + vendor
+                    + "/V2__add_scan_strategy_and_spark_conf.sql");
+            assertTrue(v2.contains("max_scan_tables_per_job"),
+                    vendor + " 的 V2 迁移里没有 scan 策略列，内容可疑");
         }
     }
 

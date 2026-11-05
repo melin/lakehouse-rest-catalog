@@ -157,6 +157,48 @@ public class CatalogExecutionClusterEntity extends AuditedEntity {
     private int jobTimeoutSeconds = 7200;
 
     /**
+     * 敏感识别扫描：单批最多扫描几张表。
+     *
+     * <p>与优化的 {@code max_tables_per_job} 差一个量级不是笔误：一个 catalog 几千张表是常态，
+     * 扫描是只读采样、天然要一次抓更多；优化的一批要真的 compaction，代价高得多。
+     *
+     * <p>{@code columnDefinition} 里带 default 不是冗余：这三个 scan 列是**后加的**，
+     * 存量行在 V2 迁移里要 {@code ADD COLUMN ... NOT NULL}，没有 DEFAULT 那句就跑不通。
+     * 同款手法见 {@code PrincipalEntity.source}。
+     */
+    @Column(name = "max_scan_tables_per_job", nullable = false,
+            columnDefinition = "integer default 200",
+            comment = "敏感识别单批最多扫描几张表")
+    private int maxScanTablesPerJob = 200;
+
+    /** 敏感识别扫描：同时允许几个扫描在跑。与优化同值——两者争的是同一台集群的算力。 */
+    @Column(name = "max_concurrent_scans", nullable = false,
+            columnDefinition = "integer default 2",
+            comment = "敏感识别同时运行几个扫描")
+    private int maxConcurrentScans = 2;
+
+    /** 敏感识别扫描：批次超时（秒）。比优化的 7200 短：扫描只读采样，收敛更快。 */
+    @Column(name = "scan_job_timeout_seconds", nullable = false,
+            columnDefinition = "integer default 3600",
+            comment = "敏感识别批次超时秒数")
+    private int scanJobTimeoutSeconds = 3600;
+
+    /**
+     * 表优化任务的 Spark 参数（逐行 {@code k=v}）。
+     *
+     * <p>留空 = 只用镜像级 {@code --conf} 默认值（{@code spark.driver.memory=4g} 等）；
+     * 写入的值要过**前缀白名单**，不放行的前缀拒收（见 {@code ExecutionClusterService}）。
+     */
+    @Column(name = "optimization_spark_conf", columnDefinition = "text",
+            comment = "表优化 Spark 参数（逐行 k=v，前缀白名单过滤）")
+    private String optimizationSparkConf;
+
+    /** 敏感识别扫描的 Spark 参数。规则与 {@link #optimizationSparkConf} 相同，两组各存各的。 */
+    @Column(name = "scan_spark_conf", columnDefinition = "text",
+            comment = "敏感识别 Spark 参数（逐行 k=v，前缀白名单过滤）")
+    private String scanSparkConf;
+
+    /**
      * 「参与连接与运行的全部字段」的 SHA-256（十六进制）。
      *
      * <p>不含批次策略与探活时间戳：改批次上限不需要重新验证连接，把它算进来会让

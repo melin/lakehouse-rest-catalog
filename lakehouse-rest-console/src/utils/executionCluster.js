@@ -184,3 +184,117 @@ export function contextVerdict(verdict) {
 export function contextSelectable(verdict) {
   return verdict === 'OK' || verdict === 'WARN'
 }
+
+// ---------------------------------------------------------------- 两组批次策略
+
+/**
+ * 两组批次策略的默认值。**必须与实体字段的默认值逐字一致**
+ * （`CatalogExecutionClusterEntity` 里 `columnDefinition = "integer default X"`）。
+ *
+ * <p>前端给一个「看起来更合理」的数，就会造出「打开抽屉看到 50、保存一提交变成 20」这种
+ * 只在第一次保存时才暴露的偏差——而用户看到的现象是「我什么都没改，值自己变了」。
+ *
+ * <p>两组分开列（而不是一个对象套两层）是有意的：它们**各算各的配额**，
+ * 扫描不占优化的并发额度。写成两层也会有人按「一层是默认、一层是覆盖」去读。
+ */
+export const BATCH_DEFAULTS = {
+  maxTablesPerJob: 20,
+  maxConcurrentJobs: 2,
+  jobTimeoutSeconds: 7200,
+  maxScanTablesPerJob: 200,
+  maxConcurrentScans: 2,
+  scanJobTimeoutSeconds: 3600,
+}
+
+/**
+ * 取值范围，与服务端 `ExecutionClusterService.apply()` 里的 `range(...)` 一一对应。
+ *
+ * <p>前端放宽了会在保存时吃 400（错误信息还不一定指到那一格），前端收紧了会让一个
+ * **合法**配置根本填不进去——两种都比「范围提示写错一个字」严重。
+ */
+export const BATCH_RANGES = {
+  maxTablesPerJob: [1, 500],
+  maxConcurrentJobs: [1, 50],
+  jobTimeoutSeconds: [300, 86400],
+  maxScanTablesPerJob: [1, 500],
+  maxConcurrentScans: [1, 50],
+  scanJobTimeoutSeconds: [300, 86400],
+}
+
+// ---------------------------------------------------------------- Spark 参数
+
+/**
+ * 前缀白名单，与服务端 `SPARK_CONF_ALLOWED_PREFIXES` 一致。
+ *
+ * <p>前端这份**不承载安全语义**——真正把关的是服务端（它会把白名单外的键丢弃并记审计）。
+ * 这里只用来说清「什么能填」并在保存前给一次提示，免得用户以为
+ * `spark.sql.catalog.xxx.uri` 生效了，实际上从来没到过 Spark 命令行。
+ */
+export const SPARK_CONF_ALLOWED_PREFIXES = [
+  'spark.driver.',
+  'spark.executor.',
+  'spark.sql.shuffle.',
+  'spark.sql.files.',
+  'spark.memory.',
+]
+
+/** 唯一的精确键（前缀匹配覆盖不到它）。 */
+export const SPARK_CONF_ALLOWED_KEYS = ['spark.default.parallelism']
+
+/** 单行值长度上限，与服务端 `MAX_SPARK_CONF_VALUE` 一致。 */
+export const SPARK_CONF_MAX_VALUE = 1024
+
+/** 一个键是否落在白名单内（前缀匹配要求比前缀更长，避免一个裸前缀被当成合法键）。 */
+export function sparkConfKeyAllowed(key) {
+  if (!key) return false
+  if (SPARK_CONF_ALLOWED_KEYS.includes(key)) return true
+  return SPARK_CONF_ALLOWED_PREFIXES.some((prefix) => key.startsWith(prefix) && key.length > prefix.length)
+}
+
+/**
+ * 一段 `k=v` 文本里**会被服务端丢弃**的键（保序去重）。
+ *
+ * <p>三种行不算：空行、`#` 注释行、格式不合法（`=` 缺失）的——最后一种服务端会直接 400，
+ * 由校验错误提示，不在这里重复报一遍。
+ */
+export function sparkConfRejectedKeys(raw) {
+  const rejected = []
+  for (const line of String(raw || '').split(/\r?\n/)) {
+    const entry = line.trim()
+    if (!entry || entry.startsWith('#')) continue
+    const eq = entry.indexOf('=')
+    if (eq <= 0) continue
+    const key = entry.slice(0, eq).trim()
+    if (!sparkConfKeyAllowed(key) && !rejected.includes(key)) {
+      rejected.push(key)
+    }
+  }
+  return rejected
+}
+
+/**
+ * 「留空时会生效的那份参数」——它是**镜像级**默认值，不是库里的默认值。
+ *
+ * <p>所以它只出现在 placeholder 里，**不回填进输入框**：回填会让「留空」这个状态消失，
+ * 之后镜像升级默认值时，所有 catalog 都停在旧参数上。这也解释了字段表里
+ * 「默认值 = 见下、留空语义 = 空 = 只有镜像级 `--conf`」这两句话并不矛盾。
+ */
+export const SPARK_CONF_IMAGE_DEFAULTS = {
+  optimization: [
+    'spark.driver.memory=4g',
+    'spark.driver.cores=4',
+    'spark.sql.shuffle.partitions=200',
+  ],
+  scan: [
+    'spark.driver.memory=4g',
+    'spark.driver.cores=4',
+    'spark.sql.shuffle.partitions=200',
+    'spark.sql.files.maxPartitionBytes=134217728',
+  ],
+}
+
+/** placeholder 的文本形态：多行默认值 + 一句「留空即用它」。 */
+export function sparkConfPlaceholder(kind) {
+  const lines = SPARK_CONF_IMAGE_DEFAULTS[kind] || []
+  return `留空 = 用镜像级默认：\n${lines.join('\n')}`
+}

@@ -34,6 +34,8 @@ import { describeError } from '@/api/client.js'
 import { executionClusterOf, managementApi } from '@/api/management.js'
 import { confirmDanger, notifyError, notifySuccess } from '@/composables/index.js'
 import {
+  BATCH_DEFAULTS,
+  BATCH_RANGES,
   CLUSTER_TYPES,
   clusterStatusInfo,
   clusterTypeLabel,
@@ -41,6 +43,8 @@ import {
   contextVerdict,
   probeReasonLabel,
   probeStepTag,
+  sparkConfPlaceholder,
+  sparkConfRejectedKeys,
 } from '@/utils/executionCluster.js'
 
 const props = defineProps({
@@ -84,11 +88,20 @@ function blankForm() {
     imagePullSecrets: '',
     serviceAccount: '',
     callbackBaseUrl: '',
-    // 批次策略
-    maxTablesPerJob: 20,
-    maxConcurrentJobs: 2,
-    jobTimeoutSeconds: 7200,
+    // 数据面令牌：**表优化与敏感识别都要用它**，所以它属于「运行位置」这一段，
+    // 不放进下面任何一组策略里（放进去就会被读成「只有那一类任务用」）。
     catalogToken: '',
+    // ⑤ 表优化批次策略
+    maxTablesPerJob: BATCH_DEFAULTS.maxTablesPerJob,
+    maxConcurrentJobs: BATCH_DEFAULTS.maxConcurrentJobs,
+    jobTimeoutSeconds: BATCH_DEFAULTS.jobTimeoutSeconds,
+    // ⑥ 敏感识别批次策略（与上面一组各算各的配额，不是它的副本）
+    maxScanTablesPerJob: BATCH_DEFAULTS.maxScanTablesPerJob,
+    maxConcurrentScans: BATCH_DEFAULTS.maxConcurrentScans,
+    scanJobTimeoutSeconds: BATCH_DEFAULTS.scanJobTimeoutSeconds,
+    // ⑦ Spark 参数：两类任务各一组。空 = 只有镜像级 --conf（不回填默认值，见 utils 里的说明）
+    optimizationSparkConf: '',
+    scanSparkConf: '',
   }
 }
 
@@ -136,7 +149,19 @@ const typeOption = computed(() => CLUSTER_TYPES.find((item) => item.value === st
 const storedContexts = computed(() => state.entity?.kubeconfig?.contexts || [])
 const storedKubeconfigState = computed(() => state.entity?.kubeconfig?.state || 'NONE')
 
-/** 底部那句「保存后会怎样」——把状态机的结论提前说出来，免得保存完才发现变成了「待验证」。 */
+/**
+ * 两段 Spark 参数里会被**服务端丢弃**的键。只是提示，不是拦截——
+ * 真正把关的是服务端（丢弃 + 记审计），前端这里禁止提交只会让人以为「服务端也认这一套」。
+ */
+const rejectedOptimizationKeys = computed(() => sparkConfRejectedKeys(state.form.optimizationSparkConf))
+const rejectedScanKeys = computed(() => sparkConfRejectedKeys(state.form.scanSparkConf))
+
+/**
+ * 底部那句「保存后会怎样」——把状态机的结论提前说出来，免得保存完才发现变成了「待验证」。
+ *
+ * <p>注意这里的措辞：只有**连接参数**（进 `config_hash` 的那些）变了才会回退状态。
+ * 批次策略与 Spark 参数**不在 `config_hash` 里**，所以单独点出来，省得用户不敢改它们。
+ */
 const footerHint = computed(() => {
   if (!configured.value) {
     return '保存后状态为「待验证」，不会自动开始派发'
@@ -145,11 +170,41 @@ const footerHint = computed(() => {
     return '当前为停用：保存后不提交任何优化任务，但配置与凭据保留'
   }
   if (dirty.value) {
-    return '保存后状态回到「待验证」——连接参数变了，上一次的验证结论不再适用'
+    return connectionDirty.value
+      ? '保存后状态回到「待验证」——连接参数变了，上一次的验证结论不再适用'
+      : '保存后状态不变：批次策略与 Spark 参数不参与连接校验'
   }
   return status.value === 'HEALTHY'
     ? '连接参数自上次验证后未改动'
     : '连接参数与上次验证时一致；点「验证连接」更新结论'
+})
+
+/**
+ * 这次改动有没有碰到**连接参数**（=`config_hash` 算的那些字段）。
+ *
+ * <p>为什么要在前端也算一遍：底部的提示语只有两种，而「改了批次策略」与「改了 kubeconfig」
+ * 的结果完全不同（前者状态不变、后者打回待验证），从 `dirty` 一个布尔量看不出来。
+ * 这里的字段清单与 §9 / 服务端 `configHash()` 对齐——**它只是文案的依据**，
+ * 状态本身仍然只由服务端写。
+ */
+const connectionFields = [
+  'clusterType', 'contextName', 'apiServer', 'caCertPem', 'namespace', 'image',
+  'imagePullPolicy', 'imagePullSecrets', 'serviceAccount', 'callbackBaseUrl',
+]
+const connectionDirty = computed(() => {
+  if (!configured.value) {
+    return true
+  }
+  const loaded = formOf(state.entity)
+  // 密文字段一律拿「表单里这次填了没有」来判：它们是留空即不改的，
+  // 而 `formOf` 读回来的本来也是空串，所以直接比空串即可。
+  const secrets = ['kubeconfig', 'secretAccessKey', 'sessionToken', 'clientSecret', 'catalogToken']
+  for (const key of connectionFields) {
+    if (state.form[key] !== loaded[key]) {
+      return true
+    }
+  }
+  return secrets.some((key) => !!state.form[key]) || state.clearCatalogToken
 })
 
 // ---------------------------------------------------------------- 加载
@@ -213,10 +268,17 @@ function formOf(dto) {
     imagePullSecrets: (dto.imagePullSecrets || []).join(', '),
     serviceAccount: dto.serviceAccount || '',
     callbackBaseUrl: dto.callbackBaseUrl || '',
-    maxTablesPerJob: dto.maxTablesPerJob || 20,
-    maxConcurrentJobs: dto.maxConcurrentJobs || 2,
-    jobTimeoutSeconds: dto.jobTimeoutSeconds || 7200,
     catalogToken: '',
+    maxTablesPerJob: dto.maxTablesPerJob || BATCH_DEFAULTS.maxTablesPerJob,
+    maxConcurrentJobs: dto.maxConcurrentJobs || BATCH_DEFAULTS.maxConcurrentJobs,
+    jobTimeoutSeconds: dto.jobTimeoutSeconds || BATCH_DEFAULTS.jobTimeoutSeconds,
+    maxScanTablesPerJob: dto.maxScanTablesPerJob || BATCH_DEFAULTS.maxScanTablesPerJob,
+    maxConcurrentScans: dto.maxConcurrentScans || BATCH_DEFAULTS.maxConcurrentScans,
+    scanJobTimeoutSeconds: dto.scanJobTimeoutSeconds || BATCH_DEFAULTS.scanJobTimeoutSeconds,
+    // 两段 Spark 参数**照实回填**（它们是普通文本，不是秘密）。库里那份已经是过滤后的结果——
+    // 回填它而不是回填用户原文，才能让「界面上看到的」与「真正会下发到命令行的」是同一个东西。
+    optimizationSparkConf: dto.optimizationSparkConf || '',
+    scanSparkConf: dto.scanSparkConf || '',
   }
 }
 
@@ -323,6 +385,16 @@ function buildPayload() {
     maxTablesPerJob: form.maxTablesPerJob,
     maxConcurrentJobs: form.maxConcurrentJobs,
     jobTimeoutSeconds: form.jobTimeoutSeconds,
+    // ⑥ 敏感识别那一组：与上面三个一起提交，但服务端按**各自的范围**校验，
+    // 六个都传 = 一次保存同时改两组，符合「同一份配置的不同段」这个模型。
+    maxScanTablesPerJob: form.maxScanTablesPerJob,
+    maxConcurrentScans: form.maxConcurrentScans,
+    scanJobTimeoutSeconds: form.scanJobTimeoutSeconds,
+    // ⑦ 两段 Spark 参数：**与 `caCertPem` 同一约定**——非秘密文本，
+    // 传空串 = 清空（退回镜像级默认）。所以这里原样提交，不做 `|| undefined`：
+    // 那会让「把参数清空」变成「保持原样」，用户点了保存却什么都没变。
+    optimizationSparkConf: form.optimizationSparkConf,
+    scanSparkConf: form.scanSparkConf,
     caCertPem: selfHosted ? '' : form.caCertPem,
   }
   if (selfHosted) {
@@ -960,37 +1032,10 @@ const probeConsequence = computed(() => {
               而探活第 5 步（只验服务端 → 地址这个方向）照样通过。
             </div>
           </el-form-item>
-        </el-form>
-
-        <!-- 4 批次策略 -->
-        <SectionTitle title="批次策略">
-          <template #tip>
-            <TipNote>
-              配额是给<b>这台集群</b>留的余量，所以跟着集群走而不是跟着服务端走：
-              同一台集群给两个 catalog 分配不同份额是正常用法。改这三个数不会让状态掉回「待验证」。
-            </TipNote>
-          </template>
-        </SectionTitle>
-        <el-form label-position="top" size="small" class="pc-form exec-grid3">
-          <el-form-item>
-            <template #label>
-              <FieldLabel label="单批最多几张表" tip="1–500。批次是按 catalog 攒的，超过这个数就顺延到下一批。" />
-            </template>
-            <el-input-number v-model="state.form.maxTablesPerJob" :min="1" :max="500" controls-position="right" class="pc-full" />
-          </el-form-item>
-          <el-form-item>
-            <template #label>
-              <FieldLabel label="同时几个批次" tip="1–50。超出的留在 PENDING，不判失败。" />
-            </template>
-            <el-input-number v-model="state.form.maxConcurrentJobs" :min="1" :max="50" controls-position="right" class="pc-full" />
-          </el-form-item>
-          <el-form-item>
-            <template #label>
-              <FieldLabel label="批次超时（秒）" tip="300–86400。超过它由跟踪节拍判失败并清理执行侧资源。" />
-            </template>
-            <el-input-number v-model="state.form.jobTimeoutSeconds" :min="300" :max="86400" :step="600" controls-position="right" class="pc-full" />
-          </el-form-item>
-          <el-form-item class="span3">
+          <!-- catalogToken 留在「运行位置」这一段，不挪进下面任何一组策略：
+               它下发给任务是为了访问 /v1/{prefix}，**表优化与敏感识别都要用**。
+               放进「敏感识别批次策略」会读成「只有扫描用」——分组放错就是把读者带偏。 -->
+          <el-form-item class="span2">
             <template #label>
               <FieldLabel
                 label="catalog 数据面令牌（catalogToken，可选）"
@@ -1013,7 +1058,194 @@ const probeConsequence = computed(() => {
             >清除已保存的数据面令牌</el-checkbox>
             <div class="pc-field-note">
               它会以命令行参数出现在 Pod spec 里——同一命名空间能读 pod 定义的人就能读到它；
-              作用域应限于数据面读取。
+              作用域应限于数据面读取。两类任务都用它，所以不归下面任何一组策略。
+            </div>
+          </el-form-item>
+        </el-form>
+
+        <!-- 5 表优化批次策略 -->
+        <SectionTitle title="表优化批次策略">
+          <template #tip>
+            <TipNote>
+              配额是给<b>这台集群</b>留的余量，所以跟着集群走而不是跟着服务端走：同一台集群给两个
+              catalog 分配不同份额是正常用法。这一组与下面那组<b>各算各的</b>——扫描不占优化的并发额度。
+              改这三个数不会让状态掉回「待验证」：它们不参与连接校验。
+            </TipNote>
+          </template>
+        </SectionTitle>
+        <el-form label-position="top" size="small" class="pc-form exec-grid3">
+          <el-form-item>
+            <template #label>
+              <FieldLabel label="单批最多几张表" :tip="`${BATCH_RANGES.maxTablesPerJob[0]}–${BATCH_RANGES.maxTablesPerJob[1]}。批次是按 catalog 攒的，超过这个数就顺延到下一批。`" />
+            </template>
+            <el-input-number
+              v-model="state.form.maxTablesPerJob"
+              :min="BATCH_RANGES.maxTablesPerJob[0]"
+              :max="BATCH_RANGES.maxTablesPerJob[1]"
+              controls-position="right"
+              class="pc-full"
+            />
+          </el-form-item>
+          <el-form-item>
+            <template #label>
+              <FieldLabel label="同时几个批次" :tip="`${BATCH_RANGES.maxConcurrentJobs[0]}–${BATCH_RANGES.maxConcurrentJobs[1]}。超出的留在 PENDING，不判失败。`" />
+            </template>
+            <el-input-number
+              v-model="state.form.maxConcurrentJobs"
+              :min="BATCH_RANGES.maxConcurrentJobs[0]"
+              :max="BATCH_RANGES.maxConcurrentJobs[1]"
+              controls-position="right"
+              class="pc-full"
+            />
+          </el-form-item>
+          <el-form-item>
+            <template #label>
+              <FieldLabel label="批次超时（秒）" :tip="`${BATCH_RANGES.jobTimeoutSeconds[0]}–${BATCH_RANGES.jobTimeoutSeconds[1]}（默认 7200 = 2h）。超过它由跟踪节拍判失败并清理执行侧资源。`" />
+            </template>
+            <el-input-number
+              v-model="state.form.jobTimeoutSeconds"
+              :min="BATCH_RANGES.jobTimeoutSeconds[0]"
+              :max="BATCH_RANGES.jobTimeoutSeconds[1]"
+              :step="600"
+              controls-position="right"
+              class="pc-full"
+            />
+          </el-form-item>
+        </el-form>
+
+        <!-- 6 敏感识别批次策略 -->
+        <SectionTitle title="敏感识别批次策略">
+          <template #tip>
+            <TipNote>
+              与上面那一组<b>各算各的</b>：扫描不占用优化的并发额度，反之亦然。两组合法但可能自相矛盾——
+              若这里配 20、上面也配 20，同一台集群可能同时收到 40 个 Spark 驱动；
+              服务端<b>不做交叉校验</b>（它不知道那台集群有多少 CPU），这张账由集群侧的
+              ResourceQuota / 调度器队列兜，部署时那份配额必须显式设。
+            </TipNote>
+          </template>
+        </SectionTitle>
+        <el-form label-position="top" size="small" class="pc-form exec-grid3">
+          <el-form-item>
+            <template #label>
+              <FieldLabel
+                label="单批最多扫描几张表"
+                :tip="`${BATCH_RANGES.maxScanTablesPerJob[0]}–${BATCH_RANGES.maxScanTablesPerJob[1]}（默认 200）。扫描的表通常远多于「一批待优化表」——一个 catalog 几千张表是常态。`"
+              />
+            </template>
+            <el-input-number
+              v-model="state.form.maxScanTablesPerJob"
+              :min="BATCH_RANGES.maxScanTablesPerJob[0]"
+              :max="BATCH_RANGES.maxScanTablesPerJob[1]"
+              controls-position="right"
+              class="pc-full"
+            />
+            <div class="pc-field-note">
+              默认 200 是因为扫描天然要一次抓更多表；优化的默认只有 20。
+            </div>
+          </el-form-item>
+          <el-form-item>
+            <template #label>
+              <FieldLabel
+                label="同时几个扫描作业"
+                :tip="`${BATCH_RANGES.maxConcurrentScans[0]}–${BATCH_RANGES.maxConcurrentScans[1]}。与优化的并发额度各自独立。`"
+              />
+            </template>
+            <el-input-number
+              v-model="state.form.maxConcurrentScans"
+              :min="BATCH_RANGES.maxConcurrentScans[0]"
+              :max="BATCH_RANGES.maxConcurrentScans[1]"
+              controls-position="right"
+              class="pc-full"
+            />
+            <div class="pc-field-note">与优化组同值不是巧合：两者争的是同一台集群的算力。</div>
+          </el-form-item>
+          <el-form-item>
+            <template #label>
+              <FieldLabel
+                label="扫描作业超时（秒）"
+                :tip="`${BATCH_RANGES.scanJobTimeoutSeconds[0]}–${BATCH_RANGES.scanJobTimeoutSeconds[1]}（默认 3600 = 1h）。`"
+              />
+            </template>
+            <el-input-number
+              v-model="state.form.scanJobTimeoutSeconds"
+              :min="BATCH_RANGES.scanJobTimeoutSeconds[0]"
+              :max="BATCH_RANGES.scanJobTimeoutSeconds[1]"
+              :step="600"
+              controls-position="right"
+              class="pc-full"
+            />
+            <div class="pc-field-note">比优化的 2h 短：扫描是只读采样，比 compaction 更快收敛。</div>
+          </el-form-item>
+        </el-form>
+
+        <!-- 7 Spark 参数 -->
+        <SectionTitle title="Spark 参数">
+          <template #tip>
+            <TipNote>
+              两类任务各一组，<b>取值独立</b>：优化任务的参数改了不该悄悄改变扫描任务的资源诉求。
+              默认已带参（driver 内存 / 核数 / shuffle 分区），<b>留空也能跑</b>；留空 = 只用镜像级
+              <code class="pc-mono">--conf</code>。改它们同样不会让状态掉回「待验证」。
+            </TipNote>
+          </template>
+        </SectionTitle>
+        <el-form label-position="top" size="small" class="pc-form exec-grid2">
+          <el-form-item>
+            <template #label>
+              <FieldLabel
+                label="表优化的 Spark 参数"
+                tip="逐行 k=v；# 开头是注释，保存时会被去掉。留空 = 用镜像级默认。"
+              />
+            </template>
+            <el-input
+              v-model="state.form.optimizationSparkConf"
+              type="textarea"
+              :rows="5"
+              class="pc-mono"
+              :placeholder="sparkConfPlaceholder('optimization')"
+            />
+            <div v-if="rejectedOptimizationKeys.length" class="pc-field-note pc-field-note-warn">
+              这些键不在白名单里，保存时会被<b>丢弃并记审计</b>：
+              <span class="pc-mono">{{ rejectedOptimizationKeys.join('、') }}</span>
+            </div>
+          </el-form-item>
+          <el-form-item>
+            <template #label>
+              <FieldLabel
+                label="敏感识别的 Spark 参数"
+                tip="同一套白名单。这组多一行 spark.sql.files.maxPartitionBytes（按列分区读样本时定并行粒度）。"
+              />
+            </template>
+            <el-input
+              v-model="state.form.scanSparkConf"
+              type="textarea"
+              :rows="5"
+              class="pc-mono"
+              :placeholder="sparkConfPlaceholder('scan')"
+            />
+            <div v-if="rejectedScanKeys.length" class="pc-field-note pc-field-note-warn">
+              这些键不在白名单里，保存时会被<b>丢弃并记审计</b>：
+              <span class="pc-mono">{{ rejectedScanKeys.join('、') }}</span>
+            </div>
+          </el-form-item>
+          <el-form-item class="span2">
+            <div class="exec-note-block exec-note-warn">
+              <b>这一栏不承载安全语义。</b>只允许调内存 / 并行度 / 分区这类键（前缀
+              <span class="pc-mono">spark.driver.*</span> / <span class="pc-mono">spark.executor.*</span> /
+              <span class="pc-mono">spark.sql.shuffle.*</span> / <span class="pc-mono">spark.sql.files.*</span> /
+              <span class="pc-mono">spark.memory.*</span> / 精确键 <span class="pc-mono">spark.default.parallelism</span>）。
+              <b>白名单外一律丢弃并记审计</b>——尤其是
+              <span class="pc-mono">spark.sql.catalog.*.token</span> /
+              <span class="pc-mono">.storage.*</span> / <span class="pc-mono">.rest.auth.type</span>
+              这类<b>连接与认证键</b>：那些由服务端按本次任务自己构造。用黑名单挡不住
+              （<span class="pc-mono">spark.sql.catalog.*</span> 是通配前缀，写不全）。
+            </div>
+          </el-form-item>
+          <el-form-item class="span2">
+            <div class="pc-field-note">
+              <span class="pc-mono">spark.sql.session.timeZone=UTC</span> 是任务代码里钉死的，<b>不在这里配</b>——
+              Iceberg 的 <span class="pc-mono">older_than</span> 按它折算时刻。填同名键会被丢弃并告警，不会静默生效。
+              <span class="pc-mono">spark.executor.*</span> 在容器即 driver（
+              <span class="pc-mono">--master local[*]</span>）的形态下是死配置，默认故意不配。
             </div>
           </el-form-item>
         </el-form>
@@ -1112,6 +1344,23 @@ const probeConsequence = computed(() => {
 
 .exec-clear-token {
   margin-top: 4px;
+}
+
+/* Spark 参数那一段的「白名单」说明。比 `.pc-field-note` 重、比 `el-alert` 轻：
+ * 它不是一句可选建议而是一条**约束**（什么键能填、填了会被丢掉），
+ * 但也不该做成整块告警——那会让「有默认值、不填也能跑」这件事被吓没。
+ * 底色与左边框沿用 `.exec-step-fix` 的同一种强调，抽屉里只有这一处需要它。 */
+.exec-note-block {
+  padding: 8px 12px;
+  border-radius: var(--pc-radius);
+  border-left: 3px solid var(--el-color-warning);
+  background: rgba(230, 162, 60, 0.08);
+  font-size: 12.5px;
+  line-height: 1.8;
+}
+
+.exec-note-warn {
+  color: var(--pc-text);
 }
 
 .exec-inline {

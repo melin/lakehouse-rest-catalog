@@ -203,7 +203,10 @@
         entity_version integer not null,
         job_timeout_seconds integer not null,
         max_concurrent_jobs integer not null,
+        max_concurrent_scans integer default 2 not null,
+        max_scan_tables_per_job integer default 200 not null,
         max_tables_per_job integer not null,
+        scan_job_timeout_seconds integer default 3600 not null,
         created_at bigint,
         probe_status varchar(8),
         probed_at bigint,
@@ -228,7 +231,9 @@
         image varchar(255) not null,
         image_pull_secrets varchar(255),
         kubeconfig_sealed text,
+        optimization_spark_conf text,
         owner varchar(255),
+        scan_spark_conf text,
         updated_by varchar(255),
         primary key (id),
         constraint uk_exec_cluster_catalog unique (catalog_id)
@@ -249,8 +254,17 @@
     comment on column lakehouse_catalog_execution_cluster.max_concurrent_jobs is
         '该 catalog 同时运行几个批次';
 
+    comment on column lakehouse_catalog_execution_cluster.max_concurrent_scans is
+        '敏感识别同时运行几个扫描';
+
+    comment on column lakehouse_catalog_execution_cluster.max_scan_tables_per_job is
+        '敏感识别单批最多扫描几张表';
+
     comment on column lakehouse_catalog_execution_cluster.max_tables_per_job is
         '单批最多几张表';
+
+    comment on column lakehouse_catalog_execution_cluster.scan_job_timeout_seconds is
+        '敏感识别批次超时秒数';
 
     comment on column lakehouse_catalog_execution_cluster.created_at is
         '创建时刻（epoch 毫秒）';
@@ -324,8 +338,14 @@
     comment on column lakehouse_catalog_execution_cluster.kubeconfig_sealed is
         'kubeconfig 原文（CredentialCipher 密封），仅 SELF_HOSTED';
 
+    comment on column lakehouse_catalog_execution_cluster.optimization_spark_conf is
+        '表优化 Spark 参数（逐行 k=v，前缀白名单过滤）';
+
     comment on column lakehouse_catalog_execution_cluster.owner is
         '记录归属主体（展示与过滤用，不参与授权判定）';
+
+    comment on column lakehouse_catalog_execution_cluster.scan_spark_conf is
+        '敏感识别 Spark 参数（逐行 k=v，前缀白名单过滤）';
 
     comment on column lakehouse_catalog_execution_cluster.updated_by is
         '最后更新者主体名（写入前已按列宽归一化）';

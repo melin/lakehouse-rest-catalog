@@ -31,6 +31,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.HexFormat;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.regex.Pattern;
@@ -67,6 +68,30 @@ public class ExecutionClusterService {
     private static final Pattern RFC1123 = Pattern.compile("[a-z0-9]([-a-z0-9]*[a-z0-9])?");
 
     private static final int MAX_SECRET_BYTES = 64 * 1024;
+
+    /**
+     * {@code *_spark_conf} 的**前缀白名单**。
+     *
+     * <p>这些键只影响内存与并行度，改错了最多是跑得慢；而白名单**之外**的键里有
+     * {@code spark.sql.catalog.*.token} / {@code storage.*} / {@code rest.auth.type}
+     * 这类**连接与认证**键——放行它们等于给了一条「改认证目标」的旁路。
+     *
+     * <p>用白名单而不是黑名单：{@code spark.sql.catalog.*} 是通配前缀，黑名单永远写不全
+     * （任何新加的连接类键都会自动落进「未列入即放行」的缝里）。见
+     * {@code docs/sensitive-data-design.md} §5.6.7。
+     */
+    private static final List<String> SPARK_CONF_ALLOWED_PREFIXES = List.of(
+            "spark.driver.",
+            "spark.executor.",
+            "spark.memory.",
+            "spark.sql.shuffle.",
+            "spark.sql.files.");
+
+    /** 逐个匹配的精确键：它们没有可用的公共前缀，与其放开整个 {@code spark.*} 不如单列。 */
+    private static final List<String> SPARK_CONF_ALLOWED_KEYS = List.of("spark.default.parallelism");
+
+    /** 单个 Spark 参数值的长度的上限：防一行超长值把列撑爆（TEXT 无上限，但没必要）。 */
+    private static final int MAX_SPARK_CONF_VALUE = 1024;
 
     private final CatalogExecutionClusterRepository repository;
     private final CatalogRepository catalogRepository;
@@ -374,7 +399,33 @@ public class ExecutionClusterService {
             entity.setJobTimeoutSeconds(range(request.jobTimeoutSeconds(), "jobTimeoutSeconds", 300, 86400));
         }
 
+        // 敏感识别那一组策略：与上面三个各算各的配额（扫描不占优化的并发额度）。
+        // 列名与校验范围都刻意与优化组对称——两组读起来一样，才不会有人以为它们共用一把额度。
+        if (request.maxScanTablesPerJob() != null) {
+            entity.setMaxScanTablesPerJob(range(request.maxScanTablesPerJob(), "maxScanTablesPerJob", 1, 500));
+        }
+        if (request.maxConcurrentScans() != null) {
+            entity.setMaxConcurrentScans(range(request.maxConcurrentScans(), "maxConcurrentScans", 1, 50));
+        }
+        if (request.scanJobTimeoutSeconds() != null) {
+            entity.setScanJobTimeoutSeconds(
+                    range(request.scanJobTimeoutSeconds(), "scanJobTimeoutSeconds", 300, 86400));
+        }
+
+        // 两组 Spark 参数：null = 不改，空串 = 清空（与 caCertPem 同一约定——它不是秘密，
+        // 「不额外传参」是有意义的状态）。写入前过白名单，落库的只会是放行的那些键。
+        if (request.optimizationSparkConf() != null) {
+            entity.setOptimizationSparkConf(normalizeSparkConf(request.optimizationSparkConf(),
+                    "optimizationSparkConf", entity.getCatalogId()));
+        }
+        if (request.scanSparkConf() != null) {
+            entity.setScanSparkConf(normalizeSparkConf(request.scanSparkConf(),
+                    "scanSparkConf", entity.getCatalogId()));
+        }
+
         applyCatalogToken(entity, request);
+        // 注意：configHash 只算连接与运行字段，**不含上面的批次策略与 Spark 参数**（§9 硬规定）。
+        // 只改 maxScanTablesPerJob 或 scanSparkConf 不该把 probe_status 打回「待验证」。
         entity.setConfigHash(configHash(entity));
     }
 
@@ -567,6 +618,72 @@ public class ExecutionClusterService {
         return url;
     }
 
+    /**
+     * 归一化一段 {@code *_spark_conf}：逐行 {@code k=v}，**白名单外的键丢弃并记审计**。
+     *
+     * <p>返回值是「过滤后剩下的键」重新拼成的文本（保持原顺序、去掉空行与注释），
+     * 落库的就是这一份——**不是**把原文存下来、在下发时再过滤。这条选择很关键：
+     * 存原文意味着「库里那份配置」与「真正生效的配置」是两个东西，排查时看到的是前者，
+     * 而出问题时起作用的却是后者。
+     *
+     * @param catalogId 只用于审计定位；为 {@code null}（新建时还没落库）也不影响过滤
+     * @return 过滤后的文本；全被滤光时返回 {@code null}（等价于「不额外传参」）
+     */
+    private String normalizeSparkConf(String raw, String field, String catalogId) {
+        String text = raw == null ? "" : raw.trim();
+        if (text.isEmpty()) {
+            return null;
+        }
+        Map<String, String> kept = new LinkedHashMap<>();
+        List<String> rejected = new ArrayList<>();
+        for (String line : text.split("\\R")) {
+            String entry = line.trim();
+            // 空行与注释行直接跳过：给 textarea 一个能写备注的地方，比禁止注释更实用
+            if (entry.isEmpty() || entry.startsWith("#")) {
+                continue;
+            }
+            int eq = entry.indexOf('=');
+            if (eq <= 0) {
+                throw ApiException.badRequest(field + " 的每一行必须是 k=v 形式，got " + entry);
+            }
+            String key = entry.substring(0, eq).trim();
+            String value = entry.substring(eq + 1).trim();
+            if (value.length() > MAX_SPARK_CONF_VALUE) {
+                throw ApiException.badRequest(field + " 的 " + key + " 值超过 " + MAX_SPARK_CONF_VALUE + " 字符");
+            }
+            if (!allowedSparkConfKey(key)) {
+                rejected.add(key);
+                continue;
+            }
+            kept.put(key, value);
+        }
+        if (!rejected.isEmpty()) {
+            // 这一条是安全事件而不是普通输入校验：白名单外的键里有连接与认证键，
+            // 有人往里塞 spark.sql.catalog.*.token 时要在审计里看得见（§12.3 / §14）。
+            log.warn("catalog {} 的 {} 丢弃了白名单外的 Spark 参数（不生效）：{}",
+                    catalogId, field, rejected);
+        }
+        if (kept.isEmpty()) {
+            return null;
+        }
+        StringBuilder builder = new StringBuilder();
+        kept.forEach((key, value) -> builder.append(key).append('=').append(value).append('\n'));
+        return builder.toString();
+    }
+
+    /** 键是否落在白名单内：前缀匹配 + 一个精确键。 */
+    private static boolean allowedSparkConfKey(String key) {
+        if (SPARK_CONF_ALLOWED_KEYS.contains(key)) {
+            return true;
+        }
+        for (String prefix : SPARK_CONF_ALLOWED_PREFIXES) {
+            if (key.startsWith(prefix) && key.length() > prefix.length()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static String requireApiServer(String value, String fallback) {
         String server = value == null || value.isBlank() ? fallback : value.trim();
         if (server == null || server.isBlank()) {
@@ -721,6 +838,11 @@ public class ExecutionClusterService {
                 entity.getMaxTablesPerJob(),
                 entity.getMaxConcurrentJobs(),
                 entity.getJobTimeoutSeconds(),
+                entity.getMaxScanTablesPerJob(),
+                entity.getMaxConcurrentScans(),
+                entity.getScanJobTimeoutSeconds(),
+                entity.getOptimizationSparkConf(),
+                entity.getScanSparkConf(),
                 readable,
                 entity.getProbeStatus(),
                 entity.getProbeReason(),

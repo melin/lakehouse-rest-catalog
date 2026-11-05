@@ -51,6 +51,11 @@ public final class ExecutionClusterDtos {
                                    int maxTablesPerJob,
                                    int maxConcurrentJobs,
                                    int jobTimeoutSeconds,
+                                   int maxScanTablesPerJob,
+                                   int maxConcurrentScans,
+                                   int scanJobTimeoutSeconds,
+                                   String optimizationSparkConf,
+                                   String scanSparkConf,
                                    boolean credentialsReadable,
                                    String probeStatus,
                                    String probeReason,
@@ -142,6 +147,11 @@ public final class ExecutionClusterDtos {
                                                 Integer maxTablesPerJob,
                                                 Integer maxConcurrentJobs,
                                                 Integer jobTimeoutSeconds,
+                                                Integer maxScanTablesPerJob,
+                                                Integer maxConcurrentScans,
+                                                Integer scanJobTimeoutSeconds,
+                                                String optimizationSparkConf,
+                                                String scanSparkConf,
                                                 Boolean clearCatalogToken,
                                                 Integer entityVersion) {
     }
