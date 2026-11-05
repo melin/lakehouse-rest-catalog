@@ -35,8 +35,10 @@
 - **库结构实际由 Flyway 在启动时应用**，脚本随 jar 走（`classpath:db/migration/{vendor}/`）。
   上面两份 `sql/schema-*.sql` 是「给人执行的全量快照」（用 `mysql < ...` 手工重建空库时用），
   `V1__baseline.sql` 是从它们**纯派生**的同一份结构（`scripts/gen-flyway-baseline.py`）。
-  两条路径同一个真源，因此不会分叉；`gen-flyway-baseline.py --check` 守这一点。
-  演进期**不再改 V1**，改结构一律新增 `V2__xxx.sql`（理由见 [`../README.md`](../README.md) §2.1）
+  两条路径同一个真源，因此不会分叉；`gen-flyway-baseline.py --check` 在有 V2 之前守这一点。
+  演进期**不再改 V1**，改结构一律新增 `V2__xxx.sql`（理由见 [`../README.md`](../README.md) §2.1）——
+  此时脚本两条路径分叉：写路径拒绝运行，`--check` 降级为信息性跳过（「V1 与快照逐字一致」本就不该再成立），
+  新列与快照的一致性改由 `FlywayBaselineTests` 与 `verify-console.py` 第 22 组守。
 - 库结构另由 `ddl-auto: validate` 兜底：Flyway 负责「结构该长什么样」，validate 负责
   「实际长出来的与实体一致吗」，不一致时应用**直接启动失败**，不是悄悄改表。
   这条闸门防的是「迁移写漏了」，见 [`../README.md`](../README.md) 第 6 节「实现说明与已知边界」第 14 条
@@ -231,16 +233,20 @@ STS 令牌、`AKS`→AAD 客户端凭据）。一行一 catalog（`catalog_id` �
 | 连接 | `cluster_type` / `api_server` / `context_name` / `namespace` / `ca_cert_pem` | `ca_cert_pem` 空 = 用 JVM 信任库；`context_name` 仅 `SELF_HOSTED` |
 | 凭据（**只进不出**） | `kubeconfig_sealed` / `auth_config_sealed` | `CredentialCipher` 密封后的整份明文，读模型只回 `has*` 与可公开标识（AccessKeyId / tenantId / clientId），**永不回明文** |
 | 运行位置 | `image` / `image_pull_policy` / `image_pull_secrets` / `service_account` / `callback_base_url` | 上一版散在 `lakehouse.rest.optimization` 里的提交参数，现在唯一来源就是这张表 |
-| 批次策略 | `max_tables_per_job` / `max_concurrent_jobs` / `job_timeout_seconds` | 并发闸门与超时按 catalog 各自算，不再全局一套 |
-| 可选数据面令牌 | `catalog_token_sealed` | 下发给任务的 `/v1/{prefix}` 凭据；只有它允许「清空」（其余凭据缺失等于配置不可用，只能删整份） |
+| 批次策略（**两组**） | 优化：`max_tables_per_job` / `max_concurrent_jobs` / `job_timeout_seconds`；敏感识别：`max_scan_tables_per_job` / `max_concurrent_scans` / `scan_job_timeout_seconds` | 并发闸门与超时按 catalog 各自算，不再全局一套；**两组各算各的配额**（扫描不占优化的并发额度）。三对区间对称，默认值不同：优化 20/2/7200、扫描 200/2/3600 |
+| Spark 参数（**两组**） | `optimization_spark_conf` / `scan_spark_conf` | 逐行 `k=v`；写入前过**前缀白名单**（`spark.driver.*` / `spark.executor.*` / `spark.memory.*` / `spark.sql.shuffle.*` / `spark.sql.files.*` + 精确键 `spark.default.parallelism`），白名单外**丢弃并记审计**（不是存下来下发时再过滤）。空 = 只有镜像级 `--conf`；传空串 = 清空（与 `ca_cert_pem` 同一约定，不是四个秘密那套「留空 = 不改」） |
+| 可选数据面令牌 | `catalog_token_sealed` | 下发给任务的 `/v1/{prefix}` 凭据；**两类任务都用它**，所以不属于任何一组策略；只有它允许「清空」（其余凭据缺失等于配置不可用，只能删整份） |
 | 探活 | `config_hash` / `probe_status` / `probe_reason` / `probe_message` / `probe_config_hash` / `probed_at` | 五态（未配置 / 停用 / 待验证 / 可用 / 不可用）由这两组列**派生**，不另存状态列：`config_hash` 与 `probe_config_hash` 不等即「改完没验证」 |
 
 两个实现细节决定了这两组 hash 的用法：
 
 - **`config_hash` 用密文算，不是明文。** 写入时明文没变就沿用旧密文（否则每次保存都换 IV，
   hash 必然变，配置会无故掉回「待验证」）。算法是 SHA-256 拼 13 段、以 `0x1f` 分隔。
-- **「留空 = 保持原样」只对密文成立。** `caCertPem` 的空串是明确的「清空」语义，
-  两者不能混用一套判空逻辑。
+- **`config_hash` 也**不**含两组批次策略与两组 Spark 参数**：改「几表一批」不该要求重新
+  验证连接。因此这些字段只能改「下一批怎么跑」，改不动派发状态——两侧都别把它们加进
+  `configHash()`（验收清单里有一条正好钉这个）。
+- **「留空 = 保持原样」只对密文成立。** `caCertPem` 与两段 `*SparkConf` 的空串是明确的
+  「清空」语义，两者不能混用一套判空逻辑。
 
 ---
 

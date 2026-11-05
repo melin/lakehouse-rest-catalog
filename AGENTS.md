@@ -80,6 +80,9 @@ REST Management API**（RBAC 管理面）与一个 **Vue 3 管理控制台**；�
    （`scripts/gen-flyway-baseline.py`，剥建库/切库语句与注释行），改实体后也要一起重跑。
    **但 V1 只在「尚未出现 V2」时可重派生**：V1 内容一变，应用过 V1 的库会 checksum 校验
    失败而拒绝启动，此后改结构只能手写 `V2__xxx.sql`（脚本对此有硬保护，见 README §2.1）。
+   进入这个阶段后**脚本的两条路径会分叉**：写路径拒绝运行（exit 2），`--check` 降级为
+   信息性跳过（exit 0）——因为「V1 与快照是否逐字一致」此时本就不再成立，而新列与快照的
+   一致性改由 `FlywayBaselineTests` + `verify-console.py` 第 22 组守。
 6. **构建服务端 jar（含控制台）用 `clean package`，不要裸 `package`。** 控制台产物按内容哈希命名，
    `maven-resources-plugin` 只覆写不删除 → `target/classes/static/console` 累积历次旧产物
    （jar 里出现多个 `index-*.js`）。服务端 POM 已把一次 `clean` 绑到 `initialize` 兜底。
@@ -160,7 +163,7 @@ python3 scripts/verify-lineage-doc.py                     # 血缘文档 ↔ 控
 python3 scripts/verify-lance-endpoints.py                  # Lance 面：规格副本 ↔ 控制器 ↔ 授权登记
 ./scripts/gen-mysql-ddl.sh                                # 重生成 sql/schema-mysql.sql
 ./scripts/gen-postgres-ddl.sh                           # 重生成 sql/schema-postgres.sql（PostgreSQL）
-/opt/homebrew/bin/python3.11 scripts/gen-flyway-baseline.py --check   # 迁移基线与快照是否漂移
+/opt/homebrew/bin/python3.11 scripts/gen-flyway-baseline.py --check   # 基线是否与快照漂移（出现 V2 后改为信息性跳过）
 ```
 
 - 这些 Python 脚本除 `verify-lineage-doc.py` 外都解析 OpenAPI 规格，依赖 **PyYAML**
@@ -301,7 +304,7 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
 | `data-model.md` | 改实体 / 看 29 张表划分、摘要列与审计列的理由、实体与仓储分在哪两个模块、Iceberg 协议面新增的 9 个列（§1.1）、血缘三表（§2.3） |
 | `table-optimization.md` | 改表存储优化：三层配置合并、批次与调度游标、组批与提交、前后指标；**三种表格式共用一套策略表与批次表**，参数键与动作能力按格式分派（§2.5 是 Iceberg 的对应物，§6.5 是执行侧差异，Lance 见 `lance-table-optimization-design.md`） |
 | `optimization-multi-instance-design.md` | 多副本部署优化调度 / 排查「同一任务被两台机器发起」（**设计稿，未实现**）：现状审计（出批与提交已有 CAS，收尾、崩溃回收、配额闸门、手动入口四处没有）、三类重复的实际后果、租约表 + 代理（fencing）提交租约 + 终态收尾 CAS、锁顺序与事务拆分、部署七条前提、双实例验收 SQL |
-| `catalog-execution-cluster-design.md` | 给 catalog 配执行集群 / 评审该方案（**已实现**，偏差见其 §15）：配置从 `optimization.*` 下移到 catalog、kubeconfig 逐 context 解析（`exec:` 硬拒）、探活五问与状态机、fabric8 要点（禁 autoConfigure 回落、client 缓存必关、AKS scope 用 AKS 的 audience 而不是管理面）；**批次策略一张表两组**（表优化 vs 敏感识别各一套 + 各一组 Spark 参数 JSON 列，不进 `config_hash`）——**M5，随敏感识别下推路线待做** |
+| `catalog-execution-cluster-design.md` | 给 catalog 配执行集群 / 评审该方案（**已实现**，偏差见其 §15）：配置从 `optimization.*` 下移到 catalog、kubeconfig 逐 context 解析（`exec:` 硬拒）、探活五问与状态机、fabric8 要点（禁 autoConfigure 回落、client 缓存必关、AKS scope 用 AKS 的 audience 而不是管理面）；**批次策略一张表两组**（表优化 vs 敏感识别各一套 + 各一组 Spark 参数 JSON 列，不进 `config_hash`）——**M5 的配置层 / 前端 / 迁移（V2）/ 守卫已落地；「真正执行扫描」与 `*SparkConf` 下发随敏感识别下推路线（该稿 P4）待做** |
 | `event-framework.md` | 加事件 / 接 listener：9 类 33 个领域事件与触发点、与 Polaris 枚举的映射、`audit_event` 表、发布监听链路、按监听器的类别/类型订阅、增量拉取契约（`?since=` / `?category=`）与不发清单 |
 | `generic-table-design.md` | parquet / orc / lance / vortex 纳入目录（**设计稿，未实现**）：格式能力矩阵、`table_kind` 方案取舍、端点与权限、Spark 接入、影响面与风险 |
 | `metrics-design.md` | 加指标 / 接 Prometheus / 排查「指标太贵」：**设计稿，未实现**——Polaris telemetry 的事实基线（四类来源、realm 基数闸门、SLO 桶、Iceberg 用量报告与运维指标的区别）、`lakehouse.*` 指标目录与基数预算（<1500）、标签黑名单与 catalog 折叠规则、切面替代逐端点 `@Timed`、管理端口暴露与 ServiceMonitor、告警/看板示例、`verify-metrics-doc.py` 一致性校验 |

@@ -91,6 +91,11 @@ public final class OptimizerJob {
             args.add("--catalog-token");
             args.add(cluster.catalogToken());
         }
+        // 这里**没有** --conf 一类的 Spark 参数，是刻意的：表优化今天只跑镜像自带的
+        // --conf，两组可配置的 Spark 参数（`optimizationSparkConf` / `scanSparkConf`）
+        // 已随 M5 存进实体，但「下发到命令行」这一步要等敏感识别的下推路线（P4）。
+        // 那时在这里加 `--conf k=v`（并让 OptimizerOptions 解析它）才算真正生效——
+        // 现在加一半会造出「界面上能填、任务收不到」的静默失败。
 
         List<LocalObjectReference> pullSecrets = new ArrayList<>();
         for (String name : cluster.imagePullSecrets()) {

@@ -225,7 +225,9 @@ mvn -o -pl :lakehouse-rest-server -am clean package -DskipTests
 ```
 
 全是增量的原因见 `scripts/gen-flyway-baseline.py` 的 docstring——那个脚本只负责把
-「接入 Flyway 时的当前结构」派生一次成 V1，此后就拒绝再动 V1（出现 V2 它会直接退出码 2）。
+「接入 Flyway 时的当前结构」派生一次成 V1，此后就拒绝再动 V1（出现 V2 它会直接退出码 2）；
+同一时刻 `--check` 也降级为信息性跳过（exit 0），因为它要验的「V1 与快照逐字一致」
+在演进期本就不再成立。
 
 ### 3.5 优雅停机的三处配合
 

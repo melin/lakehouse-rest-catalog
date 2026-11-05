@@ -305,7 +305,8 @@ Lance 面见 [`lance-table-optimization-design.md`](lance-table-optimization-des
 | 连接 | `cluster_type`（`SELF_HOSTED` / `EKS` / `AKS`，类型即认证）、`api_server`、`context_name`、`namespace`、`ca_cert_pem` |
 | 凭据 | `kubeconfig_sealed`、`auth_config_sealed`、`catalog_token_sealed`——`CredentialCipher` 密封后的整份明文；读模型只回 `has*` |
 | 运行位置 | `image`、`image_pull_policy`、`image_pull_secrets`、`service_account`、`callback_base_url`（上一版散在 yml 里的提交参数） |
-| 批次策略 | `max_tables_per_job`、`max_concurrent_jobs`、`job_timeout_seconds` |
+| 批次策略 | 优化：`max_tables_per_job`、`max_concurrent_jobs`、`job_timeout_seconds`；敏感识别：`max_scan_tables_per_job`、`max_concurrent_scans`、`scan_job_timeout_seconds`。**两组各算各的配额**（扫描不占优化的并发额度），默认值不同（20/2/7200 与 200/2/3600） |
+| Spark 参数 | `optimization_spark_conf` / `scan_spark_conf`（逐行 `k=v`，写入前过前缀白名单，白名单外丢弃并记审计）。**本步只把配置存/校验/展示接好，还不下发到命令行**——下发随敏感数据下推路线（见 [`sensitive-data-design.md`](sensitive-data-design.md) §5.6.7） |
 | 探活 | `config_hash` / `probe_status` / `probe_reason` / `probe_message` / `probe_config_hash` / `probed_at`——五态由它们派生，不另存状态列 |
 
 字段语义、五态状态机与「`configHash` 用密文算」这类坑见

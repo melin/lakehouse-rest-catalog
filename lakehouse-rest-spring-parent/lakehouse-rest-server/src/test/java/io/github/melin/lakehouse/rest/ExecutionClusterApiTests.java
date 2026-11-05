@@ -2,6 +2,7 @@ package io.github.melin.lakehouse.rest;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -420,6 +421,130 @@ class ExecutionClusterApiTests {
         assertTrue(clusterRepository.findByCatalogId(catalogId()).isEmpty(), "行必须真的删掉（含凭据）");
         // catalog 本身还在
         assertEquals(CATALOG, json(200, "GET", M + "/catalogs/" + CATALOG, null).get("name").asString());
+    }
+
+    // ------------------------------------------------------------------ M5：两组策略与 Spark 参数
+
+    @Test
+    void omittedScanStrategyKeepsTheColumnDefaults() throws Exception {
+        createCatalog(CATALOG);
+
+        // 一个字段都不带（这是老版本控制台 / 老客户端的报文形状）
+        JsonNode created = json(200, "PUT", path(), selfHostedBody("paimon-opt"));
+
+        // 默认值来自列定义，不是「0 就是没配」——0 会让扫描一批都组不出来，
+        // 而界面上看不出任何异常（列表照常、探活照常）
+        assertEquals(200, created.get("maxScanTablesPerJob").asInt());
+        assertEquals(2, created.get("maxConcurrentScans").asInt());
+        assertEquals(3600, created.get("scanJobTimeoutSeconds").asInt());
+        // 两段 Spark 参数默认是**空**：留空 = 只有镜像级 --conf。
+        // 判据用 `has(...)` 而不是 `get(...).isNull()`：响应体按 NON_NULL 序列化，
+        // 这两项的「空」在报文里表现为**整个键不出现**。
+        assertFalse(created.has("optimizationSparkConf"), "留空 = 不额外传参，报文里就不该有这一项：" + created);
+        assertFalse(created.has("scanSparkConf"), "留空 = 不额外传参，报文里就不该有这一项：" + created);
+    }
+
+    @Test
+    void scanStrategyIsValidatedWithItsOwnRanges() throws Exception {
+        createCatalog(CATALOG);
+        JsonNode created = json(200, "PUT", path(), selfHostedBody("paimon-opt"));
+        int version = created.get("entityVersion").asInt();
+
+        // 两组策略的区间是对称的：这三条越界与优化组的报错形状应当一致
+        for (String pair : new String[] {
+                "\"maxScanTablesPerJob\":501", "\"maxConcurrentScans\":0", "\"scanJobTimeoutSeconds\":299"}) {
+            json(400, "PUT", path(), """
+                    {"clusterType":"SELF_HOSTED","entityVersion":%d,"namespace":"paimon-opt",
+                     "image":"registry.example.com/x:1","callbackBaseUrl":"http://a.b",%s}
+                    """.formatted(version, pair));
+        }
+        // 一条都没落库
+        assertEquals(200, stored().getMaxScanTablesPerJob());
+        assertEquals(2, stored().getMaxConcurrentScans());
+    }
+
+    @Test
+    void scanSparkConfDropsKeysOutsideTheWhitelist() throws Exception {
+        createCatalog(CATALOG);
+        JsonNode created = json(200, "PUT", path(), selfHostedBody("paimon-opt"));
+        int version = created.get("entityVersion").asInt();
+
+        JsonNode updated = json(200, "PUT", path(), """
+                {"clusterType":"SELF_HOSTED","entityVersion":%d,"namespace":"paimon-opt",
+                 "image":"registry.example.com/lakehouse-rest-optimizer:1.0.0",
+                 "callbackBaseUrl":"http://lakehouse-rest-server.lakehouse-rest.svc.cluster.local:8080",
+                 "scanSparkConf":"spark.driver.memory=8g\\nspark.sql.catalog.paimon.token=stolen\\nspark.sql.shuffle.partitions=64"}
+                """.formatted(version));
+
+        // 白名单外的键**在落库前就被丢掉**（不是存下来到下发时再过滤）：
+        // 「库里那份配置」与「真正生效的配置」必须是同一个东西
+        String conf = updated.get("scanSparkConf").asString();
+        assertTrue(conf.contains("spark.driver.memory=8g"), conf);
+        assertTrue(conf.contains("spark.sql.shuffle.partitions=64"), conf);
+        assertFalse(conf.contains("spark.sql.catalog.paimon.token"), "连接与认证键必须被丢弃：" + conf);
+        assertFalse(conf.contains("stolen"), "连值都不能留在库里：" + conf);
+        assertEquals(conf, stored().getScanSparkConf(), "落库的就是过滤后的那一份");
+    }
+
+    @Test
+    void changingOnlyTheBatchStrategyLeavesTheConfigHashAlone() throws Exception {
+        createCatalog(CATALOG);
+        JsonNode created = json(200, "PUT", path(), selfHostedBody("paimon-opt"));
+        String hashBefore = stored().getConfigHash();
+
+        // 只改扫描那一组的配额与参数（连接参数一个字都没动）
+        json(200, "PUT", path(), """
+                {"clusterType":"SELF_HOSTED","entityVersion":%d,"namespace":"paimon-opt",
+                 "image":"registry.example.com/lakehouse-rest-optimizer:1.0.0",
+                 "callbackBaseUrl":"http://lakehouse-rest-server.lakehouse-rest.svc.cluster.local:8080",
+                 "maxScanTablesPerJob":300,"scanJobTimeoutSeconds":1800,
+                 "optimizationSparkConf":"spark.driver.memory=8g"}
+                """.formatted(created.get("entityVersion").asInt()));
+
+        assertEquals(300, stored().getMaxScanTablesPerJob());
+        // 这两列**不进 config_hash**：改配额不该要求重新验证连接。
+        // 判据是 hash 逐字不变——它一旦变了，下一次读回来的状态就是「待验证」，
+        // 而用户改的只是「几表一批」。
+        assertEquals(hashBefore, stored().getConfigHash(),
+                "config_hash 把批次策略或 Spark 参数算进去了：改配额会把状态打回「待验证」");
+
+        // 反过来：改连接参数必须换 hash——否则「改了 kubeconfig 状态还是正常」，
+        // 比上面那一半更危险
+        json(200, "PUT", path(), """
+                {"clusterType":"SELF_HOSTED","entityVersion":%d,"contextName":"dev",
+                 "namespace":"paimon-opt",
+                 "image":"registry.example.com/lakehouse-rest-optimizer:1.0.1",
+                 "callbackBaseUrl":"http://lakehouse-rest-server.lakehouse-rest.svc.cluster.local:8080"}
+                """.formatted(stored().getEntityVersion()));
+        assertNotEquals(hashBefore, stored().getConfigHash(),
+                "换了镜像而 hash 没变：上一次的验证结论会被错误地沿用");
+    }
+
+    @Test
+    void sparkConfIsClearedByAnExplicitEmptyString() throws Exception {
+        createCatalog(CATALOG);
+        JsonNode created = json(200, "PUT", path(), selfHostedBody("paimon-opt"));
+        int version = created.get("entityVersion").asInt();
+        JsonNode withConf = json(200, "PUT", path(), """
+                {"clusterType":"SELF_HOSTED","entityVersion":%d,"namespace":"paimon-opt",
+                 "image":"registry.example.com/lakehouse-rest-optimizer:1.0.0",
+                 "callbackBaseUrl":"http://lakehouse-rest-server.lakehouse-rest.svc.cluster.local:8080",
+                 "optimizationSparkConf":"spark.driver.memory=8g"}
+                """.formatted(version));
+        assertTrue(withConf.get("optimizationSparkConf").asString().contains("8g"));
+
+        // 传空串 = 清空（与 caCertPem 同一约定，而不是像四个秘密那样「留空 = 不动」）。
+        // 这两者的区别是这份配置能不能退回「只有镜像级 --conf」：
+        // 按秘密的约定走，一旦填过就再也退不回去了
+        JsonNode cleared = json(200, "PUT", path(), """
+                {"clusterType":"SELF_HOSTED","entityVersion":%d,"namespace":"paimon-opt",
+                 "image":"registry.example.com/lakehouse-rest-optimizer:1.0.0",
+                 "callbackBaseUrl":"http://lakehouse-rest-server.lakehouse-rest.svc.cluster.local:8080",
+                 "optimizationSparkConf":""}
+                """.formatted(withConf.get("entityVersion").asInt()));
+        assertFalse(cleared.has("optimizationSparkConf"),
+                "空串应当把这一项清成 null（报文里整个键消失）：" + cleared);
+        assertNull(stored().getOptimizationSparkConf());
     }
 
     // ------------------------------------------------------------------ 工具

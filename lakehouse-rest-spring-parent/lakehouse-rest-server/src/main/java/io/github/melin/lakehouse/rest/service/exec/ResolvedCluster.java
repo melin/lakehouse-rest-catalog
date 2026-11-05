@@ -12,6 +12,13 @@ import java.util.List;
  *
  * <p><b>它带着明文凭据，因此只活在方法栈上</b>：不缓存、不落库、不进日志
  * （{@link #toString()} 被覆写成不含凭据的形态，避免有人顺手打日志）。
+ *
+ * <p><b>这里没有敏感识别的三个配额，也没有两段 Spark 参数</b>，不是忘了：它们已经存进
+ * 实体（M5，配置层 / 前端 / V2 迁移都落地了），但**下推到任务命令行**这一步随敏感识别的
+ * 下推路线（`sensitive-data-design.md` 的 P4）一起做——那时扫描任务的提交器才第一次
+ * 消费 `maxScanTablesPerJob` / `maxConcurrentScans` / `scanJobTimeoutSeconds` 与
+ * `scanSparkConf`。现在就把它们塞进来，只会得到一份**没人读**的字段，
+ * 而「没人读」与「读错了」在真机上分不出来。表优化那三项在此处，是因为调度器今天就在用它们。
  */
 public record ResolvedCluster(ClusterType type,
                               String catalogId,

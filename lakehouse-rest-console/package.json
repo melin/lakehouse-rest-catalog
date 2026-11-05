@@ -14,7 +14,8 @@
     "test:auto-refresh": "node --test \"tools/auto-refresh-tests/*.test.mjs\"",
     "test:snippet": "node --test \"tools/snippet-tests/*.test.mjs\"",
     "test:storage": "node --test \"tools/storage-tests/*.test.mjs\"",
-    "test:sso": "node --test \"tools/sso-tests/*.test.mjs\""
+    "test:sso": "node --test \"tools/sso-tests/*.test.mjs\"",
+    "test:execution": "node --test \"tools/execution-tests/*.test.mjs\""
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.2",

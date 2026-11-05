@@ -811,7 +811,7 @@ kubeconfig 与 AKS 的 client secret 都是「服务端持有的一份长期凭�
 | M2 | `ExecutionClientFactory` + fabric8 提交器 + 两个 TokenProvider + 调度接线 | 删 `KubernetesJobSubmitter` / `LoggingJobSubmitter` | ✅ |
 | M3 | 前端：列表列 + 抽屉 + 三种类型表单 + 探活结果面板 + 横幅 | 按效果图六画面 | ✅ |
 | M4 | 文档回填（`table-optimization.md` §9.2 / `console.md` / `README` / 计数）与 `verify-console` 新守卫 | 见 §14 | ✅（23 组 150 项） |
-| M5 | **随敏感数据识别引入**：批次策略扩两组 + 两个 Spark 参数列 + 抽屉两段（原型已回填，本节 §4 / §9 已同步） | 兑现 `sensitive-data-design.md` §5.6.6 / §5.6.7；**依赖下推路线（该稿 P4）**，不单独排期 | 待做 |
+| M5 | **随敏感数据识别引入**：批次策略扩两组 + 两个 Spark 参数列 + 抽屉两段（原型已回填，本节 §4 / §9 已同步） | 兑现 `sensitive-data-design.md` §5.6.6 / §5.6.7；**依赖下推路线（该稿 P4）**，不单独排期。**配置层 + 前端 + 迁移 + 守卫已落地**（实体/DTO/service 校验、schema 快照加列 + 手写 V2 增量、抽屉 ⑤⑥⑦ 段与 `catalogToken` 归位、`verify-console.py` 第 22 组 14 项新守卫、`ExecutionClusterApiTests` 5 条 M5 用例、前端 `tools/execution-tests` 12 条）；**「真正执行扫描」仍留待 P4**——本步只把存 / 校验 / 展示 / 提交链路接好，`*SparkConf` 尚未下发到任务命令行 | ✅（扫描执行除外） |
 
 未决，需要拍板的三件：
 
@@ -837,7 +837,7 @@ kubeconfig 与 AKS 的 client secret 都是「服务端持有的一份长期凭�
 - [ ] kubeconfig 解析后逐 context 给结论，不可用的行禁用但不隐藏
 - [ ] 探活结果五步，第 5 步带「只说了一个方向」的声明与手工验证命令
 - [ ] 未配置时行内按钮是主色（待办），不是灰色次要按钮
-- [ ] **抽屉出现两组批次策略（⑤ 表优化 / ⑥ 敏感识别）与两段 Spark 参数（⑦），且 `catalogToken` 在 ④ 运行位置段**（原型 `catalog-execution-cluster-mockup.html`）
+- [x] **抽屉出现两组批次策略（⑤ 表优化 / ⑥ 敏感识别）与两段 Spark 参数（⑦），且 `catalogToken` 在 ④ 运行位置段**（原型 `catalog-execution-cluster-mockup.html`）
 
 **服务端**
 
@@ -846,8 +846,12 @@ kubeconfig 与 AKS 的 client secret 都是「服务端持有的一份长期凭�
 - [ ] 未配置 / 停用 / 异常三种情况下派发跳过、`PENDING` 不判失败、游标不推进
 - [ ] `client.close()` 在淘汰与配置变更时被调用（测试守线程数）
 - [ ] `exec:` 的 kubeconfig 被硬拒，错误文案给出替代路径
-- [ ] **只改 `maxScanTablesPerJob` 不改 `probe_status`**（两组策略列不进 `config_hash`）
-- [ ] **`scanSparkConf` 里塞 `spark.sql.catalog.*.token` 被丢弃并记审计**，扫描仍用服务端构造的会话
+- [x] **只改 `maxScanTablesPerJob` 不改 `probe_status`**（两组策略列不进 `config_hash`）
+  ——机械守卫：`verify-console.py` 第 22.12 组断言 `configHash()` 里不出现这 5 个字段名；
+  行为用例：`ExecutionClusterApiTests.changingOnlyTheBatchStrategyLeavesTheConfigHashAlone`
+- [x] **`scanSparkConf` 里塞 `spark.sql.catalog.*.token` 被丢弃并记审计**，扫描仍用服务端构造的会话
+  ——`normalizeSparkConf` 在**写入路径**上过滤（落库的就是过滤后的那一份，不是下发时再过滤），
+  行为用例：`ExecutionClusterApiTests.scanSparkConfDropsKeysOutsideTheWhitelist`
 
 **文档与机械校验**
 

@@ -63,7 +63,10 @@ spec/rest-catalog-open-api-iceberg.yaml）。路径写错时前端只表现为�
  22. 执行集群     catalog 级执行集群（优化任务提交到哪个 k8s）：六个端点都挂在 catalog 下、
                   三类型/五状态在前端与 enum 各只有一份、凭据只进不出、yml 里不再有提交参数、
                   fail-closed 的两个落点都在。这些错法全都不报错——任务静默地不跑，
-                  或者跑到了服务端自己所在的集群
+                  或者跑到了服务端自己所在的集群。含 M5 的三处静默风险：两组批次策略与两组
+                  Spark 参数的字段名在实体/DTO/前端三处必须对齐（写错一个字母=保存静默忽略）、
+                  它们**不得进 config_hash**（否则改配额就把状态打回「待验证」）、
+                  Spark 白名单前缀服务端过滤与前端提示必须逐字一致
  23. 定时刷新     Catalog 与优化任务列表的「定时刷新」：默认开启 5 秒、档位与默认值各只有一份、
                   每一拍走静默路径（不出遮罩、失败不清空表格）、后台标签页暂停、卸载清定时器。
                   这些错法都不报错——页面看起来在跑，数据其实停在几分钟前，
@@ -2526,6 +2529,166 @@ SCHEMA_SQL = os.path.join(ROOT, "sql/schema-mysql.sql")
 check("sql/schema-mysql.sql 里有 lakehouse_catalog_execution_cluster",
       "create table lakehouse_catalog_execution_cluster" in read(SCHEMA_SQL).lower(),
       "实体加了但没重新执行 scripts/gen-mysql-ddl.sh")
+
+# --- 22.12 M5：两组批次策略 + 两段 Spark 参数 -----------------------------
+#
+# 这一小节钉的是 M5 的**三处静默风险**，它们全都不报错：
+# ① 两组策略的字段名写错一个字母 → 保存那条路径静默忽略它（@JsonIgnoreProperties 兜住了未知键），
+#    界面显示改了、库里还是老值；
+# ② 两组策略或 Spark 参数被顺手塞进 `configHash()` → 改一次配额就把状态打回「待验证」，
+#    而验收清单里正好有一条要求「只改 maxScanTablesPerJob 不改 probe_status」；
+# ③ 白名单在服务端与前端各写一份而内容不一致 → 前端提示「这些键会被丢弃」而服务端照收，
+#    或者反过来：前端以为能填的键，保存时被静默丢掉。
+EXEC_ENTITY = os.path.join(
+    SERVER_JAVA, "domain/entity/CatalogExecutionClusterEntity.java")
+exec_entity = read(EXEC_ENTITY)
+
+# ① 实体两处（字段名 + 列名）都要在，且三个 int 列必须带 DEFAULT——
+#    存量库上的 `ALTER TABLE ... ADD COLUMN ... NOT NULL` 没有 DEFAULT 会直接跑不通，
+#    而这条只在 V2 迁移真的被执行时才暴露。
+M5_COLUMNS = {
+    "maxScanTablesPerJob": "max_scan_tables_per_job",
+    "maxConcurrentScans": "max_concurrent_scans",
+    "scanJobTimeoutSeconds": "scan_job_timeout_seconds",
+    "optimizationSparkConf": "optimization_spark_conf",
+    "scanSparkConf": "scan_spark_conf",
+}
+missing_fields = [field for field in M5_COLUMNS if f"private int {field} " not in exec_entity
+                  and f"private String {field};" not in exec_entity]
+missing_columns = [column for column in M5_COLUMNS.values() if f'name = "{column}"' not in exec_entity]
+check("M5 的 5 个字段在实体上齐全（三个 int + 两个 text，列名按同一命名法）",
+      not missing_fields and not missing_columns,
+      "缺字段：" + "、".join(missing_fields) + " 缺列名：" + "、".join(missing_columns))
+missing_defaults = [field for field in ("maxScanTablesPerJob", "maxConcurrentScans", "scanJobTimeoutSeconds")
+                    if f"integer default" not in exec_entity]
+check("三个 scan 列都是 NOT NULL + DEFAULT（否则存量库加列跑不通）",
+      len(missing_defaults) == 0 and all(
+          v in exec_entity for v in ("integer default 200", "integer default 2", "integer default 3600")),
+      "这三个列缺 columnDefinition 里的默认值：加 NOT NULL 列时存量行必须能取到值")
+
+# DTO 读写两侧都要有这 5 个字段：只加读侧的表现是「保存了但读回来是旧值」。
+exec_dtos = read(EXEC_DTOS)
+m5_names = ("maxScanTablesPerJob", "maxConcurrentScans", "scanJobTimeoutSeconds",
+            "optimizationSparkConf", "scanSparkConf")
+read_model = exec_dtos.split("public record ExecutionCluster(")[1].split(") {")[0]
+write_model = exec_dtos.split("public record UpdateExecutionClusterRequest(")[1].split(") {")[0]
+check("M5 的 5 个字段在读写两个 record 里都有（读侧 int/String，写侧 Integer/String）",
+      all(name in read_model for name in m5_names) and all(name in write_model for name in m5_names),
+      "缺读侧：" + "、".join(n for n in m5_names if n not in read_model)
+      + " 缺写侧：" + "、".join(n for n in m5_names if n not in write_model))
+
+# ② `configHash()` 必须**不含** M5 字段。这条是验收清单里
+#    「只改 maxScanTablesPerJob 不改 probe_status」的机械版本。
+EXEC_SERVICE = os.path.join(SERVER_JAVA, "service/exec/ExecutionClusterService.java")
+exec_service = read(EXEC_SERVICE)
+hash_block = exec_service.split("static String configHash(", 1)[1].split("\n    }", 1)[0]
+# 先确认真的截到了方法体：标记串被改名时 block 会退化成空串，
+# 于是「不含 M5 字段」必然成立——这条断言会从「守住红线」变成「永远通过」。
+check("configHash() 能被正确定位（否则下面那条红线是空断言）",
+      "entity.getClusterType()" in hash_block and "entity.getCatalogTokenSealed()" in hash_block,
+      "截不到 configHash() 的方法体：本节的核心断言会假通过")
+leaked_in_hash = [name for name in m5_names if name in hash_block]
+check("两组策略与 Spark 参数都不进 config_hash（改配额不该要求重新验证连接）",
+      not leaked_in_hash, "configHash() 里出现了：" + "、".join(leaked_in_hash))
+
+# 白名单的键族**逐字**一致：服务端用前缀列表、前端也用前缀列表，两边都从同一份文档抄。
+server_prefixes = set(re.findall(r'"(spark\.[\w.]*\.)"', exec_service))
+front_prefixes = set(re.findall(r"^  '([\w.]+\.)',", read(EXEC_CLUSTER_UTIL), re.M))
+check("Spark 参数白名单前缀两处一致（服务端过滤用，前端只做提示）",
+      server_prefixes and server_prefixes == front_prefixes,
+      f"服务端 {sorted(server_prefixes)} / 前端 {sorted(front_prefixes)}")
+
+# 白名单生效的落点必须在 `apply()` 里被调用：定义了却不调 = 用户在表单里填什么都会原样落库。
+check("写入路径确实过白名单（normalizeSparkConf 被调用两次，两组各一次）",
+      exec_service.count("normalizeSparkConf(request.") == 2,
+      "Spark 参数落库前没有过滤，或只过滤了一组")
+
+# ③ 抽屉：⑦ 两段、⑤⑥ 两组，且 catalogToken 不在任何一组策略里。
+EXEC_DRAWER = os.path.join(CONSOLE_DIR, "src/components/ExecutionClusterDrawer.vue")
+drawer = read(EXEC_DRAWER)
+for title in ("表优化批次策略", "敏感识别批次策略", "Spark 参数"):
+    check(f"抽屉里有「{title}」段", f'title="{title}"' in drawer, "抽屉缺这一段")
+
+# catalogToken 与它所在的那一段之间不能夹着策略段标题：判据是「catalogToken 输入框出现在
+# 第一个策略段标题之前」。放错组不会报错，只会让读者以为它只服务扫描。
+token_pos = drawer.find('v-model="state.form.catalogToken"')
+first_strategy_pos = drawer.find('title="表优化批次策略"')
+check("catalogToken 在 ④ 运行位置段（两类任务都用它，不归任何一组策略）",
+      0 < token_pos < first_strategy_pos,
+      "catalogToken 出现在策略段之后，会被读成「只有那一类任务用」")
+
+# 两段 Spark 参数各自要在**三处**都在：`formOf` 回填、`buildPayload` 提交、模板里的 v-model。
+# 只看「字段名出现过」是不够的——漏了 `buildPayload` 那一行，整个文件里这个名字依然到处都是，
+# 而表现为「填了保存不进去」（提交报文里没有这个键）。
+def section(source, marker, count=1):
+    """从 marker 起截一段（默认到下一个顶层函数/块结束），用来按函数分区断言。"""
+    body = source.split(marker, 1)
+    if len(body) < 2:
+        return ""
+    return body[1].split("\n}\n", count)[0] if count else body[1]
+
+
+form_of_block = section(drawer, "function formOf(dto) {")
+payload_block = section(drawer, "function buildPayload() {")
+template_block = drawer.split("<template>", 1)[-1]
+two_conf_ok = all(
+    name in form_of_block and name in payload_block and f'v-model="state.form.{name}"' in template_block
+    for name in ("optimizationSparkConf", "scanSparkConf"))
+check("两段 Spark 参数在回填 / 提交报文 / 模板三处都齐全",
+      two_conf_ok,
+      "缺某一处：回填缺=保存后看不到，提交缺=填了存不进去，模板缺=没有输入框")
+
+# 两组策略的 6 个数字同样要三处齐全（与上一条同一类错法）。
+batch_names = ("maxTablesPerJob", "maxConcurrentJobs", "jobTimeoutSeconds",
+               "maxScanTablesPerJob", "maxConcurrentScans", "scanJobTimeoutSeconds")
+batch_ok = all(name in form_of_block and name in payload_block for name in batch_names)
+check("两组批次策略的 6 个数字都进回填与提交报文",
+      batch_ok,
+      "缺：" + "、".join(n for n in batch_names if n not in form_of_block or n not in payload_block))
+
+# 前端默认值必须与服务端实体的 DEFAULT 逐个对上：前端给一个「看起来更合理」的数，
+# 就会造出「打开抽屉看到 50、保存一提交变成 20」——而现象是「我什么都没改，值自己变了」。
+front_defaults = dict(re.findall(r"^  (\w+): (\d+),$", read(EXEC_CLUSTER_UTIL), re.M))
+mismatched = [name for name, value in (("maxScanTablesPerJob", "200"), ("maxConcurrentScans", "2"),
+                                       ("scanJobTimeoutSeconds", "3600"))
+              if front_defaults.get(name) != value or f"integer default {value}" not in exec_entity]
+check("前端三组默认值与服务端列 DEFAULT 逐字相同",
+      not mismatched, "对不上：" + "、".join(mismatched))
+
+# --- 22.13 V2 增量迁移与基线脚本的双路径 ----------------------------------
+#
+# M5 加了列，而 V1 基线**一旦被任何库应用过就不能再改**（Flyway 比 checksum，
+# 改了会让所有存量库拒启动）。因此结构变更只能走手写的 V2+，而
+# `gen-flyway-baseline.py` 必须同时具备两条路径：
+# 写路径拒绝（否则下一次有人跑它，V1 会被快照覆盖回「含 V2 列」的样子、
+# 与库里的 V1 不再逐字相同）、`--check` 信息性跳过（演进阶段二者本就不再一致）。
+MIGRATION_DIRS = (os.path.join(ROOT, "lakehouse-rest-spring-parent/lakehouse-rest-server/src/main/resources/db/migration/mysql"),
+                  os.path.join(ROOT, "lakehouse-rest-spring-parent/lakehouse-rest-server/src/main/resources/db/migration/postgresql"))
+for vendor_dir in MIGRATION_DIRS:
+    vendor = os.path.basename(vendor_dir)
+    versions = sorted(f for f in os.listdir(vendor_dir) if re.match(r"^V\d+__", f)) \
+        if os.path.isdir(vendor_dir) else []
+    v2 = [f for f in versions if f.startswith("V2__")]
+    v2_text = read(os.path.join(vendor_dir, v2[0])) if v2 else ""
+    scan_cols = [column for column in ("max_scan_tables_per_job", "max_concurrent_scans",
+                                       "scan_job_timeout_seconds", "optimization_spark_conf",
+                                       "scan_spark_conf") if column not in v2_text]
+    check(f"{vendor} 有 V2 增量且包含 5 个新列",
+          len(v2) == 1 and not scan_cols,
+          ("缺 V2" if not v2 else "") + ("缺列：" + "、".join(scan_cols) if scan_cols else ""))
+
+# 三个 int 列在 V2 里必须带 DEFAULT：`add column ... not null` 而存量库表里已有行，
+# 没有 DEFAULT 的那一列会直接让迁移失败（空库上跑永远看不到这个态）。
+mysql_v2 = read(os.path.join(MIGRATION_DIRS[0], "V2__add_scan_strategy_and_spark_conf.sql"))
+check("V2 的三个 NOT NULL 列都带 DEFAULT（存量库升级才跑得通）",
+      all(f"default {value}" in mysql_v2 for value in ("200", "2", "3600")),
+      "有 NOT NULL 列没带 DEFAULT：存量库上 ADD COLUMN 会失败")
+
+GEN_BASELINE = os.path.join(ROOT, "scripts/gen-flyway-baseline.py")
+baseline_script = read(GEN_BASELINE)
+check("基线脚本写路径拒绝、--check 信息性跳过（两条路径都在）",
+      "return 2" in baseline_script and "args.check" in baseline_script,
+      "缺少双路径之一：要么会把演进后的快照覆盖回 V1，要么 --check 在演进阶段恒失败")
 
 # ------------------------------------------------------------------ 23. 定时刷新
 

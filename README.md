@@ -128,7 +128,12 @@ PostgreSQL 走同一套实体：`scripts/gen-postgres-ddl.sh` 生成 `sql/schema
 **手写** `db/migration/mysql/V2__xxx.sql`（增量 `alter table`）→ 重新打包发版。
 不要再改 V1：`validate-on-migrate: true` 会比对已应用版本的 checksum，**V1 的内容一旦变过，
 所有应用过 V1 的库都会拒绝启动**（`Migration checksum mismatch`）。
-`scripts/gen-flyway-baseline.py` 对此有硬保护——迁移目录里一出现 V1 以外的版本，它就拒绝运行。
+`scripts/gen-flyway-baseline.py` 对此有硬保护——迁移目录里一出现 V1 以外的版本，写路径就拒绝运行
+（退出码 2）。同一个判断也改变了 `--check` 的语义：它原本验的是「V1 与快照逐字一致」，
+而这个命题在演进期**本就不该再成立**（快照含新列、V1 按设计不含），因此 `--check` 降级为
+信息性跳过（退出码 0，打印一行说明）。新列与快照的一致性改由另外两道守：
+`FlywayBaselineTests`（真 Flyway 在 H2 上跑 V1→V2 的升级路径）与 `verify-console.py` 第 22 组
+（V2 里必须有那 5 个列、三个 `NOT NULL` 列必须带 `DEFAULT`）。
 
 `ddl-auto` 仍是 **`validate`**，但职责变了：Flyway 决定「结构该长什么样」，
 validate 决定「实际长出来的与实体一致吗」。不一致仍然直接启动失败，而不是悄悄改表——
@@ -709,7 +714,10 @@ Azure 只下发定位元数据是个明确的缺口：Polaris 的 `polaris.stora
     ①**存量库的旧结构不比对**——`baseline-on-migrate` 只写一条版本记录，不校验内容，
     升级前要人工确认旧表与 V1 一致；②**V1 不可再改**（checksum 会变，已应用的库启动失败），
     改结构一律新增 Vn；③**H2 / 测试 profile 关闭了 Flyway**，所以测试绿不等于迁移能跑，
-    靠 `FlywayBaselineTests` 与 `gen-flyway-baseline.py --check` 两条守卫补。
+    靠 `FlywayBaselineTests` 与 `verify-console.py` 第 22 组两条守卫补（前者用真 Flyway 跑
+    「空库跑到最新」与「V1 存量库升到最新」两条路径，后者守住 V2 的列与 `DEFAULT` 写法）。
+    一旦出现 V2，`gen-flyway-baseline.py --check` 会从「比对漂移」降级为信息性跳过——
+    它要验的「V1 与快照逐字一致」在演进期按设计就不再成立。
     代价是「改实体多一步」（生成快照 + 手写增量），换来的是升级不再需要停机手工执行 SQL。
 15. **超长文本列的实际容量受 MySQL 的 TEXT 类型限制**。`length = 65535` 的列在 MySQL 上
     落为 `text`（上限 65535 **字节**，utf8mb4 下约 1.6 万个汉字），`length = 1048576` 以上
@@ -1085,8 +1093,8 @@ python3 scripts/verify-lance-endpoints.py
 
 # Flyway 迁移基线：从上面的快照纯派生，保证「手工建库」与「启动迁移」两条路径不分叉
 # （校验脚本本身要 PyYAML 之外的零依赖，用 /opt/homebrew/bin/python3.11 与上文一致）
-python3.11 scripts/gen-flyway-baseline.py --check   # 只校验是否漂移（改了实体忘了这一步会红）
-python3.11 scripts/gen-flyway-baseline.py           # 重生成（仅在尚未出现 V2 时可用）
+python3.11 scripts/gen-flyway-baseline.py --check   # 只校验是否漂移（改了实体忘了这一步会红；出现 V2 后转为信息性跳过）
+python3.11 scripts/gen-flyway-baseline.py           # 重生成（仅在尚未出现 V2 时可用；出现 V2 后退出码 2）
 
 # 控制台：构建产物落位 + 与服务端规格逐条比对端点
 ./scripts/build-console.sh                   # 需要 Node 20+，见第 9 节
@@ -1110,9 +1118,10 @@ Iceberg 协议面落地的 9 个新列也由它产出（`catalog_format` 是
 
 `gen-flyway-baseline.py` 是**纯派生**：输入 `sql/schema-*.sql`，输出 Flyway 的
 `V1__baseline.sql`，不引入第二处结构描述。它**只到 V1 尚未被任何库应用为止**——
-迁移目录里一出现 V2 及更高版本，它就拒绝运行（退出码 2）并提示「改结构要手写增量」，
-因为 V1 的内容一变，所有应用过它的库都会 checksum 校验失败。这就是它比 `gen-mysql-ddl.sh`
-少了「随时可重跑」这个性质的原因。
+迁移目录里一出现 V2 及更高版本，它的**写路径**就拒绝运行（退出码 2）并提示「改结构要手写增量」，
+因为 V1 的内容一变，所有应用过它的库都会 checksum 校验失败；同时 `--check` 从「比对是否漂移」
+降级为**信息性跳过**（退出码 0），理由是那个比对在演进期本就不再成立。这就是它比
+`gen-mysql-ddl.sh` 少了「随时可重跑」这个性质的原因。
 
 `verify-iceberg-endpoints.py` **不依赖 PyYAML**：它只需要规格里「路径 / 方法」两层
 （indent 2 / indent 4），所以自写了一个缩进解析器，而不是为一条校验引入一个部署前提。
@@ -1341,12 +1350,14 @@ http://localhost:8080/console/
   因此 `verify-console.py` 第 6 组、`build-image.sh` 与 `ConsoleApiTests` 都会在产物缺失时明确失败。
 - **路径不靠人工比对。** 全部端点收在 `lakehouse-rest-console/src/api/endpoints.js` 一张表里，
   由 `scripts/verify-console.py` 与四份 OpenAPI 规格（Paimon / Iceberg / Lance / 管理 API）机械比对
-  （28 组 216 项：端点存在性、引用完整性、五处基址一致、产物新鲜度、对话框状态、下拉候选来源、
+  （28 组 234 项：端点存在性、引用完整性、五处基址一致、产物新鲜度、对话框状态、下拉候选来源、
   静态凭据字段与服务端的一致性、三种格式的优化参数键（且两两不重合）、**catalog 表格式**、**Iceberg 目录浏览的契约形状**、
   存储字段分层、事件页的远程分页与类型筛选、问号图标悬停即显、提示性告警的正文收进问号（TipAlert：错误不收、带按钮的正文留在可见区）、**全站表格的远程分页（页码与过滤下推、
   分页器只有 `TablePager` 一个）**、**血缘页签的异步挂载与纯函数布局**、
   **catalog 级执行集群（五个端点都挂在 catalog 下、状态只由服务端算、凭据只进不出、
-  yml 里不再有提交参数、fail-closed 的两处落点）**、**列表的定时刷新（默认开启 5 秒、
+  yml 里不再有提交参数、fail-closed 的两处落点；含 M5 的两组批次策略与两段 Spark 参数：
+  字段名三处对齐、不进 `config_hash`、白名单前缀两处逐字一致、V2 增量带 DEFAULT）**、
+  **列表的定时刷新（默认开启 5 秒、
   每一拍只走静默刷新、后台暂停、失败不清空表格）**、**引擎接入片段里的续期契约
   （Paimon 默认仍是 bear、Iceberg 的 scope 与服务端常量逐字对齐、续期能力分控制面/数据面两列）**，
   最后由一组「文档计数」盯住这个数字本身与脚本一致）；
