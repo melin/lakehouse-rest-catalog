@@ -20,11 +20,6 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
 
-# 非 root 运行。uid/gid 固定成 10001，便于与 Kubernetes 的 runAsUser、
-# emptyDir 的 fsGroup 对齐；随机 uid 会让挂载卷的属主判定变得不可预期。
-RUN groupadd --system --gid 10001 app \
-    && useradd --system --uid 10001 --gid app --no-create-home --home-dir /app --shell /usr/sbin/nologin app
-
 WORKDIR /app
 
 # 宿主机构建好的 jar。文件名是 POM 的约定产物名——改版本号时这里要跟着改，
@@ -45,10 +40,9 @@ WORKDIR /app
 # `COPY --chmod=0644 a/b.sql /app/sql/b.sql` 会把权限也套到 Docker 自动创建的
 # 中间目录上，/app/sql 变成 drw-r--r--（没有 x 位就无法遍历，里面文件什么权限都
 # 读不到），而报错指向的是文件、不是目录。现在没有那一层了，这一段随之消失。
-COPY --chown=app:app lakehouse-rest-spring-parent/lakehouse-rest-server/target/lakehouse-rest-server-1.0.0.jar /app/app.jar
+COPY lakehouse-rest-spring-parent/lakehouse-rest-server/target/lakehouse-rest-server-1.0.0.jar /app/app.jar
 
-USER 10001:10001
-
+# 不创建专用 app 用户，容器以 root 身份运行（与 k8s 清单里去掉所有 securityContext 一致）。
 EXPOSE 8080
 
 # 用 JAVA_TOOL_OPTIONS 而不是 ENTRYPOINT 里的 sh -c "$JAVA_OPTS"：

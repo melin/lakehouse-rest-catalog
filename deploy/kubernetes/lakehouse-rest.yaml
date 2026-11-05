@@ -599,29 +599,12 @@ spec:
       # 比 spring.lifecycle.timeout-per-shutdown-phase（30s）留 15s 余量，
       # 用于 preStop 的等待与 JVM 收尾。设小了会把优雅停机截断。
       terminationGracePeriodSeconds: 45
-      securityContext:
-        # Dockerfile 里创建的 app 用户就是 10001，这里对齐。
-        # 用固定数字而不是名字：名字要靠镜像里的 /etc/passwd 解析，
-        # 而 kubelet 在容器启动前就要完成属主检查。
-        runAsNonRoot: true
-        runAsUser: 10001
-        runAsGroup: 10001
-        # fsGroup 对 emptyDir 生效；对 hostPath **不生效**（hostPath 不支持
-        # 属主管理），warehouse 目录的可写性由下面的 initContainer 负责。
-        fsGroup: 10001
-        fsGroupChangePolicy: OnRootMismatch
-        seccompProfile:
-          type: RuntimeDefault
       initContainers:
-        # hostPath 目录是 kubelet 以 root 建的（0755 root:root），而主容器以
-        # uid 10001 运行、根文件系统只读——不 chown 的话启动会直接报
-        # 「warehouse 目录不可写」，而报错位置离真正原因很远。
-        #
-        # fsGroup 在这里帮不上忙：hostPath 不参与属主管理，这是它与 PVC 的关键差别。
-        # 因此用 root 跑一次 chown + chmod，之后主容器全程非 root。
-        #
-        # 这里用到的两个能力都必须在 securityContext 里显式列出（下面 drop ALL）：
-        # CHOWN 给 chown，FOWNER 给 chmod。少一个就是 Init 阶段 EPERM。
+        # hostPath 目录由 kubelet 以 root 创建（0755 root:root）。本清单不再为
+        # Deployment 设置任何 securityContext，主容器与 initContainer 都直接以 root
+        # 运行，因此 /data 由 root 持有、可直接写入，无需属主修正。这里仍顺手做一次
+        # chown 10001:10001 + chmod 0750，仅为兼容「将来若切回非 root 运行」——
+        # 那时再补回 Pod/容器 securityContext，目录属主已经就绪。
         - name: prepare-warehouse
           image: registry.cn-hangzhou.aliyuncs.com/melin1204/lakehouse-rest-catalog:1.0.0
           imagePullPolicy: Always
@@ -632,32 +615,14 @@ spec:
             - -c
             - |
               set -e
-              # 顺序不能反：`chown 10001:10001 /data` 执行后目录属主已经是 10001，
-              # 而当前 fsuid 仍是 0——此时 chmod 属于「改别人的文件」，需要 CAP_FOWNER。
-              # 把 chmod 写在 chown 后面，就会报
-              #   chmod: changing permissions of '/data': Operation not permitted
-              # 先 chmod（属主还是 root，改自己的文件不需要额外能力），再把属主交出去。
+              # 顺序说明（历史约束，现已不强制）：曾要求 chmod 先于 chown——当时 initContainer
+              # 以 drop ALL 只保留 CHOWN/FOWNER 运行，chown 后目录属主变 10001、再 chmod 就需要
+              # CAP_FOWNER。现在清单不再设 securityContext，init 以 root 全权限运行，顺序已无约束；
+              # 保留「先 chmod 再 chown」只是习惯，无害。
               mkdir -p /data
               chmod 0750 /data
               chown 10001:10001 /data
               echo "warehouse 目录属主已就绪: $(ls -ld /data)"
-          securityContext:
-            # 覆盖 Pod 级的 runAsNonRoot / runAsUser：chown 必须是 root。
-            runAsNonRoot: false
-            runAsUser: 0
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            # root 身份在这里**不等于**全权限：drop ALL 之后只剩显式 add 的能力。
-            #   CHOWN  —— chown 改属主
-            #   FOWNER —— chmod 改权限（目录属主不是 0 时的必要条件）
-            # 缺 FOWNER 的表现就是 initContainer 报 Operation not permitted，
-            # Pod 卡在 Init 阶段，日志里只有一句 chmod 失败。
-            capabilities:
-              drop:
-                - ALL
-              add:
-                - CHOWN
-                - FOWNER
           volumeMounts:
             # 挂的就是主容器那份 warehouse 卷，这里的 /data 即节点上的
             # /data/paimon-warehouse——chown 落在卷根目录上。
@@ -762,17 +727,6 @@ spec:
               # 上限为基数算堆大小，没有 limits 时 JVM 会按宿主机的物理内存来算，
               # 在内存大的节点上会给自己开一个远超合理范围的堆。
               memory: 2Gi
-          securityContext:
-            allowPrivilegeEscalation: false
-            # 根文件系统只读。JVM 与 Spring Boot 需要写的位置只有临时目录，
-            # 下面用 emptyDir 单独挂到 /tmp。
-            #
-            # 这一条能挡住的是一整类攻击：镜像里的任何写操作都无法落地，
-            # 例如下载 shell 脚本、改写 jar、往启动脚本里注入内容。
-            readOnlyRootFilesystem: true
-            capabilities:
-              drop:
-                - ALL
           volumeMounts:
             - name: config
               mountPath: /app/config
