@@ -1009,31 +1009,30 @@ users:
 
       <div class="sec">
         <span class="idx">6</span><h3>敏感识别批次策略</h3>
-        <span class="hint">与上面那一组<b>各算各的</b>：扫描不占用优化的并发额度，反之亦然</span>
+        <span class="hint">只有「几表一批」与「超时」两项——<b>并发数用上面 5 的那一个</b></span>
       </div>
       <div class="banner" style="border-left-color:var(--accent);background:#eef4ff;color:#1e3a8a">
         <span>ⓘ</span>
         <div>
-          两组合法但不能自相矛盾：若这里配 <span class="mono">20</span>、上面也配 <span class="mono">20</span>，
-          同一台集群可能同时收到 <b>40 个 Spark 驱动</b>。服务端<b>不做交叉校验</b>——它不知道那台集群有多少 CPU，
-          编一个「加起来不超过 X」只会得到一个 X 猜错的系统。这张账由<b>集群侧的 ResourceQuota / 调度器队列</b>兜，
-          部署时那份配额<b>必须显式设</b>，空着就是敞口。
+          下推的扫描作业与优化批次<b>共用 5 里的 <span class="mono">maxConcurrentJobs</span></b> 一把闸门：
+          两者跑在同一台集群上、争的是同一份算力，因此这里<b>不再有独立的并发数</b>。
+          代价是两类任务会互相排队（优化占满时扫描要等，反之亦然）——有意为之，让位比超发诚实。
+          <br />
+          剩下的叠加只发生在<b>跨 catalog</b>：两个 catalog 都指向同一台集群、各配 20，集群就会收到 <b>40 个 Spark 驱动</b>。
+          服务端<b>不做交叉校验</b>——它不知道那台集群有多少 CPU，编一个「加起来不超过 X」只会得到一个 X 猜错的系统。
+          这张账由<b>集群侧的 ResourceQuota / 调度器队列</b>兜，部署时那份配额<b>必须显式设</b>，空着就是敞口。
         </div>
       </div>
-      <div class="grid3">
+      <div class="grid2">
         <div class="fld">
           <label>扫描作业最多几张表</label>
           <input type="text" value="200" />
           <div class="note">扫描的表通常远多于「一批待优化表」——一个 catalog 几千张表是常态。</div>
         </div>
         <div class="fld">
-          <label>同时几个扫描作业</label>
-          <input type="text" value="2" />
-          <div class="note">与全局默认 <span class="mono">max-concurrent</span> 同源；catalog 级覆盖它。</div>
-        </div>
-        <div class="fld">
           <label>扫描作业超时</label>
           <input type="text" value="1h" />
+          <div class="note">与优化的超时<b>各自独立</b>：扫描是只读采样，比 compaction 更快收敛。</div>
         </div>
       </div>
 

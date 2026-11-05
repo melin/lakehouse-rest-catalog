@@ -399,13 +399,11 @@ public class ExecutionClusterService {
             entity.setJobTimeoutSeconds(range(request.jobTimeoutSeconds(), "jobTimeoutSeconds", 300, 86400));
         }
 
-        // 敏感识别那一组策略：与上面三个各算各的配额（扫描不占优化的并发额度）。
-        // 列名与校验范围都刻意与优化组对称——两组读起来一样，才不会有人以为它们共用一把额度。
+        // 敏感识别那一组策略：只有「一批几张表」与「批次超时」两项。
+        // **并发数不在这里**——优化批次与扫描作业共用上面那个 maxConcurrentJobs，
+        // 两者跑在同一台集群上、争的是同一份算力，各开一把闸门只会让总和变成两倍的敞口。
         if (request.maxScanTablesPerJob() != null) {
             entity.setMaxScanTablesPerJob(range(request.maxScanTablesPerJob(), "maxScanTablesPerJob", 1, 500));
-        }
-        if (request.maxConcurrentScans() != null) {
-            entity.setMaxConcurrentScans(range(request.maxConcurrentScans(), "maxConcurrentScans", 1, 50));
         }
         if (request.scanJobTimeoutSeconds() != null) {
             entity.setScanJobTimeoutSeconds(
@@ -839,7 +837,6 @@ public class ExecutionClusterService {
                 entity.getMaxConcurrentJobs(),
                 entity.getJobTimeoutSeconds(),
                 entity.getMaxScanTablesPerJob(),
-                entity.getMaxConcurrentScans(),
                 entity.getScanJobTimeoutSeconds(),
                 entity.getOptimizationSparkConf(),
                 entity.getScanSparkConf(),

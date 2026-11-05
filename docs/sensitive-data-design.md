@@ -380,9 +380,9 @@ confidence = clamp( 0.35·s_name + 0.10·s_type + 0.40·s_value + 0.10·s_dict +
 | 约束 | 口径 |
 |---|---|
 | 同一张表 | 同时只允许一个 `RUNNING` 扫描（否则两条 finding 流互相洗状态）；重入返 `409` |
-| 同一 catalog | 同时最多 `N` 个（**默认 2，可配**，见下）；超了排队而不是拒绝——定时任务批量触发时排队比让调度器重试更可控 |
+| 同一 catalog | 同时最多 `N` 个（**默认 2，可配**，见下）；超了排队而不是拒绝——定时任务批量触发时排队比让调度器重试更可控。**这一条只数 A 路线（进程内）的扫描**：B 路线下推的作业在集群上跑，它数的是执行集群那把 `maxConcurrentJobs`（见下与 §5.6.6） |
 | 与数据预览 | A 路线下扫描与预览**共用一个并发池**，扫描不应把预览饿死；扫描请求按较低优先级入池 |
-| 与优化任务 | 数据上无互斥（读的是不同东西）；B 路线下扫描作业的并发上限**与优化批次各算各的**（见 §5.6.6），共用同一台执行集群但**不共用配额** |
+| 与优化任务 | 数据上无互斥（读的是不同东西）；B 路线下扫描作业的并发上限**与优化批次共用同一个 `maxConcurrentJobs`**（见 §5.6.6）——共用同一台执行集群、也就是同一份算力，因此**共用同一把闸门** |
 
 **catalog 级并发默认 2，且是可配的**——三层配置，与 §5.6.1 的执行位置同一套口径：
 
@@ -390,6 +390,13 @@ confidence = clamp( 0.35·s_name + 0.10·s_type + 0.40·s_value + 0.10·s_dict +
 |---|---|---|
 | 全局默认 | `lakehouse.rest.sensitivity.scan.max-concurrent` | `2` |
 | catalog 覆盖 | `sensitivity-settings.maxConcurrentScans` | 继承全局 |
+
+> ⚠️ 这个名字（`maxConcurrentScans`）**指的是 A 路线（进程内）的扫描并发**——守存储侧并发读的那道闸门。它与执行集群上那把 `maxConcurrentJobs`（§5.6.6）是**两件事**，只是过去曾有一个同名的集群列，本轮已删。读到这里请按下表区分：
+>
+> | 名字 | 管谁 | 默认 | 落在哪 |
+> |---|---|---|---|
+> | `max-concurrent` / `maxConcurrentScans` | A 路线的扫描线程（不进集群） | 2 | `application.yml` / `sensitivity-settings` |
+> | `maxConcurrentJobs` | 这台集群上的**所有**作业（优化 + 下推扫描） | 2 | `lakehouse_catalog_execution_cluster` |
 | 单次覆盖 | **不支持** | — |
 
 为什么单次不能覆盖：它是**资源保护**而不是本次请求的参数。允许单次放开，等于「谁都能给自己提额」，那这道闸门就只剩字面意思。要调就调 catalog 级——那是一次治理决定、进审计。
@@ -402,7 +409,7 @@ confidence = clamp( 0.35·s_name + 0.10·s_type + 0.40·s_value + 0.10·s_dict +
 
 | 环节 | 复用程度 | 说明 |
 |---|---|---|
-| 执行集群配置与客户端 | **原样复用** | `resolve` / `clientFor` / `dispatchable` 全部按 catalog 生效；扫描不引入第二套「集群配置」概念。**但配额不共用**——见 §5.6.6 |
+| 执行集群配置与客户端 | **原样复用** | `resolve` / `clientFor` / `dispatchable` 全部按 catalog 生效；扫描不引入第二套「集群配置」概念。**并发闸门也共用**（同一把 `maxConcurrentJobs`）——见 §5.6.6 |
 | 探活（五问） | **原样复用** | 它问的是「这个集群能不能收下并跑起一个 Job」，与 Job 内容无关；第 4 步 dry-run 用的仍是同一份报文构造 |
 | k8s 报文骨架 | 复用骨架，换 `--scan-id` 与容器名 | 前缀 `paimon-scan-`、容器名 `scanner`；`backoffLimit=0`、`restartPolicy=Never`、`imagePullSecrets` / `serviceAccountName` 逐条照抄。**TTL 与 `jobTimeoutSeconds` 取扫描自己的批次策略**（§5.6.6 的 `scanJobTimeoutSeconds`），不读优化那组 |
 | Spark 参数 | 复用注入位置，**取值独立** | 同一份「`extraJavaOptions` / `--conf` 注入点」的实现，但读的是扫描那一组 Spark 参数（§5.6.7 的 `scan_spark_conf`）——优化任务的参数改了不该悄悄改变扫描任务的资源诉求 |
@@ -422,28 +429,38 @@ confidence = clamp( 0.35·s_name + 0.10·s_type + 0.40·s_value + 0.10·s_dict +
 
 - **`execution=SPARK` 要 fail-closed**。给一个没配执行集群的 catalog 建 `execution=SPARK` 的扫描必须返 **400**，而不是静默退回 A——静默降级会让「我以为它在集群上跑」变成一条查不出来的行为，与 §5 那两处 fail-closed 同一口径。
 - **探测器不在 Spark 里重写**。D1/D2 是元数据、不进 Spark；D3/D4/D5 需要值，但**只是把抽样的行拉回来、跑同一份 Java 打分器**。**不要**把正则与校验器翻译成 Spark SQL 表达式：那会造出第二份打分实现，§5.1 的权重与 §5.2 的公式立即分叉。抽样语句走 `TABLESAMPLE`、降级 `HEAD`，与 A 路线同一口径（§6.2）。
-- **扫描配额与优化配额各算各的**（已定，见 §5.6.6）。`maxConcurrentJobs` 是优化批次的额度，扫描不借用它；扫描用自己那组配置的 `maxConcurrentScans`（默认 2，§5.6.4）计数。**代价是两侧可以同时把同一台集群放到 2N 个驱动**——这个风险不由「共用配额」消解（共用会让「优化占的额度」与「扫描占的额度」互相成为对方的噪声），而由 §5.6.6 末尾的**集群侧硬配额**兜底。
+- **B 路线的扫描作业与优化批次共用一把 `maxConcurrentJobs`**（已定，见 §5.6.6）。两者跑在同一台集群上、争的是同一份算力，因此**没有独立的 `maxConcurrentScans`**：下推的扫描作业也计入这个数，超出的留在 `PENDING`。理由不是「省一列」——各开一把闸门时，两侧各自看起来都在额度内，实际把同一台集群放到 `maxConcurrentScans + maxConcurrentJobs` 个驱动，而这个总和没有任何地方在守。共用一把闸门后，「同时最多几个作业在这台集群上」终于是一个可以被读出来的数字。
+  - 代价是**两类任务会互相排队**：一个 catalog 把 `maxConcurrentJobs` 设成 2、又同时排了一大批优化和一次全量扫描时，扫描要等优化让位。这是**有意的**——它们争的本来就是同一份算力，让位比超发诚实。
+  - 仍需集群侧兜底的只剩**跨 catalog** 的叠加（多个 catalog 指向同一台集群），那部分依然由 ResourceQuota / 调度器队列负责，服务端不知道集群总量（§5.6.6 末段）。
+- **A 路线（进程内）的扫描不受这把闸门管**。它不提交任何 Job、不占集群算力，守的是存储侧被并发读的压力（§5.6.4 的 `max-concurrent`，默认 2，与 `TablePreviewService` 同池）。把这两件事混成一个数字会让「调大集群并发」意外地把对象存储的并发也放开。
 
 **状态机要补两态。** 走 `execution=SPARK` 后扫描不再从 `RUNNING` 开始：`POST /sensitivity-scans` 返 `202` 时是 `PENDING`，调度节拍提交成功才转 `RUNNING`，提交期间是 `SUBMITTING`，并需要一份与优化批次同形的「提交成功、回写前进程挂掉」回收（`reapStaleSubmissions`）。§4.2 的 `status` 取值随之扩充。
 
 #### 5.6.6 执行集群配置：一张表，两组策略（表优化 / 敏感识别各一套）
 
-已定：**扫描任务与优化任务共用同一份执行集群配置**（同一个 k8s、同一个镜像、同一份凭据、同一组探活结论），但**策略参数按任务类型分开**。因此 `lakehouse_catalog_execution_cluster` 在「连接与运行位置」（现有 ①②③ 段）之外，把批次策略扩成**两组并列**：
+已定：**扫描任务与优化任务共用同一份执行集群配置**（同一个 k8s、同一个镜像、同一份凭据、同一组探活结论），**并发闸门也共用同一把**，只有「一批几张表」与「批次超时」按任务类型分开。因此 `lakehouse_catalog_execution_cluster` 在「连接与运行位置」（现有 ①②③ 段）之外，补上扫描那两列与两段 Spark 参数：
 
 | 组 | 字段 | 消费方 |
 |---|---|---|
-| **表优化**（现有，保持不动） | `maxTablesPerJob` / `maxConcurrentJobs` / `jobTimeoutSeconds` | `OptimizationDispatcher` / `OptimizationBatchCreator` |
-| **敏感识别**（新增） | `maxScanTablesPerJob` / `maxConcurrentScans` / `scanJobTimeoutSeconds` | `SensitivityScanner`（B 路线） |
+| **表优化**（现有，保持不动） | `maxTablesPerJob` / **`maxConcurrentJobs`** / `jobTimeoutSeconds` | `OptimizationDispatcher` / `OptimizationBatchCreator` |
+| **敏感识别**（新增） | `maxScanTablesPerJob` / `scanJobTimeoutSeconds` | `SensitivityScanner`（B 路线） |
+
+**`maxConcurrentJobs` 是两类任务共用的一把闸门**（本轮口径变更）。它挂在「表优化」那一组下面只是因为历史顺序（列先为优化建的），语义上是**这台集群同时允许几个作业在跑**，扫描作业与优化批次**一起**计入、一起排队：
+
+- 没有独立的 `maxConcurrentScans`。曾经设计过一列，本轮删掉——**各开一把闸门不等于更安全**：两侧各自都在自己的额度内、合起来正好把同一台集群放到两份额度的驱动数，而这个总和没有任何一处看得见。共用一把之后，「这台集群上同时最多几个作业」是一个能被读出来的数字。
+- **代价（接受）**：两类任务互相排队。一个 catalog 同时排了优化与全量扫描时，扫描要等优化让位、反之亦然。它们争的本来就是同一份算力，让位比超发诚实。
+- **A 路线（进程内）的扫描不受它管**：不提交 Job、不占集群算力，守的是存储侧并发读（§5.6.4 的 `max-concurrent`，与 `TablePreviewService` 同池）。两件事混成一个数字会让「调大集群并发」意外放开对象存储的并发。
+- **跨 catalog 的叠加**依然由集群侧兜（见末段）——服务端不知道那台集群的 CPU 总量。
 
 **为什么不把两组并成一列带类型标记的子表**：它们是**两个固定的、字段集合已知的**策略组，不是一个会增长的列表。子表（`execution_cluster_policy(type, ...)`）会让「读一个策略」变成一次 join，并且 `type` 列一旦要校验取值域、又要为两种类型各写一遍约束——现在多出来的列宽与迁移成本，远小于为两个已知类型建一套 EAV 的复杂度。
 
 **列名不能省掉类型前缀**（`maxTablesPerJob` vs `maxScanTablesPerJob`）：两条业务线读的是同一行，`maxTablesPerJob` 这个名字在扫描代码里会让人以为「扫描也受它约束」。前缀是**给下一个读代码的人**看的，不是给数据库看的。
 
-**默认值与校验**：`maxScanTablesPerJob=200`（扫描的表通常比「一批待优化表」多得多，一个 catalog 几千张表是常态）、`maxConcurrentScans=2`（§5.6.4 已论证）、`scanJobTimeoutSeconds=3600`。区间与优化那组同形（1–500 / 1–50 / 5m–24h），超范围 400。
+**默认值与校验**：`maxScanTablesPerJob=200`（扫描的表通常比「一批待优化表」多得多，一个 catalog 几千张表是常态）、`scanJobTimeoutSeconds=3600`。两者各自有区间（1–500 / 5m–24h），超范围 400。**两类任务的批次策略一共是 5 个数字**（优化 3 + 扫描 2）——并发那一项是共用的，不再算两遍。
 
-**这一扩列对状态机的影响**：`config_hash` 的算法与「改完没验证」的判据**不含批次策略**（现有实现如此）——新增的两组策略列同样不进 `config_hash`。这意味着**只改 `maxScanTablesPerJob` 不会把状态打回「待验证」**，这是对的：改一次并发数不需要重新证明「这个集群连得上」。
+**这一扩列对状态机的影响**：`config_hash` 的算法与「改完没验证」的判据**不含批次策略**（现有实现如此）——新增的策略列同样不进 `config_hash`。这意味着**只改 `maxScanTablesPerJob`（或 `maxConcurrentJobs`）不会把状态打回「待验证」**，这是对的：改一次并发数不需要重新证明「这个集群连得上」。
 
-**两组合法但不能自相矛盾**：若某 catalog 的 `maxConcurrentScans` 与 `maxConcurrentJobs` 都配成 20，同一台集群可能同时收到 40 个 Spark 驱动。本方案**不做交叉校验**（两边都是合法值），而是在文档里点名这张账要由**集群侧的准入**兜（ResourceQuota / 调度器队列）。理由：服务端不知道那台集群的 CPU 总量，编一个「两边加起来不超过 X」的规则只会得到一个 X 猜错的系统——而 k8s 自己正好知道答案。
+**为什么不再需要「两组配额交叉校验」**：这个风险随独立列一起消失了。原先要讨论的是「`maxConcurrentScans=20` + `maxConcurrentJobs=20` → 40 个驱动」，现在一个 catalog 只有一个并发数，**单个 catalog 的上限就是它自己**，交叉校验的对象不存在了。剩下的叠加只有**跨 catalog**（两个 catalog 指向同一台集群，各配 20 → 40 个驱动），那部分一如既往由**集群侧的准入**兜（ResourceQuota / 调度器队列）：服务端不知道那台集群的 CPU 总量，编一个「加起来不超过 X」的规则只会得到一个 X 猜错的系统——而 k8s 自己正好知道答案。**部署时这份集群侧配额必须显式设，空着就是敞口。**
 
 #### 5.6.7 两组策略里的 Spark 参数（默认注入，可逐 catalog 覆盖）
 
@@ -598,10 +615,10 @@ DQ 的规则可以按标签匹配：「所有 `L3+` 列必须有 completeness �
 | `PUT` | `/column-tags` | 手工打标（upsert，带 `entityVersion` 做 409） |
 | `DELETE` | `/column-tags/{id}` | 删标签（**同时写抑制项**，否则下次扫描复活） |
 | `GET` / `PUT` / `DELETE` | `/tag-mask-bindings[/{id}]` | 标签 → 脱敏绑定 |
-| `GET` / `PUT` | `/sensitivity-settings` | **catalog 级治理设置**：`defaultExecution`（§5.6.1）、`maxConcurrentScans`（§5.6.4）、`propagationMaxDepth`（§7.1）。`PUT` 走乐观锁，且**变更进审计**——它改的是「这个 catalog 的扫描怎么跑」，与改绑定同级 |
+| `GET` / `PUT` | `/sensitivity-settings` | **catalog 级治理设置**：`defaultExecution`（§5.6.1）、`maxConcurrentScans`（§5.6.4，指 **A 路线进程内**的扫描并发，非集群闸门）、`propagationMaxDepth`（§7.1）。`PUT` 走乐观锁，且**变更进审计**——它改的是「这个 catalog 的扫描怎么跑」，与改绑定同级 |
 | `GET` / `PUT` / `DELETE` | `/sensitivity-schedules[/{id}]` | **仅当选 catalog 自建调度时存在**（§5.6.3）；外部调度路线不注册这三个端点，运行时端点计数也不含它们 |
 
-执行集群的两组策略与 Spark 参数挂在**既有**的 `PUT /catalogs/{c}/execution-cluster` 上（`maxScanTablesPerJob` / `maxConcurrentScans` / `scanJobTimeoutSeconds` / `optimizationSparkConf` / `scanSparkConf`，§5.6.6、§5.6.7），**不新增端点**——它们与「连哪个集群」是同一份配置的不同段，拆成两个端点会让「保存了连接但没保存策略」变成一个用户看得见、却说不清为什么的状态。
+执行集群的批次策略（含扫描那两列）与两段 Spark 参数挂在**既有**的 `PUT /catalogs/{c}/execution-cluster` 上（新增 `maxScanTablesPerJob` / `scanJobTimeoutSeconds` / `optimizationSparkConf` / `scanSparkConf`；`maxConcurrentJobs` 是既有字段，现在两类任务共用，§5.6.6、§5.6.7），**不新增端点**——它们与「连哪个集群」是同一份配置的不同段，拆成两个端点会让「保存了连接但没保存策略」变成一个用户看得见、却说不清为什么的状态。
 
 > 「是否自建调度」是**部署期决定**（§5.6.3），因此它决定了端点数——这与本仓库「运行时端点数 == 登记数」的守卫直接相关：切换路线时登记表要同步增删三个端点，漏改会让守卫直接红。
 
@@ -639,11 +656,11 @@ DQ 的规则可以按标签匹配：「所有 `L3+` 列必须有 completeness �
 
 | 期 | 范围 | 验收断言 |
 |---|---|---|
-| **P0** | 五实体 + 内置类型 seed + 类型/探测器配置端点与控制台 `#types` + D1/D2 元数据扫描 + 手工打标 + `/column-tags` 只读 + 控制台 `#overview` / `#tags` + `/sensitivity-settings`（catalog 级设置含 `defaultExecution`） | 扫描 100 张表 < 30 秒；同一列重扫不产生重复 tag；内置类型不可删（409）；**改一个内置类型的探测器权重后，下一轮扫描的判定随之改变且变更进审计**；**`defaultExecution` 与 `maxConcurrentScans` 三层覆盖生效（请求 > catalog > 全局）** |
+| **P0** | 五实体 + 内置类型 seed + 类型/探测器配置端点与控制台 `#types` + D1/D2 元数据扫描 + 手工打标 + `/column-tags` 只读 + 控制台 `#overview` / `#tags` + `/sensitivity-settings`（catalog 级设置含 `defaultExecution`） | 扫描 100 张表 < 30 秒；同一列重扫不产生重复 tag；内置类型不可删（409）；**改一个内置类型的探测器权重后，下一轮扫描的判定随之改变且变更进审计**；**`defaultExecution` 三层覆盖生效（请求 > catalog > 全局）；`maxConcurrentScans`（A 路线进程内并发）按 catalog 覆盖生效，且与集群闸门 `maxConcurrentJobs` 互不影响** |
 | **P1** | D3 采样探测 + 校验器 + 置信度分档 + 人审队列 + 自动应用闸门 | 身份证列在 500 条造数上命中率 100%、误报 0；`PERSON_NAME` 即使置信度 0.99 也进 PENDING |
 | **P2** | 血缘传播 + 生命周期钩子 + 增量扫描（`ALTER ADD COLUMN`）；`execution` 落库，扫描历史可见位置；`propagationMaxDepth` 可配 | `DIRECT` 边一轮传播后下游出 tag；`AGGREGATE` 边不产生 tag；`REJECTED` 列重扫不复活；生命周期钩子产生的扫描 `trigger_type=LIFECYCLE`；**`max-depth=2` 时第 3 跳停在 `PENDING`** |
 | **P3** | 标签驱动脱敏（resolve 展开）+ 冲突报告 + 缓存主动失效 | 打标后 ≤60 秒策略生效；显式 mask 优先且冲突可见；三格式（Paimon/Iceberg/Lance）同表同规则结果一致 |
-| **P4** | D4 字典 / D5 统计特征 + 触发方式补全（`#schedules`：外部调度建议页，或自建调度 + `/sensitivity-schedules` 三端点）+ `execution=SPARK` 下推（复用表优化任务的提交/探活/跟踪/取消链路，§5.6.5；执行集群扩两组策略与两组 Spark 参数，§5.6.6 / §5.6.7）+ 对外事件订阅 | 外部调度按 cron 触发一次扫描且只触发一次；同表并发重入返 409；SPARK 路线下扫描事件的 `execution` 为 `SPARK` 且两条审计链可按 `scanId` 拼上；**给不可派发的 catalog 建 `execution=SPARK` 返 400**；**扫了 100 张表、其中 3 张读失败时，`tables_scanned=100` 且 `tables_failed=3`（不是「扫了 97 张」）**；**作业日志里不含任何原始列值**（抽查一次真实扫描的 Pod 日志）；**`scanSparkConf` 里塞 `spark.sql.catalog.*.token` 被丢弃并记审计，且扫描仍用服务端构造的会话** |
+| **P4** | D4 字典 / D5 统计特征 + 触发方式补全（`#schedules`：外部调度建议页，或自建调度 + `/sensitivity-schedules` 三端点）+ `execution=SPARK` 下推（复用表优化任务的提交/探活/跟踪/取消链路，§5.6.5；执行集群扩扫描那两列与两组 Spark 参数，§5.6.6 / §5.6.7；**并发闸门共用既有的 `maxConcurrentJobs`**）+ 对外事件订阅 | 外部调度按 cron 触发一次扫描且只触发一次；同表并发重入返 409；SPARK 路线下扫描事件的 `execution` 为 `SPARK` 且两条审计链可按 `scanId` 拼上；**给不可派发的 catalog 建 `execution=SPARK` 返 400**；**扫了 100 张表、其中 3 张读失败时，`tables_scanned=100` 且 `tables_failed=3`（不是「扫了 97 张」）**；**作业日志里不含任何原始列值**（抽查一次真实扫描的 Pod 日志）；**`scanSparkConf` 里塞 `spark.sql.catalog.*.token` 被丢弃并记审计，且扫描仍用服务端构造的会话** |
 
 > `execution` 字段 P2 就落库（成本极低、事后补埋点会丢历史），但 `SPARK` 这条路到 P4 才通。P2 阶段该列恒为 `IN_PROCESS`——**先有列再有值，比事后给存量行补一个说不清的默认值干净**。同理 §4.2 的那组 B 专属列（Job 坐标 / 令牌哈希 / 提交代数）也在 P2 一次建好：`status` 的取值域一旦要扩到 `PENDING` / `SUBMITTING`，改的是列宽与所有既有读取点，不如一次到位。
 
@@ -661,14 +678,15 @@ DQ 的规则可以按标签匹配：「所有 `L3+` 列必须有 completeness �
 | **密文 / 哈希列识别不出** | 明确口径：识别的是**明文形态**；`md5(...)` 这类列靠血缘 `DERIVED` 传播兜，而不是靠值匹配 |
 | **标签行数爆炸** | 只为命中的列落 tag（不是「每列 × 每类型」）；控制台强制分页 + 按 catalog 过滤 |
 | **内置类型与用户自定义冲突** | `type_code` 唯一；内置 seed 用 upsert 且**不覆盖**用户改动过的字段 |
-| **两组并发配额叠加上限** | 扫描与优化**各算各的**（§5.6.6）：同一 catalog 可能同时收到 `maxConcurrentScans + maxConcurrentJobs` 个驱动。本方案**不做交叉校验**（编一个「加起来不超过 X」只会得到一个 X 猜错的系统），由集群侧 ResourceQuota / 调度器队列兜——**部署时这份配额必须显式设**，空着就是敞口 |
+| **跨 catalog 的并发叠加** | 同一台集群被 N 个 catalog 指向、每个都配 `maxConcurrentJobs=20` → N×20 个驱动。**单个 catalog 内部已无叠加**（扫描与优化共用一把闸门，§5.6.6），剩下的这层本方案**不做交叉校验**（编一个「加起来不超过 X」只会得到一个 X 猜错的系统），由集群侧 ResourceQuota / 调度器队列兜——**部署时这份配额必须显式设**，空着就是敞口 |
+| **两类任务互相排队** | 共用一把 `maxConcurrentJobs` 的直接代价：优化占满时扫描要等，反之亦然（§5.6.6）。**有意为之**——它们争的是同一份算力；若某 catalog 确实需要两类任务都能随时起跑，做法是调大这个数或拆两台集群，而不是再开一把看不见的闸门 |
 | **`*_sparkConf` 成为改认证目标的旁路** | 按**前缀白名单**过滤（§5.6.7），白名单外一律丢弃 + 记审计；连接与认证键只能由服务端构造，用户传了不生效 |
 
 **已拍板（本轮六条）**：
 
 1. 下推路线用**同一个优化器镜像**（同一 jar 的另一个 main class `SensitivityScannerJob`），不单独打镜像——白拿三格式运行时与 Lance 的 arrow 排序修复（§5.6.5）。
-2. 下推路线的作业**不与优化批次共用** `maxConcurrentJobs`：两组配额各算各的，扫描用自己的 `maxConcurrentScans`（§5.6.4、§5.6.6）；叠加风险由集群侧配额兜。
-3. catalog 级并发**默认 2，可配**（全局默认 / catalog 覆盖两层，不支持单次覆盖）（§5.6.4）。
+2. 下推路线的扫描作业**与优化批次共用**执行集群的 `maxConcurrentJobs` 一把闸门：两者跑在同一台集群上、争的是同一份算力，**不设独立的 `maxConcurrentScans`**（§5.6.4、§5.6.6）；跨 catalog 的叠加仍由集群侧配额兜。
+3. catalog 级并发**默认 2，可配**（全局默认 / catalog 覆盖两层，不支持单次覆盖）（§5.6.4）——这是 **A 路线（进程内）** 的并发，与上面那把集群闸门是两件事，互不影响。
 4. 默认执行位置**定 A（进程内）**，且**全局可切**——三层覆盖：全局默认 < catalog 的 `defaultExecution` < 单次请求（§5.6.1）。
 5. 血缘传播默认深度 **5 跳，支持在 `application.yml` 配**（`lakehouse.rest.sensitivity.propagation.max-depth`），也可单次覆盖（§7.1）。
 6. 分级**对齐国标口径**：`L1–L4` 对应《网络数据分类分级指引》1–4 级（GB/T 43697-2024 均属一般数据）；`CORE` / `IMPORTANT` 两档只人工打、不自动识别（§5.5）。
@@ -678,5 +696,5 @@ DQ 的规则可以按标签匹配：「所有 `L3+` 列必须有 completeness �
 1. 采样读是否一律走 `TablePreviewService`（安全复用但受其限额约束），还是给扫描器开独立只读通道（更快但要单独审计）？——**注意这条与 §5.6.1 是关联的**：若「独立只读通道」在服务端进程内，仍属 A 路线；只有把读放到 Spark 作业里才是 B。
 2. 表级标签（`column_name=''`）是否要参与策略展开？本文口径是**不参与**（只用于检索与粗判），需确认。
 3. §5.6.3 的调度选**外部**（不建表、不注册三端点）还是**自建**（建第 6 张表、端点数 +3）？本文倾向外部——但它会决定「运行时端点登记数」，是会影响守卫脚本的硬选择。
-4. §5.6.6 的**两组策略放在同一行**（本稿）还是各自建独立表（`optimization_policy` / `scan_policy`）？同一行的代价是「改扫描配额的人要看得到优化那几列」，独立表的代价是 join 与两套乐观锁。本稿选同一行——因为读它们的代码本来就都要先拿到这一行。
+4. §5.6.6 的**批次策略放在同一行**（本稿）还是各自建独立表（`optimization_policy` / `scan_policy`）？同一行的代价是「改扫描批次策略的人要看得到优化那几列」，独立表的代价是 join 与两套乐观锁。本稿选同一行——因为读它们的代码本来就都要先拿到这一行，而且并发闸门本来就是共用的（分开建表会让「共用」变成一次跨表读，更难看出来）。
 5. §5.6.7 的 Spark 参数**默认值（4g / local[4] / 显式 200 分区）**是否按你们的集群资源再调一轮？这三个数只影响性能不影响正确性，但会决定「照默认跑」的部署是不是合理起点。

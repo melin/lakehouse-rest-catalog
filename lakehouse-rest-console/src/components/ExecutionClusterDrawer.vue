@@ -95,9 +95,9 @@ function blankForm() {
     maxTablesPerJob: BATCH_DEFAULTS.maxTablesPerJob,
     maxConcurrentJobs: BATCH_DEFAULTS.maxConcurrentJobs,
     jobTimeoutSeconds: BATCH_DEFAULTS.jobTimeoutSeconds,
-    // ⑥ 敏感识别批次策略（与上面一组各算各的配额，不是它的副本）
+    // ⑥ 敏感识别批次策略：**没有并发项**——扫描与优化共用上面那把 maxConcurrentJobs 闸门，
+    // 两者跑在同一台集群上、争同一份算力（见 utils 里的说明）。
     maxScanTablesPerJob: BATCH_DEFAULTS.maxScanTablesPerJob,
-    maxConcurrentScans: BATCH_DEFAULTS.maxConcurrentScans,
     scanJobTimeoutSeconds: BATCH_DEFAULTS.scanJobTimeoutSeconds,
     // ⑦ Spark 参数：两类任务各一组。空 = 只有镜像级 --conf（不回填默认值，见 utils 里的说明）
     optimizationSparkConf: '',
@@ -273,7 +273,6 @@ function formOf(dto) {
     maxConcurrentJobs: dto.maxConcurrentJobs || BATCH_DEFAULTS.maxConcurrentJobs,
     jobTimeoutSeconds: dto.jobTimeoutSeconds || BATCH_DEFAULTS.jobTimeoutSeconds,
     maxScanTablesPerJob: dto.maxScanTablesPerJob || BATCH_DEFAULTS.maxScanTablesPerJob,
-    maxConcurrentScans: dto.maxConcurrentScans || BATCH_DEFAULTS.maxConcurrentScans,
     scanJobTimeoutSeconds: dto.scanJobTimeoutSeconds || BATCH_DEFAULTS.scanJobTimeoutSeconds,
     // 两段 Spark 参数**照实回填**（它们是普通文本，不是秘密）。库里那份已经是过滤后的结果——
     // 回填它而不是回填用户原文，才能让「界面上看到的」与「真正会下发到命令行的」是同一个东西。
@@ -385,10 +384,9 @@ function buildPayload() {
     maxTablesPerJob: form.maxTablesPerJob,
     maxConcurrentJobs: form.maxConcurrentJobs,
     jobTimeoutSeconds: form.jobTimeoutSeconds,
-    // ⑥ 敏感识别那一组：与上面三个一起提交，但服务端按**各自的范围**校验，
-    // 六个都传 = 一次保存同时改两组，符合「同一份配置的不同段」这个模型。
+    // ⑥ 敏感识别那一组：与上面一起提交，但服务端按**各自的范围**校验。
+    // 一次保存同时改两组，符合「同一份配置的不同段」这个模型；并发项只有上面那一个（共用）。
     maxScanTablesPerJob: form.maxScanTablesPerJob,
-    maxConcurrentScans: form.maxConcurrentScans,
     scanJobTimeoutSeconds: form.scanJobTimeoutSeconds,
     // ⑦ 两段 Spark 参数：**与 `caCertPem` 同一约定**——非秘密文本，
     // 传空串 = 清空（退回镜像级默认）。所以这里原样提交，不做 `|| undefined`：
@@ -1068,8 +1066,8 @@ const probeConsequence = computed(() => {
           <template #tip>
             <TipNote>
               配额是给<b>这台集群</b>留的余量，所以跟着集群走而不是跟着服务端走：同一台集群给两个
-              catalog 分配不同份额是正常用法。这一组与下面那组<b>各算各的</b>——扫描不占优化的并发额度。
-              改这三个数不会让状态掉回「待验证」：它们不参与连接校验。
+              catalog 分配不同份额是正常用法。<b>并发数这一项是两类任务共用的</b>——扫描作业也计入它
+              （见下方 ⑥）。改这三个数不会让状态掉回「待验证」：它们不参与连接校验。
             </TipNote>
           </template>
         </SectionTitle>
@@ -1088,7 +1086,7 @@ const probeConsequence = computed(() => {
           </el-form-item>
           <el-form-item>
             <template #label>
-              <FieldLabel label="同时几个批次" :tip="`${BATCH_RANGES.maxConcurrentJobs[0]}–${BATCH_RANGES.maxConcurrentJobs[1]}。超出的留在 PENDING，不判失败。`" />
+              <FieldLabel label="同时几个批次" :tip="`${BATCH_RANGES.maxConcurrentJobs[0]}–${BATCH_RANGES.maxConcurrentJobs[1]}。超出的留在 PENDING，不判失败。优化批次与扫描作业共用这一个额度（两类任务跑在同一台集群上）。`" />
             </template>
             <el-input-number
               v-model="state.form.maxConcurrentJobs"
@@ -1097,6 +1095,9 @@ const probeConsequence = computed(() => {
               controls-position="right"
               class="pc-full"
             />
+            <div class="pc-field-note">
+              扫描作业也算在这里：两类任务争同一台集群的算力，各开一把闸门只会让总和变成敞口。
+            </div>
           </el-form-item>
           <el-form-item>
             <template #label>
@@ -1117,10 +1118,9 @@ const probeConsequence = computed(() => {
         <SectionTitle title="敏感识别批次策略">
           <template #tip>
             <TipNote>
-              与上面那一组<b>各算各的</b>：扫描不占用优化的并发额度，反之亦然。两组合法但可能自相矛盾——
-              若这里配 20、上面也配 20，同一台集群可能同时收到 40 个 Spark 驱动；
-              服务端<b>不做交叉校验</b>（它不知道那台集群有多少 CPU），这张账由集群侧的
-              ResourceQuota / 调度器队列兜，部署时那份配额必须显式设。
+              这一组只有「一批几张表」与「批次超时」两项——<b>并发数用上面 ⑤ 的那一个</b>：
+              扫描作业与优化批次跑在同一台集群上、争的是同一份算力，两把闸门只会让总和翻倍。
+              两个超时各自独立，因为扫描是只读采样、比 compaction 收敛得快。
             </TipNote>
           </template>
         </SectionTitle>
@@ -1142,22 +1142,6 @@ const probeConsequence = computed(() => {
             <div class="pc-field-note">
               默认 200 是因为扫描天然要一次抓更多表；优化的默认只有 20。
             </div>
-          </el-form-item>
-          <el-form-item>
-            <template #label>
-              <FieldLabel
-                label="同时几个扫描作业"
-                :tip="`${BATCH_RANGES.maxConcurrentScans[0]}–${BATCH_RANGES.maxConcurrentScans[1]}。与优化的并发额度各自独立。`"
-              />
-            </template>
-            <el-input-number
-              v-model="state.form.maxConcurrentScans"
-              :min="BATCH_RANGES.maxConcurrentScans[0]"
-              :max="BATCH_RANGES.maxConcurrentScans[1]"
-              controls-position="right"
-              class="pc-full"
-            />
-            <div class="pc-field-note">与优化组同值不是巧合：两者争的是同一台集群的算力。</div>
           </el-form-item>
           <el-form-item>
             <template #label>

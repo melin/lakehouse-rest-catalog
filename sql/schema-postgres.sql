@@ -203,7 +203,6 @@
         entity_version integer not null,
         job_timeout_seconds integer not null,
         max_concurrent_jobs integer not null,
-        max_concurrent_scans integer default 2 not null,
         max_scan_tables_per_job integer default 200 not null,
         max_tables_per_job integer not null,
         scan_job_timeout_seconds integer default 3600 not null,
@@ -253,9 +252,6 @@
 
     comment on column lakehouse_catalog_execution_cluster.max_concurrent_jobs is
         '该 catalog 同时运行几个批次';
-
-    comment on column lakehouse_catalog_execution_cluster.max_concurrent_scans is
-        '敏感识别同时运行几个扫描';
 
     comment on column lakehouse_catalog_execution_cluster.max_scan_tables_per_job is
         '敏感识别单批最多扫描几张表';

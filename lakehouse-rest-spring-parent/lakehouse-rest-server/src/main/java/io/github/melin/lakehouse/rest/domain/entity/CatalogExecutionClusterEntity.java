@@ -148,7 +148,16 @@ public class CatalogExecutionClusterEntity extends AuditedEntity {
     @Column(name = "max_tables_per_job", nullable = false, comment = "单批最多几张表")
     private int maxTablesPerJob = 20;
 
-    /** 同时允许几个批次在跑。超出的留在 PENDING。 */
+    /**
+     * 同时允许几个批次在跑。超出的留在 PENDING。
+     *
+     * <p><b>优化批次与扫描作业共用这一把闸门</b>：两者跑在同一台集群上、争的是同一份算力，
+     * 因此下推路线的扫描作业也计入这个数——不再有独立的 {@code maxConcurrentScans}。
+     *
+     * <p>列注释（{@code comment}）刻意保留原文案不改：它写在 V1 基线里、而 V1 已冻结
+     * （改内容会让应用过 V1 的库 checksum 校验失败），改它会让快照与 V1 漂移。
+     * 「共用」这件事记在这里与 {@code max_scan_tables_per_job} 的 Javadoc 里。
+     */
     @Column(name = "max_concurrent_jobs", nullable = false, comment = "该 catalog 同时运行几个批次")
     private int maxConcurrentJobs = 2;
 
@@ -162,7 +171,7 @@ public class CatalogExecutionClusterEntity extends AuditedEntity {
      * <p>与优化的 {@code max_tables_per_job} 差一个量级不是笔误：一个 catalog 几千张表是常态，
      * 扫描是只读采样、天然要一次抓更多；优化的一批要真的 compaction，代价高得多。
      *
-     * <p>{@code columnDefinition} 里带 default 不是冗余：这三个 scan 列是**后加的**，
+     * <p>{@code columnDefinition} 里带 default 不是冗余：这两个 scan 列是**后加的**，
      * 存量行在 V2 迁移里要 {@code ADD COLUMN ... NOT NULL}，没有 DEFAULT 那句就跑不通。
      * 同款手法见 {@code PrincipalEntity.source}。
      */
@@ -170,12 +179,6 @@ public class CatalogExecutionClusterEntity extends AuditedEntity {
             columnDefinition = "integer default 200",
             comment = "敏感识别单批最多扫描几张表")
     private int maxScanTablesPerJob = 200;
-
-    /** 敏感识别扫描：同时允许几个扫描在跑。与优化同值——两者争的是同一台集群的算力。 */
-    @Column(name = "max_concurrent_scans", nullable = false,
-            columnDefinition = "integer default 2",
-            comment = "敏感识别同时运行几个扫描")
-    private int maxConcurrentScans = 2;
 
     /** 敏感识别扫描：批次超时（秒）。比优化的 7200 短：扫描只读采样，收敛更快。 */
     @Column(name = "scan_job_timeout_seconds", nullable = false,

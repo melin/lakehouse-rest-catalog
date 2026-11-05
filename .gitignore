@@ -35,6 +35,12 @@ build/
 ### macOS ###
 .DS_Store
 
+### Python ###
+# scripts/ 下的校验脚本被反复以 `python3 scripts/xxx.py` 直接运行，会就地生成字节码缓存。
+# 它是本机解释器版本的产物（3.11 与 3.12 的 .pyc 互不通用），入库只会带来二进制 diff 噪音。
+__pycache__/
+*.py[cod]
+
 # 控制台的构建产物。它由 lakehouse-rest-console 的源码构建而来，落在这条路径上只是
 # 为了让 Spring Boot 把 /console 当 classpath 资源托管，因此**属于构建产物，不入库**。
 #

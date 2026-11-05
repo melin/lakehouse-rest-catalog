@@ -233,7 +233,7 @@ STS 令牌、`AKS`→AAD 客户端凭据）。一行一 catalog（`catalog_id` �
 | 连接 | `cluster_type` / `api_server` / `context_name` / `namespace` / `ca_cert_pem` | `ca_cert_pem` 空 = 用 JVM 信任库；`context_name` 仅 `SELF_HOSTED` |
 | 凭据（**只进不出**） | `kubeconfig_sealed` / `auth_config_sealed` | `CredentialCipher` 密封后的整份明文，读模型只回 `has*` 与可公开标识（AccessKeyId / tenantId / clientId），**永不回明文** |
 | 运行位置 | `image` / `image_pull_policy` / `image_pull_secrets` / `service_account` / `callback_base_url` | 上一版散在 `lakehouse.rest.optimization` 里的提交参数，现在唯一来源就是这张表 |
-| 批次策略（**两组**） | 优化：`max_tables_per_job` / `max_concurrent_jobs` / `job_timeout_seconds`；敏感识别：`max_scan_tables_per_job` / `max_concurrent_scans` / `scan_job_timeout_seconds` | 并发闸门与超时按 catalog 各自算，不再全局一套；**两组各算各的配额**（扫描不占优化的并发额度）。三对区间对称，默认值不同：优化 20/2/7200、扫描 200/2/3600 |
+| 批次策略（**共 5 列**） | 优化：`max_tables_per_job` / `max_concurrent_jobs` / `job_timeout_seconds`；敏感识别：`max_scan_tables_per_job` / `scan_job_timeout_seconds` | 批次闸门与超时按 catalog 各自算，不再全局一套。**并发只有一把 `max_concurrent_jobs`：下推的扫描作业与优化批次共用它**（两者争同一台集群的算力），扫描**没有**独立的并发列。两对区间对称，默认值不同：优化 20/2/7200、扫描 200/3600 |
 | Spark 参数（**两组**） | `optimization_spark_conf` / `scan_spark_conf` | 逐行 `k=v`；写入前过**前缀白名单**（`spark.driver.*` / `spark.executor.*` / `spark.memory.*` / `spark.sql.shuffle.*` / `spark.sql.files.*` + 精确键 `spark.default.parallelism`），白名单外**丢弃并记审计**（不是存下来下发时再过滤）。空 = 只有镜像级 `--conf`；传空串 = 清空（与 `ca_cert_pem` 同一约定，不是四个秘密那套「留空 = 不改」） |
 | 可选数据面令牌 | `catalog_token_sealed` | 下发给任务的 `/v1/{prefix}` 凭据；**两类任务都用它**，所以不属于任何一组策略；只有它允许「清空」（其余凭据缺失等于配置不可用，只能删整份） |
 | 探活 | `config_hash` / `probe_status` / `probe_reason` / `probe_message` / `probe_config_hash` / `probed_at` | 五态（未配置 / 停用 / 待验证 / 可用 / 不可用）由这两组列**派生**，不另存状态列：`config_hash` 与 `probe_config_hash` 不等即「改完没验证」 |

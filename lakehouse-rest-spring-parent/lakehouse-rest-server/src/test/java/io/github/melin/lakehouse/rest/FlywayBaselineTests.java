@@ -216,13 +216,12 @@ class FlywayBaselineTests {
 
         try (Connection connection = DriverManager.getConnection(url, USER, PASSWORD);
              PreparedStatement query = connection.prepareStatement(
-                     "select max_scan_tables_per_job, max_concurrent_scans, scan_job_timeout_seconds"
+                     "select max_scan_tables_per_job, scan_job_timeout_seconds"
                              + " from lakehouse_catalog_execution_cluster where id = 'existing'");
              ResultSet rows = query.executeQuery()) {
             assertTrue(rows.next(), "存量行在升级后应当还在");
             assertEquals(200, rows.getInt(1), "存量行的 max_scan_tables_per_job 应当拿到 DEFAULT 200，而不是 0/NULL");
-            assertEquals(2, rows.getInt(2), "存量行的 max_concurrent_scans 应当拿到 DEFAULT 2");
-            assertEquals(3600, rows.getInt(3), "存量行的 scan_job_timeout_seconds 应当拿到 DEFAULT 3600");
+            assertEquals(3600, rows.getInt(2), "存量行的 scan_job_timeout_seconds 应当拿到 DEFAULT 3600");
         }
     }
 

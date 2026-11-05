@@ -115,21 +115,23 @@ test('placeholder 文本里既有默认值也有一句「留空即用它」', ()
   assert.equal(sparkConfPlaceholder('nope'), '留空 = 用镜像级默认：\n')
 })
 
-test('两组策略的默认值：扫描 200/2/3600、优化 20/2/7200', () => {
+test('两组策略的默认值：扫描 200/3600、优化 20/2/7200', () => {
   assert.deepEqual(BATCH_DEFAULTS, {
     maxTablesPerJob: 20,
     maxConcurrentJobs: 2,
     jobTimeoutSeconds: 7200,
     maxScanTablesPerJob: 200,
-    maxConcurrentScans: 2,
     scanJobTimeoutSeconds: 3600,
   })
 })
 
-test('取值范围三对对称（优化的上限就是扫描的上限）', () => {
+test('取值范围两对对称（优化的上限就是扫描的上限）', () => {
   assert.deepEqual(BATCH_RANGES.maxTablesPerJob, BATCH_RANGES.maxScanTablesPerJob)
-  assert.deepEqual(BATCH_RANGES.maxConcurrentJobs, BATCH_RANGES.maxConcurrentScans)
   assert.deepEqual(BATCH_RANGES.jobTimeoutSeconds, BATCH_RANGES.scanJobTimeoutSeconds)
+  // 并发只有一把闸门：扫描那组没有独立的 maxConcurrentScans，
+  // 也自然没有对应的区间——它用的是 maxConcurrentJobs 那一个。
+  assert.equal(BATCH_DEFAULTS.maxConcurrentScans, undefined)
+  assert.equal(BATCH_RANGES.maxConcurrentScans, undefined)
   // 每个默认值都必须落在自己的区间里：区间收紧而默认值没跟上时，
   // 表单会一打开就报「不在范围内」
   for (const [name, value] of Object.entries(BATCH_DEFAULTS)) {

@@ -1350,13 +1350,14 @@ http://localhost:8080/console/
   因此 `verify-console.py` 第 6 组、`build-image.sh` 与 `ConsoleApiTests` 都会在产物缺失时明确失败。
 - **路径不靠人工比对。** 全部端点收在 `lakehouse-rest-console/src/api/endpoints.js` 一张表里，
   由 `scripts/verify-console.py` 与四份 OpenAPI 规格（Paimon / Iceberg / Lance / 管理 API）机械比对
-  （28 组 234 项：端点存在性、引用完整性、五处基址一致、产物新鲜度、对话框状态、下拉候选来源、
+  （28 组 240 项：端点存在性、引用完整性、五处基址一致、产物新鲜度、对话框状态、下拉候选来源、
   静态凭据字段与服务端的一致性、三种格式的优化参数键（且两两不重合）、**catalog 表格式**、**Iceberg 目录浏览的契约形状**、
   存储字段分层、事件页的远程分页与类型筛选、问号图标悬停即显、提示性告警的正文收进问号（TipAlert：错误不收、带按钮的正文留在可见区）、**全站表格的远程分页（页码与过滤下推、
   分页器只有 `TablePager` 一个）**、**血缘页签的异步挂载与纯函数布局**、
   **catalog 级执行集群（五个端点都挂在 catalog 下、状态只由服务端算、凭据只进不出、
-  yml 里不再有提交参数、fail-closed 的两处落点；含 M5 的两组批次策略与两段 Spark 参数：
-  字段名三处对齐、不进 `config_hash`、白名单前缀两处逐字一致、V2 增量带 DEFAULT）**、
+  yml 里不再有提交参数、fail-closed 的两处落点；含 M5 的扫描批次策略与两段 Spark 参数：
+  字段名三处对齐、不进 `config_hash`、白名单前缀两处逐字一致、V2 增量带 DEFAULT、
+  并发只有 `maxConcurrentJobs` 一把闸门（扫描与优化共用，四处都不许再出现 `maxConcurrentScans`））**、
   **列表的定时刷新（默认开启 5 秒、
   每一拍只走静默刷新、后台暂停、失败不清空表格）**、**引擎接入片段里的续期契约
   （Paimon 默认仍是 bear、Iceberg 的 scope 与服务端常量逐字对齐、续期能力分控制面/数据面两列）**，

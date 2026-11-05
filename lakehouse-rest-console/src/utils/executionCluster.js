@@ -194,15 +194,15 @@ export function contextSelectable(verdict) {
  * <p>前端给一个「看起来更合理」的数，就会造出「打开抽屉看到 50、保存一提交变成 20」这种
  * 只在第一次保存时才暴露的偏差——而用户看到的现象是「我什么都没改，值自己变了」。
  *
- * <p>两组分开列（而不是一个对象套两层）是有意的：它们**各算各的配额**，
- * 扫描不占优化的并发额度。写成两层也会有人按「一层是默认、一层是覆盖」去读。
+ * <p>扫描那组**没有并发项**：扫描作业与优化批次共用 `maxConcurrentJobs` 一把闸门
+ * （两者跑在同一台集群上、争同一份算力）。同一个字段名出现在两个位置，
+ * 早晚会有人按「两层配置」去读，所以干脆只保留一个。
  */
 export const BATCH_DEFAULTS = {
   maxTablesPerJob: 20,
   maxConcurrentJobs: 2,
   jobTimeoutSeconds: 7200,
   maxScanTablesPerJob: 200,
-  maxConcurrentScans: 2,
   scanJobTimeoutSeconds: 3600,
 }
 
@@ -217,7 +217,6 @@ export const BATCH_RANGES = {
   maxConcurrentJobs: [1, 50],
   jobTimeoutSeconds: [300, 86400],
   maxScanTablesPerJob: [1, 500],
-  maxConcurrentScans: [1, 50],
   scanJobTimeoutSeconds: [300, 86400],
 }
 

@@ -83,7 +83,6 @@ USE `lakehouse_catalog`;
         entity_version integer not null comment '乐观并发版本号，对应管理 API 的 entityVersion',
         job_timeout_seconds integer not null comment '批次超时秒数',
         max_concurrent_jobs integer not null comment '该 catalog 同时运行几个批次',
-        max_concurrent_scans integer default 2 not null comment '敏感识别同时运行几个扫描',
         max_scan_tables_per_job integer default 200 not null comment '敏感识别单批最多扫描几张表',
         max_tables_per_job integer not null comment '单批最多几张表',
         scan_job_timeout_seconds integer default 3600 not null comment '敏感识别批次超时秒数',

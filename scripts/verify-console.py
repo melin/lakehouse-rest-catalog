@@ -2543,12 +2543,11 @@ EXEC_ENTITY = os.path.join(
     SERVER_JAVA, "domain/entity/CatalogExecutionClusterEntity.java")
 exec_entity = read(EXEC_ENTITY)
 
-# ① 实体两处（字段名 + 列名）都要在，且三个 int 列必须带 DEFAULT——
+# ① 实体两处（字段名 + 列名）都要在，且两个 int 列必须带 DEFAULT——
 #    存量库上的 `ALTER TABLE ... ADD COLUMN ... NOT NULL` 没有 DEFAULT 会直接跑不通，
 #    而这条只在 V2 迁移真的被执行时才暴露。
 M5_COLUMNS = {
     "maxScanTablesPerJob": "max_scan_tables_per_job",
-    "maxConcurrentScans": "max_concurrent_scans",
     "scanJobTimeoutSeconds": "scan_job_timeout_seconds",
     "optimizationSparkConf": "optimization_spark_conf",
     "scanSparkConf": "scan_spark_conf",
@@ -2556,26 +2555,42 @@ M5_COLUMNS = {
 missing_fields = [field for field in M5_COLUMNS if f"private int {field} " not in exec_entity
                   and f"private String {field};" not in exec_entity]
 missing_columns = [column for column in M5_COLUMNS.values() if f'name = "{column}"' not in exec_entity]
-check("M5 的 5 个字段在实体上齐全（三个 int + 两个 text，列名按同一命名法）",
+check("M5 的 4 个字段在实体上齐全（两个 int + 两个 text，列名按同一命名法）",
       not missing_fields and not missing_columns,
       "缺字段：" + "、".join(missing_fields) + " 缺列名：" + "、".join(missing_columns))
-missing_defaults = [field for field in ("maxScanTablesPerJob", "maxConcurrentScans", "scanJobTimeoutSeconds")
+missing_defaults = [field for field in ("maxScanTablesPerJob", "scanJobTimeoutSeconds")
                     if f"integer default" not in exec_entity]
-check("三个 scan 列都是 NOT NULL + DEFAULT（否则存量库加列跑不通）",
+check("两个 scan 列都是 NOT NULL + DEFAULT（否则存量库加列跑不通）",
       len(missing_defaults) == 0 and all(
-          v in exec_entity for v in ("integer default 200", "integer default 2", "integer default 3600")),
-      "这三个列缺 columnDefinition 里的默认值：加 NOT NULL 列时存量行必须能取到值")
+          v in exec_entity for v in ("integer default 200", "integer default 3600")),
+      "这两个列缺 columnDefinition 里的默认值：加 NOT NULL 列时存量行必须能取到值")
 
-# DTO 读写两侧都要有这 5 个字段：只加读侧的表现是「保存了但读回来是旧值」。
+# 并发数只有一处（`maxConcurrentJobs`）：优化批次与扫描作业共用它，
+# 实体内不该再出现独立的 `maxConcurrentScans`——列还在就会被读成「各算各的配额」。
+# 判据要**排除注释**：解释「为什么删掉这一列」的 Javadoc 里必然会提到这个名字，
+# 只判 `@Column` 声明与字段声明（那两处才是真的会生成列的地方）。
+exec_code_only = "\n".join(line for line in exec_entity.split("\n")
+                           if not line.strip().startswith(("*", "//")))
+check("扫描不再有独立并发列（共用 maxConcurrentJobs 一把闸门）",
+      "maxConcurrentScans" not in exec_code_only
+      and "max_concurrent_scans" not in exec_code_only,
+      "实体里仍有 maxConcurrentScans：口径已改为两类任务共用 maxConcurrentJobs")
+
+# DTO 读写两侧都要有这 4 个字段：只加读侧的表现是「保存了但读回来是旧值」。
 exec_dtos = read(EXEC_DTOS)
-m5_names = ("maxScanTablesPerJob", "maxConcurrentScans", "scanJobTimeoutSeconds",
+m5_names = ("maxScanTablesPerJob", "scanJobTimeoutSeconds",
             "optimizationSparkConf", "scanSparkConf")
 read_model = exec_dtos.split("public record ExecutionCluster(")[1].split(") {")[0]
 write_model = exec_dtos.split("public record UpdateExecutionClusterRequest(")[1].split(") {")[0]
-check("M5 的 5 个字段在读写两个 record 里都有（读侧 int/String，写侧 Integer/String）",
+check("M5 的 4 个字段在读写两个 record 里都有（读侧 int/String，写侧 Integer/String）",
       all(name in read_model for name in m5_names) and all(name in write_model for name in m5_names),
       "缺读侧：" + "、".join(n for n in m5_names if n not in read_model)
       + " 缺写侧：" + "、".join(n for n in m5_names if n not in write_model))
+# 写侧尤其要盯住：只删实体列而留着 DTO 字段，前端提交的 `maxConcurrentScans`
+# 会被 `@JsonIgnoreProperties` 静默吞掉——报错没有，值也没落库。
+check("DTO 两侧都不再暴露 maxConcurrentScans（否则会被静默忽略）",
+      "maxConcurrentScans" not in read_model and "maxConcurrentScans" not in write_model,
+      "DTO 里仍有 maxConcurrentScans：前端提交的键会被静默丢弃")
 
 # ② `configHash()` 必须**不含** M5 字段。这条是验收清单里
 #    「只改 maxScanTablesPerJob 不改 probe_status」的机械版本。
@@ -2638,22 +2653,34 @@ check("两段 Spark 参数在回填 / 提交报文 / 模板三处都齐全",
       two_conf_ok,
       "缺某一处：回填缺=保存后看不到，提交缺=填了存不进去，模板缺=没有输入框")
 
-# 两组策略的 6 个数字同样要三处齐全（与上一条同一类错法）。
+# 两组策略的 5 个数字同样要三处齐全（与上一条同一类错法）。
+# 注意是 5 而不是 6：`maxConcurrentJobs` 一项被两类任务共用，
+# 扫描那组只有「一批几张表」与「批次超时」。
 batch_names = ("maxTablesPerJob", "maxConcurrentJobs", "jobTimeoutSeconds",
-               "maxScanTablesPerJob", "maxConcurrentScans", "scanJobTimeoutSeconds")
+               "maxScanTablesPerJob", "scanJobTimeoutSeconds")
 batch_ok = all(name in form_of_block and name in payload_block for name in batch_names)
-check("两组批次策略的 6 个数字都进回填与提交报文",
+check("两组批次策略的 5 个数字都进回填与提交报文",
       batch_ok,
       "缺：" + "、".join(n for n in batch_names if n not in form_of_block or n not in payload_block))
 
 # 前端默认值必须与服务端实体的 DEFAULT 逐个对上：前端给一个「看起来更合理」的数，
 # 就会造出「打开抽屉看到 50、保存一提交变成 20」——而现象是「我什么都没改，值自己变了」。
 front_defaults = dict(re.findall(r"^  (\w+): (\d+),$", read(EXEC_CLUSTER_UTIL), re.M))
-mismatched = [name for name, value in (("maxScanTablesPerJob", "200"), ("maxConcurrentScans", "2"),
+mismatched = [name for name, value in (("maxScanTablesPerJob", "200"),
                                        ("scanJobTimeoutSeconds", "3600"))
               if front_defaults.get(name) != value or f"integer default {value}" not in exec_entity]
-check("前端三组默认值与服务端列 DEFAULT 逐字相同",
+check("前端两组默认值与服务端列 DEFAULT 逐字相同",
       not mismatched, "对不上：" + "、".join(mismatched))
+# 前端也不该再有 `maxConcurrentScans`：它没有对应的服务端列，
+# 留在工具层就是「表单里有一个保存不进任何地方的输入框」。
+check("前端批次默认值里没有 maxConcurrentScans（扫描并发用 maxConcurrentJobs）",
+      "maxConcurrentScans" not in front_defaults,
+      "前端仍有 maxConcurrentScans：抽屉里会多出一项存不进去的并发数")
+# 抽屉里同样不许有：`v-model="state.form.maxConcurrentScans"` 或默认值常量。
+# 判据用**代码形态**（绑定 / 赋值 / 键）而不是裸名字——注释里解释「这项为什么没有」时会提到它。
+check("抽屉里没有 maxConcurrentScans 的绑定或默认值",
+      not re.search(r"(state\.form\.maxConcurrentScans|maxConcurrentScans\s*:)", read(EXEC_DRAWER)),
+      "抽屉里仍有 maxConcurrentScans 的输入框或默认值：它没有对应的服务端列，存不进去")
 
 # --- 22.13 V2 增量迁移与基线脚本的双路径 ----------------------------------
 #
@@ -2670,18 +2697,26 @@ for vendor_dir in MIGRATION_DIRS:
         if os.path.isdir(vendor_dir) else []
     v2 = [f for f in versions if f.startswith("V2__")]
     v2_text = read(os.path.join(vendor_dir, v2[0])) if v2 else ""
-    scan_cols = [column for column in ("max_scan_tables_per_job", "max_concurrent_scans",
+    scan_cols = [column for column in ("max_scan_tables_per_job",
                                        "scan_job_timeout_seconds", "optimization_spark_conf",
                                        "scan_spark_conf") if column not in v2_text]
-    check(f"{vendor} 有 V2 增量且包含 5 个新列",
+    check(f"{vendor} 有 V2 增量且包含 4 个新列",
           len(v2) == 1 and not scan_cols,
           ("缺 V2" if not v2 else "") + ("缺列：" + "、".join(scan_cols) if scan_cols else ""))
+    # 反向断言：迁移里也不该出现独立的扫描并发列（口径是两类任务共用 maxConcurrentJobs）。
+    # 同实体那条：文件头有一行 `-- **这里没有 max_concurrent_scans**` 的解释，
+    # 因此只判**可执行语句**（`alter table` / `add column`），注释不算。
+    v2_sql = "\n".join(line for line in v2_text.split("\n")
+                       if not line.strip().startswith("--"))
+    check(f"{vendor} 的 V2 里没有 max_concurrent_scans",
+          "max_concurrent_scans" not in v2_sql,
+          "V2 里仍有 max_concurrent_scans：与「共用一把闸门」的口径冲突")
 
-# 三个 int 列在 V2 里必须带 DEFAULT：`add column ... not null` 而存量库表里已有行，
+# 两个 int 列在 V2 里必须带 DEFAULT：`add column ... not null` 而存量库表里已有行，
 # 没有 DEFAULT 的那一列会直接让迁移失败（空库上跑永远看不到这个态）。
 mysql_v2 = read(os.path.join(MIGRATION_DIRS[0], "V2__add_scan_strategy_and_spark_conf.sql"))
-check("V2 的三个 NOT NULL 列都带 DEFAULT（存量库升级才跑得通）",
-      all(f"default {value}" in mysql_v2 for value in ("200", "2", "3600")),
+check("V2 的两个 NOT NULL 列都带 DEFAULT（存量库升级才跑得通）",
+      all(f"default {value}" in mysql_v2 for value in ("200", "3600")),
       "有 NOT NULL 列没带 DEFAULT：存量库上 ADD COLUMN 会失败")
 
 GEN_BASELINE = os.path.join(ROOT, "scripts/gen-flyway-baseline.py")

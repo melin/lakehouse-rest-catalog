@@ -435,8 +435,12 @@ class ExecutionClusterApiTests {
         // 默认值来自列定义，不是「0 就是没配」——0 会让扫描一批都组不出来，
         // 而界面上看不出任何异常（列表照常、探活照常）
         assertEquals(200, created.get("maxScanTablesPerJob").asInt());
-        assertEquals(2, created.get("maxConcurrentScans").asInt());
         assertEquals(3600, created.get("scanJobTimeoutSeconds").asInt());
+        // 扫描**没有**自己的并发配额：它和优化批次共用 maxConcurrentJobs（一把闸门、一台集群）。
+        // 这条反向断言钉住「有人顺手把 maxConcurrentScans 加回来」——加回来就会出现
+        // 两个各算各的额度，总和变成两倍的敞口，而界面与列表上什么都看不出来。
+        assertFalse(created.has("maxConcurrentScans"),
+                "扫描不该有自己的并发配额，共用 maxConcurrentJobs：" + created);
         // 两段 Spark 参数默认是**空**：留空 = 只有镜像级 --conf。
         // 判据用 `has(...)` 而不是 `get(...).isNull()`：响应体按 NON_NULL 序列化，
         // 这两项的「空」在报文里表现为**整个键不出现**。
@@ -450,9 +454,9 @@ class ExecutionClusterApiTests {
         JsonNode created = json(200, "PUT", path(), selfHostedBody("paimon-opt"));
         int version = created.get("entityVersion").asInt();
 
-        // 两组策略的区间是对称的：这三条越界与优化组的报错形状应当一致
+        // 两组策略的区间是同形的：这两条越界与优化组的报错形状应当一致
         for (String pair : new String[] {
-                "\"maxScanTablesPerJob\":501", "\"maxConcurrentScans\":0", "\"scanJobTimeoutSeconds\":299"}) {
+                "\"maxScanTablesPerJob\":501", "\"scanJobTimeoutSeconds\":299"}) {
             json(400, "PUT", path(), """
                     {"clusterType":"SELF_HOSTED","entityVersion":%d,"namespace":"paimon-opt",
                      "image":"registry.example.com/x:1","callbackBaseUrl":"http://a.b",%s}
@@ -460,7 +464,7 @@ class ExecutionClusterApiTests {
         }
         // 一条都没落库
         assertEquals(200, stored().getMaxScanTablesPerJob());
-        assertEquals(2, stored().getMaxConcurrentScans());
+        assertEquals(3600, stored().getScanJobTimeoutSeconds());
     }
 
     @Test
