@@ -1,9 +1,16 @@
 #!/bin/bash
 # 生成 MySQL 建表语句并安装到 sql/schema-mysql.sql。
 #
-# 为什么要有这个脚本：DDL 必须与实体一致，手工维护 18 张表迟早会漂移。
+# 为什么要有这个脚本：DDL 必须与实体一致，手工维护 29 张表迟早会漂移。
 # 建表语句由 Hibernate 依据实体元数据生成（见 MysqlDdlGeneratorTests），
 # 本脚本只负责补文件头、落到交付路径，并把「是否发生变化」告诉调用者。
+#
+# 本文件是「给人执行的全量快照」，**不是**应用启动时用的那一份：
+# 启动迁移走 jar 里 classpath 上的 db/migration/mysql/V1__baseline.sql，
+# 它由 scripts/gen-flyway-baseline.py 从本文件**纯派生**出来。
+# 因此改了实体要**依次**跑两个脚本：
+#   ./scripts/gen-mysql-ddl.sh && python3.11 scripts/gen-flyway-baseline.py
+# 只跑第一个，启动时 Flyway 建的还是旧结构（第二份脚本的 --check 能发现漂移）。
 #
 # 用法：
 #   ./scripts/gen-mysql-ddl.sh              # 生成并覆盖 sql/schema-mysql.sql
@@ -51,11 +58,16 @@ cat >"$TARGET" <<'HEADER'
 -- 应用方式（库不存在时会一并创建，库名可用 DB_NAME=... 重新生成来改）：
 --   mysql -h 127.0.0.1 -u root -p < sql/schema-mysql.sql
 --
+-- 这份文件是「给人手工重建空库」用的快照。应用**正常启动不需要执行它**：
+-- 库结构由 Flyway 在启动时应用 jar 里的 db/migration/mysql/V1__baseline.sql，
+-- 那是从本文件纯派生出来的同一份结构（scripts/gen-flyway-baseline.py）。
+--
 -- 几点说明：
 --   - 库、表都必须使用 utf8mb4，否则中文标识符与 JSON 文本会乱码；
 --   - 本文件用于初始化空库，重复执行会因表已存在而失败；要重建请先 drop database；
---   - 应用启动时的 ddl-auto 是 validate：本文件与实体不一致时会直接启动失败，
---     而不是悄悄改表，因此升级代码后若实体有变，需要重新生成并迁移；
+--   - 应用启动时的 ddl-auto 是 validate：迁移后的库与实体不一致时会直接启动失败，
+--     而不是悄悄改表。升级代码时**不要改本文件对应的 V1**（checksum 会变，
+--     已应用过 V1 的库将拒绝启动），要新增 V2__xxx.sql 增量；
 --   - 唯一约束里的 locator_hash / spec_hash 是定长 SHA-256 摘要：
 --     MySQL 的索引键上限是 3072 字节（utf8mb4 下 768 字符），
 --     而命名空间路径与分区 spec 的长度没有上界，直接用原文建唯一索引会被

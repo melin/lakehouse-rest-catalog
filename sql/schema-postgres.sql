@@ -7,10 +7,15 @@
 --   createdb lakehouse_catalog
 --   psql -d lakehouse_catalog -f sql/schema-postgres.sql
 --
+-- 这份文件是「给人手工重建空库」用的快照。应用**正常启动不需要执行它**：
+-- 库结构由 Flyway 在启动时应用 jar 里的 db/migration/postgresql/V1__baseline.sql，
+-- 那是从本文件纯派生出来的同一份结构（scripts/gen-flyway-baseline.py）。
+--
 -- 几点说明：
 --   - 本文件用于初始化空库，重复执行会因表已存在而失败；要重建请先 drop schema public cascade;
---   - 应用启动时的 ddl-auto 是 validate：本文件与实体不一致时会直接启动失败，
---     而不是悄悄改表，因此升级代码后若实体有变，需要重新生成并迁移；
+--   - 应用启动时的 ddl-auto 是 validate：迁移后的库与实体不一致时会直接启动失败，
+--     而不是悄悄改表。升级代码时**不要改本文件对应的 V1**（checksum 会变，
+--     已应用过 V1 的库将拒绝启动），要新增 V2__xxx.sql 增量；
 --   - 默认 schema 是 public；如需其它 schema，请在应用侧用 search_path 指定，
 --     并重命名下面所有表为 <schema>.<table>（生成物默认不带 schema 前缀）；
 --   - 自增列用 GENERATED ... AS IDENTITY（PostgreSQL 的序列等价物），不是 MySQL 的 AUTO_INCREMENT；

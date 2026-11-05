@@ -127,8 +127,12 @@ class MysqlDdlGeneratorTests {
      * 身份接入再加一张 {@code lakehouse_group_role_mapping}（IdP 组 → 主体角色的
      * 翻译表）到 29——它是「谁该有哪些角色」的唯一新表，授权结果仍然落在
      * {@code lakehouse_principal_role_grant} 里，因此判定链一行都没改。
+     *
+     * <p><b>包内可见，另有一处引用。</b>{@code FlywayBaselineTests} 拿它断言「迁移
+     * 脚本真的建出了实体所需的全部表」。那是同一个事实（仓库共有多少张实体表），
+     * 各写一份就会在每次改结构时被各自手改一遍——正是这个常量想避免的失效方式。
      */
-    private static final int EXPECTED_TABLES = 29;
+    static final int EXPECTED_TABLES = 29;
 
     /** MySQL 一张表一行的最大字节数（存储层上限，与列长度上限是两件事）。 */
     private static final long MYSQL_ROW_SIZE_LIMIT = 65535L;

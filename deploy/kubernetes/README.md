@@ -38,7 +38,7 @@ kustomize 组装，一条 `kubectl apply -k` 起全套。**这一版把这些都
 
 | 删掉的 | 现在怎么来 |
 | --- | --- |
-| `mysql.yaml`（StatefulSet + Service） | 外部 MySQL。连接串写在 `configmap.yaml` 的 `spring.datasource.url`，建表语句见仓库 `sql/schema-mysql.sql` |
+| `mysql.yaml`（StatefulSet + Service） | 外部 MySQL。连接串写在 `configmap.yaml` 的 `spring.datasource.url`；建表由应用启动时的 Flyway 自动完成（见 3.4），**不需要事先执行任何 SQL** |
 | `warehouse-pvc.yaml`（PVC） | 节点本地目录 `/data/paimon-warehouse`，`hostPath` 挂进容器（单副本，Pod 重建数据不丢） |
 | `secret.yaml`（Secret） | 不做 Secret。鉴权默认关闭，数据库口令直接写在 ConfigMap 里；配置中没有任何 `${...}` 占位符 |
 | `pdb.yaml`（PodDisruptionBudget） | 单副本本来没有可用性冗余，PDB 只能二选一：`minAvailable: 1` 会卡住节点排空，`maxUnavailable: 1` 等于没有保护 |
@@ -64,7 +64,7 @@ kustomize 组装，一条 `kubectl apply -k` 起全套。**这一版把这些都
 | 条件 | 说明 |
 | --- | --- |
 | Kubernetes | 1.24 及以上（清单只用 `apps/v1` 与 `v1` 的稳定 API） |
-| 外部 MySQL | 8.0，库为 `lakehouse_catalog`，已执行 `sql/schema-mysql.sql`（26 张表）。`ddl-auto: validate` 会在启动时校验表结构，不一致则启动失败 |
+| 外部 MySQL | 8.0，库为 `lakehouse_catalog` **且该库需已存在**（`create database` 是 DBA 的活，应用不建库）。表结构不用管：启动时 Flyway 从 jar 里的 `classpath:db/migration/mysql` 自动应用 V1 基线，之后 `ddl-auto: validate` 再校验一遍，不一致则启动失败 |
 | 节点目录 | `/data/paimon-warehouse` 由清单自动创建（`DirectoryOrCreate`），属主由 initContainer 修正为 10001 |
 | 镜像 | 需先构建并让节点拿得到，见 2.2 |
 
@@ -185,12 +185,47 @@ securityContext:
 而这里的命令只需要 `sh` + `chmod` + `chown`。`scripts/verify-k8s-manifests.py` §12
 会按命令里出现的 `chmod`/`chown` 反查能力是否够（漏了直接红）。
 
-### 3.4 建表语句走镜像，不走 ConfigMap
+### 3.4 建表语句随 jar 走，不由部署方执行
 
-DDL 由 Dockerfile 打进镜像，与 jar 来自同一次构建；`ddl-auto: validate` 校验的
-正是 jar 里的实体定义，两者天然同版本。代价：**改完 DDL 必须重新构建镜像**，
-并在库上手工执行迁移（`/docker-entrypoint-initdb.d` 那套随 `mysql.yaml` 一起删了，
-现在建库是外部 MySQL 的事）。
+库结构由 **Flyway 在应用启动时**应用到外部 MySQL，脚本在 jar 里的
+`classpath:db/migration/mysql/V1__baseline.sql`。部署方什么都不用做——外部库只需要存在，
+甚至连表都不需要预先建。
+
+这一节此前写的是「DDL 由 Dockerfile 打进镜像、K8s 的 initContainer 拿它初始化空库」。
+两件事都不成立：镜像里的那份 `sql/schema-mysql.sql` 从来没有被任何 initContainer 用过
+（清单里的 `initContainers` 只有 `prepare-warehouse`），而且容器里也没有 mysql 客户端——
+它一直在为一件不存在的事准备着。现在那份 DDL 已从镜像移除，只剩 jar 里这一份。
+
+这样带来两个变化：
+
+- **首次部署少一步。** 以前要 `mysql < sql/schema-mysql.sql`，现在直接把外部库建好
+  （`create database lakehouse_catalog`）、连接串填对，Pod 起来就建好了。
+- **滚动升级也不需要「先执行 DDL、再滚镜像」的顺序。** 新代码要的增量结构写在
+  `V2__xxx.sql` 里随 jar 发布，由新 Pod 启动时自行应用。空库得到的是 V1 + V2，
+  存量库得到的是 baseline 标记 + V2，两种路径终点同一套结构。
+
+**升级期改写迁移脚本要格外小心。** `validate-on-migrate: true` 会比对「已应用版本的
+checksum」与「当前文件内容」，**V1 的内容一旦变过，所有已经应用过 V1 的库都会启动失败**：
+
+```
+Validate failed: Migration checksum mismatch for migration version 1
+```
+
+因此改结构的路径是**新增一个版本**，而不是改 V1：
+
+```bash
+# 1. 改实体后重生成快照（这份是「给人看的当前结构」，不再参与启动流程）
+./scripts/gen-mysql-ddl.sh
+
+# 2. 手写增量，放进同一个目录
+$EDITOR lakehouse-rest-spring-parent/lakehouse-rest-server/src/main/resources/db/migration/mysql/V2__add_xxx.sql
+
+# 3. 重新打包并发版
+mvn -o -pl :lakehouse-rest-server -am clean package -DskipTests
+```
+
+全是增量的原因见 `scripts/gen-flyway-baseline.py` 的 docstring——那个脚本只负责把
+「接入 Flyway 时的当前结构」派生一次成 V1，此后就拒绝再动 V1（出现 V2 它会直接退出码 2）。
 
 ### 3.5 优雅停机的三处配合
 
@@ -307,8 +342,17 @@ Pod/人以别的属主占着。先确认 initContainer 的日志：
 `/tmp` 与 `/tmp/paimon-warehouse` 的挂载顺序被写反了（数据写进了 emptyDir）。
 
 **启动失败，报 schema validation 错误**
-外部 MySQL 的表结构与 jar 里的实体定义不一致。外部库需要自己执行
-`sql/schema-mysql.sql`（新建）或做迁移（升级）。
+外部 MySQL 的表结构与 jar 里的实体定义不一致，而此时 Flyway 的迁移没能把差距补上。
+分两种情形：
+
+- **报 `Migration checksum mismatch for migration version N`**：有人改了一个已经应用过的
+  迁移文件。文件不能改，只能新增版本（见 3.4）。
+- **报某列/某表缺失，但迁移日志里没有任何新版本被应用**：`V2__xxx.sql` 没写、没放进
+  jar，或者这个库被 `baseline-on-migrate` 标成了比实际更高的版本。先看启动日志里
+  `Flyway ... Migrating schema ... to version` 那几行确认应用到了哪一版。
+- **存量库第一次升级时**：它会走 `baseline-on-migrate` 被标记为「已在 V1」而**不**重跑
+  建表语句。因此「先有旧表、再上 Flyway」的库必须自己确认旧表结构与 V1 一致——
+  这是唯一一处 Flyway 帮不上忙的地方。
 
 **ImagePullBackOff，但 `docker images` 里明明有这个镜像**
 镜像是本地构建的，节点拉的却不是同一个。单节点集群用 2.2 的 `load` 命令；

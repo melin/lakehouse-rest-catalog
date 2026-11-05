@@ -225,8 +225,10 @@ overlaps(a, b):
 
 ### 3.6 升级 SQL
 
-`sql/schema-mysql.sql` 是**全量初始化脚本**（`ddl-auto=validate`，重复执行会因表已存在而失败），
-所以存量库要单独执行一次：
+`sql/schema-mysql.sql` 是**全量初始化快照**（重复执行会因表已存在而失败），
+所以存量库升级要单独执行一次增量。它同时表现为「应用不再需要这一步」——
+同一段增量写进 `db/migration/mysql/V2__generic_tables.sql` 后，由启动时的 Flyway 自动应用
+（见 [`../README.md`](../README.md) §2.1；本文写作时该机制尚未引入，故下面给的是手工形态）：
 
 ```sql
 alter table lakehouse_table add column table_kind varchar(16) null after name;

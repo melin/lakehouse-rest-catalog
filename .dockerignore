@@ -1,13 +1,14 @@
 # 构建上下文过滤。目的只剩一个：缩小上下文体积——两个 Dockerfile 都不编译，
 # 也没有 `COPY . .`，它们只从上下文里取几个文件。
 #
-# 必须留在上下文里的三样东西：
+# 必须留在上下文里的两样东西：
 #   - lakehouse-rest-spring-parent/lakehouse-rest-server/target/lakehouse-rest-server-1.0.0.jar
-#     （服务端镜像的主体，由使用者在宿主机上先构建出来）
-#   - sql/schema-mysql.sql
-#     （K8s 的 initContainer 用它初始化空库）
+#     （服务端镜像的主体，由使用者在宿主机上先构建出来；迁移脚本在这个 jar 里）
 #   - lakehouse-rest-optimizer/target/ 下的 jar 与 jars/
 #     （优化任务镜像的主体，同样是宿主机先构建）
+#
+# 不需要留在上下文里的：sql/。库结构由 jar 里 classpath 上的
+# db/migration/{vendor}/V1__baseline.sql 在启动时由 Flyway 应用，镜像不再装第二份 DDL。
 
 # 版本控制与编辑器
 .git

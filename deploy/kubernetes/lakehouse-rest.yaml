@@ -67,12 +67,22 @@ data:
     spring:
       application:
         name: lakehouse-rest-server
-      # 元数据存储默认使用 MySQL。建表语句见仓库根目录的 sql/schema-mysql.sql，
-      # 首次部署需要先执行它；之后由 ddl-auto: validate 在启动时校验实体与库结构是否一致，
-      # 不一致就启动失败，而不是悄悄改表。
+      # 元数据存储默认使用 MySQL。**建表由应用自己完成**：启动时 Flyway 会从
+      # jar 里的 classpath:db/migration/mysql 应用 V1 基线（首次部署什么都不用做，
+      # 库存在即可）。存量库（此前用 sql/schema-mysql.sql 建好的）由
+      # baseline-on-migrate 标记为「已在 V1」，不会重跑建表语句。
+      #
+      # 之后 ddl-auto: validate 再校验一遍实体与库结构是否一致，不一致就启动失败，
+      # 而不是悄悄改表。分工是：Flyway 决定「结构该长什么样」，validate 决定
+      # 「实际长出来的与实体一致吗」。
+      #
+      # 升级代码时**不再需要手工迁移**：改实体后手写一个 V2__xxx.sql 放进
+      # db/migration/mysql/，重新打 jar，滚动更新即可（先于新 Pod 生效，
+      # 因此不需要「先执行 DDL 再滚镜像」的发布顺序）。
       #
       # 需要即用即丢的实例（本地调试、端到端脚本）时换用 h2 profile：
       #   java -jar lakehouse-rest-spring-parent/lakehouse-rest-server/target/lakehouse-rest-server-1.0.0.jar --spring.profiles.active=h2
+      # （h2 profile 里 spring.flyway.enabled=false，建表仍交给 ddl-auto）
       datasource:
         url: jdbc:mysql://172.18.6.181:3306/lakehouse_catalog?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
         driver-class-name: com.mysql.cj.jdbc.Driver
@@ -689,9 +699,10 @@ spec:
                 - |
                   code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/v1/config)
                   case "$code" in 200|401|403) exit 0 ;; *) exit 1 ;; esac
-            # 30 × 4s = 120s 上限：JVM 冷启动 + Hibernate 对 26 张表做 validate，
-            # 在资源紧张的节点上会比本地慢不少。有 startupProbe 挡着，livenessProbe
-            # 的计时应从它成功之后才开始，因此不必为「启动慢」放大 liveness 的容忍度。
+            # 30 × 4s = 120s 上限：JVM 冷启动 + Flyway 应用迁移 + Hibernate 对 29 张表
+            # 做 validate，在资源紧张的节点上会比本地慢不少。有 startupProbe 挡着，
+            # livenessProbe 的计时应从它成功之后才开始，因此不必为「启动慢」放大
+            # liveness 的容忍度。
             periodSeconds: 4
             timeoutSeconds: 3
             failureThreshold: 30

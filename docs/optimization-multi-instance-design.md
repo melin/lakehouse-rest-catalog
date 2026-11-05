@@ -441,8 +441,8 @@ I4 依赖回收器常开。
 | 1 | warehouse 必须是对象存储（S3 / OSS / OBS / ABFS） | `replicas: 1` + hostPath + `file://` | 两个 Pod 各写一份仓库：建的表在另一个节点看不见 |
 | 2 | `management-url`（catalog 执行集群配置）填 **Service DNS** | 由使用者手填，可能是 IP | 滚动更新后回调打到已销毁的 Pod，批次全部走超时收尾 |
 | 3 | `lakehouse.rest.auth.access-token.signing-key` 显式配置 | 留空则每次启动随机 | 两个实例互不认令牌，控制台随机 401 |
-| 4 | 共享 MySQL 单库，`ddl-auto: validate` | 已是 validate | 各节点内嵌库 = 各跑各的；DDL 未执行则新版本启动失败 |
-| 5 | 发布顺序：**先执行 DDL，再滚动镜像** | — | `validate` 会挡启动，两个新 Pod 都起不来 |
+| 4 | 共享 MySQL 单库，`ddl-auto: validate` | 已是 validate | 各节点内嵌库 = 各跑各的；迁移未随 jar 发出则新版本启动失败 |
+| 5 | 发布顺序：DDL 随 jar 走，**不再需要「先执行 DDL、再滚动镜像」** | Flyway 在新 Pod 启动时自动应用增量（V2 及更高） | 旧 Pod 期间仍可写库：新加的列必须可空或带默认值，必要时分两次发（先加列、后收紧），否则旧 Pod 会因 NOT NULL 无默认值写失败 |
 | 6 | 节点时钟同步（NTP/chrony） | — | 租约与 `deadline` 都按毫秒比较，漂移几秒会让回收误判 |
 | 7 | 停机让出：`@PreDestroy` 释放租约 | 只有 web 层的 graceful shutdown | 滚动期间调度空窗一个 TTL（默认 3 分钟）；强杀时退化为同一行为，只慢不错 |
 

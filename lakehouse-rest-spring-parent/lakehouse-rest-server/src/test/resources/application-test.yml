@@ -18,6 +18,19 @@ spring:
   jpa:
     hibernate:
       ddl-auto: update
+  # Flyway 在测试里关闭，建表仍交给 ddl-auto（与 h2 profile 同一个决定）。
+  #
+  # 为什么测试不走迁移：迁移脚本是 MySQL / PostgreSQL 方言，而测试数据源是
+  # 原生模式的 H2（它不认 ENGINE=InnoDB / auto_increment / 内联 comment）。
+  # 让 42 个测试类各自去连 MySQL 才能跑，是把「跑一遍单测」的门槛抬到「先装一个数据库」，
+  # 与这个测试套件「不依赖任何外部服务」的设计前提相反。
+  #
+  # 代价说清楚：**测试里建表用的是 Hibernate 的 ddl-auto，不是迁移脚本**，
+  # 因此测试绿不证明迁移脚本能跑。这由 FlywayBaselineTests 单独兜——
+  # 它在 H2 的 MODE=MySQL 下把 MySQL 迁移基线整份执行一遍并断言表数；
+  # 另一个理由是「迁移脚本会不会与实体漂移」由 gen-flyway-baseline.py --check 守。
+  flyway:
+    enabled: false
 
 # 测试仓库另放一处，不共用 application.yml 的 file:///tmp/paimon-warehouse。
 #
@@ -44,6 +57,39 @@ lakehouse:
     # 不受这里影响，授权链路照样测得到。
     auth:
       enabled: false
+      # OIDC 在测试里显式关闭（application.yml 里默认是开的，且填了本地 Keycloak 参数）。
+      #
+      # 为什么必须在这里压回去：application.yml 的 oidc 段是**本地调试用的默认值**
+      # （enabled: true + localhost:8081 的 Keycloak）。测试环境没有那个 IdP，
+      # 于是「OIDC 已启用」这个状态会从两个方向把用例带偏：
+      #   1) GET /api/console/v1/auth 的 methods 多出 oidc，登录方式的三个断言全挂；
+      #   2) IdP 探活连不上 localhost:8081，verdict 反而可能不是用例期望的 FAIL
+      #      ——探活把「连不上」归到哪一档由代码决定，不该由某个开发机上有没有
+      #      Keycloak 决定。
+      #
+      # 换句话说：不写这一行，`mvn test` 的结果就取决于「跑测试的机器上有没有
+      # localhost:8081 那个 Keycloak」，这正是测试套件最该消除的那类不确定性。
+      # 这与上面 auth.enabled 是同一个手法——默认值面向「本机起服务看效果」，
+      # 测试则必须跑在一个形状明确的部署上。
+      #
+      # 四个地址类字段一并清空，而不是只关 enabled：IdentityProviderApiTests 钉住的
+      # 是「没接入 IdP」这张脸的完整形状（enabled=false **且** issuer / clientId
+      # 不出现在响应里）。只关开关会留下一半「看起来接好了、其实没接」的状态，
+      # 而空串经 IdentityProviderService#text 归一成 null、再被 NON_NULL 省掉，
+      # 正是「没配」应有的表现。dev 默认值留在 application.yml，不要在这里复刻。
+      #
+      # 不受影响的两类测试：
+      #   - OidcServiceTests / ConsoleAuthOidcConfigTests：纯单测，不加载 Spring 上下文，
+      #     配置由用例自己 new 出来；
+      #   - 需要「OIDC 已启用」这一档的：在各自的 @SpringBootTest properties 里
+      #     显式开启（优先级高于本文件）。
+      console:
+        oidc:
+          enabled: false
+          issuer-uri: ""
+          client-id: ""
+          redirect-uri: ""
+          post-logout-redirect-uri: ""
     authorization:
       enabled: false
 

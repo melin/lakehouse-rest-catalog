@@ -9,9 +9,16 @@ server:
 spring:
   application:
     name: lakehouse-rest-server
-  # 元数据存储默认使用 MySQL。建表语句见仓库根目录的 sql/schema-mysql.sql，
-  # 首次部署需要先执行它；之后由 ddl-auto: validate 在启动时校验实体与库结构是否一致，
-  # 不一致就启动失败，而不是悄悄改表。
+  # 元数据存储默认使用 MySQL。
+  #
+  # 建表与变更由 **Flyway** 在启动时执行（db/migration/{vendor}/V*.sql，随 fat jar 走）：
+  # 首次部署连到空库会建出全部表，之后按版本顺序只应用新增的迁移，无需人工执行 SQL。
+  # 存量库（此前用 sql/schema-mysql.sql 手工建过表）用 flyway.baseline-on-migrate 标记，
+  # 见下方 spring.flyway 段与 README「数据库迁移」一节。
+  #
+  # sql/schema-mysql.sql 仍然保留，但角色变了：它是**给人看的全量结构快照**，
+  # 由实体生成、用于评审与手工排查，不再是部署步骤。两者同源（迁移基线由它派生），
+  # 一致性由 scripts/gen-flyway-baseline.py --check 守。
   #
   # 需要即用即丢的实例（本地调试、端到端脚本）时换用 h2 profile：
   #   java -jar lakehouse-rest-spring-parent/lakehouse-rest-server/target/lakehouse-rest-server-1.0.0.jar --spring.profiles.active=h2
@@ -22,6 +29,24 @@ spring:
     password: "Root2024!@"
     hikari:
       maximum-pool-size: 20
+  flyway:
+    # 迁移脚本位置。{vendor} 由 Boot 自动配置按 JDBC 连接替换成驱动 id
+    # （mysql / postgresql / h2），因此同一份配置在三套数据源下各取各的目录，
+    # 不需要按 profile 各写一遍。见 spring-boot-flyway 的 LocationResolver。
+    locations: classpath:db/migration/{vendor}
+    # 存量库：此前用全量脚本建过表的库，反正是「已经有全部表」的状态。
+    # baseline-on-migrate=true 会在库里没有 flyway_schema_history 表时先写一条
+    # V1 基线记录（视为已应用），避免对已存在的表再跑一次 create table 而失败。
+    # 对空库无影响——空库直接执行迁移，不会走 baseline 分支。
+    baseline-on-migrate: true
+    baseline-version: 1
+    baseline-description: "既有库：结构已由 sql/schema-<vendor>.sql 初始化"
+    # 校验开关保持默认 true：迁移脚本的 checksum 一旦与库里记录的不符就启动失败。
+    # 这正是我们要的——改历史脚本会立刻暴露，而不是在某个环境上悄悄生效。
+    # 由此推出一条硬约束：**V1 一旦被任何库应用过就不能再改**（改了所有存量库都会
+    # 因 checksum 不一致拒绝启动）。改结构一律新增 V2__xxx.sql，
+    # scripts/gen-flyway-baseline.py 对此有硬保护（出现 V2 后它拒绝再派生 V1）。
+    validate-on-migrate: true
   jpa:
     hibernate:
       ddl-auto: validate

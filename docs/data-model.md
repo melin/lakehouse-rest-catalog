@@ -32,8 +32,14 @@
   注释随 DDL 一起生成，`show create table`（MySQL）/ `\\d+`（PostgreSQL）看到的就是实体里写的那句话。
   新增实体或列时漏写注释不会让构建失败，因此 `MysqlDdlGeneratorTests.everyTableAndColumnIsCommented`
   （MySQL）与 `PostgresDdlGeneratorTests.everyTableAndColumnIsCommented`（PostgreSQL）会把它挡在生成侧。
-- 库结构由 `ddl-auto: validate` 守住：实体与库不一致时应用**直接启动失败**，
-  代价是实体变更后要自行迁移存量数据（见 [`../README.md`](../README.md) 第 6 节「实现说明与已知边界」第 14 条）
+- **库结构实际由 Flyway 在启动时应用**，脚本随 jar 走（`classpath:db/migration/{vendor}/`）。
+  上面两份 `sql/schema-*.sql` 是「给人执行的全量快照」（用 `mysql < ...` 手工重建空库时用），
+  `V1__baseline.sql` 是从它们**纯派生**的同一份结构（`scripts/gen-flyway-baseline.py`）。
+  两条路径同一个真源，因此不会分叉；`gen-flyway-baseline.py --check` 守这一点。
+  演进期**不再改 V1**，改结构一律新增 `V2__xxx.sql`（理由见 [`../README.md`](../README.md) §2.1）
+- 库结构另由 `ddl-auto: validate` 兜底：Flyway 负责「结构该长什么样」，validate 负责
+  「实际长出来的与实体一致吗」，不一致时应用**直接启动失败**，不是悄悄改表。
+  这条闸门防的是「迁移写漏了」，见 [`../README.md`](../README.md) 第 6 节「实现说明与已知边界」第 14 条
 
 ---
 

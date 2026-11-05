@@ -79,4 +79,6 @@
 | `verify-lineage-doc.py` / `verify-iceberg-endpoints.py` / `verify-lance-endpoints.py` | 血缘、Iceberg、Lance 三份文档声明的端点与实现台账 |
 | `verify-k8s-manifests.py` | `deploy/kubernetes/` 清单内部引用自洽 |
 
-生成物**不要手改**：`sql/schema-mysql.sql`、`sql/schema-postgres.sql`、`management-api-contract.md` 由脚本重生成。
+生成物**不要手改**：`sql/schema-mysql.sql`、`sql/schema-postgres.sql`、
+`db/migration/{vendor}/V1__baseline.sql`、`management-api-contract.md` 由脚本重生成。
+反向的一条：迁移目录里的 `V2` 及更高版本**必须手写**（增量语句只能人来写），写进去之后就不能再改。

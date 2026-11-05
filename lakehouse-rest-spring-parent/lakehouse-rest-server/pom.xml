@@ -176,6 +176,38 @@
 			<artifactId>auth</artifactId>
 		</dependency>
 
+		<!--
+			数据库迁移（Flyway）：把「库结构变了要手工执行 DDL」变成「启动时按版本顺序自动应用」。
+
+			**为什么这是部署决策、因而只在 server 声明**：迁移脚本在 classpath 上
+			（`db/migration/<vendor>/*.sql`），而 classpath 的最终形状由本模块的 fat jar 决定——
+			core / storage / protocol-* 不产出可执行物，迁移与它们无关。将来若把可执行物拆成
+			第二个（例如只跑迁移的 job 镜像），依赖要跟着那个模块走，而不是这里。
+
+			starter 自带 spring-boot-starter-jdbc 与 spring-boot-flyway 的自动装配；
+			**版本全部由 Boot 的 BOM 管**（starter 4.1.2 → flyway-core 12.4.0），
+			因此这里三行都不写 <version>。改 Flyway 版本 = 改 Boot 版本，不是改这里。
+
+			flyway-core **不自带任何数据库的方言实现**：MySQL 8 与 PostgreSQL 各自另有构件
+			（flyway 10 起把它们拆出去，单独发版）。不装对应构件时 Flyway 会在启动期报
+			「Unsupported Database」，而不是静默跳过，因此漏装是启动即失败、不会静默不迁移。
+		-->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-flyway</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.flywaydb</groupId>
+			<artifactId>flyway-mysql</artifactId>
+			<scope>runtime</scope>
+		</dependency>
+		<!-- PostgreSQL profile 用（备用方言，见 application-postgresql.yml）；46KB -->
+		<dependency>
+			<groupId>org.flywaydb</groupId>
+			<artifactId>flyway-database-postgresql</artifactId>
+			<scope>runtime</scope>
+		</dependency>
+
 		<!-- 元数据存储：默认 H2 内存库，可用 profile 切换到 MySQL / PostgreSQL -->
 		<dependency>
 			<groupId>com.h2database</groupId>

@@ -213,7 +213,10 @@ SCIM 带来的是「删除用户 / 停用账号」这类能力——那属于 P2
 - 所有既有 `lakehouse_principal` 行：`source` 默认 `LOCAL`，`granted_by` 默认 `MANUAL`；
 - 这两个默认值保证**升级后行为逐字不变**：没有 JIT、没有同步、手工授权不受影响；
 - DDL 由实体重新生成（`gen-mysql-ddl.sh` / `gen-postgres-ddl.sh`），
-  `ddl-auto: validate` 会在升级时直接拦住「加了列却没迁移」的实例。
+  迁移作为 `Vn__xxx.sql` 随 jar 发布、启动时自动应用（见 [`../README.md`](../README.md) §2.1）。
+  存量库不会重跑建表语句，因此**这一版的加列必须可空或带默认值**——
+  否则老数据在 `not null` 加列时就会被拒。`ddl-auto: validate` 仍在迁移之后兜底，
+  拦住「迁移写漏了」的实例。本文写作时还是「手工执行升级 SQL」，机制已变、结论不变。
 
 ---
 

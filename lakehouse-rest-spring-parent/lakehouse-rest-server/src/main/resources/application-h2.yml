@@ -16,6 +16,21 @@ spring:
   jpa:
     hibernate:
       ddl-auto: update
+  # Flyway 在此 profile 下关闭，建表仍交给 ddl-auto。
+  #
+  # 为什么不像 MySQL 那样走迁移：db/migration 下的脚本是 **MySQL / PostgreSQL 方言**
+  # （ENGINE=InnoDB、auto_increment、comment '...' 内联在列定义里）。H2 只在
+  # `MODE=MySQL` 下才认这些（实测：原生模式下 88 条语句全失败，MODE=MySQL 下全通过），
+  # 而本 profile 刻意用原生模式——它的价值正是「一个与生产不同、能快速起停的载体」，
+  # 不是「生产方言的近似」。为它再维护第三份方言的迁移基线，等于让一个一次性载体
+  # 去牵住一份需要长期演进的结构描述，收益是负的。
+  #
+  # 正确性由测试兜住：FlywayBaselineTests 在 H2 的 MODE=MySQL 下把 MySQL 迁移基线
+  # 整份跑一遍并断言建表数，迁移脚本本身永远有真实执行路径。
+  # 显式写出 false 而不是靠「不加依赖就不生效」：依赖在 classpath 上就有，
+  # 不写这一行 Flyway 会自动装配并尝试用 MySQL 方言脚本去建 H2 表，直接启动失败。
+  flyway:
+    enabled: false
 
 # 认证与授权在此 profile 下显式关闭（默认已是 true，这里要把默认压回去）。
 #

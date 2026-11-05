@@ -76,6 +76,10 @@ REST Management API**（RBAC 管理面）与一个 **Vue 3 管理控制台**；�
    29 表 / 26 唯一约束 / 33 索引，下次生成会覆盖）。PostgreSQL 同源生成物 `sql/schema-postgres.sql`
    由 `scripts/gen-postgres-ddl.sh` 生成（29 张表，唯一约束内联、自增列用 `identity`）。
    **改了实体就必须重跑对应生成**，否则启动时 `ddl-auto=validate` 直接失败。
+   Flyway 的迁移基线 `db/migration/{vendor}/V1__baseline.sql` 是这两份的**下游派生**
+   （`scripts/gen-flyway-baseline.py`，剥建库/切库语句与注释行），改实体后也要一起重跑。
+   **但 V1 只在「尚未出现 V2」时可重派生**：V1 内容一变，应用过 V1 的库会 checksum 校验
+   失败而拒绝启动，此后改结构只能手写 `V2__xxx.sql`（脚本对此有硬保护，见 README §2.1）。
 6. **构建服务端 jar（含控制台）用 `clean package`，不要裸 `package`。** 控制台产物按内容哈希命名，
    `maven-resources-plugin` 只覆写不删除 → `target/classes/static/console` 累积历次旧产物
    （jar 里出现多个 `index-*.js`）。服务端 POM 已把一次 `clean` 绑到 `initialize` 兜底。
@@ -156,6 +160,7 @@ python3 scripts/verify-lineage-doc.py                     # 血缘文档 ↔ 控
 python3 scripts/verify-lance-endpoints.py                  # Lance 面：规格副本 ↔ 控制器 ↔ 授权登记
 ./scripts/gen-mysql-ddl.sh                                # 重生成 sql/schema-mysql.sql
 ./scripts/gen-postgres-ddl.sh                           # 重生成 sql/schema-postgres.sql（PostgreSQL）
+/opt/homebrew/bin/python3.11 scripts/gen-flyway-baseline.py --check   # 迁移基线与快照是否漂移
 ```
 
 - 这些 Python 脚本除 `verify-lineage-doc.py` 外都解析 OpenAPI 规格，依赖 **PyYAML**
@@ -269,7 +274,8 @@ deploy/kubernetes/      单文件三文档：configmap / deployment / service（
 spec/                   三份 OpenAPI 规格的仓库副本（不随服务端分发）：
                         rest-catalog-open-api-paimon.yaml / -iceberg.yaml /
                         rest-management-open-api.yaml（Paimon 官方 REST Management API）
-sql/                    MySQL / PostgreSQL 建表语句（生成物，分别对应 schema-mysql.sql / schema-postgres.sql）
+sql/                    MySQL / PostgreSQL 建表快照（生成物：schema-mysql.sql / schema-postgres.sql，
+                        给人执行；Flyway 迁移基线是它们的下游派生，随 jar 走，见 server 的 db/migration/）
 scripts/                验收 / 生成 / 校验 / 镜像构建脚本
 docs/                   36 份设计文档（另有十份配套效果图 HTML）
 ```
@@ -447,7 +453,7 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
 | 改动 | 步骤 |
 | --- | --- |
 | **加 Catalog API 端点** | ① 控制器 + DTO 都进 `lakehouse-rest-protocol-paimon`（`web/` 与 `dto/`），字段名与规格逐字一致；② `lakehouse-rest-core` 的 `config/CatalogAccessRules.java` 登记路径 → 权限（漏了构建红）；③ 测试 `PaimonRestCatalogApiTests` 之类 + `CatalogEndpointAuthorizationTests`（**测试目前全在 `lakehouse-rest-spring-parent/lakehouse-rest-server/src/test/`**，见 `maven-module-design.md` §8.6）；④ 更新 `docs/catalog-api-endpoints.md` |
-| **改 JPA 实体 / 加表** | ① 改 `domain/entity`——**先判断放哪个模块**：catalog 侧 12 实体、RBAC 管理侧 7 实体与事件审计 1 实体在 `lakehouse-rest-core`（被协议面复用，下沉避免协议层反向依赖 server），表存储优化 3 实体在 `lakehouse-rest-server`；继承 `AuditedEntity` 才有审计列；② `./scripts/gen-mysql-ddl.sh` 重生成 `sql/schema-mysql.sql`（**必须**）；③ 摘要列（SHA-256）或唯一约束变化时同步 `docs/data-model.md` |
+| **改 JPA 实体 / 加表** | ① 改 `domain/entity`——**先判断放哪个模块**：catalog 侧 12 实体、RBAC 管理侧 7 实体与事件审计 1 实体在 `lakehouse-rest-core`（被协议面复用，下沉避免协议层反向依赖 server），表存储优化 3 实体在 `lakehouse-rest-server`；继承 `AuditedEntity` 才有审计列；② `./scripts/gen-mysql-ddl.sh` 重生成 `sql/schema-mysql.sql`（**必须**）；③ 迁移落地二选一：**首次接入期**再跑一次 `scripts/gen-flyway-baseline.py` 重派生 V1（仅当目录里还没有 V2）；**已演进期**手写 `db/migration/mysql/V2__<描述>.sql` 增量——**不要再改 V1**，改动会让已应用过它的库因 checksum 不一致启动失败；④ 摘要列（SHA-256）或唯一约束变化时同步 `docs/data-model.md` |
 | **改管理 API / 权限** | ① 实现落在 `lakehouse-rest-server`（`web/` + `service/` + `dto/ManagementDtos`），词表类在 `lakehouse-rest-core`（`dto/ManagementEnums`、`dto/Privilege`）→ 改规格副本与实现后 `python3 scripts/gen-management-contract.py`；② 权限枚举变了 → `scripts/gen-management-privileges.py` 重生成 `dto/Privilege.java`；官方权限词表（access / ResourceType）变了 → 跑 `verify-spark-sql-doc.py`（比对语法/PermissionDtos/客户端三方）；③ 管理语句跟随改动时进 `lakehouse-rest-spark/shared`（语法 + AstBuilder + Command 三处；两个版本模块编译同一份源码，改一处即两边生效） |
 | **跨模块搬类 / 加模块** | ① **先算依赖图再动手**——凭「看起来该属于这里」搬会把方向搬反，本仓实测出现过 46 条反向边；工具在 `outputs/maven-module-refactor/module-graph.py`（分类表 `RULES`、允许方向 `ALLOWED`）；② 包名不动 → 不需要改任何 `import`，`mvn -o -DskipTests clean install` 编译通过＝搬对了，enforcer 红＝方向搬反；③ 同步 `docs/maven-module-design.md`（§8 落地记录）与本文第 3 节的类数 |
 | **改控制台** | ① 按 `docs/console.md` §5.3 清单做（endpoints.js → api/*.js → views/ → router → 构建）；② `./scripts/build-console.sh` 重新构建（**产物不入库，但不构建就没有**，见第 8 节陷阱 1）；③ 页面渲染不写进服务端测试，服务端侧只覆盖托管机制（`ConsoleApiTests`） |
@@ -508,8 +514,10 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
   不要在控制器里手写响应体。
 - **文档里的代码块要与代码同步**——`SparkSqlDocExamplesTests` 会真跑
   `docs/spark-sql-reference.md` 第 10 节示例，**改坏示例会让构建失败**。
-- **生成物一律不要手改**：`sql/schema-mysql.sql`、`sql/schema-postgres.sql`、`docs/management-api-contract.md`、
+- **生成物一律不要手改**：`sql/schema-mysql.sql`、`sql/schema-postgres.sql`、
+  `db/migration/{vendor}/V1__baseline.sql`、`docs/management-api-contract.md`、
   `dto/Privilege.java`。要改就改生成器或规格再重跑。
+  迁移目录里的 **V2 及更高版本相反——必须手写**（增量语句推不出来），且写进去之后就不能再改。
 - **控制台里「表格式」有两个层级，别混**：catalog 级是 `catalogFormat`（`PAIMON` / `ICEBERG`，
   `utils/catalogFormat.js`，创建后不可改），表级是 `schema.options.type`（`table` /
   `format-table` / `object-table` / `lance-table`，`utils/tableKind.js`）。`ICEBERG`

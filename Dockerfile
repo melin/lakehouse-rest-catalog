@@ -31,30 +31,21 @@ WORKDIR /app
 # `.dockerignore` 那条放行规则写的是通配符，不需要动。
 #
 # 落位时改名 app.jar：ENTRYPOINT 里的路径就不会随版本号漂移。
+# 镜像里只有 jar，**没有** sql/schema-mysql.sql。
+#
+# 库结构由 jar 内 classpath 上的 db/migration/{vendor}/V1__baseline.sql 在启动时
+# 由 Flyway 自动应用，因此不再需要第二份 DDL 进镜像。此前那一份是给「K8s 的
+# initContainer 初始化空库」用的，而清单里从来没有这样一个 initContainer
+# （deploy/kubernetes/lakehouse-rest.yaml 的 initContainers 只有 prepare-warehouse）——
+# 也就是说，它一直在为一件不存在的事准备着。容器里也没有 mysql 客户端，
+# 真要手工执行，运维还是得把它从镜像或仓库里取出来。
+#
+# 删掉这一段还顺带消掉了一个坑：为了让 initContainer（以别的 uid 运行）能读到那份
+# 文件，这里曾经要 RUN mkdir + chmod 0755，再单独 COPY --chmod=0644。原因是
+# `COPY --chmod=0644 a/b.sql /app/sql/b.sql` 会把权限也套到 Docker 自动创建的
+# 中间目录上，/app/sql 变成 drw-r--r--（没有 x 位就无法遍历，里面文件什么权限都
+# 读不到），而报错指向的是文件、不是目录。现在没有那一层了，这一段随之消失。
 COPY --chown=app:app lakehouse-rest-spring-parent/lakehouse-rest-server/target/lakehouse-rest-server-1.0.0.jar /app/app.jar
-
-# 建表语句一并放进镜像：部署时 initContainer 要拿它初始化空库，
-# 直接从镜像里取可以避免「镜像里的代码」与「集群里的 DDL」版本不一致。
-# （DDL 与 jar 都取自同一个仓库状态，因此仍然是同版本的一对。）
-#
-# 为什么先建目录、再单独复制文件，而不是一句 COPY 带 --chmod 搞定：
-#
-# 1) 不能省掉权限设置。COPY 会原样保留源文件的权限位，而
-#    scripts/gen-mysql-ddl.sh 用 mktemp 生成中间文件（0600）再拷到交付路径，
-#    于是镜像里也会是 0600——只有属主 app(10001) 读得到，
-#    而 K8s 的 initContainer 以别的 uid 运行时直接失败。
-#
-# 2) 但也不能直接把 --chmod 加在一条指向 /app/sql/schema-mysql.sql 的 COPY 上。
-#    Docker 会为多级目标路径自动创建中间目录，而 --chmod 同样作用在这些目录上，
-#    结果是 /app/sql 变成 drw-r--r--（0644）。目录没有 x 位就无法遍历，
-#    里面的文件即便 0644 也读不到，而报错说的是
-#    "cannot open /app/sql/schema-mysql.sql: Permission denied"——指向文件，
-#    真正的原因在目录上，很容易往错的方向查。
-#
-# 所以目录与文件的权限分开设：目录 0755（可遍历），文件 0644（可读不可写）。
-RUN mkdir -p /app/sql && chown app:app /app/sql && chmod 0755 /app/sql
-
-COPY --chown=app:app --chmod=0644 sql/schema-mysql.sql /app/sql/schema-mysql.sql
 
 USER 10001:10001
 

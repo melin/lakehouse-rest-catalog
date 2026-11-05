@@ -1,13 +1,22 @@
 # PostgreSQL：元数据存储的备用方言，与 MySQL 共用同一套 JPA 实体。
 #
-# 建表语句由脚本生成，见 sql/schema-postgres.sql（scripts/gen-postgres-ddl.sh），
-# 请勿手工修改该文件。应用启动时的 ddl-auto 是 validate：schema 与实体不一致会
-# 直接启动失败，而不是悄悄改表，因此升级代码后若实体有变，需要重新生成并迁移。
+# 建表与变更**由 Flyway 在启动时执行**：迁移脚本是 db/migration/postgresql/V*.sql，
+# 由 scripts/gen-postgres-ddl.sh 产出的 sql/schema-postgres.sql 派生
+# （scripts/gen-flyway-baseline.py），随 jar 走。库需预先建好（Flyway 不建库），
+# 之后连上去会自动建出全部表。
+#
+# sql/schema-postgres.sql 仍然保留，但角色变了：它是给人看的全量结构快照，
+# 用于评审与手工排查，不再是部署步骤。
 #
 # 使用方式：
 #   createdb lakehouse_catalog                       # 库需预先建好
-#   psql -d lakehouse_catalog -f sql/schema-postgres.sql
 #   java -jar lakehouse-rest-server.jar --spring.profiles.active=postgresql
+#
+# 存量库（此前用 sql/schema-postgres.sql 手工建过表的）由 application.yml 里的
+# flyway.baseline-on-migrate 标记为「已在 V1」，不会重复建表。
+#
+# 升级改结构时**不要改 V1**：checksum 会变，已应用过它的库将拒绝启动。
+# 新增 V2__xxx.sql 增量，放进同一个目录即可（见 scripts/gen-flyway-baseline.py 的 docstring）。
 #
 # 与 MySQL 的差别：唯一约束里的 namespace_hash / spec_hash 是为 MySQL 的
 # 3072 字节索引键上限引入的，在 PostgreSQL 上同样可用（定长 64 字符），
@@ -20,8 +29,13 @@ spring:
     password: paimon
     hikari:
       maximum-pool-size: 20
+  # locations 不用覆盖：application.yml 写的是 classpath:db/migration/{vendor}，
+  # {vendor} 由 Boot 按 JDBC 连接解析成 postgresql，因此这里自动取到
+  # db/migration/postgresql/。三套数据源共用一行配置。
   jpa:
     hibernate:
-      # 与 MySQL 一致的 validate：依赖 sql/schema-postgres.sql 先建好库
+      # 与 MySQL 一致的 validate：结构由 Flyway 建好后再校验实体与库是否一致。
+      # 两者是**接力**关系而不是重复：Flyway 负责「结构该长什么样」，
+      # validate 负责「实际长出来的与实体是否一致」，后者能兜住手工改过的库。
       ddl-auto: validate
     # 方言由 JDBC 连接自动探测，无需显式指定
