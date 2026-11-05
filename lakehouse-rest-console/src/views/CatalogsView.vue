@@ -140,7 +140,7 @@
                     {{ credCell(row).label }}
                   </el-tag>
                 </el-tooltip>
-                <span class="cred-meta" :title="credCell(row).detail">{{ credCell(row).detail }}</span>
+                <div class="cred-meta" :title="credCell(row).detail">{{ credCell(row).detail }}</div>
               </div>
             </template>
           </el-table-column>
