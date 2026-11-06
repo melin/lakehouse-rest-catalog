@@ -1,7 +1,7 @@
 # 敏感数据识别与分类 · 设计方案
 
-> **状态：设计稿；P0 已实现**（服务端五实体与四控制器、控制台六屏 + 表详情页签，见 §12 分期表与 `docs/README.md` 的条目）。**其余各期（P1–P4）为设计**，代码里没有的部分会显式报错而不是静默降级（`SAMPLED` → 501、`execution=SPARK` → 400/501、`decide` 无端点）。
-> **§13 的十一条已全部拍板，无未决项。** 本文描述的是**拍板后的目标形态**：其中「调度自建」（第 9 条）与「Spark 默认 `1g`/`local[1]`」（第 11 条）是**本轮才定**的，与更早版本的口径相反——读到 §5.6.2 / §5.6.3 / §5.6.7 / §9 / §11 时以本稿为准。
+> **状态：P0 / P1 已实现，P2–P4 为设计**。已实现的落点：P0 = 五实体 + 内置类型 seed + 类型/探测器配置 + D1/D2 元数据扫描 + 手工打标 + 控制台六屏与表详情页签；P1 = D3 采样探测（走预览那条只读通道）+ 五个校验器 + 值层打分 + 自动应用闸门 + 人审 `decide` + 第 7 张表（抑制项，V4）+ 控制台 `#findings` 的闭环与「已否决」区块。代码里没有的部分会显式报错而不是静默降级（`execution=SPARK` → 400/501；`D4`/`D5` 层恒 0 分）。
+> **§13 的十一条已全部拍板，无未决项。** 本文描述的是**拍板后的目标形态**：其中「调度自建」（第 9 条）与「Spark 默认 `1g`/`local[1]`」（第 11 条）是更早一轮才定的，与更早版本的口径相反——读到 §5.6.2 / §5.6.3 / §5.6.7 / §9 / §11 时以本稿为准。
 > 配套交互原型：[`sensitive-data-mockup.html`](sensitive-data-mockup.html)（八画面；`#schedules` 已按自建 CRUD 呈现）。
 
 ## 0. 一句话结论
@@ -87,9 +87,11 @@
 
 ## 4. 数据模型
 
-六张新表，全部沿用既有约定：`AuditedEntity` 审计列、`entity_version` 乐观并发、全名摘要列做唯一键（理由见 §4.7）。
+七张新表，全部沿用既有约定：`AuditedEntity` 审计列、`entity_version` 乐观并发、全名摘要列做唯一键（理由见 §4.8）。
 
-> **第六张表（`lakehouse_sensitivity_schedule`，§4.6）是本轮拍板「调度自建」之后才进数据模型的**：此前那一版把触发时点交给外部调度器管、本方案不建表，已废弃（§5.6.3）。因此 `EXPECTED_TABLES` 与迁移脚本都按**六张**算——**别再按「五张」写**。
+> **七张里已落库六张**：V3 建的五张（§4.1–§4.5）+ V4 建的抑制项表（§4.7）。第七张 `lakehouse_sensitivity_schedule`（§4.6）是拍板「调度自建」之后才进数据模型的，属 **P4**，还没建——`EXPECTED_TABLES` 因此是 **35**（29 + 5 + 1），**别再按 34 写**。
+>
+> **抑制项为什么必须单独一张表（P1 新增 §4.7）**：它是「这列**不是**这个类型」的断言，键是 `(column_ref_hash, type_code)`；而 `lakehouse_column_tag` 记的是「这列**是**什么」，键是 `(column_ref_hash, tag_key)`。两者的生命周期也不同：标签删掉可以重建，而「谁在什么时候否掉、谁又在什么时候解禁」删掉就再也拼不出来。并进标签表会让一次驳回要么被标签的唯一键挡住，要么在删标签时被一起删掉。
 
 ### 4.1 `lakehouse_sensitive_type` —— 敏感类型与探测器
 
@@ -200,13 +202,30 @@
 
 >`next_run_at` 是**抢占条件而不是展示字段**：多副本下每个实例都算同一个「到期」，靠 `UPDATE … WHERE next_run_at = <读到的值>` 的**条件更新**只让一方拿到推进权（与表优化那条完全同形）。因此它必须与 `entity_version` 分开——`entity_version` 是给**人工编辑**的乐观锁（改 cron 撞车返 409），`next_run_at` 是给**调度器**的抢占令牌（改 cron 时不该让调度器以为自己撞车了）。两者在一张表上各管一段，写成同一个字段会让「编辑调度项」与「调度节拍」互相干扰。
 
-### 4.7 主键与索引取舍
+### 4.7 `lakehouse_sensitivity_suppression` —— 永久抑制项（P1，V4）
+
+人审否决与「删标签」两条路径写的是同一张表（§7.2）：键是 `(column_ref_hash, type_code)`，语义是「这一列**不是**这个类型，别再提」。
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `id` | bigint PK | 自增 |
+| `catalog_name` / `database_name` / `table_name` / `column_name` | varchar | 库 / 表 / 列名原样存，供展示与按范围回查（与标签表同口径，不靠哈希反解） |
+| `column_ref_hash` | varchar(64) | 全名 SHA-256，唯一键的一半 |
+| `type_code` | varchar(64) | 被否决的敏感类型，唯一键的另一半 |
+| `reason` | varchar(512) | 否决理由。人审驳回取用户填写的那句；删标签写成 `column tag deleted by <主体>`——**断言要有人负责** |
+| `decided_by` / `decided_at` | varchar(255) / bigint | 谁在什么时候否掉 |
+| `finding_id` | bigint | 溯源那一条被驳回的 finding（删标签路径为空） |
+| `enabled_flag` | tinyint(1) | **解禁是置 false 而不是删行**：删掉就丢了「曾经否过、后来改主意」这段历史，界面也没法显示「已解除」 |
+
+失效只有两条路：列改名（哈希变了，旧抑制项自然不再命中）或治理员显式解禁（`DELETE /sensitivity-suppressions/{id}`）。**解禁不删行、也不触发立刻重扫**——点的是「解除抑制」，不是「立刻读这张表」；下一轮扫描才会重新判。
+
+### 4.8 主键与索引取舍
 
 列级全名 `catalog.database.table.column` 在 utf8mb4 下 `(64+255+512+255)×4 = 4344` 字节，**远超 MySQL 单索引 3072 上限**。沿用 `DataPolicyEntity` 的做法：`column_ref_hash`（SHA-256，定长 64）做唯一键，三段 + 列名原名列只用于展示与过滤。
 
 写入方（服务层）负责保持哈希与原名列一致；改名钩子同时更新两处。**漂移只会来自绕过服务层的写法**——与策略表现有的口径一致，不引入新机制。
 
-### 4.8 DDL 示意（MySQL，实际由 `gen-mysql-ddl.sh` 生成）
+### 4.9 DDL 示意（MySQL，实际由 `gen-mysql-ddl.sh` 生成）
 
 ```sql
 create table lakehouse_column_tag (
@@ -545,7 +564,9 @@ D1 / D2 只读 `lakehouse_table.schema_doc`（当前 schema 的 JSON 文档）�
 | `LIMIT` 取头 N 行 | 支持 | 支持 | 支持 |
 | 列裁剪 | 支持 | 支持 | 支持 |
 
-采样策略：优先 `TABLESAMPLE`；不支持时降级 `LIMIT`，并在 finding 上标 `sampling_mode=HEAD` + 置信度 `×0.85`——**头部数据偏斜是真实风险**（按时间分区的表头部全是最新一天），降级必须留痕，让人审时看得见。
+采样策略：**当前实现恒为 `HEAD`**——采样读走数据预览那条只读通道（`SensitivitySampler` → `TablePreviewService#sample`），它按文件顺序读前 N 行，没有抽样算子，因此 finding 上的 `sampling_mode` 一律记 `HEAD`，不编一个更聪明的模式名。**头部数据偏斜是真实风险**（按时间分区的表头部全是最新一天），所以这一列必须落库、必须能在人审时看见。
+
+> **口径修正（P1 落地时）**：本节原写「降级 `LIMIT` 并乘 `×0.85`」，与 `SensitivityScorer` 的实际规则不一致——代码里没有这个折损系数。真正存在的打折只有一条：**有效样本 < 200 行时整体 × 0.7**（样本太少时「全命中」可能只是抽样抽得太巧）。写一个不存在的系数比不写更糟：人审时会去算那 15% 从哪来。`TABLESAMPLE` 仍作为**目标形态**保留在上表里：等有引擎侧抽样通道再翻成首选，届时 `sampling_mode` 这一列才第一次出现第二个取值。
 
 > 这一条刻意不写成「三格式完全一致」。查询层的能力差异是客观存在的，把差异藏在「都支持」里，最后表现为「Lance 表识别率莫名偏低」，比显式降级难查得多。
 
@@ -654,7 +675,9 @@ DQ 的规则可以按标签匹配：「所有 `L3+` 列必须有 completeness �
 | `POST` | `/sensitivity-scans/{id}/items` | **仅 B 路线**：作业逐表回报（`{table, status, findings, maskedSamples, metrics}`）——**没命中也要回**，否则「扫完没发现」与「漏扫」不可分（§5.6.5） |
 | `POST` | `/sensitivity-scans/{id}:cancel` | 取消（RUNNING 才有意义；`execution=SPARK` 时同时停作业——复用 `OptimizationJobSubmitter#cancel` 的 Background 删除语义） |
 | `GET` | `/sensitivity-findings?state=PENDING&table=&type=` | 人审队列 |
-| `POST` | `/sensitivity-findings:decide` | 批量确认/拒绝（`{ids, decision, note}`）；确认即落 tag |
+| `POST` | `/sensitivity-findings:decide` | 批量确认/拒绝（`{ids, decision, note}`）；**确认即落 `MANUAL` 标签**（级别取类型表），**拒绝即落永久抑制项**（§7.2）、并撤掉该列的自动标签。整批一个事务；已决策的行计入 `skipped`（幂等）；有 id 不存在 → 整批 404。判权按 finding **自己记着的** catalog 逐个判 `ALTER`（请求体里没有 catalog，不能由调用方「声明」权限） |
+| `GET` | `/sensitivity-suppressions?catalog=` | 永久抑制项清单，**含已解禁的**——界面要能显示「已解除」而不是让它凭空消失。判 `DESCRIBE`：「这列**不是**身份证」与「这列是身份证」是同一级别的信息 |
+| `DELETE` | `/sensitivity-suppressions/{id}` | 显式解禁：置 `enabled=false`（**不删行**，保留决策史），**不触发立刻重扫**（点的是「解除抑制」，不是「立刻读这张表」）。判 `ALTER`，catalog 取自抑制项自己 |
 | `GET` | `/column-tags?table=&tagKey=&level=` | 标签查询（对外主接口） |
 | `PUT` | `/column-tags` | 手工打标（upsert，带 `entityVersion` 做 409） |
 | `DELETE` | `/column-tags/{id}` | 删标签（**同时写抑制项**，否则下次扫描复活） |
@@ -668,6 +691,8 @@ DQ 的规则可以按标签匹配：「所有 `L3+` 列必须有 completeness �
 > **端点计数要连量词一起改。** 本仓库的守卫是「运行时端点数 == 登记数」（catalog 端点只加控制器判权不够——`AuthorizationInterceptor` 先执行、`resolve()` 返 null 即 403）。本轮把调度从「外部路线不注册」翻成「自建、正式注册」，因此**这 5 条从「可选」变为「必有」**：`GET`/`POST /sensitivity-schedules` 与 `GET`/`PUT`/`DELETE /sensitivity-schedules/{id}`。**计数口径是按 `(方法, 路径)` 元组，不是按路径数**——写成「+3」会让守卫的差集对不上（`EXTENSION_ENDPOINTS` 里每一条都是一个 `(METHOD, path)`）。登记表与守卫脚本要同步，漏改会让守卫直接红。**这正是 §5.6.3 说「这一条是会影响守卫的硬选择」的落点。**
 
 事件：`sensitivity.scan.started` / `.completed` / `.failed`、`sensitivity.finding.decided`、`column.tag.changed`、`sensitivity.binding.changed`。扫描事件的 payload 带 `execution` 与 `triggerType`——「谁在什么时候读了明文」要能仅凭事件流回答，不必回查扫描表。
+
+> **P1 已登记这 3 条**（`EXTENSION_ENDPOINTS` 按 `(METHOD, path)` 元组计）：`POST /sensitivity-findings:decide`、`GET /sensitivity-suppressions`、`DELETE /sensitivity-suppressions/{id}`。解禁复用的是 `sensitivity.binding.changed`（属性 `kind=SUPPRESSION`、`change=RELEASED|LIFTED`）——它是一条治理配置变更，不是一次扫描、也不是一条标签变更；`sensitivity.finding.decided` 由此从「有类型无发布点」变成真有发布点。
 
 ## 10. 权限与可见性
 
@@ -706,12 +731,14 @@ DQ 的规则可以按标签匹配：「所有 `L3+` 列必须有 completeness �
 | 期 | 范围 | 验收断言 |
 |---|---|---|
 | **P0** | 五实体 + 内置类型 seed + 类型/探测器配置端点与控制台 `#types` + D1/D2 元数据扫描 + 手工打标 + `/column-tags` 只读 + 控制台 `#overview` / `#tags` + `/sensitivity-settings`（catalog 级设置含 `defaultExecution`） | 扫描 100 张表 < 30 秒；同一列重扫不产生重复 tag；内置类型不可删（409）；**改一个内置类型的探测器权重后，下一轮扫描的判定随之改变且变更进审计**；**`defaultExecution` 三层覆盖生效（请求 > catalog > 全局）；`maxConcurrentScans`（A 路线进程内并发）按 catalog 覆盖生效，且与集群闸门 `maxConcurrentJobs` 互不影响** |
-| **P1** | D3 采样探测 + 校验器 + 置信度分档 + 人审队列 + 自动应用闸门 | 身份证列在 500 条造数上命中率 100%、误报 0；`PERSON_NAME` 即使置信度 0.99 也进 PENDING |
+| **P1**（**已交付**） | D3 采样探测 + 校验器 + 置信度分档 + 人审队列（`decide`）+ 自动应用闸门 + 第 7 张表（抑制项，V4） | 身份证列在 500 条造数上命中率 100%、误报 0；`PERSON_NAME` 即使置信度 0.99 也进 PENDING；**驳回后重扫不复活、解禁后下一轮重新判**；**删标签同时写抑制项** |
 | **P2** | 血缘传播 + 生命周期钩子 + 增量扫描（`ALTER ADD COLUMN`）；`execution` 落库，扫描历史可见位置；`propagationMaxDepth` 可配 | `DIRECT` 边一轮传播后下游出 tag；`AGGREGATE` 边不产生 tag；`REJECTED` 列重扫不复活；生命周期钩子产生的扫描 `trigger_type=LIFECYCLE`；**`max-depth=2` 时第 3 跳停在 `PENDING`** |
 | **P3** | 标签驱动脱敏（resolve 展开）+ 冲突报告 + 缓存主动失效 | 打标后 ≤60 秒策略生效；显式 mask 优先且冲突可见；三格式（Paimon/Iceberg/Lance）同表同规则结果一致 |
 | **P4** | D4 字典 / D5 统计特征 + 触发方式补全（**自建调度**：`#schedules` 由建议页改为 CRUD + `/sensitivity-schedules` 5 条端点登记 + 第 6 张表 `lakehouse_sensitivity_schedule` + 两个租约通道，§5.6.3）+ `execution=SPARK` 下推（复用表优化任务的提交/探活/跟踪/取消链路，§5.6.5；执行集群扩扫描那两列与两组 Spark 参数，§5.6.6 / §5.6.7；**并发闸门共用既有的 `maxConcurrentJobs`**）+ 对外事件订阅 | 自建调度按 cron 触发一次扫描且只触发一次（多副本下靠 `sensitivity.scan` 租约 + `next_run_at` 条件更新，§5.6.3）；**停用一个调度项后不再产生新扫描，历史扫描仍按 `schedule_name` 可查**；同表并发重入返 409；SPARK 路线下扫描事件的 `execution` 为 `SPARK` 且两条审计链可按 `scanId` 拼上；**给不可派发的 catalog 建 `execution=SPARK` 返 400**；**`scanSparkConf` 的默认段是 `spark.driver.memory=1g` + `spark.driver.cores=1`，不含 `shuffle.partitions`**（§5.6.7）；**扫了 100 张表、其中 3 张读失败时，`tables_scanned=100` 且 `tables_failed=3`（不是「扫了 97 张」）**；**作业日志里不含任何原始列值**（抽查一次真实扫描的 Pod 日志）；**`scanSparkConf` 里塞 `spark.sql.catalog.*.token` 被丢弃并记审计，且扫描仍用服务端构造的会话** |
 
 > `execution` 字段 P2 就落库（成本极低、事后补埋点会丢历史），但 `SPARK` 这条路到 P4 才通。P2 阶段该列恒为 `IN_PROCESS`——**先有列再有值，比事后给存量行补一个说不清的默认值干净**。同理 §4.2 的那组 B 专属列（Job 坐标 / 令牌哈希 / 提交代数）也在 P2 一次建好：`status` 的取值域一旦要扩到 `PENDING` / `SUBMITTING`，改的是列宽与所有既有读取点，不如一次到位。
+
+> **P1 实际落了什么**（一句话对照上表，避免「按设计稿以为做了」）：采样读走**预览那条只读通道**（`SensitivitySampler` → `TablePreviewService#sample`，同一并发池、不落原值、只存打码样本）；五个校验器是 core 里的纯函数常量（`SensitivityValidators`）；值层得分按「非空行」做分母、校验通过率 &lt; 99% 时整层打折（`SensitivityScorer#valueScore`）；三条决策带在 `SensitivityDetectors#detect` 里合成；`AUTO_APPLIED` 由 `SensitivityTagWriter` 落 `AUTO` 标签并重算表级级别；人审 `decide` 与抑制项由 `SensitivityDecisionService` 承担。**丢弃下界随「这一列到底有没有采到样」走，而不是随扫描模式走**——`SAMPLED` 模式下某列读失败时它只有元数据证据，用 0.60 会把本可提出的候选判死。
 
 ## 13. 风险与未决
 
@@ -723,8 +750,9 @@ DQ 的规则可以按标签匹配：「所有 `L3+` 列必须有 completeness �
 | **识别系统自身泄漏** | 只存打码样本、采样单独授权、原始行不出服务端（§5.4）；**下推 Spark 时缺口收窄到「原始行不出 Pod」**——值层抽样在作业内跑、只回落打码样本与命中率，且任务侧禁止把样本值写进日志（§5.6.5） |
 | **下推路线的「假覆盖」** | 逐表回调里「没命中也要回」，把「扫完没发现」与「漏扫」分开（§5.6.5）；`tables_failed` 与 `tables_scanned` 分开计数，覆盖率不会把读失败的表算成已覆盖 |
 | **标签本身就敏感** | 分级可见性（§10） |
-| **调度重复触发** | 外部调度器负责「只触发一次」；服务端再加同表并发闸门（§5.6.4）兜底，两者不互相假设 |
+| **调度重复触发** | 自建调度（§5.6.3）：`sensitivity.scan` 租约 + `next_run_at` 条件更新让多副本下只有一方推进；服务端另有同表并发闸门（§5.6.4）兜底，两者不互相假设 |
 | **密文 / 哈希列识别不出** | 明确口径：识别的是**明文形态**；`md5(...)` 这类列靠血缘 `DERIVED` 传播兜，而不是靠值匹配 |
+| **一次误驳会让真敏感列永久静默** | 抑制项按 `(column_ref_hash, type_code)` 记，**只挡这一个类型**（同一列被别的类型命中仍会提）；列改名自动失效；解禁入口在 `#findings` 屏的「已否决」区块里、且解禁进事件流（`kind=SUPPRESSION`）——「这列为什么一直没被提出来」永远能从抑制项清单答上来 |
 | **标签行数爆炸** | 只为命中的列落 tag（不是「每列 × 每类型」）；控制台强制分页 + 按 catalog 过滤 |
 | **内置类型与用户自定义冲突** | `type_code` 唯一；内置 seed 用 upsert 且**不覆盖**用户改动过的字段 |
 | **跨 catalog 的并发叠加** | 同一台集群被 N 个 catalog 指向、每个都配 `maxConcurrentJobs=20` → N×20 个驱动。**单个 catalog 内部已无叠加**（扫描与优化共用一把闸门，§5.6.6），剩下的这层本方案**不做交叉校验**（编一个「加起来不超过 X」只会得到一个 X 猜错的系统），由集群侧 ResourceQuota / 调度器队列兜——**部署时这份配额必须显式设**，空着就是敞口 |

@@ -52,6 +52,14 @@ public enum ResourceType {
     SENSITIVITY_SCAN,
     /** 一次扫描的命中记录。 */
     SENSITIVITY_FINDING,
+    /**
+     * 人审否决的永久抑制项（{@code /api/management/v1/sensitivity-suppressions/{id}}）。
+     *
+     * <p>与 {@link #SENSITIVITY_FINDING} 分开：抑制项是「这一列**不是**某类型」这个结论，
+     * 它的 {@code 404} 指向的是「这条抑制记录不存在」，而不是「这条命中不存在」。
+     * 混成一个取值会让人拿着抑制项的 id 去人审队列里找。
+     */
+    SENSITIVITY_SUPPRESSION,
     /** 列级标签（{@code /api/management/v1/column-tags}）。 */
     COLUMN_TAG,
     /** 标签到脱敏动作的绑定。 */

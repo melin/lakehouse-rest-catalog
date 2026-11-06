@@ -6,10 +6,12 @@ import io.github.melin.lakehouse.rest.domain.entity.CatalogEntity;
 import io.github.melin.lakehouse.rest.domain.entity.DatabaseEntity;
 import io.github.melin.lakehouse.rest.domain.entity.SensitivityFindingEntity;
 import io.github.melin.lakehouse.rest.domain.entity.SensitivityScanEntity;
+import io.github.melin.lakehouse.rest.domain.entity.SensitivitySuppressionEntity;
 import io.github.melin.lakehouse.rest.domain.entity.TableEntity;
 import io.github.melin.lakehouse.rest.domain.repo.DatabaseRepository;
 import io.github.melin.lakehouse.rest.domain.repo.SensitivityFindingRepository;
 import io.github.melin.lakehouse.rest.domain.repo.SensitivityScanRepository;
+import io.github.melin.lakehouse.rest.domain.repo.SensitivitySuppressionRepository;
 import io.github.melin.lakehouse.rest.domain.repo.TableRepository;
 import io.github.melin.lakehouse.rest.dto.SensitivityDtos.Finding;
 import io.github.melin.lakehouse.rest.dto.SensitivityDtos.FindingList;
@@ -31,6 +33,7 @@ import io.github.melin.lakehouse.rest.support.SchemaColumns.Column;
 import io.github.melin.lakehouse.rest.support.SensitivityCatalogSettings;
 import io.github.melin.lakehouse.rest.support.SensitivityDetectors;
 import io.github.melin.lakehouse.rest.support.SensitivityDetectors.CandidateType;
+import io.github.melin.lakehouse.rest.support.SensitivityDetectors.ColumnValues;
 import io.github.melin.lakehouse.rest.support.SensitivityDetectors.Match;
 import io.github.melin.lakehouse.rest.support.SensitivityEnums.DetectorKind;
 import io.github.melin.lakehouse.rest.support.SensitivityEnums.FindingState;
@@ -39,6 +42,7 @@ import io.github.melin.lakehouse.rest.support.SensitivityEnums.ScanMode;
 import io.github.melin.lakehouse.rest.support.SensitivityEnums.ScanScope;
 import io.github.melin.lakehouse.rest.support.SensitivityEnums.ScanStatus;
 import io.github.melin.lakehouse.rest.support.SensitivityEnums.ScanTrigger;
+import io.github.melin.lakehouse.rest.support.SensitivityEnums.TagSource;
 import java.time.Clock;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -58,31 +62,37 @@ import org.springframework.stereotype.Service;
 /**
  * 敏感数据扫描的编排（设计见 {@code docs/sensitive-data-design.md} §5.6 / §6）。
  *
- * <p><b>P0 只实现 A 路线的一次 {@code METADATA_ONLY} 扫描（D1 + D2）。</b>这两层只读
- * {@code lakehouse_table.schema_doc}——零 I/O、不碰凭据、不读明文样本，因此它也是
- * 「刚接入一个 catalog、第一次想看看有什么敏感数据」时唯一能跑的路径。
- * {@code SAMPLED} 与 {@code execution=SPARK} 都**显式拒绝**（501）而不是静默降级：
- * 静默把「采样」当成「只读元数据」跑，会得到一个「扫描完成、只发现 0 列」的结论，
- * 而用户以为已经按值判过一遍了（§5.6.5 的两条 fail-closed 同一口径）。
+ * <p><b>P1 起两条路都能跑：{@code METADATA_ONLY}（D1 + D2）与 {@code SAMPLED}
+ * （再加 D3 值层）。</b>前者只读 {@code lakehouse_table.schema_doc}——零 I/O、
+ * 不碰凭据、不读明文样本，因此它也是「刚接入一个 catalog、第一次想看看有什么敏感数据」
+ * 时唯一能跑的路径。后者要采样读明文，走的是<a>数据预览那条只读通道</a>
+ * （{@link SensitivitySampler} → {@code TablePreviewService.sample}），
+ * 与预览共用同一个并发池（§5.4 已拍板的口径）。
+ * {@code execution=SPARK} 仍然**显式拒绝**而不是静默退回 A：元数据档下是 400
+ * （下推只读元数据的扫描没有收益），采样档下是 501（下推链路属 P4）。
+ * 「我明明选了 SPARK」不该变成一条查不出来的行为（§5.6.5 的 fail-closed）。
  *
- * <p><b>P0 的扫描只产 finding，不产 tag，这是口径而不是缺口。</b>只跑 D1/D2 时置信度
- * 上限是 {@code 0.35 + 0.10 = 0.45}（见 {@code SensitivityScorer.METADATA_FLOOR}），
- * 永远够不到默认的 {@code min_confidence=0.85}，因此元数据档**不可能**自动落标——
- * 它只把人审候选写进 {@code lakehouse_sensitivity_finding}。于是验收断言
- * 「同一列重扫不产生重复 tag」在 P0 由两件事共同保证：finding 的唯一键
- * {@code (scan_id, column_ref_hash, type_code)} 加上写前的内存去重（重扫产生的是
- * **新一次扫描的新行**，不是同一行重复），以及 tag 的唯一键
- * {@code (column_ref_hash, tag_key)} 使手工打标天然是 upsert。
- * 扫描在 P1 起能产出 {@code AUTO_APPLIED} 之后，才需要在收尾处补一次表级标签重算。
+ * <p><b>扫描从 P1 起会产 tag，但只在 {@code AUTO_APPLIED} 时。</b>值层让置信度可以
+ * 到 {@code 0.35 + 0.10 + 0.40 = 0.85}，于是强格式类型（身份证 / 手机号 / 银行卡 /
+ * USCC / 邮箱 / IP / 凭据）在 {@code min_confidence=0.85} 与 {@code auto_apply=true}
+ * 同时满足时自动落标；其余仍是人审候选。{@code PERSON_NAME} / {@code ADDRESS} /
+ * {@code SALARY} / {@code MEDICAL_DIAGNOSIS} 四类的 {@code auto_apply} 恒 false，
+ * 因此哪怕置信度 0.99 也只进 {@code PENDING}——这正是 §5.3 的「防误脱敏」。
  *
- * <p><b>同步执行，不引入执行池。</b>A 路线在 P0 是纯 CPU（解析 JSON），一次 catalog 扫描
- * 以毫秒到秒计，为此引入本工程第一个生产线程池，换来的是「进程内并发闸门要自己实现」
- * 与「重启要清理孤儿行」两套机制——而 §5.6.4 的并发闸门守的是「存储侧被并发读的压力」，
- * 在 P0 这条没有读存储的路径上本就没有可守的对象。因此本类<b>同步跑完再返回</b>，
- * 同时把闸门按 catalog 生效值实现出来（它会在 P1 的采样路线上成为真的闸门）。
- * 代价写在明处：{@code POST /sensitivity-scans} 的 202 与响应体里的
- * {@code status} 在 P0 通常是终态；客户端仍应按下标轮询 {@code GET /sensitivity-scans/{id}}，
- * 因为 P4 的 B 路线会让这个字段在 202 时是 {@code PENDING}。
+ * <p><b>人审否决过的结论不再产出。</b>开跑前把该 catalog 仍生效的抑制项取成集合，
+ * 逐列命中时先查它（§7.2）。这一条与「自动应用白名单」是一对：白名单决定
+ * 「什么样的结论可以自动落」，抑制项决定「什么样的结论连提都不要提」。
+ *
+ * <p><b>仍然同步执行，不引入执行池。</b>{@code METADATA_ONLY} 是纯 CPU（解析 JSON），
+ * 一次 catalog 扫描以毫秒到秒计；{@code SAMPLED} 变成有 I/O 的路径，但它的并发
+ * 由**两层**现成的闸门守住：本类的 catalog 级名额（{@code maxConcurrentScans}），
+ * 以及读通道自己的 {@code MAX_CONCURRENT_PER_PRINCIPAL}（与预览共用，§5.4）。
+ * 为此再引入本工程第一个生产线程池，换来的是「进程内并发闸门要自己实现」与
+ * 「重启要清理孤儿行」两套机制——而这两件事今天都已经有了，不需要第二套。
+ * 因此本类<b>同步跑完再返回</b>。代价写在明处：{@code POST /sensitivity-scans}
+ * 的 202 与响应体里的 {@code status} 在 A 路线通常是终态；客户端仍应按下标轮询
+ * {@code GET /sensitivity-scans/{id}}，因为 P4 的 B 路线会让这个字段在 202 时是
+ * {@code PENDING}。
  *
  * <p><b>整个 {@link #start} 不加 {@code @Transactional}。</b>一次扫描会在库里写入
  * 成百上千条 finding，把它们圈进一个事务意味着请求线程长时间占着一条数据库连接，
@@ -111,6 +121,9 @@ public class SensitivityScanService {
     private final TableRepository tableRepository;
     private final SensitivityScanRepository scanRepository;
     private final SensitivityFindingRepository findingRepository;
+    private final SensitivitySuppressionRepository suppressionRepository;
+    private final SensitivitySampler sampler;
+    private final SensitivityTagWriter tagWriter;
     private final SensitiveTypeService typeService;
     private final SensitivitySettingsService settingsService;
     private final ExecutionClusterService clusters;
@@ -163,12 +176,6 @@ public class SensitivityScanService {
         requireScopeFields(scope, database, table);
 
         ScanMode mode = parseMode(request.mode());
-        if (mode == ScanMode.SAMPLED) {
-            // 不静默降级成 METADATA_ONLY：那会得到一个「扫完了、只发现 0 列」的结论，
-            // 而调用方以为已经按值判过一遍。P1 才实现采样（§12 的分期表）。
-            throw ApiException.notImplemented("mode=SAMPLED is not implemented yet;"
-                    + " only METADATA_ONLY (D1 name/comment + D2 type/shape) runs on this release");
-        }
         ScanTrigger trigger = parseTrigger(request.triggerType());
         int sampleSize = resolveSampleSize(request.sampleSize());
 
@@ -236,7 +243,7 @@ public class SensitivityScanService {
             scanRepository.save(scan);
 
             publishStarted(scan, tables.size());
-            RunResult result = runMetadataScan(scan, catalogName, tables);
+            RunResult result = runScan(scan, catalogName, tables);
             ScanStatus finalStatus = finish(scan, result, now);
             scan.setStatus(finalStatus.name());
             return new ScanAccepted(scan.getId(), catalogName, finalStatus.name(), execution.name());
@@ -298,7 +305,8 @@ public class SensitivityScanService {
     }
 
     /**
-     * {@code GET /sensitivity-findings}：命中清单（P0 只读；人审队列 UI 在 P1）。
+     * {@code GET /sensitivity-findings}：命中清单（读侧；写侧是人审的
+     * {@code decide}，P1 起在 {@link SensitivityDecisionService}）。
      *
      * <p><b>它挂在本服务上而不是另起一个服务。</b>P0 的 finding 只有读路径，
      * 唯一的查询轴是「哪个 catalog / 哪次扫描」，而 `findingRepository` 已经在这里
@@ -401,8 +409,8 @@ public class SensitivityScanService {
      * {@code SchemaColumns.parse} 已经把「认不出的形状」折成空列表（不抛），
      * 所以这里的 catch 兜的是更外层的东西（字符串解码、内存）。
      */
-    private RunResult runMetadataScan(SensitivityScanEntity scan, String catalogName,
-                                      List<ResolvedTable> tables) {
+    private RunResult runScan(SensitivityScanEntity scan, String catalogName,
+                              List<ResolvedTable> tables) {
         List<CandidateType> types = typeService.candidates();
         if (types.isEmpty()) {
             // 不是错误，但必须说出来：候选类型为空时整轮扫描恒零命中，
@@ -412,10 +420,14 @@ public class SensitivityScanService {
                     + " and whether all types are disabled)", scan.getId());
         }
         Set<String> written = existingKeys(scan.getId());
+        // 抑制项在开跑前一次取全：逐列回查会在 2000 列 × 11 类型上变成两万次查询
+        Set<String> suppressed = suppressedKeys(catalogName);
+        boolean sampled = ScanMode.SAMPLED.name().equals(scan.getMode());
         int tablesScanned = 0;
         int tablesFailed = 0;
         int columnsScanned = 0;
         int findingsCreated = 0;
+        int suppressedSkipped = 0;
 
         for (ResolvedTable candidate : tables) {
             tablesScanned++;
@@ -424,13 +436,29 @@ public class SensitivityScanService {
                 // §6.1 的兜底：Lance 表根本不写 schema_doc，register 进来的外部表也可能还没刷新
                 // 元数据。这类表**跳过、不猜**，并单独计数——把它算成「已扫描、无敏感列」
                 // 会让覆盖率说「这张表已经看过了」，而其实一眼都没看过。
-                //
-                // P0 没有 I/O，因此「读失败」与「没有可读的元数据」是同一件事，都落在
-                // tables_failed 里；P1 的采样路线会让两者分开（那时才有真的读失败）。
                 tablesFailed++;
                 log.info("sensitivity scan {} skipped {}.{}.{}: no parseable schema_doc",
                         scan.getId(), catalogName, candidate.database(), candidate.table());
                 continue;
+            }
+            SensitivitySampler.TableSample sample = SensitivitySampler.TableSample.none();
+            if (sampled) {
+                List<String> names = new ArrayList<>(columns.size());
+                for (Column column : columns) {
+                    names.add(column.name());
+                }
+                try {
+                    sample = sampler.sample(catalogName, candidate.database(), candidate.table(),
+                            names, scan.getSampleSize());
+                } catch (RuntimeException exception) {
+                    // 采样读失败 = 这张表这一轮**没看过**：计入 tables_failed，不是「无敏感列」。
+                    // 把漏扫说成干净，是这类系统最坏的一种错（§13「假覆盖」）。
+                    tablesFailed++;
+                    log.warn("sensitivity scan {} failed to sample {}.{}.{}: {}", scan.getId(),
+                            catalogName, candidate.database(), candidate.table(),
+                            exception.getMessage(), exception);
+                    continue;
+                }
             }
             try {
                 List<SensitivityFindingEntity> batch = new ArrayList<>();
@@ -439,21 +467,31 @@ public class SensitivityScanService {
                     columnsScanned++;
                     String referenceHash = ColumnRefs.hash(catalogName, candidate.database(),
                             candidate.table(), column.name());
+                    ColumnValues values = sample.values(column.name());
                     for (Match match : SensitivityDetectors.detect(catalogName, candidate.table(),
-                            column, types)) {
+                            column, types, values)) {
                         String key = match.typeCode() + "|" + referenceHash;
+                        if (suppressed.contains(key)) {
+                            // 人审否决过的结论不再产出（§7.2）：否则「拒绝 → 次日复活 →
+                            // 再拒一次」会变成每天的例行劳动，而人手是有限的资源。
+                            // 抑制项只在列改名（哈希变了）或治理员显式解禁后失效。
+                            suppressedSkipped++;
+                            continue;
+                        }
                         if (!written.add(key)) {
                             // 同一次扫描里同列同型已经有了（P4 的逐表回调会重放）。跳过而不是
                             // 靠唯一键抛异常：几十次约束冲突会把事务标记成 rollback-only，
                             // 「继续处理下一列」的意图就实现不了（见仓储注释）。
                             continue;
                         }
-                        batch.add(finding(scan, candidate, column, referenceHash, match, now));
+                        batch.add(finding(scan, candidate, column, referenceHash, match, sample, now));
                     }
                 }
                 if (!batch.isEmpty()) {
-                    findingRepository.saveAll(batch);
-                    findingsCreated += batch.size();
+                    findingsCreated += findingRepository.saveAll(batch).size();
+                    // 自动应用闸门（§5.3）：AUTO_APPLIED 是打分器**已经**判过的结论
+                    // （置信度 ≥ min_confidence 且该类型允许自动），这里只负责落标。
+                    applyAutoTags(batch, catalogName, candidate, sample);
                 }
             } catch (RuntimeException exception) {
                 tablesFailed++;
@@ -461,18 +499,68 @@ public class SensitivityScanService {
                         candidate.table(), exception.getMessage(), exception);
             }
         }
+        if (suppressedSkipped > 0) {
+            log.info("sensitivity scan {} skipped {} finding(s) suppressed by a human rejection",
+                    scan.getId(), suppressedSkipped);
+        }
         return new RunResult(tablesScanned, columnsScanned, findingsCreated, tablesFailed);
+    }
+
+    /**
+     * 把本批次里 {@code AUTO_APPLIED} 的命中落成标签。
+     *
+     * <p><b>为什么在 {@code saveAll} 之后做。</b>标签的 {@code finding_id} 要指向真实的
+     * 那一行，而 id 是自增的——先落 finding 再落标签，标签才有溯源。反过来会得到
+     * 一条「来源未知」的自动标签，而自动标签恰恰是最需要能被追问「凭什么自动」的那种。
+     *
+     * <p><b>{@code source=AUTO}。</b>人工确认的走 {@code SensitivityDecisionService}，
+     * 那里传 {@code MANUAL}；两条路径写同一张表但标不同的来源，{@code TagWriter}
+     * 会保证人工结论不被这里的自动结论覆盖。
+     */
+    private void applyAutoTags(List<SensitivityFindingEntity> batch, String catalogName,
+                               ResolvedTable candidate, SensitivitySampler.TableSample sample) {
+        boolean applied = false;
+        for (SensitivityFindingEntity entity : batch) {
+            if (!FindingState.AUTO_APPLIED.name().equals(entity.getState())) {
+                continue;
+            }
+            applied |= tagWriter.apply(catalogName, candidate.database(), candidate.table(),
+                    entity.getColumnName(), entity.getTypeCode(), entity.getConfidence(),
+                    entity.getId(), TagSource.AUTO, RequestContext.principal()).isPresent();
+        }
+        if (applied) {
+            // 表级级别 = 该表所有列标签的 max(level)（§5.5）。它不参与策略展开，
+            // 所以这一步不会改变任何列的脱敏行为。
+            tagWriter.refreshTableLevel(catalogName, candidate.database(), candidate.table(),
+                    RequestContext.principal());
+        }
+    }
+
+    /**
+     * 这个 catalog 里仍生效的抑制项，键的形状与 finding 的去重键一致
+     * （{@code typeCode|columnRefHash}）。
+     */
+    private Set<String> suppressedKeys(String catalogName) {
+        Set<String> keys = new HashSet<>();
+        for (SensitivitySuppressionEntity entity
+                : suppressionRepository.findByCatalogNameAndEnabledFlagTrueOrderByDecidedAtDesc(
+                        catalogName)) {
+            keys.add(entity.getTypeCode() + "|" + entity.getColumnRefHash());
+        }
+        return keys;
     }
 
     /**
      * 落一条 finding。
      *
-     * <p>{@code maskedSamplesJson} 恒为空：P0 不采样，因此没有样本可打码。
-     * 这里刻意不写 {@code null} 之外的任何东西——§5.4 的唯一一条不变量是
-     * 「任何路径都不写原值」，而一条「先写占位再补上」的路径迟早会漏掉打码那一步。
+     * <p><b>{@code maskedSamplesJson} 只写打码后的样本</b>（§5.4 的唯一不变量）：
+     * 采样读到的原值在 {@link SensitivitySampler} 里已经转成了
+     * {@code maskedSamples}，这里拿到的只有那一份。未采样时保持 {@code null}
+     * ——「没采」与「采到空」是两件事，后者是一条真实的证据。
      */
     private SensitivityFindingEntity finding(SensitivityScanEntity scan, ResolvedTable table,
-                                             Column column, String referenceHash, Match match, long now) {
+                                             Column column, String referenceHash, Match match,
+                                             SensitivitySampler.TableSample sample, long now) {
         SensitivityFindingEntity entity = new SensitivityFindingEntity();
         entity.setScanId(scan.getId());
         entity.setCatalogName(scan.getCatalogName());
@@ -484,6 +572,11 @@ public class SensitivityScanService {
         entity.setConfidence(match.confidence());
         entity.setMatchedDetectorsJson(Json.write(scores(match)));
         entity.setState(match.state().name());
+        List<String> masked = sample.maskedSamples(column.name());
+        if (!masked.isEmpty()) {
+            entity.setMaskedSamplesJson(Json.write(masked));
+            entity.setSamplingMode(sample.samplingMode());
+        }
         entity.markCreated(RequestContext.principal(), now);
         return entity;
     }

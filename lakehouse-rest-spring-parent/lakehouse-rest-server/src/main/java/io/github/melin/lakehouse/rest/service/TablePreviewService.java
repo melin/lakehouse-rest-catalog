@@ -191,8 +191,113 @@ public class TablePreviewService {
         }
     }
 
-    private PreviewDtos.PreviewResponse readSlice(PreviewTarget target, PreviewTable table,
-                                                  PreviewDtos.PreviewRequest req,
+    /**
+     * 采样读：敏感数据识别（D3 值层）用的**同一条只读通道**（设计稿 §5.4 第 1 条）。
+     *
+     * <p><b>为什么不是第二个读入口。</b>它复用本类已有的
+     * {@code PreviewTableFactory} 分派、{@link PreviewTable} 的读实现、
+     * {@link PreviewLimits} 的文件数与字节预算，以及**同一个并发池**
+     * （{@link #requireSlot()}）。扫描拿到的每一点能力都不是为它新写的：
+     * 一旦另开一条「只为识别服务」的读路径，系统里就多了一条只有自己知道、
+     * 只有自己审计的明文读法，而那条路恰恰最需要被审视（§5.4 的张力说明）。
+     *
+     * <p><b>与 {@link #preview} 的三处刻意差异：</b>
+     * <ol>
+     *   <li><b>不加列脱敏策略</b>：识别读的必须是原值，读到 {@code ****} 等于没读
+     *       （识别的是明文形态）。这正是 §5.4 说的「合法高权限读」，它的收口是
+     *       判权（{@code CATALOG:ALTER}）、只读待判列、结果不出服务端三条，
+     *       而不是在值上再遮一层；</li>
+     *   <li><b>不发预览事件</b>：一次采样会读几十张表、每张几页，逐页发
+     *       {@code table.previewed} 会把审计流冲成噪声，而「谁在什么时候读了明文」
+     *       已由 {@code sensitivity.scan.started} / {@code .completed} 完整记下
+     *       （含范围、列数、行数、主体，§9 末段）。审计的目的是能回答那个问题，
+     *       不是把每条 SELECT 都抄一遍；</li>
+     *   <li><b>行数由采样量决定、不走游标</b>：一次读完 {@code rows} 行就停，
+     *       读不满也算正常（文件数 / 字节预算先到），由调用方按真实读到的行数算
+     *       命中率——样本量不足的打折在 {@code SensitivityScorer} 里做。</li>
+     * </ol>
+     *
+     * <p><b>返回的行是原值。</b>调用方（{@code SensitivitySampler}）必须保证它只在
+     * 内存里活一次，落库前过 {@code SensitivityMasking}（§5.4 的唯一不变量）。
+     *
+     * @param target  已定位的表
+     * @param columns 要读的列（**只读待判列**，不 {@code SELECT *}，§5.4 第 2 条）；
+     *                空表示按表的列顺序取前 {@code PreviewLimits.maxColumns} 列
+     * @param rows    最多读多少行（采样量）
+     */
+    public Sample sample(PreviewTarget target, List<String> columns, int rows) {
+        if (rows < 1) {
+            throw ApiException.badRequest("sample rows must be positive, got " + rows);
+        }
+        String key = requireSlot();
+        try (PreviewTable table = open(target, null)) {
+            List<PreviewColumn> all = table.columns();
+            Map<String, PreviewColumn> byName = new LinkedHashMap<>();
+            for (PreviewColumn column : all) {
+                byName.put(column.name(), column);
+            }
+            List<PreviewColumn> output = new ArrayList<>();
+            if (columns == null || columns.isEmpty()) {
+                for (PreviewColumn column : all) {
+                    if (output.size() >= limits.maxColumns()) {
+                        break;
+                    }
+                    output.add(column);
+                }
+            } else {
+                List<String> unknown = new ArrayList<>();
+                for (String name : new java.util.LinkedHashSet<>(columns)) {
+                    PreviewColumn column = byName.get(name);
+                    if (column == null) {
+                        unknown.add(name);
+                    } else {
+                        output.add(column);
+                    }
+                }
+                if (!unknown.isEmpty()) {
+                    // 元数据（schema_doc）与表当前的列不一致：可能刚 ALTER 过。
+                    // 报错而不是跳过——跳过会让「这一列没被判过」看起来像「这列不敏感」。
+                    throw ApiException.badRequest("Unknown columns " + unknown + " on "
+                            + target.database() + "." + target.table().getName()
+                            + "; refresh the table metadata and scan again");
+                }
+            }
+            int[] indices = new int[output.size()];
+            List<String> names = new ArrayList<>(output.size());
+            for (int index = 0; index < output.size(); index++) {
+                names.add(output.get(index).name());
+                indices[index] = indexOf(all, output.get(index).name());
+            }
+            long startedAt = System.nanoTime();
+            PreviewChunk chunk = table.read(new PreviewTable.ReadSpec(
+                    indices,
+                    indices.length,
+                    List.of(),
+                    List.of(),
+                    0,
+                    0,
+                    rows,
+                    limits.maxFiles(),
+                    limits.maxBytes(),
+                    startedAt + limits.timeoutMs() * 1_000_000L));
+            return new Sample(names, chunk.rows(), table.snapshotId(), chunk.rowsRead());
+        } finally {
+            releaseSlot(key);
+        }
+    }
+
+    /**
+     * 一次采样读的产物。
+     *
+     * @param columns    读到的列名（顺序与 {@code rows} 里每一行的值一一对应）
+     * @param rows       行（**原值**，只在内存里活一次）
+     * @param snapshotId 读的快照
+     * @param rowsRead   真正从文件里读出来的行数（含被预算截断前的部分）
+     */
+    public record Sample(List<String> columns, List<List<Object>> rows, Long snapshotId, long rowsRead) {
+    }
+
+    private PreviewDtos.PreviewResponse readSlice(PreviewTarget target, PreviewTable table,                                                  PreviewDtos.PreviewRequest req,
                                                   PreviewCursorCodec.Cursor cursor,
                                                   DataPolicyService.PreviewPolicy policy) {
         // 期间表又提交过：游标里的行号对应的清单已经不是最新的那份。

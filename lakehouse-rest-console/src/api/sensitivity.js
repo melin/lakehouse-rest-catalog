@@ -119,7 +119,7 @@ export const sensitivityApi = {
   getScan: (scanId) => get('getSensitivityScan', { params: { scanId } }),
 
   /**
-   * 命中清单（人审队列的读侧；P0 只提供读，「批量确认 / 拒绝」属 P1）。
+   * 命中清单（人审队列的读侧；写侧是下面的 `decideFindings`）。
    *
    * <p><b>`catalog` 必填</b>：服务端硬要求。没有它这个端点就成了
    * 「一次读到所有 catalog 的识别结论」，而识别结论（类型 + 置信度）本身就是敏感信息。
@@ -132,6 +132,40 @@ export const sensitivityApi = {
     get('listSensitivityFindings', {
       params: { query: { catalog, state, table, type, page, pageSize } },
     }),
+
+  /**
+   * 批量确认 / 拒绝（P1 人审闭环）。
+   *
+   * <p>请求体与服务端 `FindingDecisionRequest` 逐字对齐：`{ids, decision, note}`。
+   * **没有 `catalog`** ——判权由服务端按 finding 自己记着的 catalog 逐个判
+   * `CATALOG:ALTER`。让前端传一个 catalog 名来「声明」权限，等于把判权的输入
+   * 交到调用方手里。
+   *
+   * <p>`decision` 只认 `CONFIRMED` / `REJECTED`：`PENDING` 是初始态、
+   * `AUTO_APPLIED` 是扫描的产出，让人审把它们「改回去」没有含义。给别的值服务端
+   * 直接 400，不会静默当成拒绝。
+   *
+   * <p>响应里的 `skipped` 是**已经决策过**的条数（幂等重试、两个人同时点）。
+   * 它不是错误——重复确认一条已确认的命中是无害的，界面照常刷新即可。
+   */
+  decideFindings: (body) => post('decideSensitivityFindings', { body }),
+
+  /**
+   * 永久抑制项清单（含**已解禁**的：`enabled=false` 的行不删，才答得出
+   * 「谁在什么时候解除过」）。判 `CATALOG:DESCRIBE`——抑制项说的「这一列不是身份证」
+   * 与标签说的「这一列是身份证」是同一级别的信息，可见性不该有差别。
+   */
+  listSuppressions: ({ catalog } = {}) =>
+    get('listSensitivitySuppressions', { params: { query: { catalog } } }),
+
+  /**
+   * 显式解禁（设计稿 §7.2 的第二条失效路径；第一条是列改名导致哈希变化）。
+   *
+   * <p>服务端**置 `enabled=false` 而不是删行**：删行等于删掉决策史。解禁之后
+   * 不会立刻重扫——下一轮扫描才会重新判这一列（解禁是「我改主意了」，
+   * 不是「现在就给我一个结论」）。
+   */
+  releaseSuppression: (id) => del('releaseSensitivitySuppression', { params: { id } }),
 
   // ------------------------------------------------------------------ 列级标签
 
@@ -162,10 +196,13 @@ export const sensitivityApi = {
   /**
    * 删标签（回 204）。
    *
-   * <p>P0 只删标签、**不写抑制项**（设计稿 §7.2 的抑制项依赖的两个前提在 P0 都不成立：
-   * 没有任何路径能产生 `REJECTED`，且元数据档置信度上限 0.45 够不到 0.85 永不产 tag，
-   * 所以「删了会复活」在 P0 不成立）。抑制项与 `decide` 端点一起在 P1 落地。
-   * 界面上的文案不能写成「删除后不会被重新识别」——那句话今天不成立。
+   * <p><b>P1 起同时写一条永久抑制项</b>（设计稿 §7.2 / §9）。只删行是不够的：
+   * 采样档会真的自动落标，同一列下一轮会被判成同一类型再写回来——用户看到的是
+   * 「删了又回来了」，而唯一能解释它的地方是一个他没打开过的扫描历史。
+   *
+   * <p>抑制项的键是 `(column_ref_hash, type_code)`，因此**只有带类型的标签**删除才
+   * 产生抑制项（手工打标的对话框不收 `typeCode`，删它只是删行；表级标签没有类型，
+   * 且界面不提供删除入口）。解禁在 `DELETE /sensitivity-suppressions/{id}`。
    */
   deleteTag: (id) => del('deleteColumnTag', { params: { id } }),
 

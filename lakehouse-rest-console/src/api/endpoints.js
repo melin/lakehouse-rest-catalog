@@ -386,10 +386,20 @@ export const ENDPOINTS = {
   listSensitivityScans: { method: 'GET', path: '/api/management/v1/sensitivity-scans' },
   getSensitivityScan: { method: 'GET', path: '/api/management/v1/sensitivity-scans/{scanId}' },
 
-  // --- 命中清单（`#overview` 的「待人审」计数；P0 只读，`decide` 属 P1）
+  // --- 命中清单（`#overview` 的「待人审」计数与 `#findings` 屏）
   // `catalog` **必填**：没有它这个端点就成了「一次读到所有 catalog 的识别结论」，
   // 而识别结论（类型 + 置信度）本身就是敏感信息。
   listSensitivityFindings: { method: 'GET', path: '/api/management/v1/sensitivity-findings' },
+  // P1 人审闭环：批量确认 / 拒绝。确认即落 `source=MANUAL` 的标签，拒绝即落永久抑制项
+  // （否则「拒绝 → 次日重扫复活 → 再拒一次」会变成每天的例行劳动）。
+  // 请求体是 `{ids, decision, note}`，**没有 catalog**——判权由服务端按 finding
+  // 自己记着的 catalog 逐个判 `CATALOG:ALTER`。
+  decideSensitivityFindings: { method: 'POST', path: '/api/management/v1/sensitivity-findings:decide' },
+
+  // --- 永久抑制项（`#findings` 的「已否决」视图 + 解禁动作）
+  // 解禁是**置 enabled=false 不删行**：留着才能回答「谁在什么时候解除过」。
+  listSensitivitySuppressions: { method: 'GET', path: '/api/management/v1/sensitivity-suppressions' },
+  releaseSensitivitySuppression: { method: 'DELETE', path: '/api/management/v1/sensitivity-suppressions/{id}' },
 
   // --- 列级标签（`#tags` 屏；设计稿 §8.4 的对外主接口）
   // 响应同时含 `items` + `meta` + `coverage`，而 `coverage` 只随范围（catalog/table）变，
@@ -399,8 +409,9 @@ export const ENDPOINTS = {
   // `entityVersion`（不匹配 409，控制台不自动重试——标签是治理结论，得由人裁决）。
   // `column` 传空串 = 表级标签（不参与策略展开，只用于检索）。
   upsertColumnTag: { method: 'PUT', path: '/api/management/v1/column-tags' },
-  // 回 204。P0 **不写抑制项**（P0 元数据档置信度上限 0.45 够不到 0.85、永不产 tag，
-  // 所以「删了会复活」在 P0 不成立）——界面文案因此不能写「删除后不会被重新识别」。
+  // 回 204。**同时写永久抑制项**（P1 起）：只删行的话，下一轮扫描会把同一列判成
+  // 同一类型再写回来，用户看到的是「删了又回来了」。抑制项只在列改名（哈希变了）
+  // 或治理员显式解禁后失效。
   deleteColumnTag: { method: 'DELETE', path: '/api/management/v1/column-tags/{id}' },
 
   // --- catalog 级治理设置（`#overview` 的「catalog 级设置」卡）

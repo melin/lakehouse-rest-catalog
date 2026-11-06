@@ -159,13 +159,15 @@
             </el-table-column>
           </el-table>
           <p class="pc-sens-note">
-            <strong>P0 只跑 D1/D2</strong>，两层都只读已落库的 schema 文档、零额外 I/O。
-            这决定了它的得分上限是
+            <strong>D1/D2 任何一档都跑</strong>，两层都只读已落库的 schema 文档、零额外 I/O。
+            这决定了元数据档的得分上限是
             <code class="pc-mono">0.35 + 0.10 = 0.45</code>，够不着默认阈值
             <code class="pc-mono">0.85</code>——因此<strong>元数据扫描只产命中、不产标签</strong>。
             要在人审队列里看到候选，靠的是元数据档的下界 <code class="pc-mono">0.35</code>
             （只有类型像的那批，如 <code class="pc-mono">char(18)</code>，不产候选——
-            定长字符列满库都是）。自动落标要等 D3 值层（P1）。
+            定长字符列满库都是）。<strong>D3 值层只在采样档跑</strong>，它把上限推到
+            <code class="pc-mono">0.35 + 0.10 + 0.40 = 0.85</code>，强格式类型因此能自动落标；
+            D4 字典与 D5 统计属 <b>P4</b>，现在配上去也不参与打分。
           </p>
         </PanelCard>
       </div>
@@ -339,7 +341,7 @@
                     placeholder="15-18"
                   />
                   <div class="pc-hint">
-                    区间的**闭区间**判据只在类型名也命中时才看：配了区间却没长度 → 不命中
+                    区间的<strong>闭区间</strong>判据只在类型名也命中时才看：配了区间却没长度 → 不命中
                     （而不是「忽略长度」）。
                   </div>
                 </template>
@@ -359,8 +361,9 @@
                     class="pc-mono"
                   />
                   <div class="pc-hint pc-field-note-warn">
-                    <strong>P0 不跑这一层</strong>：值模式要采样读明文，属 P1。
-                    现在配上去只是把形状定下来，扫描不会用到它——因此调它的权重暂时看不到判定变化。
+                    <strong>只在采样档跑</strong>：这一层要读明文样本，元数据档里配了也不生效。
+                    打折口径值得记住——校验器<strong>通过率低于 99% 时整层乘一次通过率</strong>，
+                    所以「500 行里 4 条脏数据」仍然自动落标（0.992），到 6 条才退到人审。
                   </div>
                 </template>
 
@@ -373,7 +376,8 @@
                     placeholder="每行一个枚举值，如 男 / 女"
                   />
                   <div class="pc-hint pc-field-note-warn">
-                    <strong>P0 不跑这一层</strong>：字典要采样、且要求列基数 &lt; 1000，属 P1。
+                    <strong>这一层还没实现（属 P4）</strong>：字典要按列基数 &lt; 1000 采样取值集合，
+                    现在配上去不参与打分。
                   </div>
                 </template>
 
@@ -393,7 +397,7 @@
                     （留空 = 不按基数判）。
                   </div>
                   <div class="pc-hint pc-field-note-warn">
-                    <strong>P0 不跑这一层</strong>：统计特征要采样，属 P1。
+                    <strong>这一层还没实现（属 P4）</strong>：统计特征要采样，现在配上去不参与打分。
                   </div>
                 </template>
               </div>
@@ -593,9 +597,9 @@ const dialog = reactive({
  * `color` 只用于左侧堆叠条与图例。
  *
  * <p>`active` 与 `weight` 才是可编辑的：它们进 `detectors_json`。
- * 注意 `VALUE` / `DICT` / `STAT` 三层在 P0 **不参与判定**（要采样，属 P1），
- * 编辑器里对这三层都写了「P0 不跑这一层」——不写的话，治理员调完它们的权重
- * 发现判定没变，会以为功能坏了。
+ * `VALUE` 只在采样档参与判定（P1 已实现，D1+D2+D3 恰好到 0.85）；`DICT` / `STAT`
+ * 两层仍未实现（属 P4），编辑器里对它们写了「这一层还没实现」——不写的话，
+ * 治理员调完权重发现判定没变，会以为功能坏了。
  */
 const LAYER_META = [
   {
@@ -656,16 +660,17 @@ const LEVEL_OPTIONS = [
 /**
  * 决策带（只读展示）。
  *
- * <p>下界之所以有三档而不是两档：`SAMPLED` 的丢弃下界是 0.60，而
- * `METADATA_ONLY` 只能跑到 0.45，沿用 0.60 会让 P0 这条唯一能不采样就跑的路径
- * **恒不产出结论**。0.35 的含义是「名称层命中是元数据模式下最低的证据要求」。
+ * <p>下界有三档而不是两档，因为**下界随「这一列到底采到样没有」走，不随扫描模式走**：
+ * 拿到样本的下界是 0.60，没拿到的下界是 0.35。若统一用 0.60，元数据档（上限 0.45）
+ * 这条唯一能不采样就跑的路径会**恒不产出结论**。0.35 的含义是「名称层命中是
+ * 没有样本时最低的证据要求」。
  */
 const BANDS = [
   {
     range: '≥ 0.85 且允许自动',
     action: '直接落标',
     tag: 'success',
-    note: 'P0 到不了：元数据档上限 0.45',
+    note: '元数据档到不了；采样档 D1+D2+D3 恰好 0.85',
   },
   {
     range: '0.35 – 0.85（元数据档）',
@@ -677,7 +682,7 @@ const BANDS = [
     range: '0.60 – 0.85（采样档）',
     action: '待人审',
     tag: 'warning',
-    note: '需要 D3 值层才有这个区间，属 P1',
+    note: '拿到样本但校验器没全过：整层按通过率打折',
   },
   {
     range: '< 下界',

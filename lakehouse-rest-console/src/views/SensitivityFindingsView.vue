@@ -6,24 +6,42 @@
     >
       <template #actions>
         <!--
-          两个「处置」动作刻意**放在页面上而不是藏起来**：它们代表这一屏的完整形态，
-          但今天是置灰的。藏掉会让人以为审核工作流就只有「看」；可点再报错会更糟——
-          服务端根本没有这个端点，报出来的是 404，读起来像「是不是我点错了」。
-          置灰 + 悬停说出理由 + 写明归属期，是这里唯一诚实的表达。
+          P1 起两个处置动作可点。**没有选中行时置灰**（tooltip 说明原因）：
+          批量接口的语义是「这一屏 20 条一起确认」，没有选中就没有动作对象，
+          让按钮可点再报 400 只会制造一次「我点错了吗」的怀疑。
         -->
-        <el-tooltip content="属 P1：需要 POST /sensitivity-findings:decide（服务端尚无此端点）" placement="bottom">
+        <el-tooltip
+          :content="selectedIds.length
+            ? `把选中的 ${selectedIds.length} 条确认为敏感（落 source=MANUAL 的标签）`
+            : '先勾选要确认的行：确认即落 MANUAL 标签，不会被下一轮扫描覆盖'"
+          placement="bottom"
+        >
           <span class="pc-finding-disabled-wrap">
-            <el-button size="small" disabled>
+            <el-button
+              size="small"
+              type="primary"
+              :disabled="!selectedIds.length || deciding"
+              :loading="deciding"
+              @click="decide('CONFIRMED')"
+            >
               <el-icon><Check /></el-icon>
-              <span class="pc-btn-text">批量确认</span>
+              <span class="pc-btn-text">确认选中</span>
             </el-button>
           </span>
         </el-tooltip>
-        <el-tooltip content="属 P1：拒绝要同时写永久抑制项，否则下一轮扫描会把同一条结论重新提出来" placement="bottom">
+        <el-tooltip
+          content="拒绝会同时写永久抑制项（按 列 + 类型 记）：下一轮扫描不再把这条结论提出来，直到列改名或治理员显式解禁"
+          placement="bottom"
+        >
           <span class="pc-finding-disabled-wrap">
-            <el-button size="small" disabled>
+            <el-button
+              size="small"
+              :disabled="!selectedIds.length || deciding"
+              :loading="deciding"
+              @click="decide('REJECTED')"
+            >
               <el-icon><Close /></el-icon>
-              <span class="pc-btn-text">批量拒绝</span>
+              <span class="pc-btn-text">拒绝选中</span>
             </el-button>
           </span>
         </el-tooltip>
@@ -34,15 +52,16 @@
     </PageHeader>
 
     <TipAlert type="info" class="pc-hint">
-      <template #title>这一屏当前只读：P0 只产候选，不产标签</template>
-      元数据档（只跑 D1 名称 / D2 类型）的得分上限是
-      <b>0.35 + 0.10 = 0.45</b>，够不到默认的自动应用阈值
-      <b>0.85</b>，所以 P0 的每一行都停在
-      <code class="pc-mono">PENDING</code>——不会有「已自动落标」的行，也不会有「已拒绝」的行。
-      「批量确认 / 批量拒绝」两个动作因此今天是置灰的：它们依赖
-      <code class="pc-mono">POST /sensitivity-findings:decide</code>（属 P1），
-      而拒绝还依赖一张抑制项表（按 <code class="pc-mono">列 + 类型</code> 记，否则下一轮扫描
-      会把同一条结论重新提出来）。这条链路的落地期写在「为什么这么判」里那一行，不靠口头约定。
+      <template #title>这一屏现在是闭环的：确认落标签，拒绝落抑制项</template>
+      <b>采样档</b>（D1–D3）的得分上限是
+      <b>0.35 + 0.10 + 0.40 = 0.85</b>，恰好够到默认的自动应用阈值——因此
+      <code class="pc-mono">AUTO_APPLIED</code> 只在「强格式类型 + 值层校验通过」时出现；
+      <b>元数据档</b>（只跑 D1/D2）上限 0.45，恒停
+      <code class="pc-mono">PENDING</code>。
+      确认一条命中会落 <code class="pc-mono">source=MANUAL</code> 的标签（人工结论优先，
+      自动结论不会覆盖它）；拒绝会同时写<b>永久抑制项</b>——否则下一轮扫描会把同一条结论
+      重新提出来，「我说了不是，它每天还问一遍」。抑制项只在<b>列改名</b>（哈希变了）
+      或治理员显式解禁后失效，解禁入口在本页下方的「已否决」卡片里。
     </TipAlert>
 
     <PanelCard flush>
@@ -136,7 +155,11 @@
           row-key="id"
           :expand-row-keys="expandedKeys"
           @expand-change="onExpandChange"
+          @selection-change="onSelectionChange"
         >
+          <!-- 只有 PENDING / AUTO_APPLIED 可选：已确认 / 已拒绝的行再决策一次没有含义
+               （服务端会把它算进 skipped，但让它进勾选集合会让人以为「这一条也要处理」）。 -->
+          <el-table-column type="selection" width="42" :selectable="decidable" fixed="left" />
           <el-table-column type="expand" fixed="left">
             <template #default="{ row }">
               <div class="pc-finding-why">
@@ -332,6 +355,82 @@
       </ResourceState>
     </PanelCard>
 
+    <PanelCard flush>
+      <div class="pc-list-head">
+        <span class="pc-list-title">已否决（永久抑制项）</span>
+        <TipNote>
+          被拒绝的「列 + 类型」组合在这里留一行，下一轮扫描<b>直接跳过</b>它。
+          解禁是置 <code class="pc-mono">enabled=false</code> 而<b>不删行</b>：
+          删行等于删掉决策史，而「谁在什么时候否掉、谁又解禁」只能从这里读出来。
+          解禁<b>不会立刻重扫</b>——下一轮扫描才会重新判这一列。
+        </TipNote>
+        <span class="pc-spacer" />
+        <el-button size="small" :loading="suppressionsLoading" :disabled="!catalogName" @click="loadSuppressions">
+          刷新
+        </el-button>
+      </div>
+      <ResourceState
+        :loading="suppressionsLoading"
+        :error="suppressionsError"
+        :empty="!suppressions.length"
+        :empty-text="catalogName
+          ? '还没有被否决的结论。拒绝一条命中就会在这里留一行，之后的重扫不再提它。'
+          : '请先选择 catalog。'"
+      >
+        <el-table :data="suppressions" size="small" row-key="id">
+          <el-table-column label="列引用" min-width="260">
+            <template #default="{ row }">
+              <span class="pc-mono">{{ row.columnRef }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="类型" width="190">
+            <template #default="{ row }">
+              <span class="pc-mono">{{ row.typeCode }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="否决理由" min-width="200">
+            <template #default="{ row }">
+              <span v-if="row.reason">{{ row.reason }}</span>
+              <span v-else class="pc-dim">未填理由</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="否决人" width="160">
+            <template #default="{ row }">
+              <span class="pc-mono">{{ row.decidedBy || '—' }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="否决时间" width="190">
+            <template #default="{ row }">
+              <TimeText :millis="row.decidedAt" />
+            </template>
+          </el-table-column>
+          <el-table-column label="状态" width="150">
+            <template #default="{ row }">
+              <el-tag v-if="row.enabled" size="small" type="warning">生效中</el-tag>
+              <el-tooltip v-else :content="`${row.releasedBy || '—'} 于 ${formatMillis(row.releasedAt)} 解禁`" placement="top">
+                <el-tag size="small" type="info">已解禁</el-tag>
+              </el-tooltip>
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="110" align="right" fixed="right">
+            <template #default="{ row }">
+              <el-button
+                v-if="row.enabled"
+                size="small"
+                link
+                type="primary"
+                :loading="releasing === row.id"
+                @click="release(row)"
+              >
+                解禁
+              </el-button>
+              <span v-else class="pc-dim">—</span>
+            </template>
+          </el-table-column>
+        </el-table>
+      </ResourceState>
+    </PanelCard>
+
     <TipAlert type="info" class="pc-hint">
       <template #title>这一页是「历史」，不是「现状」</template>
       一次扫描给每个命中列留一行，<b>重扫会再留一行</b>——同一个结论在多轮扫描里各有一行，
@@ -348,6 +447,7 @@
 <script setup>
 import { onMounted, reactive, ref } from 'vue'
 import { useRoute } from 'vue-router'
+import { ElMessage, ElMessageBox } from 'element-plus'
 
 import PageHeader from '@/components/PageHeader.vue'
 import PanelCard from '@/components/PanelCard.vue'
@@ -370,11 +470,11 @@ import { ICEBERG, PAIMON, catalogFormatOf } from '@/utils/catalogFormat.js'
  * 「改一个内置类型的探测器权重后，下一轮扫描的判定随之改变」也要靠这一屏
  * **看出来**——前后两次展开同一列的「为什么这么判」，各层贡献的差就是证据。
  *
- * <p><b>写侧（确认 / 拒绝）不在这一屏。</b>`POST /sensitivity-findings:decide` 属 P1，
- * 它不是一个「加个按钮」的事：拒绝要同时落一张抑制项表（按 `column_ref_hash + type_code`
- * 记），否则下一轮扫描会把同一条结论重新提出来——「我说了不是，它每次还问」。
- * 那会让 §12 写明的「P0 = 五实体」变成六实体，因此 P0 只做读。按钮留在页面上置灰，
- * 是为了让「这一屏的完整形态长什么样」一眼可见（见模板里的注释）。
+ * <p><b>写侧（确认 / 拒绝）从 P1 起就在这一屏。</b>`POST /sensitivity-findings:decide`
+ * 不是一个「加个按钮」的事：拒绝要同一事务里落一张抑制项表（按
+ * `column_ref_hash + type_code` 记），否则下一轮扫描会把同一条结论重新提出来——
+ * 「我说了不是，它每次还问」。因此按钮与抑制项卡片是同一件事的两半：
+ * 上面的按钮产生否决，下面的卡片让否决可以被撤回（撤回 = 置 `enabled=false` 不删行）。
  *
  * <p><b>分页走远程（`useRemotePaging`）。</b>命中的量级是「每轮扫描每命中列一行」，
  * 而扫描是每天重跑的，两个维度都会长。这一屏的用法又是「逐条看为什么」——
@@ -450,7 +550,7 @@ const LAYERS = [
     label: 'D3 值模式',
     note: '采样值正则 + 校验器',
     weight: 0.4,
-    inactive: 'P0 不跑这一层（要采样才有效值，属 P1）',
+    inactive: '元数据档不跑这一层：它要采样才有值（采样档下这一层是唯一接近确证的证据）',
   },
   {
     key: 'dict',
@@ -458,7 +558,7 @@ const LAYERS = [
     label: 'D4 字典',
     note: '小基数枚举对照敏感字典',
     weight: 0.1,
-    inactive: 'P0 不跑这一层（要读列值，属 P1）',
+    inactive: '本版不跑这一层（属 P4：需要业务字典，内置类型没有可对照的词表）',
   },
   {
     key: 'stat',
@@ -466,7 +566,7 @@ const LAYERS = [
     label: 'D5 统计特征',
     note: '基数比 / 长度分布 / 空值率',
     weight: 0.05,
-    inactive: 'P0 不跑这一层（要读列值，属 P1）',
+    inactive: '本版不跑这一层（属 P4）',
   },
 ]
 
@@ -491,12 +591,141 @@ const paging = useRemotePaging(
 
 const { loading, error, rows, total, page, pageSize, load, reload, onPageChange, onSizeChange } = paging
 
+// ---------------------------------------------------------------- 人审决策（P1）
+
+const selectedIds = ref([])
+const deciding = ref(false)
+
+/** 只有待审 / 已自动落标的行可选：已决策的行再决策一次没有含义（服务端会算进 skipped）。 */
+function decidable(row) {
+  return row.state === 'PENDING' || row.state === 'AUTO_APPLIED'
+}
+
+function onSelectionChange(selection) {
+  selectedIds.value = (selection || []).map((row) => row.id)
+}
+
+/**
+ * 批量确认 / 拒绝。
+ *
+ * <p><b>整个批量一个请求。</b>服务端一次决策一个事务：逐条发会把「前 7 条成功、第 8 条失败」
+ * 变成一个既不是开始也不是结束的界面，而人唯一能做的是再点一次（重复点击会撞上
+ * 已经确认的那几条）。
+ *
+ * <p>拒绝时让用户填一句理由：抑制项是一句「这一列不是身份证」的断言，而断言要有人负责。
+ * 取消输入 = 放弃这次操作（不是「无理由继续」）——理由在这里不是可选的装饰。
+ */
+async function decide(decision) {
+  const ids = [...selectedIds.value]
+  if (!ids.length) return
+  const verb = decision === 'CONFIRMED' ? '确认' : '拒绝'
+  let note = ''
+  if (decision === 'REJECTED') {
+    try {
+      const input = await ElMessageBox.prompt(
+        `将把选中的 ${ids.length} 条标记为「不是敏感」，并写入永久抑制项（下一轮扫描不再提示）。写一句理由：`,
+        '拒绝这些命中',
+        { confirmButtonText: '拒绝并抑制', cancelButtonText: '取消', inputPlaceholder: '例如：这是身份证后四位的掩码列' },
+      )
+      note = (input.value || '').trim()
+    } catch {
+      return
+    }
+  } else {
+    try {
+      await ElMessageBox.confirm(
+        `确认后这 ${ids.length} 条会落成 source=MANUAL 的标签（后续扫描的自动结论不会覆盖它们）。`,
+        '确认这些命中',
+        { confirmButtonText: '确认', cancelButtonText: '取消', type: 'warning' },
+      )
+    } catch {
+      return
+    }
+  }
+  deciding.value = true
+  try {
+    const result = await sensitivityApi.decideFindings({ ids, decision, note })
+    const extra = result?.skipped ? `，${result.skipped} 条已被决策过（跳过）` : ''
+    ElMessage.success(`${verb} ${result?.decided ?? ids.length} 条${extra}`)
+    selectedIds.value = []
+    await Promise.all([load(), loadSuppressions()])
+  } catch (exception) {
+    ElMessage.error(exception?.message || `${verb}失败`)
+  } finally {
+    deciding.value = false
+  }
+}
+
+// ---------------------------------------------------------------- 永久抑制项
+
+const suppressions = ref([])
+const suppressionsLoading = ref(false)
+const suppressionsError = ref(null)
+const releasing = ref(null)
+
+async function loadSuppressions() {
+  if (!catalogName.value) {
+    suppressions.value = []
+    return
+  }
+  suppressionsLoading.value = true
+  suppressionsError.value = null
+  try {
+    const payload = await sensitivityApi.listSuppressions({ catalog: catalogName.value })
+    suppressions.value = payload?.items || []
+  } catch (exception) {
+    suppressionsError.value = exception
+  } finally {
+    suppressionsLoading.value = false
+  }
+}
+
+/**
+ * 解禁一条抑制项。
+ *
+ * <p>二次确认写清代价：解禁之后<b>下一轮扫描会重新把这一列提出来</b>，
+ * 也就是说这条否决会被推翻。不写这句，用户会以为「解禁 = 只是从列表里去掉」。
+ */
+async function release(row) {
+  try {
+    await ElMessageBox.confirm(
+      `解禁后，下一轮扫描会重新判定 ${row.columnRef} 是不是 ${row.typeCode}。`
+        + '如果判定结果不变，拒绝需要再做一次。',
+      '解禁这条否决',
+      { confirmButtonText: '解禁', cancelButtonText: '取消', type: 'warning' },
+    )
+  } catch {
+    return
+  }
+  releasing.value = row.id
+  try {
+    await sensitivityApi.releaseSuppression(row.id)
+    ElMessage.success('已解禁；下一轮扫描会重新判定这一列')
+    await loadSuppressions()
+  } catch (exception) {
+    ElMessage.error(exception?.message || '解禁失败')
+  } finally {
+    releasing.value = null
+  }
+}
+
+/** 解禁时间在响应里是 epoch 毫秒（`releasedAt`），tooltip 里要给人看的时间。 */
+function formatMillis(value) {
+  if (!value) return '—'
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString()
+}
+
 function onCatalogChange(value) {
   // 写回全局上下文：`catalog` 是控制台的核心上下文，切了不写回会让「目录浏览」等页面
   // 停在旧值上，而这一屏看起来已经切过去了。
   session.selectCatalog(value || '')
   expandedKeys.value = []
+  selectedIds.value = []
   reload()
+  // 抑制项是 catalog 级资源，换 catalog 必须重取——不取会让上一次的选择残留在这里，
+  // 而「解禁」按钮点下去会操作到另一个 catalog 的行。
+  loadSuppressions()
 }
 
 function onExpandChange(row, expanded) {
@@ -535,7 +764,7 @@ function layerSum(row) {
  * 而 `effectiveRows` 不进 finding（它是扫描级的统计，不是这一列的性质），
  * 前端因此**算不出**那个折损系数，只能判断「两者不等」并说明原因。
  * 元数据档不做折损，两者必然一致——不一致只有三种可能：采样折损、
- * 某一层是 P0 不跑的层却带着非 0 分（配置残留）、或者这一行是脚本直接写进去的。
+ * 某一层是当前不跑的层却带着非 0 分（配置残留）、或者这一行是脚本直接写进去的。
  * 三种都值得看见，所以这里不做静默归零。
  */
 function discounted(row) {
@@ -565,7 +794,7 @@ function stateSpec(state) {
 
 function modeSpec(mode) {
   return mode === 'SAMPLED'
-    ? { label: '采样档（D1–D5）', tag: 'success' }
+    ? { label: '采样档（D1–D3）', tag: 'success' }
     : { label: '元数据档（只跑 D1/D2）', tag: 'info' }
 }
 
@@ -575,6 +804,7 @@ onMounted(() => {
   session.loadCatalogs().catch(() => null)
   if (catalogName.value) {
     load()
+    loadSuppressions()
   }
 })
 
@@ -663,8 +893,9 @@ onConsoleRefresh(refresh)
   color: var(--pc-text-dim);
 }
 
-/* 「P0 不跑这一层」用弱化的橙色而不是灰：它是**还没通**，不是**本来没有**。
-   两者的处置完全不同——前者等 P1、后者要改配置。 */
+/* 「这一层为什么是 0 分」用弱化的橙色而不是灰：它是**这一档不跑**（元数据档的 D3、
+   属 P4 的 D4/D5），不是**本来没有**。两者的处置完全不同——前者换个模式或等一期，
+   后者要改配置。 */
 .pc-finding-off {
   color: var(--el-color-warning);
   font-size: 12.5px;

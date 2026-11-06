@@ -394,9 +394,10 @@ EXTENSION_ENDPOINTS = {
     #
     # 判权在控制器：类型表**归服务管理员**（这张表没有 catalog 列，类型是全局的）；
     # 扫描/标签/设置按 catalog 判 DESCRIBE（读）或 ALTER（写）。
-    # 有意**不**登记的三条（P1/P4 才有）：`/sensitivity-findings:decide`（批量决策）、
-    # `/sensitivity-scans/{id}/submission` 与 `/items/{id}`（下推作业的回调口，
-    # 调用方是 k8s 里的任务而不是控制台）、`/sensitivity-schedules`（P0 取外部调度路线）。
+    # 有意**不**登记的两条（P4 才有）：`/sensitivity-scans/{id}/submission` 与
+    # `/items/{id}`——下推作业的回调口，调用方是 k8s 里的任务而不是控制台。
+    # `/sensitivity-schedules` 的 5 条同样属 P4（本轮拍板自建调度，但表与端点未建）。
+    # `decide` 与两条抑制项端点已在 P1 补齐，因此**从「不登记」翻成「登记」**。
     ("GET", "/api/management/v1/sensitive-types"): "敏感类型清单（内置 + 自定义，全局资源，判服务管理员）",
     ("POST", "/api/management/v1/sensitive-types"): "新建自定义类型（builtin 恒 false，判服务管理员）",
     ("GET", "/api/management/v1/sensitive-types/{typeCode}"): "敏感类型详情（含五层探测器配置与 configuredLayers）",
@@ -405,10 +406,13 @@ EXTENSION_ENDPOINTS = {
     ("POST", "/api/management/v1/sensitivity-scans"): "发起扫描（返 202，扫描是长任务；判 CATALOG:ALTER）",
     ("GET", "/api/management/v1/sensitivity-scans"): "扫描历史（含 execution / triggerType 两列；不带 catalog 要服务管理员）",
     ("GET", "/api/management/v1/sensitivity-scans/{scanId}"): "单次扫描详情与计数（含 tablesFailed 与 B 路线的 Job 坐标）",
-    ("GET", "/api/management/v1/sensitivity-findings"): "命中清单 / 人审队列（catalog 必填；P0 只读，decide 属 P1）",
+    ("GET", "/api/management/v1/sensitivity-findings"): "命中清单 / 人审队列（catalog 必填；state=PENDING 即待审队列）",
+    ("POST", "/api/management/v1/sensitivity-findings:decide"): "批量确认/拒绝（确认落 MANUAL 标签，拒绝落永久抑制项；判 CATALOG:ALTER）",
+    ("GET", "/api/management/v1/sensitivity-suppressions"): "永久抑制项清单（含已解禁的；判 CATALOG:DESCRIBE）",
+    ("DELETE", "/api/management/v1/sensitivity-suppressions/{id}"): "显式解禁（置 enabled=false 不删行；判 CATALOG:ALTER）",
     ("GET", "/api/management/v1/column-tags"): "列级标签查询 + 覆盖率（对外主接口；coverage 只随范围变）",
     ("PUT", "/api/management/v1/column-tags"): "手工打标（upsert，更新带 entityVersion 乐观锁；source 恒 MANUAL）",
-    ("DELETE", "/api/management/v1/column-tags/{id}"): "删标签（回 204；P0 不写抑制项，界面文案不得承诺不复活）",
+    ("DELETE", "/api/management/v1/column-tags/{id}"): "删标签（回 204；同时写抑制项，否则下次扫描会复活）",
     ("GET", "/api/management/v1/sensitivity-settings"): "catalog 级治理设置（含 resolved* 生效值；判 CATALOG:ALTER）",
     ("PUT", "/api/management/v1/sensitivity-settings"): "改 catalog 级设置（entityVersion = catalog 自己的版本号；变更进审计）",
 }

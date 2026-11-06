@@ -94,13 +94,14 @@ class FlywayBaselineTests {
      * 里 {@code assertEquals(MIGRATIONS.size(), first.migrationsExecuted)}）：漏加一个文件，
      * 那一刻就会失败，而不是让清点悄悄少掉几张表。
      *
-     * <p>顺序必须与 Flyway 的应用顺序一致：V3 建的五张表是「V1 之后的纯新增」，
-     * 清点时要一起数。
+     * <p>顺序必须与 Flyway 的应用顺序一致：V3 建的五张表、V4 建的一张抑制项表都是
+     * 「V1 之后的纯新增」，清点时要一起数。
      */
     private static final List<String> MIGRATIONS = List.of(
             "V1__baseline.sql",
             "V2__add_scan_strategy_and_spark_conf.sql",
-            "V3__add_sensitive_data_tables.sql");
+            "V3__add_sensitive_data_tables.sql",
+            "V4__add_sensitivity_suppression.sql");
 
     /**
      * MySQL 基线：整份执行一遍，建出全部实体表，且可重复执行。
@@ -232,9 +233,9 @@ class FlywayBaselineTests {
                 .baselineVersion("1")
                 .load();
         MigrateResult upgrade = toLatest.migrate();
-        assertEquals(2, upgrade.migrationsExecuted,
-                "存量库上应补跑 V2 与 V3 两条（V1 已记录，不重放）——"
-                        + "V2 加列、V3 建敏感数据五张表");
+        assertEquals(3, upgrade.migrationsExecuted,
+                "存量库上应补跑 V2 / V3 / V4 三条（V1 已记录，不重放）——"
+                        + "V2 加列、V3 建敏感数据五张表、V4 建抑制项表");
 
         try (Connection connection = DriverManager.getConnection(url, USER, PASSWORD);
              PreparedStatement query = connection.prepareStatement(
@@ -248,9 +249,11 @@ class FlywayBaselineTests {
 
         // V3 的建表在同一个 URL 上生效：升级路径与空库路径建出的是同一套表
         try (Connection connection = DriverManager.getConnection(url, USER, PASSWORD)) {
-            List<String> missing = missingTables(connection, SENSITIVE_TABLES);
+            List<String> expected = new ArrayList<>(SENSITIVE_TABLES);
+            expected.add(SUPPRESSION_TABLE);
+            List<String> missing = missingTables(connection, expected);
             assertTrue(missing.isEmpty(),
-                    "存量库升级到 V3 后缺这些表：" + missing + "——即升级路径没把 V3 应用上");
+                    "存量库升级到最新后缺这些表：" + missing + "——即升级路径没把 V3 / V4 应用上");
         }
     }
 
@@ -286,8 +289,17 @@ class FlywayBaselineTests {
                 assertTrue(v3.contains("create table " + table),
                         vendor + " 的 V3 迁移里没有建 " + table + "，内容可疑");
             }
+            // V4 是 P1 人审闭环的那张抑制项表；少了它，人审驳回落库时会报
+            // 「表不存在」，而报错点离真正原因（漏了一个迁移文件）很远
+            String v4 = readClasspath("/db/migration/" + vendor
+                    + "/V4__add_sensitivity_suppression.sql");
+            assertTrue(v4.contains("create table " + SUPPRESSION_TABLE),
+                    vendor + " 的 V4 迁移里没有建 " + SUPPRESSION_TABLE + "，内容可疑");
         }
     }
+
+    /** P1 人审闭环的抑制项表（V4 建）。 */
+    private static final String SUPPRESSION_TABLE = "lakehouse_sensitivity_suppression";
 
     /** V3 建的五张表；{@link #baselinesArePackagedOnTheClasspath} 与升级用例共用。 */
     private static final List<String> SENSITIVE_TABLES = List.of(
@@ -302,7 +314,7 @@ class FlywayBaselineTests {
      *
      * <p><b>要读全部版本文件，不能只读 V1。</b>结构演进之后新表写在 V3 里，
      * 只读 V1 会让清点结果永远停在 29 张，而 {@link MysqlDdlGeneratorTests#EXPECTED_TABLES}
-     * 是 34——看起来像「脚本与实体漂移」，实际是这条清点自己没跟上。
+     * 是 35——看起来像「脚本与实体漂移」，实际是这条清点自己没跟上。
      * 反过来，只读「目录里所有文件」也不可行：classpath 没有列目录的可移植做法，
      * 因此走 {@link #MIGRATIONS} 这张显式清单，漏加文件的失败点见那里的注释。
      *

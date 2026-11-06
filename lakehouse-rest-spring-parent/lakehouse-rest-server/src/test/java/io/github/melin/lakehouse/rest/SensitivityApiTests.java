@@ -69,10 +69,18 @@ import tools.jackson.databind.node.JsonNodeFactory;
  *   <li><b>改一个内置类型的探测器权重后，下一轮扫描的判定随之改变。</b>
  *       {@code SensitivityDetectors} 漏乘 {@code weight} 时这条会失败，而失败的方式
  *       极隐蔽：权重配了、库里存了、控制台也显示得出来，判定却一字不变。
+ *   <li><b>人审确认真的落标签、驳回真的落抑制项，且重扫不复活。</b>这三条是 P1
+ *       闭环的全部内容：只改状态的话，人审队列会被清空而数据仍在明文里；
+ *       只删标签而不抑制的话，同一列会在下一轮被写回来（「删了又回来了」）。
+ *   <li><b>决策接口的幂等与批量语义。</b>重复提交要计入 {@code skipped} 而不是失败，
+ *       不存在的 id 要整批 404 而不是「能找到的照做」——人审是一次有意的动作，
+ *       悄悄少做几条会让人对不上账。
  * </ol>
  *
- * <p>扫描是 {@code METADATA_ONLY}（P0 唯一实现的档）：只读 {@code schema_doc} 里的
- * 列名 / 类型 / 注释，不碰任何行数据，因此本类不需要真存储。
+ * <p>扫描默认走 {@code METADATA_ONLY}（本类不依赖真存储），采样档只做一次
+ * 「不再 501、空表不报错」的冒烟——值层的正面断言在
+ * {@code SensitivitySamplingTests} 里用真实的 500 行 parquet 表跑
+ * （那里能造出「500 条真身份证」这种形状，而 H2 + 空表造不出来）。
  *
  * <p><b>本类的每个断言都不依赖「其它测试类没动过这些表」</b>：类型表按
  * {@code typeCode} 定位、finding 按 {@code scanId} 过滤、标签断言前先断言表为空
@@ -242,20 +250,31 @@ class SensitivityApiTests {
                 "治理设置变更要发 sensitivity.binding.changed");
     }
 
-    // ------------------------------------------------------------------ 3. 扫描（P0 只有元数据档）
+    // ------------------------------------------------------------------ 3. 扫描
 
     @Test
     @Order(4)
-    void scanRunsMetadataOnlyAndIsIdempotent() throws Exception {
+    void scanRunsAndIsIdempotent() throws Exception {
         createPaimonTable();
 
-        // P0 未实现采样档：必须明确回 501，**不静默降级**成元数据档——
-        // 降级会得到一个「扫完了、只发现 0 列」的结论，而调用方以为已按值判过
-        assertEquals(501, status("POST", M + "/sensitivity-scans",
+        // ★ P1 起采样档不再 501：它真的会去读表（走预览那条只读通道）。
+        // 这张表刚建、一个数据文件都没有，于是这一轮读到 0 行 → 每列的 values 为空 →
+        // 值层不参与打分，下界回落到元数据档的 0.35。断言这一点同时证明三件事：
+        // 501 没了、读失败/空表不会被当成「值不像」把候选判死、以及空表不会抛错。
+        JsonNode sampled = json(202, "POST", M + "/sensitivity-scans",
                 """
                 {"catalog": "paimon", "scope": "TABLE", "database": "sens_db",
-                 "table": "people", "mode": "SAMPLED"}
-                """), "P0 的采样档未实现，要 501 而不是当成元数据档跑一遍");
+                 "table": "people", "mode": "SAMPLED", "sampleSize": 500}
+                """);
+        assertEquals("SUCCEEDED", sampled.get("status").asString());
+        JsonNode sampledDetail = json(200, "GET", M + "/sensitivity-scans/"
+                + sampled.get("scanId").asString(), null);
+        assertEquals("SAMPLED", sampledDetail.get("mode").asString());
+        assertEquals(0, sampledDetail.get("tablesFailed").asInt(),
+                "空表读得出 0 行，不算失败（失败是「读不出来」）");
+        assertTrue(sampledDetail.get("findingsCreated").asInt() >= 1,
+                () -> "没有值证据时应当回落到元数据档的判定（0.45），而不是一条都不产："
+                        + sampledDetail);
 
         // ★ 第三层覆盖的证明：catalog 上写的是 IN_PROCESS，请求里显式要 SPARK。
         // 而 METADATA_ONLY + SPARK 恒被拒（元数据下推没有收益）→ 400。
@@ -349,7 +368,18 @@ class SensitivityApiTests {
                 """);
         assertEquals(id, again.get("id").asLong(), "同一列同一 tag_key 复用的是同一行");
         assertEquals(1, again.get("entityVersion").asInt(), "改过之后版本 +1");
-        assertEquals(1, tagRepository.count(), "重写不该产生第二行");
+        // P1 起每次写列级标签都会重算表级级别（§5.5），因此这里有两行：
+        // 手工那条列级标签，以及自动重算出来的 `sensitivity.level`。
+        // 断言「重写不产生第二行」要针对列级那一行，不能数全表——否则它测的是
+        // 「表级级别没有被重算」，而那是要被断言存在的另一件事
+        assertEquals(2, tagRepository.count(), "列级标签 + 自动重算的表级级别");
+        JsonNode tableLevel = tableLevelTag();
+        assertEquals("L4", tableLevel.get("tagValue").asString(),
+                "表级级别 = 该表所有列标签的 max(level)，这里唯一一列是 L4");
+        assertEquals("AUTO", tableLevel.get("source").asString(),
+                "表级级别是自动算出来的，不是人打的");
+        assertTrue(tableLevel.get("tableLevel").asBoolean(),
+                "column 为空串 → 读模型把它标成表级（界面据此不把它算进「已分类列」）");
 
         // 已存在的标签**必须**带版本：丢的是一条人工治理结论，而人工结论
         // 无法从任何地方重建（所以这里选「不给版本就不让改」这一侧）
@@ -360,13 +390,16 @@ class SensitivityApiTests {
                 """), "已存在的标签不带 entityVersion → 409");
 
         // 表级标签：column 为空串。它进不了「已分类列」的分子（分母是列数），
-        // 但要让「这张表里有 L3」这件事有地方存
+        // 但要让「这张表里有 L3」这件事有地方存。
+        // 这里用**另一个 tag_key**（PII.TABLE_LEVEL）而不是自动那行的
+        // `sensitivity.level`：后者是自动重算的产物，人工去改它要先给版本，
+        // 那是另一条路径（也正因如此，`refreshTableLevel` 遇到 MANUAL 的同键行会放手）
         json(200, "PUT", M + "/column-tags",
                 """
                 {"catalog": "paimon", "database": "sens_db", "table": "people",
                  "column": "", "tagKey": "PII.TABLE_LEVEL", "tagValue": "L3"}
                 """);
-        assertEquals(2, tagRepository.count());
+        assertEquals(3, tagRepository.count(), "自动表级 + 人工表级 + 列级");
 
         // ★ 重扫一次：finding 是逐轮追加的历史，但**标签不该被复制、也不该被覆盖**
         json(202, "POST", M + "/sensitivity-scans",
@@ -374,16 +407,15 @@ class SensitivityApiTests {
                 {"catalog": "paimon", "scope": "TABLE", "database": "sens_db",
                  "table": "people", "mode": "METADATA_ONLY"}
                 """);
-        assertEquals(2, tagRepository.count(),
-                "重扫只写 finding，不动标签表——自动路径在 P0 够不到阈值，"
-                        + "因此它也没有资格覆盖人工结论");
+        assertEquals(3, tagRepository.count(),
+                "重扫只写 finding，不动标签表——自动路径够不到阈值时没有资格覆盖人工结论");
 
-        // level 过滤下推到服务端（不是把全部取回来在前端筛）
+        // level 过滤下推到服务端（不是把全部取回来在前端筛）。
+        // L4 有两条：手工那条列级标签 + 自动重算出来的表级级别（值同样是 L4）
         JsonNode l4 = json(200, "GET", M + "/column-tags?catalog=" + PREFIX + "&level=L4", null);
-        assertEquals(1, l4.get("items").size(), "L4 只有那条列级标签");
-        assertEquals("id_card", l4.get("items").get(0).get("column").asString());
+        assertEquals(2, l4.get("items").size(), "列级 L4 + 表级 L4");
         JsonNode l3 = json(200, "GET", M + "/column-tags?catalog=" + PREFIX + "&level=L3", null);
-        assertEquals(1, l3.get("items").size(), "L3 只有那条表级标签");
+        assertEquals(1, l3.get("items").size(), "L3 只有那条人工表级标签");
 
         // 覆盖率：分子只算「已分类的列」，表级标签不进分子——
         // 把它算进去会让分子（列 + 表）与分母（列数）不可比
@@ -398,7 +430,9 @@ class SensitivityApiTests {
         assertTrue(eventTypes().contains("column.tag.changed"), "打标要发 column.tag.changed");
 
         json(204, "DELETE", M + "/column-tags/" + id, null);
-        assertEquals(1, tagRepository.count());
+        // 列级标签删掉后，自动算出来的表级级别没有依据了，于是被一并删掉
+        // （留着它会让「这张表是 L4」这句话失去依据）——只剩那条人工表级标签
+        assertEquals(1, tagRepository.count(), "自动表级随列级一起消失");
         assertEquals(404, status("DELETE", M + "/column-tags/" + id, null),
                 "删一个不存在的标签 → 404（资源类型是 COLUMN_TAG）");
     }
@@ -454,7 +488,224 @@ class SensitivityApiTests {
                 "上一轮的结论不该被这一轮改写");
     }
 
+    // ------------------------------------------------------------------ 6. 人审闭环（P1）
+
+    /**
+     * 确认一条命中 → 落一条 {@code MANUAL} 标签，且重复提交不产生第二条。
+     *
+     * <p><b>为什么「确认」要真的写标签，而不是只改一个状态字段。</b>人审的价值在于
+     * 它的结论**能被下游执行**：§5.5 的脱敏策略读的是标签，不是 finding。
+     * 只改状态的表现是「人审队列清空了、数据还在明文里」——这是这一屏最容易
+     * 交付成空壳的方式。
+     *
+     * <p>标签的来源必须是 {@code MANUAL}（不是 {@code AUTO}）：人工确认是权威性最高的
+     * 结论，写成 {@code AUTO} 会让下一轮扫描的自动结论把它覆盖掉。
+     */
+    @Test
+    @Order(7)
+    void confirmedFindingBecomesAManualTagAndDecideIsIdempotent() throws Exception {
+        createPaimonTable();
+        String scanId = scanPaimonTable();
+        JsonNode pending = findingsOf(scanId, "CN_ID_CARD").get(0);
+        assertEquals("PENDING", pending.get("state").asString(), "这一轮应当产出一条待审命中");
+        long findingId = pending.get("id").asLong();
+
+        JsonNode decided = json(200, "POST", M + "/sensitivity-findings:decide",
+                """
+                {"ids": [%d], "decision": "CONFIRMED", "note": "verified against the source system"}
+                """.formatted(findingId));
+        assertEquals("CONFIRMED", decided.get("decision").asString());
+        assertEquals(1, decided.get("decided").asInt());
+        assertEquals(0, decided.get("skipped").asInt());
+        assertEquals(1, decided.get("tagIds").size(), "确认要落一条标签");
+        assertEquals(0, decided.get("suppressionIds").size(), "确认不该落抑制项");
+
+        JsonNode tag = tagOf("id_card");
+        assertEquals("MANUAL", tag.get("source").asString(),
+                "人工确认写 MANUAL（写成 AUTO 会被下一轮扫描覆盖）");
+        assertEquals("CN_ID_CARD", tag.get("typeCode").asString());
+        assertEquals("L4", tag.get("level").asString(), "级别来自类型表，不由人审界面决定");
+        assertEquals(findingId, tag.get("findingId").asLong(), "标签要能溯源到那条 finding");
+
+        // 状态真的改成了 CONFIRMED（不是只在响应里说了一句）
+        JsonNode confirmed = json(200, "GET", M + "/sensitivity-findings?catalog=" + PREFIX
+                + "&state=CONFIRMED&type=CN_ID_CARD", null);
+        assertTrue(ids(confirmed).contains(findingId),
+                () -> "确认过的 finding 应当出现在 state=CONFIRMED 里：" + confirmed);
+
+        // ★ 幂等：同一条再提交一次 → skipped=1、不再落第二条标签、也不报错。
+        // 两个人同时点确认、或网络重试，都会走到这里
+        JsonNode again = json(200, "POST", M + "/sensitivity-findings:decide",
+                """
+                {"ids": [%d], "decision": "CONFIRMED"}
+                """.formatted(findingId));
+        assertEquals(0, again.get("decided").asInt(), "已决策的行不再决策一次");
+        assertEquals(1, again.get("skipped").asInt(), "跳过要如实计数，而不是假装成功");
+        assertEquals(0, again.get("tagIds").size(), "不该产生第二条标签");
+
+        // 请求体挡住两种错法：空 id 列表（400）与不存在的 id（404，整批失败而不是部分成功）
+        assertEquals(400, status("POST", M + "/sensitivity-findings:decide",
+                """
+                {"ids": [], "decision": "CONFIRMED"}
+                """), "空 id 列表要 400（这是「一次作用于一批」的接口）");
+        assertEquals(404, status("POST", M + "/sensitivity-findings:decide",
+                """
+                {"ids": [987654321], "decision": "CONFIRMED"}
+                """), "不存在的 id 要 404，且整批不做（悄悄少做几条会让人对不上账）");
+        assertEquals(400, status("POST", M + "/sensitivity-findings:decide",
+                """
+                {"ids": [%d], "decision": "PENDING"}
+                """.formatted(findingId)),
+                "decision 只接受 CONFIRMED / REJECTED（PENDING 是初始态，不是人能写进去的）");
+    }
+
+    /**
+     * 驳回一条命中 → 落永久抑制项，**下一轮扫描不再提它**；解禁后才重新判。
+     *
+     * <p><b>这是 P1 人审闭环的核心断言（§7.2）。</b>如果驳回只改 finding 的状态，
+     * 第二天重扫会再次判成敏感——人就变成了一台每天重复劳动的机器，
+     * 而重复劳动的最后结果是没人再看队列。因此这一条断言了四件事：
+     * 抑制项真的落了、重扫真的跳过了、解禁不触发立刻重扫、解禁后下一轮重新判出来。
+     */
+    @Test
+    @Order(8)
+    void rejectedFindingIsSuppressedSoTheNextScanDoesNotBringItBack() throws Exception {
+        createPaimonTable();
+        String scanId = scanPaimonTable();
+        JsonNode pending = findingsOf(scanId, "CN_ID_CARD").get(0);
+        long findingId = pending.get("id").asLong();
+
+        JsonNode rejected = json(200, "POST", M + "/sensitivity-findings:decide",
+                """
+                {"ids": [%d], "decision": "REJECTED", "note": "not an id card: test fixture data"}
+                """.formatted(findingId));
+        assertEquals(1, rejected.get("decided").asInt());
+        assertEquals(1, rejected.get("suppressionIds").size(), "驳回要落一条永久抑制项");
+        assertEquals(0, rejected.get("tagIds").size(), "驳回不产标签");
+
+        JsonNode suppression = suppressionOf("CN_ID_CARD");
+        assertTrue(suppression.get("enabled").asBoolean());
+        assertEquals("not an id card: test fixture data", suppression.get("reason").asString());
+        assertEquals("id_card", suppression.get("column").asString());
+        assertEquals(findingId, suppression.get("findingId").asLong(),
+                "抑制项要指向那条被驳回的 finding（这是「谁否掉的」唯一线索）");
+
+        // 驳回不该删掉人审确认过的人工标签（那是另一条结论，而且无法重建）
+        assertEquals("MANUAL", tagOf("id_card").get("source").asString(),
+                "驳回只撤自动标签，不碰人工结论");
+
+        // ★ 重扫：被否决的结论不再产出
+        String next = scanPaimonTable();
+        assertTrue(findingsOf(next, "CN_ID_CARD").isEmpty(),
+                "人审否决过的结论不该在下一轮复活——否则「拒绝 → 次日复活 → 再拒」会成为日常劳动");
+
+        // ★ 解禁：不立刻重扫（点的是「解除抑制」，不是「立刻读这张表」）
+        json(204, "DELETE", M + "/sensitivity-suppressions/" + suppression.get("id").asLong(), null);
+        JsonNode released = suppressionOf("CN_ID_CARD");
+        assertFalse(released.get("enabled").asBoolean());
+        assertFalse(released.path("releasedBy").asString("").isBlank(),
+                "解禁要记下是谁做的（这一屏要能回答「谁在什么时候改主意了」）");
+        assertTrue(released.path("releasedAt").asLong(0) > 0, "解禁时间也要留下");
+        assertTrue(findingsOf(next, "CN_ID_CARD").isEmpty(),
+                "解禁本身不触发扫描——它只是「下一轮重新判」");
+
+        // ★ 解禁之后下一轮真的重新判出来（否则解禁是一个永远不生效的按钮）
+        String after = scanPaimonTable();
+        assertEquals(1, findingsOf(after, "CN_ID_CARD").size(),
+                "解禁后的下一轮应当重新判出这条结论");
+    }
+
+    /**
+     * {@code DELETE /column-tags/{id}} 也写抑制项（§9 那一行的硬要求）。
+     *
+     * <p>与 {@code REJECTED} 共用同一段逻辑（{@code SensitivityDecisionService#suppressColumn}），
+     * 因此这里断言的是「两条路径口径一致」，而不是「另有一套实现」：
+     * 删标签的语义同样是「这条结论我撤回」，只删行会让下一轮扫描把它写回来。
+     */
+    @Test
+    @Order(9)
+    void deletingAColumnTagAlsoSuppressesTheConclusion() throws Exception {
+        createPaimonTable();
+        // 用 name 列（PERSON_NAME）而不是 id_card：id_card 上已经有一条人工确认的标签
+        // 与一条抑制项的历史，混在一起会让「这次删的是哪条结论」看不出因果
+        JsonNode written = json(200, "PUT", M + "/column-tags",
+                """
+                {"catalog": "paimon", "database": "sens_db", "table": "people",
+                 "column": "name", "tagKey": "PII.PERSON_NAME", "tagValue": "L3",
+                 "typeCode": "PERSON_NAME"}
+                """);
+        long tagId = written.get("id").asLong();
+        assertEquals("MANUAL", written.get("source").asString());
+
+        // 手工打标顺带解除该列该类型的抑制（若存在）；此时还没有，因此这一条只是形状断言
+        json(204, "DELETE", M + "/column-tags/" + tagId, null);
+
+        JsonNode suppression = suppressionOf("PERSON_NAME");
+        assertTrue(suppression.get("enabled").asBoolean(), "删标签要落一条生效中的抑制项");
+        assertEquals("name", suppression.get("column").asString());
+        assertTrue(suppression.get("reason").asString().startsWith("column tag deleted by"),
+                () -> "抑制项的理由要写明是谁撤回的：" + suppression.get("reason").asString());
+
+        String scanId = scanPaimonTable();
+        assertTrue(findingsOf(scanId, "PERSON_NAME").isEmpty(),
+                "撤回之后的重扫不该把这条结论写回来（那正是「删了又回来了」）");
+    }
+
     // ------------------------------------------------------------------ 夹具与工具
+
+    /** 跑一轮元数据扫描并返回 scanId（本类后半段的用例都以「先扫一遍」为前置）。 */
+    private String scanPaimonTable() throws Exception {
+        return json(202, "POST", M + "/sensitivity-scans",
+                """
+                {"catalog": "paimon", "scope": "TABLE", "database": "sens_db",
+                 "table": "people", "mode": "METADATA_ONLY"}
+                """).get("scanId").asString();
+    }
+
+    /** 取某列的标签（本类的表只有一张，因此列名足以定位）。 */
+    private JsonNode tagOf(String column) throws Exception {
+        JsonNode list = json(200, "GET", M + "/column-tags?catalog=" + PREFIX
+                + "&table=" + DB + "." + TABLE, null);
+        for (JsonNode item : list.get("items")) {
+            if (column.equals(item.get("column").asString())
+                    && !item.get("tableLevel").asBoolean()) {
+                return item;
+            }
+        }
+        throw new AssertionError("no tag on column " + column + ": " + list);
+    }
+
+    /** 取自动重算出来的表级级别那一行（{@code tag_key = sensitivity.level}）。 */
+    private JsonNode tableLevelTag() throws Exception {
+        JsonNode list = json(200, "GET", M + "/column-tags?catalog=" + PREFIX
+                + "&table=" + DB + "." + TABLE, null);
+        for (JsonNode item : list.get("items")) {
+            if (item.get("tableLevel").asBoolean()
+                    && "sensitivity.level".equals(item.get("tagKey").asString())) {
+                return item;
+            }
+        }
+        throw new AssertionError("no auto table-level tag: " + list);
+    }
+
+    /** 取某个类型的抑制项（含已解禁的——清单刻意不隐藏它们）。 */
+    private JsonNode suppressionOf(String typeCode) throws Exception {
+        JsonNode list = json(200, "GET", M + "/sensitivity-suppressions?catalog=" + PREFIX, null);
+        for (JsonNode item : list.get("items")) {
+            if (typeCode.equals(item.get("typeCode").asString())) {
+                return item;
+            }
+        }
+        throw new AssertionError("no suppression for " + typeCode + ": " + list);
+    }
+
+    private static List<Long> ids(JsonNode list) {
+        List<Long> out = new java.util.ArrayList<>();
+        for (JsonNode item : list.get("items")) {
+            out.add(item.get("id").asLong());
+        }
+        return out;
+    }
 
     private List<String> eventTypes() {
         return eventRepository.findAll().stream()

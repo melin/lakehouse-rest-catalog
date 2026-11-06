@@ -179,6 +179,69 @@ public final class SensitivityDtos {
     public record FindingList(List<Finding> items, PageMeta meta) {
     }
 
+    /**
+     * {@code POST /sensitivity-findings:decide} 的请求体：批量确认 / 拒绝。
+     *
+     * <p><b>批量而不是单条。</b>人审队列的真实用法是「这一屏 20 条，扫一眼，全确认」
+     * ——逐条点一次会让人放弃使用队列，而放弃之后这个闸门就等于不存在。
+     * 因此接口以「一组 id + 一个决定」为单位，而不是每条一个请求。
+     *
+     * <p><b>{@code decision} 只接受 {@code CONFIRMED} / {@code REJECTED}。</b>
+     * 把状态机缩到这两个值是有意的：{@code AUTO_APPLIED} 是扫描的产出、
+     * {@code PENDING} 是初始态，让人审把它们「改回去」没有任何含义，
+     * 而允许任意赋值会让 {@code REJECTED} 的抑制项与状态脱节。
+     *
+     * <p>{@code note} 会写进抑制项的 {@code reason}（拒绝时）与事件（两者都写）——
+     * 三个月后回看「为什么这列被判成不是身份证」时，这是唯一的一手信息。
+     */
+    public record FindingDecisionRequest(List<Long> ids, String decision, String note) {
+    }
+
+    /**
+     * 决策结果。
+     *
+     * <p>{@code skipped} 是**已经被决策过**的条数（幂等重试、或两个人同时点）。
+     * 它不是错误——把「重复提交」判成 409 会让批量操作在网络抖动时反复失败，
+     * 而重复确认一条已经确认的命中，语义上是无害的。
+     *
+     * <p>{@code tagIds} / {@code suppressionIds} 是**这次真正产生的行**。
+     * 分开回传而不是合并成一个 id 列表：调用方（控制台）要用它们区分
+     * 「落了标签」与「落了抑制项」，两者的后续动作不同（前者去标签页看，
+     * 后者去抑制项页看）。
+     */
+    public record FindingDecisionResult(String decision,
+                                        int decided,
+                                        int skipped,
+                                        List<Long> tagIds,
+                                        List<Long> suppressionIds) {
+    }
+
+    /**
+     * 一条永久抑制项（{@code GET /sensitivity-suppressions}）。
+     *
+     * <p>{@code enabled=false} 表示已解禁：**行不删**，所以界面上能显示
+     * 「这条被谁在什么时候解除过」，而不是让它凭空消失。
+     */
+    public record Suppression(Long id,
+                              String catalog,
+                              String database,
+                              String table,
+                              String column,
+                              String columnRef,
+                              String typeCode,
+                              String reason,
+                              boolean enabled,
+                              String decidedBy,
+                              Long decidedAt,
+                              Long findingId,
+                              String releasedBy,
+                              Long releasedAt) {
+    }
+
+    /** {@code GET /sensitivity-suppressions}：按 catalog 过滤的抑制项清单（不分页，量级是「几十条」）。 */
+    public record SuppressionList(List<Suppression> items) {
+    }
+
     // ------------------------------------------------------------------ 列级标签
 
     /**

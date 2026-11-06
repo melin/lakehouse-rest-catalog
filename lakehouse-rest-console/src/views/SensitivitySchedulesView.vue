@@ -13,21 +13,21 @@
     </PageHeader>
 
     <!--
-      这一屏**没有「新建调度」按钮，不是还没做，而是设计里就该长这样**。
-      §5.6.2 推荐的触发方式是「外部调度器调 POST /sensitivity-scans」：cron 由外部系统自己管，
-      本方案因此不建第 6 张表（§5.6.3），也就没有一个「调度项」对象可以新建。
-      §11 的原话是「外部调度路线下此屏退化为**只读的「调度建议」页**……不出现新建按钮」。
-      与「识别结果审核」那两枚置灰按钮同一口径：那里说的是「还没通」（属 P1），
-      这里说的是「本来如此」（选了自建调度路线才会多出三个端点）。
+      这一屏现在**是过渡态**：调度已拍板改为 catalog 自建（与表优化调度同形，属 P4），
+      因此在第 6 张表 `lakehouse_sensitivity_schedule` 与 `/sensitivity-schedules` 的
+      5 条端点落地之前，这里给的是「手动打一发」的那一行 curl —— 运维照着写进
+      Airflow / k8s CronJob 就能用，而不是等一个还不存在的调度项。
+      所以这一屏**没有「新建调度」按钮不是漏做**，而是「CRUD 还没到」：
+      判定依据是代码现状，表与端点建好那天，这一屏整块的形态要一起换。
     -->
     <TipAlert type="info" class="pc-gap">
       <template #title>这一屏为什么没有「新建调度」</template>
-      cron 由外部系统自己管：服务端只提供一个发起入口（<code>POST /sensitivity-scans</code>），
-      不保存「调度项」，因此 4.x 的实体仍然是 <strong>五张表</strong>。
-      只有切到 <strong>catalog 自建调度</strong>那条路线，才会多出第 6 张表
-      （<code>lakehouse_sensitivity_schedule</code>）与 <code>/sensitivity-schedules</code> 三个端点——
-      代价与要动的地方见页面末尾那张卡。两屏都随触发路线的选择而改变形态，
-      这正是设计稿 §11 要求「不能只画一条路」的地方。
+      调度已拍板改为 <strong>catalog 自建</strong>（与表优化调度同形），属 <strong>P4</strong>：
+      届时落第 6 张表 <code>lakehouse_sensitivity_schedule</code> 与
+      <code>/sensitivity-schedules</code> 的 5 条端点，这一屏改成调度项 CRUD。
+      在那之前它给的是<strong>过渡态</strong>的那一行命令——服务端只有一个发起入口
+      （<code>POST /sensitivity-scans</code>），cron 由外部系统自己管，照着下面的 curl
+      写进 Airflow / k8s CronJob 就能立刻用起来。代价与要动的地方见页面末尾那张卡。
     </TipAlert>
 
     <!-- ============================ 1. 调度建议（可复制的一发） ============================ -->
@@ -77,23 +77,23 @@
         <div class="pc-sched-field">
           <FieldLabel
             text="模式"
-            tip="元数据档只读列名 / 注释 / 类型（D1 + D2），不碰数据；采样档要读列值，属 P1"
+            tip="元数据档只读列名 / 注释 / 类型（D1 + D2），不碰数据；采样档再加值层，会读前 N 行明文"
           />
           <el-select v-model="form.mode" size="small" class="pc-sched-mode">
-            <el-option label="仅元数据（P0 可跑）" value="METADATA_ONLY" />
-            <el-option label="采样（P0 回 501）" value="SAMPLED" />
+            <el-option label="仅元数据（D1 + D2）" value="METADATA_ONLY" />
+            <el-option label="采样（再加 D3 值层）" value="SAMPLED" />
           </el-select>
         </div>
 
         <div class="pc-sched-field">
           <FieldLabel
             text="执行位置"
-            tip="省略该字段 = 跟着生效值走（请求 > catalog 的 defaultExecution > 全局）。显式写 SPARK 在 P0 会回 501"
+            tip="省略该字段 = 跟着生效值走（请求 > catalog 的 defaultExecution > 全局）。显式写 SPARK 目前不可用：元数据档回 400、采样档回 501"
           />
           <el-select v-model="form.execution" size="small" class="pc-sched-exec">
             <el-option label="跟随生效值（省略字段）" value="" />
             <el-option label="进程内 IN_PROCESS" value="IN_PROCESS" />
-            <el-option label="下推 SPARK（P0 回 501）" value="SPARK" />
+            <el-option label="下推 SPARK（属 P4，尚未可用）" value="SPARK" />
           </el-select>
         </div>
       </div>
@@ -336,12 +336,13 @@
     </PanelCard>
 
     <TipAlert type="info" class="pc-gap">
-      <template #title>P0 现状</template>
-      <code class="pc-mono">mode=SAMPLED</code> 与 <code class="pc-mono">execution=SPARK</code>
-      目前都回 <strong>501</strong>（不是 400）：服务端显式拒绝而不是静默降级。
-      因此今天这一屏真正能跑通的组合只有「<code class="pc-mono">METADATA_ONLY</code> +
-      跟随生效值 / <code class="pc-mono">IN_PROCESS</code>」，而它正好是「刚接入一个 catalog、
-      想定期看看有没有敏感列」时唯一需要的那一种。
+      <template #title>哪些组合现在能跑通</template>
+      两种模式都能跑（<code class="pc-mono">METADATA_ONLY</code> 与
+      <code class="pc-mono">SAMPLED</code>：后者多读值层，采样要 <code class="pc-mono">CATALOG:ALTER</code>）。
+      真正还跑不通的是 <code class="pc-mono">execution=SPARK</code>，而且它<strong>不是一个状态码</strong>：
+      元数据档下服务端回 <strong>400</strong>（下推只读元数据的扫描没有收益），
+      采样档下回 <strong>501</strong>（下推链路属 P4，还没接）。
+      两者都是**显式拒绝而不是静默降级**——「我明明选了 SPARK」不该变成一条查不出来的行为。
     </TipAlert>
   </div>
 </template>
@@ -366,14 +367,16 @@ import { session } from '@/store/session.js'
 /**
  * 扫描调度（mockup `#schedules`，设计稿 §5.6 / §11 L649 / §12 P4）。
  *
- * <p><b>这一屏在 P0 就该是现在这个样子，而不是「还没做完」。</b>§5.6.2 推荐的触发方式是
- * 「外部调度器调 `POST /sensitivity-scans`」：cron 由外部系统自己管，本方案因此**不建**
- * 第 6 张表（§5.6.3），也就没有一个「调度项」对象供人新建。§11 L649 的原话是
- * 「外部调度路线下此屏退化为**只读的「调度建议」页**（展示一行可直接复制的
- * `curl POST /sensitivity-scans`，供 Airflow / CronJob 用），不出现新建按钮」。
+ * <p><b>这一屏现在是过渡态。</b>调度已拍板改为 **catalog 自建**（与表优化调度同形，
+ * §5.6.3），属 P4；在第 6 张表 `lakehouse_sensitivity_schedule` 与
+ * `/sensitivity-schedules` 的 5 条端点落地之前，这里给的是**过渡态**的那一行 curl：
+ * cron 由外部系统自己管，运维照着写进 Airflow / k8s CronJob 就能立刻用。
+ * 所以「没有新建调度按钮」的成因是「CRUD 还没到」，不是「设计里没有这一屏」——
+ * 表与端点建好那天，这一屏整块形态要一起换（`docs/console.md` 那条也标了目标形态）。
  *
- * <p>所以这一页与「识别结果审核」里那两枚置灰按钮的处理方式刻意不同：那里要说清
- * 「属 P1、还没通」，这里要说清「本来如此」。同一句「按钮是灰的」，两种成因不能共用一句解释。
+ * <p>它与「识别结果审核」里那两枚处置按钮的处理方式**必须分开讲**：那里的成因是
+ * 「还没通」（P1 已通，按钮现在可点），这里的成因是「调度能力还没建」。
+ * 同一句「按钮是灰的」，两种成因不能共用一句解释。
  *
  * <p><b>唯一的服务端数据是「最近由 `SCHEDULE` 触发的扫描」。</b>只读建议页本可以一个字都不取，
  * 但那样「我把 Airflow 接上了」就只能靠翻日志证明——而 §12 对 P4 的验收断言正是

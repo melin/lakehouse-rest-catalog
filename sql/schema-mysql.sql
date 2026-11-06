@@ -543,6 +543,27 @@ USE `lakehouse_catalog`;
         primary key (id)
     ) comment='敏感数据扫描：一次扫描的范围、模式、生效执行位置与计数' engine=InnoDB;
 
+    create table lakehouse_sensitivity_suppression (
+        enabled_flag bit not null comment '是否仍生效；解禁置 false，不删行',
+        created_at bigint comment '创建时刻（epoch 毫秒）',
+        decided_at bigint comment '否决时刻（epoch 毫秒）',
+        finding_id bigint comment '来源 finding 的 id（溯源用，可空）',
+        id bigint not null auto_increment comment '自增主键',
+        updated_at bigint comment '最后更新时刻（epoch 毫秒）',
+        catalog_name varchar(64) not null comment 'catalog 名',
+        column_ref_hash varchar(64) not null comment 'catalog.db.table.column 的 SHA-256（列改名后哈希变，抑制项自动失效）',
+        type_code varchar(64) not null comment '被否决的敏感类型',
+        reason varchar(512) comment '否决理由（人审备注）',
+        table_name varchar(512) not null comment '表名',
+        column_name varchar(255) not null comment '列名',
+        created_by varchar(255) comment '创建者主体名（写入前已按列宽归一化）',
+        database_name varchar(255) not null comment '库名',
+        decided_by varchar(255) comment '否决人主体名',
+        owner varchar(255) comment '记录归属主体（展示与过滤用，不参与授权判定）',
+        updated_by varchar(255) comment '最后更新者主体名（写入前已按列宽归一化）',
+        primary key (id)
+    ) comment='人审否决的永久抑制项（按列哈希 + 类型记，重扫不再自动打标）' engine=InnoDB;
+
     create table lakehouse_snapshot (
         version_number integer comment '快照文件格式版本，不是自增序号',
         changelog_record_count bigint comment '本次提交的 changelog 记录数',
@@ -830,6 +851,12 @@ USE `lakehouse_catalog`;
 
     create index ix_sensitivity_scan_status 
        on lakehouse_sensitivity_scan (status_value);
+
+    create index ix_sensitivity_suppression_catalog 
+       on lakehouse_sensitivity_suppression (catalog_name);
+
+    alter table lakehouse_sensitivity_suppression 
+       add constraint uk_sensitivity_suppression unique (column_ref_hash, type_code);
 
     create index ix_snapshot_table 
        on lakehouse_snapshot (table_id);

@@ -57,9 +57,11 @@ public class SensitivityScanController {
      * ——按 {@code scanId} 轮询详情。
      *
      * <p>失败的四种前置在此**没有**特殊处理，都由服务层抛：
-     * {@code execution=SPARK} 且 catalog 不可派发 → 400（fail-closed，§5.6.5）；
-     * {@code mode=SAMPLED} / {@code execution=SPARK} 在 P0 → 501（不静默降级）；
-     * 同表已有在跑的扫描 → 409；超出 A 路线并发 → 429。
+     * {@code execution=SPARK} 且 {@code mode=METADATA_ONLY} → 400（下推没有收益，
+     * 且不允许静默改走进程内）；{@code execution=SPARK} 且 catalog 不可派发 → 400
+     * （fail-closed，§5.6.5）；{@code execution=SPARK} 且 {@code mode=SAMPLED} → 501
+     * （下推链路属 P4，还没接）；同表已有在跑的扫描 → 409；超出 A 路线并发 → 429。
+     * <b>{@code mode=SAMPLED} 本身不再是错误</b>：P1 起它真的会去读样本（走预览那条只读通道）。
      */
     @PostMapping
     public ResponseEntity<ScanAccepted> start(@RequestBody ScanRequest request) {

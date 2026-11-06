@@ -142,6 +142,12 @@ class MysqlDdlGeneratorTests {
      * {@code lakehouse_column_tag}（列级标签的**当前状态**）、
      * {@code lakehouse_tag_mask_binding}（标签 → 脱敏动作的 catalog 级绑定）。
      * 前两张与后三张分属 server / core 模块，但表数是同一个事实，只在这里数一次。
+     * P1 人审闭环再加一张到 35：{@code lakehouse_sensitivity_suppression}
+     * （人审否决的**永久抑制项**，设计稿 §7.2）。它不并进
+     * {@code lakehouse_column_tag}——那件的唯一键是 {@code (column_ref_hash, tag_key)}、
+     * 语义是「这列现在是什么标签」，而抑制项是「这列被判定**不是**某类型」，两者互斥；
+     * 合并会让「没有标签」这一个状态有两种表示（无行 / 有一行空值），
+     * 而两种表示迟早会在某个查询里被当成不同的东西。
      * <b>为什么 finding 与 tag 要拆两张</b>：扫描每天重跑，finding 会重复产生，
      * 而「这列是身份证」这个结论只该有一份——合并成一张就会出现「同列 30 条 pending」
      * 或「重扫把人工拒绝洗回待审」（见 {@code ColumnTagEntity} 的类注释）。
@@ -153,7 +159,7 @@ class MysqlDdlGeneratorTests {
      * 脚本真的建出了实体所需的全部表」。那是同一个事实（仓库共有多少张实体表），
      * 各写一份就会在每次改结构时被各自手改一遍——正是这个常量想避免的失效方式。
      */
-    static final int EXPECTED_TABLES = 34;
+    static final int EXPECTED_TABLES = 35;
 
     /** MySQL 一张表一行的最大字节数（存储层上限，与列长度上限是两件事）。 */
     private static final long MYSQL_ROW_SIZE_LIMIT = 65535L;

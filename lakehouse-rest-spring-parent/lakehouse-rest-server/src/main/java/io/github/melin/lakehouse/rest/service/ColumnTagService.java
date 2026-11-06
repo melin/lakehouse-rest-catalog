@@ -40,10 +40,12 @@ import org.springframework.transaction.annotation.Transactional;
 /**
  * 列级标签的服务（设计见 {@code docs/sensitive-data-design.md} §4.4 / §8.4 / §9）。
  *
- * <p><b>这张表是「结论的当前状态」，因此它的写路径只有一条——人工。</b>
- * 自动应用（§5.3）与血缘传播（§7.1）分别在 P1 / P2 落地，它们写的是同一张表，
- * 但走的是各自的服务；本类在 P0 只承担两件事：读（含覆盖率）与人工打标 / 撤标。
- * 分开的理由见 {@code ColumnTagEntity} 的类注释（结论只有一份，历史归 finding）。
+ * <p><b>这张表是「结论的当前状态」，而它有三条写路径，各自标自己的来源。</b>
+ * 本类承担人工的那两条（打标 / 撤标），{@code source} 恒 {@code MANUAL}；
+ * 自动应用（§5.3）走 {@link SensitivityTagWriter} 标 {@code AUTO}，人审确认走
+ * {@link SensitivityDecisionService} 标 {@code MANUAL}，血缘传播（§7.2）留到 P2 标
+ * {@code INHERITED}。三条路径共用一张表但**不共用优先级**：{@code AUTO} 永远不覆盖
+ * 已有的 {@code MANUAL}（这是「人工结论优先」在写侧的唯一落点）。
  *
  * <p><b>为什么 {@code source} 不可由调用方指定。</b>手工打标恒为 {@code MANUAL}。
  * 允许请求体指定 {@code AUTO}，等于开了一个绕过自动应用闸门（§5.3 的白名单 + 阈值）
@@ -51,20 +53,16 @@ import org.springframework.transaction.annotation.Transactional;
  * 不是「调用方说它是自动的」。这与 {@code DataPolicyEntity} 的策略文本不能由
  * 引擎侧写入是同一条性质：治理结论只能由声称它的那条路径产生。
  *
- * <p><b>DELETE 在 P0 只删标签，不写抑制项</b>（设计稿 §7.2 / §9 那一行要求「同时写抑制项」）。
- * 这一步被推迟到 P1，理由是它依赖的两个前提在 P0 都不存在：
- * <ol>
- *   <li>抑制项按 {@code column_ref_hash + type_code} 记，而 {@code REJECTED} 唯一来源是
- *       人审驳回（{@code POST /sensitivity-findings:decide}，P1）——P0 没有任何路径能产生
- *       一个 {@code REJECTED} 结论，也就没有东西要抑制；</li>
- *   <li>「删了会复活」的前提是**扫描会自动落标**。P0 的扫描只跑 D1/D2，置信度上限
- *       {@code 0.45}（{@code SensitivityScorer.METADATA_FLOOR}）远够不到
- *       {@code min_confidence=0.85}，因此元数据档**永远不产 tag**——删掉的标签
- *       在 P0 没有任何东西能让它复活。</li>
- * </ol>
- * 而抑制项需要一张表，那会让 §12 写明的「P0 = 五实体」变成六实体。
- * <b>结论：P1 加采样与自动应用时，抑制项必须与 {@code decide} 端点一起落地</b>
- * （那时「人审驳回 → 次日重扫复活」这个死循环才真实存在）。
+ * <p><b>DELETE 在 P1 起同时写永久抑制项</b>（设计稿 §7.2 / §9 的那一行）。
+ * 只删行是不够的：P1 的扫描会真的自动落标，同一列下一轮会被判成同一类型再写回来，
+ * 用户看到的是「删了又回来了」。因此撤标 = 删标签 + 落一条
+ * {@code (column_ref_hash, type_code)} 的抑制项，两条路径（这里与
+ * {@code POST /sensitivity-findings:decide} 的 {@code REJECTED}）共用
+ * {@link SensitivityDecisionService#suppressColumn}，口径不会漂。
+ *
+ * <p>反向的一条也在这里：手工打标 {@code typeCode} 非空时**解除**抑制
+ * （{@link SensitivityDecisionService#liftSuppression}）。不解除的话下一轮扫描仍会
+ * 跳过这一列，这条手工标签会在某次「删了再扫」之后变成一条永远不会被自动确认的孤儿结论。
  */
 @Slf4j
 @Service
@@ -88,6 +86,8 @@ public class ColumnTagService {
     private final DatabaseRepository databaseRepository;
     private final TableRepository tableRepository;
     private final SensitiveTypeService typeService;
+    private final SensitivityDecisionService decisionService;
+    private final SensitivityTagWriter tagWriter;
     private final CatalogEventPublisher events;
     private final Clock clock;
 
@@ -250,6 +250,11 @@ public class ColumnTagService {
         entity.setFindingId(null);
         entity.setInheritedFrom(null);
         ColumnTagEntity saved = tagRepository.save(entity);
+        if (typeCode != null) {
+            // 手工重新打标 = 撤回之前的否决：不解除的话，下一轮扫描仍会跳过这一列，
+            // 而这条手工标签会在某次「删了再扫」之后变成一条永远不会被自动确认的孤儿结论。
+            decisionService.liftSuppression(referenceHash, typeCode, principal);
+        }
 
         attributes.put("tagValue", saved.getTagValue());
         attributes.put("afterTagValue", saved.getTagValue());
@@ -258,6 +263,9 @@ public class ColumnTagService {
         attributes.put("source", saved.getSource());
         events.publish(CatalogEventType.COLUMN_TAG_CHANGED, catalogName,
                 CatalogEvent.TARGET_TABLE, database + "." + table, attributes);
+        // 表级级别 = 该表所有列标签的 max(level)（§5.5），因此任何一次列级写入之后都要重算。
+        // 它不参与策略展开，所以这一步不会改变任何列的脱敏行为。
+        tagWriter.refreshTableLevel(catalogName, database, table, principal);
         return toDto(saved);
     }
 
@@ -271,14 +279,25 @@ public class ColumnTagService {
      * 「删错了没法恢复」会让人不敢删；而 {@code enabled} 那条路留给「先关掉、
      * 观察一下再说」。
      *
-     * <p>不写抑制项——理由见类注释（P0 没有任何路径能产生 {@code REJECTED}，
-     * 也没有任何路径能让扫描自动落标，因此「删了会复活」在 P0 不成立）。
+     * <p><b>同时写一条永久抑制项</b>（P1，见类注释）：删标签的语义是「这条结论我撤回」，
+     * 而只要扫描还会自动落标，「撤回」就必须比这一行活得更久——否则同一列会在下一轮
+     * 被重新判成同一类型。抑制项只在该列改名（哈希变）或治理员显式解禁后失效
+     * （{@code DELETE /sensitivity-suppressions/{id}}）。
      */
     @Transactional
     public void delete(Long id, String principal) {
         ColumnTagEntity entity = require(id);
         snapshotDelete(entity, principal);
         tagRepository.delete(entity);
+        // P1：删标签同时写永久抑制项（§9 那一行）。理由见 SnapshotDelete 上方的说明
+        // 与 SensitivityDecisionService#suppressColumn：只删行的话，下一轮扫描会把
+        // 同一列判成同一类型再写回来，用户看到的是「删了又回来了」。
+        decisionService.suppressColumn(entity.getCatalogName(), entity.getDatabaseName(),
+                entity.getTableName(), entity.getColumnName(), entity.getColumnRefHash(),
+                entity.getTypeCode(), "column tag deleted by " + principal, entity.getFindingId(),
+                principal);
+        tagWriter.refreshTableLevel(entity.getCatalogName(), entity.getDatabaseName(),
+                entity.getTableName(), principal);
     }
 
     /**

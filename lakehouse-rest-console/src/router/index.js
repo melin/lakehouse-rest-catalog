@@ -228,26 +228,27 @@ const routes = [
     meta: { title: '发起扫描', group: '治理（Management API）', parent: 'sensitivityOverview' },
   },
   {
-    // 识别结果审核（mockup `#findings`，人审队列）。
+    // 识别结果审核（mockup `#findings`，人审闭环：读 + 写）。
     //
-    // <p>P0 只读：元数据档得分上限 0.45 够不到自动应用阈值 0.85，因此每一行都停在
-    // `PENDING`、两个处置按钮置灰（`decide` 端点属 P1）。这一屏的价值在于把
-    // 「为什么这么判」摊开——命中了哪一层、各层贡献多少，这些在标签清单里看不到
-    // （那里只有结论）。不进菜单，从总览的「待人审」卡与「最近扫描」的行跳进来。
+    // <p>P1 起写侧在这一屏：确认落 `source=MANUAL` 的标签、拒绝落永久抑制项
+    // （`POST /sensitivity-findings:decide`），页尾「已否决」卡片是解禁入口。
+    // 这一屏的价值在于把「为什么这么判」摊开——命中了哪一层、各层贡献多少，
+    // 这些在标签清单里看不到（那里只有结论）。
+    // 不进菜单，从总览的「待人审」卡与「最近扫描」的行跳进来。
     path: '/sensitivity/findings',
     name: 'sensitivityFindings',
     component: () => import('@/views/SensitivityFindingsView.vue'),
     meta: { title: '识别结果审核', group: '治理（Management API）', parent: 'sensitivityOverview' },
   },
   {
-    // 扫描调度（mockup `#schedules`，设计稿 §5.6.2 / §12 P4）。
+    // 扫描调度（mockup `#schedules`，设计稿 §5.6.3 / §12 P4）。
     //
-    // <p>**这一屏在 P0 就该是现在这个样子，不是「还没做完」。** 推荐的触发方式是
-    // 「外部调度器调 `POST /sensitivity-scans`」——cron 由外部系统自己管，方案因此
-    // 不建第 6 张表（§5.6.3），也就没有一个「调度项」对象供人新建。§11 的原话是
-    // 「外部调度路线下此屏退化为**只读的「调度建议」页**……不出现新建按钮」。
-    // 所以它不进侧边菜单：一个只读的建议页摆在菜单里，会被读成「调度功能在这」，
-    // 而运维真正要的是那行可复制的 curl——入口开在发起扫描屏的页尾。
+    // <p>**现在是过渡态**：调度已拍板改为 catalog 自建（与表优化调度同形），属 P4；
+    // 在第 6 张表 `lakehouse_sensitivity_schedule` 与 `/sensitivity-schedules` 的
+    // 5 条端点落地之前，这一屏给的是那行可复制的 curl（cron 由外部系统自己管）。
+    // 所以「没有新建调度按钮」的成因是「CRUD 还没到」，不是「设计里没有这一屏」。
+    // 它不进侧边菜单：一个只读的建议页摆在菜单里会被读成「调度功能在这」，
+    // 而运维真正要的是那行 curl——入口开在发起扫描屏的页尾。
     path: '/sensitivity/schedules',
     name: 'sensitivitySchedules',
     component: () => import('@/views/SensitivitySchedulesView.vue'),

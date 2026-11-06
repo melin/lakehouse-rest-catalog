@@ -16,13 +16,17 @@
       </template>
     </PageHeader>
 
-    <!-- P0 的删除语义必须先说清：抑制项要 P1 才有，因此「删了会不会复活」在今天是
-         「不适用」而不是「不会」。写成「删除后不会被重新识别」是假的。 -->
+    <!-- 删除语义必须先说清，而且**要按「这条标签有没有类型」分两种情形讲**：
+         抑制项的键是 (列, 类型)，自动落标与人审确认来的标签都带 typeCode，删了会写抑制项；
+         手工打标的对话框不收 typeCode，删掉它就只是删行——下一轮扫描若仍命中会重新提出结论。
+         一句话写成「删除会写抑制项」对前一半是真的、对后一半是假的。 -->
     <TipAlert type="warning" class="pc-gap">
-      <template #title>删标签的语义（当前阶段）</template>
-      删除只移除这条治理结论，<strong>不会写抑制项</strong>——抑制项依赖「有人拒绝过这个识别结果」，
-      而当前阶段既没有拒绝路径、元数据档也够不到自动落标阈值，所以「删了会复活」暂时不成立。
-      这句话在识别结果审核上线后会变，届时界面文案要一起改。
+      <template #title>删标签的语义</template>
+      列级标签若带着<b>类型</b>（自动落标、或人审确认产生的），删除会<b>同时写一条抑制项</b>
+      （按「列 + 类型」记）：下一轮扫描直接跳过这一组合，不再把它提出来。
+      手工打标的标签没有类型，删除只删这一行——扫描若再次命中，这条结论会重新出现。
+      撤错了不用重建：去「识别结果审核 → 已否决」解禁即可。表级标签不给删除按钮，
+      它的值是该表所有列标签 <code class="pc-mono">max(level)</code> 的派生结论，删了下一轮还会算出来。
     </TipAlert>
 
     <PanelCard flush>
@@ -462,11 +466,16 @@ async function save() {
 
 async function confirmDelete(row) {
   const target = row.tableLevel ? row.table : `${row.database}.${row.table}.${row.column}`
+  const typed = Boolean(row.typeCode)
+  const detail = typed
+    ? `将删除标签「${row.tagKey}」。同时会写一条抑制项（${row.column} × ${row.typeCode}），`
+      + '之后的重扫不再把这一组合提出来；撤错了可在「识别结果审核 → 已否决」解禁。'
+    : `将删除标签「${row.tagKey}」。它没有类型，因此不会写抑制项——`
+      + '下一次扫描若再次命中，该结论会重新出现。'
   const ok = await confirmDanger({
     title: '删除标签',
     target,
-    detail: `将删除标签「${row.tagKey}」。这不会写抑制项——下一次扫描若再次命中，`
-      + '该列可能重新出现标签。',
+    detail,
   })
   if (!ok) return
   try {
