@@ -81,7 +81,7 @@ class PolicyPreviewTests {
                         "then", col("name"))),
                 "else", lit("HIDDEN"))));
         return new DataPolicyService.PreviewPolicy("hash", 1, rowFilter, Map.copyOf(masks),
-                List.of());
+                List.of(), List.of());
     }
 
     // ------------------------------------------------------------------ 集成：真实读路径
@@ -166,7 +166,7 @@ class PolicyPreviewTests {
         TablePreviewService service = service(dir);
         DataPolicyService.PreviewPolicy hidden = new DataPolicyService.PreviewPolicy(
                 "hash", 1, coalesceFalse(op("eq", col("region"), lit("CN"))),
-                Map.of(), List.of("phone"));
+                Map.of(), List.of("phone"), List.of());
 
         // 默认投影：phone 从输出里消失，行过滤照常生效，行宽 = 可读列数
         PreviewDtos.PreviewResponse response = service.preview(target(dir),
@@ -206,7 +206,7 @@ class PolicyPreviewTests {
         Map<String, Object> rowFilter = coalesceFalse(
                 op("eq", col("ghost"), lit("CN")));
         DataPolicyService.PreviewPolicy stale = new DataPolicyService.PreviewPolicy(
-                "hash", 1, rowFilter, Map.of(), List.of());
+                "hash", 1, rowFilter, Map.of(), List.of(), List.of());
         ApiException exception = assertThrows(ApiException.class,
                 () -> service.preview(target(dir),
                         new PreviewDtos.PreviewRequest(null, null, null, 100, null, null), stale));
@@ -224,7 +224,7 @@ class PolicyPreviewTests {
         DataPolicyService.PreviewPolicy regionMasked = new DataPolicyService.PreviewPolicy(
                 "hash", 1,
                 coalesceFalse(op("eq", col("region"), lit("CN"))),
-                Map.of("region", Map.of("fn", "mask_alphanum")), List.of());
+                Map.of("region", Map.of("fn", "mask_alphanum")), List.of(), List.of());
         PreviewDtos.PreviewRequest request = new PreviewDtos.PreviewRequest(null,
                 new PreviewDtos.PartitionSelectionRequest("explicit",
                         List.of(new PreviewDtos.PartitionValue("region", "identity", "CN")), null),
@@ -255,7 +255,7 @@ class PolicyPreviewTests {
         DataPolicyService.PreviewPolicy phoneMasked = new DataPolicyService.PreviewPolicy(
                 "hash", 1,
                 coalesceFalse(op("eq", col("region"), lit("CN"))),
-                Map.of("phone", Map.of("fn", "mask_alphanum")), List.of());
+                Map.of("phone", Map.of("fn", "mask_alphanum")), List.of(), List.of());
         PreviewDtos.PreviewRequest request = new PreviewDtos.PreviewRequest(null,
                 new PreviewDtos.PartitionSelectionRequest("explicit",
                         List.of(new PreviewDtos.PartitionValue("region", "identity", "CN")), null),

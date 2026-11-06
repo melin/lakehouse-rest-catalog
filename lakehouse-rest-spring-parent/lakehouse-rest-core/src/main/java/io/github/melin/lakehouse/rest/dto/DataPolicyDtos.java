@@ -76,8 +76,53 @@ public final class DataPolicyDtos {
 
     // ------------------------------------------------------------------ 引擎下发（resolve）
 
-    /** 下发给引擎的一条列绑定：列 + mask AST（原文，不含 $principal）。 */
-    public record MaskBinding(String column, Map<String, Object> mask, boolean allowNullOnRequired) {
+    /**
+     * 下发给引擎的一条列绑定：列 + mask AST（原文，不含 $principal）。
+     *
+     * <p><b>{@code origin} 不是给引擎的开关，是给它排障用的。</b>引擎对两种来源一视同仁
+     * （都是「这一列套这个 mask」），但一条 SQL 被脱敏之后有人在问「这列为什么是星号」时，
+     * 答案是「策略里写了」还是「这列被打了标、catalog 配了绑定」，指向两个完全不同的
+     * 处置动作（改策略 vs 改绑定）。没有这个字段，排查必须先去控制台翻两处。
+     *
+     * <p>它也让 {@code conflicts} 可解释：冲突里的「显式赢」正是靠区分两种来源判出来的。
+     */
+    public record MaskBinding(String column, Map<String, Object> mask, boolean allowNullOnRequired,
+                              String origin) {
+
+        /** 显式写在 {@code lakehouse_column_mask} 里的（表级策略，§5）。 */
+        public static final String ORIGIN_EXPLICIT = "EXPLICIT";
+
+        /** 由列标签 + catalog 绑定展开出来的（§8.1）。 */
+        public static final String ORIGIN_TAG = "TAG";
+    }
+
+    /**
+     * 标签展开时被放弃的候选（设计 §8.1 的「冲突不静默吞」）。
+     *
+     * <p><b>为什么必须下发而不是只记日志。</b>「我给这列配了绑定，为什么脱敏的样子是另一个」
+     * 是一个会反复被问的问题，而它有两个完全正常的原因（显式 mask 优先、同列多命中选了
+     * 更高的一档）。把原因跟着响应一起回去，控制台才能把它列出来；只写日志的话，
+     * 答案在服务端的某个文件里，问问题的人看不到。
+     *
+     * <p>{@code reason} 三个取值，对应三种处置：
+     * <ul>
+     *   <li>{@code EXPLICIT_WINS} —— 这列有显式 mask，绑定被放弃。要改用绑定，先删策略里那条；</li>
+     *   <li>{@code HIDDEN_CONFLICT} —— 这列在 {@code hidden_json} 里。整列不可见与脱敏叠加
+     *       说不清谁生效，所以不展开；选一个；</li>
+     *   <li>{@code OUTRANKED} —— 同列命中多条绑定，按 level / priority 选了另一条。</li>
+     * </ul>
+     *
+     * <p><b>{@code tagKey} 是标签的键，{@code bindingKey} 是绑定的键——两者必须分开。</b>
+     * 同一条标签（{@code PII.CN_ID_CARD}）可以同时命中 {@code PII.*} 与
+     * {@code PII.CN_ID_CARD} 两条绑定，这时只报 tagKey 的话，两条记录一模一样，
+     * 「输的是哪条规则」这个问题在响应里无法回答——而它正是治理员要改的那一条。
+     */
+    public record MaskConflict(String column, String tagKey, String tagValue, String bindingKey,
+                               String reason, String detail) {
+
+        public static final String REASON_EXPLICIT_WINS = "EXPLICIT_WINS";
+        public static final String REASON_HIDDEN_CONFLICT = "HIDDEN_CONFLICT";
+        public static final String REASON_OUTRANKED = "OUTRANKED";
     }
 
     /**
@@ -87,11 +132,18 @@ public final class DataPolicyDtos {
      * 「没数据」等价）；<b>FOUND</b> = 命中，{@code rowFilter} / {@code masks} 已按
      * 调用者折叠（{@code $principal} 成字面量）；<b>EXEMPT</b> = 调用者在豁免名单内，
      * 引擎按无策略处理。服务错误（拿不到）不在这里——那是 5xx，由引擎 fail-closed 处理。
+     *
+     * <p><b>FOUND 不再等于「有 DataPolicyEntity」。</b>一张从没配过策略的表，只要它的列
+     * 被打了标、catalog 又配了对应绑定，也会回 FOUND（{@code version=null}，
+     * 且所有 mask 的 {@code origin=TAG}）——这正是「新增列被识别打标后自动纳入覆盖，
+     * 不用改策略」的落点。{@code version} 可空因此不是疏忽：没有策略就没有版本号，
+     * 而引擎侧缓存必须靠标签变更事件失效，不能靠比对版本。
      */
     public record ResolvedPolicy(String table, String status, Integer version,
                                  Map<String, Object> rowFilter, String rowFilterSql,
                                  List<MaskBinding> masks, List<String> hiddenColumns,
-                                 boolean exempted, String enforcedScope) {
+                                 boolean exempted, String enforcedScope,
+                                 List<MaskConflict> conflicts) {
     }
 
     /** 批量解析的响应。{@code principal} 回显的是服务端认定的主体名（排障用）。 */

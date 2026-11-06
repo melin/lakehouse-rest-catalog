@@ -644,6 +644,8 @@ for tag in columnTags(表):
 
 **缓存**：策略下发有 60 秒 TTL，打标后最多 60 秒生效。另需在标签变更时**主动失效**对应表的策略缓存（与 `StorageCredentialCache.invalidateCatalog` 同构），否则「刚确认完、页面上还是明文」会被当成 bug 报上来。
 
+> **这条「主动失效」不在本仓库里。** 60 秒 TTL 的缓存在**引擎侧**（`PolicyProjectRule`），本仓库只有 `resolve` 的 DB 查询。因此本仓库负责的是**把事件发对**：`column.tag.changed`（带 `database` / `table` / `tagKey`）与 `sensitivity.binding.changed`（`kind=BINDING` + `catalog`），让引擎能按 `catalog.db.table` 驱逐。P3 阶段 0+1 交付的是这一半；引擎侧订阅属跨仓库改动，验收（「打标后 ≤60 秒生效」）在 TTL 这一侧已经成立，主动失效是把「≤60 秒」压到「立刻」的增强。
+
 ### 8.2 与既有策略的优先级宣告（必须写死在文档里）
 
 ```
@@ -681,7 +683,7 @@ DQ 的规则可以按标签匹配：「所有 `L3+` 列必须有 completeness �
 | `GET` | `/column-tags?table=&tagKey=&level=` | 标签查询（对外主接口） |
 | `PUT` | `/column-tags` | 手工打标（upsert，带 `entityVersion` 做 409） |
 | `DELETE` | `/column-tags/{id}` | 删标签（**同时写抑制项**，否则下次扫描复活） |
-| `GET` / `PUT` / `DELETE` | `/tag-mask-bindings[/{id}]` | 标签 → 脱敏绑定 |
+| `GET` / `PUT` / `DELETE` | `/tag-mask-bindings[/{id}]` | 标签 → 脱敏绑定。**P3 阶段 0 已落地三条**：`GET`（全量列表，含停用项）、`PUT`（按唯一键 `(catalog, tagKey, tagValue)` upsert）、`DELETE /{id}`。**没有详情端点**——列表就是全量，「详情」等于把同一份数据再开一个判权入口 |
 | `GET` / `PUT` | `/sensitivity-settings` | **catalog 级治理设置**：`defaultExecution`（§5.6.1）、`maxConcurrentScans`（§5.6.4，指 **A 路线进程内**的扫描并发，非集群闸门）、`propagationMaxDepth`（§7.1）。`PUT` 走乐观锁，且**变更进审计**——它改的是「这个 catalog 的扫描怎么跑」，与改绑定同级 |
 | `GET` / `POST` | `/sensitivity-schedules` | **调度项**（本轮拍板自建，§5.6.3）：列表 / 新建。`POST` 校验 cron 合法性、范围递进（`table` 有值则 `database` 必须有值）、`execution=SPARK` 时目标 catalog 可派发（否则 400，与 `POST /sensitivity-scans` 同一条 fail-closed） |
 | `GET` / `PUT` / `DELETE` | `/sensitivity-schedules/{id}` | 详情 / 改（含启停；`PUT` 带 `entityVersion` 走乐观锁）/ 删。**改 cron 会重算 `next_run_at`**（§4.6：人工编辑的乐观锁与调度的抢占令牌是两把，别合并） |
@@ -689,6 +691,8 @@ DQ 的规则可以按标签匹配：「所有 `L3+` 列必须有 completeness �
 执行集群的批次策略（含扫描那两列）与两段 Spark 参数挂在**既有**的 `PUT /catalogs/{c}/execution-cluster` 上（新增 `maxScanTablesPerJob` / `scanJobTimeoutSeconds` / `optimizationSparkConf` / `scanSparkConf`；`maxConcurrentJobs` 是既有字段，现在两类任务共用，§5.6.6、§5.6.7），**不新增端点**——它们与「连哪个集群」是同一份配置的不同段，拆成两个端点会让「保存了连接但没保存策略」变成一个用户看得见、却说不清为什么的状态。
 
 > **端点计数要连量词一起改。** 本仓库的守卫是「运行时端点数 == 登记数」（catalog 端点只加控制器判权不够——`AuthorizationInterceptor` 先执行、`resolve()` 返 null 即 403）。本轮把调度从「外部路线不注册」翻成「自建、正式注册」，因此**这 5 条从「可选」变为「必有」**：`GET`/`POST /sensitivity-schedules` 与 `GET`/`PUT`/`DELETE /sensitivity-schedules/{id}`。**计数口径是按 `(方法, 路径)` 元组，不是按路径数**——写成「+3」会让守卫的差集对不上（`EXTENSION_ENDPOINTS` 里每一条都是一个 `(METHOD, path)`）。登记表与守卫脚本要同步，漏改会让守卫直接红。**这正是 §5.6.3 说「这一条是会影响守卫的硬选择」的落点。**
+
+> **但 `/tag-mask-bindings` 这三条在 P3 阶段 0 没有进 `EXTENSION_ENDPOINTS`，这是有意的。** 上一条讲的是调度那 5 条——它们与控制台 `#schedules` 同一轮落地，所以「登记端点」与「控制台调用」可以一起做。绑定不一样：§5.5 拍板 `#bindings` 是**唯一刻意不建的一屏**，控制台在阶段 3 之前不会调用这三条；而 `verify-console.py` 第 2 组断言是「白名单里每一条都在控制台里真的被调用」，提前登记会直接红。**顺序是先建屏、再登记，不要反过来。**（管理面端点不走 `AuthorizationInterceptor`，所以上面那句「只加控制器判权不够」不适用于这里——三条端点各自的判权在控制器里，分别是 `DESCRIBE` / `ALTER` / `ALTER`。）
 
 事件：`sensitivity.scan.started` / `.completed` / `.failed`、`sensitivity.finding.decided`、`column.tag.changed`、`sensitivity.binding.changed`。扫描事件的 payload 带 `execution` 与 `triggerType`——「谁在什么时候读了明文」要能仅凭事件流回答，不必回查扫描表。
 
@@ -733,12 +737,24 @@ DQ 的规则可以按标签匹配：「所有 `L3+` 列必须有 completeness �
 | **P0** | 五实体 + 内置类型 seed + 类型/探测器配置端点与控制台 `#types` + D1/D2 元数据扫描 + 手工打标 + `/column-tags` 只读 + 控制台 `#overview` / `#tags` + `/sensitivity-settings`（catalog 级设置含 `defaultExecution`） | 扫描 100 张表 < 30 秒；同一列重扫不产生重复 tag；内置类型不可删（409）；**改一个内置类型的探测器权重后，下一轮扫描的判定随之改变且变更进审计**；**`defaultExecution` 三层覆盖生效（请求 > catalog > 全局）；`maxConcurrentScans`（A 路线进程内并发）按 catalog 覆盖生效，且与集群闸门 `maxConcurrentJobs` 互不影响** |
 | **P1**（**已交付**） | D3 采样探测 + 校验器 + 置信度分档 + 人审队列（`decide`）+ 自动应用闸门 + 第 7 张表（抑制项，V4） | 身份证列在 500 条造数上命中率 100%、误报 0；`PERSON_NAME` 即使置信度 0.99 也进 PENDING；**驳回后重扫不复活、解禁后下一轮重新判**；**删标签同时写抑制项** |
 | **P2** | 血缘传播 + 生命周期钩子 + 增量扫描（`ALTER ADD COLUMN`）；`execution` 落库，扫描历史可见位置；`propagationMaxDepth` 可配 | `DIRECT` 边一轮传播后下游出 tag；`AGGREGATE` 边不产生 tag；`REJECTED` 列重扫不复活；生命周期钩子产生的扫描 `trigger_type=LIFECYCLE`；**`max-depth=2` 时第 3 跳停在 `PENDING`** |
-| **P3** | 标签驱动脱敏（resolve 展开）+ 冲突报告 + 缓存主动失效 | 打标后 ≤60 秒策略生效；显式 mask 优先且冲突可见；三格式（Paimon/Iceberg/Lance）同表同规则结果一致 |
+| **P3**（**阶段 0+1 已交付**） | 标签驱动脱敏（resolve / 预览展开）+ 绑定端点（`/tag-mask-bindings` 三条）+ 冲突报告；缓存主动失效在**引擎侧**（本仓库只负责发事件） | 打标后 ≤60 秒策略生效；显式 mask 优先且冲突可见；三格式（Paimon/Iceberg/Lance）同表同规则结果一致 |
 | **P4** | D4 字典 / D5 统计特征 + 触发方式补全（**自建调度**：`#schedules` 由建议页改为 CRUD + `/sensitivity-schedules` 5 条端点登记 + 第 6 张表 `lakehouse_sensitivity_schedule` + 两个租约通道，§5.6.3）+ `execution=SPARK` 下推（复用表优化任务的提交/探活/跟踪/取消链路，§5.6.5；执行集群扩扫描那两列与两组 Spark 参数，§5.6.6 / §5.6.7；**并发闸门共用既有的 `maxConcurrentJobs`**）+ 对外事件订阅 | 自建调度按 cron 触发一次扫描且只触发一次（多副本下靠 `sensitivity.scan` 租约 + `next_run_at` 条件更新，§5.6.3）；**停用一个调度项后不再产生新扫描，历史扫描仍按 `schedule_name` 可查**；同表并发重入返 409；SPARK 路线下扫描事件的 `execution` 为 `SPARK` 且两条审计链可按 `scanId` 拼上；**给不可派发的 catalog 建 `execution=SPARK` 返 400**；**`scanSparkConf` 的默认段是 `spark.driver.memory=1g` + `spark.driver.cores=1`，不含 `shuffle.partitions`**（§5.6.7）；**扫了 100 张表、其中 3 张读失败时，`tables_scanned=100` 且 `tables_failed=3`（不是「扫了 97 张」）**；**作业日志里不含任何原始列值**（抽查一次真实扫描的 Pod 日志）；**`scanSparkConf` 里塞 `spark.sql.catalog.*.token` 被丢弃并记审计，且扫描仍用服务端构造的会话** |
 
 > `execution` 字段 P2 就落库（成本极低、事后补埋点会丢历史），但 `SPARK` 这条路到 P4 才通。P2 阶段该列恒为 `IN_PROCESS`——**先有列再有值，比事后给存量行补一个说不清的默认值干净**。同理 §4.2 的那组 B 专属列（Job 坐标 / 令牌哈希 / 提交代数）也在 P2 一次建好：`status` 的取值域一旦要扩到 `PENDING` / `SUBMITTING`，改的是列宽与所有既有读取点，不如一次到位。
 
 > **P1 实际落了什么**（一句话对照上表，避免「按设计稿以为做了」）：采样读走**预览那条只读通道**（`SensitivitySampler` → `TablePreviewService#sample`，同一并发池、不落原值、只存打码样本）；五个校验器是 core 里的纯函数常量（`SensitivityValidators`）；值层得分按「非空行」做分母、校验通过率 &lt; 99% 时整层打折（`SensitivityScorer#valueScore`）；三条决策带在 `SensitivityDetectors#detect` 里合成；`AUTO_APPLIED` 由 `SensitivityTagWriter` 落 `AUTO` 标签并重算表级级别；人审 `decide` 与抑制项由 `SensitivityDecisionService` 承担。**丢弃下界随「这一列到底有没有采到样」走，而不是随扫描模式走**——`SAMPLED` 模式下某列读失败时它只有元数据证据，用 0.60 会把本可提出的候选判死。
+
+> **P3 阶段 0+1 实际落了什么**（§9 的端点 + §8.1 的展开；控制台 `#bindings` 屏与缓存主动失效不在这一批）：
+>
+> - **展开是查询期行为**（`TagMaskExpander`，core）：打标签时**不**往策略表写 mask。写进去之后「改一条 catalog 级绑定」要改回多少张表没人知道，漏改的那几张不报错、只是继续按老规矩脱敏。
+> - **没策略的表也生效**：`resolve` 对「没有 `DataPolicyEntity`」的表先问一次展开结果，有 mask 就回 `FOUND` + `version=null`。这是 §8.1「新增列被识别打标后自动纳入覆盖，不用改策略」的落点——只在「有策略」的分支里展开会让这句话变成空话，而配过策略的表全都工作，看不出来。
+> - **`version=null` 是信息不是缺陷**：没有策略就没有版本号，因此引擎侧缓存**必须**靠 `column.tag.changed` / `sensitivity.binding.changed` 失效，不能靠比对版本。
+> - **豁免连带豁免标签绑定，主体白名单不连带**：豁免（`exemptPrincipals`）是「这张表对这个人不设防」，是对**表**的判定，所以连标签展开一起跳过；`subjects`（FOR 子句）限定的是**这条策略**的适用主体，所以名单外的人看不到行过滤、但**仍会**被标签脱敏——否则一条只给某部门用的行过滤策略会顺带关掉全局 PII 保护。
+> - **文件下载 / 分区列举的 403 判据改用 `hasActiveProtection`**（策略**或**标签绑定）。只判策略的话，一张「没策略、列被打了标、catalog 配了绑定」的表能把 parquet 原文件递出去，而同一张表的预览明明已经脱敏。
+> - **`PII.*` 前缀通配按「段」匹配**（前缀保留末尾的点），且同级别同优先级时**精确匹配赢过通配**——这条 tie-breaker 是 §8.1 三项排序之外的第四个，只在三项全等时生效。
+> - **冲突里区分 `tagKey` 与 `bindingKey`**：同一条标签能同时命中 `PII.*` 与 `PII.CN_ID_CARD`，只报标签键的话两条记录一模一样，「输的是哪条规则」答不上来。
+> - **绑定写入只校验到语法层**（`PolicyExpressions.parseMaskTemplate`）：绑定不知道会落在什么类型的列上，所以「结果类型等于列类型」留到引擎编译时兜；但「fn 拼错」「表达式引用 `col`」必须写入即拒——绑定里写死列名，落到别的列上就是把那一列的值搬过来。
+> - **控制台的 `#bindings` 屏刻意还没建**（§5.5 那条「唯一刻意不建的一屏」在本阶段仍然成立），因此这三条端点**没有**加进 `scripts/verify-console.py` 的 `EXTENSION_ENDPOINTS`：那份白名单的第 2 组断言要求「每一条都在控制台里真的被调用」，提前登记会让守卫红。阶段 3 建屏时再一起加。
 
 ## 13. 风险与未决
 

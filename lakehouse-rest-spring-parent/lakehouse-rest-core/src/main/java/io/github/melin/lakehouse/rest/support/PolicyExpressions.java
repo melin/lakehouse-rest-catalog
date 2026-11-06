@@ -90,6 +90,18 @@ public final class PolicyExpressions {
     public record SchemaView(Set<String> columns, Map<String, String> types,
                              Set<String> requiredColumns) {
 
+        /**
+         * 空视图：一列都没有。
+         *
+         * <p>只给「没有列上下文」的表达式校验用（标签绑定的 {@code expr} 模板）。
+         * 它让「引用列」在 {@code validate} 里直接失败——这正是想要的，
+         * 只是报错文案（「列不存在」）不如 {@code parseMaskTemplate} 自己给的准确，
+         * 所以那条路会先做一次显式检查再走到这里。
+         */
+        public static SchemaView empty() {
+            return new SchemaView(Set.of(), Map.of(), Set.of());
+        }
+
         public static SchemaView of(TypeDtos.Schema schema) {
             Set<String> columns = new LinkedHashSet<>();
             Map<String, String> types = new LinkedHashMap<>();
@@ -176,6 +188,82 @@ public final class PolicyExpressions {
             return new ValidatedMask(asMap(normalized), toSql(normalized), category);
         }
         throw ApiException.badRequest("mask must contain either \"fn\" or \"expr\"");
+    }
+
+    /**
+     * 解析并校验一条**没有具体列**的 mask 模板（catalog 级标签绑定，设计 §4.5 / §8.1）。
+     *
+     * <p><b>为什么不能直接复用 {@link #parseMask}。</b>绑定的语义是「凡是命中这个标签的列
+     * 都套这条 mask」，写入时还不知道它会落在哪张表、哪一列上——因此拿不到列类型。
+     * 而 {@code parseMask} 的第一件事是 {@code requireColumnCategory}（列必须存在、
+     * 必须有类型）。用一个假的 schema 糊过去，报错会指向一张不存在的表，
+     * 真正的错因（{@code fn} 拼错）反而被埋掉。
+     *
+     * <p><b>校验到哪一层为止。</b>标准集：{@code fn} 在 {@link #STANDARD_MASK_FNS} 里、
+     * 参数个数与取值合法（hash 算法必须在 {@link #HASH_ALGORITHMS} 内）——这些都与列类型无关。
+     * 逃生口：AST 必须落在白名单内，且<b>不允许引用列</b>（{@code {"col": ...}}）：
+     * 绑定要落在未知的列上，表达式里写死一个列名，等于把一条「只对那一列有意义」的规则
+     * 记成了 catalog 级规则——它落到别的列上就是把别人的值搬过来。要按列定制请写表级策略。
+     *
+     * <p><b>类型校验刻意留空</b>（{@code resultCategory} 回 {@code null}）：
+     * 「结果类型等于列类型」只有拿到真实列才判得了，由引擎侧编译 mask 时兜住
+     * （与策略「校验之后表又变了」是同一道闸）。因此 {@code replace_with_null}
+     * 落在非空列上会在<b>执行时</b>失败，而不是在这里被拒——这一点写在这里，
+     * 是因为它看起来像一个漏掉的校验。
+     *
+     * @param json              mask 节点：{@code {"fn": ..., "args": [...]}} 或 {@code {"expr": ...}}
+     * @param placeholderColumn 只出现在渲染出的 SQL 与报错文案里的列名（调用方传 {@code column}）
+     */
+    public static ValidatedMask parseMaskTemplate(Object json, String placeholderColumn) {
+        if (!(json instanceof Map<?, ?> mask)) {
+            throw ApiException.badRequest("mask must be an object with \"fn\" or \"expr\"");
+        }
+        if (mask.containsKey("fn") && mask.containsKey("expr")) {
+            throw ApiException.badRequest("mask must use either \"fn\" (standard set) or \"expr\""
+                    + " (escape hatch), not both");
+        }
+        if (mask.containsKey("fn")) {
+            // columnCategory = null：表示「还不知道会落在什么类型的列上」，跳过类型检查
+            return parseStandardMask(asMap(mask), placeholderColumn, null);
+        }
+        if (mask.containsKey("expr")) {
+            // 先查列引用，再交给 validate：否则 validate 会先以「列不存在」失败，
+            // 而那句话把「绑定不该写列名」这个真正的问题说成了「这张表缺一列」
+            requireNoColumnReference(mask.get("expr"));
+            Object normalized = validate(mask.get("expr"), SchemaView.empty(), 0, false);
+            String category = inferType(normalized, SchemaView.empty());
+            if (category == null || NULL_TYPE.equals(category)) {
+                throw ApiException.badRequest("cannot infer the result type of the mask template;"
+                        + " add an explicit cast — it is compared with the column type at"
+                        + " execution time");
+            }
+            return new ValidatedMask(asMap(normalized), toSql(normalized), null);
+        }
+        throw ApiException.badRequest("mask must contain either \"fn\" or \"expr\"");
+    }
+
+    /**
+     * 模板里不允许出现列引用。
+     *
+     * <p>报错要指认是哪一列：治理员从控制台看到「不能引用列」时，第一反应是
+     * 「那我该怎么写」——把违规的那个 {@code col} 名字打出来，比一句规则声明有用。
+     */
+    private static void requireNoColumnReference(Object node) {
+        if (node instanceof Map<?, ?> map) {
+            if (map.containsKey("col")) {
+                throw ApiException.badRequest("a tag binding mask must not reference a column"
+                        + " (found \"col\": \"" + map.get("col") + "\"): the binding is a"
+                        + " catalog-level rule applied to whichever column carries the tag;"
+                        + " use a table-level policy for per-column expressions");
+            }
+            for (Object value : map.values()) {
+                requireNoColumnReference(value);
+            }
+        } else if (node instanceof List<?> list) {
+            for (Object value : list) {
+                requireNoColumnReference(value);
+            }
+        }
     }
 
     // ------------------------------------------------------------------ 节点校验（递归）
@@ -802,14 +890,28 @@ public final class PolicyExpressions {
         }
     }
 
+    /**
+     * 标准集的「这个 mask 只能落 string 列」检查。
+     *
+     * <p>{@code columnCategory == null} 表示<b>列类型未知</b>（catalog 级绑定模板，
+     * 见 {@link #parseMaskTemplate}），此时跳过检查而不是判失败——未知不等于不匹配。
+     * 这类绑定的类型一致性在执行点兜住。
+     */
     private static void requireStringColumn(String columnCategory, String column, String fn) {
+        if (columnCategory == null) {
+            return;
+        }
         if (!STRING.equals(columnCategory)) {
             throw ApiException.badRequest("mask " + fn + " produces a string, but column " + column
                     + " is " + columnCategory + " — the result type must equal the column type");
         }
     }
 
+    /** 同 {@link #requireStringColumn}：列类型未知（绑定模板）时跳过。 */
     private static void requireTemporal(String columnCategory, String column, String fn) {
+        if (columnCategory == null) {
+            return;
+        }
         if (!DATE.equals(columnCategory) && !TIMESTAMP.equals(columnCategory)) {
             throw ApiException.badRequest("mask " + fn + " applies to date/timestamp columns,"
                     + " but column " + column + " is " + columnCategory);

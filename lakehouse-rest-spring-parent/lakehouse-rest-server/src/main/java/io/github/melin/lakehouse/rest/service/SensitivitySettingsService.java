@@ -62,6 +62,17 @@ public class SensitivitySettingsService {
     private static final int MIN_PROPAGATION_DEPTH = 1;
     private static final int MAX_PROPAGATION_DEPTH = 32;
 
+    /**
+     * 事件属性里的种类标记。
+     *
+     * <p>{@code sensitivity.binding.changed} 这个类型被两条写路径共用（§9 的事件清单
+     * 只给了它一个），P3 起还有 {@code TagMaskBindingService} 那条（{@code kind=BINDING}）。
+     * 下游订阅方据此判断「该刷新哪份缓存」：设置改的是扫描怎么跑，
+     * 绑定改的是脱敏怎么展开——两者的失效目标完全不同。两边都写 {@code kind}，
+     * 判断逻辑才不必依赖「没有 kind 就当设置」这种隐式约定。
+     */
+    public static final String EVENT_KIND = "SETTINGS";
+
     private final CatalogRepository catalogRepository;
     private final RestServerProperties properties;
     private final CatalogEventPublisher events;
@@ -131,6 +142,8 @@ public class SensitivitySettingsService {
         // （与事件框架「没有变化的操作不进事件流」同一条规则）
         if (!after.equals(before)) {
             Map<String, Object> attributes = new LinkedHashMap<>();
+            // 与 TagMaskBindingService 共用同一个事件类型，靠 kind 区分（见 EVENT_KIND 的注释）
+            attributes.put("kind", EVENT_KIND);
             attributes.put("defaultExecution", saved.getProperties()
                     .get(SensitivityCatalogSettings.KEY_DEFAULT_EXECUTION));
             attributes.put("maxConcurrentScans", saved.getProperties()

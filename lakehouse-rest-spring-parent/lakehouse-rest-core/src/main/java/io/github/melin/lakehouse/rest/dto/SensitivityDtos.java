@@ -332,6 +332,66 @@ public final class SensitivityDtos {
                                          Integer entityVersion) {
     }
 
+    // ------------------------------------------------------------------ 标签 → 脱敏绑定（P3）
+
+    /**
+     * 一条「标签 → 脱敏动作」绑定（设计 §4.5 / §8.1）。
+     *
+     * <p><b>作用域是 catalog，不是表。</b>绑定表达的是「凡是 {@code PII.CN_ID_CARD} 的列
+     * 都这么脱敏」——它是规则，不是某张表的属性。因此这个读模型里没有
+     * {@code database} / {@code table}：有的话会让人以为绑定能按表配，
+     * 而那正是 {@code DataPolicyEntity} 的职责（两张表的分工见 §4.5 的 blockquote）。
+     *
+     * <p>{@code wildcardKey} / {@code wildcardValue} 是把「通配」显式说出来：
+     * 前者 = {@code tagKey} 以 {@code .*} 结尾（{@code PII.*} 匹配整个域），
+     * 后者 = {@code tagValue} 是空串（该键任意分级）。界面要能一眼看出这条绑定
+     * 覆盖的是「一个类型」还是「一个域」——两者的爆炸半径差一个数量级，
+     * 而它们在字段上只是一个后缀与一个空串。
+     *
+     * <p><b>没有 {@code entityVersion}。</b>{@code lakehouse_tag_mask_binding} 是 P0 就建的
+     * 表，字段表（§4.5）里没有乐观锁列，这里以字段表为准：绑定是「几条到几十条」的
+     * 规则配置，两个人同时改同一条的后果是一条规则被覆盖，下一轮 resolve 就能看出来；
+     * 它不像标签那样会静默丢一条人工结论。PUT 因此是 last-write-wins，
+     * 审计靠 {@code updatedBy} / {@code updatedAt}。
+     */
+    public record TagMaskBinding(long id,
+                                 String catalog,
+                                 String tagKey,
+                                 String tagValue,
+                                 boolean wildcardKey,
+                                 boolean wildcardValue,
+                                 Map<String, Object> mask,
+                                 String maskSql,
+                                 int priority,
+                                 boolean enabled,
+                                 String updatedBy,
+                                 Long updatedAt) {
+    }
+
+    /** {@code GET /tag-mask-bindings?catalog=}：不分页（量级是「几条到几十条」），含停用项。 */
+    public record TagMaskBindingList(List<TagMaskBinding> items) {
+    }
+
+    /**
+     * {@code PUT /tag-mask-bindings} 的请求体。
+     *
+     * <p><b>按唯一键 {@code (catalog, tagKey, tagValue)} upsert，不按 id。</b>唯一键本身
+     * 就是这条规则的地址——先 POST 拿 id 再 PUT，会让「先 GET 一下自己有没有配过」
+     * 变成调用方必做的事，漏做就撞唯一索引（报错形状还是 500，不是业务错误）。
+     * 这与 {@code PUT /column-tags} 同一形态。
+     *
+     * <p>{@code tagValue} 传 {@code null} / 空串都表示「该键任意值」。服务层**统一归一成空串**
+     * 落库：MySQL 唯一索引下多行 {@code NULL} 互不冲突，用 {@code null} 会让同一把键
+     * 能插两条通配绑定（见实体类注释）。
+     */
+    public record TagMaskBindingUpsertRequest(String catalog,
+                                              String tagKey,
+                                              String tagValue,
+                                              Object mask,
+                                              Integer priority,
+                                              Boolean enabled) {
+    }
+
     // ------------------------------------------------------------------ catalog 级设置
 
     /**

@@ -356,14 +356,22 @@ public class CatalogFileService {
                 "the table directory " + tablePath);
     }
 
-    /** 表挂了启用中的策略 → 下载 403（带原因；表级与 catalog 级下载共用同一口径）。 */
+    /**
+     * 表挂了启用中的保护 → 下载 403（带原因；表级与 catalog 级下载共用同一口径）。
+     *
+     * <p><b>判据是 {@code hasActiveProtection} 而不是 {@code hasActivePolicy}</b>：
+     * P3 起「列被打了标、catalog 配了绑定」的表也会脱敏，只看策略表的话，
+     * 这类表的 parquet 原文件能从这条路原样搬走——而同一张表的预览明明是密文。
+     */
     private void requireDownloadAllowed(CatalogEntity catalog, TableEntity table) {
         String databaseName = databaseRepository.findById(table.getDatabaseId())
                 .map(DatabaseEntity::getName).orElse(null);
         if (databaseName != null
-                && dataPolicyService.hasActivePolicy(catalog.getPrefix(), databaseName, table.getName())) {
+                && dataPolicyService.hasActiveProtection(
+                        catalog.getPrefix(), databaseName, table.getName())) {
             throw ApiException.forbidden("file download is not available for this table:"
-                    + " a row filter / column mask policy is active (design §7.2)");
+                    + " a row filter / column mask policy (or a tag-based mask) is active"
+                    + " (design §7.2 / §8.1)");
         }
     }
 

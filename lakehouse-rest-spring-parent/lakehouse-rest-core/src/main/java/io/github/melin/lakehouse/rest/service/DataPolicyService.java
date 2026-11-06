@@ -7,12 +7,14 @@ import io.github.melin.lakehouse.rest.domain.entity.ColumnMaskEntity;
 import io.github.melin.lakehouse.rest.domain.entity.DataPolicyEntity;
 import io.github.melin.lakehouse.rest.domain.entity.DatabaseEntity;
 import io.github.melin.lakehouse.rest.domain.entity.TableEntity;
+import io.github.melin.lakehouse.rest.domain.entity.TagMaskBindingEntity;
 import io.github.melin.lakehouse.rest.domain.repo.CatalogRepository;
 import io.github.melin.lakehouse.rest.domain.repo.ColumnMaskRepository;
 import io.github.melin.lakehouse.rest.domain.repo.DataPolicyRepository;
 import io.github.melin.lakehouse.rest.domain.repo.DatabaseRepository;
 import io.github.melin.lakehouse.rest.domain.repo.TableRepository;
 import io.github.melin.lakehouse.rest.dto.DataPolicyDtos.MaskBinding;
+import io.github.melin.lakehouse.rest.dto.DataPolicyDtos.MaskConflict;
 import io.github.melin.lakehouse.rest.dto.DataPolicyDtos.MaskEntry;
 import io.github.melin.lakehouse.rest.dto.DataPolicyDtos.MaskUpsert;
 import io.github.melin.lakehouse.rest.dto.DataPolicyDtos.PolicyDetail;
@@ -93,6 +95,12 @@ public class DataPolicyService {
     private final CatalogEventPublisher events;
     private final RestServerProperties properties;
     private final Clock clock;
+    /**
+     * 标签 → mask 的展开（§8.1）。它只做纯计算，读路径上被四条路径共用：
+     * 引擎 {@link #resolve}、控制台预览 {@link #previewPolicyOf}、主体试算
+     * {@link #policyForPrincipal}，以及文件下载 / 分区列举的收口判据。
+     */
+    private final TagMaskExpander tagExpander;
 
     // ------------------------------------------------------------------ 管理面：读
 
@@ -267,6 +275,12 @@ public class DataPolicyService {
      *
      * <p>按调用者个性化：{@code $principal} 在这里折成字面量（引擎缓存因此必须按主体
      * 分片）；豁免名单内的调用者拿到 {@code exempted=true} + 空表达式。
+     *
+     * <p><b>P3 起这里也展开标签绑定</b>（§8.1）：每张表的 mask 是「显式 mask + 标签
+     * 展开」的合并结果，被放弃的候选随 {@code conflicts} 一起下发。因此
+     * {@code FOUND} 不再等价于「有 {@code DataPolicyEntity}」——一张只有标签保护的表
+     * 也回 {@code FOUND}（{@code version=null}）。标签展开的读次数：绑定按 catalog 一次、
+     * 标签按表一次；catalog 没配绑定时整段短路，开销与 P3 之前一致。
      */
     @Transactional(readOnly = true)
     public ResolveResult resolve(String catalogName, List<String> tables) {
@@ -298,41 +312,67 @@ public class DataPolicyService {
         for (DataPolicyEntity policy : policyRepository.findByFullNameHashIn(hashByName.values())) {
             byName.put(nameByHash.get(policy.getFullNameHash()), policy);
         }
+        // 本 catalog 的启用绑定（catalog 级规则，一次取全量）。空列表时下面每一处都直接
+        // 短路——没配绑定的部署，读路径的查询次数与 P3 之前逐字一致。
+        List<TagMaskBindingEntity> tagBindings = tagExpander.bindingsOf(catalogName);
         List<ResolvedPolicy> resolved = new ArrayList<>();
         for (String name : names) {
             DataPolicyEntity policy = byName.get(name);
             if (policy == null || !policy.isEnabled()) {
-                // 「没策略」与「已停用」对引擎等价：都放行，但状态如实分开回，排障能看出来
-                resolved.add(new ResolvedPolicy(name,
-                        policy == null ? "NONE" : "DISABLED", null, null, null,
-                        List.of(), List.of(), false, null));
+                // 「没策略」与「已停用」对**策略**等价，但对标签绑定不等价：停用的是那条策略，
+                // 不是标签。所以两条路都要再问一次展开结果——一张从没配过策略的表，
+                // 只要列被打了标、catalog 又配了绑定，照样要下发 mask（这就是 §8.1 说的
+                // 「新增列被识别打标后自动纳入覆盖，不用改策略」）。
+                MergedMasks merged = tagBindings.isEmpty()
+                        ? MergedMasks.empty()
+                        : mergedMasks(catalogName, TableRef.of(name), null, tagBindings);
+                if (merged.masks().isEmpty()) {
+                    // 没策略也没标签保护：正常响应，引擎放行
+                    resolved.add(new ResolvedPolicy(name,
+                            policy == null ? "NONE" : "DISABLED", null, null, null,
+                            List.of(), List.of(), false, null, merged.conflicts()));
+                    continue;
+                }
+                // 标签展开出的 mask 也要判 SELECT：否则无权者能从「这张表回了 FOUND」
+                // 反推出「它里面有敏感列」——策略内容（列清单）本身就是敏感信息
+                requireTableSelect(catalogName, name);
+                resolved.add(new ResolvedPolicy(name, "FOUND", null, null, null,
+                        merged.masks(), List.of(), false, null, merged.conflicts()));
                 continue;
             }
             requireTableSelect(catalogName, name);
             if (exemptOf(policy).contains(principal)) {
+                // 豁免是「这张表对这个人不设防」——对**表**的判定，不是对某条规则的判定，
+                // 因此**连标签绑定一起豁免**。刻意写明：这里看起来像漏了展开，其实是不展开。
+                // 反过来，若豁免只豁免显式 mask，「临时给某人开明文」这个最常见的运维动作
+                // 就只能靠删绑定实现，而删绑定会影响所有人。
                 resolved.add(new ResolvedPolicy(name, "EXEMPT", policy.getEntityVersion(),
-                        null, null, List.of(), List.of(), true, policy.getEnforcedScope()));
+                        null, null, List.of(), List.of(), true, policy.getEnforcedScope(),
+                        List.of()));
                 continue;
             }
-            // 主体白名单（§13.2 的 FOR 子句）：名单非空且调用者不在名单里 → 按没策略放行。
-            // 「策略对我不生效」与「表本来就没策略」对引擎是同一个语义，回 NONE；
-            // 名单内但又在豁免名单里的（上面的分支）仍走 EXEMPT——豁免优先级更高
+            // 主体白名单（§13.2 的 FOR 子句）：名单非空且调用者不在名单里 → 这条策略不生效。
+            // 但它限定的是**这条策略**的适用主体，不是「这张表对这个人不设防」，
+            // 所以标签绑定仍然下发。若混为一谈，一条只给某部门用的行过滤策略
+            // 会顺带关掉全局的 PII 脱敏——这个副作用没人预期得到。
             if (!subjectsOf(policy).isEmpty() && !subjectsOf(policy).contains(principal)) {
-                resolved.add(new ResolvedPolicy(name, "NONE", null, null, null,
-                        List.of(), List.of(), false, null));
+                MergedMasks tagOnly = tagBindings.isEmpty()
+                        ? MergedMasks.empty()
+                        : mergedMasks(catalogName, TableRef.of(name), null, tagBindings);
+                resolved.add(tagOnly.masks().isEmpty()
+                        ? new ResolvedPolicy(name, "NONE", null, null, null,
+                                List.of(), List.of(), false, null, tagOnly.conflicts())
+                        : new ResolvedPolicy(name, "FOUND", null, null, null,
+                                tagOnly.masks(), List.of(), false, null, tagOnly.conflicts()));
                 continue;
             }
             Map<String, Object> folded = policy.getRowFilterJson() == null ? null
                     : PolicyExpressions.foldPrincipal(
                             Json.read(policy.getRowFilterJson(), Map.class), principal, principalRoles);
-            List<MaskBinding> bindings = new ArrayList<>();
-            for (ColumnMaskEntity mask : maskRepository.findByPolicyId(policy.getId())) {
-                bindings.add(new MaskBinding(mask.getColumnName(),
-                        Json.read(mask.getMaskJson(), Map.class), mask.isAllowNullOnRequired()));
-            }
+            MergedMasks merged = mergedMasks(catalogName, TableRef.of(name), policy, tagBindings);
             resolved.add(new ResolvedPolicy(name, "FOUND", policy.getEntityVersion(),
-                    folded, policy.getRowFilterSql(), bindings, hiddenOf(policy),
-                    false, policy.getEnforcedScope()));
+                    folded, policy.getRowFilterSql(), merged.masks(), hiddenOf(policy),
+                    false, policy.getEnforcedScope(), merged.conflicts()));
         }
         return new ResolveResult(principal, resolved);
     }
@@ -340,29 +380,25 @@ public class DataPolicyService {
     // ------------------------------------------------------------------ 读路径收口
 
     /**
-     * 预览路径的策略解析（设计 §6 P1）。返回 {@code null} 表示「按原样预览」——
-     * 没策略、已停用、或调用者在豁免名单里；否则携带折叠好 {@code $principal} 的
+     * 预览路径的策略解析（设计 §6 P1 / §8.1）。返回 {@code null} 表示「按原样预览」——
+     * 什么保护都没有，或调用者在豁免名单里；否则携带折叠好 {@code $principal} 的
      * 行过滤 AST 与 mask 集，由预览服务逐行求值。
      *
-     * <p>与引擎的 {@link #resolve} 共用同一份判定链（启用 / 豁免 / 折叠），双端语义
-     * 天然一致；差别只在执行点：引擎把表达式编译进 Catalyst，预览逐行解释
+     * <p>与引擎的 {@link #resolve} 共用同一份判定链（启用 / 豁免 / 白名单 / 折叠 / 标签展开），
+     * 双端语义天然一致；差别只在执行点：引擎把表达式编译进 Catalyst，预览逐行解释
      * （{@code PolicyExpressionEvaluator}）。
-     */
-    /**
-     * 预览路径的策略解析（设计 §6 P1）。返回 {@code null} 表示「按原样预览」——
-     * 没策略、已停用、或调用者在豁免名单里；否则携带折叠好 {@code $principal} 的
-     * 行过滤 AST 与 mask 集，由预览服务逐行求值。
      *
-     * <p>与引擎的 {@link #resolve} 共用同一份判定链（启用 / 豁免 / 折叠），双端语义
-     * 天然一致；差别只在执行点：引擎把表达式编译进 Catalyst，预览逐行解释
-     * （{@code PolicyExpressionEvaluator}）。
+     * <p><b>没有策略不等于没有保护。</b>标签绑定是 catalog 级的，一张从没配过策略的表
+     * 只要列被打了标、catalog 配了绑定，预览照样要按 mask 求值——否则「打标即脱敏」
+     * 只在配过策略的表上成立，而这两件事本来是独立的。
      */
     @Transactional(readOnly = true)
     public PreviewPolicy previewPolicyOf(String catalogName, String databaseName,
                                          String tableName) {
         DataPolicyEntity policy = findPolicy(catalogName, databaseName, tableName).orElse(null);
         if (policy == null || !policy.isEnabled()) {
-            return null;
+            // 停用的只是那条策略，标签绑定仍然生效（与 resolve 的 DISABLED 分支同一口径）
+            return previewPolicyOfTags(catalogName, databaseName, tableName);
         }
         return previewPolicyOfEntity(policy, RequestContext.auditPrincipal());
     }
@@ -374,28 +410,35 @@ public class DataPolicyService {
      * 策略内容的人（判权在控制器，{@code TABLE:ALTER}）。
      *
      * <p>{@code status} 四态与 {@link ResolvedPolicy} 同语义：NONE（没策略或白名单外）、
-     * DISABLED、EXEMPT、FOUND。
+     * DISABLED、EXEMPT、FOUND。与 resolve 一样，**没有策略但有标签保护**时也回 FOUND
+     * （{@code version=null}）——试算的结果必须和这个人真去查询时看到的一样，
+     * 否则这个工具就是在骗人。
      */
     @Transactional(readOnly = true)
     public PrincipalPolicy policyForPrincipal(String catalogName, String databaseName,
                                               String tableName, String principal) {
         requireTableExists(catalogName, databaseName, tableName);
         DataPolicyEntity policy = findPolicy(catalogName, databaseName, tableName).orElse(null);
-        if (policy == null) {
-            return new PrincipalPolicy("NONE", null, null, null);
-        }
-        if (!policy.isEnabled()) {
-            return new PrincipalPolicy("DISABLED", policy.getEntityVersion(),
-                    policy.getRowFilterSql(), null);
+        if (policy == null || !policy.isEnabled()) {
+            PreviewPolicy tags = previewPolicyOfTags(catalogName, databaseName, tableName);
+            return tags == null
+                    ? new PrincipalPolicy(policy == null ? "NONE" : "DISABLED",
+                            policy == null ? null : policy.getEntityVersion(),
+                            policy == null ? null : policy.getRowFilterSql(), null)
+                    : new PrincipalPolicy("FOUND", null, null, tags);
         }
         if (exemptOf(policy).contains(principal)) {
+            // 豁免连标签绑定一起豁免（与 resolve 同一口径，理由见那里的注释）
             return new PrincipalPolicy("EXEMPT", policy.getEntityVersion(),
                     policy.getRowFilterSql(), null);
         }
         List<String> subjects = subjectsOf(policy);
         if (!subjects.isEmpty() && !subjects.contains(principal)) {
-            // 白名单外：策略对该主体不生效，语义与「没策略」相同（§13.2 FOR 子句）
-            return new PrincipalPolicy("NONE", null, null, null);
+            // 白名单外：这条策略对该主体不生效，但标签绑定仍然生效（§13.2 FOR 子句只限定策略）
+            PreviewPolicy tags = previewPolicyOfTags(catalogName, databaseName, tableName);
+            return tags == null
+                    ? new PrincipalPolicy("NONE", null, null, null)
+                    : new PrincipalPolicy("FOUND", null, null, tags);
         }
         return new PrincipalPolicy("FOUND", policy.getEntityVersion(), policy.getRowFilterSql(),
                 previewPolicyOfEntity(policy, principal));
@@ -406,7 +449,10 @@ public class DataPolicyService {
                                   PreviewPolicy policy) {
     }
 
-    /** 判定链的公共实现：豁免 / 白名单判定后折叠 {@code $principal} 与 {@code $principal_roles}。 */
+    /**
+     * 判定链的公共实现：豁免 / 白名单判定后折叠 {@code $principal} 与 {@code $principal_roles}，
+     * 再把显式 mask 与标签展开的 mask 合并。
+     */
     private PreviewPolicy previewPolicyOfEntity(DataPolicyEntity policy, String principal) {
         if (exemptOf(policy).contains(principal)) {
             return null;
@@ -420,26 +466,108 @@ public class DataPolicyService {
                 : PolicyExpressions.foldPrincipal(
                         Json.read(policy.getRowFilterJson(), Map.class), principal,
                         authorizationService.principalRoleNames(principal));
-        Map<String, Map<String, Object>> masks = new LinkedHashMap<>();
-        for (ColumnMaskEntity mask : maskRepository.findByPolicyId(policy.getId())) {
-            masks.put(mask.getColumnName(),
-                    Json.read(mask.getMaskJson(), Map.class));
-        }
+        TableRef ref = new TableRef(policy.getDatabaseName(), policy.getTableName());
+        MergedMasks merged = mergedMasks(policy.getCatalogName(), ref, policy, null);
         return new PreviewPolicy(policy.getFullNameHash(), policy.getEntityVersion(),
-                rowFilter, Map.copyOf(masks), hiddenOf(policy));
+                rowFilter, indexByColumn(merged.masks()), hiddenOf(policy), merged.conflicts());
+    }
+
+    /**
+     * 只有标签保护（没有启用中的策略）时的预览策略；一条 mask 都没有则返回 {@code null}。
+     *
+     * <p>{@code version} 用 {@code 0}：没有策略就没有版本号，而调用方（预览服务）
+     * 只把它当缓存标识用。写 {@code -1} 之类的哨兵更糟——它会看起来像一个真实的版本值。
+     */
+    private PreviewPolicy previewPolicyOfTags(String catalogName, String databaseName,
+                                              String tableName) {
+        TableRef ref = new TableRef(databaseName, tableName);
+        MergedMasks merged = mergedMasks(catalogName, ref, null, null);
+        if (merged.masks().isEmpty()) {
+            return null;
+        }
+        return new PreviewPolicy(sha256(fullName(catalogName, databaseName, tableName)), 0,
+                null, indexByColumn(merged.masks()), List.of(), merged.conflicts());
+    }
+
+    private static Map<String, Map<String, Object>> indexByColumn(List<MaskBinding> masks) {
+        Map<String, Map<String, Object>> byColumn = new LinkedHashMap<>();
+        for (MaskBinding mask : masks) {
+            byColumn.put(mask.column(), mask.mask());
+        }
+        return Map.copyOf(byColumn);
+    }
+
+    /**
+     * 显式 mask 与标签展开的 mask 合成一份（§8.1 / §8.2）。
+     *
+     * <p><b>顺序是「显式在前、标签在后」</b>：同一列不会同时出现在两处（显式赢，
+     * 标签那侧记冲突），所以这个顺序只影响未命中显式 mask 的列，但固定下来
+     * 让下发报文可逐字比对。
+     *
+     * @param policy      表策略；{@code null} = 这张表没有策略，只有标签可展开
+     * @param tagBindings 该 catalog 的启用绑定；{@code null} 时由 expander 自己取
+     */
+    private MergedMasks mergedMasks(String catalogName, TableRef ref, DataPolicyEntity policy,
+                                    List<TagMaskBindingEntity> tagBindings) {
+        List<MaskBinding> masks = new ArrayList<>();
+        Set<String> explicitColumns = new LinkedHashSet<>();
+        List<String> hidden = List.of();
+        if (policy != null) {
+            for (ColumnMaskEntity mask : maskRepository.findByPolicyId(policy.getId())) {
+                explicitColumns.add(mask.getColumnName());
+                masks.add(new MaskBinding(mask.getColumnName(),
+                        Json.read(mask.getMaskJson(), Map.class), mask.isAllowNullOnRequired(),
+                        MaskBinding.ORIGIN_EXPLICIT));
+            }
+            hidden = hiddenOf(policy);
+        }
+        TagMaskExpander.Expansion expansion = tagExpander.expand(catalogName, ref.database(),
+                ref.table(), tagBindings, explicitColumns, hidden);
+        for (TagMaskExpander.TagMask tagMask : expansion.masks().values()) {
+            // allowNullOnRequired 恒 false：绑定表没有这一列（§4.5），而它表达的是
+            // 「我知道这个 mask 可能置空、仍要对非空列应用」。绑定要在未知的列上生效，
+            // 无法预先确认；真落在非空列上时引擎编译期会拒绝——那是 fail-closed，不是明文。
+            masks.add(new MaskBinding(tagMask.column(), tagMask.mask(), false,
+                    MaskBinding.ORIGIN_TAG));
+        }
+        return new MergedMasks(masks, expansion.conflicts());
+    }
+
+    /** 一次合并的结果：下发的 mask 列表（显式在前）+ 被放弃的候选。 */
+    private record MergedMasks(List<MaskBinding> masks, List<MaskConflict> conflicts) {
+
+        static MergedMasks empty() {
+            return new MergedMasks(List.of(), List.of());
+        }
+    }
+
+    /** {@code database.table} 的拆分结果（表名可含点号，取最后一个点，与 {@link #requireTableSelect} 同口径）。 */
+    private record TableRef(String database, String table) {
+
+        static TableRef of(String tableRef) {
+            int lastDot = tableRef.lastIndexOf('.');
+            if (lastDot <= 0 || lastDot == tableRef.length() - 1) {
+                throw ApiException.badRequest("table must be written as database.table, got: " + tableRef);
+            }
+            return new TableRef(tableRef.substring(0, lastDot), tableRef.substring(lastDot + 1));
+        }
     }
 
     /**
      * 预览求值所需的全部输入（§6 P1）。{@code rowFilter} 已按调用者折叠
      * {@code $principal}；masks 键是列名、值是 mask AST（标准集或逃生口表达式）。
+     *
+     * <p>{@code conflicts} 让控制台能回答「这列我配了绑定，为什么脱敏成另一个样子」——
+     * 与 resolve 的响应同一份口径，两个读取面不能对同一件事给出不同答案。
      */
     public record PreviewPolicy(String fullNameHash, int version,
                                 Map<String, Object> rowFilter,
                                 Map<String, Map<String, Object>> masks,
-                                List<String> hiddenColumns) {
+                                List<String> hiddenColumns,
+                                List<MaskConflict> conflicts) {
     }
 
-    /** 这张表有没有启用中的策略（分区端点与文件下载的 403 判据；§6、§7.2）。 */
+    /** 这张表有没有启用中的**策略**（不含标签绑定；组合判据见 {@link #hasActiveProtection}）。 */
     @Transactional(readOnly = true)
     public boolean hasActivePolicy(String catalogName, String databaseName, String tableName) {
         return findPolicy(catalogName, databaseName, tableName)
@@ -447,13 +575,31 @@ public class DataPolicyService {
     }
 
     /**
-     * 这张表的启用中策略里有没有至少一条列脱敏——**快照统计打码的判据**（§7.3）。
+     * 这张表有没有任何生效中的**保护**：策略，或标签绑定展开出的 mask。
+     *
+     * <p><b>分区列举与文件下载必须用这个而不是 {@link #hasActivePolicy}。</b>
+     * 只判策略的话，一张「没配过策略、但列被打了标、catalog 配了绑定」的表会把
+     * parquet 原文件直接递出去——而同一张表的预览明明已经脱敏了。两个入口对
+     * 「这张表有没有受保护」给出不同答案，等于把标签绑定当成不存在。
+     */
+    @Transactional(readOnly = true)
+    public boolean hasActiveProtection(String catalogName, String databaseName, String tableName) {
+        return hasActivePolicy(catalogName, databaseName, tableName)
+                || tagExpander.hasAnyMask(catalogName, databaseName, tableName);
+    }
+
+    /**
+     * 这张表有没有任何会改变列值的保护——**快照统计打码的判据**（§7.3）。
      *
      * <p>快照的 {@code statistics} 字段是服务端唯一可能携带<b>列级</b> min/max/nullCount
      * 的载体（Paimon 优化器算完统计后会随提交上报，序列化串里就是逐字段的边界值）。
      * 它是不透明的序列化串，没法按列拆开挑着下发，所以只有「有 mask」才整体置空：
      * 纯行过滤策略不改列值，统计口径不受影响，照常下发（§6 的分工）。统计的行数 /
      * 文件数 / 字节数聚合值不在打码范围——它们不反推任何列的原值。
+     *
+     * <p><b>标签绑定也算「有 mask」</b>：一张只靠标签脱敏的表，如果统计照常下发，
+     * 那么被 mask 的列的最大值 / 最小值会从 {@code statistics} 里漏回去——
+     * 而它看起来只是一串不透明的序列化数据，没人会想到那里有原值的边界。
      *
      * <p>签名收 {@link TableEntity} 而不是三段名：调用方（快照读路径）手里就是
      * 表实体，三段名要从 id 反查 catalog / database 两层，收口点不该让每个调用方
@@ -468,41 +614,53 @@ public class DataPolicyService {
         if (catalogName == null || databaseName == null) {
             return false;
         }
-        return findPolicy(catalogName, databaseName, table.getName())
+        boolean explicit = findPolicy(catalogName, databaseName, table.getName())
                 .filter(DataPolicyEntity::isEnabled)
                 .map(policy -> !maskRepository.findByPolicyId(policy.getId()).isEmpty())
                 .orElse(false);
+        return explicit
+                || tagExpander.hasAnyMask(catalogName, databaseName, table.getName());
     }
 
     /**
-     * 拒绝带策略表的分区列举与文件下载（403 + 说明）。
+     * 拒绝带保护的表做分区列举与文件下载（403 + 说明）。
      *
      * <p>P1 起预览改为按策略求值（见 {@link #previewPolicyOf}），但**分区列举与
      * 文件下载维持拒绝**：分区值是 transform 后的值（{@code day(ts)}），与 mask 的
      * 「同类型结果」规则对不上；文件下载更直接——一个 parquet 原文件就是全表明文。
      * 红线是<b>不做「悄悄返回明文」</b>——那等于控制台成了后门。存储凭据直读
      * （§7.1）本层拦不住，控制台至少不该主动递刀。
+     *
+     * <p>判据用 {@link #hasActiveProtection}（策略或标签绑定）：只看策略的话，
+     * 上一句的「红线」在标签脱敏这条路上就不成立了。
      */
     public void requirePreviewAllowed(String catalogName, String databaseName, String tableName) {
-        if (hasActivePolicy(catalogName, databaseName, tableName)) {
+        if (hasActiveProtection(catalogName, databaseName, tableName)) {
             throw ApiException.forbidden("this request is not available for this table:"
-                    + " a row filter / column mask policy is active (design §6);"
-                    + " data preview applies the policy per row, but partition listing"
-                    + " and file downloads are refused; use a controlled engine session instead");
+                    + " a row filter / column mask policy or a tag-based mask is active"
+                    + " (design §6 / §8.1); data preview applies the policy per row, but"
+                    + " partition listing and file downloads are refused;"
+                    + " use a controlled engine session instead");
         }
     }
 
     /**
-     * 该 catalog 下所有启用策略的表的物理根路径——catalog 级文件下载的收口判据
+     * 该 catalog 下所有受保护的表的物理根路径——catalog 级文件下载的收口判据
      * （§7.2：一个 parquet 原文件就是全表明文）。调用方把下载请求的相对路径与
      * 这些前缀比对，命中即 403。
+     *
+     * <p>两个来源都要算：启用的策略，以及「有列标签命中启用绑定」的表。
+     * 后者按标签表反查（{@code database.table}），不再逐表展开 mask——这里判的是
+     * 「这个文件值不值得保护」，不是「保护成什么样」。
      *
      * <p>策略按三段名绑定，路径要从 {@code lakehouse_table.path_value} 反查；
      * 表可能已经不存在（策略还没被 DROP 钩子清掉）——跳过即可，文件本来也打不开。
      */
     @Transactional(readOnly = true)
     public List<String> protectedTablePaths(String catalogName) {
-        List<String> paths = new ArrayList<>();
+        // 用 LinkedHashSet：两个来源可能指向同一张表（既有策略又有标签），
+        // 调用方按前缀比对虽然不怕重复，但重复项会让这条列表在排障时难以阅读
+        Set<String> paths = new LinkedHashSet<>();
         for (DataPolicyEntity policy : policyRepository.findByCatalogName(catalogName)) {
             if (!policy.isEnabled()) {
                 continue;
@@ -512,7 +670,14 @@ public class DataPolicyService {
                     .filter(path -> path != null && !path.isBlank())
                     .ifPresent(paths::add);
         }
-        return paths;
+        for (String tableRef : tagExpander.tablesWithMask(catalogName)) {
+            TableRef ref = TableRef.of(tableRef);
+            tableEntityOf(catalogName, ref.database(), ref.table())
+                    .map(TableEntity::getPath)
+                    .filter(path -> path != null && !path.isBlank())
+                    .ifPresent(paths::add);
+        }
+        return new ArrayList<>(paths);
     }
 
     // ------------------------------------------------------------------ 表生命周期联动（§5.2 取舍 4）

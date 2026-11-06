@@ -73,8 +73,12 @@ public class DataPolicyController {
      * {@code GET /policies/resolve?catalog=&tables=db.t1,db.t2}：引擎的策略解析通道。
      *
      * <p>响应按调用者个性化（{@code $principal} 已折成字面量、豁免已判定）。
-     * 对没策略的表回 {@code status=NONE}——「没策略」是正常响应；
+     * 对什么保护都没有的表回 {@code status=NONE}——「没策略」是正常响应；
      * 服务端错误走 5xx，由引擎侧 fail-closed 拒读（§5.4 的失败模型）。
+     *
+     * <p><b>{@code FOUND} 不等于「有 {@code DataPolicyEntity}」</b>：P3 起标签绑定也在
+     * 这里展开，一张从没配过策略、但列被打了标且 catalog 配了绑定的表同样回
+     * {@code FOUND}（{@code version=null}，mask 的 {@code origin=TAG}）。
      */
     @GetMapping("/resolve")
     public ResolveResult resolve(@RequestParam("catalog") String catalog,

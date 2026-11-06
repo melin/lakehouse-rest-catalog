@@ -127,7 +127,12 @@ public class TablePreviewController {
                 List.of(target.database()), target.table().getName(), Access.SELECT, action);
     }
 
-    /** 表挂了启用中的策略时拒绝分区列举（预览已改为按策略求值，不再走这里；§6）。 */
+    /**
+     * 表挂了启用中的**保护**时拒绝分区列举（预览已改为逐行求值，不再走这里；§6 / §7.2）。
+     *
+     * <p>「保护」= 策略**或**标签绑定（`hasActiveProtection`）：P3 起「列被打了标、
+     * catalog 配了绑定」的表也会脱敏，只判策略会让这类表的分区值照常露出去。
+     */
     private void requireNotProtected(PreviewTarget target) {
         dataPolicyService.requirePreviewAllowed(target.catalog().getPrefix(),
                 target.database(), target.table().getName());
