@@ -132,23 +132,148 @@ public class SensitivityTagWriter {
     }
 
     /**
-     * 撤掉一条**自动**标签（人审驳回、或自动应用不再成立时）。
+     * 落一条**血缘继承**来的标签（设计稿 §7.1）。
      *
-     * <p><b>只删 {@code AUTO} 的</b>：人审驳回说的是「探测器判错了」，不是
+     * <p><b>它是 {@link #apply} 之外的一条独立入口，而不是给 {@code apply} 多一个参数。</b>
+     * 两条路径有三处语义不同，塞进一个方法只会让每处都要靠 {@code if} 分辨：
+     * <ul>
+     *   <li><b>凭什么写。</b>{@code apply} 凭「扫描自己判出来了」，本方法凭「上游是这样」——
+     *       后者必须记下 {@code inherited_from}，否则这条标签既解释不了、也追不回去；</li>
+     *   <li><b>能不能覆盖。</b>{@code apply} 只挡 {@code MANUAL}（自动不推翻人工）；本方法
+     *       还要挡 {@code AUTO}：扫描在**这一列上**直接判出来的结论，证据强于「从上游推来」，
+     *       拿继承去覆盖它是一次降级——而级别没变、只是来源变了的覆盖，在界面上看不出来；</li>
+     *   <li><b>幂等靠什么。</b>同一轮传播会被重放（扫描重试、多实例），重复写同一条结论
+     *       不该在事件流里留下一串 {@code UPDATED}。</li>
+     * </ul>
+     *
+     * <p><b>置信度由调用方算好传进来。</b>逐跳折损（{@code DIRECT} ×0.9、{@code DERIVED}
+     * 再 ×0.6）是传播那一侧的策略，写标签这一侧只负责落库——把它挪进来，等于让
+     * 「写一条标签」隐式依赖「这条标签是怎么来的」。
+     *
+     * @param inheritedFrom 上游列全名（{@code catalog.db.table.column}），必填
+     * @return 落下的标签；**被人工 / 自动结论挡住、或与现有继承结论等同时返回空**
+     */
+    @Transactional
+    public Optional<ColumnTagEntity> applyInherited(String catalog, String database, String table,
+                                                    String column, String typeCode, Double confidence,
+                                                    String inheritedFrom, String principal) {
+        SensitiveTypeEntity type = typeService.require(typeCode);
+        SensitivityLevel level = SensitivityLevel.parse(type.getLevel()).orElse(null);
+        if (level == null) {
+            // 与 apply 同一条理由：没有分级的敏感标签在所有按级别组织的视图里都会消失
+            log.warn("sensitive type {} has no parsable level ({}), inherited tag not written",
+                    typeCode, type.getLevel());
+            return Optional.empty();
+        }
+        String tagKey = SensitivityTags.sensitiveTagKey(type.getCategory(), typeCode);
+        String referenceHash = ColumnRefs.hash(catalog, database, table, column);
+        ColumnTagEntity entity = tagRepository.findByColumnRefHashAndTagKey(referenceHash, tagKey)
+                .orElse(null);
+        if (entity != null) {
+            TagSource existing = TagSource.parse(entity.getSource()).orElse(TagSource.MANUAL);
+            if (existing == TagSource.MANUAL) {
+                // 人工结论优先：治理员已经就这一列下过判断，继承不该把它写回算法结论
+                return Optional.empty();
+            }
+            if (existing == TagSource.AUTO) {
+                // 扫描在这一列上直接判出来的结论强于「从上游推来的」——覆盖是一次降级
+                return Optional.empty();
+            }
+            if (!shouldRewrite(entity, level, confidence, inheritedFrom)) {
+                // 同一轮传播重放：结论一模一样就不写，避免事件流里一串无意义的 UPDATED
+                return Optional.empty();
+            }
+            entity.setEntityVersion(entity.getEntityVersion() + 1);
+            entity.touch(principal, clock.millis());
+        } else {
+            entity = new ColumnTagEntity();
+            entity.setCatalogName(catalog);
+            entity.setDatabaseName(database);
+            entity.setTableName(table);
+            entity.setColumnName(column);
+            entity.setColumnRefHash(referenceHash);
+            entity.setTagKey(tagKey);
+            entity.setEntityVersion(0);
+            entity.markCreated(principal, clock.millis());
+        }
+        entity.setTagValue(level.name());
+        entity.setTypeCode(typeCode);
+        entity.setSource(TagSource.INHERITED.name());
+        entity.setConfidence(confidence);
+        // 继承标签没有自己的 finding：它凭的是上游那条结论，不是这一轮的某个探测器命中
+        entity.setFindingId(null);
+        entity.setInheritedFrom(inheritedFrom);
+        entity.setEnabled(true);
+        ColumnTagEntity saved = tagRepository.save(entity);
+
+        Map<String, Object> attributes = new LinkedHashMap<>();
+        attributes.put("database", database);
+        attributes.put("table", table);
+        attributes.put("column", column);
+        attributes.put("columnRef", ColumnRefs.fullName(catalog, database, table, column));
+        attributes.put("tagKey", tagKey);
+        attributes.put("tagValue", saved.getTagValue());
+        attributes.put("typeCode", typeCode);
+        attributes.put("level", level.name());
+        attributes.put("source", saved.getSource());
+        attributes.put("confidence", confidence);
+        attributes.put("inheritedFrom", inheritedFrom);
+        attributes.put("change", "UPDATED");
+        // 事件必须发：引擎侧的策略缓存按 catalog.db.table 驱逐（设计稿 §8.1）。
+        // 继承标签同样会改变某一列的 mask，漏发这条事件的表现是「下游已经继承了，
+        // 但上下游两边读出来的脱敏不一致」，而它要等缓存 TTL 到期才自愈。
+        events.publish(CatalogEventType.COLUMN_TAG_CHANGED, catalog, CatalogEvent.TARGET_TABLE,
+                database + "." + table, attributes);
+        return Optional.of(saved);
+    }
+
+    /**
+     * 现有的继承标签要不要重写。
+     *
+     * <p>三条都变了才算「有新结论」：级别、置信度（容差 {@code 1e-6}，逐跳相乘会累积
+     * 浮点误差）、来源列。只比级别会让「上游换了列、但级别一样」的继承永远停在旧的
+     * {@code inherited_from} 上，而那一列在血缘图上已经不再流向这里。
+     */
+    private static boolean shouldRewrite(ColumnTagEntity entity, SensitivityLevel level,
+                                         Double confidence, String inheritedFrom) {
+        if (!level.name().equals(entity.getTagValue())) {
+            return true;
+        }
+        if (!inheritedFrom.equals(entity.getInheritedFrom())) {
+            return true;
+        }
+        double previous = entity.getConfidence() == null ? -1d : entity.getConfidence();
+        return confidence == null || Math.abs(previous - confidence) > 1e-6;
+    }
+
+    /**
+     * 撤掉一条**自动得出**的标签（{@code AUTO} 与 {@code INHERITED}，人审驳回 / 自动应用不再成立时）。
+     *
+     * <p><b>只删这两种来源的</b>：人审驳回说的是「这个结论不成立」，不是
      * 「这条人工结论也错了」。删掉人工标签会让一次误点毁掉一条治理结论，
      * 而人工结论无法从任何地方重建。
+     *
+     * <p><b>{@code INHERITED} 必须一起来。</b>P2 起驳回一条继承来的结论（比如
+     * 「md5 之后的列仍然算身份证」这个判断被推翻）如果只删 {@code AUTO}，表现是
+     * 人审队列里的状态变了、抑制项也落了，而**那一列的 mask 还在生效**——
+     * 用户看到的是「我驳回了，它照样打码」，这比不让人驳回更坏。
      *
      * @return 真的删了返回 {@code true}（没有可删的也是 {@code false}，不报错）
      */
     @Transactional
-    public boolean removeAuto(String catalog, String database, String table, String column,
-                              String typeCode, String principal) {
+    public boolean removeAutomatic(String catalog, String database, String table, String column,
+                                   String typeCode, String principal) {
         SensitiveTypeEntity type = typeService.require(typeCode);
         String tagKey = SensitivityTags.sensitiveTagKey(type.getCategory(), typeCode);
         String referenceHash = ColumnRefs.hash(catalog, database, table, column);
         ColumnTagEntity entity = tagRepository.findByColumnRefHashAndTagKey(referenceHash, tagKey)
                 .orElse(null);
-        if (entity == null || !TagSource.AUTO.name().equals(entity.getSource())) {
+        if (entity == null) {
+            return false;
+        }
+        TagSource source = TagSource.parse(entity.getSource()).orElse(TagSource.MANUAL);
+        if (source != TagSource.AUTO && source != TagSource.INHERITED) {
+            // MANUAL：人审驳回不代表人工结论也错了（见方法注释）
             return false;
         }
         Map<String, Object> attributes = new LinkedHashMap<>();

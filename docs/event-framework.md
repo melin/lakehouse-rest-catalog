@@ -304,7 +304,7 @@ lakehouse:
 
 | 配置项 | 默认 | 说明 |
 | --- | --- | --- |
-| `lakehouse.rest.event-listener.types` | 空 = 全部 | 启用的监听器名（`CatalogEventListener.name()`，现有 `db` / `log`） |
+| `lakehouse.rest.event-listener.types` | 空 = 全部 | 启用的监听器名（`CatalogEventListener.name()`，现有 `db` / `log` / `policy` / `lineage` / `sensitivity`） |
 | `lakehouse.rest.event-listener.<name>.enabled-event-categories` | 空 = 全部 | 按类别订阅，取值见 `CatalogEventCategory` |
 | `lakehouse.rest.event-listener.<name>.enabled-event-types` | 空 = 全部 | 按具体类型订阅，取值是 wire 值 |
 

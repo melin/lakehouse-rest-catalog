@@ -122,9 +122,11 @@ public class SensitivityDecisionService {
             } else {
                 SensitivitySuppressionEntity suppression = suppress(entity, note, principal, now);
                 suppressionIds.add(suppression.getId());
-                // 驳回同时撤掉自动标签：留着它会让「驳回」在策略面上不生效
-                // （P3 的标签驱动脱敏读的是标签，不是 finding）
-                tagWriter.removeAuto(entity.getCatalogName(), entity.getDatabaseName(),
+                // 驳回同时撤掉「自动得出」的标签（AUTO 与 INHERITED）：留着它会让
+                // 「驳回」在策略面上不生效（P3 的标签驱动脱敏读的是标签，不是 finding）。
+                // P2 起继承来的标签也要撤——否则驳回一条血缘继承结论时，那条 mask 继续生效，
+                // 用户看到的是「我驳回了，它照样打码」。
+                tagWriter.removeAutomatic(entity.getCatalogName(), entity.getDatabaseName(),
                         entity.getTableName(), entity.getColumnName(), entity.getTypeCode(), principal);
             }
             touchedTables.add(entity.getCatalogName() + "\u0000" + entity.getDatabaseName()

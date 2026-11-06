@@ -585,17 +585,21 @@ D1 / D2 只读 `lakehouse_table.schema_doc`（当前 schema 的 JSON 文档）�
 | `transform_kind` | 是否继承 | 说明 |
 |---|---|---|
 | `DIRECT` | ✅ 继承，置信度 = 上游 × 0.9 | 直接列引用，语义不变 |
-| `DERIVED` | ⚠️ 继承但标 `needs_review`，置信度 × 0.6 | `substr(id_card,1,6)`、`md5(id_card)` 仍可反推，但已变形 |
-| `AGGREGATE` | ❌ 不继承，生成 `PENDING` 建议 | `count(id_card)` 不敏感，`max(salary)` 敏感——无法用规则区分，交给人 |
+| `DERIVED` | ⚠️ 继承，置信度 × 0.6，**并同时落一条 `PENDING` 建议** | `substr(id_card,1,6)`、`md5(id_card)` 仍可反推，但已变形。原文写的 `needs_review` 标记最终没有做成标签上的状态位——标签表只存「现在这列是什么」，没有待审态；「要人看一眼」这件事由一条 finding 表达（§4.3），人审的确认/拒绝、抑制项也都挂在它上面 |
+| `AGGREGATE` | ❌ 不继承，生成 `PENDING` 建议，**且不再往下传** | `count(id_card)` 不敏感，`max(salary)` 敏感——无法用规则区分，交给人。这条链的下游没有结论可继承 |
 | `CONSTANT` / `UNRESOLVED` | ❌ 不传播 | 没有源列 / 解析不出源 |
 
-实现要点：
+实现要点（**P2 落地口径**，与下面的设计原文有三处出入，已按实现改写）：
 
-- **幂等增量**：只处理 `last_seen` 之后有新活动的边，不每次全图重算；
-- **防环**：血缘图可能有环（`docs/lineage-design.md` 已讨论过环），传播用 visited set；
-- **深度上限默认 5 跳，可在 `application.yml` 配**（已定）。键是 `lakehouse.rest.sensitivity.propagation.max-depth`，默认 `5`；传给扫描/传播的请求体也能单次覆盖（与 §5.6.1 的执行位置同一套「全局默认 / 单次覆盖」口径），超过则停在 `PENDING` 建议——避免一条误标沿长链污染半张数仓。
+- **触发器是扫描，没有独立的传播端点。** 一次扫描收尾时（`finish` 之后、写终态之前），从这次覆盖到的表的标签出发沿列边 BFS 一遍。§9 的端点清单里没有 propagation 这一条，原因不只是「省一个接口」：finding 的唯一键建在 `scan_id` 上，一条没有扫描作为出处的结论答不上「谁在什么时候基于什么得出」。于是**增量**来自「只从这次扫到的表出发」（不是原文说的 `last_seen` 游标），**幂等**来自唯一键 + `applyInherited` 的「结论没变就不写」。
+- **三档的实现差别只在「写不写标签」。** 三者共用同一个置信度口径：先算 `上游 × 0.9`（`DERIVED` 再 ×0.6），再分派给「写标签」「写标签 + 写建议」「只写建议」。建议的排序依据是「这条有多值得看」，与标签的分数必须是同一个口径，否则人审队列里「0.81 的建议」与「0.729 的标签」说的是同一件事却排在两处。`DIRECT` / `DERIVED` 写完继续往下走，`AGGREGATE` 那一跳**终止这条支路**（下游没有结论可继承）。
+- **防环**：visited set，键是 `目标列哈希|typeCode`（不是「边」——同一条边经不同上游到达，结论应当只有一条）。
+- **深度上限**：`lakehouse.rest.sensitivity.propagation.max-depth`（默认 5），catalog 可经 `sensitivity-settings.propagationMaxDepth` 覆盖。**P2 没有做「单次请求覆盖」**——传播不是端点，没有请求维度；原文那句「传给扫描/传播的请求体也能单次覆盖」在 P2 不成立，要覆盖只能改 catalog 设置。
+- **深度语义 = 跳数**：被打标的那一列是 0，第一跳是 1。因此 `max-depth=2` 时**第 3 跳**停在 `PENDING`（`reason=DEPTH_EXCEEDED`）。
+- **三条不越界**：不跨 catalog（往别人的 catalog 写标签会绕过那里的判权与设置，只计入 `crossCatalogSkipped`）；不覆盖已有 `MANUAL` / `AUTO` 结论的列（扫描在本列直接判出来的证据更强，被继承覆盖是一次降级）；深度超限只出建议。
+- **标签没写进去也要继续往下传。** 目标列已有更强结论时这一跳不落标签，但那条链**下游**还没被推过；用本轮算出的置信度继续往下走是保守的一侧——最多把下游算低，不会算高。
 
-  > 5 跳这个默认值本身是**折中而非最优**：深链数仓（`ods → dwd → dws → ads`，每层还可能有中间表）实际需要 8–10 跳才够，而每多一跳，误标的污染面翻一倍。所以它不是「调对一次就完了」的参数——**放在 yml 里就是要让人按自己的数仓层级调**，而不是让它藏在代码里被当成物理常数。调大它的同时应调小自动应用白名单（§5.3），两条一起动才安全。
+> 5 跳这个默认值本身是**折中而非最优**：深链数仓（`ods → dwd → dws → ads`，每层还可能有中间表）实际需要 8–10 跳才够，而每多一跳，误标的污染面翻一倍。所以它不是「调对一次就完了」的参数——**放在 yml 里就是要让人按自己的数仓层级调**，而不是让它藏在代码里被当成物理常数。调大它的同时应调小自动应用白名单（§5.3），两条一起动才安全。
 
 ### 7.2 人工否决优先于自动传播
 
@@ -613,6 +617,15 @@ D1 / D2 只读 `lakehouse_table.schema_doc`（当前 schema 的 JSON 文档）�
 | `RENAME` | 跟随改名（同时更新三段原名列与 `column_ref_hash`） |
 | `CREATE` | 不继承任何东西（新表就是新表） |
 | `ALTER TABLE ADD COLUMN` | 触发**该表**增量扫描；新列在分类前，控制台把它标成「未分类」并计入覆盖率缺口 |
+
+P2 落地口径（`SensitivityLifecycleListener` + `ColumnTagService#onTableDropped/onTableRenamed`）：
+
+- **挂在事件上，不在协议面里直接调。** `ALTER` 的实现分散在 Paimon / Iceberg / Lance 三个协议模块，而标签与扫描都在 server——让协议模块反过来依赖治理服务，等于把敏感数据焊死在表结构变更上。`CatalogEventListener` 是唯一两边都够得着的位置（与 `DataPolicyLifecycleListener` 同一条理由）。
+- **`DROP` / `UNREGISTER` 连 finding 一起删**：表的元数据都没了，那些 finding 指向的列已不存在，留着只会在人审队列里堆一串点开就 404 的待审项。删掉的每条标签都发一条 `column.tag.changed`（`change=DELETED`）——删完之后那行就不在了，事件是「这条治理结论曾经是什么」的唯一残留，引擎侧也靠它按表驱逐策略缓存。
+- **`RENAME` 只搬标签，不搬 finding，也不搬抑制项。** 三者时机不同：标签是「现在这列是什么」，必须跟过去；finding 是历史（某次扫描看到了什么），改写它等于篡改那次扫描的结论；抑制项按 `column_ref_hash` 记，改名后哈希变了自然不再命中——**这正是 §7.2 说的「改名视为新列」那条失效路径**，顺手迁过去就把人审否决变成了跨改名的永久诅咒。
+- **`ALTER` 的判据只看 `TABLE_COMMITTED` 上的 `change=alter`。** 三个发布点（alter / rollback-schema / commit-snapshot）都发这个事件类型，但只有 `alter` 改了列的集合；漏掉这个判据的表现是「每次回滚 schema、每次提交快照都白扫一遍」，日志里除了一堆扫描记录什么也看不出来。
+- **扫描放在提交之后（`afterCommit`），并用 `REQUIRES_NEW` 开新事务。** 发布点是同步的，监听器因此跑在改表那个事务**里面**：直接扫会把一次 DDL 变成「改表 + 扫表」的长事务，而且扫描读到的 `schema_doc` 在提交前对别的实例不可见。`REQUIRES_NEW` 不是可有可无的——`afterCommit` 里线程上仍绑着刚提交事务的连接与 `EntityManager`，直接写库**插入既不 flush 也不报错**，表现是「改完表结构，扫描记录一条也没有」。没有事务上下文时（例如直接调服务层的用例）就地执行，否则那些用例里 `afterCommit` 永不触发，「钩子确实触发了扫描」会以假绿灯通过。
+- **钩子产生的扫描是 `trigger_type=LIFECYCLE` + `scope=TABLE` + `mode=METADATA_ONLY`**：为一个新列重新采样整张表，等于把一次 schema 变更变成一次明文读；而元数据档毫秒级、零 I/O，幂等且足够让 D1/D2 先给出名字与类型上的判断。
 
 ## 8. 消费面
 
@@ -736,13 +749,15 @@ DQ 的规则可以按标签匹配：「所有 `L3+` 列必须有 completeness �
 |---|---|---|
 | **P0** | 五实体 + 内置类型 seed + 类型/探测器配置端点与控制台 `#types` + D1/D2 元数据扫描 + 手工打标 + `/column-tags` 只读 + 控制台 `#overview` / `#tags` + `/sensitivity-settings`（catalog 级设置含 `defaultExecution`） | 扫描 100 张表 < 30 秒；同一列重扫不产生重复 tag；内置类型不可删（409）；**改一个内置类型的探测器权重后，下一轮扫描的判定随之改变且变更进审计**；**`defaultExecution` 三层覆盖生效（请求 > catalog > 全局）；`maxConcurrentScans`（A 路线进程内并发）按 catalog 覆盖生效，且与集群闸门 `maxConcurrentJobs` 互不影响** |
 | **P1**（**已交付**） | D3 采样探测 + 校验器 + 置信度分档 + 人审队列（`decide`）+ 自动应用闸门 + 第 7 张表（抑制项，V4） | 身份证列在 500 条造数上命中率 100%、误报 0；`PERSON_NAME` 即使置信度 0.99 也进 PENDING；**驳回后重扫不复活、解禁后下一轮重新判**；**删标签同时写抑制项** |
-| **P2** | 血缘传播 + 生命周期钩子 + 增量扫描（`ALTER ADD COLUMN`）；`execution` 落库，扫描历史可见位置；`propagationMaxDepth` 可配 | `DIRECT` 边一轮传播后下游出 tag；`AGGREGATE` 边不产生 tag；`REJECTED` 列重扫不复活；生命周期钩子产生的扫描 `trigger_type=LIFECYCLE`；**`max-depth=2` 时第 3 跳停在 `PENDING`** |
+| **P2**（**已交付**） | 血缘传播 + 生命周期钩子 + 增量扫描（`ALTER ADD COLUMN`）；`execution` 落库，扫描历史可见位置；`propagationMaxDepth` 可配 | `DIRECT` 边一轮传播后下游出 tag；`AGGREGATE` 边不产生 tag；`REJECTED` 列重扫不复活；生命周期钩子产生的扫描 `trigger_type=LIFECYCLE`；**`max-depth=2` 时第 3 跳停在 `PENDING`**（`SensitivityPropagationTests` 5 条 + `SensitivityLifecycleTests` 4 条） |
 | **P3**（**阶段 0+1 已交付**） | 标签驱动脱敏（resolve / 预览展开）+ 绑定端点（`/tag-mask-bindings` 三条）+ 冲突报告；缓存主动失效在**引擎侧**（本仓库只负责发事件） | 打标后 ≤60 秒策略生效；显式 mask 优先且冲突可见；三格式（Paimon/Iceberg/Lance）同表同规则结果一致 |
 | **P4** | D4 字典 / D5 统计特征 + 触发方式补全（**自建调度**：`#schedules` 由建议页改为 CRUD + `/sensitivity-schedules` 5 条端点登记 + 第 6 张表 `lakehouse_sensitivity_schedule` + 两个租约通道，§5.6.3）+ `execution=SPARK` 下推（复用表优化任务的提交/探活/跟踪/取消链路，§5.6.5；执行集群扩扫描那两列与两组 Spark 参数，§5.6.6 / §5.6.7；**并发闸门共用既有的 `maxConcurrentJobs`**）+ 对外事件订阅 | 自建调度按 cron 触发一次扫描且只触发一次（多副本下靠 `sensitivity.scan` 租约 + `next_run_at` 条件更新，§5.6.3）；**停用一个调度项后不再产生新扫描，历史扫描仍按 `schedule_name` 可查**；同表并发重入返 409；SPARK 路线下扫描事件的 `execution` 为 `SPARK` 且两条审计链可按 `scanId` 拼上；**给不可派发的 catalog 建 `execution=SPARK` 返 400**；**`scanSparkConf` 的默认段是 `spark.driver.memory=1g` + `spark.driver.cores=1`，不含 `shuffle.partitions`**（§5.6.7）；**扫了 100 张表、其中 3 张读失败时，`tables_scanned=100` 且 `tables_failed=3`（不是「扫了 97 张」）**；**作业日志里不含任何原始列值**（抽查一次真实扫描的 Pod 日志）；**`scanSparkConf` 里塞 `spark.sql.catalog.*.token` 被丢弃并记审计，且扫描仍用服务端构造的会话** |
 
 > `execution` 字段 P2 就落库（成本极低、事后补埋点会丢历史），但 `SPARK` 这条路到 P4 才通。P2 阶段该列恒为 `IN_PROCESS`——**先有列再有值，比事后给存量行补一个说不清的默认值干净**。同理 §4.2 的那组 B 专属列（Job 坐标 / 令牌哈希 / 提交代数）也在 P2 一次建好：`status` 的取值域一旦要扩到 `PENDING` / `SUBMITTING`，改的是列宽与所有既有读取点，不如一次到位。
 
 > **P1 实际落了什么**（一句话对照上表，避免「按设计稿以为做了」）：采样读走**预览那条只读通道**（`SensitivitySampler` → `TablePreviewService#sample`，同一并发池、不落原值、只存打码样本）；五个校验器是 core 里的纯函数常量（`SensitivityValidators`）；值层得分按「非空行」做分母、校验通过率 &lt; 99% 时整层打折（`SensitivityScorer#valueScore`）；三条决策带在 `SensitivityDetectors#detect` 里合成；`AUTO_APPLIED` 由 `SensitivityTagWriter` 落 `AUTO` 标签并重算表级级别；人审 `decide` 与抑制项由 `SensitivityDecisionService` 承担。**丢弃下界随「这一列到底有没有采到样」走，而不是随扫描模式走**——`SAMPLED` 模式下某列读失败时它只有元数据证据，用 0.60 会把本可提出的候选判死。
+
+> **P2 实际落了什么**（一句话对照上表）：`SensitivityPropagationService`（BFS 三档 + 建议落 finding）；调用点在 `SensitivityScanService#finish` 之后、写终态之前，异常只记 WARN（传播是一次已成功扫描的增值收尾，不该把它变成失败）；`SensitivityLifecycleListener` + `ColumnTagService#onTableDropped/onTableRenamed` 四个方法；`SensitivityTagWriter#applyInherited` 新增 `INHERITED` 来源，并把 `removeAuto` 放宽成 `removeAutomatic`（**驳回一条继承结论也必须能撤掉标签**，只删 `AUTO` 的表现是「我驳回了，它照样打码」）。**没有 V5 迁移**：P2 需要的 `execution` / `claimAttempt`（B 路线那组列）在 P1 已一次建好，`ScanStatus` 也已含 `PENDING` / `SUBMITTING`。`source` 优先级 `MANUAL > AUTO > INHERITED`——继承不能覆盖 `AUTO`，扫描在本列直接判出来的证据更强，被继承覆盖是一次降级。
 
 > **P3 阶段 0+1 实际落了什么**（§9 的端点 + §8.1 的展开；控制台 `#bindings` 屏与缓存主动失效不在这一批）：
 >

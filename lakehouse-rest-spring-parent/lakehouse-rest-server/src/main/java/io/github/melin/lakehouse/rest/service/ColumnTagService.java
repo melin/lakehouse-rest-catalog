@@ -8,6 +8,7 @@ import io.github.melin.lakehouse.rest.domain.entity.TableEntity;
 import io.github.melin.lakehouse.rest.domain.repo.CatalogRepository;
 import io.github.melin.lakehouse.rest.domain.repo.ColumnTagRepository;
 import io.github.melin.lakehouse.rest.domain.repo.DatabaseRepository;
+import io.github.melin.lakehouse.rest.domain.repo.SensitivityFindingRepository;
 import io.github.melin.lakehouse.rest.domain.repo.TableRepository;
 import io.github.melin.lakehouse.rest.dto.SensitivityDtos.ColumnTag;
 import io.github.melin.lakehouse.rest.dto.SensitivityDtos.ColumnTagCoverage;
@@ -82,6 +83,7 @@ public class ColumnTagService {
             List.of(TagSource.MANUAL, TagSource.AUTO, TagSource.INHERITED);
 
     private final ColumnTagRepository tagRepository;
+    private final SensitivityFindingRepository findingRepository;
     private final CatalogRepository catalogRepository;
     private final DatabaseRepository databaseRepository;
     private final TableRepository tableRepository;
@@ -324,6 +326,103 @@ public class ColumnTagService {
         events.publish(CatalogEventType.COLUMN_TAG_CHANGED, entity.getCatalogName(),
                 CatalogEvent.TARGET_TABLE,
                 entity.getDatabaseName() + "." + entity.getTableName(), attributes);
+    }
+
+    // ------------------------------------------------------------------ 表生命周期（P2）
+
+    /**
+     * 表被删 / 注销：删掉它的全部列级标签（设计稿 §7.3）。
+     *
+     * <p><b>为什么必须删。</b>同名表重建时会继承旧标签——与数据策略那条
+     * 「DROP 不级联删，会让同名重建的表继承旧策略」的坑是同一个，只是后果反过来：
+     * 策略残留导致**意外保护**（新表被旧谓词读小），标签残留导致**意外脱敏**
+     * （新表某一列因为名字碰巧一样而被 mask 掉，而没人知道为什么）。
+     *
+     * <p>每条删掉的标签都发一条 {@code column.tag.changed}：删完之后那行就不在了，
+     * 事件是「这条治理结论曾经是什么」的唯一残留（与
+     * {@link #snapshotDelete} 同一条理由）。同时引擎侧靠它按表驱逐策略缓存——
+     * 少发一条，下游会继续按已经不存在的标签脱敏到缓存过期。
+     *
+     * <p><b>finding 也一起删</b>（§7.3 的表格里写的「全部列级标签与 finding」）：
+     * 表的元数据都没了，那些 finding 指向的列已经不存在，留着只会在人审队列里
+     * 堆一串点开就 404 的待审项。
+     */
+    @Transactional
+    public int onTableDropped(String catalogName, String database, String table) {
+        List<ColumnTagEntity> tags =
+                tagRepository.findByCatalogNameAndDatabaseNameAndTableName(catalogName, database, table);
+        for (ColumnTagEntity entity : tags) {
+            snapshotDelete(entity, RequestContext.auditPrincipal());
+            tagRepository.delete(entity);
+        }
+        int findings = findingRepository.deleteByTable(catalogName, database, table);
+        if (!tags.isEmpty() || findings > 0) {
+            log.info("dropped {} column tag(s) and {} finding(s) of {}.{}.{} along with the table",
+                    tags.size(), findings, catalogName, database, table);
+        }
+        return tags.size();
+    }
+
+    /**
+     * 表改名 / 换库：标签跟随（三段名列与 {@code column_ref_hash} 一起改）。
+     *
+     * <p><b>改的是标签，不是 finding，也不是抑制项。</b>三者的时机不同：
+     * <ul>
+     *   <li><b>标签</b>是「现在这列是什么」，改完名之后这张表还叫这个名字，
+     *       结论当然要跟过去——不跟的话改名等于把这一列的保护悄悄卸掉；</li>
+     *   <li><b>finding</b> 是历史：「某次扫描在这张表上看到了什么」。把它改写成新名字，
+     *       等于篡改那条扫描的结论；</li>
+     *   <li><b>抑制项</b>按 {@code column_ref_hash} 记，改名后哈希变了，
+     *       **旧抑制项自然不再命中**——这正是 §7.2 说「列被重命名视为新列」那条失效路径。
+     *       如果这里顺手把抑制项也迁过去，人审否决就变成了一个跨改名生效的永久诅咒。</li>
+     * </ul>
+     */
+    @Transactional
+    public int onTableRenamed(String catalogName, String fromDatabase, String fromTable,
+                              String toDatabase, String toTable) {
+        List<ColumnTagEntity> tags =
+                tagRepository.findByCatalogNameAndDatabaseNameAndTableName(catalogName, fromDatabase, fromTable);
+        String principal = RequestContext.auditPrincipal();
+        int moved = 0;
+        for (ColumnTagEntity entity : tags) {
+            String targetHash = ColumnRefs.hash(catalogName, toDatabase, toTable, entity.getColumnName());
+            ColumnTagEntity clash = tagRepository
+                    .findByColumnRefHashAndTagKey(targetHash, entity.getTagKey()).orElse(null);
+            if (clash != null && !clash.getId().equals(entity.getId())) {
+                // 目标名下已经有一条同键标签（上一次同名表留下的陈旧行）：保留现有的，
+                // 删掉这条旧的。两条都留会让同一列出现两个互相矛盾的结论。
+                log.warn("column tag {} -> {}.{}.{} collides with an existing row; dropping the old one",
+                        entity.getColumnRefHash(), toDatabase, toTable, entity.getColumnName());
+                tagRepository.delete(entity);
+                continue;
+            }
+            Map<String, Object> attributes = new LinkedHashMap<>();
+            attributes.put("database", toDatabase);
+            attributes.put("table", toTable);
+            attributes.put("column", entity.getColumnName());
+            attributes.put("columnRef", ColumnRefs.fullName(catalogName, toDatabase, toTable,
+                    entity.getColumnName()));
+            attributes.put("tagKey", entity.getTagKey());
+            attributes.put("tagValue", entity.getTagValue());
+            attributes.put("typeCode", entity.getTypeCode());
+            attributes.put("source", entity.getSource());
+            attributes.put("change", "UPDATED");
+            attributes.put("movedFrom", fromDatabase + "." + fromTable);
+            entity.setDatabaseName(toDatabase);
+            entity.setTableName(toTable);
+            entity.setColumnRefHash(targetHash);
+            entity.setEntityVersion(entity.getEntityVersion() + 1);
+            entity.touch(principal, clock.millis());
+            tagRepository.save(entity);
+            events.publish(CatalogEventType.COLUMN_TAG_CHANGED, catalogName,
+                    CatalogEvent.TARGET_TABLE, toDatabase + "." + toTable, attributes);
+            moved++;
+        }
+        if (moved > 0) {
+            log.info("moved {} column tag(s) of {}.{}.{} to {}.{}", moved, catalogName,
+                    fromDatabase, fromTable, toDatabase, toTable);
+        }
+        return moved;
     }
 
     // ------------------------------------------------------------------ 覆盖率

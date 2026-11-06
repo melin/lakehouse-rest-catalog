@@ -4,6 +4,7 @@ import io.github.melin.lakehouse.rest.domain.entity.SensitivityFindingEntity;
 import java.util.Collection;
 import java.util.List;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
@@ -68,4 +69,18 @@ public interface SensitivityFindingRepository extends JpaRepository<SensitivityF
     /** 某批列引用在某次扫描里已有的记录（重扫时用来判断哪几条要更新）。 */
     List<SensitivityFindingEntity> findByScanIdAndColumnRefHashIn(
             String scanId, Collection<String> columnRefHashes);
+
+    /**
+     * 一张表的全部命中（表被删 / 注销时级联清掉，设计稿 §7.3）。
+     *
+     * <p><b>刻意不加 {@code clearAutomatically}。</b>这个方法是**在删表的事务里**被调用的
+     * （生命周期监听器是同步监听器）：{@code clear()} 会清空持久化上下文，
+     * 把同一个事务里刚排队的 {@code delete table} 一起丢掉，症状是「删表返回 204、
+     * 表却还在」。同款坑见 {@code LineageColumnEdgeRepository#deleteByRef}。
+     */
+    @Modifying
+    @Query("delete from SensitivityFindingEntity f where f.catalogName = :catalog"
+            + " and f.databaseName = :database and f.tableName = :table")
+    int deleteByTable(@Param("catalog") String catalog, @Param("database") String database,
+                      @Param("table") String table);
 }

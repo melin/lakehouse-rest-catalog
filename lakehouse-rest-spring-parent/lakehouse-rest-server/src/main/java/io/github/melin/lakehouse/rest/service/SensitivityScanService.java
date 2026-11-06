@@ -124,6 +124,7 @@ public class SensitivityScanService {
     private final SensitivitySuppressionRepository suppressionRepository;
     private final SensitivitySampler sampler;
     private final SensitivityTagWriter tagWriter;
+    private final SensitivityPropagationService propagation;
     private final SensitiveTypeService typeService;
     private final SensitivitySettingsService settingsService;
     private final ExecutionClusterService clusters;
@@ -245,6 +246,10 @@ public class SensitivityScanService {
             publishStarted(scan, tables.size());
             RunResult result = runScan(scan, catalogName, tables);
             ScanStatus finalStatus = finish(scan, result, now);
+            // 传播是**收尾的增值动作**：它不改这一轮的计数，也不该让一次已经成功的扫描变成失败。
+            // 放在 finish 之后（终态已落、事件已发）而不是之前，是因为「扫完了」这件事
+            // 不依赖传播是否成功；而传播需要的只是「哪些列刚有了结论」。
+            propagate(scan, tables);
             scan.setStatus(finalStatus.name());
             return new ScanAccepted(scan.getId(), catalogName, finalStatus.name(), execution.name());
         } finally {
@@ -631,6 +636,57 @@ public class SensitivityScanService {
         scan.setTablesFailed(result.tablesFailed());
         publishFinished(CatalogEventType.SENSITIVITY_SCAN_COMPLETED, scan, result, startedAt);
         return ScanStatus.SUCCEEDED;
+    }
+
+    // ------------------------------------------------------------------ 传播与生命周期
+
+    /**
+     * 扫完之后沿血缘把结论往上下游搬（§7.1）。
+     *
+     * <p><b>为什么以扫描为触发器。</b>传播产出的 {@code PENDING} 建议必须挂在某次扫描上
+     * （finding 的唯一键是 {@code (scan_id, column_ref_hash, type_code)}），而「刚扫过的这批表
+     * 有了新结论」正是最自然的起点。代价是**没有独立的重算入口**——想把一整棵血缘树
+     * 重推一遍，得重新扫一次源头那几张表。这是有意的：一次没有任何扫描的传播，
+     * 它写下的结论没有「谁在什么时候基于什么得出」的出处。
+     *
+     * <p><b>异常一律吞掉。</b>传播是收尾的增值动作：让它把一次已经成功的扫描变成 500，
+     * 等于「扫完了、finding 也对，但接口报错」，而调用方拿不到那个 scanId。
+     */
+    private void propagate(SensitivityScanEntity scan, List<ResolvedTable> tables) {
+        if (tables.isEmpty()) {
+            return;
+        }
+        List<SensitivityPropagationService.Seed> seeds = new ArrayList<>(tables.size());
+        for (ResolvedTable table : tables) {
+            seeds.add(new SensitivityPropagationService.Seed(table.database(), table.table()));
+        }
+        try {
+            propagation.propagate(scan, seeds);
+        } catch (RuntimeException exception) {
+            log.warn("sensitivity scan {} finished but propagation failed: {}",
+                    scan.getId(), exception.getMessage(), exception);
+        }
+    }
+
+    /**
+     * 生命周期钩子触发的单表扫描（{@code trigger_type=LIFECYCLE}，§5.6.2 / §7.3）。
+     *
+     * <p>恒为 {@code METADATA_ONLY} 且恒为**该表**：新增一列要判的是「这一列叫什么、什么类型」，
+     * 那是 D1/D2 的事，零 I/O；而重新采样整张表只为发现一个新列，是把一次 schema 变更
+     * 变成一次明文读。
+     *
+     * <p><b>失败只记日志，不往上抛。</b>钩子挂在建表 / 改表的事务提交之后，那时候
+     * DDL 已经成功了；让一次扫描的失败（同表已有扫描在跑 → 409、并发名额满了 → 429）
+     * 冒泡出去，只会让调用方以为改表失败。
+     */
+    public void scanForLifecycle(String catalogName, String database, String table) {
+        try {
+            start(new ScanRequest(catalogName, ScanScope.TABLE.name(), database, table,
+                    ScanMode.METADATA_ONLY.name(), null, null, ScanTrigger.LIFECYCLE.name()));
+        } catch (RuntimeException exception) {
+            log.info("lifecycle scan of {}.{}.{} skipped: {}", catalogName, database, table,
+                    exception.getMessage());
+        }
     }
 
     // ------------------------------------------------------------------ 事件
