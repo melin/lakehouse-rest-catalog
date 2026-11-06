@@ -84,6 +84,13 @@
                而 Lance 的读取路径不经过那一层（见 docs/lance-rest-catalog-design.md §7），
                给一个存得下、永远不生效的策略编辑器比不给更糟。 -->
           <el-tab-pane v-if="!isLanceTable" label="数据策略" name="policy" />
+          <!-- 敏感数据与「数据策略」成对，排除范围也一致（含 Lance 表）：本页的判据之一
+               「机密列是否已被脱敏」读的就是这张表的策略，Lance 表读不到，而给一张
+               读不到策略的表画一句「未知」不如不画。
+               例外在另一半：其余判据（逐列分类状态、覆盖率、待审条数）全是与格式无关的
+               元数据事实，所以 Format / Object 这些非 Paimon 表仍保有此页——
+               它们同样可能被引擎读到，同样该知道里面有没有敏感列。 -->
+          <el-tab-pane v-if="!isLanceTable" label="敏感数据" name="sensitivity" />
           <!-- 存储优化同样按表格式伸缩：本页只展示 Paimon 表。Iceberg 表走 IcebergTableView，
                Lance 表走 LanceTableView（`/lance-tables/...`），两页挂的都是同一个组件
                （`TableOptimizationPanel`，分别传 format="ICEBERG" / "LANCE"）。
@@ -576,6 +583,20 @@
             />
           </template>
 
+          <!------------------------------- 敏感数据 -------------------------------->
+          <!-- 与「数据策略」同构：内容在独立组件里，父组件给 ref + 一声「该加载了」。
+               列选项复用 policyColumns 的来源（全量 schema）——页签的行骨架就是它，
+               不能被覆盖率的分子分母带着走（未分类列必须显式出现并标灰） -->
+          <template v-else-if="tab === 'sensitivity'">
+            <TableSensitivityPanel
+              ref="sensitivityPanel"
+              :catalog="prefix"
+              :database="database"
+              :table-name="table"
+              :columns="policyColumns"
+            />
+          </template>
+
           <!------------------------------- 数据访问 -------------------------------->
           <template v-else>
             <div class="pc-access">
@@ -678,6 +699,7 @@ import ResourceState from '@/components/ResourceState.vue'
 import TableOptimizationPanel from '@/components/TableOptimizationPanel.vue'
 import TablePolicyPanel from '@/components/TablePolicyPanel.vue'
 import TablePreviewPanel from '@/components/TablePreviewPanel.vue'
+import TableSensitivityPanel from '@/components/TableSensitivityPanel.vue'
 import TablePager from '@/components/TablePager.vue'
 import TimeText from '@/components/TimeText.vue'
 import TipNote from '@/components/TipNote.vue'
@@ -866,10 +888,10 @@ const kindNote = computed(() => {
   const base = `${kindLabel.value}（type=${tableKind.value}）不受快照管理：没有快照、标签与分支，`
     + '也没有提交累计出来的文件统计'
   if (isLanceTable.value) {
-    return `${base}；Lance 的行过滤 / 列脱敏没有落点，因此也没有「数据策略」。'
-      + '这里保留「详细信息」「文件列表」「血缘」三页，数据本身用 Lance 客户端读。`
+    return `${base}；Lance 的行过滤 / 列脱敏没有落点，因此也没有「数据策略」与「敏感数据」。`
+      + '这里保留「详细信息」「文件列表」「血缘」三页，数据本身用 Lance 客户端读。'
   }
-  return `${base}，因此这里只保留「详细信息」「文件列表」「数据策略」与「血缘」。`
+  return `${base}，因此这里只保留「详细信息」「文件列表」「数据策略」「敏感数据」与「血缘」。`
 })
 
 /**
@@ -1002,6 +1024,28 @@ const optimizationPending = ref(false)
 const policyPending = ref(false)
 const policyPanel = ref(null)
 
+/**
+ * 第三个用这套机制的页签：敏感数据。三个面板都是「切走即销毁、切回是全新实例」，
+ * 因此同样不能靠 `loadedTabs` 做「只拉一次」——每次切过来都要显式 `load()`。
+ */
+const sensitivityPending = ref(false)
+const sensitivityPanel = ref(null)
+
+watch(sensitivityPanel, (panel) => {
+  if (panel && sensitivityPending.value) {
+    sensitivityPending.value = false
+    panel.load()
+  }
+})
+
+function loadSensitivity() {
+  if (sensitivityPanel.value) {
+    sensitivityPanel.value.load()
+  } else {
+    sensitivityPending.value = true
+  }
+}
+
 watch(policyPanel, (panel) => {
   if (panel && policyPending.value) {
     policyPending.value = false
@@ -1126,11 +1170,12 @@ function isPartitionKey(field) {
 }
 
 function onTabChange(name) {
-  // 数据策略 / 存储优化：数据在面板组件实例里，而页签内容是 v-else-if——切走即销毁，
-  // 切回来是全新实例（loaded=false、detail=null）。对这两个页签「已加载只拉一次」
+  // 数据策略 / 敏感数据 / 存储优化：数据在面板组件实例里，而页签内容是 v-else-if——切走即销毁，
+  // 切回来是全新实例（loaded=false、数据=null）。对这三个页签「已加载只拉一次」
   // 不成立，每次切到都要触发 load（面板已挂载就直接调，未挂载攒 pending）。
-  // load 是幂等的单表 GET，重复触发的代价是回页签时一次轻量请求，换来的是永远不空白
+  // load 是幂等的单表 GET 族，重复触发的代价是回页签时几次轻量请求，换来的是永远不空白
   if (name === 'policy') { loadPolicy(); return }
+  if (name === 'sensitivity') { loadSensitivity(); return }
   if (name === 'optimization') { loadOptimization(); return }
   if (loadedTabs.has(name)) return
   loadedTabs.add(name)
@@ -1169,11 +1214,12 @@ watch([prefix, database, table], () => {
   partitionPattern.value = ''
   partitionsLoaded.value = false
   detailsSection.value = 'fields'
-  // 深链接：`?tab=<name>` 直达某个页签（数据保护总览的「详情」用 ?tab=policy 跳进来）。
-  // 只认真实存在的页签名，不认识的参数静默忽略——它是便利入口，不是协议
+  // 深链接：`?tab=<name>` 直达某个页签（数据保护总览的「详情」用 ?tab=policy 跳进来，
+  // 敏感数据待审队列的「查看这张表」用 ?tab=sensitivity）。只认真实存在的页签名，
+  // 不认识的参数静默忽略——它是便利入口，不是协议
   const requested = String(route.query.tab || '')
   if (['details', 'lineage', 'preview', 'snapshots', 'tags', 'branches', 'files',
-    'access', 'policy', 'optimization'].includes(requested)) {
+    'access', 'policy', 'sensitivity', 'optimization'].includes(requested)) {
     tab.value = requested
   }
   overview.load()

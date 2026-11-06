@@ -55,6 +55,13 @@
         <el-tab-pane label="数据预览" name="preview" />
         <el-tab-pane label="快照" name="snapshots" />
         <el-tab-pane label="文件列表" name="files" />
+        <!-- 敏感数据：本页唯一一个不靠 loadTable 结果做的页签。它的三份数据（逐列标签与覆盖率、
+             待人审条数、这张表的显式脱敏）全部来自 catalog 侧的管理 API，按三段名挂表，
+             与协议面无关；服务端识别 D1/D2 两层读的也是 `lakehouse_table.schema_doc`，
+             与 `metadata.json` 同源。Iceberg 的行过滤 / 列脱敏在 Spark 侧按 PolicyRelation
+             注入，本页没有策略编辑器（与「数据策略」页签在 Paimon 页的定位不同），
+             但「这列现在受不受保护」读得出来——读到的是服务端记的结论。 -->
+        <el-tab-pane label="敏感数据" name="sensitivity" />
         <el-tab-pane label="存储优化" name="optimization" />
       </el-tabs>
 
@@ -385,6 +392,21 @@
             </ResourceState>
           </template>
 
+          <!------------------------------- 敏感数据 -------------------------------->
+          <!-- 与 Paimon 表详情页**同一个组件**：两份数据来源、判据与口径完全一致，
+               差别只在列骨架从哪来（那一页是 `schema.fields`，这里是 Iceberg 的
+               当前 schema）。列骨架必须是「这张表实际有哪些列」，不能用标签反推——
+               未分类的列要显式出现并标灰，否则一个「扫过、没敏感」的假象就成立了 -->
+          <template v-else-if="tab === 'sensitivity'">
+            <TableSensitivityPanel
+              ref="sensitivityPanel"
+              :catalog="prefix"
+              :database="database"
+              :table-name="table"
+              :columns="sensitivityColumns"
+            />
+          </template>
+
           <!------------------------------- 存储优化 -------------------------------->
           <!-- 与 Paimon 表详情页同一个组件：三项动作的名字与执行流程两种格式一致，
                差别只在参数键与指标口径，而那两样都在 utils/optimization.js 与执行侧，
@@ -428,6 +450,7 @@ import SectionTitle from '@/components/SectionTitle.vue'
 import TablePager from '@/components/TablePager.vue'
 import TableOptimizationPanel from '@/components/TableOptimizationPanel.vue'
 import TablePreviewPanel from '@/components/TablePreviewPanel.vue'
+import TableSensitivityPanel from '@/components/TableSensitivityPanel.vue'
 import TimeText from '@/components/TimeText.vue'
 import TipNote from '@/components/TipNote.vue'
 import { describeError } from '@/api/client.js'
@@ -741,6 +764,25 @@ function loadOptimization() {
   }
 }
 
+/** 敏感数据页签：同一套「攒请求 → 挂载后发」机制，理由与存储优化那处注释完全一致。 */
+const sensitivityPanel = ref(null)
+const sensitivityPending = ref(false)
+
+watch(sensitivityPanel, (panel) => {
+  if (panel && sensitivityPending.value) {
+    sensitivityPending.value = false
+    panel.load()
+  }
+})
+
+function loadSensitivity() {
+  if (sensitivityPanel.value) {
+    sensitivityPanel.value.load()
+  } else {
+    sensitivityPending.value = true
+  }
+}
+
 // ------------------------------------------------------------------ 数据预览
 
 /** 这张表的内部 id：本页只有名字，预览端点要 id（换一次，换到就存着）。 */
@@ -756,6 +798,21 @@ const previewColumns = computed(() => {
     type: typeof field.type === 'string' ? field.type : JSON.stringify(field.type),
   }))
 })
+
+/**
+ * 敏感数据页签的行骨架：当前 schema 的列。
+ *
+ * <p>与数据预览用的是同一份「当前 schema 字段」，取法不同——`fields` 是本页
+ * 「详细信息」页签正在展示的那一份（`schemas[]` 里当前 schema-id 的字段）。
+ * **骨架必须来自这张表自己**，不能用标签反推：未分类的列要显式出现并标灰，
+ * 否则「扫过、没敏感」这个假象就成立了（设计稿 §13）。
+ */
+const sensitivityColumns = computed(() =>
+  fields.value.map((field) => ({
+    name: field.name,
+    type: typeof field.type === 'string' ? field.type : JSON.stringify(field.type),
+  })),
+)
 
 /**
  * 切到数据预览时先做一次「名字 → 内部 id」，换到才挂面板。
@@ -780,11 +837,14 @@ async function loadPreview() {
 }
 
 function onTabChange(name) {
+  // 敏感数据与存储优化不能进 `loadedTabs` 的「只拉一次」判定：它们的面板切走即销毁，
+  // 切回来是全新实例（内部数据全空）。这两个页签每次切到都要显式 load，
+  // 面板未挂载时先攒 pending（理由见上面那段 Element Plus 同步抛事件的说明）
+  if (name === 'optimization') { loadOptimization(); return }
+  if (name === 'sensitivity') { loadSensitivity(); return }
   if (loadedTabs.has(name)) return
   loadedTabs.add(name)
   if (name === 'files') loadFilesIfFirst()
-  // 切到存储优化时才拉策略与历史：打开一张表的成本不该因为多了一个页签而变高
-  if (name === 'optimization') loadOptimization()
   if (name === 'preview') loadPreview()
 }
 
@@ -818,6 +878,7 @@ watch([prefix, database, table], () => {
   // 因此可以立刻发；文件页签则要等新的 metadata（它按 location 算根目录），
   // 那条路径由 overview 回来后用户点刷新或切页签触发。
   if (tab.value === 'optimization') loadOptimization()
+  if (tab.value === 'sensitivity') loadSensitivity()
 }, { immediate: true })
 </script>
 

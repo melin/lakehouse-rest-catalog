@@ -225,6 +225,7 @@
 
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
+import { useRoute } from 'vue-router'
 
 import IconAction from '@/components/IconAction.vue'
 import PageHeader from '@/components/PageHeader.vue'
@@ -256,7 +257,15 @@ const LEVEL_OPTIONS = [
 
 const catalog = ref('')
 const levelFilter = ref('')
-const tableFilter = ref('')
+/**
+ * 表过滤器（`库.表` 两段，服务端按整体比较）。
+ *
+ * <p>`?table=` 预填的来源是表详情「敏感数据」页签的「手工新增标签」按钮——
+ * 站在一张表里点它，落点就应当是那张表的标签。空串表示不带过滤（服务端认空串）。
+ * 只做**文本框预填**，不在挂载时自动弹对话框：深链接是「我已经站在这张表前」，
+ * 该看到的是这张表已有的标签，建不建由人决定。
+ */
+const tableFilter = ref(String(useRoute().query.table || ''))
 
 const loading = ref(false)
 const error = ref('')
@@ -292,7 +301,9 @@ const dialog = reactive({
 })
 
 onMounted(() => {
-  catalog.value = session.state.selectedCatalog || ''
+  // `?catalog=` 优先于全局选中项：表详情页跳过来时带的是**那张表所在的 catalog**，
+  // 而全局选中项可能已经被切到别处（切了就会看到另一批标签，还以为是这张表的）。
+  catalog.value = String(useRoute().query.catalog || '') || session.state.selectedCatalog || ''
   if (catalog.value) load()
 })
 

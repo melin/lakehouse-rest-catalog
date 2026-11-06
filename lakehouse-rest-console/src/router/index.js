@@ -213,6 +213,47 @@ const routes = [
     meta: { title: '敏感类型', icon: 'SetUp', group: '治理（Management API）', nav: true },
   },
   {
+    // 发起扫描（mockup `#scan`，设计稿 §11）。
+    //
+    // <p>与总览分成两屏而不是把表单塞进总览的弹窗：这一屏要给的不只是参数，还有
+    // 「这一发会读什么」——范围级联、执行位置对比、成本与权限提示，全都必须在按下
+    // 按钮**之前**看得见（采样是 §5.4 明确承认的「合法高权限读」）。总览页只留一个
+    // 一跳就到的入口按钮，那是「看治理到什么程度」的页面，不该被表单撑开。
+    //
+    // <p>不进侧边菜单（没有 `nav`）：它是总览的下钻目标，单独列在菜单里会变成一个
+    // 「打开就是空表单」的入口——与 `/catalogs/:catalogName` 同一取舍。
+    path: '/sensitivity/scan',
+    name: 'sensitivityScan',
+    component: () => import('@/views/SensitivityScanView.vue'),
+    meta: { title: '发起扫描', group: '治理（Management API）', parent: 'sensitivityOverview' },
+  },
+  {
+    // 识别结果审核（mockup `#findings`，人审队列）。
+    //
+    // <p>P0 只读：元数据档得分上限 0.45 够不到自动应用阈值 0.85，因此每一行都停在
+    // `PENDING`、两个处置按钮置灰（`decide` 端点属 P1）。这一屏的价值在于把
+    // 「为什么这么判」摊开——命中了哪一层、各层贡献多少，这些在标签清单里看不到
+    // （那里只有结论）。不进菜单，从总览的「待人审」卡与「最近扫描」的行跳进来。
+    path: '/sensitivity/findings',
+    name: 'sensitivityFindings',
+    component: () => import('@/views/SensitivityFindingsView.vue'),
+    meta: { title: '识别结果审核', group: '治理（Management API）', parent: 'sensitivityOverview' },
+  },
+  {
+    // 扫描调度（mockup `#schedules`，设计稿 §5.6.2 / §12 P4）。
+    //
+    // <p>**这一屏在 P0 就该是现在这个样子，不是「还没做完」。** 推荐的触发方式是
+    // 「外部调度器调 `POST /sensitivity-scans`」——cron 由外部系统自己管，方案因此
+    // 不建第 6 张表（§5.6.3），也就没有一个「调度项」对象供人新建。§11 的原话是
+    // 「外部调度路线下此屏退化为**只读的「调度建议」页**……不出现新建按钮」。
+    // 所以它不进侧边菜单：一个只读的建议页摆在菜单里，会被读成「调度功能在这」，
+    // 而运维真正要的是那行可复制的 curl——入口开在发起扫描屏的页尾。
+    path: '/sensitivity/schedules',
+    name: 'sensitivitySchedules',
+    component: () => import('@/views/SensitivitySchedulesView.vue'),
+    meta: { title: '扫描调度', group: '治理（Management API）', parent: 'sensitivityOverview' },
+  },
+  {
     // OIDC 配置：SSO 的**生效配置** + 连通性测试 + 令牌样例。
     //
     // <p>整页只读，没有编辑框——这些字段来自部署配置（yml / K8s ConfigMap）。

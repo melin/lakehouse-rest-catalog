@@ -1357,7 +1357,7 @@ http://localhost:8080/console/
   因此 `verify-console.py` 第 6 组、`build-image.sh` 与 `ConsoleApiTests` 都会在产物缺失时明确失败。
 - **路径不靠人工比对。** 全部端点收在 `lakehouse-rest-console/src/api/endpoints.js` 一张表里，
   由 `scripts/verify-console.py` 与四份 OpenAPI 规格（Paimon / Iceberg / Lance / 管理 API）机械比对
-  （29 组 249 项：端点存在性、引用完整性、五处基址一致、产物新鲜度、对话框状态、下拉候选来源、
+  （30 组 263 项：端点存在性、引用完整性、五处基址一致、产物新鲜度、对话框状态、下拉候选来源、
   静态凭据字段与服务端的一致性、三种格式的优化参数键（且两两不重合）、**catalog 表格式**、**Iceberg 目录浏览的契约形状**、
   存储字段分层、事件页的远程分页与类型筛选、问号图标悬停即显、提示性告警的正文收进问号（TipAlert：错误不收、带按钮的正文留在可见区）、**全站表格的远程分页（页码与过滤下推、
   分页器只有 `TablePager` 一个）**、**血缘页签的异步挂载与纯函数布局**、
@@ -1367,7 +1367,10 @@ http://localhost:8080/console/
   并发只有 `maxConcurrentJobs` 一把闸门（扫描与优化共用，四处都不许再出现 `maxConcurrentScans`））**、
   **列表的定时刷新（默认开启 5 秒、
   每一拍只走静默刷新、后台暂停、失败不清空表格）**、**引擎接入片段里的续期契约
-  （Paimon 默认仍是 bear、Iceberg 的 scope 与服务端常量逐字对齐、续期能力分控制面/数据面两列）**，
+  （Paimon 默认仍是 bear、Iceberg 的 scope 与服务端常量逐字对齐、续期能力分控制面/数据面两列）**、
+  **敏感数据的八屏与表详情「敏感数据」页签（两个表详情页挂同一块面板、Lance 页反向不挂、
+  待审队列按 catalog 格式选表详情路由、级别序数与来源优先级与服务端逐字一致、
+  `protected` 只认显式策略）**，
   最后由一组「文档计数」盯住这个数字本身与脚本一致）；
   服务端侧 `ConsoleApiTests` 守住静态资源托管与 SPA 深链回退。
 - **表格式（Paimon / Iceberg）在创建 Catalog 时就选定，之后不可改。** 新建弹窗里用

@@ -9,15 +9,16 @@
           <el-icon><Refresh /></el-icon>
           <span class="pc-btn-text">刷新</span>
         </el-button>
+        <!-- 「发起扫描」跳独立页而不是在本页开表单：这一屏要回答的是「治理到什么
+             程度」（跨页统计、一眼扫完），表单会把它撑成另一件事。跳转需要先选
+             catalog——`name` 带过去，免得再选一次。 -->
         <el-button
           size="small"
-          type="primary"
-          :loading="scanning"
           :disabled="!catalog"
-          @click="startMetadataScan"
+          @click="$router.push({ name: 'sensitivityScan' })"
         >
           <el-icon><Search /></el-icon>
-          <span class="pc-btn-text">扫描元数据</span>
+          <span class="pc-btn-text">发起扫描</span>
         </el-button>
       </template>
     </PageHeader>
@@ -80,7 +81,16 @@
       <div class="pc-kpi">
         <div class="pc-kpi-label">待人审</div>
         <div class="pc-kpi-value pc-kpi-orange">{{ pendingFindings }}</div>
-        <div class="pc-kpi-dim">置信度落在决策带的中间段，需人工裁决</div>
+        <div class="pc-kpi-dim">
+          置信度落在决策带的中间段，需人工裁决
+          <!-- 这个数字如果不带出口，读的人只能记下数再去别处找那一屏。
+               跳转带上当前 catalog（findings 屏必填），免得再选一次。 -->
+          <RouterLink
+            v-if="pendingFindings > 0"
+            class="pc-link"
+            :to="{ name: 'sensitivityFindings', query: { catalog } }"
+          >去审核</RouterLink>
+        </div>
       </div>
       <div class="pc-kpi">
         <div class="pc-kpi-label">打标表数</div>
@@ -165,9 +175,8 @@
           <el-button
             size="small"
             type="primary"
-            :loading="scanning"
             :disabled="!catalog"
-            @click="startMetadataScan"
+            @click="$router.push({ name: 'sensitivityScan' })"
           >
             扫描元数据
           </el-button>
@@ -287,7 +296,7 @@ import ResourceState from '@/components/ResourceState.vue'
 import TipAlert from '@/components/TipAlert.vue'
 import { describeError } from '@/api/client.js'
 import { sensitivityApi } from '@/api/sensitivity.js'
-import { notifyError, notifySuccess } from '@/composables/index.js'
+import { notifyError } from '@/composables/index.js'
 import { session } from '@/store/session.js'
 
 /**
@@ -303,7 +312,6 @@ import { session } from '@/store/session.js'
  */
 const catalog = ref('')
 const loading = ref(false)
-const scanning = ref(false)
 const error = ref('')
 
 const coverage = ref({
@@ -562,38 +570,17 @@ function duration(row) {
 }
 
 // ------------------------------------------------------------------ 发起扫描
-
-/**
- * 发起一次**目录级元数据扫描**。
- *
- * <p>`execution` 刻意**不传**：省略即用生效的三层覆盖值（请求 > catalog > 全局），
- * 这正是「三层覆盖生效」这条验收要走的路径；传了反而把 catalog 的设置遮住了。
- *
- * <p>`mode` 传 `METADATA_ONLY`：P0 只有 D1/D2，采样档（`SAMPLED`）要 P1 才有值探测，
- * 现在发采样扫描会真的去读明文却拿不到额外结论——成本与风险都白花。
- */
-async function startMetadataScan() {
-  if (!catalog.value) return
-  scanning.value = true
-  try {
-    const accepted = await sensitivityApi.startScan({
-      catalog: catalog.value,
-      scope: 'CATALOG',
-      database: '',
-      table: '',
-      mode: 'METADATA_ONLY',
-      triggerType: 'MANUAL',
-    })
-    notifySuccess(
-      `已受理扫描 ${shortId(accepted.scanId)}（${executionLabel(accepted.execution)}）`,
-    )
-    await load()
-  } catch (cause) {
-    notifyError(cause)
-  } finally {
-    scanning.value = false
-  }
-}
+//
+// 发起动作**搬到了独立的一屏**（`/sensitivity/scan`，路由名 `sensitivityScan`）：
+// 它要给的参数与提示比「扫描元数据」四个字多得多（范围级联、执行位置对比、
+// 成本与权限提示），塞进本页会把「治理到什么程度」的视图撑成一张表单。
+// 本页只留跳转入口（页头与「最近扫描」空态两处）。
+//
+// 保留这条注释是因为这里**曾经有一个内联的 `startMetadataScan`**：它固定发
+// CATALOG 级、`METADATA_ONLY`、且刻意不带 `execution`（要覆盖三层取值路径）。
+// 那个行为现在是 `SensitivityScanView` 的默认值（scope=CATALOG、
+// mode=METADATA_ONLY），差别只在 execution——那一屏把它显式摆给用户看并显式提交，
+// 因为设计稿 §5.6.1 要求「切 B 时控制台必须在发起页显式提示」。
 </script>
 
 <style scoped>

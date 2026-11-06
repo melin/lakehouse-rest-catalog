@@ -3389,10 +3389,200 @@ check("插件的 workingDirectory 指向前端工程目录",
       "workingDirectory 应从 server 模块回到仓库根再进 lakehouse-rest-console"
       "（参考配置的 ../web-console 是平级布局，本仓是嵌套布局）")
 
-# ------------------------------------------------------------------ 29. 文档计数
+# ------------------------------------------------------------------ 29. 敏感数据屏
 
 print()
-print("29. 文档计数（文档写的「N 组 M 项」必须与脚本实际一致）")
+print("29. 敏感数据（分类分级屏 + 表详情的「敏感数据」页签）")
+
+# 这一组的起因与前几组同源：敏感数据这套东西的错法**全都不报错**，只把话说错。
+#
+#   · 表详情页的逐列状态若以标签为骨架（而不是以 schema 为骨架），
+#     **没被识别出来的列会从页面上消失**——读的人看到的是「全部分类完了」，
+#     而事实是「大部分没扫过」（设计稿 §13 的「覆盖率是分母问题」）；
+#   · 分级若按 `ordinal()` 或字符串比大小，`IMPORTANT` / `CORE` 声明序排在 L1 之后，
+#     「表级最高级别」会显示成 L1——两档最严的人工认定被算成最低；
+#   · 归属来源若不分优先级，一列同时有人工与自动标签时被读成「自动」，
+#     「人工覆盖过」这件事从结论里消失；
+#   · `protected` 若把「有标签」也算进去，界面上一句「机密列都已受保护」
+#     就把「只是打了标、策略还没接」说成了安全（标签驱动脱敏属 P3）。
+#
+# 纯函数那一半放在 `tools/sensitivity-tests/`（`npm test` 跑），这里只钉**接线**：
+# 三个页面挂了没、深链接认得这个页签没、按格式选路由选对没、以及两份词表
+# （级别序数 / 来源优先级）与服务端 Java 是否逐字一致——这些抄错了都不会编译报错。
+
+SENS_UTIL = os.path.join(CONSOLE_DIR, "src/utils/sensitivityTable.js")
+SENS_PANEL = os.path.join(CONSOLE_DIR, "src/components/TableSensitivityPanel.vue")
+SENS_FINDINGS_VIEW = os.path.join(CONSOLE_DIR, "src/views/SensitivityFindingsView.vue")
+SENS_TAGS_VIEW = os.path.join(CONSOLE_DIR, "src/views/SensitivityTagsView.vue")
+SENS_TESTS_DIR = os.path.join(CONSOLE_DIR, "tools/sensitivity-tests")
+SENS_ENUMS = os.path.join(CORE_JAVA, "support/SensitivityEnums.java")
+COLUMN_TAG_SERVICE = os.path.join(SERVER_JAVA, "service/ColumnTagService.java")
+
+sensitivity_util = read(SENS_UTIL)
+sensitivity_panel = read(SENS_PANEL)
+sens_findings_view = read(SENS_FINDINGS_VIEW)
+sens_tags_view = read(SENS_TAGS_VIEW)
+sens_enums = read(SENS_ENUMS)
+column_tag_service = read(COLUMN_TAG_SERVICE)
+
+# --- 29.1 六条路由都在，三个进菜单、三个是下钻页 ----------------------------
+# 后三条不进菜单是刻意的（与 `/catalogs/:catalogName` 同一取舍）：它们是总览的
+# 下钻目标，单独列在菜单里会变成「打开就是空表单 / 空列表」的入口。
+sens_routes = {
+    "/sensitivity": ("sensitivityOverview", True),
+    "/sensitivity/tags": ("sensitivityTags", True),
+    "/sensitivity/types": ("sensitivityTypes", True),
+    "/sensitivity/scan": ("sensitivityScan", False),
+    "/sensitivity/findings": ("sensitivityFindings", False),
+    "/sensitivity/schedules": ("sensitivitySchedules", False),
+}
+missing_sens = [path for path, (_, _) in sens_routes.items()
+                if f"path: '{path}'" not in router_source]
+wrong_view = [f"{path}→{view}" for path, (view, _) in sens_routes.items()
+              if view not in router_source]
+check("六条敏感数据路由都登记并指向对应页面", not missing_sens and not wrong_view,
+      f"缺路由 {missing_sens}；缺组件名 {wrong_view}")
+
+# 菜单可见性单独断言一次：下钻页多一个「nav: true」不会报错，只会让侧边栏多出
+# 一个点进去不知道该干什么的条目。
+sens_nav_mismatch = [path for path, (_, nav) in sens_routes.items()
+                     if ("nav: true" in route_block(path)) != nav]
+check("菜单可见性与设计一致（总览 / 标签 / 类型进菜单，三个下钻页不进）",
+      not sens_nav_mismatch,
+      f"菜单可见性不符：{sens_nav_mismatch}")
+
+# --- 29.2 两个表详情页都挂了「敏感数据」，且挂的是同一块面板 ---------------
+# 另写一个面板等于两套渲染规则：同一列在 Paimon 表与 Iceberg 表上会显示得不一样，
+# 而「为什么不一样」需要读两个组件才解释得清（与数据预览那条判据同一取舍）。
+tab_declared = {}
+panel_mounted = {}
+for label, view_source in (("TableView", table_view), ("IcebergTableView", ice_source)):
+    tab_declared[label] = bool(re.search(r'label="敏感数据"\s+name="sensitivity"', view_source))
+    panel_mounted[label] = "TableSensitivityPanel" in view_source
+check("两个表详情页都声明了「敏感数据」页签并挂同一块面板",
+      all(tab_declared.values()) and all(panel_mounted.values()),
+      f"页签 {tab_declared}；面板 {panel_mounted}")
+
+# --- 29.3 两个页签都是「切到即 load」 ---------------------------------------
+# 面板切走即销毁、切回是全新实例，因此不能进 `loadedTabs` 的「只拉一次」判定。
+# 写错的症状是**切回来一片空白**，且不报任何错（Element Plus 同步抛事件那一坑）。
+stale_guard = {}
+for label, view_source in (("TableView", table_view), ("IcebergTableView", ice_source)):
+    stale_guard[label] = re.search(
+        r"if \(name === 'sensitivity'\) \{ loadSensitivity\(\); return \}", view_source) is not None
+check("两个页签都走「切到即 load」（不进 loadedTabs 的只拉一次判定）",
+      all(stale_guard.values()),
+      f"缺少这条分支的页面：{[k for k, v in stale_guard.items() if not v]}"
+      "（缺了它切回页签会永远空白，且不报错）")
+
+# --- 29.4 反向断言：Lance 表详情页**不**挂这个页签 -------------------------
+# Lance 表的 schema 是 manifest 里的 JSON Arrow 字段树，没有扁平列清单，
+# 挂上去只会得到一屏空骨架——「这张表读不到列清单」写成「这张表没有敏感列」，
+# 方向正好是反的。Paimon 侧对 Lance 表也刻意排除（同样的理由）。
+check("Lance 表详情页不挂「敏感数据」页签（它没有扁平列清单）",
+      "sensitivity" not in lance_table_view,
+      "LanceTableView 里出现了 sensitivity：那一页会渲染出空骨架")
+
+# --- 29.5 待审队列的「列引用」按 catalog 格式选表详情路由 -------------------
+# 一张 Iceberg 表的库表名喂进 Paimon 的详情页只会得到 404，而界面上表现为
+# 「这条 finding 的链接坏了」，看不出是路由选错了。格式只存在于 catalog 列表里，
+# 因此这一页还必须自己去 loadCatalogs。
+check("待审队列按 catalog 格式选表详情路由，且拿不到格式时不画链接",
+      "'table'" in sens_findings_view and "'icebergTable'" in sens_findings_view
+      and "catalogFormatOf" in sens_findings_view
+      and "loadCatalogs" in sens_findings_view
+      and re.search(r"if \(!catalog\) return null", sens_findings_view) is not None,
+      "缺少格式分派或 catalog 列表：Iceberg 表的列引用会跳到 Paimon 详情页并 404")
+
+# --- 29.6 标签清单屏接住面板按钮带过来的两个参数 ----------------------------
+# 表详情页的「手工新增标签」带 `?catalog=` + `?table=` 跳过来。不接的话，
+# 全局选中项若已被切到别的 catalog，读的人看到的会是**另一个 catalog 的标签**
+# 而以为是这张表的——数字与内容都对，只是不是问的那张表。
+check("标签清单屏接住 ?catalog= 与 ?table=（面板跳过来时预填）",
+      "useRoute()" in sens_tags_view and "query.catalog" in sens_tags_view
+      and "query.table" in sens_tags_view,
+      "没有读查询参数：深链接过来会落在全局选中项上，看到的是另一个 catalog 的标签")
+
+# --- 29.7 级别序数与服务端 rank() 逐字一致 ---------------------------------
+# 这是本组的核心一条：`IMPORTANT` / `CORE` 的声明序在 L1 之后，但严重度最高。
+# 前端抄错（或"顺手"按 ordinal 比）的表现是「表级最高级别 = L1」——最严的两档
+# 被算成最低，而页面上没有任何异常。
+level_enum = sens_enums.split("public enum SensitivityLevel {")[1].split("public static Optional")[0]
+java_level_ranks = {name: int(rank) for name, rank in
+                    re.findall(r"^\s*([A-Z]\w*)\((\d+)\)", level_enum, re.M)}
+rank_block = sensitivity_util.split("export const LEVEL_RANK = {")[1].split("}")[0]
+js_level_ranks = {name: int(rank) for name, rank in
+                  re.findall(r"^\s*([A-Z]\w*):\s*(\d+),", rank_block, re.M)}
+check("前端 LEVEL_RANK 与 Java SensitivityLevel.rank() 逐字一致",
+      java_level_ranks and js_level_ranks == java_level_ranks,
+      f"Java {java_level_ranks} vs 前端 {js_level_ranks}"
+      "（IMPORTANT/CORE 必须大于 L4——按声明序比会把最严的两档算成最低）")
+
+# --- 29.8 人工两档的名单两侧一致 -------------------------------------------
+# 这两档只能人工打，自动识别不产它们。前端若把 L4 也列进来，
+# 界面会把「自动命中的最高级」说成「人工认定」。
+java_manual_only = sorted(re.findall(r"SensitivityLevel\.([A-Z]\w*)",
+                                     sens_enums.split("MANUAL_ONLY_LEVELS =")[1].split(";")[0]))
+js_manual_only = sorted(re.findall(
+    r"'([A-Z]\w*)'", sensitivity_util.split("MANUAL_ONLY_LEVELS = [")[1].split("]")[0]))
+check("人工认定两档的名单与服务端一致（IMPORTANT / CORE）",
+      java_manual_only == js_manual_only == ["CORE", "IMPORTANT"],
+      f"Java {java_manual_only} vs 前端 {js_manual_only}")
+
+# --- 29.9 归属来源的优先级两侧同序 -----------------------------------------
+# 它表达的是**结论的权威性**，不是敏感度：一列同时有人工与自动标签时应当被读成
+# 「这列靠人管着」。顺序反了会把「人工覆盖」从统计里抹掉，而覆盖率照样显示。
+java_priority = re.findall(r"TagSource\.([A-Z]+)",
+                           column_tag_service.split("SOURCE_PRIORITY =")[1].split(";")[0])
+js_priority = re.findall(r"'([A-Z]+)'",
+                         sensitivity_util.split("SOURCE_PRIORITY = [")[1].split("]")[0])
+check("来源优先级与服务端同序（MANUAL > AUTO > INHERITED）",
+      java_priority == js_priority == ["MANUAL", "AUTO", "INHERITED"],
+      f"Java {java_priority} vs 前端 {js_priority}")
+
+# --- 29.10 「当前脱敏」只认显式策略 ----------------------------------------
+# 「有标签」不等于「已脱敏」：标签驱动脱敏（设计稿 §8.1）属 P3，P0/P1 没有
+# 标签 → 策略的 resolve 展开。把两者画成同一个徽标的后果是——
+# 一行「已保护」的绿标落在一条根本没生效的结论上。
+check("protected 只认策略里的显式脱敏与整列不可见",
+      re.search(r"protected:\s*Boolean\(maskSql\)\s*\|\|\s*isHidden", sensitivity_util)
+      is not None,
+      "protected 的判据变了：若把「有标签」也算进去，界面会宣称一条没生效的保护")
+
+check("面板不出现标签 → 脱敏的绑定动作，但文案里写明了这一档缺席（属 P3）",
+      # 反向断言必须**排除注释与模板说明**：面板的正文里必然要提到「标签绑定 /
+      # resolve 展开」——那正是它说清「这一档今天不存在」的方式（与实体那几条
+      # 「删掉某列」的反向断言同源）。因此这里只判**代码形态**（动作会以函数名
+      # 出现），并**正向**要求那句说明还在：文案被删掉时，读的人会把
+      # 「没有这一档」读成「所有标签都已生效」。
+      not re.search(r"\b(bindTag|listBindings|resolveBindings|tagBindings)\b",
+                    "\n".join(line for line in sensitivity_panel.split("\n")
+                              if not line.strip().startswith(("<!--", "*", "//"))))
+      and "属 P3" in sensitivity_panel,
+      "面板调用了绑定 / 展开动作，或删掉了「这一档属 P3」的说明文案")
+
+# --- 29.11 三份数据源各取各的，且容错分层 ----------------------------------
+# tags 是主干（失败即错误态），另两份（待审条数、这张表的策略）各自容错：
+# 一个 KPI 或一条策略读不到，不该把「逐列分类状态」整屏打成错误。
+check("面板的三份数据源各取各的（标签是主干，findings 与策略各自容错）",
+      "listTags" in sensitivity_panel and "listFindings" in sensitivity_panel
+      and "policyApi" in sensitivity_panel
+      and sensitivity_panel.count(".catch(() => null)") >= 2,
+      "缺少容错分支：策略或待审条数读不到时整屏会变成错误态")
+
+# --- 29.12 新增的纯函数用例会被 `npm test` 通配纳入 -------------------------
+# `npm test` = `node --test "tools/*-tests/*.test.mjs"`。放错目录的用例
+# 会**静默不跑**——测试总数看起来少几个，而没人会为「少跑几个」去查。
+sens_test_files = (sorted(f for f in os.listdir(SENS_TESTS_DIR) if f.endswith(".test.mjs"))
+                   if os.path.isdir(SENS_TESTS_DIR) else [])
+check("敏感数据的纯函数用例放在 tools/sensitivity-tests/ 下（会被 npm test 纳入）",
+      bool(sens_test_files),
+      "目录不存在或没有 *.test.mjs：`node --test \"tools/*-tests/*.test.mjs\"` 不会跑到它")
+
+# ------------------------------------------------------------------ 30. 文档计数
+
+print()
+print("30. 文档计数（文档写的「N 组 M 项」必须与脚本实际一致）")
 
 # 这一组是**元校验**，起因是一次真实的漂移：docs/console.md 写「12 组 37 项」、
 # README 写「12 组 38 项」，而脚本实际是 38——两个数字都没人核对，因为脚本此前
