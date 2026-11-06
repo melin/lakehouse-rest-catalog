@@ -1,7 +1,8 @@
 # 敏感数据识别与分类 · 设计方案
 
-> **状态：设计稿，未实现。** 本文只描述方案与契约，不含任何已落地代码。
-> 配套交互原型：[`sensitive-data-mockup.html`](sensitive-data-mockup.html)（八画面）。
+> **状态：设计稿；P0 已实现**（服务端五实体与四控制器、控制台六屏 + 表详情页签，见 §12 分期表与 `docs/README.md` 的条目）。**其余各期（P1–P4）为设计**，代码里没有的部分会显式报错而不是静默降级（`SAMPLED` → 501、`execution=SPARK` → 400/501、`decide` 无端点）。
+> **§13 的十一条已全部拍板，无未决项。** 本文描述的是**拍板后的目标形态**：其中「调度自建」（第 9 条）与「Spark 默认 `1g`/`local[1]`」（第 11 条）是**本轮才定**的，与更早版本的口径相反——读到 §5.6.2 / §5.6.3 / §5.6.7 / §9 / §11 时以本稿为准。
+> 配套交互原型：[`sensitive-data-mockup.html`](sensitive-data-mockup.html)（八画面；`#schedules` 已按自建 CRUD 呈现）。
 
 ## 0. 一句话结论
 
@@ -86,7 +87,9 @@
 
 ## 4. 数据模型
 
-五张新表，全部沿用既有约定：`AuditedEntity` 审计列、`entity_version` 乐观并发、全名摘要列做唯一键（理由见 §4.6）。
+六张新表，全部沿用既有约定：`AuditedEntity` 审计列、`entity_version` 乐观并发、全名摘要列做唯一键（理由见 §4.7）。
+
+> **第六张表（`lakehouse_sensitivity_schedule`，§4.6）是本轮拍板「调度自建」之后才进数据模型的**：此前那一版把触发时点交给外部调度器管、本方案不建表，已废弃（§5.6.3）。因此 `EXPECTED_TABLES` 与迁移脚本都按**六张**算——**别再按「五张」写**。
 
 ### 4.1 `lakehouse_sensitive_type` —— 敏感类型与探测器
 
@@ -179,13 +182,31 @@
 
 > 为什么单独一张表而不是给 `DataPolicyEntity` 加列：绑定是 **catalog 级规则**，策略是 **表级对象**。把绑定塞进策略意味着「200 张表各存一份同样的绑定」，改一次要改 200 行。
 
-### 4.6 主键与索引取舍
+### 4.6 `lakehouse_sensitivity_schedule` —— 定时扫描的调度项
+
+**本轮已拍板：调度自建，且与表优化的调度方案同形**（§5.6.3）。因此这张表不是「选了自建才建」的可选项，而是数据模型的一部分。
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `id` | bigint PK | 自增 |
+| `name` | varchar(128) unique | 调度项名 |
+| `cron` | varchar(64) | **直接存 5 或 6 段 cron 表达式**（秒级可选），不走表优化那套「分钟粒度 interval」——§5.6.3 说明了为什么这两者不能共用一列 |
+| `catalog_name` / `database_name` / `table_name` | varchar | 可空 = 上层范围，与 §5.6.1 的三段范围同口径；**mutually 递进**（`table` 有值则 `database` 必须有值） |
+| `mode` / `sample_size` / `execution` | varchar / int / varchar | 复用扫描参数，含 §5.6.1 的执行位置 |
+| `enabled_flag` | boolean | 停用；停用后不再出计划，但历史扫描按 `schedule_name` 仍可查 |
+| `last_run_at` / `next_run_at` | bigint | epoch 毫秒，`next_run_at` 由服务端算——**这是抢占的 CAS 条件**，与表优化的 `next_run_at` 同一手法 |
+
+唯一键 `(name)`。**不给它加 `last_scan_id`**：一次调度可能因范围变化对应多条扫描，用「扫描表里 `trigger_type=SCHEDULE` + `schedule_name`」回查更准，也避免两表互相更新（与 §4.2 的 `schedule_name` 那一列成对）。
+
+>`next_run_at` 是**抢占条件而不是展示字段**：多副本下每个实例都算同一个「到期」，靠 `UPDATE … WHERE next_run_at = <读到的值>` 的**条件更新**只让一方拿到推进权（与表优化那条完全同形）。因此它必须与 `entity_version` 分开——`entity_version` 是给**人工编辑**的乐观锁（改 cron 撞车返 409），`next_run_at` 是给**调度器**的抢占令牌（改 cron 时不该让调度器以为自己撞车了）。两者在一张表上各管一段，写成同一个字段会让「编辑调度项」与「调度节拍」互相干扰。
+
+### 4.7 主键与索引取舍
 
 列级全名 `catalog.database.table.column` 在 utf8mb4 下 `(64+255+512+255)×4 = 4344` 字节，**远超 MySQL 单索引 3072 上限**。沿用 `DataPolicyEntity` 的做法：`column_ref_hash`（SHA-256，定长 64）做唯一键，三段 + 列名原名列只用于展示与过滤。
 
 写入方（服务层）负责保持哈希与原名列一致；改名钩子同时更新两处。**漂移只会来自绕过服务层的写法**——与策略表现有的口径一致，不引入新机制。
 
-### 4.7 DDL 示意（MySQL，实际由 `gen-mysql-ddl.sh` 生成）
+### 4.8 DDL 示意（MySQL，实际由 `gen-mysql-ddl.sh` 生成）
 
 ```sql
 create table lakehouse_column_tag (
@@ -277,12 +298,14 @@ confidence = clamp( 0.35·s_name + 0.10·s_type + 0.40·s_value + 0.10·s_dict +
 | 采样读是「合法高权限读」 | 必须绕过列脱敏（否则读到的是 `****`，识别失效）。这是本方案最需要被审视的一处张力，见下 |
 | 全程审计 | `sensitivity.scan.started` / `.sampled` / `.completed`，含范围、列数、采样行数、主体 |
 
-**关于「绕过脱敏去采样」**：这不是漏洞，而是这个能力的必要前提——但必须收口：
+**关于「绕过脱敏去采样」**：这不是漏洞，而是这个能力的必要前提——但必须收口。**已拍板：A 路线一律走数据预览那条读通道，不给扫描器开第二条只读入口**（见下方第 1 条），四个收口点是：
 
-1. 只用内部只读通道（复用 `TablePreviewService` 的读路径，**不新开一条绕过策略的 SQL 入口**）；
+1. **只用内部只读通道**：复用 `TablePreviewService` 的读路径与其 `PreviewTableFactory` 按格式分派（`PreviewTable` / `PreviewLimits`），**不新开一条绕过策略的 SQL 入口**。这条**已定为口径**，不再作为「快 vs 稳」的取舍项——独立通道能换来吞吐，但代价是「谁读了明文」多一条只有自己知道的读路径，而扫描的吞吐问题在 B 路线（§5.6.1）另有更合适的解法；
 2. 只读待判列，不 `SELECT *`；
 3. 权限点独立于 `SELECT`，且在控制台发起扫描时显示「本次将读取 N 列明文样本」的显式提示；
 4. 采样结果**不返回给调用方**——只返回统计量与打码样本，原始行不出服务端。
+
+> **复用读通道的代价要写在这里，不能只写好处**：A 路线下扫描与预览**共用同一个并发池**（`MAX_CONCURRENT_PER_PRINCIPAL = 2`，§5.6.4 的 `max-concurrent` 取同值正是为此）。因此「大家同时在预览表」时扫描会排队，反之亦然。这是有意的：两条路径争的是同一份存储带宽，各自单开一把闸门才会出现「预览限 2、扫描不限」的失衡。
 
 ### 5.5 分类分级（对齐国标与等保口径）
 
@@ -312,6 +335,13 @@ confidence = clamp( 0.35·s_name + 0.10·s_type + 0.40·s_value + 0.10·s_dict +
 **审计留存**：等保要求日志留存**不少于 6 个月**，而本方案的 `sensitivity.scan.*` 事件与 finding 决策记录**不设 TTL**（与 `lineage` 的 `run-retention-days` 不同——血缘运行史可以清，治理决策史不能）——这一条写在这里是为了防止后来者顺手给它加个清理任务。
 
 表级级别 = 该表所有列标签 `max(level)`，落一行 `column_name=''` 的表级标签，供目录检索与「这张表能不能对外」的粗判。
+
+**已拍板：表级标签不参与策略展开**（只用于检索与分级可见性）。这条要在 §8.1 的 resolve 里硬性排除，理由是**两者的作用面不同**：
+
+- 表级标签回答的是「**这张表整体算几级**」，是一个给目录检索与上线检查看的**汇总结论**；
+- 策略展开要回答的是「**哪一列**该怎么脱敏」，需要的是**列**的来历。
+
+把表级标签也喂给展开会在两处出错：① 表级标签的 `tag_key` 来自 `max(level)` 的聚合，**没有对应的列**，展开时找不到要遮的列名；② 一旦给表级标签也配一条 binding，就会命中这张表的**所有列**——「因为整表是 L4 所以把所有列都 mask 掉」，这不是本方案的意思，也不是任何治理员的意思。所以表级标签走的是**检索面**（`#tags` 的「按表汇总」、`#overview` 的分级分布），不走**执行面**。
 
 ### 5.6 扫描执行位置与触发方式（两个独立可配置项）
 
@@ -350,30 +380,38 @@ confidence = clamp( 0.35·s_name + 0.10·s_type + 0.40·s_value + 0.10·s_dict +
 
 | 触发 | 入口 | 带定时 | 范围 | 落地期 |
 |---|---|---|---|---|
-| **手动** | `POST /sensitivity-scans` → `202` + `scanId` | — | 任意（catalog / 库 / 表） | P0 |
+| **手动** | `POST /sensitivity-scans` → `202` + `scanId` | — | 任意（catalog / 库 / 表） | P0（已实现） |
 | **生命周期钩子** | `ALTER TABLE ADD COLUMN` | — | 恒为**该表**，`METADATA_ONLY` | P2 |
-| **定时 · 外部调度器**（推荐） | 外部系统（Airflow / k8s CronJob / 优化任务那套）调 `POST /sensitivity-scans` | cron | 逐调度项配 | P4 |
-| **定时 · catalog 自建** | 服务端内轻量调度 | cron | 逐调度项配 | P4（可选） |
+| **定时 · catalog 自建**（**已拍板**） | 服务端调度节拍读 `lakehouse_sensitivity_schedule` 的 `next_run_at` | cron | 逐调度项配 | P4 |
+| ~~定时 · 外部调度器~~ | ~~外部系统（Airflow / k8s CronJob）调 `POST /sensitivity-scans`~~ | cron | 逐调度项配 | **已否决，见下** |
 
-**推荐外部调度**，理由与 §5.6.1 的默认值同源：catalog 保持无状态最省事。多实例下的内建定时要么把 `@Scheduled` 变成 N 个副本跑 N 次，要么就得为它再配一套分布式租约——那是为「必须内跑」的优化任务付过的成本（见 `optimization-multi-instance-design.md`），调度本身不需要重复付。外部调度沿用 `POST /sensitivity-scans` 这一个入口，审计链也只有一条。
+**已拍板：调度自建，与表优化的调度方案同形**（不选外部调度器）。这一条**推翻了本稿此前的「推荐外部」**，改的理由不是「内建更好」，而是**它要付的那笔成本已经付过了**：
 
-#### 5.6.3 两种落法的差别：要不要第 6 张表
+- 原稿的顾虑是「多实例下 `@Scheduled` 要么跑 N 遍、要么再配一套分布式租约」。但**表优化的调度已经把这套租约做完了**：`lakehouse_scheduler_lease`（通道名硬编码在 `SchedulerLease.CHANNELS`）+ `next_run_at` 条件更新抢占 + `OptimizationSchedulingConfig` 的 `@EnableScheduling` 节拍。自建调度**复用这三样**即可，`sensitivity.scan` 只是往通道清单里加**一个名字**（§5.6.5 的「调度租约」那一行），不是新造一套机制。
+- 反过来，外部调度器那条路**在「谁在什么时候读了明文」上多一个说不清的环节**：cron 在别人手里、`triggered_by` 只能记成「那个 Airflow 账号」，控制台 `#schedules` 也永远只能是一张只读建议页。**自建之后，调度项本身成为一个可审计、可停启、能在控制台上被看见的对象**——这与本方案「治理动作都要有主人」的口径一致。
+- **代价（接受）**：多一张表、**登记表 +5 条**（`(方法, 路径)` 计数：`GET`/`POST /sensitivity-schedules` + `GET`/`PUT`/`DELETE /sensitivity-schedules/{id}`——注意是 **5 不是 3**，本仓库的登记表按方法算，别按「三个路径」数），要同步进守卫脚本（§9 末段）。以及自建调度器**必须自己保证「只触发一次」**——但这不是新增风险：`next_run_at` 条件更新与租约本来就是同一件事的两道，§5.6.4 的同表并发闸门照旧兜底。
 
-选**外部调度**时，cron 由外部系统自己管，本方案**不建** `lakehouse_sensitivity_schedule` 表（实体仍是 §4 的五张，DDL 不变）。
+> **与表优化「调度间隔」不共用的地方**：表优化的调度粒度是 `schedule_interval_seconds`（默认 3600，对齐 DLF 的 compaction 间隔），**是「隔多久看一次」而不是 cron 表达式**；扫描这边存的是 cron（5/6 段，秒级可选）。两者都是「到点了打一发」，但**不能把 interval 直接当 cron 用**——`schedule_interval_seconds=3600` 换算成 cron 是 `0 0 * * * *`，看起来对，可一旦用户想写 `*/30 * * * *`（每 30 分钟）或 `0 3 * * *`（每天 3 点），interval 那个模型就表达不了「凌晨 3 点」这种语义。所以 §4.6 那列直接叫 `cron`，不叫 `interval`。
 
-选**catalog 自建**时才需要第 6 张表：
+#### 5.6.3 已定：自建调度（落第 6 张表）
 
-| 字段 | 类型 | 说明 |
-|---|---|---|
-| `id` | bigint PK | 自增 |
-| `name` | varchar(128) | 调度项名 |
-| `cron` | varchar(64) | 5 或 6 段 cron（秒级可选） |
-| `catalog_name` / `database_name` / `table_name` | varchar | 可空 = 上层范围，与 §4.2 同口径 |
-| `mode` / `sample_size` / `execution` | varchar / int / varchar | 复用扫描参数，含 §5.6.1 的位置 |
-| `enabled_flag` | boolean | 停用 |
-| `last_run_at` / `next_run_at` | bigint | epoch 毫秒，`next_run_at` 由服务端算 |
+**本轮拍板：调度自建，与表优化的调度方案同形**，因此**建** `lakehouse_sensitivity_schedule` 表（§4.6 六张新表之一），字段见该节。外部调度器那条路**否决**，理由见 §5.6.2。
 
-唯一键 `(name)`。**不给它加 `last_scan_id`**：一次调度可能因范围变化对应多条扫描，用「扫描表里 `trigger_type=SCHEDULE` + `schedule_name`」回查更准，也避免两表互相更新。
+**「与表优化方案一致」具体指哪三样**——这是本条约定的全部内容，不要多抄也不要少抄：
+
+| 机制 | 表优化那边 | 敏感识别这边 | 一致？ |
+|---|---|---|---|
+| 调度单写者 | `lakehouse_scheduler_lease`，两个通道：`optimization.scan`（出批节拍）/ `optimization.dispatch`（提交作业） | 同形两个通道：**`sensitivity.scan`**（调度节拍）/ **`sensitivity.dispatch`**（B 路线提交作业），登记进 `SchedulerLease.CHANNELS` | ✅ 同表、同 API（`tryAcquire` / `renew` / `release`） |
+| 到点抢占 | `lakehouse_table_optimization.next_run_at` 条件更新 | `lakehouse_sensitivity_schedule.next_run_at` 条件更新 | ✅ 同手法（**不是**新加分布式锁） |
+| 节拍来源 | `@EnableScheduling`（`OptimizationSchedulingConfig`，可按配置关掉） | 复用同一个节拍（不新开一个 `SchedulingConfig`——两个 `@EnableScheduling` 没有意义，同一个开关关掉的是「服务端有没有定时任务」这件事本身） | ✅ 同一处 |
+
+两个通道**都要**，因为是两个阶段：**`sensitivity.scan` 决定「这一拍谁去读调度表并发起扫描」**（A 路线在这一步就把扫描跑掉了；B 路线只落一行 `PENDING`），**`sensitivity.dispatch` 决定「谁去把 `PENDING` 提交成 Job」**。与表优化的 `optimization.scan` / `optimization.dispatch` 一一对应。只做第一个的话，B 路线下每台实例都会各自提交一遍同一批 `PENDING` 扫描——这正是多副本下最典型的重复任务。
+
+三样都对上之后，「自建」的增量成本就只剩**一张表 + 5 条端点登记 + 两个租约通道名**，而 §5.6.2 说的那份收益（调度项可审计、可停启、在控制台上看得见）是白拿的。
+
+> **一个必须记下的坑**：`SchedulerLease.CHANNELS` 里**已经**有一个通道叫 **`optimization.scan`**——它不是敏感识别的扫描，是表优化那条「扫描哪些表该入批」的节拍。新增的这个通道名**不要**叫 `scan`，用 **`sensitivity.scan`**；两者混名会让「停掉优化扫描的租约」变成一件说不清影响面的事。
+
+唯一键 `(name)`；**不给它加 `last_scan_id`**：一次调度可能因范围变化对应多条扫描，用「扫描表里 `trigger_type=SCHEDULE` + `schedule_name`」回查更准，也避免两表互相更新。
 
 #### 5.6.4 并发与互斥（两条路都要守）
 
@@ -414,7 +452,7 @@ confidence = clamp( 0.35·s_name + 0.10·s_type + 0.40·s_value + 0.10·s_dict +
 | k8s 报文骨架 | 复用骨架，换 `--scan-id` 与容器名 | 前缀 `paimon-scan-`、容器名 `scanner`；`backoffLimit=0`、`restartPolicy=Never`、`imagePullSecrets` / `serviceAccountName` 逐条照抄。**TTL 与 `jobTimeoutSeconds` 取扫描自己的批次策略**（§5.6.6 的 `scanJobTimeoutSeconds`），不读优化那组 |
 | Spark 参数 | 复用注入位置，**取值独立** | 同一份「`extraJavaOptions` / `--conf` 注入点」的实现，但读的是扫描那一组 Spark 参数（§5.6.7 的 `scan_spark_conf`）——优化任务的参数改了不该悄悄改变扫描任务的资源诉求 |
 | 提交器的幂等 / 状态折算 / 取消 | **原样复用** | 「先查同名再建」「先看 conditions 再看计数」「Background 删除」三条判据都不含优化语义 |
-| 调度租约 | 复用模式，**新增一个通道** | `sensitivity.dispatch` 必须登记进通道清单，否则多副本下每台都会提交一遍（§5.6.2 已论证过内建定时的这份代价） |
+| 调度租约 | 复用模式，**新增两个通道** | `sensitivity.scan`（调度节拍）与 `sensitivity.dispatch`（提交作业）必须登记进 `SchedulerLease.CHANNELS`，否则多副本下每台都会提交一遍（§5.6.2 已论证过内建定时的这份代价）。**与既有的 `optimization.scan` 不是同一个通道**——那个是表优化的出批节拍，别混名（§5.6.3） |
 | 回调客户端 | 复用形状，另开两个端点 | 令牌换 `X-Sensitivity-Scan-Token`（作用域 = 这一次扫描），端点换成「清单」与「结果」两个 |
 | Spark 会话构建 | **抽公共类，不许复制** | 三套配置（Paimon 的 `data-token.enabled`、Iceberg 的 `X-Iceberg-Access-Delegation`、Lance 的 `/lance` + `parent` + `headers.Authorization`）与镜像里 arrow 的类路径排序都是**编译器看不见**的约定；复制一份就是下次升级 connector 时必分叉 |
 | 镜像 | **同一个优化器镜像** | 已定：扫描入口是同一个 jar 里的另一个 main class（`SensitivityScannerJob`）。三种格式的运行时、Lance 的 arrow 类路径排序都白拿；单独打镜像省下的体积换不来那两处修复的分叉风险 |
@@ -471,15 +509,17 @@ confidence = clamp( 0.35·s_name + 0.10·s_type + 0.40·s_value + 0.10·s_dict +
 | 表优化 | `optimization_spark_conf` | `spark.sql.shuffle.partitions`、`spark.driver.memory`、`spark.driver.cores`、`spark.executor.instances` … |
 | 敏感识别 | `scan_spark_conf` | 同上 + `spark.sql.files.maxPartitionBytes`（按列分区读时控制单分区大小） |
 
-**默认值（新建配置时预置，不是「空即无」）**——三类参数各给一个能跑起来的起点：
+**默认值（新建配置时预置，不是「空即无」）**——已按本轮拍板调整为 **`1g` / `local[1]`**（原稿的 `4g` / `local[4]` 作废）：
 
 | 参数 | 默认 | 为什么是这个数 |
 |---|---|---|
-| `spark.driver.memory` | `4g` | Spark 发行版默认 1g，对「一次处理几十张表的 compaction」/「拉样本跑打分」都偏小；4g 是这两类负载的常见起点 |
-| `spark.driver.cores` / `master` | `local[N]`，`N=4` | 容器就是 driver（`Dockerfile` 的 ENTRYPOINT 用 `--master local[*]`）。**注释里写清 `local[N]` 的 N 是「表内并行度」**：优化任务的横向扩展单位是 pod（一个批次一个 pod），单 pod 内 N 决定并发执行几张表的 IO |
-| `spark.sql.shuffle.partitions` | `200`（Spark 默认）**但显式写出来** | 小数据量下 200 个 shuffle 分区是纯开销；写出来是为了让人看见它、能按表数调小。**不改成更小的默认值**：改了会让「按默认跑」的部署在两处行为不同 |
+| `spark.driver.memory` | **`1g`**（原 `4g`） | 与**容器内存请求对齐**：这个 pod 同时跑优化与下推扫描两类作业，而扫描的负载特征是「拉样本跑打分」——峰值取决于**一批列 × 采样行上限**，不取决于表本身有多大。给 1g 是让**默认值先跑得起来**，真跑大扫描的部署按 catalog 调大即可（三层覆盖的口径在这里照样成立）。**把默认值调大是把别人环境的成本替他们花了**：一个 catalog 只偶尔扫几张小表，却要为每次调度请求 4g，是不必要的常驻占用。 |
+| `spark.driver.cores` / `master` | **`local[1]`**，即 `N=1`（原 `local[4]`） | 容器就是 driver（`Dockerfile` 的 ENTRYPOINT 用 `--master local[*]`，配 `local[N]` 收窄它）。**`N=1` 的含义是「单 pod 内串行执行」**——与 §5.6.5「一个扫描 = 一个 Job，不组批」是同一句话的两面：横向扩展单位是 **pod 数**（受集群侧配额约束），单 pod 内不靠并发抢吞吐。这样把「这台集群上真正并行跑着几个作业」这件事的答案完全留在 `maxConcurrentJobs` 一处，而不是「作业数 × 每作业线程数」两处相乘。 |
+| `spark.sql.shuffle.partitions` | **由 `200` 改为不预置**（见下） | 小数据量下 200 个 shuffle 分区是纯开销，而扫描的 shuffle 量比 compaction 更小（按列拉样本）。**把 `200` 从默认里去掉**：它不是「能跑起来的起点」而是一个性能陷阱——留着它等于每次小扫描都白起 200 个分区。需要它的部署按 catalog 显式写上（`spark.sql.shuffle.partitions` 在白名单里）。 |
 | `spark.executor.*` | **不配** | `local[*]` 模式下没有独立 executor，配了是死配置。只有将来改 `k8s://` 提交模式才需要——**留空并注明原因**，比配一组永不生效的值好 |
 | `spark.sql.session.timeZone` | `UTC` | 这是**任务代码里钉死的**（见 `TableOptimizerJob.spark()`），不是可配项；列在这里是提醒：用户传的 `scan_spark_conf` **不得覆盖它**，否则 Iceberg 的 `older_than` 会按本机时区折算 |
+
+> **`200 分区` 的处置要说清，别留下「到底改没改」的疑点**：原稿写的是「`200` 但显式写出来，好让人看见」。本轮拍板把默认值收敛到 `1g / local[1]` 之后，`200` 与新默认值的取向不一致（一个是「把开销藏起来」，一个是「让人自己看见并调」）。因此**统一到后者**：`shuffle.partitions` 不进默认集，`scanSparkConf` 的默认段只剩 `spark.driver.memory=1g` 与 `spark.driver.cores=1` 两行。要在控制台上看到这个差异，`#schedules` 的对照卡按新默认值渲染（§11）。
 
 **注入顺序与优先级**（三层，后者覆盖前者）：
 
@@ -562,12 +602,16 @@ D1 / D2 只读 `lakehouse_table.schema_doc`（当前 schema 的 JSON 文档）�
 ```text
 masks = 显式 mask（lakehouse_column_mask，现状）
 for tag in columnTags(表):
+    if tag.column == "":                      # 表级标签（§5.5 已拍板：不参与展开）
+        continue                              # —— 它是一个汇总结论，没有对应的列可遮
     for b in bindings(catalog, tag.tag_key, tag.tag_value):
         if tag.column 不在 masks:            # 显式优先
             masks[tag.column] = b.mask       # origin = TAG
         else:
             conflicts += (tag.column, b.tag_key, "explicit-wins")
 ```
+
+> **那句 `continue` 要写成代码里的第一个分支，不能靠「表级标签恰好没有 binding 命中」侥幸**：`bindings(catalog, tag_key, tag_value)` 如果有人在控制台上给 `TABLE_LEVEL` 这类键配了绑定，表级标签就会命中——而它的 `column` 是空串，落进 `masks[""]`，表现是**这条绑定静默不生效**（没有任何列叫空串），或者更糟：某个实现把空串当成「所有列」的前缀去匹配。**排除表级标签是显式规则，不是隐含结果。**
 
 三种结果都有明确归宿：
 
@@ -616,11 +660,12 @@ DQ 的规则可以按标签匹配：「所有 `L3+` 列必须有 completeness �
 | `DELETE` | `/column-tags/{id}` | 删标签（**同时写抑制项**，否则下次扫描复活） |
 | `GET` / `PUT` / `DELETE` | `/tag-mask-bindings[/{id}]` | 标签 → 脱敏绑定 |
 | `GET` / `PUT` | `/sensitivity-settings` | **catalog 级治理设置**：`defaultExecution`（§5.6.1）、`maxConcurrentScans`（§5.6.4，指 **A 路线进程内**的扫描并发，非集群闸门）、`propagationMaxDepth`（§7.1）。`PUT` 走乐观锁，且**变更进审计**——它改的是「这个 catalog 的扫描怎么跑」，与改绑定同级 |
-| `GET` / `PUT` / `DELETE` | `/sensitivity-schedules[/{id}]` | **仅当选 catalog 自建调度时存在**（§5.6.3）；外部调度路线不注册这三个端点，运行时端点计数也不含它们 |
+| `GET` / `POST` | `/sensitivity-schedules` | **调度项**（本轮拍板自建，§5.6.3）：列表 / 新建。`POST` 校验 cron 合法性、范围递进（`table` 有值则 `database` 必须有值）、`execution=SPARK` 时目标 catalog 可派发（否则 400，与 `POST /sensitivity-scans` 同一条 fail-closed） |
+| `GET` / `PUT` / `DELETE` | `/sensitivity-schedules/{id}` | 详情 / 改（含启停；`PUT` 带 `entityVersion` 走乐观锁）/ 删。**改 cron 会重算 `next_run_at`**（§4.6：人工编辑的乐观锁与调度的抢占令牌是两把，别合并） |
 
 执行集群的批次策略（含扫描那两列）与两段 Spark 参数挂在**既有**的 `PUT /catalogs/{c}/execution-cluster` 上（新增 `maxScanTablesPerJob` / `scanJobTimeoutSeconds` / `optimizationSparkConf` / `scanSparkConf`；`maxConcurrentJobs` 是既有字段，现在两类任务共用，§5.6.6、§5.6.7），**不新增端点**——它们与「连哪个集群」是同一份配置的不同段，拆成两个端点会让「保存了连接但没保存策略」变成一个用户看得见、却说不清为什么的状态。
 
-> 「是否自建调度」是**部署期决定**（§5.6.3），因此它决定了端点数——这与本仓库「运行时端点数 == 登记数」的守卫直接相关：切换路线时登记表要同步增删三个端点，漏改会让守卫直接红。
+> **端点计数要连量词一起改。** 本仓库的守卫是「运行时端点数 == 登记数」（catalog 端点只加控制器判权不够——`AuthorizationInterceptor` 先执行、`resolve()` 返 null 即 403）。本轮把调度从「外部路线不注册」翻成「自建、正式注册」，因此**这 5 条从「可选」变为「必有」**：`GET`/`POST /sensitivity-schedules` 与 `GET`/`PUT`/`DELETE /sensitivity-schedules/{id}`。**计数口径是按 `(方法, 路径)` 元组，不是按路径数**——写成「+3」会让守卫的差集对不上（`EXTENSION_ENDPOINTS` 里每一条都是一个 `(METHOD, path)`）。登记表与守卫脚本要同步，漏改会让守卫直接红。**这正是 §5.6.3 说「这一条是会影响守卫的硬选择」的落点。**
 
 事件：`sensitivity.scan.started` / `.completed` / `.failed`、`sensitivity.finding.decided`、`column.tag.changed`、`sensitivity.binding.changed`。扫描事件的 payload 带 `execution` 与 `triggerType`——「谁在什么时候读了明文」要能仅凭事件流回答，不必回查扫描表。
 
@@ -635,6 +680,10 @@ DQ 的规则可以按标签匹配：「所有 `L3+` 列必须有 completeness �
 
 **标签分级可见**：`PII.CN_ID_CARD` 这个字符串直接告诉你「这列是身份证」——对普通使用者只显示「敏感（已保护）」，完整类型与级别需 `CATALOG:SENSITIVE_READ`。与 `DataPolicyEntity`「策略不是表属性」同一条思路：**保护动作的存在本身也是信息**。
 
+**表级标签的可读面比列级更宽、可写面不变**：表级标签（`column_name=''`）回答的是「这张表的整体级别」，属于§5.5 说的**检索面**，因此它在 `GET /column-tags` 里按 §10 的分级可见规则照常返回；但**它不参与策略展开**（§5.5 已拍板），所以它对 `CATALOG:SENSITIVE_ADMIN` 那条「改绑定 = 改脱敏行为」的判定**不构成输入**——改一个表级标签不会让任何列的脱敏行为变化，这一点要在控制台把它与列级标签区分展示（`#table` 页签里表级那行标注「整表级别，不驱动脱敏」）。
+
+**调度项属受管资源**：`/sensitivity-schedules` 的读写判 `CATALOG:ALTER`（与发起扫描同档，因为它最终产出的就是一次扫描），**不新增权限词**——沿用本方案「权限不新增词」的既有偏离（§10 上方那条已在实现里落地的口径）。停启一个调度项等于「让这个 catalog 定期读明文」，与手动发起扫描是同一件事的两种时点。
+
 ## 11. 控制台
 
 八屏，见 [`sensitive-data-mockup.html`](sensitive-data-mockup.html)：
@@ -646,11 +695,11 @@ DQ 的规则可以按标签匹配：「所有 `L3+` 列必须有 completeness �
 | 识别结果审核 | `#findings` | 待确认队列：列引用 + 置信度条 + 命中探测器 + **打码样本** + 右侧「为什么这么判」；批量确认/拒绝 |
 | 标签清单 | `#tags` | 列级标签表：来源徽标（自动/人工/继承）、级别、置信度、时间；行内改/删；按表汇总 |
 | **类型与探测器配置** | `#types` | 类型清单 + **新建/编辑类型**：`type_code` / 类别 / 分级 / `auto_apply` 开关 / 阈值 / **五层探测器逐层编辑**（列名正则、值正则 + 校验器、字典、权重）+ 权重实时归一化预览。内置类型只可停用、每个字段失焦前是只读态 |
-| **扫描任务与调度** | `#schedules` | 调度项列表（cron / 范围 / 模式 / 执行位置 / 上次·下次运行 / 启停）+ **「下推 Spark 时服务端把这一发变成什么」对照卡**（复用表优化任务链路的哪几段、哪几条语义不能照搬，§5.6.5）；外部调度路线下此屏退化为**只读的「调度建议」页**（展示一行可直接复制的 `curl POST /sensitivity-scans`，供 Airflow / CronJob 用），不出现新建按钮 |
-| 标签驱动脱敏 | `#bindings` | 绑定列表 + 「本绑定覆盖 N 列」预估 + 冲突提示（显式 mask 覆盖了几列） |
-| 表详情联动 | `#table` | 表详情的「敏感数据」页签：列 → 标签徽标、级别、来源；未分类列显式标灰 |
+| **扫描任务与调度** | `#schedules` | **调度项 CRUD（本轮已定自建，§5.6.3）**：列表（cron / 范围 / 模式 / 执行位置 / 上次·下次运行 / 启停）+ 新建·编辑表单（cron 输入带 5/6 段校验与「下次运行时刻」实时预览）+ 「下推 Spark 时服务端把这一发变成什么」对照卡（复用表优化任务链路的哪几段、哪几条语义不能照搬，§5.6.5；Spark 参数按 §5.6.7 的**新默认值 `1g` / `local[1]`** 渲染）。**没有「外部调度建议页」这个形态了**——那个形态以「不建表、不注册端点」为前提，已随路线翻转废弃 |
+| 标签驱动脱敏 | `#bindings` | 绑定列表 + 「本绑定覆盖 N 列」预估 + 冲突提示（显式 mask 覆盖了几列）。**表级标签不出现在这里的候选里**（§5.5 已拍板它不参与展开） |
+| 表详情联动 | `#table` | 表详情的「敏感数据」页签：列 → 标签徽标、级别、来源；未分类列显式标灰；**表级那行单独标注「整表级别，不驱动脱敏」**，与列级标签视觉上分开（§10） |
 
-`#types` 与 `#schedules` 是本轮新增：前者补上「识别规则怎么配」（此前原型只有类型**清单**、没有**编辑**），后者补上 §5.6 的触发方式落地界面。两屏都随触发路线的选择而改变形态——这正是文档与原型要对齐的地方，不能只画一条路。
+`#types` 与 `#schedules` 是上一轮新增：前者补上「识别规则怎么配」（此前原型只有类型**清单**、没有**编辑**），后者补上 §5.6 的触发方式落地界面。`#schedules` 的形态**已由本轮拍板定死为 CRUD**（不再是「随路线在只读建议页与 CRUD 之间二选一」）——这正是文档与原型要对齐的地方。
 
 ## 12. 分期与验收
 
@@ -660,7 +709,7 @@ DQ 的规则可以按标签匹配：「所有 `L3+` 列必须有 completeness �
 | **P1** | D3 采样探测 + 校验器 + 置信度分档 + 人审队列 + 自动应用闸门 | 身份证列在 500 条造数上命中率 100%、误报 0；`PERSON_NAME` 即使置信度 0.99 也进 PENDING |
 | **P2** | 血缘传播 + 生命周期钩子 + 增量扫描（`ALTER ADD COLUMN`）；`execution` 落库，扫描历史可见位置；`propagationMaxDepth` 可配 | `DIRECT` 边一轮传播后下游出 tag；`AGGREGATE` 边不产生 tag；`REJECTED` 列重扫不复活；生命周期钩子产生的扫描 `trigger_type=LIFECYCLE`；**`max-depth=2` 时第 3 跳停在 `PENDING`** |
 | **P3** | 标签驱动脱敏（resolve 展开）+ 冲突报告 + 缓存主动失效 | 打标后 ≤60 秒策略生效；显式 mask 优先且冲突可见；三格式（Paimon/Iceberg/Lance）同表同规则结果一致 |
-| **P4** | D4 字典 / D5 统计特征 + 触发方式补全（`#schedules`：外部调度建议页，或自建调度 + `/sensitivity-schedules` 三端点）+ `execution=SPARK` 下推（复用表优化任务的提交/探活/跟踪/取消链路，§5.6.5；执行集群扩扫描那两列与两组 Spark 参数，§5.6.6 / §5.6.7；**并发闸门共用既有的 `maxConcurrentJobs`**）+ 对外事件订阅 | 外部调度按 cron 触发一次扫描且只触发一次；同表并发重入返 409；SPARK 路线下扫描事件的 `execution` 为 `SPARK` 且两条审计链可按 `scanId` 拼上；**给不可派发的 catalog 建 `execution=SPARK` 返 400**；**扫了 100 张表、其中 3 张读失败时，`tables_scanned=100` 且 `tables_failed=3`（不是「扫了 97 张」）**；**作业日志里不含任何原始列值**（抽查一次真实扫描的 Pod 日志）；**`scanSparkConf` 里塞 `spark.sql.catalog.*.token` 被丢弃并记审计，且扫描仍用服务端构造的会话** |
+| **P4** | D4 字典 / D5 统计特征 + 触发方式补全（**自建调度**：`#schedules` 由建议页改为 CRUD + `/sensitivity-schedules` 5 条端点登记 + 第 6 张表 `lakehouse_sensitivity_schedule` + 两个租约通道，§5.6.3）+ `execution=SPARK` 下推（复用表优化任务的提交/探活/跟踪/取消链路，§5.6.5；执行集群扩扫描那两列与两组 Spark 参数，§5.6.6 / §5.6.7；**并发闸门共用既有的 `maxConcurrentJobs`**）+ 对外事件订阅 | 自建调度按 cron 触发一次扫描且只触发一次（多副本下靠 `sensitivity.scan` 租约 + `next_run_at` 条件更新，§5.6.3）；**停用一个调度项后不再产生新扫描，历史扫描仍按 `schedule_name` 可查**；同表并发重入返 409；SPARK 路线下扫描事件的 `execution` 为 `SPARK` 且两条审计链可按 `scanId` 拼上；**给不可派发的 catalog 建 `execution=SPARK` 返 400**；**`scanSparkConf` 的默认段是 `spark.driver.memory=1g` + `spark.driver.cores=1`，不含 `shuffle.partitions`**（§5.6.7）；**扫了 100 张表、其中 3 张读失败时，`tables_scanned=100` 且 `tables_failed=3`（不是「扫了 97 张」）**；**作业日志里不含任何原始列值**（抽查一次真实扫描的 Pod 日志）；**`scanSparkConf` 里塞 `spark.sql.catalog.*.token` 被丢弃并记审计，且扫描仍用服务端构造的会话** |
 
 > `execution` 字段 P2 就落库（成本极低、事后补埋点会丢历史），但 `SPARK` 这条路到 P4 才通。P2 阶段该列恒为 `IN_PROCESS`——**先有列再有值，比事后给存量行补一个说不清的默认值干净**。同理 §4.2 的那组 B 专属列（Job 坐标 / 令牌哈希 / 提交代数）也在 P2 一次建好：`status` 的取值域一旦要扩到 `PENDING` / `SUBMITTING`，改的是列宽与所有既有读取点，不如一次到位。
 
@@ -682,7 +731,7 @@ DQ 的规则可以按标签匹配：「所有 `L3+` 列必须有 completeness �
 | **两类任务互相排队** | 共用一把 `maxConcurrentJobs` 的直接代价：优化占满时扫描要等，反之亦然（§5.6.6）。**有意为之**——它们争的是同一份算力；若某 catalog 确实需要两类任务都能随时起跑，做法是调大这个数或拆两台集群，而不是再开一把看不见的闸门 |
 | **`*_sparkConf` 成为改认证目标的旁路** | 按**前缀白名单**过滤（§5.6.7），白名单外一律丢弃 + 记审计；连接与认证键只能由服务端构造，用户传了不生效 |
 
-**已拍板（本轮六条）**：
+**已拍板（累计十一条：本轮六条 + 上文五条）**：
 
 1. 下推路线用**同一个优化器镜像**（同一 jar 的另一个 main class `SensitivityScannerJob`），不单独打镜像——白拿三格式运行时与 Lance 的 arrow 排序修复（§5.6.5）。
 2. 下推路线的扫描作业**与优化批次共用**执行集群的 `maxConcurrentJobs` 一把闸门：两者跑在同一台集群上、争的是同一份算力，**不设独立的 `maxConcurrentScans`**（§5.6.4、§5.6.6）；跨 catalog 的叠加仍由集群侧配额兜。
@@ -691,10 +740,14 @@ DQ 的规则可以按标签匹配：「所有 `L3+` 列必须有 completeness �
 5. 血缘传播默认深度 **5 跳，支持在 `application.yml` 配**（`lakehouse.rest.sensitivity.propagation.max-depth`），也可单次覆盖（§7.1）。
 6. 分级**对齐国标口径**：`L1–L4` 对应《网络数据分类分级指引》1–4 级（GB/T 43697-2024 均属一般数据）；`CORE` / `IMPORTANT` 两档只人工打、不自动识别（§5.5）。
 
-**仍未决**：
+**本轮新增（第 7–11 条，与上面 6 条同权，只是写下来更晚）**：
 
-1. 采样读是否一律走 `TablePreviewService`（安全复用但受其限额约束），还是给扫描器开独立只读通道（更快但要单独审计）？——**注意这条与 §5.6.1 是关联的**：若「独立只读通道」在服务端进程内，仍属 A 路线；只有把读放到 Spark 作业里才是 B。
-2. 表级标签（`column_name=''`）是否要参与策略展开？本文口径是**不参与**（只用于检索与粗判），需确认。
-3. §5.6.3 的调度选**外部**（不建表、不注册三端点）还是**自建**（建第 6 张表、端点数 +3）？本文倾向外部——但它会决定「运行时端点登记数」，是会影响守卫脚本的硬选择。
-4. §5.6.6 的**批次策略放在同一行**（本稿）还是各自建独立表（`optimization_policy` / `scan_policy`）？同一行的代价是「改扫描批次策略的人要看得到优化那几列」，独立表的代价是 join 与两套乐观锁。本稿选同一行——因为读它们的代码本来就都要先拿到这一行，而且并发闸门本来就是共用的（分开建表会让「共用」变成一次跨表读，更难看出来）。
-5. §5.6.7 的 Spark 参数**默认值（4g / local[4] / 显式 200 分区）**是否按你们的集群资源再调一轮？这三个数只影响性能不影响正确性，但会决定「照默认跑」的部署是不是合理起点。
+7. **采样读一律走数据预览那条内部只读通道**（`TablePreviewService` 的读路径），**不给扫描器开第二只读入口**（§5.4 第 1 条）。代价是 A 路线下扫描与预览共用并发池，这是有意为之——两条路径争同一份存储带宽。
+8. **表级标签（`column_name=''`）不参与策略展开**，只用于检索与分级可见性（§5.5、§10、§11）。它没有对应的列，喂给展开会在「找不到列」与「全表 mask」两处出错。
+9. **调度自建，与表优化调度方案同形**：复用 `lakehouse_scheduler_lease`（新增 `sensitivity.scan` / `sensitivity.dispatch` 两个通道）+ `next_run_at` 条件更新抢占 + 同一个 `@EnableScheduling` 节拍；建第 6 张表 `lakehouse_sensitivity_schedule`，注册 `/sensitivity-schedules` 的 5 条端点（§4.6、§5.6.2、§5.6.3）。**推翻本稿此前的「推荐外部调度」。**
+10. **批次策略放同一行**（本稿既有口径，本轮确认）：`maxTablesPerJob` / `maxConcurrentJobs` / `jobTimeoutSeconds` 与 `maxScanTablesPerJob` / `scanJobTimeoutSeconds` 同在一张 `lakehouse_catalog_execution_cluster`；**不建独立的 `optimization_policy` / `scan_policy`**（§5.6.6）——读它们的代码本就要先拿到这一行，而并发闸门本来就是共用的，拆表会让「共用」变成一次跨表读、更难看出来。
+11. **两组 Spark 参数的默认值收敛为 `1g` / `local[1]`**（原 `4g` / `local[4]` 作废），并**把 `spark.sql.shuffle.partitions=200` 从默认段移除**（§5.6.7）。理由：默认值该是「跑得起来的最小起点」，不是「把别人环境的成本替他们花了」；`N=1` 让「这台集群并行几个作业」的答案完全落在 `maxConcurrentJobs` 一处。
+
+> **本条（11）是唯一一条「改了之后连既有文档口径都要跟着动」的拍板**——`catalog-execution-cluster-design.md` §…「`*SparkConf` 默认值（4g / local[4] / 显式 200 分区）」那句、以及同稿配套原型 `catalog-execution-cluster-mockup.html` 里的两段 `textarea` 示例文本，都属于同一份默认值。**两处不同步 = 同一个产品在两个文档里对不上**，改的时候一起改（守卫脚本对这一组的断言以本设计稿 §5.6.7 的表为准）。
+
+**仍未决**：**无。** 原先列在这里的 5 条（采样读通道 / 表级标签是否参与展开 / 调度外部还是自建 / 批次策略放同一行还是分表 / Spark 参数默认值）已全部并入上面的第 7–11 条。此后若要再开新议题，**新开一节写，不要往这张已结案的清单里追加**——一张「已全部拍板」的表混进来一条新问题，会让读者分不清哪些是结论、哪些还在讨论。

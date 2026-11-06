@@ -830,78 +830,111 @@
 
       <!-- ============ 6. 扫描任务与调度 ============ -->
       <div class="screen" id="screen-schedules">
-        <div class="danger-banner">
-          <b>本屏形态取决于一个部署期决定：调度放外部还是自建。</b>
-          推荐<b>外部</b>——catalog 保持无状态，多实例下不必再养一套分布式租约；此时本屏是只读的「调度建议」页。
-          选<b>自建</b>时才出现下面的新建/编辑按钮，并且要落第 6 张表、端点计数 +3。
+        <div class="note-banner">
+          <b>已拍板：调度自建，与表优化调度方案同形</b>（§5.6.3）。因此本屏是<b>完整的 CRUD</b>：可新建、可改 cron、可停启、可删。
+          这条路<b>推翻了本稿早先的「推荐外部调度」</b>——那版的顾虑是「多实例下要再养一套分布式租约」，
+          而那套租约<b>表优化早就做完了</b>（<span class="mono">lakehouse_scheduler_lease</span> + <span class="mono">next_run_at</span> 条件更新），
+          自建只是往通道清单里加两个名字。代价：<b>第 6 张表 + 5 条端点登记</b>（守卫按「运行时端点数 == 登记数」会较真）。
         </div>
 
         <div class="card">
-          <h3>调度项 <span class="tag t-green">当前路线：外部调度（建议）</span></h3>
+          <h3>
+            调度项 <span class="tag t-green">当前路线：catalog 自建（本轮拍板）</span>
+            <span style="margin-left:auto"><button class="btn">＋ 新建调度项</button></span>
+          </h3>
           <table>
-            <tr><th>名称</th><th>cron</th><th>范围</th><th>模式</th><th>执行位置</th><th>上次运行</th><th>下次运行</th><th>状态</th></tr>
+            <tr><th>名称</th><th>cron</th><th>范围</th><th>模式</th><th>执行位置</th><th>上次运行</th><th>下次运行</th><th>状态</th><th>操作</th></tr>
             <tr>
-              <td class="mono">sch-daily</td><td class="mono">0 3 * * *</td>
+              <td class="mono">sch-daily</td><td class="mono">0 0 3 * * *</td>
               <td>warehouse（全库）</td><td><span class="tag t-blue">SAMPLED</span></td>
               <td><span class="tag t-gray">进程内</span></td>
               <td class="muted">11-05 03:00 <span class="tag t-warn">失败</span></td>
               <td class="muted">11-06 03:00</td>
               <td><span class="switch"></span></td>
+              <td><button class="btn sm plain">编辑</button> <button class="btn sm danger">删除</button></td>
             </tr>
             <tr>
-              <td class="mono">sch-weekly-lake</td><td class="mono">0 4 * * 0</td>
+              <td class="mono">sch-weekly-lake</td><td class="mono">0 0 4 * * 0</td>
               <td>lake（全库）</td><td><span class="tag t-blue">SAMPLED</span></td>
               <td><span class="tag t-warn">下推 Spark</span></td>
               <td class="muted">11-02 04:00 <span class="badge-dot"></span>成功</td>
               <td class="muted">11-09 04:00</td>
               <td><span class="switch"></span></td>
+              <td><button class="btn sm plain">编辑</button> <button class="btn sm danger">删除</button></td>
             </tr>
             <tr>
-              <td class="mono">sch-meta-fast</td><td class="mono">*/30 * * * *</td>
+              <td class="mono">sch-meta-fast</td><td class="mono">0 */30 * * * *</td>
               <td>全部 catalog</td><td><span class="tag t-gray">METADATA_ONLY</span></td>
               <td><span class="tag t-gray">进程内</span></td>
               <td class="muted">11-05 14:30 <span class="badge-dot"></span>成功</td>
               <td class="muted">11-05 15:00</td>
               <td><span class="switch off"></span></td>
+              <td><button class="btn sm plain">编辑</button> <button class="btn sm danger">删除</button></td>
             </tr>
           </table>
           <div class="note-banner" style="margin:12px 0 0">
             下推 Spark 的调度项必须确认目标 catalog 已配执行集群；<span class="mono">sch-weekly-lake</span> 是
-            <span class="mono">lake</span>，已配；若未配，调度器在发起时就应拒（<span class="mono">400</span>），而不是拖到作业提交才失败。
+            <span class="mono">lake</span>，已配；若未配，<b>调度项在保存时就该被拒</b>（<span class="mono">400</span>），
+            而不是拖到某个凌晨的调度节拍才发现——那时它已经是一条「配置好了但从不生效」的记录。
+          </div>
+          <div class="warn-banner" style="margin:12px 0 0">
+            <b>cron 是 5 或 6 段的完整表达式，不是「隔多少秒」。</b>
+            表优化那边的调度粒度是 <span class="mono">schedule_interval_seconds=3600</span>（对齐 DLF 的 compaction 间隔），
+            那个模型<b>表达不了「每天凌晨 3 点」</b>——所以这一列叫 <span class="mono">cron</span>，不叫 <span class="mono">interval</span>。
           </div>
         </div>
 
         <div class="grid2">
           <div class="card" style="margin-bottom:0">
-            <h3>外部调度器接法 <span class="tag t-gray">唯一入口：POST /sensitivity-scans</span></h3>
-            <code class="cmd"><span class="c"># Airflow / k8s CronJob 都只是拼这个请求</span>
-curl -X POST <span class="k">"$HOST/api/catalogs/warehouse/sensitivity-scans"</span> \
-  -H <span class="k">"Authorization: Bearer $TOKEN"</span> \
-  -H <span class="k">"Content-Type: application/json"</span> \
-  -d <span class="k">'{ "scope":"CATALOG",
-       "mode":"SAMPLED",
-       "execution":"IN_PROCESS",
-       "sampleSize":2000 }'</span>
-<span class="c"># → 202 {"scanId":"scn-9a1f"}</span></code>
+            <h3>调度项 API <span class="tag t-green">5 条端点，已注册</span></h3>
+            <code class="cmd"><span class="c"># 新建（cron 5/6 段；execution=SPARK 时目标 catalog 必须可派发）</span>
+POST <span class="k">/api/catalogs/warehouse/sensitivity-schedules</span>
+<span class="k">'{ "name":"sch-daily",
+    "cron":"0 0 3 * * *",
+    "scope":"DATABASE", "databaseName":"dw",
+    "mode":"SAMPLED", "execution":"IN_PROCESS", "sampleSize":2000 }'</span>
+<span class="c"># → 201 {"id":"…","nextRunAt":1762…}</span>
+
+<span class="c"># 列表 / 详情·改·删</span>
+GET    <span class="k">/sensitivity-schedules</span>
+GET    <span class="k">/sensitivity-schedules/{id}</span>
+PUT    <span class="k">/sensitivity-schedules/{id}</span>   <span class="c"># 带 entityVersion（乐观锁，撞车 409）</span>
+DELETE <span class="k">/sensitivity-schedules/{id}</span></code>
             <div class="muted" style="margin-top:12px;line-height:1.8">
-              调度器只负责「按时打这一发」；重试、超时、补跑都是调度器的职责。
-              服务端<b>不假设</b>调度器一定只发一次——同表并发重入仍返 <span class="mono">409</span>（§5.6.4）。
+              到点后服务端<b>不是</b>直接扫，而是走同一发 <span class="mono">POST /sensitivity-scans</span>（<span class="mono">trigger_type=SCHEDULE</span> + <span class="mono">schedule_name</span>），
+              所以「谁在什么时候读了明文」的审计链只有一条。同表并发重入仍返 <span class="mono">409</span>（§5.6.4）。
             </div>
           </div>
 
           <div class="card" style="margin-bottom:0">
-            <h3>两条路线的差别</h3>
+            <h3>自建要复用的三样东西 <span class="tag t-green">表优化已经做完了</span></h3>
             <table>
-              <tr><th>项</th><th>外部调度</th><th>自建调度</th></tr>
-              <tr><td>新增表</td><td><span class="tag t-green">无（仍 5 张）</span></td><td><span class="tag t-warn">第 6 张</span></td></tr>
-              <tr><td>新增端点</td><td><span class="tag t-green">0</span></td><td><span class="tag t-warn">+3</span></td></tr>
-              <tr><td>多实例</td><td class="muted">天然无冲突</td><td class="muted">要分布式租约</td></tr>
-              <tr><td>cron 管理</td><td class="muted">外部系统</td><td class="muted">本服务</td></tr>
-              <tr><td>控制台</td><td class="muted">只读建议页</td><td class="muted">完整 CRUD</td></tr>
+              <tr><th>机制</th><th>表优化那边</th><th>敏感识别这边</th></tr>
+              <tr>
+                <td>调度单写者</td>
+                <td class="mono muted">lease 通道 optimization.scan / .dispatch</td>
+                <td class="mono">lease 通道 sensitivity.scan / .dispatch</td>
+              </tr>
+              <tr>
+                <td>到点抢占</td>
+                <td class="mono muted">table_optimization.next_run_at 条件更新</td>
+                <td class="mono">sensitivity_schedule.next_run_at 条件更新</td>
+              </tr>
+              <tr>
+                <td>节拍来源</td>
+                <td class="mono muted">@EnableScheduling（可关）</td>
+                <td class="mono">同一个（不新开一个 SchedulingConfig）</td>
+              </tr>
             </table>
             <div class="warn-banner" style="margin:12px 0 0">
-              这条不是风格问题：<b>端点计数 +3 会直接影响守卫脚本</b>（运行时端点数 == 登记数）。
-              切换路线必须同步改登记表，否则守卫直接红。
+              <b>别把新通道叫 <span class="mono">scan</span>。</b>
+              <span class="mono">SchedulerLease.CHANNELS</span> 里<b>已经</b>有一个 <span class="mono">optimization.scan</span>——
+              那是表优化「扫哪些表该入批」的节拍，不是敏感识别扫描。混名会让「停掉扫描的租约」变成一件说不清影响面的事。
+            </div>
+            <div class="note-banner" style="margin:12px 0 0">
+              增量成本 = <b>一张表 + 5 条端点登记 + 两个通道名</b>。
+              换回来的是：调度项本身成为<b>可审计、可停启、控制台上看得见</b>的对象——
+              外部调度器那条路永远只能把 <span class="mono">triggered_by</span> 记成「那个 Airflow 账号」。
             </div>
           </div>
         </div>
