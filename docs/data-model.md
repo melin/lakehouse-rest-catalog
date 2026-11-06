@@ -152,7 +152,7 @@
 
 | 表 | 对应资源 | 说明 |
 | --- | --- | --- |
-| `lakehouse_audit_event` | 目录领域事件 | 9 类 39 个领域事件（catalog / 库 / 表 / 视图 / 授权 / 主体与角色 / 策略 / 优化）的 append-only 事实记录；自增 `id` 兼作增量拉取的游标，`(catalog, id)` 与 `(category, id)` 两条联合索引分别支撑按目录、按类别增量拉 |
+| `lakehouse_audit_event` | 目录领域事件 | 10 类 45 个领域事件（catalog / 库 / 表 / 视图 / 授权 / 主体与角色 / 策略 / 优化 / 敏感数据）的 append-only 事实记录；自增 `id` 兼作增量拉取的游标，`(catalog, id)` 与 `(category, id)` 两条联合索引分别支撑按目录、按类别增量拉 |
 
 两种表格式的事件在**同一张表、同一个流**里（`catalog` 只是查询参数）；`attributes_json`
 用 JSON 单列承载开放属性，`category` 是 `type` 的冗余列（存下来让「只看权限变更」

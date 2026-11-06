@@ -373,7 +373,7 @@ Jackson 2.15.2 抬到 2.21.x，并替换 netty 与 jersey，导致 Spark 侧出�
 | | 行过滤 / 列脱敏 | 仍属路线图 | ❌ 无（`auth` 端点返回空规则） |
 | 策略与运维 | 策略存储：4 类 `system.*` + 继承 + `applicable-policies` | 1.0 起，1.7 文档完整 | ⚠️ 等价语义散在「catalog 默认 + 表级覆盖」的开关里，无名、无版本、无来源 |
 | | 策略执行 | **不做**（存了不会跑） | ✅ 有（调度 + k8s Spark 任务 + 历史） |
-| 可观测与集成 | 事件框架（BEFORE/AFTER，多监听器，按类型过滤） | 1.0 / 1.5 | ✅ 已实现（只发 AFTER，10 类 38 型，按类别/类型订阅） |
+| 可观测与集成 | 事件框架（BEFORE/AFTER，多监听器，按类型过滤） | 1.0 / 1.5 | ✅ 已实现（只发 AFTER，10 类 45 型，按类别/类型订阅） |
 | | 引擎回传查询指标（行数/字节/提交） | 1.3 起 | ❌ 无 |
 | | CLI / Python 客户端 / Helm / admin tool / 二进制分发 | 1.0—1.5 | ⚠️ 有 Helm 清单与校验脚本，无 CLI |
 
@@ -428,7 +428,7 @@ Polaris 在每次操作前后各发一个事件，`PolarisEvent` 带 `eventId` /
 
 已按下面的形状落地（设计与清单见 [`event-framework.md`](event-framework.md)）：
 
-- 10 类 38 个领域事件，覆盖 catalog / 库 / 表 / 视图 / 授权 / 主体与角色 / 优化；
+- 10 类 45 个领域事件，覆盖 catalog / 库 / 表 / 视图 / 授权 / 主体与角色 / 策略 / 优化 / 敏感数据；
   **只发 AFTER**，丢掉 Polaris 的 BEFORE 与 GET/LIST 读事件。
 - 一张 `audit_event` 表（event_id / type / category / principal / request_id / target /
   时间 / 属性 JSON），写库与写日志是两个 listener。

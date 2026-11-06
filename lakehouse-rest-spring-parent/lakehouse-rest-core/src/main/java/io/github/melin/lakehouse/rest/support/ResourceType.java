@@ -40,5 +40,21 @@ public enum ResourceType {
     EXECUTION_CLUSTER,
     /** 血缘的一次执行记录（{@code /api/management/v1/lineage/runs/{runId}} 的 404 用它定位）。 */
     LINEAGE_RUN,
+    /** 敏感类型与探测器配置（{@code /api/management/v1/sensitive-types/{typeCode}}）。 */
+    SENSITIVE_TYPE,
+    /**
+     * 一次敏感数据扫描（{@code /api/management/v1/sensitivity-scans/{scanId}}）。
+     *
+     * <p>与 {@link #SENSITIVITY_FINDING} 分开：{@code 404} 的语义是「这次扫描不存在」
+     * 还是「这条命中不存在」，指向的是两张表、两套排查动作——混成一个取值会让人
+     * 拿着 finding 的 id 去扫描历史里找。
+     */
+    SENSITIVITY_SCAN,
+    /** 一次扫描的命中记录。 */
+    SENSITIVITY_FINDING,
+    /** 列级标签（{@code /api/management/v1/column-tags}）。 */
+    COLUMN_TAG,
+    /** 标签到脱敏动作的绑定。 */
+    TAG_MASK_BINDING,
     UNKNOWN
 }

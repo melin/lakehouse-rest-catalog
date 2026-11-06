@@ -103,7 +103,7 @@ public class ConsoleEventService {
             if (categoryName != null) {
                 predicates.add(cb.equal(root.get("category"), categoryName));
             }
-            // 事件类型（39 种）也在这里筛：界面上的类型下拉是「看某一类事件」，
+            // 事件类型（45 种）也在这里筛：界面上的类型下拉是「看某一类事件」，
             // 与类别一样属于筛选条件，不该退化成只筛当前页。
             if (typeName != null) {
                 predicates.add(cb.equal(root.get("type"), typeName));

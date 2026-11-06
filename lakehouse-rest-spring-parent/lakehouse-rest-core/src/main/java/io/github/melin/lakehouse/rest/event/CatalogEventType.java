@@ -209,7 +209,71 @@ public enum CatalogEventType {
     OPTIMIZATION_JOB_FAILED(CatalogEventCategory.OPTIMIZATION, "optimization.job_failed"),
 
     /** 优化批次被取消。 */
-    OPTIMIZATION_JOB_CANCELED(CatalogEventCategory.OPTIMIZATION, "optimization.job_canceled");
+    OPTIMIZATION_JOB_CANCELED(CatalogEventCategory.OPTIMIZATION, "optimization.job_canceled"),
+
+    // ------------------------------------------------------------------ SENSITIVITY
+
+    /**
+     * 一次敏感数据扫描开始。
+     *
+     * <p><b>属性里带 {@code execution} 与 {@code triggerType}（设计稿 §9 末段）。</b>
+     * 「谁在什么时候读了明文」要能**仅凭事件流**回答，不必回查扫描表——
+     * 事件表会被外发到 Kafka / Webhook，消费方不一定有库的读权限。
+     *
+     * <p><b>这是 SENSITIVITY 类别里的「读」事件</b>（与 {@code TABLE_PREVIEWED} 同类），
+     * 与「只收变更」那条总判据不一致，因此单独说明：扫描要读明文样本来判断列里
+     * 是什么，这个读取动作本身就是合规要记录的访问。设计稿 §5.4 把它列为
+     * 「全程审计」的一条，属性里有范围、列数、采样行数与主体。
+     */
+    SENSITIVITY_SCAN_STARTED(CatalogEventCategory.SENSITIVITY, "sensitivity.scan.started"),
+
+    /** 一次敏感数据扫描完成（含扫了 0 条命中的情况）。 */
+    SENSITIVITY_SCAN_COMPLETED(CatalogEventCategory.SENSITIVITY, "sensitivity.scan.completed"),
+
+    /** 一次敏感数据扫描失败（{@code error_message} 有原因）。 */
+    SENSITIVITY_SCAN_FAILED(CatalogEventCategory.SENSITIVITY, "sensitivity.scan.failed"),
+
+    /**
+     * 人对一条 finding 做了决策（确认 / 拒绝）。
+     *
+     * <p>P0 不发这个事件（人审队列是 P1），但类型先建：{@code CatalogEventType}
+     * 的取值是「跨系统的契约字符串」，{@code enabled-event-types} 配置里写了它
+     * 就该能被解析——等实现时再补，会让已经按文档配好的部署在升级后拿到一个
+     * 「未知事件类型」的启动告警。
+     */
+    SENSITIVITY_FINDING_DECIDED(CatalogEventCategory.SENSITIVITY, "sensitivity.finding.decided"),
+
+    /**
+     * 某列的标签变了（新增 / 改值 / 删除 / 启停）。
+     *
+     * <p>属性里带 before / after 与操作者（设计稿 §8.4）：下游订阅方（数据地图、
+     * 审批流）要能据此增量更新，而不是每次全量拉一遍标签表。
+     *
+     * <p><b>属性里不放列的值</b>——标签的变化不涉及数据值，这条约束自然成立；
+     * 写在这里是提醒：将来若要给「自动应用」的标签加个「命中样本」字段，
+     * 那会是一条把明文带进事件表的路径（§5.4 的第一条不变量）。
+     */
+    COLUMN_TAG_CHANGED(CatalogEventCategory.SENSITIVITY, "column.tag.changed"),
+
+    /**
+     * catalog 级治理配置变了。
+     *
+     * <p><b>P0 的发布点是 {@code SensitivitySettingsService.update}（{@code PUT
+     * /sensitivity-settings}）</b>——它改的是「这个 catalog 的扫描怎么跑」：
+     * {@code defaultExecution} / {@code maxConcurrentScans} / {@code propagationMaxDepth}，
+     * 属性里带改动前后的三个值、解析后的生效值与乐观锁版本。设计稿 §9 对此的要求是
+     * 「{@code PUT} 走乐观锁，且**变更进审计**——它改的是『这个 catalog 的扫描怎么跑』，
+     * 与改绑定同级」，控制台那一屏的标签也因此是「治理设置变更」。
+     *
+     * <p><b>P3 的真绑定（标签 → 脱敏动作）落地后复用同一个类型</b>：两者都是
+     * 「catalog 级治理配置变更」，设计稿的事件清单只给了这一个类型承载它们。
+     * 到那时属性里要再加一个 {@code kind} 区分「设置 / 绑定」，否则下游订阅方
+     * 拿到 {@code sensitivity.binding.changed} 时无法判断该刷新哪一份缓存。
+     *
+     * <p><b>值没变不发</b>（与事件框架「没有变化的操作不进事件流」同一条规则）：
+     * 同一个值连按两次保存不该在事件流里留两条。
+     */
+    SENSITIVITY_BINDING_CHANGED(CatalogEventCategory.SENSITIVITY, "sensitivity.binding.changed");
 
     private static final Map<String, CatalogEventType> BY_WIRE = indexByWire();
 

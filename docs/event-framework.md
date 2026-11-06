@@ -10,7 +10,7 @@
 
 ---
 
-## 1. 领域事件清单（9 类 39 型）
+## 1. 领域事件清单（10 类 45 型）
 
 事件按**类别**（{@code CatalogEventCategory}）分组，类别是监听器订阅的粒度（§5）；
 每个类别下是若干个**类型**（{@code CatalogEventType}），类型是事件流里的契约字符串。
@@ -39,6 +39,7 @@ Polaris 的 `PolarisEventType` 有 15 个类别、一百多个常量，是 **CRU
 | `TRANSACTION` / `NOTIFICATION` / `CONFIG` / `TASK_EXECUTION` / `RATE_LIMITING` | ❌ | 我们没有这些对象（优化批次的对齐见 §1.3） |
 | （无） | ✅ `GRANT` | Polaris 把授权挂在 `CATALOG_ROLE` 下；我们只有官方那一套三元组赋权，审计上更该单列一类 |
 | （无） | ✅ `OPTIMIZATION` | 本地扩展：优化策略与批次终态（Polaris 无对应物） |
+| （无） | ✅ `SENSITIVITY` | 本地扩展：敏感数据识别与标签治理（扫描轨迹、人审决策、标签与绑定变更）。Polaris 无对应物——它是目录协议，不含数据识别 |
 
 ### 1.2 类型清单
 
@@ -58,7 +59,7 @@ Polaris 的 `PolarisEventType` 有 15 个类别、一百多个常量，是 **CRU
 | `namespace.updated` | 改属性 | 两侧的 `alter` / `updateProperties`（**一个键都没变时不发**） |
 | `namespace.dropped` | 删库 | 两侧的 `drop`（Paimon 侧级联删表；Iceberg 侧非空拒绝） |
 
-**TABLE**（6）
+**TABLE**（7）
 
 | wire 值 | 含义 | 发布点 |
 | --- | --- | --- |
@@ -114,11 +115,12 @@ Polaris 的 `PolarisEventType` 有 15 个类别、一百多个常量，是 **CRU
 | --- | --- |
 | `principal_role.created` / `principal_role.updated` / `principal_role.dropped` | 主体角色的增删改 |
 
-**POLICY**（1）
+**POLICY**（2）
 
 | wire 值 | 含义 | 发布点 |
 | --- | --- | --- |
 | `optimization.policy_updated` | 表策略或 catalog 级默认设置变化 | `TableOptimizationService.updatePolicy`（`scope=table`）/ `updateSettings`（`scope=catalog`） |
+| `policy.changed` | 数据策略（行过滤 / 脱敏 / 整列不可见）变化 | `DataPolicyService` 的 upsert 与 delete 两处；属性带策略名与变更种类 |
 
 **OPTIMIZATION**（4）
 
@@ -132,8 +134,34 @@ Polaris 的 `PolarisEventType` 有 15 个类别、一百多个常量，是 **CRU
 按终态分型而不是「一条 `job_finished` + `state` 属性」，是因为消费方最常写的一条规则是
 「失败就告警」——分型之后那是订阅一个类型，不用再解析报文。要「所有终态」也有现成的类别。
 
+**SENSITIVITY**（6）
+
+| wire 值 | 含义 | 发布点 |
+| --- | --- | --- |
+| `sensitivity.scan.started` | 一次敏感数据扫描开始 | `SensitivityScanService.publishStarted`；属性带 `execution` / `triggerType` / 范围 / 表数 / 采样量 |
+| `sensitivity.scan.completed` | 扫描完成（含 0 命中的情况） | `SensitivityScanService.finish`（CAS 命中时） |
+| `sensitivity.scan.failed` | 扫描失败，或收尾时发现状态已被别的实例改掉 | `SensitivityScanService.finish`（CAS 落空与异常两条路） |
+| `sensitivity.finding.decided` | 人对一条 finding 做了确认 / 拒绝 | **P0 无发布点**（人审队列是 P1）；类型先建，见下 |
+| `column.tag.changed` | 某列的标签变了（新增 / 改值 / 删除） | `ColumnTagService` 的 upsert 与 delete 两处；属性带 before / after 与操作者 |
+| `sensitivity.binding.changed` | catalog 级治理设置变了（`defaultExecution` / `maxConcurrentScans` / `propagationMaxDepth`） | `SensitivitySettingsService.update`（**值没变不发**） |
+
+> **这一类的两条「读路径」事件**（`scan.started` 与 `table.previewed` 同类）：扫描要读
+> 明文样本来判断列里是什么，这个读取动作本身就是合规要记录的访问。与 §1.3 的判据
+> 「只有让数据离开服务端的读才收录」一致——扫描把列值读进了识别逻辑。
+>
+> **`sensitivity.finding.decided` 为什么先建类型、P0 却没有发布点**：`CatalogEventType`
+> 的取值是**跨系统的契约字符串**，`enabled-event-types` 配置里写了它就该能被解析。
+> 等实现时再补，会让已经按文档配好的部署在升级后拿到一个「未知事件类型」的启动告警。
+> 因此 §1.2 的 45 型里，**44 型有发布点，这一型是有意的占位**。
+>
+> **属性里不放列的值**（设计稿 §5.4 第一条不变量）：`column.tag.changed` 的变化不涉及
+> 数据值；将来若有人想给自动应用的标签加个「命中样本」字段，那会是一条把明文带进
+> 事件表的路径——事件表会被外发，落进去就等于泄漏。
+
 **主体与角色是 realm 级资源，不属于任何 catalog**：这些事件的 `catalog` 列留空串，
-控制台在「全部 Catalog」下能看见、按目录筛时看不见。
+控制台在「全部 Catalog」下能看见、按目录筛时看不见。敏感数据那六条绑定在 catalog 上
+（扫描与标签都是 catalog 内的事），因此 `catalog` 列有值——`column.tag.changed` 是唯一
+例外：它的事件目标是表的全名，`catalog` 取标签所属目录。
 
 ### 1.3 不发的事件与理由
 
@@ -179,7 +207,7 @@ Polaris 的 `PolarisEventType` 有 15 个类别、一百多个常量，是 **CRU
 
 属性集合刻意**开放**（自由 JSON）而不是逐列建：两种表格式的同名事件携带的属性不同
 （Paimon 提交带 `snapshotId`，Iceberg 带 `updates` 数），逐列建模会让「哪列属于哪种格式」
-变成第二张对照表要维护。事件框架的契约是「九个固定列 + 一段开放属性」。
+变成第二张对照表要维护。事件框架的契约是「十一个固定列 + 一段开放属性」。
 
 索引三条：`(catalog, id)` 支撑按目录增量拉、`(category, id)` 支撑按类别增量拉、
 `type` 单列供排障时按类型查。

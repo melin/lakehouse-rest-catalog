@@ -84,6 +84,25 @@ class FlywayBaselineTests {
     private static final Pattern COMMENT_LINE = Pattern.compile("(?m)^\\s*--.*$");
 
     /**
+     * 两个方言目录下的全部版本文件，**按应用顺序**。
+     *
+     * <p><b>为什么在测试里再列一遍。</b>{@code classpath:db/migration/mysql} 是一个目录，
+     * 但 Java 的 classpath 没有「列目录内容」的可移植做法（jar 里尤其没有）。
+     * 于是这里有两条路：全部写死，或者只读 V1 再用 Flyway 自己的行为兜。
+     * 写死的代价是「加了 V4 忘了加进这个列表」——所以用 {@link #MIGRATIONS}
+     * 同时驱动「迁移条数」与「建表清点」两个断言（{@link #mysqlBaselineCreatesEveryTable}
+     * 里 {@code assertEquals(MIGRATIONS.size(), first.migrationsExecuted)}）：漏加一个文件，
+     * 那一刻就会失败，而不是让清点悄悄少掉几张表。
+     *
+     * <p>顺序必须与 Flyway 的应用顺序一致：V3 建的五张表是「V1 之后的纯新增」，
+     * 清点时要一起数。
+     */
+    private static final List<String> MIGRATIONS = List.of(
+            "V1__baseline.sql",
+            "V2__add_scan_strategy_and_spark_conf.sql",
+            "V3__add_sensitive_data_tables.sql");
+
+    /**
      * MySQL 基线：整份执行一遍，建出全部实体表，且可重复执行。
      *
      * <p>三条断言各堵一个方向：
@@ -108,9 +127,9 @@ class FlywayBaselineTests {
                 .load();
 
         MigrateResult first = flyway.migrate();
-        assertEquals(2, first.migrationsExecuted,
-                "空库上执行迁移应当是「V1 建表 + V2 加列」两条。条数为 0 说明脚本没被发现；"
-                        + "条数与预期不符说明有人加了/删了版本文件却没同步这条断言——"
+        assertEquals(MIGRATIONS.size(), first.migrationsExecuted,
+                "空库上执行迁移应当把 " + MIGRATIONS + " 逐条应用。条数为 0 说明脚本没被发现；"
+                        + "条数与预期不符说明有人加了/删了版本文件却没同步本类的 MIGRATIONS——"
                         + "注意 V1 的 checksum 不可再变，加结构一律新增 V2+。");
 
         List<String> declared = declaredTables("mysql");
@@ -150,7 +169,8 @@ class FlywayBaselineTests {
                 .load();
 
         MigrateResult first = flyway.migrate();
-        assertEquals(2, first.migrationsExecuted, "空库上执行 PostgreSQL 迁移应当应用 V1 + V2 两条");
+        assertEquals(MIGRATIONS.size(), first.migrationsExecuted,
+                "空库上执行 PostgreSQL 迁移应当把 " + MIGRATIONS + " 逐条应用");
 
         List<String> declared = declaredTables("postgresql");
         assertEquals(MysqlDdlGeneratorTests.EXPECTED_TABLES, declared.size(),
@@ -211,8 +231,10 @@ class FlywayBaselineTests {
                 .baselineOnMigrate(true)
                 .baselineVersion("1")
                 .load();
-        assertEquals(1, toLatest.migrate().migrationsExecuted,
-                "存量库上只应补跑 V2 这一条（V1 已记录，不重放）");
+        MigrateResult upgrade = toLatest.migrate();
+        assertEquals(2, upgrade.migrationsExecuted,
+                "存量库上应补跑 V2 与 V3 两条（V1 已记录，不重放）——"
+                        + "V2 加列、V3 建敏感数据五张表");
 
         try (Connection connection = DriverManager.getConnection(url, USER, PASSWORD);
              PreparedStatement query = connection.prepareStatement(
@@ -222,6 +244,13 @@ class FlywayBaselineTests {
             assertTrue(rows.next(), "存量行在升级后应当还在");
             assertEquals(200, rows.getInt(1), "存量行的 max_scan_tables_per_job 应当拿到 DEFAULT 200，而不是 0/NULL");
             assertEquals(3600, rows.getInt(2), "存量行的 scan_job_timeout_seconds 应当拿到 DEFAULT 3600");
+        }
+
+        // V3 的建表在同一个 URL 上生效：升级路径与空库路径建出的是同一套表
+        try (Connection connection = DriverManager.getConnection(url, USER, PASSWORD)) {
+            List<String> missing = missingTables(connection, SENSITIVE_TABLES);
+            assertTrue(missing.isEmpty(),
+                    "存量库升级到 V3 后缺这些表：" + missing + "——即升级路径没把 V3 应用上");
         }
     }
 
@@ -249,22 +278,46 @@ class FlywayBaselineTests {
                     + "/V2__add_scan_strategy_and_spark_conf.sql");
             assertTrue(v2.contains("max_scan_tables_per_job"),
                     vendor + " 的 V2 迁移里没有 scan 策略列，内容可疑");
+            // V3 同理：少了它，存量库升级后敏感数据那五张表不存在，
+            // 表现是一进控制台就报「表不存在」，而不是迁移报错
+            String v3 = readClasspath("/db/migration/" + vendor
+                    + "/V3__add_sensitive_data_tables.sql");
+            for (String table : SENSITIVE_TABLES) {
+                assertTrue(v3.contains("create table " + table),
+                        vendor + " 的 V3 迁移里没有建 " + table + "，内容可疑");
+            }
         }
     }
 
+    /** V3 建的五张表；{@link #baselinesArePackagedOnTheClasspath} 与升级用例共用。 */
+    private static final List<String> SENSITIVE_TABLES = List.of(
+            "lakehouse_sensitive_type",
+            "lakehouse_sensitivity_scan",
+            "lakehouse_sensitivity_finding",
+            "lakehouse_column_tag",
+            "lakehouse_tag_mask_binding");
+
     /**
      * 脚本里声明的表名，按声明顺序。
+     *
+     * <p><b>要读全部版本文件，不能只读 V1。</b>结构演进之后新表写在 V3 里，
+     * 只读 V1 会让清点结果永远停在 29 张，而 {@link MysqlDdlGeneratorTests#EXPECTED_TABLES}
+     * 是 34——看起来像「脚本与实体漂移」，实际是这条清点自己没跟上。
+     * 反过来，只读「目录里所有文件」也不可行：classpath 没有列目录的可移植做法，
+     * 因此走 {@link #MIGRATIONS} 这张显式清单，漏加文件的失败点见那里的注释。
      *
      * <p>先剥注释行再匹配：文件头里也提到了 {@code sql/schema-*.sql}，若不剥，
      * 行首匹配虽然不会误命中（注释行以 {@code --} 开头），但把头与首条语句的
      * 边界留在这里迟早会让别的解析出错。
      */
     private static List<String> declaredTables(String vendor) throws IOException {
-        String sql = readClasspath("/db/migration/" + vendor + "/V1__baseline.sql");
-        Matcher matcher = CREATE_TABLE.matcher(COMMENT_LINE.matcher(sql).replaceAll(""));
         List<String> tables = new ArrayList<>();
-        while (matcher.find()) {
-            tables.add(matcher.group(1).toLowerCase(Locale.ROOT));
+        for (String migration : MIGRATIONS) {
+            String sql = readClasspath("/db/migration/" + vendor + "/" + migration);
+            Matcher matcher = CREATE_TABLE.matcher(COMMENT_LINE.matcher(sql).replaceAll(""));
+            while (matcher.find()) {
+                tables.add(matcher.group(1).toLowerCase(Locale.ROOT));
+            }
         }
         assertTrue(!tables.isEmpty(), vendor + " 基线里没解析到建表语句，正则可能已失效");
         return tables;

@@ -71,6 +71,14 @@ import org.springframework.test.context.DynamicPropertySource;
         "spring.jpa.properties.hibernate.hbm2ddl.schema-generation.script.append=false",
         // 关掉启动期预置数据：此时库里没有表，预置会失败
         "lakehouse.rest.initial-catalog.prefix=",
+        // 同上：内置敏感类型的 seed 也是一个「启动后查库」的 ApplicationRunner，
+        // 而这里刻意 ddl-auto=none（只生成脚本、不建真表），
+        // lakehouse_sensitive_type 根本不存在，seed 会在启动阶段抛
+        // 「Table "LAKEHOUSE_SENSITIVE_TYPE" not found」。
+        // 关掉而不是给它加 try/catch：本测试的意图是「JPA 元数据 → DDL 文本」，
+        // 它不该因为「库里有没有表」而变绿或变红；吞异常的 catch 会把
+        // 「表真的没建出来」这个事实一起藏起来。
+        "lakehouse.rest.sensitivity.seed-builtin-types=false",
         "lakehouse.rest.authorization.enabled=false",
         "lakehouse.rest.auth.enabled=false"
 })
@@ -127,12 +135,25 @@ class MysqlDdlGeneratorTests {
      * 身份接入再加一张 {@code lakehouse_group_role_mapping}（IdP 组 → 主体角色的
      * 翻译表）到 29——它是「谁该有哪些角色」的唯一新表，授权结果仍然落在
      * {@code lakehouse_principal_role_grant} 里，因此判定链一行都没改。
+     * 敏感数据识别（P0）一次性加五张到 34：
+     * {@code lakehouse_sensitive_type}（类型与探测器配置）、
+     * {@code lakehouse_sensitivity_scan}（一次扫描的范围与计数）、
+     * {@code lakehouse_sensitivity_finding}（逐轮扫描的命中历史）、
+     * {@code lakehouse_column_tag}（列级标签的**当前状态**）、
+     * {@code lakehouse_tag_mask_binding}（标签 → 脱敏动作的 catalog 级绑定）。
+     * 前两张与后三张分属 server / core 模块，但表数是同一个事实，只在这里数一次。
+     * <b>为什么 finding 与 tag 要拆两张</b>：扫描每天重跑，finding 会重复产生，
+     * 而「这列是身份证」这个结论只该有一份——合并成一张就会出现「同列 30 条 pending」
+     * 或「重扫把人工拒绝洗回待审」（见 {@code ColumnTagEntity} 的类注释）。
+     * <b>为什么 tag 与 tag_mask_binding 要拆两张</b>：绑定是 catalog 级规则、
+     * 标签是列级事实，作用域与生命周期都不同——塞进同表会让「改一次绑定」变成
+     * 改 200 行（每张表各存一份），漏改两行没有任何提示。
      *
      * <p><b>包内可见，另有一处引用。</b>{@code FlywayBaselineTests} 拿它断言「迁移
      * 脚本真的建出了实体所需的全部表」。那是同一个事实（仓库共有多少张实体表），
      * 各写一份就会在每次改结构时被各自手改一遍——正是这个常量想避免的失效方式。
      */
-    static final int EXPECTED_TABLES = 29;
+    static final int EXPECTED_TABLES = 34;
 
     /** MySQL 一张表一行的最大字节数（存储层上限，与列长度上限是两件事）。 */
     private static final long MYSQL_ROW_SIZE_LIMIT = 65535L;
@@ -322,6 +343,11 @@ class MysqlDdlGeneratorTests {
      *
      * <p>未列出的类型直接抛错而不是按 0 计：漏算会让上限悄悄失守，而这条断言存在的
      * 全部意义就是「越界即失败」。新增列类型时在这里补一行即可。
+     *
+     * <p>{@code float(53)} 是 MySQL 8 方言对 JPA {@code double} 的输出
+     * （MySQL 的 {@code DOUBLE} 就是 8 字节的双精度，括号里是二进制精度位数）——
+     * 看不出与 {@code double} 的关系，所以单独注释一句；敏感数据识别引入的
+     * {@code confidence} / {@code min_confidence} 两列会走到这里。
      */
     private static long columnBytes(String type) {
         Matcher varchar = VARCHAR.matcher(type);
@@ -334,6 +360,8 @@ class MysqlDdlGeneratorTests {
             case "bigint" -> 8L;
             case "integer", "int" -> 4L;
             case "bit" -> 1L;
+            // JPA double → MySQL DOUBLE，方言写成 float(53)
+            case "float(53)" -> 8L;
             default -> throw new IllegalArgumentException("未建模的列类型 " + type
                     + "：请在 columnBytes 里补上它计入行大小的字节数");
         };

@@ -78,6 +78,14 @@ import org.springframework.test.context.DynamicPropertySource;
         "spring.jpa.properties.hibernate.hbm2ddl.schema-generation.script.append=false",
         // 关掉启动期预置数据：此时库里没有表，预置会失败
         "lakehouse.rest.initial-catalog.prefix=",
+        // 同上：内置敏感类型的 seed 也是一个「启动后查库」的 ApplicationRunner，
+        // 而这里刻意 ddl-auto=none（只生成脚本、不建真表），
+        // lakehouse_sensitive_type 根本不存在，seed 会在启动阶段抛
+        // 「Table "LAKEHOUSE_SENSITIVE_TYPE" not found」。
+        // 关掉而不是给它加 try/catch：本测试的意图是「JPA 元数据 → DDL 文本」，
+        // 它不该因为「库里有没有表」而变绿或变红；吞异常的 catch 会把
+        // 「表真的没建出来」这个事实一起藏起来。
+        "lakehouse.rest.sensitivity.seed-builtin-types=false",
         "lakehouse.rest.authorization.enabled=false",
         "lakehouse.rest.auth.enabled=false"
 })
@@ -117,12 +125,12 @@ class PostgresDdlGeneratorTests {
     /**
      * 实体的表数量；新增/删除实体时应同步调整，否则本测试会失败提醒。
      *
-     * <p>与 MySQL 脚本共用同一套实体，因此数量同为 29（见
+     * <p>与 MySQL 脚本共用同一套实体，因此数量同为 34（见
      * {@code MysqlDdlGeneratorTests#EXPECTED_TABLES} 的演进注释：从 23 经行过滤/列脱敏
      * 到 25，加 catalog 级执行集群到 26，加调度通道租约到 27，加 Lance 版本账到 28，
-     * 加身份接入的组映射表到 29）。
+     * 加身份接入的组映射表到 29，加敏感数据识别五张表到 34）。
      */
-    private static final int EXPECTED_TABLES = 29;
+    private static final int EXPECTED_TABLES = 34;
 
     /** 表级注释：{@code comment on table X is '...'}。 */
     private static final Pattern TABLE_COMMENT = Pattern.compile(

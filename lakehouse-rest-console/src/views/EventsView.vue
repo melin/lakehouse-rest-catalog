@@ -181,6 +181,7 @@ const CATEGORIES = [
   { value: 'PRINCIPAL', label: '主体' },
   { value: 'PRINCIPAL_ROLE', label: '主体角色' },
   { value: 'OPTIMIZATION', label: '优化' },
+  { value: 'SENSITIVITY', label: '敏感数据' },
 ]
 
 /**
@@ -235,9 +236,19 @@ const TYPES = [
   { value: 'optimization.job_partially_succeeded', label: '优化部分成功', tag: 'warning', category: 'OPTIMIZATION' },
   { value: 'optimization.job_failed', label: '优化失败', tag: 'danger', category: 'OPTIMIZATION' },
   { value: 'optimization.job_canceled', label: '优化取消', tag: 'info', category: 'OPTIMIZATION' },
+  // --- 敏感数据识别（P0 落的事件六条） ---
+  // 三条扫描事件带 `execution` 与 `triggerType`：只凭事件流就要能回答「谁在什么时候
+  // 读了明文」，不必回查扫描表。`started` 用 info 而不是 success——「已发起」不等于
+  // 「识别成功」，中间还有失败这条腿。
+  { value: 'sensitivity.scan.started', label: '扫描已发起', tag: 'info', category: 'SENSITIVITY' },
+  { value: 'sensitivity.scan.completed', label: '扫描完成', tag: 'success', category: 'SENSITIVITY' },
+  { value: 'sensitivity.scan.failed', label: '扫描失败', tag: 'danger', category: 'SENSITIVITY' },
+  { value: 'sensitivity.finding.decided', label: '命中裁决', tag: 'warning', category: 'SENSITIVITY' },
+  { value: 'column.tag.changed', label: '标签变更', tag: 'warning', category: 'SENSITIVITY' },
+  { value: 'sensitivity.binding.changed', label: '治理设置变更', tag: 'info', category: 'SENSITIVITY' },
 ]
 
-/** 类型下拉按类别分组：39 个类型平铺成一列太长，分组后是「先想类别、再想动作」。 */
+/** 类型下拉按类别分组：45 个类型平铺成一列太长，分组后是「先想类别、再想动作」。 */
 const TYPE_GROUPS = computed(() => CATEGORIES
   .map((category) => ({
     label: category.label,

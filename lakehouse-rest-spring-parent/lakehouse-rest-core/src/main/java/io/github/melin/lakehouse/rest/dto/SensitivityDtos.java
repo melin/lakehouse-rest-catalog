@@ -1,0 +1,311 @@
+package io.github.melin.lakehouse.rest.dto;
+
+import io.github.melin.lakehouse.rest.support.PageMeta;
+import java.util.List;
+import java.util.Map;
+
+/**
+ * 敏感数据识别与标签治理的 DTO（设计见 {@code docs/sensitive-data-design.md} §9）。
+ *
+ * <p><b>端点统一挂 {@code /api/management/v1/**}。</b>设计稿 §9 的表里路径写作
+ * {@code /sensitive-types} 等（省略了前缀），但 §9 开头那句「沿用 management 风格
+ * （{@code /api/catalogs/{c}/...}）」在真实代码里对应的是
+ * {@code /api/management/v1/catalogs/{c}/...}——受管前缀清单（
+ * {@code WebConfig.addInterceptors}）只含 {@code /v1/**}、{@code /lance/v1/**}、
+ * {@code /api/catalog/v1/**}、{@code /api/management/v1/**}、{@code /api/console/v1/**}，
+ * 照字面挂在 {@code /api/catalogs/...} 会是**匿名可调**。因此这里的路径一律带
+ * {@code /api/management/v1/} 前缀。
+ *
+ * <p><b>不新增权限词。</b>设计稿 §10 的四个权限点（{@code CATALOG:SENSITIVE_SCAN} 等）
+ * 映射到既有 access 词表：改类型 / 打标 / 批量决策 → {@code CATALOG:ALTER}，
+ * 看完整标签 → {@code CATALOG:DESCRIBE}。理由有两处机械约束：
+ * {@code scripts/verify-spark-sql-doc.py} 把 {@code allowedFor} 与
+ * {@code docs/spark-sql-reference.md} §7.4 的 access 词表逐项比对，
+ * {@code ConsoleApiTests} 也断言权限矩阵——加一个词就要同时改这两处与引擎侧文档，
+ * 而「谁能发起扫描」这件事用 {@code CATALOG:ALTER} 已经表达得很准
+ * （它与「改这个 catalog 的配置」同级）。
+ */
+public final class SensitivityDtos {
+
+    private SensitivityDtos() {
+    }
+
+    // ------------------------------------------------------------------ 敏感类型
+
+    /**
+     * 一个敏感类型的读模型。
+     *
+     * <p>{@code detectors} 直接给结构化对象（不是 JSON 字符串）：控制台的
+     * {@code #types} 屏要逐层编辑探测器，给一个需要前端自己 parse 的字符串
+     * 等于把 {@link io.github.melin.lakehouse.rest.support.DetectorConfig} 的
+     * 解析规则复制一份到 JS 里，两份迟早漂移。写路径同样收结构化对象。
+     *
+     * <p>{@code autoApplyAllowed} 是**只读的推断结果**（白名单里有没有它），
+     * 与可写的 {@code autoApply} 并列：界面要能回答「这个类型为什么不允许自动落标」
+     * ——原因是它在 §5.3 的禁止清单里，而不是「有人把开关关了」。
+     * 两者同值时说明没人改过；{@code autoApply=false} 而
+     * {@code autoApplyAllowed=true} 说明是治理员显式关的。
+     *
+     * <p><b>没有 {@code entityVersion}。</b>设计稿 §4 开头那句「全部沿用既有约定
+     * （… entity_version 乐观并发 …）」在 §4.1 的字段表里并没有落成类型表的一列，
+     * 这里以字段表为准：类型是「几十个」低频对象，两个人同时改同一个类型的窗口
+     * 极小，而这类冲突的后果只是「一个版本的探测器配置被覆盖」——它下一轮扫描
+     * 就会被发现（识别结果变了），不像标签冲突那样会静默丢一条治理结论。
+     * 代价换来的是少一列、少一次 DDL，以及读模型少一个调用方要回填的字段。
+     * PUT 因此是 last-write-wins，审计靠 {@code updatedBy} / {@code updatedAt}。
+     */
+    public record SensitiveType(String typeCode,
+                                String typeName,
+                                String category,
+                                String level,
+                                Map<String, Object> detectors,
+                                boolean autoApply,
+                                boolean autoApplyAllowed,
+                                double minConfidence,
+                                boolean builtin,
+                                boolean enabled,
+                                List<String> configuredLayers,
+                                String createdBy,
+                                Long createdAt,
+                                String updatedBy,
+                                Long updatedAt) {
+    }
+
+    /** {@code GET /sensitive-types}：不分页（类型是「几十」个，与既有列表同一取舍）。 */
+    public record SensitiveTypeList(List<SensitiveType> items) {
+    }
+
+    /**
+     * {@code POST} / {@code PUT /sensitive-types/{code}} 的请求体。
+     *
+     * <p>{@code detectors} 是「层名 → 层配置」的裸 JSON 节点（{@code Object} 承载），
+     * 与 {@code DataPolicyDtos} 的表达式同一做法：形状校验在服务层做
+     * （{@code DetectorConfig.parse} 认不出的层忽略、不抛），DTO 层不做形状假设。
+     */
+    public record SensitiveTypeUpsertRequest(String typeCode,
+                                             String typeName,
+                                             String category,
+                                             String level,
+                                             Object detectors,
+                                             Boolean autoApply,
+                                             Double minConfidence,
+                                             Boolean enabled) {
+    }
+
+    // ------------------------------------------------------------------ 扫描
+
+    /**
+     * {@code POST /sensitivity-scans} 的请求体。
+     *
+     * <p>{@code scope} 决定后三个字段哪几个必填：{@code CATALOG} 全空、
+     * {@code DATABASE} 要库名、{@code TABLE} 要库名 + 表名。**不靠「哪几个字段有值」
+     * 反推层级**：{@code TABLE} 级的表名恰好等于某个库名这种巧合不该改变语义。
+     *
+     * <p>{@code execution} 留空 = 用生效的三层覆盖值（请求 &gt; catalog 的
+     * {@code defaultExecution} &gt; 全局）——注意落库的是**生效值**，
+     * 因为「三个月后回看这次扫描跑在哪」必须能答上来（设计稿 §4.2）。
+     */
+    public record ScanRequest(String catalog,
+                              String scope,
+                              String database,
+                              String table,
+                              String mode,
+                              String execution,
+                              Integer sampleSize,
+                              String triggerType) {
+    }
+
+    /** 扫描的读模型（列表与详情共用；列表页靠它带出 {@code execution} 与 {@code triggerType} 两列）。 */
+    public record ScanSummary(String id,
+                              String catalog,
+                              String scope,
+                              String database,
+                              String table,
+                              String mode,
+                              String execution,
+                              String triggerType,
+                              String status,
+                              int sampleSize,
+                              int tablesScanned,
+                              int columnsScanned,
+                              int findingsCreated,
+                              int tablesFailed,
+                              String triggeredBy,
+                              Long startedAt,
+                              Long finishedAt,
+                              String errorMessage,
+                              String executionNamespace,
+                              String executionResource,
+                              Long createdAt,
+                              Long updatedAt) {
+    }
+
+    /** {@code GET /sensitivity-scans}：分页走既有 {@code PageMeta} 口径（先过滤再切页）。 */
+    public record ScanList(List<ScanSummary> items, PageMeta meta) {
+    }
+
+    /** {@code POST /sensitivity-scans} 的 202 响应：只回 id 与生效执行位置，不回结果。 */
+    public record ScanAccepted(String scanId, String catalog, String status, String execution) {
+    }
+
+    // ------------------------------------------------------------------ 命中（finding）
+
+    /**
+     * 一条扫描命中。
+     *
+     * <p>{@code samples} 是**打码后**的样本（§5.4 的唯一不变量：任何路径都不写原值）。
+     * 类型是 {@code List<String>} 而不是原始行的二维数组——它本就只该是
+     * 「{@code 110***********1234}」这样的字符串，用更宽的类型会让人以为能拿到原值。
+     */
+    public record Finding(long id,
+                          String scanId,
+                          String catalog,
+                          String database,
+                          String table,
+                          String column,
+                          String columnRef,
+                          String typeCode,
+                          double confidence,
+                          Map<String, Object> detectors,
+                          List<String> samples,
+                          String samplingMode,
+                          String state,
+                          String decidedBy,
+                          Long decidedAt,
+                          Long createdAt) {
+    }
+
+    /** {@code GET /sensitivity-findings}：人审队列（P1 起有队列 UI，P0 只提供读）。 */
+    public record FindingList(List<Finding> items, PageMeta meta) {
+    }
+
+    // ------------------------------------------------------------------ 列级标签
+
+    /**
+     * 一条列级标签。
+     *
+     * <p>{@code level} 是从 {@code tagValue} 解出的分级（不是所有标签都有：
+     * 手工标签如 {@code owner.team} 就没有）。单独给一个字段，是为了让
+     * 「按 {@code level=L4} 过滤」与「分级分布」两个消费方不必各自再解一次。
+     *
+     * <p>{@code tableLevel} = {@code column} 为空串（表级聚合标签）。
+     */
+    public record ColumnTag(long id,
+                            String catalog,
+                            String database,
+                            String table,
+                            String column,
+                            String columnRef,
+                            boolean tableLevel,
+                            String tagKey,
+                            String tagValue,
+                            String level,
+                            String source,
+                            String typeCode,
+                            Double confidence,
+                            String inheritedFrom,
+                            Long findingId,
+                            boolean enabled,
+                            int entityVersion,
+                            String updatedBy,
+                            Long updatedAt) {
+    }
+
+    /** {@code GET /column-tags}：对外主接口（数据地图、审批流、上线检查都消费它）。 */
+    public record ColumnTagList(List<ColumnTag> items, PageMeta meta, ColumnTagCoverage coverage) {
+    }
+
+    /**
+     * 覆盖率摘要（设计稿 §13「不承诺扫完即全覆盖，控制台报覆盖率」）。
+     *
+     * <p>{@code classifiedColumns} 是**已打标列数**，{@code totalColumns} 是范围内
+     * 已知列数——分母来自 {@code lakehouse_table.schema_doc} 解析出的列，
+     * 因此「没扫过的表」会把覆盖率拉低，这正是要表达的东西：
+     * 「已分类 / 全部」比「扫描已完成」诚实。
+     *
+     * <p><b>{@code tablesCounted} / {@code totalTables} 是把「诚不诚实」落到实处的那两列。</b>
+     * 分母要对 catalog 里每张表的 {@code schema_doc} 做一次 JSON 解析，而一个几万张表的
+     * catalog 会让这一个读接口变成全量元数据扫描。因此分母有一个表数上限
+     * （{@code MAX_COVERAGE_TABLES}），超过时**只数到上限为止并把两个数都回传**：
+     * 前端据此显示「覆盖率按前 N 张表计算」而不是把一个被截断的分母当成全局值。
+     * 只回一个分母、不说是怎么算出来的，就等于让它撒谎——而
+     * 「覆盖率是分母问题，不能靠沉默掩盖」正是这一屏存在的理由。
+     *
+     * <p>{@code tablesWithTags} 与 {@code tablesCounted} 的区别：前者是**有标签**的表数
+     * （分子侧），后者是**被计入分母**的表数。两者不同值说明「有表被扫过但没命中任何类型」，
+     * 或「还有表没被数进分母」。
+     *
+     * <p>{@code byLevel} / {@code bySource} 按**已打标列**统计（不是按标签行）：
+     * 一列有两个标签时它在两个维度里各算一次，而「L4 有多少列」这个问题的答案是
+     * 「有几个列的最高级别是 L4」——按标签行数会把同一列重复计入。
+     */
+    public record ColumnTagCoverage(int classifiedColumns,
+                                    int totalColumns,
+                                    int tablesWithTags,
+                                    int tablesCounted,
+                                    int totalTables,
+                                    Map<String, Integer> byLevel,
+                                    Map<String, Integer> bySource) {
+    }
+
+    /**
+     * {@code PUT /column-tags} 的请求体：手工打标（upsert）。
+     *
+     * <p>唯一键是 {@code (column_ref_hash, tag_key)}，所以「同一列同一键只能有一个值」
+     * ——重复 PUT 是更新，不是新增。{@code entityVersion} 做乐观锁，不符回 409。
+     *
+     * <p>{@code source} **不可由调用方指定**：手工打标恒为 {@code MANUAL}，
+     * 否则「谁能伪造一条 AUTO 标签」就成了一个绕过自动应用闸门的口子
+     * （AUTO 标签的含义是「扫描算出来并过了白名单」，不是「谁说是就是」）。
+     */
+    public record ColumnTagUpsertRequest(String catalog,
+                                         String database,
+                                         String table,
+                                         String column,
+                                         String tagKey,
+                                         String tagValue,
+                                         String typeCode,
+                                         Boolean enabled,
+                                         Integer entityVersion) {
+    }
+
+    // ------------------------------------------------------------------ catalog 级设置
+
+    /**
+     * {@code GET /sensitivity-settings}：一个 catalog 的治理设置。
+     *
+     * <p><b>三个字段都是「catalog 覆盖」，即 {@code null} 表示继承全局。</b>读接口
+     * 同时回 {@code resolved*} 三列（生效值）：界面要能回答「这个 catalog 现在实际
+     * 会怎么跑」，而只给覆盖值的话，答案是「未设置」——那要前端自己再取一次全局配置，
+     * 于是同一件事有两个答案源（与 {@code ActionPolicy} 的
+     * 「差异 + 生效值并列」同一取舍）。
+     */
+    public record SensitivitySettings(String catalog,
+                                      String defaultExecution,
+                                      Integer maxConcurrentScans,
+                                      Integer propagationMaxDepth,
+                                      String resolvedExecution,
+                                      int resolvedMaxConcurrentScans,
+                                      int resolvedPropagationMaxDepth,
+                                      int entityVersion,
+                                      String updatedBy,
+                                      Long updatedAt) {
+    }
+
+    /**
+     * {@code PUT /sensitivity-settings}：整份替换。
+     *
+     * <p>传 {@code null} = 清除覆盖、回落全局；不传字段（{@code null}）也能表达这一点，
+     * 所以**没有单独的「清除」开关**——与执行集群那份请求体刻意不同：
+     * 那里的秘密字段留空表示「保持原样」，因为空串是有效的秘密值；
+     * 这里的三个字段都是可选覆盖，空就是空。
+     *
+     * <p>{@code entityVersion} 做乐观锁：改的是「这个 catalog 的扫描怎么跑」，
+     * 与改绑定同级，两个治理员同时改必须由人来裁决（设计稿 §9）。
+     */
+    public record SensitivitySettingsUpdateRequest(String defaultExecution,
+                                                   Integer maxConcurrentScans,
+                                                   Integer propagationMaxDepth,
+                                                   Integer entityVersion) {
+    }
+}

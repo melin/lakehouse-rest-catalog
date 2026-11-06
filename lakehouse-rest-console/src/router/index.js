@@ -175,6 +175,44 @@ const routes = [
     meta: { title: '优化任务', icon: 'Histogram', group: '治理（Management API）', nav: true },
   },
   {
+    // 敏感数据总览（mockup `#overview`）。与「数据保护」并列在治理分组：
+    // 数据保护管「怎么保护」（行过滤 / 列脱敏），这一屏管「哪些列需要保护」——
+    // 分类分级在前、保护策略在后，两屏是同一层治理决策的两半。
+    //
+    // <p>挂在管理 API（`/api/management/v1/sensitivity-*`）下，分组标签写的就是
+    // 「这一页用的是哪套 API」。
+    path: '/sensitivity',
+    name: 'sensitivityOverview',
+    component: () => import('@/views/SensitivityOverviewView.vue'),
+    meta: { title: '敏感数据', icon: 'Aim', group: '治理（Management API）', nav: true },
+  },
+  {
+    // 列级标签清单（mockup `#tags`）：识别结论落成的治理事实。
+    //
+    // <p>与总览分成两屏而不是一页两个页签：总览回答「治理到什么程度」（跨页统计、
+    // 一眼扫完），标签清单回答「具体哪一列是什么」（检索、逐条改删）。
+    // 两者的操作频次与检索方式都不同，混在一页会让「我今天要做什么」变得不清楚。
+    path: '/sensitivity/tags',
+    name: 'sensitivityTags',
+    component: () => import('@/views/SensitivityTagsView.vue'),
+    meta: { title: '敏感标签', icon: 'CollectionTag', group: '治理（Management API）', nav: true },
+  },
+  {
+    // 类型与探测器配置（mockup `#types`）：识别能力本身。
+    //
+    // <p>**没有 catalog 选择器**，与上面两屏刻意不同：`lakehouse_sensitive_type`
+    // 没有 catalog 列，类型是识别能力、不是某个目录的属性。服务端四处判的也是
+    // `requireServiceAdmin` 而不是 `CATALOG:ALTER`——改一个类型的权重等于改所有
+    // catalog 的判定口径，把入口收紧到服务级是安全取舍。
+    //
+    // <p>这一屏还是设计稿 §12 P0 那条验收断言「改一个内置类型的探测器权重后，
+    // 下一轮扫描的判定随之改变」唯一的操作入口。
+    path: '/sensitivity/types',
+    name: 'sensitivityTypes',
+    component: () => import('@/views/SensitivityTypesView.vue'),
+    meta: { title: '敏感类型', icon: 'SetUp', group: '治理（Management API）', nav: true },
+  },
+  {
     // OIDC 配置：SSO 的**生效配置** + 连通性测试 + 令牌样例。
     //
     // <p>整页只读，没有编辑框——这些字段来自部署配置（yml / K8s ConfigMap）。

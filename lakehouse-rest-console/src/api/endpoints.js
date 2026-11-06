@@ -348,6 +348,67 @@ export const ENDPOINTS = {
   // 策略四态并用预览求值链读一页数据。判权 TABLE:ALTER——试算结果本身就是策略内容。
   // 只读、不落库：唯一副作用是预览自身的 TABLE_PREVIEWED 审计（操作者本人）。
   dryRunTablePolicy: { method: 'POST', path: '/api/management/v1/policies/tables/{catalogName}/{databaseName}/{tableName}/dry-run' },
+
+  // ------------------------------------------------------------------ 管理 API：敏感数据识别（类型 / 扫描 / 标签 / 设置）
+  // 本工程自己的资源（`SensitiveTypeController` / `SensitivityScanController` /
+  // `ColumnTagController` / `SensitivitySettingsController`），四份规格里都没有它们。
+  // 设计见 docs/sensitive-data-design.md。
+  //
+  // **路径与设计稿 §9 的写法不同**：§9 写的是 `/api/catalogs/{c}/...`，但服务端
+  // `WebConfig.addInterceptors` 的受管前缀清单只含 `/v1/**`、`/lance/v1/**`、
+  // `/api/catalog/v1/**`、`/api/management/v1/**`、`/api/console/v1/**`——
+  // 照字面挂到 `/api/catalogs/...` 会是**匿名可调**。因此这一组全挂
+  // `/api/management/v1/**`，与既有的数据策略、执行集群同款。
+  //
+  // 判权在控制器，且**类型表归服务管理员**（`lakehouse_sensitive_type` 没有 catalog
+  // 列——类型是全局的，不是某个 catalog 的属性）；扫描/标签/设置按 catalog 判
+  // `DESCRIBE`（读）或 `ALTER`（写）。因此「谁能看到敏感标签」这一层不由前端表达，
+  // 前端只负责把 403 如实显示出来。
+
+  // --- 类型与探测器（`#types` 屏；全局资源，四处判 service-admin）
+  // 内置类型只禁止**删除**（409），不禁改：改探测器权重正是「改完下一轮扫描判定
+  // 随之改变」的那条验收路径，堵掉它就等于验收项没法做。
+  listSensitiveTypes: { method: 'GET', path: '/api/management/v1/sensitive-types' },
+  createSensitiveType: { method: 'POST', path: '/api/management/v1/sensitive-types' },
+  getSensitiveType: { method: 'GET', path: '/api/management/v1/sensitive-types/{typeCode}' },
+  // PUT 是 **last-write-wins**（类型表刻意不加 entity_version 列），因此这里没有
+  // 版本参数——界面不能假装有乐观锁，否则会显示一个服务端从不检查的字段。
+  updateSensitiveType: { method: 'PUT', path: '/api/management/v1/sensitive-types/{typeCode}' },
+  deleteSensitiveType: { method: 'DELETE', path: '/api/management/v1/sensitive-types/{typeCode}' },
+
+  // --- 扫描（`#overview` 的「最近扫描」与发起入口；P0 只跑 D1/D2 元数据档）
+  // POST 回 **202** 而不是 201：扫描是长任务，响应体只有 `{scanId, catalog, status,
+  // execution}`，结果要另取。判 `CATALOG:ALTER`（采样是「合法高权限读」，挂 SELECT 上
+  // 等于任何能查表的人都能让服务端替他读明文）。
+  startSensitivityScan: { method: 'POST', path: '/api/management/v1/sensitivity-scans' },
+  // `catalog` 为空会要服务管理员（服务端在 catalog 非空时判 DESCRIBE、为空时判
+  // `requireServiceAdmin`）——控制台这一屏始终带 catalog，不带等于刻意查全库。
+  listSensitivityScans: { method: 'GET', path: '/api/management/v1/sensitivity-scans' },
+  getSensitivityScan: { method: 'GET', path: '/api/management/v1/sensitivity-scans/{scanId}' },
+
+  // --- 命中清单（`#overview` 的「待人审」计数；P0 只读，`decide` 属 P1）
+  // `catalog` **必填**：没有它这个端点就成了「一次读到所有 catalog 的识别结论」，
+  // 而识别结论（类型 + 置信度）本身就是敏感信息。
+  listSensitivityFindings: { method: 'GET', path: '/api/management/v1/sensitivity-findings' },
+
+  // --- 列级标签（`#tags` 屏；设计稿 §8.4 的对外主接口）
+  // 响应同时含 `items` + `meta` + `coverage`，而 `coverage` 只随范围（catalog/table）变，
+  // **不随 `tagKey`/`level` 变**——「筛 L4 后覆盖率还是 86%」是正确行为。
+  listColumnTags: { method: 'GET', path: '/api/management/v1/column-tags' },
+  // 唯一键 `(column_ref_hash, tag_key)`，重复 PUT 是更新不是新增；更新必须带
+  // `entityVersion`（不匹配 409，控制台不自动重试——标签是治理结论，得由人裁决）。
+  // `column` 传空串 = 表级标签（不参与策略展开，只用于检索）。
+  upsertColumnTag: { method: 'PUT', path: '/api/management/v1/column-tags' },
+  // 回 204。P0 **不写抑制项**（P0 元数据档置信度上限 0.45 够不到 0.85、永不产 tag，
+  // 所以「删了会复活」在 P0 不成立）——界面文案因此不能写「删除后不会被重新识别」。
+  deleteColumnTag: { method: 'DELETE', path: '/api/management/v1/column-tags/{id}' },
+
+  // --- catalog 级治理设置（`#overview` 的「catalog 级设置」卡）
+  // 三个字段都是 catalog 覆盖（`null` = 继承全局），响应另给三个 `resolved*` 生效值。
+  // 注意 `entityVersion` 是 **catalog 自己的版本号**（设置存在 catalog 行的 properties 里）：
+  // 改扫描设置会让 catalog 的 etag 一起变。读写都判 `CATALOG:ALTER`。
+  sensitivitySettings: { method: 'GET', path: '/api/management/v1/sensitivity-settings' },
+  updateSensitivitySettings: { method: 'PUT', path: '/api/management/v1/sensitivity-settings' },
 }
 
 /** 端点名 → `METHOD path`，供校验脚本与调试输出复用。 */

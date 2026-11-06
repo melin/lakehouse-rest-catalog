@@ -93,6 +93,9 @@ public class RestServerProperties {
     /** {@code lakehouse.rest.policy.*}：行过滤 / 列脱敏策略（见 {@link DataPolicy}）。 */
     private final DataPolicy policy = new DataPolicy();
 
+    /** {@code lakehouse.rest.sensitivity.*}：敏感数据识别与标签治理（见 {@link Sensitivity}）。 */
+    private final Sensitivity sensitivity = new Sensitivity();
+
     /**
      * 行过滤 / 列脱敏的写入口开关（{@code docs/row-filter-column-mask-design.md} §5.4）。
      *
@@ -1213,5 +1216,147 @@ public class RestServerProperties {
          * （两处默认值相同，漂移的表现是「配置写了但节拍没变」）。
          */
         private String cleanupCron = "0 30 3 * * *";
+    }
+
+    /**
+     * {@code lakehouse.rest.sensitivity.*}：敏感数据识别与标签治理
+     * （设计见 {@code docs/sensitive-data-design.md} §5.6）。
+     *
+     * <p><b>这一段的三个值都是「三层覆盖」的底层</b>（请求 &gt; catalog 的
+     * {@code sensitivity-settings} &gt; 这里）。与「代码默认值 / {@code application.yml} /
+     * k8s ConfigMap」那三层一起改，缺一层就是同镜像在不同环境行为不同
+     * （见 {@code docs/sensitive-data-design.md} §5.6.1 / §5.6.4）。
+     *
+     * <p><b>没有 {@code enabled} 开关。</b>与 policy / lineage 那两处不同：那些开关
+     * 关掉的是一个「会自动改数据行为」的能力（下发脱敏规则、接收采集上报），
+     * 而这里关掉只能关掉「读元数据算候选」——扫描本身不改任何数据，它产出的
+     * finding 与 tag 都是「建议」，人审之前不产生任何副作用（自动应用是 P1 的事，
+     * 且那时由类型级的 {@code auto_apply} 单独把关）。为它加一个开关，
+     * 只会让「为什么扫不出东西」多一个可能的答案。
+     */
+    @Getter
+    @Setter
+    public static class Sensitivity {
+
+        /**
+         * 内置类型随启动 seed。
+         *
+         * <p>默认开，且**几乎不该关**：内置类型是「识别能力」本身，关掉之后
+         * 一次扫描跑不出任何结论（候选类型表为空），而失败表现是「扫完了什么都没有」，
+         * 与「这张表真的没有敏感数据」长得一模一样。
+         *
+         * <p>留着它是因为有一类部署需要它：测试里要一个「只有我自己建的类型」的
+         * 确定环境（{@code application-test.yml} 关掉），否则内置类型会参与断言。
+         */
+        private boolean seedBuiltinTypes = true;
+
+        private final Scan scan = new Scan();
+
+        private final Propagation propagation = new Propagation();
+    }
+
+    /**
+     * {@code lakehouse.rest.sensitivity.scan.*}：扫描怎么跑（设计稿 §5.6.1 / §5.6.4）。
+     *
+     * <p><b>两个键分别管两条不同的闸门</b>，别混：{@code execution} 是「在哪跑」，
+     * {@code maxConcurrent} 是「A 路线（进程内）同时跑几个」。B 路线（下推 Spark）
+     * 的并发**不在这里**——它共用执行集群那把 {@code maxConcurrentJobs}
+     * （见 {@code lakehouse_catalog_execution_cluster} 与设计稿 §5.6.6）。
+     */
+    @Getter
+    @Setter
+    public static class Scan {
+
+        /**
+         * 执行位置的全局默认：{@code IN_PROCESS}（A 路线）/ {@code SPARK}（B 路线）。
+         *
+         * <p><b>默认 {@code IN_PROCESS} 的理由是「不新增读路径」</b>：A 路线复用
+         * 数据预览的读通道，而 B 路线要把「谁读了明文」拆成服务端与作业侧两条审计链。
+         * 只有「采样 + 范围 ≥ 整个 catalog」才值得切 B。
+         *
+         * <p>解析不出来时回落 {@code IN_PROCESS} 并留 WRAN（见
+         * {@code SensitivitySettingsService}）：这里是启动路径上的一个便利项，
+         * 拼错一个枚举名不该让服务起不来。
+         */
+        private String execution = "IN_PROCESS";
+
+        /**
+         * A 路线（进程内）同时进行的扫描数上限，**默认 2**。
+         *
+         * <p><b>这道闸门守的不是服务端 CPU，而是存储侧被并发读的压力</b>：
+         * A 路线每条扫描会按列拉样本，同一份存储被 N 条扫描同时打，N 越大越接近
+         * 「用小文件随机读打满对象存储」。取 2 与
+         * {@code TablePreviewService.MAX_CONCURRENT_PER_PRINCIPAL} 同值不是巧合——
+         * 两条读路径争的是同一份后端带宽，给它们同一个量级才不会出现
+         * 「预览限 2、扫描不限」的失衡。
+         *
+         * <p>**不是**执行集群那把 {@code maxConcurrentJobs}：那个管的是这台集群上
+         * 同时跑几个作业（优化批次 + 下推扫描一起算），A 路线不提交任何作业。
+         * 混成一个数字会让「调大集群并发」意外放开对象存储的并发。
+         */
+        private int maxConcurrent = 2;
+
+        /** 采样行上限的默认值（设计稿 §5.4）；请求可以调小，调大受 {@link #maxSampleSize} 约束。 */
+        private int sampleSize = 2000;
+
+        /**
+         * 采样行上限的硬上限（设计稿 §5.4）。
+         *
+         * <p>请求体里的 {@code sampleSize} 超过它就 **400**，不静默截断——
+         * 静默截断会让「我明明要了 5 万行」变成一条查不出来的行为，
+         * 而扫描的结论质量正是由样本量决定的。
+         */
+        private int maxSampleSize = 10000;
+
+        /**
+         * 单次扫描最多扫多少张表。
+         *
+         * <p>存在的理由是「误操作保护」而不是性能：{@code scope=CATALOG} 打在一个
+         * 几千张表的 catalog 上，一次请求就会把服务端读通道占满几十分钟。
+         * 超了 400 并给出实际表数，让调用方显式换成库级或加过滤。
+         */
+        private int maxTablesPerScan = 5000;
+
+        /**
+         * 元数据扫描（{@code METADATA_ONLY}）是否允许下推 Spark。
+         *
+         * <p>恒为 {@code false} 且不做成配置项？——恰恰相反，它是配置项但只允许
+         * 一个取值，这个矛盾的写法本身就是**说明**：下推读元数据没有任何收益，
+         * 反而多一次作业调度开销（设计稿 §5.6.1）。把它写出来是为了让
+         * 「为什么 {@code METADATA_ONLY} + {@code SPARK} 被拒」在配置里也有出处，
+         * 而不是只在代码分支里。
+         */
+        private boolean allowMetadataOnSpark = false;
+    }
+
+    /**
+     * {@code lakehouse.rest.sensitivity.propagation.*}：血缘传播（设计稿 §7.1，P2 落地）。
+     *
+     * <p>P0 只有配置项、没有实现——**先有键再有值**，与 {@code execution} 那一列
+     * 在 P2 就落库是同一条理由（设计稿 §12 的注）：等实现时再补配置，会发现
+     * 已有的部署要各自补一次。
+     */
+    @Getter
+    @Setter
+    public static class Propagation {
+
+        /**
+         * 沿血缘列边向下游传播的最大跳数，默认 5。
+         *
+         * <p>深度不是越大越好：{@code A → B → C → …} 逐跳传递会稀释置信度，
+         * 而「第 5 跳之后还算不算继承来的敏感数据」是一个治理判断，
+         * 该由人定而不是算法一路推到底（验收断言：「{@code max-depth=2} 时
+         * 第 3 跳停在 {@code PENDING}」）。
+         */
+        private int maxDepth = 5;
+
+        /**
+         * 传播产出的标签置信度的逐跳折损系数，默认 {@code 0.9}。
+         *
+         * <p>{@code 0.9^n}：第一跳 0.9、第五跳 0.59。取这个数是为了让「传播来的标签」
+         * 天然低于「直接扫出来的标签」，在按置信度排序的人审队列里排后面——
+         * 这不是数学上的必然，而是排序意图的表达。
+         */
+        private double confidenceDecay = 0.9d;
     }
 }

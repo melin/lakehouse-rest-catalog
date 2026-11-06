@@ -42,5 +42,20 @@ public enum CatalogEventCategory {
     PRINCIPAL_ROLE,
 
     /** 存储优化（策略变更与批次终态）。 */
-    OPTIMIZATION
+    OPTIMIZATION,
+
+    /**
+     * 敏感数据识别与标签治理（扫描轨迹、人审决策、标签与绑定变更）。
+     *
+     * <p><b>为什么单独一类而不是并进 {@link #POLICY}。</b>POLICY 那一类记的是
+     * 「谁改了规则」，而这一类的核心是「谁在什么时候读了明文数据」——扫描事件
+     * 回答的是数据访问，不是配置变更。合规审计要把后者单独拉出来看，
+     * 与 {@code POLICY} 与 {@code OPTIMIZATION} 分开的理由同源。
+     *
+     * <p><b>这类事件不设 TTL</b>（设计稿 §5.5 末段）：等保要求日志留存不少于 6 个月，
+     * 而 {@code sensitivity.scan.*} 与 finding 决策记录是治理决策史，不是运行史。
+     * 血缘的运行史可以清（{@code lineage.run-retention-days}），治理决策史不能——
+     * 这一条写在这里，是为了防止后来者顺手给它加一个清理任务。
+     */
+    SENSITIVITY
 }

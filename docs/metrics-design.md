@@ -28,7 +28,7 @@
 | 延迟直方图 / SLO 桶                 | ✅ **默认关** | 与 Polaris 同默认，按需配置（§5.4）                 |
 | Iceberg 客户端上报的 scan/commit 报告 | ✅ **P2**  | 端点已存在，只是当前只校验不落库（§4.3.7）                 |
 | 分布式追踪（OTel）                   | ❌ 本文不涉及   | Polaris 也是两条独立链路，trace 默认关               |
-| 审计（谁在什么时候改了什么）                | ❌ 不在指标里   | 已有事件框架（9 类 33 型）+ `audit_event` 表        |
+| 审计（谁在什么时候改了什么）                | ❌ 不在指标里   | 已有事件框架（10 类 45 型）+ `audit_event` 表        |
 
 ---
 
@@ -143,7 +143,7 @@ SPI 长这样：`IcebergMetricsReporter.reportMetric(MetricsReportEnvelope)`，
 | HTTP 指标                  | 无                                                            | 加 Actuator 即有                  |
 | API 操作指标                 | 无                                                            | 切面补（§7.3）                      |
 | 授权 / 认证可观测性              | 只有异常与日志                                                      | 计数器（§7.4）                      |
-| 事件                       | 9 类 33 型，`CatalogEventPublisher` 已收口                         | 在发布器里加计数（§7.5）                 |
+| 事件                       | 10 类 45 型，`CatalogEventPublisher` 已收口                        | 在发布器里加计数（§7.5）                 |
 | 优化任务                     | `OptimizationJobService` / `OptimizationBatchService` 状态在 DB | 加计数 / 时长 / 运行中 gauge（§7.6）     |
 | Iceberg 上报端点             | `POST .../tables/{t}/metrics` 已实现，**只校验 + 打日志**              | 加 SPI 与计数（§7.7，P2）             |
 | 持久化指标                    | 无                                                            | 先用 Hikari 自带，P2 再谈方法级（§4.2）    |
@@ -235,7 +235,7 @@ Micrometer 里用点分层，Prometheus 导出自动转下划线：
 
 | Micrometer 名                         | 类型      | 标签                          | 用途                           |
 | ------------------------------------ | ------- | --------------------------- | ---------------------------- |
-| `lakehouse.events.published`         | Counter | `category`（9 种）`type`（33 种） | 「变更在发生吗」；控制台事件页的写入速率         |
+| `lakehouse.events.published`         | Counter | `category`（10 种）`type`（45 种） | 「变更在发生吗」；控制台事件页的写入速率         |
 | `lakehouse.events.listener.failures` | Counter | `listener` `category`       | 某个监听器坏了（发布器已逐监听器兜底，但坏了自己不会喊） |
 
 #### 4.3.6 优化任务
