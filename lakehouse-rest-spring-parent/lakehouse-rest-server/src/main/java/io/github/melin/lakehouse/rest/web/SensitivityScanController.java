@@ -77,12 +77,16 @@ public class SensitivityScanController {
      * <p>不带 {@code catalog} 时判服务管理员：否则这个端点就是一条「列出所有 catalog
      * 被扫过哪些表」的路，而那些表名的存在感本身就是信息（§10 的「保护动作的存在本身
      * 也是信息」）。与 {@code OptimizationController#jobs} 同一口径。
+     *
+     * <p>{@code scheduleName}（P4）：按调度项名筛历史。它不参与判权——可见性仍由
+     * {@code catalog} 那一条决定，否则「传一个我有权限的调度项名」就能绕过 catalog 判权。
      */
     @GetMapping
     public ScanList list(@RequestParam(name = "catalog", required = false) String catalog,
                          @RequestParam(name = "status", required = false) String status,
                          @RequestParam(name = "scope", required = false) String scope,
                          @RequestParam(name = "triggerType", required = false) String triggerType,
+                         @RequestParam(name = "scheduleName", required = false) String scheduleName,
                          @RequestParam(name = "page", required = false) Integer page,
                          @RequestParam(name = "pageSize", required = false) Integer pageSize) {
         if (catalog != null && !catalog.isBlank()) {
@@ -90,7 +94,7 @@ public class SensitivityScanController {
         } else {
             authorizationService.requireServiceAdmin("list sensitivity scans across catalogs");
         }
-        return scanService.list(catalog, status, scope, triggerType, page, pageSize);
+        return scanService.list(catalog, status, scope, triggerType, scheduleName, page, pageSize);
     }
 
     /**

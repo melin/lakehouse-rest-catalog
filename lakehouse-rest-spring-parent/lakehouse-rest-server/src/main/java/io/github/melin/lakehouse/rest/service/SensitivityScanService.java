@@ -277,14 +277,19 @@ public class SensitivityScanService {
     // ------------------------------------------------------------------ 读
 
     /**
-     * {@code GET /sensitivity-scans}：按 catalog / 状态 / 范围 / 触发方式过滤后分页。
+     * {@code GET /sensitivity-scans}：按 catalog / 状态 / 范围 / 触发方式 / 调度项过滤后分页。
      *
      * <p>先过滤再切页（与全部既有列表端点同一口径）：候选集是「几十到几百」条，
      * 在内存里过滤比把四个条件拼成一条动态 JPQL 更不容易出错，也不会出现
      * 「按状态筛出来的页码和没筛的对不上」。
+     *
+     * <p>{@code scheduleName} 是 P4 加的第五个过滤轴：调度项控制台要回答「这条规则跑过
+     * 哪几次」，而按 {@code triggerType=SCHEDULE} 筛出来的是**所有**调度项的历史。
+     * 名字是字符串而不是外键（§4.6），因此删掉调度项之后这里仍能查到旧历史——
+     * 这正是「删除不影响审计」那条口径的读侧。
      */
     public ScanList list(String catalog, String status, String scope, String triggerType,
-                         Integer page, Integer pageSize) {
+                         String scheduleName, Integer page, Integer pageSize) {
         String catalogName = trimToNull(catalog);
         List<SensitivityScanEntity> all = catalogName == null
                 ? scanRepository.findAllByOrderByCreatedAtDesc()
@@ -292,6 +297,7 @@ public class SensitivityScanService {
         String statusFilter = trimToNull(status);
         String scopeFilter = trimToNull(scope);
         String triggerFilter = trimToNull(triggerType);
+        String scheduleFilter = trimToNull(scheduleName);
         List<ScanSummary> items = new ArrayList<>();
         for (SensitivityScanEntity entity : all) {
             if (statusFilter != null && !statusFilter.equals(entity.getStatus())) {
@@ -301,6 +307,9 @@ public class SensitivityScanService {
                 continue;
             }
             if (triggerFilter != null && !triggerFilter.equals(entity.getTriggerType())) {
+                continue;
+            }
+            if (scheduleFilter != null && !scheduleFilter.equals(entity.getScheduleName())) {
                 continue;
             }
             items.add(toDto(entity));
@@ -918,7 +927,7 @@ public class SensitivityScanService {
     private static ScanSummary toDto(SensitivityScanEntity entity) {
         return new ScanSummary(entity.getId(), entity.getCatalogName(), entity.getScope(),
                 entity.getDatabaseName(), entity.getTableName(), entity.getMode(), entity.getExecution(),
-                entity.getTriggerType(), entity.getStatus(), entity.getSampleSize(),
+                entity.getTriggerType(), entity.getScheduleName(), entity.getStatus(), entity.getSampleSize(),
                 entity.getTablesScanned(), entity.getColumnsScanned(), entity.getFindingsCreated(),
                 entity.getTablesFailed(), entity.getTriggeredBy(), entity.getStartedAt(),
                 entity.getFinishedAt(), entity.getErrorMessage(), entity.getExecutionNamespace(),

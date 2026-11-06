@@ -9,9 +9,16 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 
+import io.github.melin.lakehouse.rest.domain.entity.SensitivityScanEntity;
 import io.github.melin.lakehouse.rest.domain.entity.SensitivityScheduleEntity;
+import io.github.melin.lakehouse.rest.domain.repo.SensitivityScanRepository;
 import io.github.melin.lakehouse.rest.domain.repo.SensitivityScheduleRepository;
 import io.github.melin.lakehouse.rest.service.SensitivityScheduleDispatcher;
+import io.github.melin.lakehouse.rest.support.SensitivityEnums.ScanExecution;
+import io.github.melin.lakehouse.rest.support.SensitivityEnums.ScanMode;
+import io.github.melin.lakehouse.rest.support.SensitivityEnums.ScanScope;
+import io.github.melin.lakehouse.rest.support.SensitivityEnums.ScanStatus;
+import io.github.melin.lakehouse.rest.support.SensitivityEnums.ScanTrigger;
 import java.util.List;
 import org.junit.jupiter.api.MethodOrderer;
 import org.junit.jupiter.api.Order;
@@ -50,6 +57,8 @@ import tools.jackson.databind.node.JsonNodeFactory;
  *       这是「多副本只触发一次」里正确性的那一道（另一道是租约，只降噪）。
  *   <li><b>停用后不再被抢占。</b>停用的语义是「规则还在、暂时不跑」，
  *       而历史扫描仍按 {@code schedule_name} 可查——所以停用不能是删除。
+ *   <li><b>历史能按调度项名查。</b>{@code schedule_name} 这一列从 V1 就在库里，但读模型
+ *       一直没带它、列表也没有这个过滤轴：存着读不到，等于那句话在 API 上不成立。
  * </ol>
  *
  * <p>本类关掉优化调度节拍（{@code optimizer.scheduler-enabled=false}）：真实节拍每 60 秒
@@ -73,6 +82,8 @@ class SensitivityScheduleApiTests {
     private MockMvc mockMvc;
     @Autowired
     private SensitivityScheduleRepository repository;
+    @Autowired
+    private SensitivityScanRepository scanRepository;
     @Autowired
     private SensitivityScheduleDispatcher dispatcher;
 
@@ -289,6 +300,59 @@ class SensitivityScheduleApiTests {
         json(204, "DELETE", M + "/sensitivity-schedules/" + scheduleId, null);
         json(404, "GET", M + "/sensitivity-schedules/" + scheduleId, null);
         assertFalse(repository.findByName(NAME).isPresent(), "删掉之后按名字也不该查得到");
+    }
+
+    // ------------------------------------------------------------------ 5. 历史按调度项回查
+
+    /**
+     * {@code GET /sensitivity-scans?scheduleName=…}：调度项的历史。
+     *
+     * <p>这条钉的是 P4 验收里那句「停用后不再产生新扫描，但历史按 {@code schedule_name}
+     * 可查」——{@code schedule_name} 这一列从 V1 就在库里，而**读模型一直没带它**
+     * （{@code ScanSummary} 没有这个字段，列表也没有这个过滤轴）：存着但读不到，
+     * 于是控制台上的「这条调度项跑过几次」在 API 上根本不成立。
+     *
+     * <p>直接写两行扫描（而不是驱动一次真扫描）：本类要的是**读路径**，
+     * 驱动真扫描需要在 {@code paimon} catalog 下先建库建表，那会把一条读模型的断言
+     * 变成对扫描引擎的断言。写完即删，免得给别的用例留下降噪。
+     */
+    @Test
+    @Order(13)
+    void scanHistoryIsQueryableByScheduleName() throws Exception {
+        SensitivityScanEntity mine = scheduledScan("scan-" + NAME, NAME);
+        SensitivityScanEntity other = scheduledScan("scan-other", "another_schedule");
+        scanRepository.saveAll(List.of(mine, other));
+        try {
+            JsonNode filtered = json(200, "GET", M + "/sensitivity-scans?catalog=" + PREFIX
+                    + "&triggerType=SCHEDULE&scheduleName=" + NAME, null);
+            JsonNode items = filtered.get("items");
+            assertEquals(1, items.size(),
+                    () -> "按调度项名筛应当只有我们自己那一行，实际=" + items);
+            assertEquals(NAME, items.get(0).get("scheduleName").asString(),
+                    "读模型要带 scheduleName，否则控制台答不出「这条规则跑过没有」");
+            assertEquals("scan-" + NAME, items.get(0).get("id").asString());
+
+            // 不带该过滤轴时两行都在：`scheduleName` 是收窄，不是唯一来源
+            JsonNode all = json(200, "GET", M + "/sensitivity-scans?catalog=" + PREFIX
+                    + "&triggerType=SCHEDULE", null);
+            assertTrue(all.get("items").size() >= 2, "不带 scheduleName 时不该把别的调度项滤掉");
+        } finally {
+            scanRepository.deleteAll(List.of(mine, other));
+        }
+    }
+
+    /** 一行最小可用的「调度触发的扫描」：只填非空列，其余走默认值。 */
+    private static SensitivityScanEntity scheduledScan(String id, String scheduleName) {
+        SensitivityScanEntity entity = new SensitivityScanEntity();
+        entity.setId(id);
+        entity.setCatalogName(PREFIX);
+        entity.setScope(ScanScope.CATALOG.name());
+        entity.setMode(ScanMode.METADATA_ONLY.name());
+        entity.setExecution(ScanExecution.IN_PROCESS.name());
+        entity.setTriggerType(ScanTrigger.SCHEDULE.name());
+        entity.setScheduleName(scheduleName);
+        entity.setStatus(ScanStatus.SUCCEEDED.name());
+        return entity;
     }
 
     // ------------------------------------------------------------------ 工具

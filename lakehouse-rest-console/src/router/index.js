@@ -241,14 +241,14 @@ const routes = [
     meta: { title: '识别结果审核', group: '治理（Management API）', parent: 'sensitivityOverview' },
   },
   {
-    // 扫描调度（mockup `#schedules`，设计稿 §5.6.3 / §12 P4）。
+    // 扫描调度（mockup `#schedules`，设计稿 §5.6.2 / §5.6.3 / §12 P4）。
     //
-    // <p>**现在是过渡态**：调度已拍板改为 catalog 自建（与表优化调度同形），属 P4；
-    // 在第 6 张表 `lakehouse_sensitivity_schedule` 与 `/sensitivity-schedules` 的
-    // 5 条端点落地之前，这一屏给的是那行可复制的 curl（cron 由外部系统自己管）。
-    // 所以「没有新建调度按钮」的成因是「CRUD 还没到」，不是「设计里没有这一屏」。
-    // 它不进侧边菜单：一个只读的建议页摆在菜单里会被读成「调度功能在这」，
-    // 而运维真正要的是那行 curl——入口开在发起扫描屏的页尾。
+    // <p>**调度项 CRUD**：自建调度的第 6 张表 `lakehouse_sensitivity_schedule` 与
+    // `/sensitivity-schedules` 的五条端点已落地，因此这一屏是「列表 + 新建 / 编辑 /
+    // 启停 / 删除 + 按调度项回查历史」，不再是那行交给 Airflow 的 curl
+    // （两种形态并存会让「谁在触发」有两个答案）。
+    // 它不进侧边菜单：入口开在发起扫描屏的页尾——想定时的人此刻正站在那张表单前面；
+    // 单独列在菜单里会变成「打开就是一个和扫描历史无关的表」。
     path: '/sensitivity/schedules',
     name: 'sensitivitySchedules',
     component: () => import('@/views/SensitivitySchedulesView.vue'),

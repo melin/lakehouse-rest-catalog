@@ -99,7 +99,7 @@
 
         <!-- 执行位置：SPARK 置灰（属 P4）。默认档是「跟随 catalog 默认」而不是一个具体值——
              写死 IN_PROCESS 等于把 catalog 级 defaultExecution 作废，而三层覆盖正是
-             验收要走的路径（与调度建议屏产出的请求体同一口径）。 -->
+             验收要走的路径（与调度项那边的「跟随生效值」同一口径）。 -->
         <el-form-item>
           <template #label>
             <FieldLabel label="执行位置" tip="三层覆盖的生效值：全局 yml < catalog 的 defaultExecution < 本次请求。" />
@@ -170,12 +170,13 @@
       </el-button>
       <el-button @click="$router.push({ name: 'sensitivityOverview' })">取消</el-button>
       <!-- 一处「本来如此」而非「还没做」的入口：这一屏发起的是**手动**的一发
-           （triggerType=MANUAL），而「多久扫一次」不在这一屏决定。调度本身属 P4
-           （已拍板自建，与表优化调度同形），现在的调度屏是**过渡态的只读建议页**。
+           （triggerType=MANUAL），而「多久扫一次」由调度项决定，不在这张表单上。
+           自建调度已落地（第 6 张表 + `/sensitivity-schedules` 五条端点），
+           调度屏现在是 CRUD，不再是那行交给 Airflow 的 curl。
            把出口留在这里，是因为想定时的人此刻正站在这张表单前面。 -->
       <el-button @click="$router.push({ name: 'sensitivitySchedules' })">
         <el-icon><Timer /></el-icon>
-        <span class="pc-btn-text">改为定时？看调度建议</span>
+        <span class="pc-btn-text">要定时？去调度项</span>
       </el-button>
       <span class="pc-dim">
         需要 <code>CATALOG:ALTER</code> 权限（挂 SELECT 上等于任何能查表的人都能让服务端替他扫全库）。
@@ -231,7 +232,7 @@ const form = reactive({
    * 空串 = **省略 `execution` 字段**，让服务端按三层覆盖取值
    * （请求 > catalog 的 `defaultExecution` > 全局 `lakehouse.rest.sensitivity.scan.execution`）。
    * 这是默认档：写死 `IN_PROCESS` 等于把 catalog 级设置作废，而「不指定」恰恰是
-   * 验收要走的那条路径（与调度建议屏产出的请求体同一口径）。
+   * 验收要走的那条路径（与调度项那边的「跟随生效值」同一口径）。
    */
   execution: '',
   sampleSize: 2000,

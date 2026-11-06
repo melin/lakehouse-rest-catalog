@@ -386,6 +386,20 @@ export const ENDPOINTS = {
   listSensitivityScans: { method: 'GET', path: '/api/management/v1/sensitivity-scans' },
   getSensitivityScan: { method: 'GET', path: '/api/management/v1/sensitivity-scans/{scanId}' },
 
+  // --- 定时调度项（`#schedules` 屏；P4 的 catalog 自建调度）
+  // 一次只触发一次由两道闸门保证：`sensitivity.scan` 租约（只降噪）与 `next_run_at`
+  // 的条件更新（正确性）。控制台这一屏只做配置读写，**不解析 cron**——
+  // `next_run_at` 由服务端在写事务里算好并回传，前端另算一份只会在两边给出不同答案。
+  // 判权：读 `CATALOG:DESCRIBE`、写 `CATALOG:ALTER`；不带 catalog 的列表要服务管理员。
+  // `PUT` 每次都会重算 `next_run_at`（停用再启用 / 改 cron 都必须重排），并带
+  // `entityVersion` 乐观锁；**改名一律 400**（历史扫描按 `schedule_name` 回查）。
+  listSensitivitySchedules: { method: 'GET', path: '/api/management/v1/sensitivity-schedules' },
+  createSensitivitySchedule: { method: 'POST', path: '/api/management/v1/sensitivity-schedules' },
+  getSensitivitySchedule: { method: 'GET', path: '/api/management/v1/sensitivity-schedules/{id}' },
+  updateSensitivitySchedule: { method: 'PUT', path: '/api/management/v1/sensitivity-schedules/{id}' },
+  // 真删（不是停用）：停用是 `PUT enabled=false`，语义是「规则还在、暂时不跑」。
+  deleteSensitivitySchedule: { method: 'DELETE', path: '/api/management/v1/sensitivity-schedules/{id}' },
+
   // --- 命中清单（`#overview` 的「待人审」计数与 `#findings` 屏）
   // `catalog` **必填**：没有它这个端点就成了「一次读到所有 catalog 的识别结论」，
   // 而识别结论（类型 + 置信度）本身就是敏感信息。

@@ -36,11 +36,14 @@ import { del, get, post, put } from './client.js'
  *    「已受理」，响应体只有 `{scanId, catalog, status, execution}`，结果要另取。
  *    `execution` 省略 = 用生效的三层覆盖值（请求 > catalog 的 `defaultExecution` > 全局），
  *    但**服务端落库的是生效值**——界面上「我这次选的」与「实际跑的」可能是两回事。
- * 6. **`sensitivity-settings` 的 `entityVersion` 是 catalog 自己的版本号**
- *    （设置存在 catalog 行的 `properties` 里）。改扫描设置会让 catalog 的 etag
- *    一起变——同一个 catalog 的「改配置」与「改扫描设置」在服务端是一行上的冲突。
- *    留 `null` 表示跳过校验（服务端不强制），但控制台总是带上它。
- */
+   * 6. **`sensitivity-settings` 的 `entityVersion` 是 catalog 自己的版本号**
+   *    （设置存在 catalog 行的 `properties` 里）。改扫描设置会让 catalog 的 etag
+   *    一起变——同一个 catalog 的「改配置」与「改扫描设置」在服务端是一行上的冲突。
+   *    留 `null` 表示跳过校验（服务端不强制），但控制台总是带上它。
+   * 7. **调度项没有「改名」这个动作**（服务端 400），且 `next_run_at` 只能由服务端算。
+   *    前者因为历史扫描按 `schedule_name` 存字符串；后者因为「下次什么时候跑」在
+   *    两个地方各算一遍，迟早会给出不同答案而没人报错。见下面那一节的注释。
+   */
 export const sensitivityApi = {
   // ------------------------------------------------------------------ 敏感类型与探测器
 
@@ -108,11 +111,13 @@ export const sensitivityApi = {
    * `CATALOG:DESCRIBE`、为空时判 `requireServiceAdmin`——控制台这一屏始终带 catalog
    * （页面有 catalog 选择器），不带是刻意去查全库，普通治理员会拿到 403。
    *
-   * <p>`status` / `scope` / `triggerType` 三个过滤都在服务端做（先过滤再切页）。
+   * <p>`status` / `scope` / `triggerType` / `scheduleName` 四个过滤都在服务端做
+   * （先过滤再切页）。`scheduleName` 与 `triggerType=SCHEDULE` 一起用才是「这条调度项
+   * 的历史」；只给 `triggerType` 得到的是所有调度项的历史。
    */
-  listScans: ({ catalog = '', status = '', scope = '', triggerType = '', page = null, pageSize = null } = {}) =>
+  listScans: ({ catalog = '', status = '', scope = '', triggerType = '', scheduleName = '', page = null, pageSize = null } = {}) =>
     get('listSensitivityScans', {
-      params: { query: { catalog, status, scope, triggerType, page, pageSize } },
+      params: { query: { catalog, status, scope, triggerType, scheduleName, page, pageSize } },
     }),
 
   /** 单次扫描详情（含 `tablesFailed` 与 B 路线的 `executionNamespace` / `executionResource`）。 */
@@ -166,6 +171,58 @@ export const sensitivityApi = {
    * 不是「现在就给我一个结论」）。
    */
   releaseSuppression: (id) => del('releaseSensitivitySuppression', { params: { id } }),
+
+  // ------------------------------------------------------------------ 定时调度项
+
+  /**
+   * 调度项清单（**不分页**：量级是「几十条」，与类型清单同一取舍）。
+   *
+   * <p>`catalog` 为空 = 跨 catalog 查询，服务端判 `requireServiceAdmin`。
+   * 控制台这一屏默认带当前选中的 catalog，普通治理员因此只会拿到自己有权限的那部分。
+   */
+  listSchedules: ({ catalog = '' } = {}) =>
+    get('listSensitivitySchedules', { params: { query: { catalog } } }),
+
+  /** 单条调度项（编辑器打开时取一次当前值，与 `getSensitiveType` 同理）。 */
+  getSchedule: (id) => get('getSensitivitySchedule', { params: { id } }),
+
+  /**
+   * 新建。`body` 与服务端 `SensitivityScheduleUpsertRequest` 逐字对齐：
+   * `{name, cron, catalog, scope, database, table, mode, execution, sampleSize, enabled}`。
+   *
+   * <p>**同名 409**（唯一键撞车若不做前置检查会以 500 冒出来）。
+   * `cron` 写错在这里就是 400，而不是等到凌晨三点——`CronSpec` 在写入前解析一次，
+   * 永不匹配的表达式（如 2 月 30 日）同样拒收。
+   *
+   * <p>`execution` 留空 = 取三层覆盖的生效值**并落库**：调度项是长期对象，
+   * 「它会在哪跑」必须能在库里读出来，不能每次触发时再按当时的 catalog 设置算一遍。
+   */
+  createSchedule: (body) => post('createSensitivitySchedule', { body }),
+
+  /**
+   * 改一条调度项（整份替换，`entityVersion` 不匹配 409，控制台不自动重试）。
+   *
+   * <p><b>「整份替换」比字面更狠：缺省字段会落回默认值。</b>`scope` 缺省 → `CATALOG`、
+   * `mode` 缺省 → `METADATA_ONLY`、`sampleSize` 缺省 → 全局默认（那三处默认值是为
+   * `POST` 准备的）。因此**启停也不能只发 `{enabled}`**：那会把一条表级采样调度项
+   * 悄悄改成 catalog 级元数据档，还回 200。调用方要么整份回传，要么别调这一条。
+   *
+   * <p>三处只能由服务端决定、界面上不能"顺手"做的动作：
+   * - **改名一律 400**（`schedule_name` 是历史扫描的外键）；
+   * - **`next_run_at` 每次都由服务端重算**（停用再启用、改 cron 都必须重排，
+   *   否则会出现「刚改成每小时，它却按昨天的每天三点先跑了一次」）；
+   * - **`scope` 收窄回 catalog 级时，库名 / 表名由服务端置空**——前端不自己清，
+   *   因为「哪一层该留哪个字段」只有一处判定。
+   */
+  updateSchedule: (id, body) => put('updateSensitivitySchedule', { params: { id }, body }),
+
+  /**
+   * 删除一条调度项（204）。**真删，不是停用**：停用是 `PUT enabled=false`。
+   *
+   * <p>删掉之后历史扫描仍在（`schedule_name` 存的是字符串，不建外键），
+   * 只是再也回查不到「这条规则现在长什么样」——这正是「删除只影响配置、不影响审计」。
+   */
+  deleteSchedule: (id) => del('deleteSensitivitySchedule', { params: { id } }),
 
   // ------------------------------------------------------------------ 列级标签
 

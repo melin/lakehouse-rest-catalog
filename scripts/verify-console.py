@@ -94,7 +94,13 @@ spec/rest-catalog-open-api-iceberg.yaml）。路径写错时前端只表现为�
                   node 版本满足 vite 的 engines、且前端产物的 outDir 仍指向服务端静态资源目录。
                   这些是**构建链的契约**，删掉或改错都完全不报错——只是打出的 jar 悄悄没有
                   /console，或者干净环境里 node 版本不够而 npm run build 中途失败
- 29. 文档计数     文档里写的「N 组 M 项」与脚本实际一致——加校验组的人要顺手改文档，
+ 29. 敏感数据     分类分级各屏（总览 / 类型 / 标签 / 人审 / 调度）与表详情页的「敏感数据」页签。
+                  这一组的错法**全都不报错、只把话说错**：以标签为骨架渲染会让没扫过的列
+                  从页面消失、按 ordinal 比级别会把最严的两档算成最低、归属来源不分优先级
+                  会把「人工覆盖过」抹掉、把「有标签」当成「已保护」会宣称一条没生效的保护。
+                  调度那一屏另外钉三处：走 CRUD 而不是生成 curl（过渡态已作废）、启停必须
+                  整份回传请求体（只发 enabled 会静默改写范围与模式）、编辑态不提供改名
+30. 文档计数     文档里写的「N 组 M 项」与脚本实际一致——加校验组的人要顺手改文档，
                   而这条约定此前没人执行（真漂过一次：docs/console.md 37、实际 38）
 
 用法：
@@ -394,10 +400,11 @@ EXTENSION_ENDPOINTS = {
     #
     # 判权在控制器：类型表**归服务管理员**（这张表没有 catalog 列，类型是全局的）；
     # 扫描/标签/设置按 catalog 判 DESCRIBE（读）或 ALTER（写）。
-    # 有意**不**登记的两条（P4 才有）：`/sensitivity-scans/{id}/submission` 与
+    # 有意**不**登记的两条（P4 的第二半才有）：`/sensitivity-scans/{id}/submission` 与
     # `/items/{id}`——下推作业的回调口，调用方是 k8s 里的任务而不是控制台。
-    # `/sensitivity-schedules` 的 5 条同样属 P4（本轮拍板自建调度，但表与端点未建）。
-    # `decide` 与两条抑制项端点已在 P1 补齐，因此**从「不登记」翻成「登记」**。
+    # `/sensitivity-schedules` 的五条在调度骨架落地后**从「不登记」翻成「登记」**：
+    # `#schedules` 屏从「生成一行 curl」的过渡态改成了 CRUD，五条端点都被它调用。
+    # `decide` 与两条抑制项端点已在 P1 补齐，因此同样**从「不登记」翻成「登记」**。
     ("GET", "/api/management/v1/sensitive-types"): "敏感类型清单（内置 + 自定义，全局资源，判服务管理员）",
     ("POST", "/api/management/v1/sensitive-types"): "新建自定义类型（builtin 恒 false，判服务管理员）",
     ("GET", "/api/management/v1/sensitive-types/{typeCode}"): "敏感类型详情（含五层探测器配置与 configuredLayers）",
@@ -415,6 +422,15 @@ EXTENSION_ENDPOINTS = {
     ("DELETE", "/api/management/v1/column-tags/{id}"): "删标签（回 204；同时写抑制项，否则下次扫描会复活）",
     ("GET", "/api/management/v1/sensitivity-settings"): "catalog 级治理设置（含 resolved* 生效值；判 CATALOG:ALTER）",
     ("PUT", "/api/management/v1/sensitivity-settings"): "改 catalog 级设置（entityVersion = catalog 自己的版本号；变更进审计）",
+
+    # --- 定时调度项（`#schedules` 屏；P4 的 catalog 自建调度）
+    # 读 CATALOG:DESCRIBE、写 CATALOG:ALTER；列表不带 catalog 时要服务管理员。
+    # 五条都必须在控制台里真的被调用：`#schedules` 已从过渡态改成 CRUD。
+    ("GET", "/api/management/v1/sensitivity-schedules"): "调度项清单（不分页；按 catalog 过滤，跨 catalog 要服务管理员）",
+    ("POST", "/api/management/v1/sensitivity-schedules"): "新建调度项（同名 409；cron 写入前解析，非法 / 永不匹配 400）",
+    ("GET", "/api/management/v1/sensitivity-schedules/{id}"): "调度项详情（编辑器打开时取当前值；不存在 404，id 非数字 400）",
+    ("PUT", "/api/management/v1/sensitivity-schedules/{id}"): "改调度项（整份替换；改名 400；每次重算 next_run_at；entityVersion 乐观锁）",
+    ("DELETE", "/api/management/v1/sensitivity-schedules/{id}"): "删调度项（真删；停用是 PUT enabled=false，两者语义不同）",
 }
 
 problems = []
@@ -3573,6 +3589,43 @@ check("面板的三份数据源各取各的（标签是主干，findings 与策�
       and "policyApi" in sensitivity_panel
       and sensitivity_panel.count(".catch(() => null)") >= 2,
       "缺少容错分支：策略或待审条数读不到时整屏会变成错误态")
+
+# --- 29.12 调度项屏：CRUD 在，三处口径没被绕过 ------------------------------
+# 这一屏此前是「生成一行 curl，拿去写进 Airflow / k8s CronJob」的过渡态。自建调度
+# 落地后它变成 CRUD，而**两种形态不能并存**：同一件事有两个入口，语义却不同
+# （外部 CronJob 每个副本都会发一次；服务端这边靠租约 + `next_run_at` 的 CAS）。
+# 反向断言按 29.10 的口径排除注释行：说明文案里必然要提到「过渡态那个 curl」。
+SENS_SCHEDULES_VIEW = os.path.join(CONSOLE_DIR, "src/views/SensitivitySchedulesView.vue")
+sens_schedules_view = read(SENS_SCHEDULES_VIEW)
+schedule_code = "\n".join(
+    line for line in sens_schedules_view.split("\n")
+    if not line.strip().startswith(("<!--", "*", "//")))
+check("调度项屏走五条 CRUD 端点，不再生成一次性 curl（过渡态作废）",
+      all(name in schedule_code for name in ("listSchedules", "createSchedule", "getSchedule",
+                                             "updateSchedule", "deleteSchedule"))
+      and not re.search(r"\b(curlText|copyCurl|scanMethod)\b", schedule_code),
+      "缺少 CRUD 调用，或过渡态那段「可复制的一发」又回来了：两种形态并存时"
+      "「谁在触发」会有两个答案")
+
+# `PUT` 是整份替换，缺 `scope` / `mode` 时服务端分别落回 `CATALOG` / `METADATA_ONLY`
+# （那两处默认值是为 POST 准备的）。只发 `{enabled}` 会把一条表级采样调度项**悄悄**
+# 改成 catalog 级元数据档，还回 200——于是「我停用了一下」顺手改了扫描口径。
+check("启停回传整份请求体（只发 enabled 会静默改写范围与模式）",
+      re.search(r"updateSchedule\(\s*row\.id,\s*bodyOf\(", schedule_code) is not None,
+      "启停没有走 bodyOf(row, …)：缺省字段会被服务端按 CATALOG / METADATA_ONLY 落库")
+
+# 改名服务端 400（历史扫描按 schedule_name 存字符串）。界面不该提供这个入口：
+# 一个「点了就报错」的输入框，比一个只读的输入框更让人以为是自己填错了。
+check("编辑态的名称只读（服务端不支持改名）",
+      re.search(r'v-model="dialog\.name"\s*\n\s*:disabled="dialog\.editing"',
+                sens_schedules_view) is not None,
+      "名称在编辑态可改：保存会拿到 400，而错误看起来像「这个字段填错了」")
+
+# 验收断言「按 cron 触发一次、只触发一次」只能在扫描历史里被看见，
+# 而 `triggerType=SCHEDULE` 单独筛出来的是**所有**调度项的历史。
+check("调度历史按 scheduleName 收窄（否则「我配的这条跑了吗」答不出来）",
+      "scheduleName: historySchedule.value" in schedule_code,
+      "历史列表没有带 scheduleName：点某一条的「历史」看到的会是全部调度项的历史")
 
 # --- 29.12 新增的纯函数用例会被 `npm test` 通配纳入 -------------------------
 # `npm test` = `node --test "tools/*-tests/*.test.mjs"`。放错目录的用例

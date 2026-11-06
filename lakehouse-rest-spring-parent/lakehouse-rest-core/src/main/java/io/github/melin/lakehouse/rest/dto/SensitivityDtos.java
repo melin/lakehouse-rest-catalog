@@ -115,7 +115,14 @@ public final class SensitivityDtos {
                               String triggerType) {
     }
 
-    /** 扫描的读模型（列表与详情共用；列表页靠它带出 {@code execution} 与 {@code triggerType} 两列）。 */
+    /**
+     * 扫描的读模型（列表与详情共用；列表页靠它带出 {@code execution} 与 {@code triggerType} 两列）。
+     *
+     * <p>{@code scheduleName} 是「这条扫描由哪个调度项发起」的答案，只有
+     * {@code triggerType=SCHEDULE} 时才有值（列在迁移里从 V1 就有，但一直没进读模型——
+     * 于是「停用之后历史仍按 {@code schedule_name} 可查」这句话在 API 上不成立：
+     * 库里存着、没人读得到）。调度项控制台按它回查「这条规则到底跑过没有」。
+     */
     public record ScanSummary(String id,
                               String catalog,
                               String scope,
@@ -124,6 +131,7 @@ public final class SensitivityDtos {
                               String mode,
                               String execution,
                               String triggerType,
+                              String scheduleName,
                               String status,
                               int sampleSize,
                               int tablesScanned,

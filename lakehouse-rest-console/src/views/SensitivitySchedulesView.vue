@@ -2,168 +2,183 @@
   <div class="pc-page">
     <PageHeader
       title="扫描调度"
-      subtitle="把「多久扫一次」交给外部调度器（Airflow / k8s CronJob），这一页负责生成那一行可直接复制的发起命令。"
+      subtitle="catalog 自建调度：每条一行 cron，服务端到点发起扫描。多副本只触发一次，不依赖外部调度器。"
     >
       <template #actions>
-        <el-button size="small" :loading="loading" :disabled="!form.catalog" @click="refresh">
+        <el-button size="small" :loading="loading" @click="load">
           <el-icon><Refresh /></el-icon>
           <span class="pc-btn-text">刷新</span>
+        </el-button>
+        <el-button size="small" type="primary" @click="openCreate">
+          <el-icon><Plus /></el-icon>
+          <span class="pc-btn-text">新建调度项</span>
         </el-button>
       </template>
     </PageHeader>
 
     <!--
-      这一屏现在**是过渡态**：调度已拍板改为 catalog 自建（与表优化调度同形，属 P4），
-      因此在第 6 张表 `lakehouse_sensitivity_schedule` 与 `/sensitivity-schedules` 的
-      5 条端点落地之前，这里给的是「手动打一发」的那一行 curl —— 运维照着写进
-      Airflow / k8s CronJob 就能用，而不是等一个还不存在的调度项。
-      所以这一屏**没有「新建调度」按钮不是漏做**，而是「CRUD 还没到」：
-      判定依据是代码现状，表与端点建好那天，这一屏整块的形态要一起换。
+      这一屏的三条口径都必须写出来，因为三条的**错法都不报错**：
+      ① 「只触发一次」若只靠租约，一次慢扫描撞上租约到期就会双触发；
+      ② 若把「停用」做成删除，历史扫描里那些 schedule_name 还在、规则却查不到了；
+      ③ 若前端自己解析 cron 算「下次运行」，它展示的时刻与服务端真正触发的时刻
+         会在某一次改 cron 之后悄悄分叉（两边都不报错）。
     -->
     <TipAlert type="info" class="pc-gap">
-      <template #title>这一屏为什么没有「新建调度」</template>
-      调度已拍板改为 <strong>catalog 自建</strong>（与表优化调度同形），属 <strong>P4</strong>：
-      届时落第 6 张表 <code>lakehouse_sensitivity_schedule</code> 与
-      <code>/sensitivity-schedules</code> 的 5 条端点，这一屏改成调度项 CRUD。
-      在那之前它给的是<strong>过渡态</strong>的那一行命令——服务端只有一个发起入口
-      （<code>POST /sensitivity-scans</code>），cron 由外部系统自己管，照着下面的 curl
-      写进 Airflow / k8s CronJob 就能立刻用起来。代价与要动的地方见页面末尾那张卡。
+      <template #title>三条口径</template>
+      <p>
+        <strong>一次调度只触发一次。</strong>
+        两道闸门一起生效：在租约通道 <code class="pc-mono">sensitivity.scan</code> 上，
+        只有一台实例读调度表，它只降低重复概率；正确性落在
+        <code class="pc-mono">next_run_at</code> 的条件更新上——抢占成功的那一台把该值
+        推进到下一个 cron 点，且下一次从<strong>「现在」</strong>算（从旧值算会在进程重启后
+        变成追赶式连发）。
+      </p>
+      <p>
+        <strong>停用不等于删除。</strong>
+        停用是「规则还在、只是暂时不跑」，历史扫描照旧按
+        <code class="pc-mono">schedule_name</code> 可查；删除是「不再需要这条规则」。
+        另外<strong>改名不被支持</strong>（服务端 400）：扫描表存的是名字字符串而不是外键，
+        改名会让「这条扫描是哪条调度项触发的」失去指向。要换名字，新建一条、停用旧的。
+      </p>
+      <p>
+        <strong>下次运行时刻由服务端算。</strong>
+        新建、改 cron、重新启用三处都在服务端写事务里重算并回传，控制台不解析 cron——
+        「同一个表达式在两处各算一遍」迟早给出不同答案，而那一刻没有任何报错。
+      </p>
     </TipAlert>
 
-    <!-- ============================ 1. 调度建议（可复制的一发） ============================ -->
-    <PanelCard title="调度建议" hint="一行 curl，原样交给 Airflow / k8s CronJob">
-      <div class="pc-sched-form">
-        <div class="pc-sched-field">
-          <FieldLabel label="catalog" tip="必填。发起的扫描会读这个 catalog 下所有表的元数据" />
-          <el-select
-            v-model="form.catalog"
-            size="small"
-            filterable
-            placeholder="选择 catalog"
-            class="pc-sched-catalog"
-            @change="onCatalogChange"
-          >
-            <el-option
-              v-for="catalog in catalogNames"
-              :key="catalog"
-              :label="catalog"
-              :value="catalog"
-            />
-          </el-select>
-        </div>
+    <!-- ============================ 1. 调度项清单 ============================ -->
+    <PanelCard flush title="调度项" hint="停用的也列出来（它们仍持有历史）">
+      <template #actions>
+        <el-select
+          v-model="catalog"
+          size="small"
+          placeholder="catalog"
+          class="pc-sched-catalog"
+          @change="onCatalogChange"
+        >
+          <el-option label="全部 catalog" value="" />
+          <el-option v-for="name in catalogNames" :key="name" :label="name" :value="name" />
+        </el-select>
+      </template>
 
-        <div class="pc-sched-field">
-          <FieldLabel
-            label="范围"
-            tip="层级不靠「哪几个字段有值」反推：TABLE 必须给库名 + 表名，DATABASE 必须给库名，缺一个服务端回 400"
-          />
-          <el-select v-model="form.scope" size="small" class="pc-sched-scope">
-            <el-option label="整个 catalog" value="CATALOG" />
-            <el-option label="单个库" value="DATABASE" />
-            <el-option label="单张表" value="TABLE" />
-          </el-select>
-        </div>
-
-        <div v-if="form.scope !== 'CATALOG'" class="pc-sched-field">
-          <FieldLabel text="库" />
-          <el-input v-model="form.database" size="small" placeholder="database" class="pc-sched-input" />
-        </div>
-
-        <div v-if="form.scope === 'TABLE'" class="pc-sched-field">
-          <FieldLabel text="表" />
-          <el-input v-model="form.table" size="small" placeholder="table" class="pc-sched-input" />
-        </div>
-
-        <div class="pc-sched-field">
-          <FieldLabel
-            text="模式"
-            tip="元数据档只读列名 / 注释 / 类型（D1 + D2），不碰数据；采样档再加值层，会读前 N 行明文"
-          />
-          <el-select v-model="form.mode" size="small" class="pc-sched-mode">
-            <el-option label="仅元数据（D1 + D2）" value="METADATA_ONLY" />
-            <el-option label="采样（再加 D3 值层）" value="SAMPLED" />
-          </el-select>
-        </div>
-
-        <div class="pc-sched-field">
-          <FieldLabel
-            text="执行位置"
-            tip="省略该字段 = 跟着生效值走（请求 > catalog 的 defaultExecution > 全局）。显式写 SPARK 目前不可用：元数据档回 400、采样档回 501"
-          />
-          <el-select v-model="form.execution" size="small" class="pc-sched-exec">
-            <el-option label="跟随生效值（省略字段）" value="" />
-            <el-option label="进程内 IN_PROCESS" value="IN_PROCESS" />
-            <el-option label="下推 SPARK（属 P4，尚未可用）" value="SPARK" />
-          </el-select>
-        </div>
-      </div>
-
-      <div class="pc-sched-warn">
-        <el-icon><WarnTriangleFilled /></el-icon>
-        <span>
-          上面这些控件<strong>不落库</strong>：它们只决定下面那一行的内容。
-          真正决定「多久跑一次」的是调度器里的 cron，控制台不参与。
-        </span>
-      </div>
-
-      <div class="pc-sched-code">
-        <el-button class="pc-sched-copy" size="small" text @click="copyCurl">复制</el-button>
-        <pre class="pc-sched-pre"><code>{{ curlText }}</code></pre>
-      </div>
-
-      <div class="pc-sched-meta">
-        <div>
-          接口：<code class="pc-mono">{{ scanMethod }} {{ scanPath }}</code>
-          ，成功回 <strong>202</strong> 与
-          <code class="pc-mono">{scanId, catalog, status, execution}</code>
-          ——按 <code class="pc-mono">scanId</code> 轮询
-          <code class="pc-mono">GET /sensitivity-scans/{scanId}</code> 取结果。
-        </div>
-        <div>
-          权限：<code class="pc-mono">CATALOG:ALTER</code>。
-          cron 触发的执行体必须持有一个能发起扫描的凭据——
-          静态令牌（<code class="pc-mono">lakehouse.rest.auth.tokens</code>，给脚本用的降级入口）
-          或一个 client-credentials 主体，不能用某个人的登录令牌（它会过期，而 cron 不会）。
-        </div>
-        <div>
-          令牌用的是占位符 <code class="pc-mono">&lt;主体令牌&gt;</code>，页面不会把真实令牌写进这段文本。
-          服务端地址取自「连接设置」；留空时用当前控制台的地址（同源部署下两者相同）。
-        </div>
-      </div>
-
-      <div class="pc-sched-cron">
-        <span class="pc-dim">cron 只是个节拍示例：</span>
-        <code class="pc-mono">*/30 * * * *</code>
-        <span class="pc-dim">
-          「每 30 分钟发起一次」。<strong>「只触发一次」由调度器自己保证</strong>
-          （k8s CronJob 的 <code class="pc-mono">concurrencyPolicy: Forbid</code>、
-          Airflow 的 <code class="pc-mono">max_active_runs=1</code>），
-          服务端另有一道同表闸门兜底——两者互不假设（§13）。
-        </span>
-      </div>
-    </PanelCard>
-
-    <!-- ============================ 2. 最近由调度触发的扫描 ============================ -->
-    <!--
-      只读的建议页为什么还要一张表：§12 对 P4 的验收是「外部调度按 cron 触发一次扫描
-      且只触发一次」——这条断言只能在扫描历史里被看见。而 `triggerType` 正是为此存在的列
-      （§4.2 落库、`#overview` 的最近扫描已经带它）。没有这一块，「我把 Airflow 接上了」
-      就只能靠翻日志证明。
-    -->
-    <PanelCard flush class="pc-sched-list" title="最近由调度触发的扫描" hint="triggerType=SCHEDULE，最多 10 条">
       <ResourceState
         :loading="loading"
         :error="error"
         :empty="!loading && !error && !rows.length"
-        empty-text="还没有 SCHEDULE 触发的扫描。上面那一行 curl 跑通一次，这里就会出现第一条。"
+        empty-text="还没有调度项。点右上角「新建调度项」给这个 catalog 排一条 cron。"
       >
         <el-table v-loading="loading" :data="rows" size="small">
-          <el-table-column label="扫描" width="150">
+          <el-table-column label="调度项" min-width="180">
+            <template #default="{ row }">
+              <div class="pc-sched-name">{{ row.name }}</div>
+              <div class="pc-mono pc-dim pc-sched-id">{{ row.catalog }}</div>
+            </template>
+          </el-table-column>
+
+          <el-table-column label="cron" width="150">
+            <template #default="{ row }">
+              <code class="pc-mono">{{ row.cron }}</code>
+            </template>
+          </el-table-column>
+
+          <el-table-column label="范围" min-width="210">
+            <template #default="{ row }">
+              <el-tag size="small" type="info" class="pc-sched-scope-tag">{{ row.scope }}</el-tag>
+              <span class="pc-mono">{{ scopeText(row) }}</span>
+            </template>
+          </el-table-column>
+
+          <el-table-column label="模式" width="140">
+            <template #default="{ row }">
+              <span class="pc-dim">{{ row.mode }}</span>
+              <div v-if="row.mode === 'SAMPLED'" class="pc-dim pc-sched-sub">采样 {{ row.sampleSize }}</div>
+            </template>
+          </el-table-column>
+
+          <el-table-column label="执行" width="100">
+            <template #default="{ row }">
+              <el-tag size="small" :type="row.execution === 'SPARK' ? 'warning' : 'info'">
+                {{ executionLabel(row.execution) }}
+              </el-tag>
+            </template>
+          </el-table-column>
+
+          <el-table-column label="启用" width="80">
+            <template #default="{ row }">
+              <el-switch
+                :model-value="row.enabled"
+                size="small"
+                :loading="toggling === row.id"
+                @change="(value) => toggleEnabled(row, value)"
+              />
+            </template>
+          </el-table-column>
+
+          <el-table-column label="上次运行" width="140">
+            <template #default="{ row }">
+              <TimeText v-if="row.lastRunAt" :millis="row.lastRunAt" mode="relative" />
+              <span v-else class="pc-dim">没跑过</span>
+            </template>
+          </el-table-column>
+
+          <el-table-column label="下次运行" width="170">
+            <template #default="{ row }">
+              <TimeText v-if="row.enabled && row.nextRunAt" :millis="row.nextRunAt" />
+              <span v-else class="pc-dim">已停用</span>
+            </template>
+          </el-table-column>
+
+          <el-table-column label="操作" width="150" fixed="right">
+            <template #default="{ row }">
+              <el-button size="small" text type="primary" @click="openEdit(row)">编辑</el-button>
+              <el-button size="small" text @click="showHistory(row)">历史</el-button>
+              <el-button size="small" text type="danger" @click="confirmDelete(row)">删除</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+      </ResourceState>
+
+      <div class="pc-sched-foot">
+        <span class="pc-dim">
+          「全部 catalog」需要服务管理员（不带 catalog 的列表是一条跨 catalog 的路）；
+          普通治理员请先在上方选一个 catalog。
+        </span>
+      </div>
+    </PanelCard>
+
+    <!-- ============================ 2. 这条调度项的历史 ============================ -->
+    <!--
+      验收断言是「按 cron 触发一次且只触发一次」，而它只能在扫描历史里被看见。
+      因此这一块不是装饰：`triggerType=SCHEDULE` 单独筛出来的是**所有**调度项的历史，
+      点某一行「历史」才会带上 `scheduleName`——否则「我配的这条跑了吗」仍然答不出来。
+    -->
+    <PanelCard flush class="pc-sched-list" title="由调度触发的扫描" hint="triggerType=SCHEDULE，最多 10 条">
+      <template #actions>
+        <el-tag v-if="historySchedule" size="small" closable class="pc-sched-chip" @close="clearHistory">
+          只看 {{ historySchedule }}
+        </el-tag>
+      </template>
+
+      <ResourceState
+        :loading="historyLoading"
+        :error="historyError"
+        :empty="!historyLoading && !historyError && !historyRows.length"
+        empty-text="还没有调度触发的扫描。等到下一次 cron 点，或者把这条调度项的 cron 临时改成近几分钟。"
+      >
+        <el-table v-loading="historyLoading" :data="historyRows" size="small">
+          <el-table-column label="扫描" width="140">
             <template #default="{ row }">
               <code class="pc-mono">{{ shortId(row.id) }}</code>
             </template>
           </el-table-column>
-          <el-table-column label="范围" min-width="220">
+          <el-table-column label="调度项" width="170">
+            <template #default="{ row }">
+              <span v-if="row.scheduleName" class="pc-mono">{{ row.scheduleName }}</span>
+              <span v-else class="pc-dim">—</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="范围" min-width="200">
             <template #default="{ row }">
               <span class="pc-mono">{{ scopeText(row) }}</span>
             </template>
@@ -173,17 +188,12 @@
               <span class="pc-dim">{{ row.mode }}</span>
             </template>
           </el-table-column>
-          <el-table-column label="执行" width="110">
-            <template #default="{ row }">
-              <span class="pc-mono">{{ row.execution }}</span>
-            </template>
-          </el-table-column>
           <el-table-column label="状态" width="100">
             <template #default="{ row }">
               <el-tag :type="statusType(row.status)" size="small">{{ row.status }}</el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="扫到的表 / 列" width="130">
+          <el-table-column label="扫到的表 / 列" width="140">
             <template #default="{ row }">
               {{ row.tablesScanned }} / {{ row.columnsScanned }}
               <template v-if="row.tablesFailed">
@@ -194,68 +204,29 @@
           <el-table-column label="命中" width="80">
             <template #default="{ row }">{{ row.findingsCreated }}</template>
           </el-table-column>
-          <el-table-column label="结束" width="190">
+          <el-table-column label="发起人" width="170">
+            <template #default="{ row }">
+              <span class="pc-mono pc-dim">{{ row.triggeredBy }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="结束" width="180">
             <template #default="{ row }">
               <TimeText :millis="row.finishedAt || row.startedAt || row.createdAt" />
             </template>
           </el-table-column>
         </el-table>
       </ResourceState>
-      <div class="pc-sched-list-foot">
+
+      <div class="pc-sched-foot">
         <span class="pc-dim">
-          只取最近 10 条、不分页：这一页看的是「调度到底有没有在发」，不是完整的扫描历史
-          （完整历史在「敏感数据」总览的最近扫描里）。
+          只取最近 10 条、不分页：这一页看的是「调度到底有没有在发」，不是完整历史
+          （完整历史在「敏感数据」总览的最近扫描里）。调度触发的主体是
+          <code class="pc-mono">system:sensitivity-scheduler</code>，不是某个人。
         </span>
       </div>
     </PanelCard>
 
-    <!-- ============================ 3. 下推 SPARK 的对照卡（§11 明确要求） ============================ -->
-    <PanelCard
-      class="pc-sched-card"
-      title="下推 Spark 时，服务端把这一发变成什么"
-      hint="复用表优化任务链路的哪几段"
-    >
-      <el-table :data="SPARK_REUSE" size="small" class="pc-sched-table">
-        <el-table-column label="环节" width="230" prop="stage" />
-        <el-table-column label="复用程度" width="190">
-          <template #default="{ row }">
-            <span :class="row.degree.startsWith('原样') ? 'pc-sched-strong' : ''">{{ row.degree }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="说明" prop="note" />
-      </el-table>
-
-      <SectionTitle title="三处不能照搬的语义">
-        <TipNote>
-          这才是这一节的重点：机械部分可以复用，但扫描的输入输出与优化任务不是一回事。
-        </TipNote>
-      </SectionTitle>
-      <ol class="pc-sched-ol">
-        <li v-for="item in SPARK_DIFFERENT" :key="item.title">
-          <strong>{{ item.title }}</strong>
-          {{ item.note }}
-        </li>
-      </ol>
-
-      <TipAlert type="warning" class="pc-sched-subtip">
-        <template #title>两条由复用带来的硬约束</template>
-        <p>
-          <strong>fail-closed：</strong>给一个没配执行集群的 catalog 建
-          <code class="pc-mono">execution=SPARK</code> 的扫描必须回
-          <strong>400</strong>，不静默退回进程内——静默降级会让「我以为它在集群上跑」
-          变成一条查不出来的行为。
-        </p>
-        <p>
-          <strong>闸门共用：</strong>下推的扫描作业与优化批次共用执行集群那一把
-          <code class="pc-mono">maxConcurrentJobs</code>，没有独立的集群侧
-          <code class="pc-mono">maxConcurrentScans</code>——各开一把闸门时，两侧各自都在额度内，
-          合起来正好把同一台集群放到两份额度的驱动数，而这个总和没有任何地方在守。
-          代价是两类任务会互相排队，这是有意的。
-        </p>
-      </TipAlert>
-    </PanelCard>
-
-    <!-- ============================ 4. 并发闸门 ============================ -->
+    <!-- ============================ 3. 两道闸门与一条只能选进程内的路 ============================ -->
     <PanelCard
       class="pc-sched-card"
       title="cron 反复打全 catalog 会撞到什么"
@@ -274,269 +245,533 @@
         <template #title>同表闸门只对 scope=TABLE 生效</template>
         409 的判据是「这个 catalog 下这张表有没有在跑的扫描」，因此
         <strong>catalog 级与库级的重扫不会被挡</strong>——两次全量扫描会并行跑、
-        各自产出一份命中。服务端的原话是
-        「<em>a scan is already &lt;STATUS&gt; for &lt;c&gt;.&lt;d&gt;.&lt;t&gt; (scan &lt;id&gt;);
-        two scans of the same table would produce two pending findings for the same conclusion</em>」，
-        而 <code class="pc-mono">ACTIVE_STATUSES</code> 是
-        <code class="pc-mono">{PENDING, SUBMITTING, RUNNING}</code>。
-        要「同一张表不重复扫」，得自己在调度器里按表拆调度项。
+        各自产出一份命中。要「同一张表不重复扫」，得自己在调度器里按表拆调度项。
       </TipAlert>
-    </PanelCard>
-
-    <!-- ============================ 5. 换成自建调度要动什么 ============================ -->
-    <PanelCard
-      class="pc-sched-card"
-      title="换成 catalog 自建调度要动什么"
-      hint="这是另一条路线，不是这一屏还没做完"
-    >
-      <ol class="pc-sched-ol">
-        <li>
-          <strong>多出第 6 张表</strong>
-          <code class="pc-mono">lakehouse_sensitivity_schedule</code>：实体数 5 → 6，
-          DDL、快照与 Flyway 迁移基线都要跟着走一遍。
-        </li>
-        <li>
-          <strong>多出三个端点</strong>
-          <code class="pc-mono">GET / PUT / DELETE /sensitivity-schedules</code>。
-        </li>
-        <li>
-          <strong>登记表与计数要同步</strong>：控制台
-          <code class="pc-mono">src/api/endpoints.js</code> 加三条，
-          校验脚手架里的扩展端点白名单与「N 组 M 项」计数一起改。
-          <span class="pc-sched-failed">漏改会让守卫直接红</span>。
-        </li>
-        <li>
-          <strong>多一套分布式租约</strong>：多副本下
-          <code class="pc-mono">@Scheduled</code> 会变成 N 个副本各跑一次，
-          要么加租约、要么容忍重复触发。优化任务已经为「必须内跑」付过这份成本，
-          调度本身不必再付一遍——这就是推荐外部调度的理由。
-        </li>
-      </ol>
-
-      <SectionTitle title="那第 6 张表的字段（§5.6.3）">
-        <TipNote>
-          列在这里不是为了现在就建，而是为了让「自建调度」的代价可估：
-          它是一次建表 + 三个端点 + 一套租约，不是加个开关。
-        </TipNote>
-      </SectionTitle>
-      <ul class="pc-sched-fields">
-        <li v-for="field in SCHEDULE_FIELDS" :key="field.name">
-          <code class="pc-mono">{{ field.name }}</code>
-          <span class="pc-dim">{{ field.note }}</span>
-        </li>
-      </ul>
 
       <TipAlert type="info" class="pc-sched-subtip">
-        <template #title>一条刻意的省略</template>
-        这张表<strong>不带 <code class="pc-mono">last_scan_id</code></strong>：
-        一次调度可能因范围变化对应多条扫描，用「扫描表里
-        <code class="pc-mono">trigger_type=SCHEDULE</code> + <code class="pc-mono">schedule_name</code>」
-        回查更准，也避免两张表互相更新。
+        <template #title>执行位置里只有进程内可选</template>
+        <code class="pc-mono">execution=SPARK</code> 的下推链路（作业提交 / 探活 / 回调）
+        还没接，因此这一屏只提供「跟随生效值」与 <code class="pc-mono">IN_PROCESS</code>。
+        服务端对「建 SPARK 调度项」本身有两条 fail-closed 校验
+        （元数据档 400、catalog 不可派发 400），但即便建得出来，触发时也会在
+        <strong>发起扫描那一步</strong>拿到 501——那正是「配好了、凌晨三点什么都没发生」。
+        下推落地之后再放开这个选项。
       </TipAlert>
     </PanelCard>
 
-    <TipAlert type="info" class="pc-gap">
-      <template #title>哪些组合现在能跑通</template>
-      两种模式都能跑（<code class="pc-mono">METADATA_ONLY</code> 与
-      <code class="pc-mono">SAMPLED</code>：后者多读值层，采样要 <code class="pc-mono">CATALOG:ALTER</code>）。
-      真正还跑不通的是 <code class="pc-mono">execution=SPARK</code>，而且它<strong>不是一个状态码</strong>：
-      元数据档下服务端回 <strong>400</strong>（下推只读元数据的扫描没有收益），
-      采样档下回 <strong>501</strong>（下推链路属 P4，还没接）。
-      两者都是**显式拒绝而不是静默降级**——「我明明选了 SPARK」不该变成一条查不出来的行为。
-    </TipAlert>
+    <!--
+      对话框必须有 `destroy-on-close`：它是常驻 DOM 的，第二次打开（编辑另一条）时
+      表单会停在上一次的值上，保存就会把 A 调度项改写成 B——与「类型」那一屏同一个坑。
+    -->
+    <el-dialog
+      v-model="dialog.open"
+      :title="dialog.editing ? `编辑调度项：${dialog.name}` : '新建调度项'"
+      width="680px"
+      :close-on-click-modal="false"
+      destroy-on-close
+    >
+      <el-form label-position="top" size="small" class="pc-form">
+        <div class="pc-sched-row">
+          <el-form-item class="pc-sched-col">
+            <template #label>
+              <FieldLabel
+                label="名称"
+                tip="唯一。建成之后不能改名——历史扫描按这个名字回查触发来源。换名字请新建一条、停用旧的"
+              />
+            </template>
+            <el-input
+              v-model="dialog.name"
+              :disabled="dialog.editing"
+              placeholder="如 nightly_pii_scan"
+              class="pc-mono"
+            />
+            <div v-if="dialog.editing" class="pc-hint">
+              改名会让历史失去指向，因此这里只读。
+            </div>
+          </el-form-item>
+
+          <el-form-item class="pc-sched-col">
+            <template #label>
+              <FieldLabel
+                label="cron"
+                tip="5 段（分 时 日 月 周）或 6 段（秒 分 时 日 月 周）。不支持 Quartz 的 ? # L W，也不接受永不匹配的表达式（如 2 月 30 日）"
+              />
+            </template>
+            <el-input v-model="dialog.cron" placeholder="0 3 * * *" class="pc-mono" />
+            <div class="pc-hint">
+              原样保存你写的这一份（5 段不会被改写成 6 段）。时区取服务端所在时区。
+            </div>
+          </el-form-item>
+        </div>
+
+        <div class="pc-sched-row">
+          <el-form-item class="pc-sched-col">
+            <template #label>
+              <FieldLabel
+                label="catalog"
+                tip="扫描只读这个 catalog 下的表。写操作的判权按它来（CATALOG:ALTER）"
+              />
+            </template>
+            <el-select v-model="dialog.catalog" filterable placeholder="选择 catalog">
+              <el-option v-for="name in catalogNames" :key="name" :label="name" :value="name" />
+            </el-select>
+          </el-form-item>
+
+          <el-form-item class="pc-sched-col">
+            <template #label>
+              <FieldLabel
+                label="范围"
+                tip="层级不靠「哪几个字段有值」反推：TABLE 必须给库名 + 表名，DATABASE 必须给库名，服务端缺一个就 400"
+              />
+            </template>
+            <el-select v-model="dialog.scope">
+              <el-option label="整个 catalog" value="CATALOG" />
+              <el-option label="单个库" value="DATABASE" />
+              <el-option label="单张表" value="TABLE" />
+            </el-select>
+          </el-form-item>
+        </div>
+
+        <div v-if="dialog.scope !== 'CATALOG'" class="pc-sched-row">
+          <el-form-item class="pc-sched-col">
+            <template #label><FieldLabel label="库名" tip="scope=DATABASE / TABLE 必填" /></template>
+            <el-input v-model="dialog.database" placeholder="database" class="pc-mono" />
+          </el-form-item>
+
+          <el-form-item v-if="dialog.scope === 'TABLE'" class="pc-sched-col">
+            <template #label><FieldLabel label="表名" tip="scope=TABLE 必填" /></template>
+            <el-input v-model="dialog.table" placeholder="table" class="pc-mono" />
+          </el-form-item>
+        </div>
+
+        <div class="pc-sched-row">
+          <el-form-item class="pc-sched-col">
+            <template #label>
+              <FieldLabel
+                label="模式"
+                tip="元数据档只读列名 / 注释 / 类型（D1 + D2），不碰数据；采样档再加值层，会读前 N 行明文"
+              />
+            </template>
+            <el-select v-model="dialog.mode">
+              <el-option label="仅元数据（D1 + D2）" value="METADATA_ONLY" />
+              <el-option label="采样（再加 D3 值层）" value="SAMPLED" />
+            </el-select>
+          </el-form-item>
+
+          <el-form-item class="pc-sched-col">
+            <template #label>
+              <FieldLabel
+                label="执行位置"
+                tip="留空 = 跟随生效值（catalog 的 defaultExecution > 全局），服务端把生效值落库。SPARK 的下推链路还没接，因此这里不提供"
+              />
+            </template>
+            <el-select v-model="dialog.execution">
+              <el-option label="跟随生效值" value="" />
+              <el-option label="进程内 IN_PROCESS" value="IN_PROCESS" />
+              <!-- 保留这一项但禁用：它说明了「为什么不能选」，比直接消失更容易被理解。 -->
+              <el-option label="下推 SPARK（链路未接）" value="SPARK" disabled />
+            </el-select>
+          </el-form-item>
+        </div>
+
+        <div class="pc-sched-row">
+          <el-form-item v-if="dialog.mode === 'SAMPLED'" class="pc-sched-col">
+            <template #label>
+              <FieldLabel
+                label="采样量"
+                tip="每个候选列读前 N 行。上限由服务端配置（lakehouse.rest.sensitivity.scan.max-sample-size），超了 400 而不静默截断"
+              />
+            </template>
+            <el-input-number
+              v-model="dialog.sampleSize"
+              :min="1"
+              :step="100"
+              controls-position="right"
+              class="pc-sched-num"
+            />
+          </el-form-item>
+
+          <el-form-item class="pc-sched-col">
+            <template #label>
+              <FieldLabel
+                label="启用"
+                tip="停用只是不跑，规则与历史都在；要「不再需要这条规则」用删除"
+              />
+            </template>
+            <el-switch v-model="dialog.enabled" />
+          </el-form-item>
+        </div>
+      </el-form>
+
+      <TipAlert type="warning" class="pc-sched-dialog-tip">
+        <template #title>保存时服务端会做三件事</template>
+        <p>
+          按 cron 重算 <code class="pc-mono">next_run_at</code>（停用再启用也会重排，
+          否则「一启用就立刻跑一次」往往发生在深夜）；校验范围递进（更宽的层级会把库名 /
+          表名置空）；校验 <code class="pc-mono">SPARK</code> 的两条 fail-closed。
+        </p>
+        <p>
+          两个治理员同时改同一条时，<code class="pc-mono">entityVersion</code> 不匹配会回
+          <strong>409</strong>，控制台<strong>不自动重试</strong>——调度项的改动要么按你的，
+          要么按他的，得由人裁决。
+        </p>
+      </TipAlert>
+
+      <template #footer>
+        <el-button size="small" @click="dialog.open = false">取消</el-button>
+        <el-button size="small" type="primary" :loading="dialog.saving" @click="save">
+          保存
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 
 import FieldLabel from '@/components/FieldLabel.vue'
 import PageHeader from '@/components/PageHeader.vue'
 import PanelCard from '@/components/PanelCard.vue'
 import ResourceState from '@/components/ResourceState.vue'
-import SectionTitle from '@/components/SectionTitle.vue'
 import TimeText from '@/components/TimeText.vue'
 import TipAlert from '@/components/TipAlert.vue'
-import TipNote from '@/components/TipNote.vue'
-import { describe } from '@/api/endpoints.js'
-import { getBaseUrl } from '@/api/client.js'
+import { describeError } from '@/api/client.js'
 import { sensitivityApi } from '@/api/sensitivity.js'
-import { notifyError, notifySuccess, onConsoleRefresh } from '@/composables/index.js'
+import { confirmDanger, notifyError, notifySuccess, onConsoleRefresh } from '@/composables/index.js'
 import { session } from '@/store/session.js'
 
 /**
- * 扫描调度（mockup `#schedules`，设计稿 §5.6 / §11 L649 / §12 P4）。
+ * 扫描调度（mockup `#schedules`，设计稿 §5.6.2 / §5.6.3 / §12 P4）。
  *
- * <p><b>这一屏现在是过渡态。</b>调度已拍板改为 **catalog 自建**（与表优化调度同形，
- * §5.6.3），属 P4；在第 6 张表 `lakehouse_sensitivity_schedule` 与
- * `/sensitivity-schedules` 的 5 条端点落地之前，这里给的是**过渡态**的那一行 curl：
- * cron 由外部系统自己管，运维照着写进 Airflow / k8s CronJob 就能立刻用。
- * 所以「没有新建调度按钮」的成因是「CRUD 还没到」，不是「设计里没有这一屏」——
- * 表与端点建好那天，这一屏整块形态要一起换（`docs/console.md` 那条也标了目标形态）。
+ * <p><b>它是 CRUD，不是「生成一行 curl」。</b>调度已拍板 catalog 自建：第 6 张表
+ * `lakehouse_sensitivity_schedule` + `/sensitivity-schedules` 的五条端点都已经落地，
+ * 于是「多久扫一次」不再交给外部调度器，而是这一屏的一行 cron。过渡态那一版
+ * （粘贴 curl 进 Airflow / k8s CronJob）随之作废——留着会让同一件事有两个入口，
+ * 而两个入口的语义并不相同（外部 CronJob 每台都会发一次，服务端这里靠租约 + CAS）。
  *
- * <p>它与「识别结果审核」里那两枚处置按钮的处理方式**必须分开讲**：那里的成因是
- * 「还没通」（P1 已通，按钮现在可点），这里的成因是「调度能力还没建」。
- * 同一句「按钮是灰的」，两种成因不能共用一句解释。
+ * <h3>三处「不能在前端做」的事</h3>
+ * - **不解析 cron、不自己算下次运行时刻**：`next_run_at` 由服务端在写事务里算好回传。
+ *   两边各算一遍，改 cron 之后就会给出不同答案，而那一刻没有任何报错。
+ * - **不提供改名**：`lakehouse_sensitivity_scan.schedule_name` 存的是名字字符串
+ *   （不建外键，§4.6），改名会让历史扫描失去指向。编辑器里名称只读，
+ *   文案要写清「换名字的正确做法」。
+ * - **不把「停用」实现成删除**：停用是 `PUT enabled=false`（规则还在），删除是真删。
+ *   两者在清单上必须长得不一样，否则「我删了它怎么还在」就成了一个正确行为被当成 bug。
  *
- * <p><b>唯一的服务端数据是「最近由 `SCHEDULE` 触发的扫描」。</b>只读建议页本可以一个字都不取，
- * 但那样「我把 Airflow 接上了」就只能靠翻日志证明——而 §12 对 P4 的验收断言正是
- * 「外部调度按 cron 触发一次扫描且只触发一次」，它只能在扫描历史里被看见。
- * `trigger_type` 这一列在 §4.2 就落库，`#overview` 的最近扫描也带着它，这里只是把范围收窄到
- * `SCHEDULE`。判权随后端走 `CATALOG:DESCRIBE`（读历史，与读 catalog 本身同判法）。
+ * <h3>PUT 是整份替换，这是这一屏最容易踩的一脚</h3>
+ * 启停走的是 `PUT`，而它**不是**逐字段语义：`scope` / `mode` / `sampleSize` 缺省时
+ * 分别落回 `CATALOG` / `METADATA_ONLY` / 全局默认。因此「只发 `{enabled:false}`」
+ * 会把一条表级采样调度项悄悄改成 catalog 级元数据档，还回 200。
+ * 所以 `toggleEnabled` 必须先按当前行拼出完整请求体（`bodyOf`），只覆盖 `enabled`。
  *
- * <p><b>那段 curl 里的路径不是抄来的</b>：它由 `describe('startSensitivityScan')`
- * 从端点登记表取出，因此服务端改路径时这一页跟着变。同理，`triggerType` 写的是
- * <strong>`SCHEDULE`</strong>——`ScanTrigger` 的三个值是 `MANUAL` / `LIFECYCLE` / `SCHEDULE`，
- * 写成 `SCHEDULED` 服务端会回 400（`UnknowntriggerType …; supported: MANUAL, LIFECYCLE, SCHEDULE`）。
+ * <h3>为什么还要一块「由调度触发的扫描」</h3>
+ * §12 对 P4 的验收是「按 cron 触发一次、且只触发一次」，它只能在扫描历史里被看见。
+ * `triggerType=SCHEDULE` 筛出来的是**所有**调度项的历史，所以每一行还带一个「历史」
+ * 动作，用 `scheduleName` 再收窄一次——这正是读模型里补 `scheduleName` 的原因。
  */
-const [scanMethod, scanPath] = describe('startSensitivityScan').split(' ')
+const catalogNames = computed(() => (session.state.catalogs || []).map((item) => item.name))
 
-// ------------------------------------------------------------------ 表单（只影响可复制的那一行）
+/** 列表过滤用的 catalog（空 = 跨 catalog，需要服务管理员）。 */
+const catalog = ref(session.state.selectedCatalog || '')
 
-const form = reactive({
-  catalog: session.state.selectedCatalog || '',
-  scope: 'CATALOG',
-  database: '',
-  table: '',
-  mode: 'METADATA_ONLY',
-  /**
-   * 空串 = **省略 `execution` 字段**，让服务端按三层覆盖取值
-   * （请求 > catalog 的 `defaultExecution` > 全局 `lakehouse.rest.sensitivity.scan.execution`）。
-   * 这一档是默认值：调度器是长期跑的东西，写死一个位置等于把 catalog 级设置作废。
-   */
-  execution: '',
-})
-
-const catalogNames = computed(() => (session.state.catalogs || []).map((catalog) => catalog.name))
-
-function onCatalogChange(value) {
-  // 写回全局上下文，与「敏感标签」等页同一口径：catalog 是控制台的核心上下文。
-  session.selectCatalog(value || '')
-  load()
-}
-
-// ------------------------------------------------------------------ 可复制的那一段
-
-/**
- * 服务端地址。默认部署是**同源**（控制台由服务端自己托管），此时
- * `getBaseUrl()` 是空串，真正的地址就是当前页面的 origin——把 origin 写出来比
- * 留一个 `<server-url>` 占位更有用，因为它就是对的。只有在「连接设置」里显式配了
- * 别处，才用那个值。
- */
-const baseUrl = computed(() => {
-  const configured = getBaseUrl()
-  if (configured) {
-    return configured
-  }
-  return typeof window === 'undefined' ? 'http://<catalog-host>:8080' : window.location.origin
-})
-
-/**
- * 请求体。四个显式填空的字段是有意的：服务端**不靠「哪几个字段有值」反推层级**
- * （表名恰好等于库名这种巧合不该改语义），所以 `database` / `table` 该空的也要出现。
- */
-const bodyJson = computed(() => {
-  const payload = {
-    catalog: form.catalog || '<catalog>',
-    scope: form.scope,
-    database: form.scope === 'CATALOG' ? '' : form.database.trim(),
-    table: form.scope === 'TABLE' ? form.table.trim() : '',
-    mode: form.mode,
-  }
-  if (form.execution) {
-    payload.execution = form.execution
-  }
-  // 恒写 SCHEDULE（不是 SCHEDULED）：这一屏产出的每一发都是定时触发的。
-  payload.triggerType = 'SCHEDULE'
-  // 紧凑单行 JSON：`-d` 里换行虽然合法，但复制出来还要再折一遍才能一眼看完。
-  return JSON.stringify(payload)
-})
-
-const curlText = computed(() =>
-  [
-    `curl -sS -X ${scanMethod} '${baseUrl.value}${scanPath}' \\`,
-    `  -H 'Authorization: Bearer <主体令牌>' \\`,
-    `  -H 'Content-Type: application/json' \\`,
-    `  -d '${bodyJson.value}'`,
-  ].join('\n'),
-)
-
-async function copyCurl() {
-  try {
-    await writeClipboard(curlText.value)
-    notifySuccess('已复制发起命令')
-  } catch {
-    notifyError(new Error('浏览器拒绝了剪贴板访问，请手动选中这段文本复制'))
-  }
-}
-
-/**
- * 写剪贴板。`navigator.clipboard` 只在安全上下文（https 或 localhost）可用，
- * 而这一屏产的片段正好是给内网 http 部署用的——所以留一条 `execCommand` 的退路，
- * 与 `components/CopyText.vue` 同一套做法（那边是行内小段文本，这里是多行代码块，
- * 因此没有直接复用组件）。
- */
-async function writeClipboard(text) {
-  if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(text)
-    return
-  }
-  const area = document.createElement('textarea')
-  area.value = text
-  area.style.position = 'fixed'
-  area.style.opacity = '0'
-  document.body.appendChild(area)
-  area.select()
-  const ok = document.execCommand('copy')
-  document.body.removeChild(area)
-  if (!ok) {
-    throw new Error('execCommand copy failed')
-  }
-}
-
-// ------------------------------------------------------------------ 最近由调度触发的扫描
+// ------------------------------------------------------------------ 清单
 
 const loading = ref(false)
 const error = ref('')
 const rows = ref([])
+const toggling = ref(null)
 
 async function load() {
-  if (!form.catalog) {
-    rows.value = []
-    return
-  }
   loading.value = true
   error.value = ''
   try {
-    const payload = await sensitivityApi.listScans({
-      catalog: form.catalog,
-      triggerType: 'SCHEDULE',
-      page: 1,
-      pageSize: 10,
-    })
+    const payload = await sensitivityApi.listSchedules({ catalog: catalog.value })
     rows.value = payload?.items || []
   } catch (cause) {
     error.value = describeError(cause)
+    rows.value = []
   } finally {
     loading.value = false
   }
 }
 
-function refresh() {
-  return form.catalog ? load() : Promise.resolve(null)
+function onCatalogChange(value) {
+  // 只在选中具体 catalog 时写回全局上下文：catalog 是控制台的核心上下文，但
+  // 「全部 catalog」只是这一屏的过滤视图——把它写进全局会让别的页面失去上下文
+  // （它们大多按选中项取数，选空之后要么 400 要么 403）。
+  if (value) {
+    session.selectCatalog(value)
+  }
+  // 换 catalog 时清掉「只看某条调度项」：那个名字属于上一个 catalog，
+  // 留着会让历史列表永远为空，而看起来像「这条调度项从没跑过」。
+  historySchedule.value = ''
+  load()
+  loadHistory()
 }
 
-onMounted(refresh)
-onConsoleRefresh(refresh)
+// ------------------------------------------------------------------ 启停
+
+/**
+ * 把一条读模型拼成 `PUT` 的整份请求体。
+ *
+ * <p>**不要在这上面偷懒**：`PUT` 缺 `scope` / `mode` 时服务端会分别按 `CATALOG` /
+ * `METADATA_ONLY` 处理（那两处默认值是为 `POST` 准备的），于是「只发 enabled」
+ * 会改写这条规则的范围与模式，而且返回 200。请求体一律从当前行整份拼出来。
+ */
+function bodyOf(row, overrides = {}) {
+  const body = {
+    name: row.name,
+    cron: row.cron,
+    catalog: row.catalog,
+    scope: row.scope,
+    database: row.database || '',
+    table: row.table || '',
+    mode: row.mode,
+    execution: row.execution || '',
+    sampleSize: row.sampleSize,
+    enabled: row.enabled,
+    entityVersion: row.entityVersion,
+    ...overrides,
+  }
+  return body
+}
+
+async function toggleEnabled(row, value) {
+  toggling.value = row.id
+  try {
+    // 传整份而不是 `{enabled}`：见 bodyOf 的注释（缺省值会静默改写范围与模式）。
+    // 每次 PUT 都会重算 next_run_at，因此「重新启用」不会立刻触发一次旧时刻。
+    await sensitivityApi.updateSchedule(row.id, bodyOf(row, { enabled: value }))
+    notifySuccess(value ? `已启用 ${row.name}` : `已停用 ${row.name}（历史仍在）`)
+    await load()
+  } catch (cause) {
+    notifyError(cause)
+    // 失败时重新拉一次：`el-switch` 用的是 `:model-value`（单向绑定），
+    // 界面上的位置由 `row.enabled` 决定，重新拉列表就是最准确的对账。
+    await load()
+  } finally {
+    toggling.value = null
+  }
+}
+
+// ------------------------------------------------------------------ 新建 / 编辑
+
+const dialog = reactive({
+  open: false,
+  editing: false,
+  saving: false,
+  id: null,
+  name: '',
+  cron: '0 3 * * *',
+  catalog: '',
+  scope: 'CATALOG',
+  database: '',
+  table: '',
+  mode: 'METADATA_ONLY',
+  execution: '',
+  sampleSize: 2000,
+  enabled: true,
+  entityVersion: 0,
+})
+
+function openCreate() {
+  dialog.editing = false
+  dialog.id = null
+  dialog.name = ''
+  dialog.cron = '0 3 * * *'
+  dialog.catalog = catalog.value || session.state.selectedCatalog || ''
+  dialog.scope = 'CATALOG'
+  dialog.database = ''
+  dialog.table = ''
+  dialog.mode = 'METADATA_ONLY'
+  dialog.execution = ''
+  dialog.sampleSize = 2000
+  dialog.enabled = true
+  dialog.entityVersion = 0
+  dialog.open = true
+}
+
+/**
+ * 打开编辑。取一次详情而不是直接用列表那一行：列表是几百毫秒前的快照，
+ * 而编辑器要的是「这一份配置的当前值」——顺带也让 `getSensitivitySchedule` 真的被调用，
+ * 而不是一条没人用的端点声明。
+ */
+async function openEdit(row) {
+  try {
+    const detail = await sensitivityApi.getSchedule(row.id)
+    applyToDialog(detail, true)
+    dialog.open = true
+  } catch (cause) {
+    notifyError(cause)
+  }
+}
+
+function applyToDialog(detail, editing) {
+  dialog.editing = editing
+  dialog.id = detail.id
+  dialog.name = detail.name || ''
+  dialog.cron = detail.cron || ''
+  dialog.catalog = detail.catalog || ''
+  dialog.scope = detail.scope || 'CATALOG'
+  dialog.database = detail.database || ''
+  dialog.table = detail.table || ''
+  dialog.mode = detail.mode || 'METADATA_ONLY'
+  // SPARK 不在下拉的可选项里（链路未接）。库里若已有这样的行，原样带出来而不是
+  // 悄悄改成 IN_PROCESS：编辑一条 SPARK 调度项时把它改成别的执行位置，是一次
+  // 用户没要求的改动；要看它、就得看见它。
+  dialog.execution = detail.execution === 'SPARK' ? 'SPARK' : (detail.execution || '')
+  dialog.sampleSize = detail.sampleSize || 2000
+  dialog.enabled = detail.enabled !== false
+  dialog.entityVersion = detail.entityVersion || 0
+}
+
+/** 换层级时清掉不该留的字段：界面与「保存后服务端会置空」的表现要一致。 */
+watch(() => dialog.scope, (scope) => {
+  if (scope === 'CATALOG') {
+    dialog.database = ''
+    dialog.table = ''
+  } else if (scope === 'DATABASE') {
+    dialog.table = ''
+  }
+})
+
+/**
+ * 保存。
+ *
+ * <p>别名 / cron / 范围三项先在本地挡一道，但**判定以服务端为准**：
+ * 这里的校验只为让「少填一个字段」不变成一次往返。
+ */
+async function save() {
+  const name = dialog.name.trim()
+  if (!dialog.editing && !name) {
+    notifyError(new Error('名称不能为空'))
+    return
+  }
+  if (!dialog.cron.trim()) {
+    notifyError(new Error('cron 不能为空'))
+    return
+  }
+  if (!dialog.catalog) {
+    notifyError(new Error('请选择 catalog'))
+    return
+  }
+  if (dialog.scope !== 'CATALOG' && !dialog.database.trim()) {
+    notifyError(new Error(dialog.scope === 'TABLE' ? '表级范围要填库名与表名' : '库级范围要填库名'))
+    return
+  }
+  if (dialog.scope === 'TABLE' && !dialog.table.trim()) {
+    notifyError(new Error('表级范围要填库名与表名'))
+    return
+  }
+
+  const body = {
+    name: dialog.editing ? dialog.name : name,
+    cron: dialog.cron.trim(),
+    catalog: dialog.catalog,
+    scope: dialog.scope,
+    database: dialog.database.trim(),
+    table: dialog.table.trim(),
+    mode: dialog.mode,
+    execution: dialog.execution,
+    sampleSize: dialog.mode === 'SAMPLED' ? dialog.sampleSize : undefined,
+    enabled: dialog.enabled,
+  }
+
+  dialog.saving = true
+  try {
+    if (dialog.editing) {
+      body.entityVersion = dialog.entityVersion
+      await sensitivityApi.updateSchedule(dialog.id, body)
+      notifySuccess(`${dialog.name} 已保存，下次运行时刻已按新 cron 重排`)
+    } else {
+      await sensitivityApi.createSchedule(body)
+      notifySuccess(`${name} 已创建，下次运行时刻由服务端算好`)
+    }
+    dialog.open = false
+    // 新建的调度项可能属于另一个 catalog：把列表切过去，否则「保存成功但列表里没有」
+    // 会被当成失败（切过来还会顺带把它的历史一起刷出来）。
+    if (body.catalog && body.catalog !== catalog.value) {
+      catalog.value = body.catalog
+      session.selectCatalog(body.catalog)
+      historySchedule.value = ''
+    }
+    await load()
+    await loadHistory()
+  } catch (cause) {
+    notifyError(cause)
+  } finally {
+    dialog.saving = false
+  }
+}
+
+async function confirmDelete(row) {
+  const ok = await confirmDanger({
+    title: '删除调度项',
+    target: `${row.name}（${row.cron}）`,
+    detail: '删除是真删：这条规则不再跑。历史扫描仍在（按名字存的字符串），'
+      + '但之后再也查不到「这条规则当时长什么样」。只是暂时不想跑，请用「停用」。',
+  })
+  if (!ok) return
+  try {
+    await sensitivityApi.deleteSchedule(row.id)
+    notifySuccess(`${row.name} 已删除`)
+    if (historySchedule.value === row.name) {
+      historySchedule.value = ''
+    }
+    await load()
+    await loadHistory()
+  } catch (cause) {
+    notifyError(cause)
+  }
+}
+
+// ------------------------------------------------------------------ 历史
+
+const historyLoading = ref(false)
+const historyError = ref('')
+const historyRows = ref([])
+/** 只看某一条调度项的历史（空 = 这个 catalog 下所有调度项）。 */
+const historySchedule = ref('')
+
+async function loadHistory() {
+  if (!catalog.value) {
+    // 跨 catalog 的扫描历史要服务管理员；没有选中 catalog 时不主动去撞 403。
+    historyRows.value = []
+    historyError.value = ''
+    return
+  }
+  historyLoading.value = true
+  historyError.value = ''
+  try {
+    const payload = await sensitivityApi.listScans({
+      catalog: catalog.value,
+      triggerType: 'SCHEDULE',
+      scheduleName: historySchedule.value,
+      page: 1,
+      pageSize: 10,
+    })
+    historyRows.value = payload?.items || []
+  } catch (cause) {
+    historyError.value = describeError(cause)
+    historyRows.value = []
+  } finally {
+    historyLoading.value = false
+  }
+}
+
+function showHistory(row) {
+  historySchedule.value = row.name
+  loadHistory()
+}
+
+function clearHistory() {
+  historySchedule.value = ''
+  loadHistory()
+}
 
 // ------------------------------------------------------------------ 展示辅助
 
-function shortId(id) {
-  const text = String(id || '')
-  return text.length > 12 ? `${text.slice(0, 12)}…` : text
-}
-
-/** 范围列：catalog 级只显示 catalog 名，库 / 表级补上后半段（与 `ScanSummary` 的三段字段对应）。 */
 function scopeText(row) {
   const parts = [row.catalog || '']
   if (row.database) {
@@ -546,6 +781,21 @@ function scopeText(row) {
     parts.push(row.table)
   }
   return parts.filter(Boolean).join('.')
+}
+
+function executionLabel(value) {
+  if (value === 'SPARK') {
+    return '下推 Spark'
+  }
+  if (value === 'IN_PROCESS') {
+    return '进程内'
+  }
+  return value || '进程内'
+}
+
+function shortId(id) {
+  const text = String(id || '')
+  return text.length > 12 ? `${text.slice(0, 12)}…` : text
 }
 
 function statusType(status) {
@@ -564,82 +814,22 @@ function statusType(status) {
   }
 }
 
-// ------------------------------------------------------------------ 静态对照内容（全部逐字来自 §5.6.5 / §5.6.3）
+// ------------------------------------------------------------------ 生命周期
 
-/** 下推 Spark 时的复用边界（§5.6.5 的表格）。 */
-const SPARK_REUSE = [
-  {
-    stage: '执行集群配置与客户端',
-    degree: '原样复用',
-    note: 'resolve / clientFor / dispatchable 全部按 catalog 生效；扫描不引入第二套「集群配置」概念，并发闸门也共用同一把 maxConcurrentJobs。',
-  },
-  {
-    stage: '探活（五问）',
-    degree: '原样复用',
-    note: '它问的是「这个集群能不能收下并跑起一个 Job」，与 Job 内容无关；第 4 步 dry-run 用的仍是同一份报文构造。',
-  },
-  {
-    stage: 'k8s 报文骨架',
-    degree: '复用骨架，换容器名',
-    note: '前缀 paimon-scan-、容器名 scanner；backoffLimit=0 / restartPolicy=Never / imagePullSecrets / serviceAccountName 逐条照抄。TTL 与超时取扫描自己那组（scanJobTimeoutSeconds），不读优化那组。',
-  },
-  {
-    stage: 'Spark 参数',
-    degree: '复用注入位置，取值独立',
-    note: '同一份注入点实现，但读的是扫描那一组参数（scan_spark_conf）——优化任务的参数改了不该悄悄改变扫描的资源诉求。',
-  },
-  {
-    stage: '提交器的幂等 / 状态折算 / 取消',
-    degree: '原样复用',
-    note: '「先查同名再建」「先看 conditions 再看计数」「Background 删除」三条判据都不含优化语义。',
-  },
-  {
-    stage: '调度租约',
-    degree: '复用模式，新增一个通道',
-    note: 'sensitivity.dispatch 必须登记进通道清单，否则多副本下每台都会提交一遍。',
-  },
-  {
-    stage: '回调客户端',
-    degree: '复用形状，另开两个端点',
-    note: '令牌换成 X-Sensitivity-Scan-Token（作用域 = 这一次扫描），端点换成「清单」与「结果」两个。',
-  },
-  {
-    stage: 'Spark 会话构建',
-    degree: '抽公共类，不许复制',
-    note: '三套配置（Paimon 的 data-token、Iceberg 的 access-delegation、Lance 的 parent + Authorization）与镜像里 arrow 的类路径排序都是编译器看不见的约定；复制一份就是下次升级 connector 时必分叉。',
-  },
-  {
-    stage: '镜像',
-    degree: '同一个优化器镜像',
-    note: '扫描入口是同一个 jar 里的另一个 main class（SensitivityScannerJob）：三种格式的运行时与 Lance 的 arrow 排序白拿，单独打镜像省下的体积换不来那两处修复的分叉风险。',
-  },
-]
+function refresh() {
+  return Promise.all([load(), loadHistory()])
+}
 
-/** 三处「机械部分能复用、语义不能照搬」的地方（§5.6.5）。 */
-const SPARK_DIFFERENT = [
-  {
-    title: '一个扫描 = 一个 Job，不要「组批」。',
-    note:
-      '优化任务的批次是「N 张表的集合」，因为每张表的压缩独立且失败可分。扫描没有这个对应物：' +
-      '同一张表同时只允许一个 RUNNING 扫描，而组批会让两个调度周期各自抓走同一张表、落在两个 Job 里——互斥就被绕过了。' +
-      '表内并行由任务内部做（逐表 try/catch + 逐表回调），不靠多开 Job。',
-  },
-  {
-    title: '「没结果」必须上报成结果。',
-    note:
-      '优化任务里「k8s 已终态但某张表没上报」按失败处理。扫描里「没上报」有两种含义——扫了但没命中、压根没跑——' +
-      '而覆盖率正是靠这个区分才成立。因此任务必须对每张表回一条 item，哪怕 findings=0、哪怕该表被跳过。',
-  },
-  {
-    title: '明文的出网口只允许一条。',
-    note:
-      '优化任务全程只搬文件、不读内容。扫描任务的收口要强一档：原始行不出 Pod，回调只带打码样本与命中率；' +
-      '并且任务侧禁止把样本值写进日志——优化任务的日志里可以有语句和指标，扫描的日志里不能有值。',
-  },
-]
+onMounted(refresh)
+onConsoleRefresh(refresh)
 
-/** 四道闸门（§5.6.4 / §5.6.5 / 本次实现）。 */
+/** 四道闸门（§5.6.4 / §5.6.5）。 */
 const GATES = [
+  {
+    gate: '同一条调度项',
+    detail:
+      '一个 cron 点只触发一次：租约只让一台实例读表，正确性靠 next_run_at 的条件更新；抢占时就把该值推进到下一个 cron 点，下一次从「现在」算。',
+  },
   {
     gate: '同一张表',
     detail:
@@ -651,31 +841,15 @@ const GATES = [
       '默认 2，超了返 429。默认值来自 lakehouse.rest.sensitivity.scan.max-concurrent，可由 catalog 的 maxConcurrentScans 覆盖，**单次请求不能覆盖**（它是资源保护，不是本次请求的参数）。',
   },
   {
-    gate: '同一 catalog（B 路线）',
-    detail:
-      '下推的 Spark 作业计入执行集群那把 maxConcurrentJobs，与优化批次共用、一起排队；没有独立的集群侧扫描并发。',
-  },
-  {
     gate: '一次扫描的表数',
     detail:
-      '上限 5000（max-tables-per-scan），超了返 400 并提示「把范围缩到一个库或一张表」。',
+      '上限 5000（max-tables-per-scan），超了返 400 并提示「把范围缩到一个库或一张表」。catalog 级 cron 最容易撞到这一条。',
   },
   {
     gate: '采样量',
     detail:
       '默认 2000，上限 10000；写一个超过上限的值返 400，不静默截断。METADATA_ONLY 下这个数字不起作用。',
   },
-]
-
-/** 第 6 张表的字段（§5.6.3，逐条来自设计稿）。 */
-const SCHEDULE_FIELDS = [
-  { name: 'id', note: 'bigint 主键，自增' },
-  { name: 'name', note: 'varchar(128) 调度项名，唯一键' },
-  { name: 'cron', note: 'varchar(64)，5 或 6 段（秒级可选）' },
-  { name: 'catalog_name / database_name / table_name', note: 'varchar，可空 = 上层范围，与扫描表同口径' },
-  { name: 'mode / sample_size / execution', note: '复用扫描参数，含执行位置' },
-  { name: 'enabled_flag', note: 'boolean，停用' },
-  { name: 'last_run_at / next_run_at', note: 'epoch 毫秒，next_run_at 由服务端算' },
 ]
 </script>
 
@@ -684,124 +858,43 @@ const SCHEDULE_FIELDS = [
   margin-bottom: 12px;
 }
 
-/* ---------------------------------------------------------------- 调度建议卡 */
-
-.pc-sched-form {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  gap: 12px;
-}
-
-.pc-sched-field {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
 .pc-sched-catalog {
   width: 190px;
 }
 
-.pc-sched-scope {
-  width: 150px;
+.pc-sched-name {
+  font-weight: 500;
 }
 
-.pc-sched-input {
-  width: 170px;
+.pc-sched-id {
+  font-size: 12px;
 }
 
-.pc-sched-mode {
-  width: 190px;
+.pc-sched-sub {
+  font-size: 12px;
 }
 
-.pc-sched-exec {
-  width: 210px;
+.pc-sched-scope-tag {
+  margin-right: 6px;
 }
 
-/* 与其余页面的「一行提示」同一观感：图标 + 一句结论，不抢标题的注意力 */
-.pc-sched-warn {
-  display: flex;
-  align-items: flex-start;
-  gap: 6px;
-  margin: 14px 0 8px;
-  color: var(--el-color-warning);
-  font-size: 12.5px;
-  line-height: 1.7;
-}
-
-.pc-sched-code {
-  position: relative;
-}
-
-/* 深色代码块：与「引擎接入配置」那一处逐字同款（同一份观感，
-   右侧留出复制按钮的宽度，免得长路径从按钮底下穿过去） */
-.pc-sched-pre {
-  margin: 0;
-  padding: 10px 68px 10px 12px;
-  overflow: auto;
-  border-radius: var(--pc-radius);
-  background: #0f1729;
-  color: #d6e2f5;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 12.5px;
-  line-height: 1.75;
-}
-
-.pc-sched-copy {
-  position: absolute;
-  top: 4px;
-  right: 6px;
-  color: #cbd5e1;
-  /* 深色底上的按钮要自己的底色：滚动时下面的文本会从它旁边掠过 */
-  background: rgba(15, 23, 41, 0.92);
-  border-radius: 4px;
-}
-
-.pc-sched-copy:hover {
-  color: #fff;
-}
-
-.pc-sched-meta {
-  margin-top: 10px;
-  color: var(--pc-text-dim);
-  font-size: 12.5px;
-  line-height: 1.9;
-}
-
-.pc-sched-meta > div + div {
-  margin-top: 4px;
-}
-
-.pc-sched-cron {
-  margin-top: 10px;
-  padding-top: 10px;
-  border-top: 1px dashed var(--pc-border);
-  font-size: 12.5px;
-  line-height: 1.9;
-}
-
-.pc-sched-cron code {
-  margin: 0 4px;
-}
-
-/* ---------------------------------------------------------------- 最近扫描 */
-
-.pc-sched-list {
-  margin-top: 12px;
-}
-
-.pc-sched-list-foot {
+.pc-sched-foot {
   padding: 10px 14px 2px;
   font-size: 12px;
   line-height: 1.7;
 }
 
+.pc-sched-list {
+  margin-top: 12px;
+}
+
+.pc-sched-chip {
+  max-width: 260px;
+}
+
 .pc-sched-failed {
   color: var(--el-color-danger);
 }
-
-/* ---------------------------------------------------------------- 说明卡 */
 
 .pc-sched-card {
   margin-top: 12px;
@@ -811,43 +904,40 @@ const SCHEDULE_FIELDS = [
   margin-bottom: 4px;
 }
 
-.pc-sched-strong {
-  font-weight: 600;
-}
-
-.pc-sched-ol,
-.pc-sched-fields {
-  margin: 0;
-  padding-left: 20px;
-  font-size: 12.5px;
-  line-height: 1.95;
-}
-
-.pc-sched-ol li + li,
-.pc-sched-fields li + li {
-  margin-top: 6px;
-}
-
-.pc-sched-fields {
-  list-style: none;
-  padding-left: 0;
-}
-
-.pc-sched-fields li {
-  display: flex;
-  gap: 10px;
-}
-
-.pc-sched-fields code {
-  flex: 0 0 auto;
-}
-
-/* TipAlert 的正文收进气泡里，因此这里的 p 只影响气泡内的排版 */
 .pc-sched-subtip {
   margin-top: 12px;
 }
 
 .pc-sched-subtip p + p {
   margin-top: 8px;
+}
+
+.pc-sched-row {
+  display: flex;
+  gap: 12px;
+}
+
+.pc-sched-col {
+  flex: 1;
+  min-width: 0;
+}
+
+.pc-sched-num {
+  width: 100%;
+}
+
+.pc-sched-dialog-tip {
+  margin-top: 4px;
+}
+
+.pc-sched-dialog-tip p + p {
+  margin-top: 8px;
+}
+
+@media (max-width: 900px) {
+  .pc-sched-row {
+    flex-direction: column;
+    gap: 0;
+  }
 }
 </style>
