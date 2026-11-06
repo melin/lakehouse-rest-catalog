@@ -44,9 +44,10 @@ import org.springframework.test.web.servlet.MvcResult;
  *   <li><b>单页应用回退</b>。history 路由要求「非文件路径返回入口页」，
  *       而「带扩展名的缺失文件仍然 404」是这条规则的另一半——
  *       少了它，构建产物不同步会变成白屏但状态码 200。
- *   <li><b>构建产物自洽</b>。产物由 {@code scripts/build-console.sh} 生成、**不入库**
- *       （见仓库根 {@code .gitignore}），因此要有一条断言挡住「构建被打断 / 只搬了一半
- *       assets」这类半套产物——它在页面上的表现是白屏，而没有任何东西报错。
+ *   <li><b>构建产物自洽</b>。产物由 {@code mvn package} 里的 frontend-maven-plugin
+ *       在 {@code generate-resources} 阶段生成、**不入库**（见仓库根 {@code .gitignore}），
+ *       因此要有一条断言挡住「构建被打断 / 只搬了一半 assets」这类半套产物——
+ *       它在页面上的表现是白屏，而没有任何东西报错。
  * </ol>
  */
 @SpringBootTest(properties = {
@@ -620,7 +621,8 @@ class ConsoleApiTests {
     /**
      * 读 classpath 上的文本；不存在时给一条「该跑哪条命令」的说明。
      *
-     * <p>控制台产物不入库，所以干净检出直接跑测试必然读不到它。默认的
+     * <p>控制台产物不入库，所以干净检出直接跑测试必然读不到它（测试类不走 Maven 的
+     * generate-resources 阶段，产物得先由一次 {@code mvn package} 铺好）。默认的
      * {@code NoSuchResource} 只会说「资源打不开」，读者要自己推断是路径写错还是
      * 根本没构建——这里把下一步动作写进消息里。
      */
@@ -629,7 +631,7 @@ class ConsoleApiTests {
         if (!resource.exists()) {
             throw new IllegalStateException(
                     "classpath 里没有 " + path + "：控制台产物不入库（见仓库根 .gitignore），"
-                    + "构建服务端之前要先跑 ./scripts/build-console.sh（需要 Node 20+）");
+                    + "要先跑一次 ./scripts/build-console.sh 或 mvn package（需要 Node 20+）");
         }
         try (InputStream input = resource.getInputStream()) {
             return new String(input.readAllBytes(), StandardCharsets.UTF_8);

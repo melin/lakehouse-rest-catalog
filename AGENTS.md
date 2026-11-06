@@ -153,7 +153,8 @@ BASE=... CLIENT_ID=... CLIENT_SECRET=... STATIC_TOKEN=... ./scripts/sweep-consol
 cd lakehouse-rest-console && BASE=... CLIENT_ID=... CLIENT_SECRET=... npm run check:login
 
 # ---- 代码生成 / 文档校验（改规格或实体后）----
-PYTHON=/path/to/python3 ./scripts/build-console.sh        # 装依赖→构建→校验（含产物新鲜度）
+PYTHON=/path/to/python3 ./scripts/build-console.sh        # 单独重建前端→校验（含产物新鲜度）
+                                                          # （出 jar 时前端已由 mvn package 构建，这条是便捷入口）
 python3 scripts/verify-console.py                         # 只校验不构建（多解释器时用 PYTHON=...）
 python3 scripts/gen-management-contract.py                # 重生成 docs/management-api-contract.md
 python3 scripts/verify-management-contract.py             # 反解文档与规格逐行比对
@@ -459,7 +460,7 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
 | **改 JPA 实体 / 加表** | ① 改 `domain/entity`——**先判断放哪个模块**：catalog 侧 12 实体、RBAC 管理侧 7 实体与事件审计 1 实体在 `lakehouse-rest-core`（被协议面复用，下沉避免协议层反向依赖 server），表存储优化 3 实体在 `lakehouse-rest-server`；继承 `AuditedEntity` 才有审计列；② `./scripts/gen-mysql-ddl.sh` 重生成 `sql/schema-mysql.sql`（**必须**）；③ 迁移落地二选一：**首次接入期**再跑一次 `scripts/gen-flyway-baseline.py` 重派生 V1（仅当目录里还没有 V2）；**已演进期**手写 `db/migration/mysql/V2__<描述>.sql` 增量——**不要再改 V1**，改动会让已应用过它的库因 checksum 不一致启动失败；④ 摘要列（SHA-256）或唯一约束变化时同步 `docs/data-model.md` |
 | **改管理 API / 权限** | ① 实现落在 `lakehouse-rest-server`（`web/` + `service/` + `dto/ManagementDtos`），词表类在 `lakehouse-rest-core`（`dto/ManagementEnums`、`dto/Privilege`）→ 改规格副本与实现后 `python3 scripts/gen-management-contract.py`；② 权限枚举变了 → `scripts/gen-management-privileges.py` 重生成 `dto/Privilege.java`；官方权限词表（access / ResourceType）变了 → 跑 `verify-spark-sql-doc.py`（比对语法/PermissionDtos/客户端三方）；③ 管理语句跟随改动时进 `lakehouse-rest-spark/shared`（语法 + AstBuilder + Command 三处；两个版本模块编译同一份源码，改一处即两边生效） |
 | **跨模块搬类 / 加模块** | ① **先算依赖图再动手**——凭「看起来该属于这里」搬会把方向搬反，本仓实测出现过 46 条反向边；工具在 `outputs/maven-module-refactor/module-graph.py`（分类表 `RULES`、允许方向 `ALLOWED`）；② 包名不动 → 不需要改任何 `import`，`mvn -o -DskipTests clean install` 编译通过＝搬对了，enforcer 红＝方向搬反；③ 同步 `docs/maven-module-design.md`（§8 落地记录）与本文第 3 节的类数 |
-| **改控制台** | ① 按 `docs/console.md` §5.3 清单做（endpoints.js → api/*.js → views/ → router → 构建）；② `./scripts/build-console.sh` 重新构建（**产物不入库，但不构建就没有**，见第 8 节陷阱 1）；③ 页面渲染不写进服务端测试，服务端侧只覆盖托管机制（`ConsoleApiTests`） |
+| **改控制台** | ① 按 `docs/console.md` §5.3 清单做（endpoints.js → api/*.js → views/ → router）；② `mvn package` 会自己构建前端（`frontend-maven-plugin` 绑 `generate-resources`），无需手工步骤；只想单独重建前端时才跑 `./scripts/build-console.sh`（**产物不入库，但不构建就没有**，见第 8 节陷阱 1）；③ 页面渲染不写进服务端测试，服务端侧只覆盖托管机制（`ConsoleApiTests`） |
 | **改配置项** | ① `lakehouse-rest-core` 的 `config/RestServerProperties.java` 加字段 + javadoc（默认值、留空含义、非法取值行为）；② `lakehouse-rest-server` 的 `application.yml` 加注释示例；③ `README.md` §5 配置表加一行。涉及存储凭据时，`docs/polaris-capabilities-and-design.md` 的「下发优先级」表也加一级 |
 
 ---
@@ -534,17 +535,20 @@ core / storage / server **共用同一个包树**（`io.github.melin.lakehouse.r
 
 1. **控制台产物不入库，但必须被构建出来。** `.gitignore` 排除
    `lakehouse-rest-spring-parent/lakehouse-rest-server/src/main/resources/static/console`，
-   而 `ConsoleApiTests`、`build-image.sh` 与 `verify-console.py` 第 6 组都要求它存在——
-   所以**出 jar 之前先跑 `./scripts/build-console.sh`**（Node 20+）；`mvn package`
-   不会替你构建前端，产物缺失时它一声不响。
+   而 `ConsoleApiTests`、`build-image.sh` 与 `verify-console.py` 第 6 组都要求它存在。
+   **正常路径已经不需要手工步骤**：`mvn package` 里的 `frontend-maven-plugin`
+   （server POM，绑 `generate-resources`）会跑 `npm ci` + `vite build` 把产物构建出来。
+   只有用 `-Dfrontend.skip=true` 打包时才要先自己跑 `./scripts/build-console.sh`（Node 20+）——
+   那种情况下产物缺失它一声不响。
    这条翻过两次方向，两次都不是笔误：最初文档写「产物已入库」而 `.gitignore` 正挡着它
    （五处陈述、零处执行，`git status` 干净得像没事，只有干净检出打出的 jar 里没有 `/console`）；
    随后改成真入库，断言是「目录没被忽略 + `index.html` 已跟踪」；2026-10-30 又改回不入库
    （每改一次前端就是 80 多个哈希文件的 diff，而漏搬一半的表现是白屏 + `git status` 干净），
    断言随之反转成「目录确实被忽略 + 入口页确实没被跟踪」，挡的是 `git add -f` 把产物塞回来。
    **判据始终只有一条**：`.gitignore`、文档、校验脚本对同一件事的说法必须一致。
-2. **忘了构建控制台就打包** → jar 里没有 `/console`（不是「上一版」，是整块没有）：
-   服务端照常启动、`/console/` 只是 404，构建日志一句抱怨都没有。
+2. **前端构建若被跳过（`-Dfrontend.skip=true`）而产物又没铺好** → jar 里没有 `/console`
+   （不是「上一版」，是整块没有）：服务端照常启动、`/console/` 只是 404，构建日志一句抱怨都没有。
+   默认路径下 `mvn package` 会自己构建前端，所以这条只在显式跳过时才成立。
    挡它的有三处：`build-image.sh`（`unzip -l` 查 jar）、`ConsoleApiTests`（读 classpath 入口页）、
    `verify-console.py` 第 6/7 组（在不在、新不新）。判是否干净：
    `ls lakehouse-rest-spring-parent/lakehouse-rest-server/target/classes/static/console/assets | wc -l` 应与源码目录一致。

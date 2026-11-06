@@ -157,6 +157,57 @@
 		<awssdk.version>2.46.6</awssdk.version>
 		<!-- 依赖边界守卫，见各模块 POM 里的 bannedDependencies -->
 		<enforcer.version>3.1.0</enforcer.version>
+		<!--
+			Node 与前端构建插件。**只有 lakehouse-rest-server 会用**，钉在父 POM
+			只为让「前端用哪个 Node」与「插件哪个版本」有一个显眼的家。
+
+			★ 版本号**必须带 v 前缀**（`v22.23.4`，不是 `22.23.4`）。这不是审美问题：
+			frontend-maven-plugin 用 `getNodeMajorVersion` 的 `^v(\d+)\..*$` 去解析它，
+			拿去决定 macOS 上的架构标（Node 16 之前的 arm64 构件不存在，要退回 x64）。
+			写成裸 `22.23.4` 时正则不匹配 → 版本被当 null → **在 Apple Silicon 上
+			判定为 x64**，于是去下 `node-...-darwin-x64.tar.gz`，得到一个 404
+			（nodejs.org 根本没有 darwin-x64 的 arm64 机器能跑的构件）。
+			插件只会打一句 `[WARNING] Node version does not start with naming convention 'v'.`
+			就把 404 抛出来，很容易被读成「网络问题」。
+
+			node.version 的取值有三个约束，改之前都要看：
+			  1. 必须满足 lakehouse-rest-console 里 vite 的 engines——
+			     当前是 `^20.19.0 || >=22.12.0`，写小了 npm run build 当场报错；
+			  2. 必须是 nodejs.org 上真实存在的版本号（拼错只在下拉构件时才失败）；
+			  3. v22.23.4 是本机 ~/.m2 里已经缓存过的版本，因此**第一次跑不会去下载 50MB**，
+			     离线构建也能过。换版本前先确认新版本构件能不能拿到。
+
+			为什么钉 22.x 而不是 20.x：vite 8 的 engines 同时接受 20.19+ 与 22.12+，
+			而 v22.23.4 是当前 22 线的 LTS（Jod），也是本机缓存的版本——两边不冲突时
+			选缓存里那个。
+		-->
+		<node.version>v22.23.4</node.version>
+		<!--
+			frontend-maven-plugin（com.github.eirslett）：把 install-node-and-npm / npm 两个
+			goal 挂进生命周期，让 `mvn package` 自己把控制台前端构建出来。
+
+			2.0.1 要求 Maven 3.6.0+（本工程用 3.9.x）。另一个候选是 1.15.1，
+			两者 goal 面基本一致；这里取 2.x 是因为它在 1.15 之后修过 Node 下载
+			与 Windows 路径的若干问题，且 2.x 是本机缓存里已有的版本。
+		-->
+		<frontend-maven-plugin.version>2.0.1</frontend-maven-plugin.version>
+		<!--
+			前端构建的总开关，默认构建。
+
+			关掉它的场景有两个，都要显式写 `-Dfrontend.skip=true`：
+			  - 明确知道 target 里已有一份新鲜的静态产物，只为快速重跑一次
+			    服务端测试或打包（省掉 npm ci + vite build 的那几十秒）；
+			  - 环境里确实拿不到 Node（例如离线且本地仓库也没有 node 构件）——
+			    此时打出的 jar 里不会有 /console，那是调用方自己的选择。
+
+			默认 false 是**本工程的核心决策**：控制台账在服务端 jar 里，
+			「打包出来能用」不该取决于某人记不记得先跑一个脚本。
+
+			注意这是 Maven 属性（不是插件的 internal property），因此 `-Dfrontend.skip=true`
+			能覆盖它；直接拼 `frontend.skip` 会被 Maven 当字符串处理，
+			而插件的 skip 是 boolean，转换失败会让构建当场报错。
+		-->
+		<frontend.skip>false</frontend.skip>
 	</properties>
 
 	<dependencyManagement>
@@ -448,6 +499,29 @@
 					<configuration>
 						<fail>true</fail>
 					</configuration>
+				</plugin>
+
+				<!--
+					把控制台前端构建进 Maven 生命周期。**只有 lakehouse-rest-server
+					会用到**，放在这里只是让版本号与 Node 版本并排可见（都在本文件的
+					<properties> 里）。
+
+					这里**只钉版本**，不写 workingDirectory / installDirectory：
+					那两条描述的是「前端源码在哪、Node 装到哪」，属于 server 模块的
+					构建形状，放在它自己的 POM 里才与「镜像里有什么看这一个 POM」的
+					注释一致；顺带避开一个坑——File 类型的插件参数按**执行插件的模块**
+					的 basedir 解析，把相对路径写在会被继承的位置容易读错基准。
+
+					为什么是插件而不是 exec-maven-plugin 直接跑 `npm run build`：
+					后者要求「跑 Maven 的机器上已经有一个够新的 Node」，而本工程的
+					jar 也要能在只装了 Maven 的环境里打出来。install-node-and-npm
+					把「用哪个 Node」也变成构建的一部分，代价是第一次要下一个 46MB
+					的构件（本机已缓存在 ~/.m2/repository/com/github/eirslett/node/）。
+				-->
+				<plugin>
+					<groupId>com.github.eirslett</groupId>
+					<artifactId>frontend-maven-plugin</artifactId>
+					<version>${frontend-maven-plugin.version}</version>
 				</plugin>
 			</plugins>
 		</pluginManagement>

@@ -1,13 +1,17 @@
 #!/bin/bash
-# 构建 Web 管理控制台前端，并把产物落到服务端的 classpath 里。
+# 单独构建 Web 管理控制台前端，并把产物落到服务端的 classpath 里。
 #
-# 为什么要有这个脚本：控制台的构建产物**不入库**，但它必须出现在服务端 jar 里
-# （lakehouse-rest-spring-parent/lakehouse-rest-server/src/main/resources/static/console 是
-# classpath 资源的落点）。也就是说「改了前端」与「打了个能用的 jar」之间隔着一道
-# 手工步骤，而漏掉它的表现是安静的——jar 里根本没有 /console，服务端不会抱怨。
-# 本脚本把「装依赖 → 构建 → 校验产物与源码一致」串成一条命令，
-# 最后一步由 verify-console.py 机械完成。任何要出 jar 的路径（本地打包、build-image.sh）
-# 都应当先跑它。
+# 什么时候需要它：**大多数时候不需要**。`mvn package` 里的 frontend-maven-plugin
+# （见 lakehouse-rest-server/pom.xml，绑 generate-resources）已经会把前端构建出来，
+# 产物直接写进
+# lakehouse-rest-spring-parent/lakehouse-rest-server/src/main/resources/static/console
+# （classpath 资源的落点），随后由 maven-resources-plugin 复制进 target/classes。
+#
+# 本脚本留给两种场景：
+#   1. 只想重建前端、不想跑整条 Maven（例如调样式的内循环）；
+#   2. 要以 -Dfrontend.skip=true 打包，于是得先把产物铺好。
+# 它把「装依赖 → 构建 → 校验产物与源码一致」串成一条命令，最后一步由
+# verify-console.py 机械完成——那一步是 `mvn package` **不会**替你跑的。
 #
 # 用法：
 #   ./scripts/build-console.sh              # 依赖已就绪时直接构建
@@ -35,8 +39,12 @@ if ! command -v npm >/dev/null 2>&1; then
   cat >&2 <<'MSG'
 找不到 npm。控制台前端需要 Node 20+：
   - 宿主机已装 Node 时，确认 npm 在 PATH 里；
-  - 没有 Node 就拿不到控制台产物——它不入库（见仓库根 .gitignore），
-    没有它 `mvn package` 打出的 jar 里不会有 /console，服务端不会为此报错，
+  - 只想出 jar 的话**不必**装 Node——`mvn package` 会自己下载一个便携 Node 来构建
+    前端（见 lakehouse-rest-server/pom.xml 的 frontend-maven-plugin）。本脚本是
+    「单独重建前端」的便捷入口，不是打包的前置步骤；
+  - 若要以 -Dfrontend.skip=true 打包，就得先有产物：那时要么跑本脚本（需要 Node），
+    要么复用上一轮留下的 src/main/resources/static/console。产物不入库（见仓库根
+    .gitignore），没有它打出的 jar 里不会有 /console，服务端不会为此报错，
     只是浏览器打开 /console/ 会 404。要一个现成可用的服务端，请用发布好的
     jar 或镜像（Dockerfile 只装现成的 jar，不涉及 Node）。
 MSG
@@ -91,5 +99,5 @@ fi
 echo
 echo "完成。产物已就位：$OUT"
 echo "注意：产物不入库（.gitignore 排除，见 verify-console.py 第 6 组），"
-echo "      所以每次要出 jar 之前都要先跑本脚本——mvn package 不会替你构建前端，"
-echo "      而漏掉这一步打出的 jar 里没有 /console，构建过程不会报任何错。"
+echo "      但打包时不必记得跑本脚本——mvn package 的 frontend-maven-plugin 会自己构建前端。"
+echo "      本脚本的价值在最后那步校验（mvn package 不会跑它）。"

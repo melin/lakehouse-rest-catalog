@@ -88,7 +88,13 @@ spec/rest-catalog-open-api-iceberg.yaml）。路径写错时前端只表现为�
                   动作的确认」：配置页没有保存动作、端点只有读与探活、探活五步与四档对着
                   Java 源比对、危险映射与空组同步的确认都来自服务端信号。这些错法全都不
                   报错——多一个保存按钮要等有人真的改坏准入规则那天才知道
- 28. 文档计数     文档里写的「N 组 M 项」与脚本实际一致——加校验组的人要顺手改文档，
+ 28. Maven 接线    `mvn package` 会自己构建控制台前端这件事必须真的成立：server POM 里
+                  frontend-maven-plugin 的三条 execution（install-node-and-npm / npm ci /
+                  npm run build）都在 generate-resources 阶段、skip 开关与 node 版本属性在、
+                  node 版本满足 vite 的 engines、且前端产物的 outDir 仍指向服务端静态资源目录。
+                  这些是**构建链的契约**，删掉或改错都完全不报错——只是打出的 jar 悄悄没有
+                  /console，或者干净环境里 node 版本不够而 npm run build 中途失败
+ 29. 文档计数     文档里写的「N 组 M 项」与脚本实际一致——加校验组的人要顺手改文档，
                   而这条约定此前没人执行（真漂过一次：docs/console.md 37、实际 38）
 
 用法：
@@ -568,10 +574,11 @@ check("控制台的令牌端点与服务端下发的 tokenEndpoint 一致",
 print("6. 构建产物完整")
 index_path = os.path.join(CONSOLE_ASSETS, "index.html")
 exists = os.path.isfile(index_path)
-# 「已构建」而不是「已提交」：产物不入库（见 .gitignore 那段说明），
-# 这条挡的是「忘了跑 scripts/build-console.sh 就 mvn package」。
+# 「已构建」而不是「已提交」：产物不入库（见 .gitignore 那段说明）。
+# 正常路径下 `mvn package` 会在 generate-resources 阶段把前端构建出来；
+# 这条挡的是「用 -Dfrontend.skip=true 打包、却没先铺好产物」。
 check("入口页 index.html 已构建", exists,
-      f"{index_path}\n  → 先跑 ./scripts/build-console.sh（需要 Node 20+）")
+      f"{index_path}\n  → 跑 ./scripts/build-console.sh，或直接 mvn package（需要 Node 20+）")
 if exists:
     html = read(index_path)
     referenced = re.findall(r'(?:src|href)="(/console/[^"]+)"', html)
@@ -624,7 +631,7 @@ else:
               os.path.join(assets_rel, "index.html")) != 0,
           f"{assets_rel}/index.html 仍被跟踪：文件已入库，.gitignore 对它不再生效"
           "（ignore 只作用于未跟踪文件）。产物改回不入库时需 `git rm -r --cached` 摘掉索引，"
-          "并确认 jar 构建链会先跑 scripts/build-console.sh")
+          "并确认 server POM 的 frontend-maven-plugin 仍在 generate-resources 构建前端")
 
 # ------------------------------------------------------------------ 7. 产物新鲜度
 
@@ -3261,10 +3268,131 @@ check("身份审计页把四个范围映射成 category/type 下推服务端",
       and "listEvents" in identity_audit_view,
       "范围没有下推成查询参数；本地筛出来的空页会被读成「没有这类事件」")
 
-# ------------------------------------------------------------------ 28. 文档计数
+# ------------------------------------------------------------------ 28. Maven 接线
 
 print()
-print("28. 文档计数（文档写的「N 组 M 项」必须与脚本实际一致）")
+print("28. Maven 接线（`mvn package` 会自己构建前端）")
+
+# 这一组把「前端由 Maven 构建」从一句文档变成机械可查的事实。它要挡的失败模式很特别：
+# 删掉一条 execution、把 phase 改错、或者把 node 版本调到 vite 不认的区间，
+# **都不会有任何报错**——`mvn package` 照样成功，只是 jar 里没有 /console（或在
+# 干净环境里 npm run build 中途失败）。这类「构建链静默降级」正是静态校验该管的。
+#
+# 只断言「接线形状」，不重跑构建：本脚本的定位是不构建前端、不启动服务端（见头部说明）。
+SERVER_POM = os.path.join(
+    ROOT, "lakehouse-rest-spring-parent/lakehouse-rest-server/pom.xml")
+PARENT_POM = os.path.join(ROOT, "lakehouse-rest-spring-parent/pom.xml")
+
+server_pom = read(SERVER_POM)
+parent_pom = read(PARENT_POM)
+
+# --- 28.1 pluginManagement 里钉了版本，且版本是常量不是字面量 ---------------
+# 版本写在父 POM 的 pluginManagement、server 模块只引 artifactId：这样「插件哪个版本」
+# 只有一个家。若有人把 version 直接写进 server 模块，父 POM 的那条就成了摆设。
+check("父 POM 钉了 frontend-maven-plugin 的版本（server 模块不写 version）",
+      "frontend-maven-plugin" in parent_pom
+      and re.search(r"<artifactId>frontend-maven-plugin</artifactId>\s*\n\s*<version>",
+                    parent_pom) is not None
+      and re.search(r"<artifactId>frontend-maven-plugin</artifactId>\s*\n\s*<version>",
+                    server_pom) is None,
+      "版本应在 lakehouse-rest-spring-parent/pom.xml 的 pluginManagement 里；"
+      "server 模块只写 artifactId")
+
+# --- 28.2 server 模块真的声明了插件 ------------------------------------------
+check("server 模块声明了 frontend-maven-plugin 并引用 node.version",
+      "frontend-maven-plugin" in server_pom and "${node.version}" in server_pom,
+      "server POM 没有接线前端构建，`mvn package` 不会构建前端")
+
+# --- 28.3 三条 execution 都在、id 与 goal 对得上 ------------------------------
+# id 是给人看的（日志里 `frontend:npm (npm-ci)`），goal 才是机械语义。
+# 两个 npm goal 靠 id 区分（一个装依赖、一个构建），id 被改掉会让日志读起来错位。
+executions = {
+    "install-node-and-npm": "install-node-and-npm",
+    "npm-ci": "npm",
+    "npm-build": "npm",
+}
+missing = []
+for exec_id, goal in executions.items():
+    # 每个 <execution> 块里应当同时出现该 id 与对应 goal，且在 generate-resources 阶段
+    block = re.search(
+        r"<execution>\s*<id>%s</id>(.*?)</execution>" % re.escape(exec_id),
+        server_pom, re.S)
+    if not block:
+        missing.append(f"缺 execution {exec_id}")
+        continue
+    body = block.group(1)
+    if f"<goal>{goal}</goal>" not in body:
+        missing.append(f"{exec_id} 的 goal 不是 {goal}")
+    if "<phase>generate-resources</phase>" not in body:
+        missing.append(f"{exec_id} 不在 generate-resources 阶段")
+check("三条 execution（装 node / npm ci / npm run build）都在 generate-resources 阶段",
+      not missing,
+      "\n".join(missing))
+
+# --- 28.4 绑在 generate-resources 是「先清、再生成、后复制」的前提 -------------
+# 单独断言一次阶段值，因为它错了不会报错、只会让 jar 里装着上一轮的页面。
+# 更晚的阶段（prepare-package 之类）会让 process-resources 先复制、前端后构建。
+check("前端构建的阶段早于 process-resources（先清 → 再生成 → 后复制）",
+      "<phase>generate-resources</phase>" in server_pom,
+      "三条 execution 应绑 generate-resources；绑到更晚的阶段会让 resources 复制到上一轮的产物")
+
+# --- 28.5 npm 构建用的是 run build，且 npm ci 带 no-audit/no-fund -----------
+check("npm 的两条命令是 `ci`（按 lock 还原）与 `run build`（vite 构建）",
+      re.search(r"<arguments>\s*ci\s+--no-audit\s+--no-fund\s*</arguments>", server_pom)
+      is not None
+      and re.search(r"<arguments>\s*run build\s*</arguments>", server_pom) is not None,
+      "args 应分别是 `ci --no-audit --no-fund` 与 `run build`")
+
+# --- 28.6 逃生开关 frontend.skip 存在，且默认 false --------------------------
+# 默认必须是「构建」：本工程的核心决策是「打包出来能用」不该取决于人记不记得跑脚本。
+# 若哪天有人把默认翻成 true，jar 又会静默缺 /console——那正是这次接线要消灭的状态。
+skip_default = re.search(
+    r"<frontend\.skip>\s*([^<]*?)\s*</frontend\.skip>", parent_pom)
+check("frontend.skip 逃生开关存在且默认 false（默认构建）",
+      skip_default is not None and skip_default.group(1) == "false"
+      and "${frontend.skip}" in server_pom,
+      f"frontend.skip 默认值是 "
+      f"{skip_default.group(1) if skip_default else '未找到'}；应为 false，"
+      "且 server 模块的 <skip> 要引用它")
+
+# --- 28.7 node 版本满足 vite 的 engines，且带 v 前缀 -------------------------
+# 两条都是踩过的坑：
+#   - 不带 v 前缀时，插件用 `^v(\d+)\..*$` 解析版本，匹配不到 → 在 Apple Silicon 上
+#     判定成 x64 → 去下不存在的 darwin-x64 构件 → 404（看起来像网络问题）；
+#   - 版本低于 vite 的 engines 下限时，npm run build 当场报错。
+node_decl = re.search(r"<node\.version>\s*([^<]*?)\s*</node\.version>", parent_pom)
+node_value = node_decl.group(1) if node_decl else ""
+node_ok = re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)", node_value) is not None
+if node_ok:
+    major, minor = int(node_value[1:].split(".")[0]), int(node_value[1:].split(".")[1])
+    # vite 的 engines 当前是 `^20.19.0 || >=22.12.0`
+    node_ok = (major == 20 and minor >= 19) or (major >= 22 and minor >= 12) or major > 22
+check("node.version 带 v 前缀且满足 vite 的 engines（^20.19.0 || >=22.12.0）",
+      node_ok,
+      f"当前 {node_value or '未声明'}：带 v 前缀（插件按 ^v\\d+ 解析）且"
+      "不低于 vite 要求的 20.19 / 22.12")
+
+# --- 28.8 outDir 仍指向服务端静态资源目录 -----------------------------------
+# 这是前后端「一次构建产出两半」的接缝：outDir 一旦改回 dist/，Maven 复制到的
+# src/main/resources/static/console 就是空的——jar 里没有 /console，且不报错。
+vite_source = read(VITE_CONFIG)
+out_dir_match = re.search(r"outDir:\s*'([^']+)'", vite_source)
+expected_out = os.path.relpath(CONSOLE_ASSETS, CONSOLE_DIR)
+check("前端 outDir 仍指向服务端静态资源目录（Maven 复制到的那处）",
+      out_dir_match is not None and out_dir_match.group(1) == expected_out,
+      f"vite.config.js 的 outDir 是 "
+      f"{out_dir_match.group(1) if out_dir_match else '未找到'}，应为 {expected_out}")
+
+# --- 28.9 workingDirectory 指向前端工程 --------------------------------------
+check("插件的 workingDirectory 指向前端工程目录",
+      "../../lakehouse-rest-console" in server_pom,
+      "workingDirectory 应从 server 模块回到仓库根再进 lakehouse-rest-console"
+      "（参考配置的 ../web-console 是平级布局，本仓是嵌套布局）")
+
+# ------------------------------------------------------------------ 29. 文档计数
+
+print()
+print("29. 文档计数（文档写的「N 组 M 项」必须与脚本实际一致）")
 
 # 这一组是**元校验**，起因是一次真实的漂移：docs/console.md 写「12 组 37 项」、
 # README 写「12 组 38 项」，而脚本实际是 38——两个数字都没人核对，因为脚本此前

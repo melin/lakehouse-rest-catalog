@@ -17,26 +17,25 @@
 ## 1. 快速开始
 
 控制台的构建产物**不入库**（落在 `lakehouse-rest-spring-parent/lakehouse-rest-server/src/main/resources/static/console`，
-见 [§8.2](#82-产物不入库但必须被构建出来)），因此**从源码构建 jar 之前要先构建前端**，
-需要 Node 20+：
+见 [§8.2](#82-产物不入库但必须被构建出来)），但**打包一步就是完整的**——
+`mvn package` 里的 `frontend-maven-plugin` 会自己把前端构建出来（它顺带管 Node 版本，
+所以宿主机不装 Node 也能构建）：
 
 ```bash
-# 1) 构建控制台产物：装依赖（按需）→ 构建 → 校验一致性
-./scripts/build-console.sh
+# 1) 打包（这一步会先构建控制台前端，再打成带 /console 的可执行 jar）
+mvn -o -pl :lakehouse-rest-server -am clean package -DskipTests
 
-# 2) 打包（这一步本身不需要 npm，但依赖上一步的产物）
-./mvnw -o package -DskipTests
-
-# 3) 启动（h2 profile 用于本地试跑）
+# 2) 启动（h2 profile 用于本地试跑）
 java -jar lakehouse-rest-spring-parent/lakehouse-rest-server/target/lakehouse-rest-server-1.0.0.jar \
   --spring.profiles.active=h2 --server.port=8080
 
-# 4) 打开
+# 3) 打开
 open http://127.0.0.1:8080/console/
 ```
 
-只改 Java、不动前端时第 1 步可以跳过，产物还在上一轮的位置；但**干净检出必须先跑一次**——
-否则打出的 jar 里没有 `/console`，而构建过程不会报任何错（守卫见 §8.2）。
+第一次打包会下载一个便携 Node（约 50MB，缓存在本机 Maven 仓库，之后复用）。
+只想重建前端、不跑整条 Maven 时才需要 `./scripts/build-console.sh`（Node 20+）；
+本机已有新鲜产物、要跳过前端那几十秒则加 `-Dfrontend.skip=true`（此时才需要手工先跑一次构建）。
 已经有发布好的 jar 或镜像时，直接用即可，不需要 Node。
 
 首次进入控制台**默认要求登录**（`lakehouse.rest.auth.console.required=true`）：
@@ -53,7 +52,7 @@ open http://127.0.0.1:8080/console/
 前端要热更新时，用 Vite 的 dev server，它把 `/v1` 与 `/api` 代理到 `127.0.0.1:8080`：
 
 ```bash
-./mvnw -o -pl :lakehouse-rest-server spring-boot:run -Dspring-boot.run.profiles=h2
+mvn -o -pl :lakehouse-rest-server spring-boot:run -Dspring-boot.run.profiles=h2
 cd lakehouse-rest-console && npm run dev        # http://127.0.0.1:5173/console/
 ```
 
@@ -896,7 +895,7 @@ python3 scripts/verify-console.py      # 退出码 0 通过 / 1 不一致 / 2 �
 PYTHON=/path/to/python3 scripts/verify-console.py   # 多解释器时指定装了 PyYAML 的那个
 ```
 
-它**不构建前端、不启动服务端**，只做静态比对，因此可以放进提交前的检查。28 组 240 项：
+它**不构建前端、不启动服务端**，只做静态比对，因此可以放进提交前的检查。29 组 249 项：
 
 | 组 | 校验内容 |
 | --- | --- |
@@ -927,7 +926,8 @@ PYTHON=/path/to/python3 scripts/verify-console.py   # 多解释器时指定装�
 | 25. 登出 | 「退出登录」什么时候要离开本应用去 IdP 结束 SSO 会话（RP-initiated logout）。三条判据都不报错：必须只在 **IdP 发过票** 时跳（否则把口令登录的人扔到别人的登录页上，本机令牌却已清）、地址只能来自服务端下发的 `end_session_endpoint`（`issuer + "/logout"` 在 Keycloak 上碰巧对，在 Auth0 / Azure 上是另一条路径，拼错就是一个 404 页面）、且必须在清令牌**之前**算（它要读令牌与来源，顺序反了就永远算不出地址，现象是登出悄悄退回「只清本机」） |
 | 26. 引擎片段 | catalog 详情页「引擎接入配置」那几行**复制出去**的配置里的续期契约。四条判据，错法全都不报错（片段照常显示、照常复制成功，只是粘进引擎后行为不对，而且要跑满一个令牌 TTL 才现形）：Paimon 两面的 `token.provider` **默认仍是 `bear`**（默认 `oauth2` 会让还没有 provider jar 的部署在建 catalog 时直接失败，报的是「找不到 factory」）、Iceberg 两面的 `scope` 与服务端 `ClientCredentialsService.SCOPE_ALL` **逐字相同**（脚本直接读 Java 常量，不抄第二份——抄了就会漂，而漂的表现是「配置永远 400 invalid_scope」，且发生在第一次刷新之后）、`RENEWAL` 分**控制面 / 数据面**两列（合成一列时「数据票能续」会被读成「主体令牌也能续」，而后者才是长作业真正挂掉的那条）、`oauth2.credential` 只以注释出现且片段里只有占位符（`<主体令牌>` / `<AK>` / `<SK>`）；另加一条接线判据：详情页真的把 `renewable` 传给了片段生成器，且开关只为 Paimon 面显示 |
 | 27. SSO 身份 | OIDC 配置 / 组映射 / 身份审计三页。这一组钉的是**不该有的能力**与**两个不可逆动作的确认**，因为它们的错法全都不报错：OIDC 配置页没有保存动作、`/identity-provider` 下只有读与探活（`GET`、`GET /claim-samples`、`POST /probe`）——这些字段来自 yml / ConfigMap，能在线改就等于「已经登录进来的人改自己的准入规则」，配错一次是全员登不上，所以不是还没做，是不做；探活五步的中文标签逐个覆盖服务端 `IdentityProviderService` 里的步骤名、判定四档对 `OK/WARN/FAIL/SKIPPED`（少一档的表现是那一行露出英文原文，而它恰恰是 IdP 连不上、最需要解释的时候）；claim 样例页写明「存在本进程内存、多副本各记各的」（不写就会把「这台为空」读成「没人用过 SSO」）；组映射对「映射到管理员角色」的二次确认建立在服务端的 `confirmAdminMapping` 上（判据要读授权关系，前端拿不到；自己写一份的漂移方向是**少确认一次**）；主体页对「空组同步」既走红色确认、又把**两种模式的后果都写明**（服务端不保存「上次登录在哪些组」；而留空的后果取决于 sync-mode：`ON_LOGIN` 下刻意一个都不删、`STRICT` 下才是撤权——只写一种就是说错，且错的方向正好是让人以为撤权成功了），回执还认 `skippedReason`（否则「刻意跳过」会被说成「跑完了没变化」）；主体清单的来源过滤下推服务端、OIDC 主体不显示「轮换 / 重置」（它没有 clientId 与密钥）；登录页与回调页共用同一张诊断卡（各写一份文案时，同一个原因在两个页面里说法不同）；诊断分类表自洽（每条规则都指向存在的分类、语气只有 `blocked` / `retry`、`unknown` 兜底在——规则指向不存在的分类时，卡片上只剩原文，结论与下一步全是空白）；身份审计页把四个范围映射成 `category` / `type` 下推；另有两条路由层面的判据：三条路由都登记、都进侧边菜单 |
-| 28. 文档计数 | 本节这张表上方的「N 组 M 项」与脚本实际一致（`docs/console.md` 与 `README.md` 各一条）。期望值由脚本自身推出——组数是源码里分组标题的条数，项数是本次校验的总条数——因此加/删校验项时这里不用改，但**文档必须跟着改** |
+| 28. Maven 接线 | `mvn package` 会自己构建控制台前端这件事必须真的成立。这一组把构建链的契约变成机械可查的事实，因为**改坏它完全不报错**——`mvn package` 照样成功，只是 jar 里没有 `/console`（或在干净环境里 `npm run build` 中途失败）。九条判据：父 POM 的 `pluginManagement` 钉了 `frontend-maven-plugin` 的版本而 server 模块**不写 version**（否则父 POM 那条成了摆设）、server 模块确实声明了插件并引用 `${node.version}`、三条 execution（`install-node-and-npm` / `npm-ci` / `npm-build`）都在且 goal 与 id 对得上、**三条都绑 `generate-resources`**（更晚的阶段会让 `process-resources` 先复制、前端后构建，症状是「改了前端，jar 里却是旧页面」）、两条 npm 命令是 `ci --no-audit --no-fund` 与 `run build`、`frontend.skip` 逃生开关在且**默认 `false`**（默认改真就又把「jar 是否能用」交回给人记性）、`node.version` **带 `v` 前缀**且满足 vite 的 engines（不带 `v` 时插件按 `^v\d+` 解析失败 → 在 Apple Silicon 上判定成 x64 → 去下不存在的 `darwin-x64` 构件，看起来像网络问题）、前端 `outDir` 仍指向服务端静态资源目录（改回 `dist/` 后 Maven 复制到的那处就是空的）、插件的 `workingDirectory` 指向前端工程目录 |
+| 29. 文档计数 | 本节这张表上方的「N 组 M 项」与脚本实际一致（`docs/console.md` 与 `README.md` 各一条）。期望值由脚本自身推出——组数是源码里分组标题的条数，项数是本次校验的总条数——因此加/删校验项时这里不用改，但**文档必须跟着改** |
 
 第 7 组是这套机制里最实用的一条：**产物过期不会让任何东西报错**，
 它只是安静地少一个按钮。
@@ -1015,7 +1015,8 @@ BASE=http://127.0.0.1:8080 CLIENT_ID=<clientId> CLIENT_SECRET=<secret> \
 4. `src/router/index.js`：加路由；想出现在侧边栏就写 `meta: { nav: true, icon, group }`。
    不需要令牌就能看的页面（登录页、SSO 回调）写 `meta: { public: true }`——
    它同时决定「不套管理布局」（`App.vue`）与「守卫不拦」（见 §6.2）。
-5. `./scripts/build-console.sh`：重新构建，第 3、4、6、7 组校验会在这里把关。
+5. 重新构建：打包时 `mvn package` 会自动构建前端；只想单独重建就 `./scripts/build-console.sh`。
+   第 3、4、6、7、28 组校验会在这里把关。
 
 ---
 
@@ -1167,8 +1168,10 @@ build: {
 ```
 
 这样 `Dockerfile` 只装构建好的 jar（连 Maven 都不跑，更不涉及 Node），Java 侧构建路径上
-完全没有 Node。但**产物本身不入库**，所以 `mvn package` 之前必须先跑
-`./scripts/build-console.sh`——Maven 不会替你构建前端。
+完全没有 Node。产物本身**不入库**，但**不需要手工先构建**——`mvn package` 里的
+`frontend-maven-plugin`（绑 `generate-resources`）会跑 `npm ci` + `vite build` 把它生成出来，
+再交给 `maven-resources-plugin` 复制进 `target/classes`。这几条 execution 的落点与理由
+见 §8.4。
 
 ### 8.2 产物不入库，但必须被构建出来
 
@@ -1181,14 +1184,20 @@ build: {
 - 半个产物比没有产物更难查：`index.html` 提交了、assets 漏了，页面白屏而
   `git status` 一片干净，只有新克隆的仓库跑起来才发现。
 
-代价是「改了前端」与「打了个能用的 jar」之间隔着一道手工步骤。所以这道步骤有三层守卫，
-都在**产物缺失或半套**时明确失败，而不是让 jar 安静地少一个 `/console`：
+代价是「改了前端」与「打了个能用的 jar」之间需要一道构建步骤。这道步骤**已经接进 Maven
+生命周期**（`frontend-maven-plugin`，见 §8.4），所以正常路径下它不再是手工的；
+剩下的失败面是「显式跳过（`-Dfrontend.skip=true`）而产物又没铺好」或「产物半套」。
+三层守卫都在**产物缺失或半套**时明确失败，而不是让 jar 安静地少一个 `/console`：
 
 | 层 | 时机 | 失败信息 |
 | --- | --- | --- |
-| `verify-console.py` 第 6 组 | 构建前，静态检查 | 入口页不存在 → 提示先跑 `build-console.sh`；入口页引用的 assets 缺失 → 逐个列出 |
+| `verify-console.py` 第 6 组 | 构建前，静态检查 | 入口页不存在 → 提示跑 `build-console.sh` 或 `mvn package`；入口页引用的 assets 缺失 → 逐个列出 |
 | `build-image.sh` | 出镜像前 | `unzip -l` 查 jar 里有没有 `static/console/index.html`，没有就拒绝构建镜像 |
-| `ConsoleApiTests` | 测试时 | classpath 上读不到入口页 → 提示「产物不入库，先跑 `build-console.sh`」 |
+| `ConsoleApiTests` | 测试时 | classpath 上读不到入口页 → 提示「产物不入库，先跑 `build-console.sh` 或 `mvn package`」 |
+
+另有一组**构建链自身**的守卫：`verify-console.py` 第 28 组断言 server POM 里那三条
+execution 仍在、绑对阶段、`skip` 与 `node.version` 属性在且取值合法、`outDir` 仍指向
+服务端静态资源目录——防的是「有人删掉一条 execution，jar 从此静默缺 `/console`」。
 
 **这件事在两个方向上都翻过车，值得记住**：最初 `.gitignore` 里有一行 `static/console`，
 而本文 §1、`README.md`、`server/pom.xml` 三处都写着「已提交」——文件都在磁盘上、
@@ -1231,8 +1240,9 @@ build: {
 </execution>
 ```
 
-早于 `process-resources`，所以随后的复制是干净的一次；
-`excludeDefaultDirectories` 置真以避免误删整个 `target`（那会把增量构建变成全量构建）。
+早于 `generate-resources`（前端在这里出产物）与 `process-resources`（复制到 `target/classes`），
+所以随后的复制是干净的一次；`excludeDefaultDirectories` 置真以避免误删整个 `target`
+（那会把增量构建变成全量构建）。
 
 判断它是否生效：
 
@@ -1246,6 +1256,56 @@ ls lakehouse-rest-spring-parent/lakehouse-rest-server/target/classes/static/cons
 控制台是内网管理界面，这个体积可以接受；真要做按需引入，
 改的是 `src/main.js` 的图标注册与 `vite.config.js` 的 `manualChunks`，
 不影响上述任何约定。
+
+### 8.5 前端构建接进 Maven 生命周期
+
+`lakehouse-rest-server/pom.xml` 里的 `frontend-maven-plugin`（`com.github.eirslett`）把
+「用哪个 Node」和「怎么构建前端」都变成了 `mvn package` 的一部分，因此**干净检出只要一条
+`mvn package`** 就能得到带 `/console` 的可执行 jar，构建机不需要预装 Node。
+
+三条 execution 全部绑在 `generate-resources`：
+
+| execution | goal | 做什么 |
+| --- | --- | --- |
+| `install-node-and-npm` | `install-node-and-npm` | 把 `${node.version}` 指定的 Node 解到 `target/frontend`（首次下载约 50MB 到本机 Maven 仓库，之后复用） |
+| `npm-ci` | `npm` | `npm ci --no-audit --no-fund`，按 `package-lock.json` 精确还原依赖 |
+| `npm-build` | `npm` | `npm run build`（= `vite build`），产物直接写进服务端静态资源目录 |
+
+**为什么必须是 `generate-resources`**：它正好夹在 `initialize` 与 `process-resources` 之间，
+于是构造顺序是
+
+```
+initialize          clean-derived-console-assets 先清掉 target 里的旧产物
+generate-resources  ← 前端在这里出产物（写进 src/main/resources/static/console）
+process-resources   maven-resources-plugin 把 src/main/resources 整体复制到 target/classes
+```
+
+即「先清 → 再生成 → 后复制」。绑到更晚的阶段（`prepare-package` 之类）会让
+`process-resources` 先复制、前端后构建，症状是「改了前端，jar 里却是旧页面」——比漏构建更难查。
+
+**几个必须一起记住的取值约束**（`verify-console.py` 第 28 组逐条守着）：
+
+- `node.version` **必须带 `v` 前缀**。插件用 `getNodeMajorVersion` 的 `^v(\d+)\..*$` 解析它，
+  拿去判定 macOS 上的架构标；写成裸 `22.23.4` 时正则不匹配 → 在 Apple Silicon 上判定为
+  **x64** → 去下不存在的 `node-...-darwin-x64.tar.gz` → 404。插件只打一句
+  `[WARNING] Node version does not start with naming convention 'v'.`，很容易被读成网络问题。
+- `node.version` 要满足 `lakehouse-rest-console` 里 vite 的 `engines`（当前
+  `^20.19.0 || >=22.12.0`），写小了 `npm run build` 当场报错。
+- `frontend.skip`（属性，默认 `false`）是唯一逃生开关：`-Dfrontend.skip=true` 跳过整组，
+  用于「本机已有新鲜产物、只想快速重跑打包或测试」。默认必须是 `false`——
+  本工程的核心决策是「打包出来能用」不该取决于人记不记得跑脚本。
+- `workingDirectory` 是 `../../lakehouse-rest-console`（本模块 → `lakehouse-rest-spring-parent`
+  → 仓库根；参考配置里的 `../web-console` 是平级布局，本仓是嵌套布局）。
+- `installDirectory` 是 `${project.build.directory}/frontend`（即 `target/frontend`，
+  随 `clean` 消失、被 `.gitignore` 覆盖）。
+
+**为什么不用 `exec-maven-plugin` 直接跑 `npm run build`**：那要求「跑 Maven 的机器上已经有一个
+够新的 Node」，而本工程的 jar 也要能在只装了 Maven 的环境里打出来。`install-node-and-npm`
+把「用哪个 Node」也变成构建的一部分，代价是第一次要下一个 46–50MB 的构件。
+
+**`npm ci` 是无条件执行的**（不判断 `node_modules` 是否已存在），与 `build-console.sh` 的
+按需安装有意不同——构建要可复现，「本机恰好留着一个半旧的 `node_modules`」产出的 bundle
+与别人不同却看不出来。日常只改后端时用 `-Dfrontend.skip=true` 跳过整组。
 
 ---
 
@@ -1285,8 +1345,8 @@ ls lakehouse-rest-spring-parent/lakehouse-rest-server/target/classes/static/cons
 （URL 错一位照样 404）；反之端点形状对了，服务也可能把「文件」当成目录列。
 
 最后一条把「产物是半套」变成了服务端测试能抓到的问题，
-与 `verify-console.py` 第 6 组是同一件事的两个入口（前者在 `mvnw test` 里跑，
-后者在 `build-console.sh` 结尾跑）。
+与 `verify-console.py` 第 6 组是同一件事的两个入口（前者在 `mvn test` 里跑，
+后者在本脚本或 `build-console.sh` 结尾跑）。
 
 一个实现细节：断言中文内容要用 `getContentAsString(StandardCharsets.UTF_8)`。
 静态资源响应头里没有 charset，`getContentAsString()` 会退回 ISO-8859-1，
@@ -1295,7 +1355,7 @@ ls lakehouse-rest-spring-parent/lakehouse-rest-server/target/classes/static/cons
 运行：
 
 ```bash
-./mvnw -o -pl :lakehouse-rest-server -Dtest=ConsoleApiTests test
+mvn -o -pl :lakehouse-rest-server -Dtest=ConsoleApiTests test
 ```
 
 前端另有一层**纯函数单测**（`node --test`，不需要浏览器也不需要构建）：
@@ -1364,8 +1424,10 @@ npm run test:execution                         # 只跑执行集群的 Spark 白
   [`console-catalog-detail.md`](console-catalog-detail.md) 与
   [`console-table-detail.md`](console-table-detail.md)。
 - **无 i18n。** 界面为中文单语，文案直接写在组件里。
-- **产物要手工构建。** 产物不入库，出 jar 之前必须跑 `scripts/build-console.sh`；
-  没有 CI 钩子替你做这一步（守卫是 `build-image.sh` 与 `ConsoleApiTests`，见 §8.2）。
+- **产物要构建出来，但已不是手工步骤。** 产物不入库，但 `mvn package` 里的
+  `frontend-maven-plugin` 会自己构建前端（§8.5）；只有显式 `-Dfrontend.skip=true` 时才需要
+  先跑 `scripts/build-console.sh`。没有 CI 钩子替你做这一步
+  （守卫是 `build-image.sh`、`ConsoleApiTests` 与 `verify-console.py` 第 6/28 组，见 §8.2）。
 - **Iceberg 协议面：目录浏览与表详情已通，写路径仍不做。** 已落地：
   Catalog 列表的「表格式」徽标与格式筛选、新建 Catalog 页的「表格式」三卡选择
   （默认值取 `meta.service.defaultCatalogFormat`，**创建后不可改**，编辑表单不回传它）、

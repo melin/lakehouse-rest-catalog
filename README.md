@@ -170,6 +170,8 @@ java -jar lakehouse-rest-spring-parent/lakehouse-rest-server/target/lakehouse-re
 `clean` 不能省：控制台产物按内容哈希命名，`maven-resources-plugin` 只覆写不删除，
 不 clean 会让 `target/classes/static/console` 累积历次旧产物（jar 里出现多个 `index-*.js`）。
 服务端 POM 已把一次 `clean` 绑到 `initialize` 兜底，所以 `mvn package` 也能干净——但 `-pl` 之外的场景仍建议手写。
+（控制台前端本身由 `mvn package` 的 `frontend-maven-plugin` 在 `generate-resources` 构建，
+所以这里的 `clean` 已经不需要再搭配一条手工的前端构建命令。）
 
 构建过程中 `maven-enforcer-plugin` 会校验四条依赖不变量（见第 1 节），
 所以「构建成功」本身就包含了一次模块方向检查；它失败时的报错信息是中文的，会指出违反的是哪条。
@@ -212,17 +214,18 @@ curl -s http://localhost:8080/api/management/v1/catalogs -H 'Authorization: Bear
 ### 2.2.1 直接看界面
 
 上面的操作都有对应的界面，不用写 curl：服务端自带 Web 管理控制台。
-**从源码构建要先打包前端**（产物不入库，见 [第 9 节](#9-web-管理控制台)）：
+**从源码构建时，前端由 `mvn package` 自动构建**（产物不入库，见 [第 9 节](#9-web-管理控制台)）：
 
 ```bash
-./scripts/build-console.sh              # 需要 Node 20+；产物落在服务端 classpath
-./mvnw -o -pl :lakehouse-rest-server -am clean package -DskipTests
+mvn -o -pl :lakehouse-rest-server -am clean package -DskipTests
 java -jar lakehouse-rest-spring-parent/lakehouse-rest-server/target/lakehouse-rest-server-1.0.0.jar \
   --spring.profiles.active=h2
 open http://localhost:8080/console/
 ```
 
-已经有发布好的 jar 或镜像时直接启动即可，不需要 Node。
+打包时会下载一个便携 Node 并把控制台前端一起构建进 jar（第一次约 50MB，之后复用）。
+已经有发布好的 jar 或镜像时直接启动即可，不需要 Node；本机已有产物、只想跳过前端那几十秒，
+加 `-Dfrontend.skip=true`。
 
 它覆盖 Catalog API（库表视图函数、快照标签分支、数据令牌与查询授权）与
 Management API（catalog、主体、角色、catalog 角色与 grants）两个 API 面，
@@ -914,7 +917,7 @@ JAVA_HOME=/path/to/jdk-21 mvn test
 | `StoragePolicyApiTests` | `file-io.type=s3` 时拒绝 Azure / GCS / OBS / OSS / COS catalog 并在报错里点明原因、接受 S3 与 FILE；`credential-manager.type=noop` 时凭据下发返回 501（`file-io.type=cosn` 只放开 COS 与 FILE 的那条映射在 `StorageCredentialResolutionTests` 里） |
 | `AuthorizationTests` | 权限蕴含与判定的单元行为 |
 | `CatalogEndpointAuthorizationTests` | 从运行时请求映射枚举全部 `/v1/{prefix}/**` 端点，逐一核对授权映射是否已登记——新增端点若忘记登记映射会让构建失败。枚举是**方法无关**的：Iceberg 面那三个显式登记的 `HEAD` 存在性检查端点一开始就把造请求的工厂顶爆了（`IllegalArgumentException: HEAD`），说明枚举确实覆盖了新协议面，而不是静默少测一批 |
-| `ConsoleApiTests` | 控制台的托管与元数据：`/console` 重定向、目录式路径转发入口页、深链回退、缺失 assets 仍 404、当前构建的入口页引用的产物都存在（产物缺失时给出「先跑 `build-console.sh`」的失败信息）、meta 的枚举与权限分组跟着规格走（含 `catalogFormats` 与服务端 `CatalogFormat` 枚举一致、`defaultCatalogFormat`）、登录引导同时如实返回 `authEnabled` 与 `consoleRequired`、门禁开着时控制台端点拒匿名而数据面仍开放（见第 9 节） |
+| `ConsoleApiTests` | 控制台的托管与元数据：`/console` 重定向、目录式路径转发入口页、深链回退、缺失 assets 仍 404、当前构建的入口页引用的产物都存在（产物缺失时给出「跑 `build-console.sh` 或 `mvn package`」的失败信息；本类不走 Maven 的 generate-resources，产物得先铺好）、meta 的枚举与权限分组跟着规格走（含 `catalogFormats` 与服务端 `CatalogFormat` 枚举一致、`defaultCatalogFormat`）、登录引导同时如实返回 `authEnabled` 与 `consoleRequired`、门禁开着时控制台端点拒匿名而数据面仍开放（见第 9 节） |
 | `ConsoleAuthEndpointTests` | 控制台登录在 HTTP 层的端到端：豁免端点可达而受保护端点拒绝匿名、**用户名密码登录成功/失败/缺参/限速与默认 `admin/admin`**、令牌签发与使用、错误密钥 401 与 `WWW-Authenticate`、**clientId 与用户名两种「不存在」的报文都与「密码不对」一字不差**、`invalid_scope` / `unsupported_grant_type`、Basic 与 JSON 体、失败限速、静态令牌映射、伪造 JWT 与畸形头。这一层才会暴露接线错误——排除列表写错、响应字段名写成驼峰、令牌端点自己反被鉴权挡住 |
 | `CatalogFileBrowserTests` | 仓库文件浏览的服务语义：下钻一层、目录优先排序、冗余分隔符与 `.` 归一化、`..` 与绝对路径 / 带 scheme 拒绝、目录不存在 404、指向文件 400、未知 catalog 404、无 warehouse 400、超出上限标 `truncated`、关开关 501；表目录为根的三条（表级下钻、出不了表目录、未知表 404）；名称前缀过滤的四条（过滤与回显、过滤先于截断、只比本层条目名、含 `/` 拒 400，含表级过滤）；下载的三条（流里字节数与元数据一致、目录与仓库根 400、关开关 501） |
 | `CatalogFileEndpointTests` | 四条端点的**接口形状**：URL、`path` / `prefix` 查询参数、状态码、响应字段名；下载钉 `Content-Disposition` 与 `Content-Length` 与实际字节一致；前缀过滤钉回显与 `total` 口径。与服务语义分开是因为这些错误各自独立——服务能把目录列对不代表端点拼对了，反过来同理 |
@@ -1097,6 +1100,7 @@ python3.11 scripts/gen-flyway-baseline.py --check   # 只校验是否漂移（�
 python3.11 scripts/gen-flyway-baseline.py           # 重生成（仅在尚未出现 V2 时可用；出现 V2 后退出码 2）
 
 # 控制台：构建产物落位 + 与服务端规格逐条比对端点
+# （一把出 jar 时前端已由 mvn package 构建；这条是「只重建前端」的便捷入口）
 ./scripts/build-console.sh                   # 需要 Node 20+，见第 9 节
 python3 scripts/verify-console.py            # 只校验，不构建（多解释器时用 PYTHON=... 指定）
 ```
@@ -1345,12 +1349,15 @@ http://localhost:8080/console/
   表级授权不在表详情页做，统一到「权限管理」页。
 - **构建产物不入库，但必须进 jar。** 控制台产物落在
   `lakehouse-rest-spring-parent/lakehouse-rest-server/src/main/resources/static/console`，
-  由 `.gitignore` 排除；打包服务端之前要先跑 `./scripts/build-console.sh`（需要 Node 20+）。
-  漏掉这一步不会报错——打出的 jar 里没有 `/console`，只是浏览器打开 404；
+  由 `.gitignore` 排除；**打包时由 `mvn package` 自己构建**（server POM 的
+  `frontend-maven-plugin` 绑在 `generate-resources`，跑 `npm ci` + `vite build`），
+  因此「漏掉构建步骤」这个状态已经不存在了——不想构建前端时用 `-Dfrontend.skip=true`，
+  那时才需要先跑 `./scripts/build-console.sh`（需要 Node 20+）。
+  产物缺失不会报错——打出的 jar 里没有 `/console`，只是浏览器打开 404；
   因此 `verify-console.py` 第 6 组、`build-image.sh` 与 `ConsoleApiTests` 都会在产物缺失时明确失败。
 - **路径不靠人工比对。** 全部端点收在 `lakehouse-rest-console/src/api/endpoints.js` 一张表里，
   由 `scripts/verify-console.py` 与四份 OpenAPI 规格（Paimon / Iceberg / Lance / 管理 API）机械比对
-  （28 组 240 项：端点存在性、引用完整性、五处基址一致、产物新鲜度、对话框状态、下拉候选来源、
+  （29 组 249 项：端点存在性、引用完整性、五处基址一致、产物新鲜度、对话框状态、下拉候选来源、
   静态凭据字段与服务端的一致性、三种格式的优化参数键（且两两不重合）、**catalog 表格式**、**Iceberg 目录浏览的契约形状**、
   存储字段分层、事件页的远程分页与类型筛选、问号图标悬停即显、提示性告警的正文收进问号（TipAlert：错误不收、带按钮的正文留在可见区）、**全站表格的远程分页（页码与过滤下推、
   分页器只有 `TablePager` 一个）**、**血缘页签的异步挂载与纯函数布局**、

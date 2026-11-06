@@ -2,12 +2,15 @@ FROM docker.1ms.run/eclipse-temurin:17-jdk
 
 # 构建方式（两个都写在这里，不只写在 README 里）：
 #
-#   ./scripts/build-console.sh                                 # 控制台产物；不入库，必须先构建
 #   mvn -o -pl :lakehouse-rest-server -am clean package -DskipTests
 #   docker buildx build -t registry.cn-hangzhou.aliyuncs.com/melin1204/lakehouse-rest-catalog:1.0.0 --platform linux/amd64 . --push
 #
-# 第一条漏了也不会让第二条失败——只是打进镜像的 jar 里没有 /console。
-# scripts/build-image.sh 会在 buildx 之前用 unzip 查一次，把这件事提前成构建前的失败。
+# 第一条已经把控制台前端一起构建了：server POM 里的 frontend-maven-plugin 绑在
+# generate-resources，跑 npm ci + vite build 把产物写进 src/main/resources/static/console。
+# 前端产物不入库，但对本镜像的构建链**不再是一道手工步骤**——`mvn package` 就是完整的
+# （需要本机有 Node，或用 -Dfrontend.skip=true 复用已有产物，见 server POM）。
+# scripts/build-image.sh 仍在 buildx 之前用 unzip 查一次 jar 里有没有 /console，
+# 把「忘记构建前端」提前成构建前的失败。
 #
 # 第二条是脚本 verify-k8s-manifests.py §9 的输入：它从本文件抓「构建镜像的那条命令」
 # 里的镜像名，再核对 deploy/kubernetes 下的清单有没有引用同一个镜像。所以改镜像名时

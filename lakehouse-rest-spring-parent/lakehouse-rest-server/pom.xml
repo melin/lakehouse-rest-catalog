@@ -36,7 +36,11 @@
 		  domain 的三张优化表 + 三个仓储
 		  dto/Management*、Optimization* 管理 API 与优化的契约
 		  config/DataInitializer 等装配   启动期初始化与调度开关
-		  resources/application*.yml     配置；static/console 是控制台的构建产物（不入库，打包前跑 scripts/build-console.sh）
+		  resources/application*.yml     配置；static/console 是**本模块构建期**由
+		                                 lakehouse-rest-console 构建出来的控制台产物
+		                                 （产物不入库，由 frontend-maven-plugin 在
+		                                 generate-resources 阶段生成，跳过用
+		                                 -Dfrontend.skip=true）
 
 		镜像里有什么，看这一个 POM 就够了——这正是把可执行物单独成一个模块的价值。
 	-->
@@ -244,6 +248,89 @@
 
 	<build>
 		<plugins>
+			<!--
+				★ 前端构建：让 `mvn package` 一步产出带 /console 的可执行 jar。
+
+				历史：这里曾经是「手工步骤」——产物不入库，出 jar 前必须先跑
+				scripts/build-console.sh，漏掉它的表现是安静的（jar 里没有 /console，
+				服务端不报错，只有浏览器打开 /console/ 才 404）。现在把那条链路
+				接进生命周期，`mvn -o` 之外的单条 `mvn package` 就是完整的。
+
+				三条 execution 的落点：
+				  install-node-and-npm   把指定版本的 Node 解到 target/frontend（只需一次，之后复用）
+				  npm ci                 按 package-lock.json 精确还原 node_modules
+				  npm run build          = vite build，产物直接写进
+				                         src/main/resources/static/console（见前端 vite.config.js 的 outDir）
+
+				为什么绑 generate-resources（而不是 package 之前随便哪个点）：
+				这是「介于 initialize 与 process-resources 之间」的那个阶段，于是得到
+
+				  initialize          clean-derived-console-assets 先清掉 target 里的旧产物
+				  generate-resources  ← 前端在这里出产物（写进 src/main/resources/...）
+				  process-resources   maven-resources-plugin 把 src/main/resources
+				                      整个复制到 target/classes，/console 随之就位
+
+				即「先清、再生成、后复制」——把三条绑到更晚的阶段（如 prepare-package）
+				会让 process-resources 复制到的还是上一轮的文件，症状是「改了前端，
+				jar 里却是旧页面」，比漏构建更难查。
+
+				**为什么不能改成 Maven 之外的脚本 + 文档约定**：那正是被推翻的旧设计。
+
+				关于速度：`npm ci` 是无条件的（不判断 node_modules 是否已存在），
+				与 scripts/build-console.sh 的按需安装有意不同——构建要可复现，
+				「本机恰好留着一个半旧的 node_modules」产出的 bundle 与别人不同却看不出来。
+				日常只改后端时用 `-Dfrontend.skip=true` 跳过整组（见父 POM 的 frontend.skip）。
+			-->
+			<plugin>
+				<groupId>com.github.eirslett</groupId>
+				<artifactId>frontend-maven-plugin</artifactId>
+				<configuration>
+					<!--
+						前端工程与仓库根的相对位置：本模块 → lakehouse-rest-spring-parent → 仓库根。
+						参考配置里写 `../web-console` 是平级布局；本仓是嵌套布局，故为 ../../。
+						写错的表现是「找不到 package.json」，不会静默。
+					-->
+					<workingDirectory>../../lakehouse-rest-console</workingDirectory>
+					<!-- Node 解在这里（= target/frontend），随 clean 一起消失，不进版本库 -->
+					<installDirectory>${project.build.directory}/frontend</installDirectory>
+					<nodeVersion>${node.version}</nodeVersion>
+					<skip>${frontend.skip}</skip>
+				</configuration>
+				<executions>
+					<execution>
+						<id>install-node-and-npm</id>
+						<phase>generate-resources</phase>
+						<goals>
+							<goal>install-node-and-npm</goal>
+						</goals>
+					</execution>
+					<execution>
+						<id>npm-ci</id>
+						<phase>generate-resources</phase>
+						<goals>
+							<goal>npm</goal>
+						</goals>
+						<configuration>
+							<!--
+								按 lock 文件精确还原，不用 npm install：后者会顺手把
+								package.json 里的 ^ 区间向上解析，两个人跑出两份依赖树。
+								后面两个 no-audit / no-fund 开关只为少打两段噪音（不改变产物）。
+							-->
+							<arguments>ci --no-audit --no-fund</arguments>
+						</configuration>
+					</execution>
+					<execution>
+						<id>npm-build</id>
+						<phase>generate-resources</phase>
+						<goals>
+							<goal>npm</goal>
+						</goals>
+						<configuration>
+							<arguments>run build</arguments>
+						</configuration>
+					</execution>
+				</executions>
+			</plugin>
 			<!-- 只有本模块打成可执行 jar：spring-boot-maven-plugin 只在这里出现 -->
 			<plugin>
 				<groupId>org.springframework.boot</groupId>
@@ -282,11 +369,17 @@
 				实测一次增量构建就多出 20 个死文件（含上一版 1.1 MB 的 index chunk），
 				打进 jar 里就是白白胖胖的几 MB，而且看 jar 内容会误以为有两个入口 chunk。
 
+				接入 frontend-maven-plugin 之后这条**仍然必需**，理由没变：
+				generate-resources 里 vite 自己会 emptyOutDir 清空 **src/main/resources** 下的
+				那份产物，但 target/classes 里的那一份不归它管，只有本插件清得到。
+				（换句话说：vite 的 emptyOutDir 与本条是两处目录的两件事，别以为前者能替代后者。）
+
 				镜像里的 jar 直接来自本地构建（Dockerfile 只装、不编译），
 				因此这条守卫要兜住的正是最常发生的场景：改完控制台后只跑
 				package，而不是 clean package。
 
-				绑到 initialize：早于 process-resources，所以随后的复制是干净的一次。
+				绑到 initialize：早于 generate-resources（前端出产物）与 process-resources
+				（复制到 target/classes），因此随后的复制是干净的一次。
 				excludeDefaultDirectories 置真，避免误删整个 target（clean 的默认行为）。
 				故意不删 target/classes 本身——那会连带清掉编译输出，
 				把增量构建变成全量构建。

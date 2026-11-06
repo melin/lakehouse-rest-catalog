@@ -48,9 +48,11 @@ __pycache__/
 #   - 曾入库（理由是「构建服务端 jar 不需要 Node」）：代价是每改一次前端都要提交
 #     80 多个哈希文件，review 全是 diff 噪音；漏提交一半的表现是「页面白屏、
 #     git status 一片干净」，只有新克隆的仓库跑起来才发现。
-#   - 现在不入库：构建 jar 之前必须先跑 ./scripts/build-console.sh（Node 20+），
-#     而「忘记跑」不会再静默——产物缺失时 verify-console.py 第 6 组、build-image.sh
-#     与 ConsoleApiTests 都会明确失败，并给出该跑哪条命令。
+#   - 现在不入库：产物在 `mvn package` 里由 server POM 的 frontend-maven-plugin
+#     现场构建（generate-resources 阶段），因此「忘记构建」这个状态已经不存在了——
+#     想跳过用 -Dfrontend.skip=true，那时才需要先自己跑 ./scripts/build-console.sh。
+#     产物缺失时 verify-console.py 第 6 组、build-image.sh 与 ConsoleApiTests
+#     都会明确失败，并给出该跑哪条命令。
 #
 # 机械检查在 scripts/verify-console.py 第 6 组：它要求这个目录**确实被忽略**、
 # 入口页**确实没被跟踪**。也就是说别用 `git add -f` 把产物塞回来——那等于把上面
