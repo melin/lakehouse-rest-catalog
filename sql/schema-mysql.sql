@@ -543,6 +543,28 @@ USE `lakehouse_catalog`;
         primary key (id)
     ) comment='敏感数据扫描：一次扫描的范围、模式、生效执行位置与计数' engine=InnoDB;
 
+    create table lakehouse_sensitivity_schedule (
+        enabled_flag bit not null comment '是否启用；停用后不再触发，历史扫描仍按 schedule_name 可查',
+        entity_version integer not null comment '乐观并发版本号（人工编辑用），与 next_run_at 的抢占语义分开',
+        sample_size integer not null comment '采样行上限（默认 2000）',
+        created_at bigint comment '创建时刻（epoch 毫秒）',
+        id bigint not null auto_increment comment '自增主键',
+        last_run_at bigint comment '上次触发的时刻（epoch 毫秒）',
+        next_run_at bigint comment '下次触发时刻（epoch 毫秒）；调度器抢占的 CAS 条件',
+        updated_at bigint comment '最后更新时刻（epoch 毫秒）',
+        execution varchar(16) not null comment '执行位置：IN_PROCESS / SPARK（未填时取三层覆盖的生效值）',
+        mode varchar(16) not null comment '扫描模式：METADATA_ONLY / SAMPLED',
+        catalog_name varchar(64) not null comment 'catalog 名',
+        cron varchar(64) not null comment 'cron 表达式（5 段或 6 段，秒级可选）',
+        name varchar(128) not null comment '调度项名（唯一；扫描表按它回查历史，因此不可改名）',
+        table_name varchar(512) comment '表名；catalog / 库级调度为空',
+        created_by varchar(255) comment '创建者主体名（写入前已按列宽归一化）',
+        database_name varchar(255) comment '库名；catalog 级调度为空',
+        owner varchar(255) comment '记录归属主体（展示与过滤用，不参与授权判定）',
+        updated_by varchar(255) comment '最后更新者主体名（写入前已按列宽归一化）',
+        primary key (id)
+    ) comment='定时扫描的调度项（自建调度：cron + next_run_at 抢占令牌）' engine=InnoDB;
+
     create table lakehouse_sensitivity_suppression (
         enabled_flag bit not null comment '是否仍生效；解禁置 false，不删行',
         created_at bigint comment '创建时刻（epoch 毫秒）',
@@ -851,6 +873,12 @@ USE `lakehouse_catalog`;
 
     create index ix_sensitivity_scan_status 
        on lakehouse_sensitivity_scan (status_value);
+
+    create index ix_sensitivity_schedule_catalog 
+       on lakehouse_sensitivity_schedule (catalog_name);
+
+    alter table lakehouse_sensitivity_schedule 
+       add constraint uk_sensitivity_schedule unique (name);
 
     create index ix_sensitivity_suppression_catalog 
        on lakehouse_sensitivity_suppression (catalog_name);

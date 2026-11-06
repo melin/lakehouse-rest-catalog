@@ -62,6 +62,14 @@ public enum ResourceType {
     SENSITIVITY_SUPPRESSION,
     /** 列级标签（{@code /api/management/v1/column-tags}）。 */
     COLUMN_TAG,
+    /**
+     * 一条定时扫描的调度项（{@code /api/management/v1/sensitivity-schedules/{id}}）。
+     *
+     * <p>与 {@link #SENSITIVITY_SCAN} 分开：{@code 404} 的语义是「这条调度项不存在」
+     * 还是「这次扫描不存在」，指向两张表、两套排查动作。而两者的 id 形状还不同
+     * （调度项是自增数字、扫描是 UUID），混用会让人拿着 3 去扫描历史里找。
+     */
+    SENSITIVITY_SCHEDULE,
     /** 标签到脱敏动作的绑定。 */
     TAG_MASK_BINDING,
     UNKNOWN

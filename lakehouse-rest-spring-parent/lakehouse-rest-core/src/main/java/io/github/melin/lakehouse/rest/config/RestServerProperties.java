@@ -1253,6 +1253,45 @@ public class RestServerProperties {
         private final Scan scan = new Scan();
 
         private final Propagation propagation = new Propagation();
+
+        private final Schedule schedule = new Schedule();
+    }
+
+    /**
+     * {@code lakehouse.rest.sensitivity.schedule.*}：自建调度的两个节拍（设计稿 §5.6.3，P4 落地）。
+     *
+     * <p><b>两个节拍而不是一个</b>，与表优化的 {@code scan-interval} / {@code dispatch-interval}
+     * 同一个理由：它们回答的是两件时效性差异很大的事——「这一拍该不该发起扫描」
+     * （分钟级，cron 的最小粒度是分钟）与「PENDING 的扫描作业该不该提交了 / 跑到哪了」
+     * （十秒级，决定用户在控制台上看到多久的延迟）。
+     *
+     * <p><b>这里没有 enabled 开关。</b>「服务端有没有定时任务」由
+     * {@code lakehouse.rest.optimization.scheduler-enabled} 一个开关决定（设计稿 §5.6.3
+     * 的「节拍来源」那一行）：两个 {@code @EnableScheduling} 没有意义，而分成两个开关
+     * 之后，「我关掉了定时任务」这句话要读两处才敢相信。调度项本身可以逐条停用，
+     * 那是另一个粒度、走 {@code enabled_flag}。
+     */
+    @Getter
+    @Setter
+    public static class Schedule {
+
+        /**
+         * 调度节拍：多久看一次 {@code lakehouse_sensitivity_schedule} 的到期项，默认 1 分钟。
+         *
+         * <p>与 cron 的最小粒度对齐：再快也不会让「每分钟一次」的表达式更准时，
+         * 只会让每台实例多几次空查询。
+         */
+        private Duration tick = Duration.ofMinutes(1);
+
+        /**
+         * 提交与跟踪节拍：把 {@code PENDING} 的扫描提交到执行集群、问 {@code RUNNING}
+         * 的跑到哪了，默认 10 秒。
+         *
+         * <p>与表优化的 {@code dispatch-interval} 取同一个数：两者做的是同一件事
+         * （把库里排队的作业放到集群上、把集群的状态收回来），用户对「提交了多久才真的
+         * 开始跑」的预期不该因为作业类型不同而不同。
+         */
+        private Duration dispatchInterval = Duration.ofSeconds(10);
     }
 
     /**

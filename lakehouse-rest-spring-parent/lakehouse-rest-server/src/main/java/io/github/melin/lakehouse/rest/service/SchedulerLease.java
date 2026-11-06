@@ -29,8 +29,10 @@ import org.springframework.stereotype.Component;
  * {@code claim_attempt}、终态的 {@code status} CAS。因此调用方的写法是
  * 「抢不到就早退」，而不是把业务逻辑放进 {@code if (leased)} 里当唯一判断。
  *
- * <p><b>三个通道而不是一个。</b>扫描是分钟级、提交是十秒级、血缘清理是日级，
- * 合成一个会让「扫描卡在某个慢 catalog 上」把提交也堵住。
+ * <p><b>五个通道而不是一个。</b>优化出批与提交是分钟级 / 十秒级、血缘清理是日级、
+ * 敏感识别的调度与提交各是一个阶段（A 路线在调度那一拍就把扫描跑掉，B 路线只落一行
+ * {@code PENDING}，由提交通道去下推）。合成一个会让「扫描卡在某个慢 catalog 上」
+ * 把提交也堵住，也会让「停掉优化扫描」变成一件说不清影响面的事。
  */
 @Component
 @RequiredArgsConstructor
@@ -46,10 +48,32 @@ public class SchedulerLease {
     public static final String CHANNEL_LINEAGE = "lineage.cleanup";
 
     /**
+     * 敏感识别调度通道：{@code SensitivityScheduleDispatcher#tick}。
+     *
+     * <p><b>名字必须是 {@code sensitivity.scan}，不能叫 {@code scan}。</b>上面那个
+     * {@link #CHANNEL_SCAN} 叫 {@code optimization.scan}，但它**不是扫描**——它是表优化
+     * 「哪些表该入批」的出批节拍。两件事共用一个名字之后，「停掉优化扫描」会变成
+     * 一件说不清影响面的事（设计稿 §5.6.3 的 blockquote 专门记了这个坑）。
+     */
+    public static final String CHANNEL_SENSITIVITY_SCAN = "sensitivity.scan";
+
+    /**
+     * 敏感识别提交通道：{@code SensitivityScanner#submitPending} / {@code reapStaleSubmissions}
+     * （设计稿 §5.6.3）。
+     *
+     * <p>与调度通道分开，是因为它们是两个阶段：{@code sensitivity.scan} 决定「这一拍谁去读
+     * 调度表并发起扫描」（A 路线在这一步就把扫描跑掉了），{@code sensitivity.dispatch}
+     * 决定「谁去把 {@code PENDING} 提交成 Job」。只做第一个的话，B 路线下每台实例都会
+     * 各自提交一遍同一批 {@code PENDING} 扫描——多副本下最典型的重复任务。
+     */
+    public static final String CHANNEL_SENSITIVITY_DISPATCH = "sensitivity.dispatch";
+
+    /**
      * 通道清单。新增 {@code @Scheduled} 必须在这里登记——没登记就没人给它让路，
      * 多副本下每一台都会跑同一件事（{@code docs/optimization-multi-instance-design.md} §5.6）。
      */
-    private static final List<String> CHANNELS = List.of(CHANNEL_SCAN, CHANNEL_DISPATCH, CHANNEL_LINEAGE);
+    private static final List<String> CHANNELS = List.of(CHANNEL_SCAN, CHANNEL_DISPATCH,
+            CHANNEL_LINEAGE, CHANNEL_SENSITIVITY_SCAN, CHANNEL_SENSITIVITY_DISPATCH);
 
     /** TTL 下限：节拍调得再快，租约也不该短于 30 秒——否则网络抖动就能造成双持有。 */
     private static final Duration MIN_TTL = Duration.ofSeconds(30);
@@ -76,7 +100,7 @@ public class SchedulerLease {
     private volatile boolean rowsEnsured;
 
     /**
-     * 启动时补齐三行，并打印通道清单。
+     * 启动时补齐全部通道行，并打印通道清单。
      *
      * <p>为什么要「补齐」而不是写进 DDL 的种子数据：{@code sql/schema-mysql.sql}
      * 是从实体生成的产物，写进去会在下次生成时丢失。两个实例同时启动时其中一个会撞主键
@@ -157,6 +181,20 @@ public class SchedulerLease {
         return interval.compareTo(MIN_TTL) < 0 ? MIN_TTL : interval;
     }
 
+    /**
+     * 扫描提交的租约 TTL（批次级 {@code claim_expires_at}）。
+     *
+     * <p>与优化批次那条同一条推导规则「3 × 节拍且 ≥ 30 秒」，只是节拍取的是敏感识别的
+     * 提交节拍：它决定「提交中的扫描多久之后可以被别的实例接管」。两处**不能共用同一个
+     * 常量**——两边的节拍可以各自调，共用会让「把扫描提交间隔调成 30 秒」
+     * 意外地把优化批次的回收窗口也缩短一半。
+     */
+    public Duration sensitivitySubmissionLeaseTtl() {
+        Duration interval = properties.getSensitivity().getSchedule().getDispatchInterval()
+                .multipliedBy(3);
+        return interval.compareTo(MIN_TTL) < 0 ? MIN_TTL : interval;
+    }
+
     /** 本实例标识，落进批次表的 {@code claim_owner}，排查时能认出是哪台机器卡住的。 */
     public String instanceId() {
         return instanceId;
@@ -205,9 +243,15 @@ public class SchedulerLease {
         if (CHANNEL_LINEAGE.equals(channel)) {
             return LINEAGE_TTL;
         }
-        Duration interval = CHANNEL_SCAN.equals(channel)
-                ? properties.getOptimization().getScanInterval()
-                : properties.getOptimization().getDispatchInterval();
+        Duration interval = switch (channel) {
+            case CHANNEL_SCAN -> properties.getOptimization().getScanInterval();
+            // 敏感识别的调度节拍是分钟级（cron 的最小粒度），提交节拍是十秒级（决定用户
+            // 看到多久的延迟）——两个通道各自按自己的节拍派生，与表优化那两个一一对应
+            case CHANNEL_SENSITIVITY_SCAN -> properties.getSensitivity().getSchedule().getTick();
+            case CHANNEL_SENSITIVITY_DISPATCH ->
+                    properties.getSensitivity().getSchedule().getDispatchInterval();
+            default -> properties.getOptimization().getDispatchInterval();
+        };
         Duration threeTicks = interval.multipliedBy(3);
         return threeTicks.compareTo(MIN_TTL) < 0 ? MIN_TTL : threeTicks;
     }

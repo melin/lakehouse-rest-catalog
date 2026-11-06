@@ -155,11 +155,16 @@ class MysqlDdlGeneratorTests {
      * 标签是列级事实，作用域与生命周期都不同——塞进同表会让「改一次绑定」变成
      * 改 200 行（每张表各存一份），漏改两行没有任何提示。
      *
+     * <p>P4 自建调度再加一张到 36：{@code lakehouse_sensitivity_schedule}
+     * （调度项，设计稿 §4.6 / §5.6.3）。它**不是**「选了自建才建」的可选项——
+     * 路线一旦拍板为自建，它就是数据模型的一部分；而 {@code next_run_at} 那一列是
+     * 抢占的 CAS 条件，没有它「多副本下只触发一次」就无从实现。
+     *
      * <p><b>包内可见，另有一处引用。</b>{@code FlywayBaselineTests} 拿它断言「迁移
      * 脚本真的建出了实体所需的全部表」。那是同一个事实（仓库共有多少张实体表），
      * 各写一份就会在每次改结构时被各自手改一遍——正是这个常量想避免的失效方式。
      */
-    static final int EXPECTED_TABLES = 35;
+    static final int EXPECTED_TABLES = 36;
 
     /** MySQL 一张表一行的最大字节数（存储层上限，与列长度上限是两件事）。 */
     private static final long MYSQL_ROW_SIZE_LIMIT = 65535L;

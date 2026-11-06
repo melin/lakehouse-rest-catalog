@@ -431,4 +431,79 @@ public final class SensitivityDtos {
                                                    Integer propagationMaxDepth,
                                                    Integer entityVersion) {
     }
+
+    // ------------------------------------------------------------------ 调度项（P4）
+
+    /**
+     * 一条调度项（{@code GET /sensitivity-schedules}、{@code GET /sensitivity-schedules/{id}}）。
+     *
+     * <p><b>{@code scope} 是派生值</b>（库里只存三段名，见实体注释），但读模型必须给出来：
+     * 界面上的「catalog 级 / 库级 / 表级」这一列如果由前端自己按「哪些字段有值」推，
+     * 同一套推导就有了两份实现，而其中一份迟早会漏掉「表名恰好等于库名」这类情形。
+     *
+     * <p>{@code nextRunAt} 是**服务端算的那个数**，不是「按 cron 现算」。两者在多副本、
+     * 时钟漂移、以及「上一拍被抢占但扫描失败」之后会不一致，而用户关心的恰恰是
+     * 「它下一次到底什么时候跑」——那个答案在库里。
+     *
+     * <p>{@code entityVersion} 只服务人工编辑的乐观锁；调度器推进 {@code nextRunAt}
+     * **不会**改它（那是抢占令牌，不是编辑）。因此「看到 3 但实际已是 4」只会发生在
+     * 两个人同时改同一条调度项时——这正是 409 要表达的事。
+     */
+    public record SensitivitySchedule(long id,
+                                      String name,
+                                      String cron,
+                                      String catalog,
+                                      String scope,
+                                      String database,
+                                      String table,
+                                      String mode,
+                                      String execution,
+                                      int sampleSize,
+                                      boolean enabled,
+                                      Long lastRunAt,
+                                      Long nextRunAt,
+                                      int entityVersion,
+                                      String createdBy,
+                                      Long createdAt,
+                                      String updatedBy,
+                                      Long updatedAt) {
+    }
+
+    /**
+     * 调度项清单。
+     *
+     * <p><b>不分页。</b>量级是「十几条到几十条」——每个 catalog 的扫描节奏不会有人配出
+     * 上百条；而分页会让「按 catalog 过滤」与「按启用状态过滤」在界面上互相牵制
+     * （筛出来 3 条却显示 2 页）。与 {@code /sensitive-types}、{@code /tag-mask-bindings}
+     * 同一取舍。
+     */
+    public record SensitivityScheduleList(List<SensitivitySchedule> items) {
+    }
+
+    /**
+     * {@code POST} / {@code PUT /sensitivity-schedules[/{id}]} 的请求体。
+     *
+     * <p>{@code name} 只在新建时有意义：**改名会被拒（400）**，因为扫描表按
+     * {@code schedule_name} 回查历史，改名会让「这条扫描是哪条调度项触发的」失去指向。
+     * 要换名字请建一条新的、停用旧的——旧名字下的历史仍可查。
+     *
+     * <p>{@code execution} 留空时取三层覆盖的生效值（请求 &gt; catalog &gt; 全局）并落库：
+     * 调度项是长期对象，「它会在哪跑」必须能在库里读出来，不能每次触发时再算一遍
+     * （算出来的值与当时那一刻的 catalog 设置有关，事后无法重建）。
+     *
+     * <p>{@code entityVersion} 只在 {@code PUT} 有意义：{@code null} 表示跳过校验
+     * （与 {@code PUT /sensitivity-settings} 同口径）。
+     */
+    public record SensitivityScheduleUpsertRequest(String name,
+                                                   String cron,
+                                                   String catalog,
+                                                   String scope,
+                                                   String database,
+                                                   String table,
+                                                   String mode,
+                                                   String execution,
+                                                   Integer sampleSize,
+                                                   Boolean enabled,
+                                                   Integer entityVersion) {
+    }
 }

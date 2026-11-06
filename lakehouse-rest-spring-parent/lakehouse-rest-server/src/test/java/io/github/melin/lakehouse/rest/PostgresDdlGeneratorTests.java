@@ -125,12 +125,18 @@ class PostgresDdlGeneratorTests {
     /**
      * 实体的表数量；新增/删除实体时应同步调整，否则本测试会失败提醒。
      *
-     * <p>与 MySQL 脚本共用同一套实体，因此数量同为 35（见
+     * <p>与 MySQL 脚本共用同一套实体，因此数量同为 36（见
      * {@code MysqlDdlGeneratorTests#EXPECTED_TABLES} 的演进注释：从 23 经行过滤/列脱敏
      * 到 25，加 catalog 级执行集群到 26，加调度通道租约到 27，加 Lance 版本账到 28，
-     * 加身份接入的组映射表到 29，加敏感数据识别五张表到 34，加 P1 人审的抑制项表到 35）。
+     * 加身份接入的组映射表到 29，加敏感数据识别五张表到 34，加 P1 人审的抑制项表到 35，
+     * 加 P4 自建调度的调度项表到 36）。
+     *
+     * <p><b>两个测试各写一份常量，是刻意的。</b>它们各自加载**不同方言**的上下文
+     * （{@code MySql8Dialect} / {@code PostgreSQLDialect}），一份变了另一份没变时，
+     * 失败会同时落在两个类上——这比让一个类去 import 另一个类的常量更能说明「方言
+     * 无关的表数事实被两处都读到了」。两份不一致时先看这里与 MySQL 那份的差值。
      */
-    private static final int EXPECTED_TABLES = 35;
+    private static final int EXPECTED_TABLES = 36;
 
     /** 表级注释：{@code comment on table X is '...'}。 */
     private static final Pattern TABLE_COMMENT = Pattern.compile(

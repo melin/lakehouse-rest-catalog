@@ -124,6 +124,8 @@ update lakehouse_scheduler_lease
 | --- | --- | --- |
 | `optimization.dispatch`（TTL 60s） | 6 拍没人提交，且拖慢 `SUBMITTING` 回收 | 批次晚 60~90 秒启动或收尾，不双跑 |
 | `optimization.scan`（TTL 3min） | 3 拍不出批 | 表晚 3 分钟被优化，下一拍自然补上 |
+| `sensitivity.scan`（TTL 3min） | 3 拍没人读调度表 | 调度项的一次触发晚至多 3 分钟；`next_run_at` 的 CAS 保证不补发、也不双发 |
+| `sensitivity.dispatch`（TTL 30s） | 3 拍没人提交下推扫描 | `PENDING` 的扫描晚 30~60 秒提交；回收器照旧把它拉回 `PENDING` |
 | `lineage.cleanup`（TTL 1h） | 当天 cron 可能整轮空窗 | 幂等 DELETE + 日级节拍，次日重跑等价；嫌长就缩到 2× 预估运行时长，或在批之间续约 |
 
 两种「没跑 `@PreDestroy`」要分开看：

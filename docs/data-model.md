@@ -1,6 +1,6 @@
 # 数据模型
 
-服务端把 catalog 元数据与授权关系全部放进关系库，共 **29 张表、29 个 JPA 仓储接口**。
+服务端把 catalog 元数据与授权关系全部放进关系库，共 **36 张表、36 个 JPA 仓储接口**（一对一：一张表一个实体、一个仓储，`MysqlDdlGeneratorTests` 的 `EXPECTED_TABLES` 与 `FlywayBaselineTests` 一起守着这个数）。
 本文件说明表的划分，以及三个容易看错或踩坑的设计点：摘要列、审计列、JSON 文档列。
 
 - 实体与仓储按模块分两处（模块划分见 [`maven-module-design.md`](maven-module-design.md) §8，
@@ -254,7 +254,7 @@ STS 令牌、`AKS`→AAD 客户端凭据）。一行一 catalog（`catalog_id` �
 
 | 表 | 对应资源 | 说明 |
 | --- | --- | --- |
-| `lakehouse_scheduler_lease` | 调度通道的「谁跑这一拍」 | 一行一个通道（`optimization.scan` / `optimization.dispatch` / `lineage.cleanup`），`lease_owner` + `expires_at` 是租约，`fencing_token` 每次易主 +1 |
+| `lakehouse_scheduler_lease` | 调度通道的「谁跑这一拍」 | 一行一个通道（`optimization.scan` / `optimization.dispatch` / `lineage.cleanup` / `sensitivity.scan` / `sensitivity.dispatch`），`lease_owner` + `expires_at` 是租约，`fencing_token` 每次易主 +1 |
 
 它**不是业务数据**，是并发控制的落点：行在启动时补齐（不写进 DDL 的种子数据，
 因为 `sql/schema-mysql.sql` 是生成物）。选租约而不是锁，是因为多副本里最常见的故障是

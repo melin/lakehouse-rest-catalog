@@ -771,6 +771,22 @@ DQ 的规则可以按标签匹配：「所有 `L3+` 列必须有 completeness �
 > - **绑定写入只校验到语法层**（`PolicyExpressions.parseMaskTemplate`）：绑定不知道会落在什么类型的列上，所以「结果类型等于列类型」留到引擎编译时兜；但「fn 拼错」「表达式引用 `col`」必须写入即拒——绑定里写死列名，落到别的列上就是把那一列的值搬过来。
 > - **控制台的 `#bindings` 屏刻意还没建**（§5.5 那条「唯一刻意不建的一屏」在本阶段仍然成立），因此这三条端点**没有**加进 `scripts/verify-console.py` 的 `EXTENSION_ENDPOINTS`：那份白名单的第 2 组断言要求「每一条都在控制台里真的被调用」，提前登记会让守卫红。阶段 3 建屏时再一起加。
 
+> **P4 第一批实际落了什么**（本轮：**自建调度**的服务端部分；`execution=SPARK` 下推与 `#schedules` 屏**尚未落地**，见下面那两条「未落」）：
+>
+> - **第 6 张表 `lakehouse_sensitivity_schedule`**（§4.6）+ **V5 纯新增迁移**（MySQL / PostgreSQL 各一份），两份快照重新生成后是 **36 张表**；`EXPECTED_TABLES` 与 `FlywayBaselineTests` 的 `MIGRATIONS` 同步到 36 / 五条。
+> - **`/sensitivity-schedules` 五条端点**（`GET`/`POST` + `GET`/`PUT`/`DELETE /{id}`），判权按 §10：带 `catalog` 时读判 `DESCRIBE`、写判 `ALTER`，不带 `catalog` 的列表判服务管理员；`PUT` 要**新旧两个 catalog 各判一次**（请求体允许把调度项挪走）；路径 id 不是数字 → **400**（`@PathVariable Long` 会抛一个全局处理器没有 500 分支的异常）。
+> - **`CronSpec`**（core，纯函数）：5 段补秒位、6 段原样、**Quartz 扩展逐段拒**（整串 `contains("L")` 会误杀 `JUL` / `WED`）、`nextAfter` **严格之后**、永不匹配的表达式在写入时就 400。时区由调用方给（`Clock#getZone()`），不用 `systemDefault()`——多副本时区不一致会让「每天 3 点」每台各扫一次。
+> - **两个租约通道** `sensitivity.scan` / `sensitivity.dispatch` 已登记进 `SchedulerLease.CHANNELS`（清单从三个变五个），TTL 各自按节拍派生（3 倍、下限 30 秒）。
+> - **节拍 = 两道闸门**：租约（只降噪，滚动发布不空窗）+ `next_run_at` 的条件更新（正确性的那一道）。**抢占时就把 `next_run_at` 推进到下一拍**，且下一次从「现在」算而不是从 `expected` 算——后者在延迟节拍（重启 / GC）之后会得到「过去某刻」，变成追赶式连发。
+> - **扫描不跑在调度线程上**：Spring Boot 默认只有一个调度线程，`OptimizationDispatcher` 也在上面跑；catalog 级扫描是分钟级，直接跑会把优化提交节拍一起按停。因此扫描丢给自有执行器（线程数 = `max-concurrent`），队列满**丢弃并 WARN，不重试**（`next_run_at` 已推进，正确语义是跳下一个 cron 点）。
+> - **写入即算 `next_run_at`**（新建 / 改 cron / 重新启用三处），不留空；**改名 400**（扫描历史按 `schedule_name` 回查）；停用是独立动作、**删除是真删**；`METADATA_ONLY + SPARK` 与「不可派发 catalog 上的 `SPARK`」都在**建的时候** 400（fail-closed 提前到写入，而不是等到凌晨三点静默不跑）。
+> - **`schedule_name` 走方法参数而不是塞进 `ScanRequest`**：否则任何调用方都能给自己的扫描贴一个「某某调度项触发的」标签，而这个字段是「这条扫描的出处」的答案。调度器写进审计列的主体名是 `system:sensitivity-scheduler`，不是 `anonymous`——「凌晨三点谁读了明文」的答案不能是「匿名」。
+>
+> **两条「未落」要写清，免得按设计稿以为做了**：
+> 1. **`execution=SPARK` 下推**（§5.6.5 的提交 / 探活 / 跟踪 / 取消、`PENDING` / `SUBMITTING` 状态机、`/sensitivity-scans/{id}/submission` 与 `…/items` 两个回调端点、与优化批次共用的 `maxConcurrentJobs`、`scanSparkConf` 注入命令行）尚未实现，`POST /sensitivity-scans` 与调度项在该路径上仍是 **501 / 400**。**同批要改的一处**：控制台 `SPARK_CONF_IMAGE_DEFAULTS`（`src/utils/executionCluster.js`，只做 placeholder 用）现在仍是 `4g` / `cores=4` / 显式 `200` 分区，与新默认段（`1g` / `cores=1`、不含 `shuffle.partitions`）相反——它得和「`--conf` 真的下发到命令行」一起改，否则界面会在服务端还没注入任何参数时就先宣告一组不存在的默认值。**落地前还有一个必须先定的结构问题**：作业侧要「跑同一份 Java 打分器」（§5.6.5「探测器不在 Spark 里重写」），而 `lakehouse-rest-optimizer` 今天不依赖 core——把 core（带 Spring）拖进作业镜像不可行，要么抽一个只含探测器 / 打分器 / 校验器的公共模块给两边用，要么接受第二份实现（那正是 §5.6.5 明确禁止的）。**这是要在写扫描作业之前拍板的一件事**，不是实现细节。
+> 2. **控制台 `#schedules` 的 CRUD 与 `EXTENSION_ENDPOINTS` 登记必须一起做**：`verify-console.py` 第 2 组断言要求白名单里每一条都在控制台里真的被调用，先登记端点会直接让守卫红（与 `#bindings` 那三条同一个理由，只是顺序相反：那三条是「先建屏、再登记」）。
+
+
 ## 13. 风险与未决
 
 | 风险 | 处置 |

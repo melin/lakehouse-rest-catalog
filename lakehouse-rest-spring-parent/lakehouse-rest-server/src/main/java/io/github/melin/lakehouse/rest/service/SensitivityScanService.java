@@ -162,6 +162,18 @@ public class SensitivityScanService {
      * 会在库里留下一条立即失败的行，而它本不该存在）。
      */
     public ScanAccepted start(ScanRequest request) {
+        return start(request, null);
+    }
+
+    /**
+     * 带调度项名的发起（{@code trigger_type=SCHEDULE} 专用）。
+     *
+     * <p>{@code scheduleName} 走参数而不是加进 {@link ScanRequest}：请求体里放这个字段
+     * 等于让任何调用方都能给自己的扫描贴一个「某某调度项触发的」标签，而
+     * {@code schedule_name} 是「这条扫描的出处在哪」的答案——它可以被伪造的话，
+     * 控制台上「这个调度项的历史扫描」就不再可信。
+     */
+    public ScanAccepted start(ScanRequest request, String scheduleName) {
         if (request == null) {
             throw ApiException.badRequest("request body must not be empty");
         }
@@ -236,6 +248,11 @@ public class SensitivityScanService {
             // 必须能答上来（§4.2）
             scan.setExecution(execution.name());
             scan.setTriggerType(trigger.name());
+            if (scheduleName != null) {
+                // 与 trigger 一致性由调用方保证（只有节拍会传它），这里不做「自动改成 SCHEDULE」：
+                // 一个 MANUAL 扫描带上调度项名，只会让人在历史里看到一个错的出处
+                scan.setScheduleName(scheduleName);
+            }
             scan.setSampleSize(sampleSize);
             scan.setStatus(ScanStatus.RUNNING.name());
             scan.setTriggeredBy(RequestContext.auditPrincipal());

@@ -400,6 +400,50 @@ lakehouse:
       # 而在「不同 catalog 用不同集群」的前提下没有一个是全局的。
 
     # -----------------------------------------------------------------------
+    # 敏感数据识别（docs/sensitive-data-design.md）。
+    #
+    # 这里只放**服务端级的两类东西**：扫描的执行位置默认值（三层覆盖的第一层）
+    # 与自建调度的节拍。逐 catalog 的治理设置（defaultExecution / maxConcurrentScans /
+    # propagationMaxDepth）不在这里——它们是 catalog 属性，走
+    #   GET|PUT /api/management/v1/catalogs/{catalog}/sensitivity-settings
+    # 与 table-default.* 同一套做法。
+    #
+    # 「代码默认 / 本文件 / 部署覆盖（环境变量或 ConfigMap）」这三层要一起改：
+    # 只改一处会让「缺省值」与「生效值」分叉，而用例绿的通常只是后者。
+    # 本部署的 ConfigMap（deploy/kubernetes）今天不带这几个键——与 optimization 段同一现状：
+    # 默认值就地生效，要覆盖时再加对应的 LAKEHOUSE_REST_SENSITIVITY_* 变量。
+    # -----------------------------------------------------------------------
+    sensitivity:
+      # 内置敏感类型随启动 seed。关掉之后「一张表都扫不出东西」看起来像功能坏了，
+      # 除非部署方确实只想用自己的自定义类型（那要先把自定义类型配好再关）。
+      seed-builtin-types: true
+      scan:
+        # 扫描执行位置的全局默认（A 路线）。catalog 的 defaultExecution 与请求体的
+        # execution 逐级覆盖它，三者是同一份枚举的逐级覆盖，不是三个独立开关。
+        execution: IN_PROCESS
+        # A 路线（进程内）的并发上限，守的是**存储侧被并发读**的压力，与执行集群那把
+        # maxConcurrentJobs（优化批次与下推扫描共用）是两件事，别混成一个数。
+        max-concurrent: 2
+        # 单次最多扫几张表；超了 400 并给出实际表数，不静默截断。
+        max-tables-per-scan: 5000
+        # 采样行数的默认值与硬上限。请求可以调小；调大只到硬上限为止，超了 400
+        # （不静默截断：结论质量正是由样本量决定的，见设计稿 §5.4）。
+        sample-size: 2000
+        max-sample-size: 10000
+        # METADATA_ONLY 下推到 Spark 是否放行。默认 false：下推只读元数据没有收益，
+        # 反而多一次作业调度开销（设计稿 §5.6.1）。要开是刻意的选择，不是配置省略。
+        allow-metadata-on-spark: false
+      # 自建调度的节拍（设计稿 §5.6.3）。没有独立的 enabled 开关：
+      # 「服务端有没有定时任务」由 lakehouse.rest.optimization.scheduler-enabled 一处决定，
+      # 两个 @EnableScheduling 没有意义。
+      schedule:
+        # 多久看一次「有调度项到期了」。它不决定扫描跑得多勤，只决定「到点后多久被看见」。
+        tick: 1m
+        # 提交租约（sensitivity.dispatch）的节拍基准：租约 TTL 取它的 3 倍、下限 30 秒。
+        # 提交下推扫描作业是 B 路线的事，这里先给一个与表优化同量级的节拍。
+        dispatch-interval: 10s
+
+    # -----------------------------------------------------------------------
     # Spark SQL 血缘（docs/lineage-design.md）。
     #
     # 数据从哪来：Spark 作业侧的抽取器（lakehouse-rest-spark 模块）把每次写入的
