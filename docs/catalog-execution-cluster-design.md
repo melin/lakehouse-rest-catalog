@@ -346,12 +346,18 @@ AWS CLI」。所以它必须是硬拒，而且拒绝文案要给出替代路径�
 它同时管优化批次与下推扫描作业，所以这两类任务天然被放在同一个量级上（§4.1 末段）。
 `scanJobTimeoutSeconds=3600` 比优化的 `7200` 短：扫描是只读采样，比 compaction 更快收敛。
 
-**`*SparkConf` 默认就带参**（不是「空即无」）：`spark.driver.memory=4g` / `spark.driver.cores=4`
-（容器即 driver，`--master local[*]`）/ `spark.sql.shuffle.partitions=200`（显式写出，便于按表数调小）;
+**`*SparkConf` 默认就带参**（不是「空即无」），**已按 `sensitive-data-design.md` §13 第 11 条拍板收敛**：
+`spark.driver.memory=1g` / `spark.driver.cores=1`（容器即 driver，`--master local[*]`，`local[1]` 即单 pod
+内串行）/ **`spark.sql.shuffle.partitions` 不进默认段**（原 `200` 已移除：小扫描白起 200 个 shuffle 分区
+是纯开销，需要它的部署按 catalog 显式写上）;
 `spark.executor.*` **故意不配**（local 模式下是死配置）;`spark.sql.session.timeZone=UTC`
 **是任务代码里钉死的、不在这里配**（Iceberg 的 `older_than` 按它折算）。扫描那组多一行
 `spark.sql.files.maxPartitionBytes`（按列分区读样本时定并行粒度）。详见
 [`sensitive-data-design.md`](sensitive-data-design.md) §5.6.7。
+
+> **默认值取「跑得起来的最小起点」，不是「替别人把成本花了」**：这个 pod 同时跑优化与下推扫描，
+> 而扫描的峰值取决于「一批列 × 采样行上限」，不取决于表本身多大。1g / `local[1]` 让
+> 「这台集群并行几个作业」的答案完全落在 `maxConcurrentJobs` 一处，而不是「作业数 × 每作业线程数」两处相乘。
 
 `image` 为什么必填而不是有部署级默认值：集群可以多个，镜像只可能有一个「对的那个」；给个默认值
 只会让「填错集群的镜像」更难发现（表现是 `ErrImagePull`，看起来像网络问题）。
@@ -827,9 +833,10 @@ kubeconfig 与 AKS 的 client secret 都是「服务端持有的一份长期凭�
    功能，那时再加，且它会是可选字段而不是认证字段。
 3. **GKE**：等有真实环境再写（§2.4）。
 
-> M5 另有两处已随 `sensitive-data-design.md` **拍板但未决**：两组策略放同一行还是各自建表（本稿选
-> 同一行）、以及 `*SparkConf` 默认值（4g / local[4] / 显式 200 分区）是否按真实集群资源再调一轮。
-> 均见该稿 §13「仍未决」第 4、5 条。
+> M5 另有两处已随 `sensitive-data-design.md` 拍板：两组策略放同一行（本稿选同一行）**已确认结案**；
+> `*SparkConf` 默认值**已由 4g / local[4] / 显式 200 分区改为 `1g` / `local[1]` / 不含 `shuffle.partitions`**
+> （§13 第 10、11 条，该稿「仍未决」已全部清空）。本稿 §4.1 与配套原型 `catalog-execution-cluster-mockup.html`
+> 的两段 `textarea` 示例文本已同步——**改默认值时这三处要一起改**，否则同一个产品在两个文档里对不上。
 
 ---
 

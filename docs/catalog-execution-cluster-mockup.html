@@ -1043,19 +1043,20 @@ users:
       <div class="grid2">
         <div class="fld">
           <label>表优化的 Spark 参数</label>
-          <textarea rows="5">spark.driver.memory=4g
-spark.driver.cores=4
-spark.sql.shuffle.partitions=200
+          <textarea rows="5">spark.driver.memory=1g
+spark.driver.cores=1
 # 容器即 driver（--master local[*]），local[N] 的 N 是表内并行度；
+# shuffle.partitions 不再预置（小数据量下 200 个分区是纯开销）；
 # executor.* 在 local 模式下是死配置，故意不配。</textarea>
         </div>
         <div class="fld">
           <label>敏感识别的 Spark 参数</label>
-          <textarea rows="5">spark.driver.memory=4g
-spark.driver.cores=4
-spark.sql.shuffle.partitions=200
+          <textarea rows="5">spark.driver.memory=1g
+spark.driver.cores=1
 spark.sql.files.maxPartitionBytes=134217728
-# 按列分区读样本时，单分区大小决定并行粒度。</textarea>
+# 按列分区读样本时，单分区大小决定并行粒度。
+# 一个扫描 = 一个 Job，local[1] 表示单 pod 内串行——
+# 「并行几个作业」只由 maxConcurrentJobs 一处决定。</textarea>
         </div>
         <div class="fld span2">
           <div class="banner bad" style="margin:0">
