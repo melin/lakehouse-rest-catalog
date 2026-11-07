@@ -43,7 +43,11 @@ class OptimizerJobTests {
                 callbackBaseUrl,
                 20,
                 2,
-                3600);
+                3600,
+                // 扫描那一组：优化报文不读它们，但 record 的构造要求给全
+                200,
+                3600,
+                List.of());
     }
 
     private static List<String> args(Job job) {
@@ -116,7 +120,7 @@ class OptimizerJobTests {
                 ClusterType.SELF_HOSTED, "demo", "ctx", "https://172.88.0.153:6443",
                 null, null, ResolvedCluster.Auth.EMPTY, null, "lakehouse-rest",
                 "registry.example.com/lakehouse-rest-catalog:1.0.0", "IfNotPresent", List.of(),
-                null, CALLBACK_BASE, 20, 2, 86400);
+                null, CALLBACK_BASE, 20, 2, 86400, 200, 3600, List.of());
 
         assertTrue(OptimizerJob.ttlSecondsAfterFinished(longBatch) > 86400,
                 "批次超时一天时，Job 不能在收尾之前被清掉");

@@ -3435,7 +3435,13 @@ SENS_PANEL = os.path.join(CONSOLE_DIR, "src/components/TableSensitivityPanel.vue
 SENS_FINDINGS_VIEW = os.path.join(CONSOLE_DIR, "src/views/SensitivityFindingsView.vue")
 SENS_TAGS_VIEW = os.path.join(CONSOLE_DIR, "src/views/SensitivityTagsView.vue")
 SENS_TESTS_DIR = os.path.join(CONSOLE_DIR, "tools/sensitivity-tests")
-SENS_ENUMS = os.path.join(CORE_JAVA, "support/SensitivityEnums.java")
+# 这份词表在 `lakehouse-rest-scan-kernel` 里（P4 第二批把它从 core 的 support/ 搬了过去）：
+# 内核要同时编进服务端与 Spark 作业两个依赖世界，因此不能留在 core（core 带 Spring）。
+# 从仓库根拼而不是从 CORE_JAVA 上跳：内核的**目录**在 spring-parent 下、**父 POM** 是根，
+# 靠 `dirname` 数层级容易数错一层。
+SCAN_KERNEL_JAVA = os.path.join(
+    ROOT, "lakehouse-rest-spring-parent/lakehouse-rest-scan-kernel/src/main/java/io/github/melin/lakehouse/rest/scan")
+SENS_ENUMS = os.path.join(SCAN_KERNEL_JAVA, "SensitivityEnums.java")
 COLUMN_TAG_SERVICE = os.path.join(SERVER_JAVA, "service/ColumnTagService.java")
 
 sensitivity_util = read(SENS_UTIL)

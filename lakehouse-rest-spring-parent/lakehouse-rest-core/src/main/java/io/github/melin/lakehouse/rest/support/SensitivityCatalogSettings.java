@@ -1,5 +1,6 @@
 package io.github.melin.lakehouse.rest.support;
 
+import io.github.melin.lakehouse.rest.scan.SensitivityEnums;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;

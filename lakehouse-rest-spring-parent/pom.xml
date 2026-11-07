@@ -61,6 +61,12 @@
 		再加第三种表格式时照这个形状添一层即可。
 	-->
 	<modules>
+		<!--
+			识别的纯计算内核。放在最前面：它不依赖本文件里的任何模块，而 core 依赖它。
+			它的父 POM 是仓库根（而不是本文件）——理由写在它自己的模块 POM 里：
+			这里有一组给服务端四个模块准备的 Spring 依赖，而它要同时进集群上的 Spark 容器。
+		-->
+		<module>lakehouse-rest-scan-kernel</module>
 		<module>lakehouse-rest-core</module>
 		<module>lakehouse-rest-storage</module>
 		<module>lakehouse-rest-protocol-paimon</module>
@@ -217,6 +223,11 @@
 				消费（没有 distributionManagement、不对外发布），因此版本号与父 POM
 				一起走，避免出现「core 0.0.1 配 server 0.0.2」这种能编译但语义错的组合。
 			-->
+			<dependency>
+				<groupId>io.github.melin</groupId>
+				<artifactId>lakehouse-rest-scan-kernel</artifactId>
+				<version>${project.version}</version>
+			</dependency>
 			<dependency>
 				<groupId>io.github.melin</groupId>
 				<artifactId>lakehouse-rest-core</artifactId>

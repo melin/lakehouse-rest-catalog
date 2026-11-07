@@ -1,7 +1,7 @@
 package io.github.melin.lakehouse.rest.domain.entity;
 
-import io.github.melin.lakehouse.rest.support.SensitivityEnums.FindingState;
-import io.github.melin.lakehouse.rest.support.SensitivityEnums.SamplingMode;
+import io.github.melin.lakehouse.rest.scan.SensitivityEnums.FindingState;
+import io.github.melin.lakehouse.rest.scan.SensitivityEnums.SamplingMode;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;

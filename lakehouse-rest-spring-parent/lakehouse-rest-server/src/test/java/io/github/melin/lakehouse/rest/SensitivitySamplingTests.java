@@ -1,5 +1,6 @@
 package io.github.melin.lakehouse.rest;
 
+import io.github.melin.lakehouse.rest.support.DetectorConfigJson;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -22,16 +23,16 @@ import io.github.melin.lakehouse.rest.service.SensitivitySampler;
 import io.github.melin.lakehouse.rest.service.StorageFileIoFactory;
 import io.github.melin.lakehouse.rest.service.TablePreviewService;
 import io.github.melin.lakehouse.rest.support.BuiltinSensitiveTypes;
-import io.github.melin.lakehouse.rest.support.DetectorConfig;
-import io.github.melin.lakehouse.rest.support.SchemaColumns.Column;
-import io.github.melin.lakehouse.rest.support.SensitivityDetectors;
-import io.github.melin.lakehouse.rest.support.SensitivityDetectors.CandidateType;
-import io.github.melin.lakehouse.rest.support.SensitivityDetectors.ColumnValues;
-import io.github.melin.lakehouse.rest.support.SensitivityDetectors.Match;
-import io.github.melin.lakehouse.rest.support.SensitivityEnums.DetectorKind;
-import io.github.melin.lakehouse.rest.support.SensitivityEnums.FindingState;
-import io.github.melin.lakehouse.rest.support.SensitivityMasking;
-import io.github.melin.lakehouse.rest.support.SensitivityScorer;
+import io.github.melin.lakehouse.rest.scan.DetectorConfig;
+import io.github.melin.lakehouse.rest.scan.ScanColumn;
+import io.github.melin.lakehouse.rest.scan.SensitivityDetectors;
+import io.github.melin.lakehouse.rest.scan.SensitivityDetectors.CandidateType;
+import io.github.melin.lakehouse.rest.scan.SensitivityDetectors.ColumnValues;
+import io.github.melin.lakehouse.rest.scan.SensitivityDetectors.Match;
+import io.github.melin.lakehouse.rest.scan.SensitivityEnums.DetectorKind;
+import io.github.melin.lakehouse.rest.scan.SensitivityEnums.FindingState;
+import io.github.melin.lakehouse.rest.scan.SensitivityMasking;
+import io.github.melin.lakehouse.rest.scan.SensitivityScorer;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -165,7 +166,7 @@ class SensitivitySamplingTests {
                 .sample(CATALOG, DATABASE, TABLE, List.of("id_card_no"), ROWS);
 
         List<Match> matches = SensitivityDetectors.detect(CATALOG, TABLE,
-                new Column("id_card_no", "VARCHAR(18)", "身份证号"),
+                new ScanColumn("id_card_no", "VARCHAR(18)", "身份证号"),
                 List.of(candidate("CN_ID_CARD")), sample.values("id_card_no"));
 
         assertEquals(1, matches.size(), () -> "500 个真身份证应当恰好命中一个类型：" + matches);
@@ -204,7 +205,7 @@ class SensitivitySamplingTests {
                 "造数的前提：500 个值都能过 seed 的正则，只有校验位是错的");
 
         List<Match> matches = SensitivityDetectors.detect(CATALOG, TABLE,
-                new Column("id_card_no", "VARCHAR(18)", null),
+                new ScanColumn("id_card_no", "VARCHAR(18)", null),
                 List.of(candidate("CN_ID_CARD")), sample.values("id_card_no"));
 
         assertTrue(matches.isEmpty(),
@@ -235,7 +236,7 @@ class SensitivitySamplingTests {
         SensitivitySampler.TableSample tolerable = sampler(dir)
                 .sample(CATALOG, DATABASE, TABLE, List.of("id_card_no"), ROWS);
         Match tolerant = SensitivityDetectors.detect(CATALOG, TABLE,
-                        new Column("id_card_no", "VARCHAR(18)", null),
+                        new ScanColumn("id_card_no", "VARCHAR(18)", null),
                         List.of(candidate("CN_ID_CARD")), tolerable.values("id_card_no"))
                 .get(0);
         assertEquals(0.85, tolerant.confidence(), 1e-9,
@@ -252,7 +253,7 @@ class SensitivitySamplingTests {
                 .sample(CATALOG, DATABASE, TABLE, List.of("id_card_no"), ROWS);
 
         Match match = SensitivityDetectors.detect(CATALOG, TABLE,
-                        new Column("id_card_no", "VARCHAR(18)", null),
+                        new ScanColumn("id_card_no", "VARCHAR(18)", null),
                         List.of(candidate("CN_ID_CARD")), sample.values("id_card_no"))
                 .get(0);
 
@@ -279,7 +280,7 @@ class SensitivitySamplingTests {
                 .sample(CATALOG, DATABASE, TABLE, List.of("id_card_no"), ROWS);
 
         List<Match> matches = SensitivityDetectors.detect(CATALOG, TABLE,
-                new Column("col1", "VARCHAR(18)", null),
+                new ScanColumn("col1", "VARCHAR(18)", null),
                 List.of(candidate("CN_ID_CARD")), sample.values("id_card_no"));
 
         assertTrue(matches.isEmpty(),
@@ -326,7 +327,7 @@ class SensitivitySamplingTests {
         BuiltinSensitiveTypes.Builtin builtin = BuiltinSensitiveTypes.byTypeCode(typeCode);
         return new CandidateType(builtin.typeCode(), builtin.level().name(),
                 builtin.minConfidence(), builtin.autoApply(),
-                DetectorConfig.parse(builtin.detectorsJson()));
+                DetectorConfigJson.parse(builtin.detectorsJson()));
     }
 
     private static SensitivitySampler sampler(Path dir) {

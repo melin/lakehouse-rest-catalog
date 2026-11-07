@@ -13,13 +13,17 @@ import java.util.List;
  * <p><b>它带着明文凭据，因此只活在方法栈上</b>：不缓存、不落库、不进日志
  * （{@link #toString()} 被覆写成不含凭据的形态，避免有人顺手打日志）。
  *
- * <p><b>这里没有敏感识别的批次策略，也没有两段 Spark 参数</b>，不是忘了：它们已经存进
- * 实体（M5，配置层 / 前端 / V2 迁移都落地了），但**下推到任务命令行**这一步随敏感识别的
- * 下推路线（`sensitive-data-design.md` 的 P4）一起做——那时扫描任务的提交器才第一次
- * 消费 `maxScanTablesPerJob` / `scanJobTimeoutSeconds` 与 `scanSparkConf`。现在就把它们
- * 塞进来，只会得到一份**没人读**的字段，而「没人读」与「读错了」在真机上分不出来。
- * 扫描的并发不需要新字段：它与优化批次**共用上面的 {@code maxConcurrentJobs}**。
- * 表优化那三项在此处，是因为调度器今天就在用它们。
+ * <p><b>表优化与敏感识别各占一组策略，共用一把并发闸门</b>：{@code maxTablesPerJob} /
+ * {@code jobTimeoutSeconds} 给优化批次，{@code maxScanTablesPerJob} /
+ * {@code scanJobTimeoutSeconds} 给下推扫描；{@code maxConcurrentJobs} 是**两类作业共用**
+ * 的那一个数（{@code docs/sensitive-data-design.md} §5.6.6）——扫描没有独立的
+ * {@code maxConcurrentScans}，两者争的本来就是同一台集群的算力。
+ *
+ * <p>{@code scanSparkConf} 是**已归一化**的 {@code k=v} 行（白名单过滤在
+ * {@code ExecutionClusterService#normalizeSparkConf} 里做过），这里只负责带着它走到
+ * 报文构造处。默认段（{@code spark.driver.memory=1g} / {@code spark.driver.cores=1}）
+ * 不在这里补——它属于「没有配置时的起点」，由 {@code ScannerJob} 在拼命令行时垫底，
+ * 两者合并之后才是一份完整的 {@code --conf} 列表。
  */
 public record ResolvedCluster(ClusterType type,
                               String catalogId,
@@ -37,7 +41,10 @@ public record ResolvedCluster(ClusterType type,
                               String callbackBaseUrl,
                               int maxTablesPerJob,
                               int maxConcurrentJobs,
-                              int jobTimeoutSeconds) {
+                              int jobTimeoutSeconds,
+                              int maxScanTablesPerJob,
+                              int scanJobTimeoutSeconds,
+                              List<String> scanSparkConf) {
 
     /**
      * EKS / AKS 的认证参数，**一个 record 装两家**。

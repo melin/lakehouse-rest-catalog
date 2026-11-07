@@ -37,7 +37,7 @@ public final class SensitivityDtos {
      *
      * <p>{@code detectors} 直接给结构化对象（不是 JSON 字符串）：控制台的
      * {@code #types} 屏要逐层编辑探测器，给一个需要前端自己 parse 的字符串
-     * 等于把 {@link io.github.melin.lakehouse.rest.support.DetectorConfig} 的
+     * 等于把 {@link io.github.melin.lakehouse.rest.scan.DetectorConfig} 的
      * 解析规则复制一份到 JS 里，两份迟早漂移。写路径同样收结构化对象。
      *
      * <p>{@code autoApplyAllowed} 是**只读的推断结果**（白名单里有没有它），

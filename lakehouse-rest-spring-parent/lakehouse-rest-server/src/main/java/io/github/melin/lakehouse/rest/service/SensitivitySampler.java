@@ -1,9 +1,9 @@
 package io.github.melin.lakehouse.rest.service;
 
 import io.github.melin.lakehouse.rest.preview.PreviewTarget;
-import io.github.melin.lakehouse.rest.support.SensitivityDetectors.ColumnValues;
-import io.github.melin.lakehouse.rest.support.SensitivityEnums.SamplingMode;
-import io.github.melin.lakehouse.rest.support.SensitivityMasking;
+import io.github.melin.lakehouse.rest.scan.SensitivityDetectors.ColumnValues;
+import io.github.melin.lakehouse.rest.scan.SensitivityEnums.SamplingMode;
+import io.github.melin.lakehouse.rest.scan.SensitivityMasking;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;

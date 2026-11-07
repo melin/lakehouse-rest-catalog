@@ -1,9 +1,9 @@
 package io.github.melin.lakehouse.rest.support;
 
+import io.github.melin.lakehouse.rest.scan.ScanColumn;
 import tools.jackson.databind.JsonNode;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 
 /**
  * 从 {@code lakehouse_table.schema_doc} 里抽出列名、类型与注释。
@@ -35,6 +35,12 @@ import java.util.Locale;
  * 为三种形状各引入一次依赖会让 core 变成「什么格式都认识」的模块，而它现在
  * 只知道 {@code schema_doc} 是一个 JSON 文档。多读一个键、少读一个键，
  * 代价远小于这条依赖。
+ *
+ * <p><b>它留在 core 而不进 {@code lakehouse-rest-scan-kernel}（P4 的模块边界）。</b>
+ * 这里解析的是**服务端库里的一列**（{@code schema_doc}），而集群上的扫描作业见不到它：
+ * 服务端解析完、把 {@link ScanColumn} 随执行清单下发。因此内核模块不需要任何 JSON 库——
+ * 它要同时能在 Spring Boot（Jackson 3）与 Spark（Jackson 2）两套依赖世界里编译，
+ * 一旦引了其中任何一个，另一个世界里就会少类或多一份旧版本。
  */
 public final class SchemaColumns {
 
@@ -45,65 +51,12 @@ public final class SchemaColumns {
     }
 
     /**
-     * 一列的三个关键信息。
-     *
-     * <p>{@code type} 是**归一化后的类型名**（小写、去掉括号里的精度），
-     * 例如 {@code varchar(18)} 与 {@code string} 都归一成 {@code string}/
-     * {@code varchar}——D2 判的是「像不像 char(18)」，不需要知道括号里的数字以外的东西，
-     * 但需要知道括号里是 18（见 {@link Column#length()}）。
-     */
-    public record Column(String name, String type, String comment) {
-
-        /** 类型名的小写形式，去掉了括号与参数。 */
-        public String normalizedType() {
-            if (type == null) {
-                return "";
-            }
-            String lower = type.toLowerCase(Locale.ROOT).trim();
-            int paren = lower.indexOf('(');
-            return paren < 0 ? lower : lower.substring(0, paren).trim();
-        }
-
-        /**
-         * 类型声明里的长度/精度；没有则 {@code null}。
-         *
-         * <p>取第一个整数即可：{@code varchar(18)} 是长度，{@code decimal(12,2)}
-         * 是精度——D2 的判据是「8–20 位的定长字符串」，两者都只要第一个数。
-         *
-         * <p><b>嵌套类型形态（Paimon 的 {@code {"type":"DECIMAL","precision":12}}）
-         * 拿不到这个数</b>：它不在类型名的括号里，而在同级字段上。这里刻意不去读——
-         * D2 的长度判据只对字符型有意义（{@code char(18)} → 身份证候选），
-         * 而 Paimon 的嵌套类型里没有字符型（字符长度由 {@code length} 字段表达，
-         * 而 {@code CHAR(18)} 这种写法在 Paimon 侧本来就走裸字符串形态）。
-         * 为一条用不到的路径去认 JSON 字段名，只会让这段代码多一处要维护的猜测。
-         */
-        public Integer length() {
-            if (type == null) {
-                return null;
-            }
-            int open = type.indexOf('(');
-            int close = type.indexOf(')', open + 1);
-            if (open < 0 || close < 0) {
-                return null;
-            }
-            String inner = type.substring(open + 1, close);
-            int comma = inner.indexOf(',');
-            String first = (comma < 0 ? inner : inner.substring(0, comma)).trim();
-            try {
-                return Integer.valueOf(first);
-            } catch (NumberFormatException e) {
-                return null;
-            }
-        }
-    }
-
-    /**
      * 解析 {@code schema_doc}。
      *
      * @param schemaDoc 三种形状之一，或 {@code null} / 空串 / 非法 JSON
      * @return 列列表；认不出时返回空列表（**不抛异常**，理由见类注释）
      */
-    public static List<Column> parse(String schemaDoc) {
+    public static List<ScanColumn> parse(String schemaDoc) {
         if (schemaDoc == null || schemaDoc.isBlank()) {
             return List.of();
         }
@@ -120,13 +73,13 @@ public final class SchemaColumns {
         if (!fields.isArray()) {
             return List.of();
         }
-        List<Column> columns = new ArrayList<>();
+        List<ScanColumn> columns = new ArrayList<>();
         for (JsonNode field : fields) {
             String name = field.path("name").asText("");
             if (name.isEmpty()) {
                 continue;
             }
-            columns.add(new Column(name, typeOf(field.path("type")), commentOf(field)));
+            columns.add(new ScanColumn(name, typeOf(field.path("type")), commentOf(field)));
         }
         return columns;
     }

@@ -1,4 +1,9 @@
-package io.github.melin.lakehouse.rest.support;
+package io.github.melin.lakehouse.rest.scan;
+
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
 
 /**
  * 列级标签的引用坐标（设计见 {@code docs/sensitive-data-design.md} §4.6）。
@@ -37,12 +42,28 @@ public final class ColumnRefs {
     /**
      * 唯一键用的 SHA-256 摘要。
      *
-     * <p>用 {@link Digests#sha256Hex} 的**多参数**形式而不是先拼成字符串再取摘要：
-     * 多参数形式的实现是「依次 update」，与拼接等价；但把四段分别传进来，
-     * 读者一眼能看出「哈希覆盖的是这四段」，而不是去猜某个分隔符。
+     * <p><b>四段依次 update，而不是先拼成一个字符串再取摘要。</b>两者的结果相同（拼接就是
+     * 依次 update），但把四段分开传，读者一眼能看出「哈希覆盖的是这四段」，不必去猜
+     * 某个分隔符是否参与了哈希。这条区别在改动时才有价值：想加一段前缀的人会看见
+     * 这里没有拼接，也就不会以为「改分隔符不影响既有标签」。
+     *
+     * <p><b>这里自己算，不借 core 的 {@code Digests}。</b>内核模块要能独立编进集群上的
+     * 扫描作业（那边没有 core），而 SHA-256 是 JDK 自带的能力——为了八行代码把 core 的
+     * 一个通用工具搬进来，会把「哪些东西属于内核」这条边界弄模糊。算法与 core 那份逐字
+     * 相同（同一个 JDK {@code MessageDigest}、同样的小写十六进制），因此**历史标签的哈希
+     * 不会变**：列引用哈希一旦变，所有既有标签在库里的唯一键就与扫描结果对不上。
      */
     public static String hash(String catalog, String database, String table, String column) {
-        return Digests.sha256Hex(catalog, database, table, column);
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            for (String part : new String[] {catalog, database, table, column}) {
+                digest.update((part == null ? "" : part).getBytes(StandardCharsets.UTF_8));
+            }
+            return HexFormat.of().formatHex(digest.digest());
+        } catch (NoSuchAlgorithmException e) {
+            // JDK 必须提供 SHA-256；走到这里说明运行环境异常
+            throw new IllegalStateException("SHA-256 is unavailable", e);
+        }
     }
 
     /** 是否表级标签（{@link #TABLE_LEVEL_COLUMN}）。 */

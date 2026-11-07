@@ -23,26 +23,34 @@ import io.github.melin.lakehouse.rest.event.CatalogEvent;
 import io.github.melin.lakehouse.rest.event.CatalogEventPublisher;
 import io.github.melin.lakehouse.rest.event.CatalogEventType;
 import io.github.melin.lakehouse.rest.service.exec.ExecutionClusterService;
+import io.github.melin.lakehouse.rest.service.submit.ScanJobSubmitter;
 import io.github.melin.lakehouse.rest.support.ApiException;
-import io.github.melin.lakehouse.rest.support.ColumnRefs;
+import io.github.melin.lakehouse.rest.scan.ColumnRefs;
 import io.github.melin.lakehouse.rest.support.Json;
 import io.github.melin.lakehouse.rest.support.Paging;
 import io.github.melin.lakehouse.rest.support.ResourceType;
+import io.github.melin.lakehouse.rest.support.ScanTokens;
 import io.github.melin.lakehouse.rest.support.SchemaColumns;
-import io.github.melin.lakehouse.rest.support.SchemaColumns.Column;
+import io.github.melin.lakehouse.rest.scan.ScanColumn;
+import io.github.melin.lakehouse.rest.scan.ScanProtocol.ScanFinding;
+import io.github.melin.lakehouse.rest.scan.ScanProtocol.ScanItemReport;
+import io.github.melin.lakehouse.rest.scan.ScanProtocol.ScanJobSpec;
+import io.github.melin.lakehouse.rest.scan.ScanProtocol.ScanTableSpec;
+import io.github.melin.lakehouse.rest.scan.ScanProtocol.ScanType;
 import io.github.melin.lakehouse.rest.support.SensitivityCatalogSettings;
-import io.github.melin.lakehouse.rest.support.SensitivityDetectors;
-import io.github.melin.lakehouse.rest.support.SensitivityDetectors.CandidateType;
-import io.github.melin.lakehouse.rest.support.SensitivityDetectors.ColumnValues;
-import io.github.melin.lakehouse.rest.support.SensitivityDetectors.Match;
-import io.github.melin.lakehouse.rest.support.SensitivityEnums.DetectorKind;
-import io.github.melin.lakehouse.rest.support.SensitivityEnums.FindingState;
-import io.github.melin.lakehouse.rest.support.SensitivityEnums.ScanExecution;
-import io.github.melin.lakehouse.rest.support.SensitivityEnums.ScanMode;
-import io.github.melin.lakehouse.rest.support.SensitivityEnums.ScanScope;
-import io.github.melin.lakehouse.rest.support.SensitivityEnums.ScanStatus;
-import io.github.melin.lakehouse.rest.support.SensitivityEnums.ScanTrigger;
-import io.github.melin.lakehouse.rest.support.SensitivityEnums.TagSource;
+import io.github.melin.lakehouse.rest.scan.SensitivityDetectors;
+import io.github.melin.lakehouse.rest.scan.SensitivityDetectors.CandidateType;
+import io.github.melin.lakehouse.rest.scan.SensitivityDetectors.ColumnValues;
+import io.github.melin.lakehouse.rest.scan.SensitivityDetectors.Match;
+import io.github.melin.lakehouse.rest.scan.SensitivityEnums.DetectorKind;
+import io.github.melin.lakehouse.rest.scan.SensitivityEnums.FindingState;
+import io.github.melin.lakehouse.rest.scan.SensitivityEnums.ScanExecution;
+import io.github.melin.lakehouse.rest.scan.SensitivityEnums.ScanMode;
+import io.github.melin.lakehouse.rest.scan.SensitivityEnums.ScanScope;
+import io.github.melin.lakehouse.rest.scan.SensitivityEnums.ScanStatus;
+import io.github.melin.lakehouse.rest.scan.SensitivityEnums.ScanTrigger;
+import io.github.melin.lakehouse.rest.scan.SensitivityEnums.TagSource;
+import java.security.MessageDigest;
 import java.time.Clock;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -68,8 +76,9 @@ import org.springframework.stereotype.Service;
  * 时唯一能跑的路径。后者要采样读明文，走的是<a>数据预览那条只读通道</a>
  * （{@link SensitivitySampler} → {@code TablePreviewService.sample}），
  * 与预览共用同一个并发池（§5.4 已拍板的口径）。
- * {@code execution=SPARK} 仍然**显式拒绝**而不是静默退回 A：元数据档下是 400
- * （下推只读元数据的扫描没有收益），采样档下是 501（下推链路属 P4）。
+ * {@code execution=SPARK} **两条路都通**：元数据档下仍是 400（下推只读元数据的扫描没有
+ * 收益），采样档下建一条 {@code PENDING} 就返回，由 {@code SensitivityScanDispatcher}
+ * 的节拍提交成 k8s Job，作业逐表回调写回 findings（§5.6.5）。
  * 「我明明选了 SPARK」不该变成一条查不出来的行为（§5.6.5 的 fail-closed）。
  *
  * <p><b>扫描从 P1 起会产 tag，但只在 {@code AUTO_APPLIED} 时。</b>值层让置信度可以
@@ -90,9 +99,8 @@ import org.springframework.stereotype.Service;
  * 为此再引入本工程第一个生产线程池，换来的是「进程内并发闸门要自己实现」与
  * 「重启要清理孤儿行」两套机制——而这两件事今天都已经有了，不需要第二套。
  * 因此本类<b>同步跑完再返回</b>。代价写在明处：{@code POST /sensitivity-scans}
- * 的 202 与响应体里的 {@code status} 在 A 路线通常是终态；客户端仍应按下标轮询
- * {@code GET /sensitivity-scans/{id}}，因为 P4 的 B 路线会让这个字段在 202 时是
- * {@code PENDING}。
+ * 的 202 与响应体里的 {@code status} 在 A 路线通常是终态；B 路线（{@code execution=SPARK}）
+ * 下这个字段是 {@code PENDING}，客户端必须按下标轮询 {@code GET /sensitivity-scans/{id}}。
  *
  * <p><b>整个 {@link #start} 不加 {@code @Transactional}。</b>一次扫描会在库里写入
  * 成百上千条 finding，把它们圈进一个事务意味着请求线程长时间占着一条数据库连接，
@@ -128,6 +136,11 @@ public class SensitivityScanService {
     private final SensitiveTypeService typeService;
     private final SensitivitySettingsService settingsService;
     private final ExecutionClusterService clusters;
+    /**
+     * B 路线的提交器：只有 {@link #cancel} 直接用它（停掉正在跑的 Job）。
+     * 提交本身在 {@code SensitivityScanDispatcher} 里——那个节拍才是「谁去提交」的答案。
+     */
+    private final ScanJobSubmitter scanSubmitter;
     private final RestServerProperties properties;
     private final CatalogEventPublisher events;
     private final Clock clock;
@@ -193,7 +206,9 @@ public class SensitivityScanService {
         int sampleSize = resolveSampleSize(request.sampleSize());
 
         ScanExecution execution = resolveExecution(request.execution(), catalog, catalogName);
-        if (execution == ScanExecution.SPARK) {
+        boolean pushed = execution == ScanExecution.SPARK;
+        int pushLimit = 0;
+        if (pushed) {
             if (mode == ScanMode.METADATA_ONLY && !properties.getSensitivity().getScan().isAllowMetadataOnSpark()) {
                 // §5.6.1：元数据档下推没有任何收益，反而多一次作业调度开销。这一条是 400
                 // 而不是静默改走 A——「我明明选的 SPARK」不该变成一条查不出来的行为。
@@ -204,8 +219,7 @@ public class SensitivityScanService {
             // fail-closed：给一个没有可派发执行集群的 catalog 建 SPARK 扫描必须 400（§5.6.5），
             // 不静默退回 A。
             clusters.assertDispatchable(catalogName);
-            throw ApiException.notImplemented("execution=SPARK is not implemented yet"
-                    + " (it reuses the table optimization submission chain and lands in P4)");
+            pushLimit = clusters.maxScanTablesPerJob(catalog.getId());
         }
 
         // 同表闸门只对 TABLE 级生效：CATALOG / DATABASE 级扫描的 database_name / table_name
@@ -231,10 +245,23 @@ public class SensitivityScanService {
                     + " tables, which exceeds lakehouse.rest.sensitivity.scan.max-tables-per-scan="
                     + maxTables + "; narrow the scope to a database or a table");
         }
+        if (pushed && tables.size() > pushLimit) {
+            // 下推路线**一个扫描 = 一个 Job**（§5.6.5 第 1 条），所以这里不能像优化批次那样
+            // 自动切成多个 Job：切开之后「同一张表同时只允许一个扫描」这条互斥会被绕过。
+            // 因此超了就 400，并告诉调用方两个可调的旋钮。
+            throw ApiException.badRequest("scope=" + scope + " resolves to " + tables.size()
+                    + " tables, which exceeds this catalog's maxScanTablesPerJob=" + pushLimit
+                    + "; a pushed scan is a single Spark job (one scan = one job, so it cannot be"
+                    + " split), narrow the scope or raise maxScanTablesPerJob in the execution cluster");
+        }
 
         int limit = settingsService.resolvedMaxConcurrentScans(
                 SensitivityCatalogSettings.read(catalog.getProperties()));
-        requireSlot(catalogName, limit);
+        // A 路线的并发闸门守的是「这台服务进程同时读几份明文」；B 路线不读明文、不占进程内
+        // 名额，它的并发由执行集群那把 maxConcurrentJobs 管（§5.6.6 末段）。
+        if (!pushed) {
+            requireSlot(catalogName, limit);
+        }
         try {
             long now = clock.millis();
             SensitivityScanEntity scan = new SensitivityScanEntity();
@@ -254,13 +281,25 @@ public class SensitivityScanService {
                 scan.setScheduleName(scheduleName);
             }
             scan.setSampleSize(sampleSize);
-            scan.setStatus(ScanStatus.RUNNING.name());
+            // PENDING 只属于 B 路线：A 路线的执行者就是发起请求的这个线程，从落库那一刻起它
+            // 已经在跑了，写 PENDING 等于谎报一个并不存在的等待（§5.6.5 的「状态机要补两态」）
+            scan.setStatus(pushed ? ScanStatus.PENDING.name() : ScanStatus.RUNNING.name());
+            // 代数从 0 起：抢占语句自己带 coalesce 兜着历史行，但新行没必要留 NULL
+            scan.setClaimAttempt(0);
             scan.setTriggeredBy(RequestContext.auditPrincipal());
-            scan.setStartedAt(now);
+            // started_at 记「真正开始读数据」的时刻：B 路线要等调度节拍把它提交成 Job 之后
+            // 才写（markSubmitted），否则「扫描耗时」会把排队时间也算进去
+            if (!pushed) {
+                scan.setStartedAt(now);
+            }
             scan.markCreated(RequestContext.principal(), now);
             scanRepository.save(scan);
 
             publishStarted(scan, tables.size());
+            if (pushed) {
+                // 建单即返回 202：提交、跟踪、逐表回调都在别的节拍 / 别的进程里发生
+                return new ScanAccepted(scan.getId(), catalogName, ScanStatus.PENDING.name(), execution.name());
+            }
             RunResult result = runScan(scan, catalogName, tables);
             ScanStatus finalStatus = finish(scan, result, now);
             // 传播是**收尾的增值动作**：它不改这一轮的计数，也不该让一次已经成功的扫描变成失败。
@@ -270,9 +309,299 @@ public class SensitivityScanService {
             scan.setStatus(finalStatus.name());
             return new ScanAccepted(scan.getId(), catalogName, finalStatus.name(), execution.name());
         } finally {
-            releaseSlot(catalogName);
+            if (!pushed) {
+                releaseSlot(catalogName);
+            }
         }
     }
+
+    // ------------------------------------------------------------------ B 路线（下推 Spark）
+
+    /** 执行清单的单页上限。作业按页拉，服务端不能被一个 `limit=1000000` 拖住。 */
+    private static final int SUBMISSION_PAGE_MAX = 200;
+
+    /** 执行清单的默认页大小：200 张表 × 每张几十列，一页几十 KB。 */
+    private static final int SUBMISSION_PAGE_DEFAULT = 50;
+
+    /**
+     * 作业回调时写进审计列的主体名。
+     *
+     * <p>回调端点不参与 RBAC（调用方是 k8s 里的作业，它没有主体身份），因此
+     * {@code RequestContext.principal()} 会是 {@code anonymous}。而作业回调会写 finding 与
+     * 自动标签的 {@code created_by}——「谁写的这条结论」的答案是「匿名」时，审计就断了。
+     * 记成 {@code system:sensitivity-scanner} 才是事实：这是作业写的，不是某个人。
+     * 与 {@code SensitivityScheduleDispatcher#SYSTEM_PRINCIPAL} 同一个口径。
+     */
+    public static final String SCANNER_PRINCIPAL = "system:sensitivity-scanner";
+
+    /**
+     * 校验回调令牌（{@code X-Sensitivity-Scan-Token}）。
+     *
+     * <p><b>库里只有哈希</b>（{@code callback_token_hash}，§4.2），因此这里算一次 SHA-256
+     * 再比。用 {@link MessageDigest#isEqual} 而不是 {@code equals}：后者在第一个不同的字节
+     * 就返回，把「比到第几位」泄漏成一个可测量的时间差——令牌是这次扫描唯一的凭据，
+     * 不差这几行。
+     *
+     * <p>没有哈希（A 路线、或还没提交的 PENDING）时**直接拒**：那种扫描根本没有作业在跑，
+     * 任何携带令牌的调用都不是它的作业发出来的。
+     */
+    public void requireCallbackToken(String scanId, String token) {
+        SensitivityScanEntity scan = require(scanId);
+        if (token == null || token.isBlank()) {
+            throw ApiException.forbidden("missing sensitivity scan token");
+        }
+        String expected = scan.getCallbackTokenHash();
+        if (expected == null || expected.isBlank()) {
+            throw ApiException.forbidden("scan " + scanId + " has no callback token"
+                    + " (execution=" + scan.getExecution() + ", status=" + scan.getStatus() + ")");
+        }
+        if (!ScanTokens.matches(expected, token)) {
+            throw ApiException.forbidden("invalid sensitivity scan token");
+        }
+    }
+
+    /**
+     * {@code GET /sensitivity-scans/{id}/submission}：作业拉取执行清单（分页）。
+     *
+     * <p><b>为什么分页。</b>一次 catalog 级扫描可能是几百张表 × 每张几十列，一整份响应
+     * 在几千列的 catalog 上会到几十 MB；作业侧也只需要「当前这一页」——它逐表跑，
+     * 跑完一页再拉下一页，内存里永远只有一页的列清单。
+     *
+     * <p>{@code hasMore} 由服务端算而不是让作业拿 {@code total} 自己比：表清单在一次扫描
+     * 期间可能变（有人建了张新表），作业按「还有没有下一页」推进比按「拿到 total 条为止」
+     * 更不容易漏扫或空转。
+     */
+    public ScanJobSpec submission(String scanId, Integer offset, Integer limit) {
+        SensitivityScanEntity scan = require(scanId);
+        if (!ScanExecution.SPARK.name().equals(scan.getExecution())) {
+            throw ApiException.badRequest("scan " + scanId + " is execution=" + scan.getExecution()
+                    + "; the submission listing only exists for execution=SPARK");
+        }
+        CatalogEntity catalog = settingsService.requireCatalog(scan.getCatalogName());
+        Map<String, String> databaseNames = databaseNames(catalog.getId());
+        List<ResolvedTable> tables = resolveTables(catalog.getId(), parseScope(scan.getScope()),
+                scan.getDatabaseName(), scan.getTableName(), databaseNames);
+
+        int total = tables.size();
+        int from = offset == null || offset < 0 ? 0 : Math.min(offset, total);
+        int size = limit == null || limit <= 0
+                ? SUBMISSION_PAGE_DEFAULT : Math.min(limit, SUBMISSION_PAGE_MAX);
+        int to = Math.min(from + size, total);
+        List<ScanTableSpec> page = new ArrayList<>(Math.max(0, to - from));
+        for (ResolvedTable table : tables.subList(from, to)) {
+            page.add(new ScanTableSpec(table.database(), table.table(), SchemaColumns.parse(table.schemaDoc())));
+        }
+        // catalog_format 一并下发：作业没有别的途径知道该用哪种 catalog 实现建会话，
+        // 而猜错的症状不是报错，是「每张表都说不存在」——见 ScanJobSpec#format
+        return new ScanJobSpec(scan.getId(), scan.getCatalogName(), catalog.getCatalogFormat(),
+                scan.getMode(), scan.getSampleSize(),
+                from, size, total, to < total, scanTypes(), page);
+    }
+
+    /**
+     * 作业逐表回报（{@code POST /sensitivity-scans/{id}/items}）。
+     *
+     * <p><b>「扫了但没命中」也要回。</b>调用方（作业）对每张表都要回一条，哪怕
+     * {@code findings} 为空——否则「扫完没发现」与「压根没跑」在库里长得一模一样，
+     * 而覆盖率正是靠这个区分才成立（§5.6.5 第 2 条）。因此这里**不因为空清单而早退**：
+     * 计数照加，只是没有 finding 要落。
+     *
+     * <p><b>重复回调是安全的。</b>{@link #existingKeys} 挡住同一次扫描里同列同型已经落过的
+     * 组合（作业重试、多副本竞争），抑制项则挡住人审否决过的结论。计数不满足这条：
+     * 一次重复回调会把 {@code tables_scanned} 多加 1——那是**如实的**，它确实又被上报了一次，
+     * 而「上报次数」与「扫过的表数」在库里是同一个字段。要区分就得加一列，值不值得由
+     * 「作业会不会重复上报」决定，而作业侧已由 {@code backoffLimit=0} 与逐表 try/catch
+     * 保证「一张表只回一次」。
+     */
+    public void reportItem(String scanId, ScanItemReport report) {
+        SensitivityScanEntity scan = require(scanId);
+        if (!ScanExecution.SPARK.name().equals(scan.getExecution())) {
+            throw ApiException.badRequest("scan " + scanId + " is execution=" + scan.getExecution()
+                    + "; item reports only exist for execution=SPARK");
+        }
+        if (report == null) {
+            throw ApiException.badRequest("item report must not be empty");
+        }
+        String database = trimToNull(report.database());
+        String table = trimToNull(report.table());
+        if (database == null || table == null) {
+            throw ApiException.badRequest("database and table are required in an item report");
+        }
+        String catalogName = scan.getCatalogName();
+        List<ScanFinding> findings = report.findings() == null ? List.of() : report.findings();
+        // 成功判据用协议里的常量，不写字面量：这一处与作业侧的
+        // ScanItemReport.STATUS_SCANNED 是同一个值，拼错不会报错，只会把「扫过」记成「失败」
+        boolean failed = report.status() == null
+                || !ScanItemReport.STATUS_SCANNED.equalsIgnoreCase(report.status().trim());
+
+        long now = clock.millis();
+        // 回调没有主体身份（端点在 RBAC 之外，见 controller 类注释）。不设它的话，
+        // 这次回调写下的 finding 与自动标签的 created_by 会是 anonymous——审计断在这里
+        RequestContext.setPrincipal(SCANNER_PRINCIPAL);
+        try {
+            int saved = 0;
+            if (!findings.isEmpty()) {
+                Set<String> suppressed = suppressedKeys(catalogName);
+                Set<String> written = existingKeys(scanId);
+                List<SensitivityFindingEntity> batch = new ArrayList<>(findings.size());
+                Set<String> columns = new HashSet<>();
+                for (ScanFinding item : findings) {
+                    String column = trimToNull(item.column());
+                    if (column == null || trimToNull(item.typeCode()) == null) {
+                        continue;
+                    }
+                    columns.add(column);
+                    String hash = ColumnRefs.hash(catalogName, database, table, column);
+                    String key = item.typeCode() + "|" + hash;
+                    if (suppressed.contains(key) || !written.add(key)) {
+                        continue;
+                    }
+                    batch.add(remoteFinding(scan, database, table, column, hash, item, now));
+                }
+                if (!batch.isEmpty()) {
+                    saved = findingRepository.saveAll(batch).size();
+                    applyAutoTags(batch, catalogName, database, table);
+                }
+                // 列数取「上报值」与「实际见到的列数」的较大者：作业可能只报了命中列，
+                // 而 columns_scanned 的语义是「扫过多少列」——它得是个可信的分母
+                int columnsScanned = Math.max(report.columnsScanned(), columns.size());
+                scanRepository.addItemCounts(scanId, 1, columnsScanned, saved, failed ? 1 : 0, now);
+            } else {
+                scanRepository.addItemCounts(scanId, 1, Math.max(0, report.columnsScanned()), 0,
+                        failed ? 1 : 0, now);
+            }
+        } finally {
+            // 必须清：Tomcat 的请求线程是复用的，留着会让下一个请求继承「扫描作业」这个身份
+            RequestContext.clear();
+        }
+        if (failed) {
+            log.info("sensitivity scan {} reported table {}.{}.{} as failed: {}", scanId,
+                    catalogName, database, table, report.errorMessage());
+        }
+    }
+
+    /**
+     * {@code POST /sensitivity-scans/{id}:cancel}：取消扫描，B 路线同时停作业。
+     *
+     * <p><b>先停作业再改状态。</b>反过来的话，作业在「状态已改成 CANCELLED、Job 还没删」的
+     * 窗口里继续回调，那些回调会因为状态不是 RUNNING 而全部落空（{@code addItemCounts} 的
+     * 条件更新返回 0 行）——不算错，但会留下一个「在跑的作业往一个已取消的扫描上报」的
+     * 错觉。先删 Job，那条路就断了。
+     *
+     * <p><b>不发事件。</b>事件类型表里没有 {@code sensitivity.scan.cancelled}，而新增一个
+     * 类型要同步「10 类 N 型」的五处计数与校验脚本。取消本身在审计列（{@code updated_by}）
+     * 与 {@code error_message} 里已经可追溯，为它扩一套事件枚举不划算——**这是有意的缺口，
+     * 不是漏写**。
+     */
+    public ScanSummary cancel(String scanId) {
+        SensitivityScanEntity scan = require(scanId);
+        List<String> active = List.of(ScanStatus.PENDING.name(), ScanStatus.SUBMITTING.name(),
+                ScanStatus.RUNNING.name());
+        if (!active.contains(scan.getStatus())) {
+            throw ApiException.conflict("scan " + scanId + " is already " + scan.getStatus()
+                    + "; only PENDING / SUBMITTING / RUNNING can be cancelled");
+        }
+        long now = clock.millis();
+        String principal = RequestContext.auditPrincipal();
+        if (ScanExecution.SPARK.name().equals(scan.getExecution()) && scan.getExecutionResource() != null) {
+            String catalogId = settingsService.requireCatalog(scan.getCatalogName()).getId();
+            try {
+                scanSubmitter.cancel(catalogId, scan.getExecutionNamespace(), scan.getExecutionResource());
+            } catch (RuntimeException exception) {
+                // 停不掉作业不该挡取消：扫描状态是**用户能看到的那个真相**，而作业停不掉
+                // 时它跑完会以 FAILED/SUCCEEDED 的回调落空（状态已 CANCELLED），
+                // 资源由 TTL 清理
+                log.warn("scan {} cancelled but its job {}/{} could not be deleted: {}", scanId,
+                        scan.getExecutionNamespace(), scan.getExecutionResource(), exception.getMessage());
+            }
+        }
+        int updated = scanRepository.cancel(scanId, "cancelled by " + principal, principal, active, now);
+        if (updated == 0) {
+            throw ApiException.conflict("scan " + scanId + " was finished concurrently; nothing to cancel");
+        }
+        log.info("sensitivity scan {} cancelled by {}", scanId, principal);
+        return toDto(require(scanId));
+    }
+
+    /**
+     * B 路线收尾时的血缘传播。
+     *
+     * <p>与 A 路线同一个动作、同一个理由（传播不改计数、不该让已成功的扫描变失败），
+     * 只是入口不同：A 路线在 {@code start} 里手上有 {@code tables}，B 路线收尾发生在
+     * {@code SensitivityScanDispatcher} 里，那时只有库里的那一行。因此这里按范围重新
+     * resolve 一次——只查 {@code lakehouse_database} / {@code lakehouse_table}，
+     * 不读任何存储。
+     */
+    public void propagateAfterPush(SensitivityScanEntity scan) {
+        try {
+            CatalogEntity catalog = settingsService.requireCatalog(scan.getCatalogName());
+            List<ResolvedTable> tables = resolveTables(catalog.getId(), parseScope(scan.getScope()),
+                    scan.getDatabaseName(), scan.getTableName(), databaseNames(catalog.getId()));
+            propagate(scan, tables);
+        } catch (RuntimeException exception) {
+            log.warn("pushed scan {} finished but propagation failed: {}",
+                    scan.getId(), exception.getMessage(), exception);
+        }
+    }
+
+    /** 候选类型 → 作业侧的线格式（{@code detectors} 用结构化对象，不传 JSON 文本）。 */
+    private List<ScanType> scanTypes() {
+        List<CandidateType> candidates = typeService.candidates();
+        List<ScanType> types = new ArrayList<>(candidates.size());
+        for (CandidateType candidate : candidates) {
+            types.add(new ScanType(candidate.typeCode(), candidate.level(), candidate.minConfidence(),
+                    candidate.autoApply(), candidate.detectors().wireLayers()));
+        }
+        return types;
+    }
+
+    /**
+     * 把作业报回来的一条命中转成实体。
+     *
+     * <p>与 A 路线的 {@link #finding} 分开，是因为**样本来源不同**：A 路线的样本在服务端
+     * 由 {@code SensitivitySampler} 打码，B 路线的样本由作业打码后随回调送上来
+     * （§5.6.5 的「明文不出 Pod」）。这里只做形状校验，不碰原值——它本来就不在。
+     */
+    private SensitivityFindingEntity remoteFinding(SensitivityScanEntity scan, String database, String table,
+                                                   String column, String referenceHash, ScanFinding item,
+                                                   long now) {
+        SensitivityFindingEntity entity = new SensitivityFindingEntity();
+        entity.setScanId(scan.getId());
+        entity.setCatalogName(scan.getCatalogName());
+        entity.setDatabaseName(database);
+        entity.setTableName(table);
+        entity.setColumnName(column);
+        entity.setColumnRefHash(referenceHash);
+        entity.setTypeCode(item.typeCode());
+        entity.setConfidence(item.confidence());
+        entity.setMatchedDetectorsJson(Json.write(item.scores() == null ? Map.of() : item.scores()));
+        entity.setState(normalizeState(item.state()));
+        List<String> masked = item.maskedSamples() == null ? List.of() : item.maskedSamples();
+        if (!masked.isEmpty()) {
+            entity.setMaskedSamplesJson(Json.write(masked));
+            entity.setSamplingMode(item.samplingMode());
+        }
+        entity.markCreated(RequestContext.principal(), now);
+        return entity;
+    }
+
+    /**
+     * 作业报回来的 {@code state} 只认 {@code PENDING} / {@code AUTO_APPLIED}，
+     * 其余（空、拼错、{@code CONFIRMED} / {@code REJECTED}）一律回落 {@code PENDING}。
+     *
+     * <p><b>不能直接 {@code valueOf}。</b>作业侧是一个独立编译单元，它写错一个字符串的
+     * 后果不该是整次回调 500——那时作业只会看到「上报失败」而表已经跑过了，
+     * 而回退成 PENDING 的坏处只是「本条结论多一次人审」。
+     */
+    private static String normalizeState(String state) {
+        String value = trimToNull(state);
+        if (FindingState.AUTO_APPLIED.name().equals(value)) {
+            return FindingState.AUTO_APPLIED.name();
+        }
+        return FindingState.PENDING.name();
+    }
+
+    /** 回调令牌的 SHA-256 已在 {@link ScanTokens}：生成方与校验方必须是同一份实现。 */
 
     // ------------------------------------------------------------------ 读
 
@@ -462,7 +791,7 @@ public class SensitivityScanService {
 
         for (ResolvedTable candidate : tables) {
             tablesScanned++;
-            List<Column> columns = SchemaColumns.parse(candidate.schemaDoc());
+            List<ScanColumn> columns = SchemaColumns.parse(candidate.schemaDoc());
             if (columns.isEmpty()) {
                 // §6.1 的兜底：Lance 表根本不写 schema_doc，register 进来的外部表也可能还没刷新
                 // 元数据。这类表**跳过、不猜**，并单独计数——把它算成「已扫描、无敏感列」
@@ -475,7 +804,7 @@ public class SensitivityScanService {
             SensitivitySampler.TableSample sample = SensitivitySampler.TableSample.none();
             if (sampled) {
                 List<String> names = new ArrayList<>(columns.size());
-                for (Column column : columns) {
+                for (ScanColumn column : columns) {
                     names.add(column.name());
                 }
                 try {
@@ -494,7 +823,7 @@ public class SensitivityScanService {
             try {
                 List<SensitivityFindingEntity> batch = new ArrayList<>();
                 long now = clock.millis();
-                for (Column column : columns) {
+                for (ScanColumn column : columns) {
                     columnsScanned++;
                     String referenceHash = ColumnRefs.hash(catalogName, candidate.database(),
                             candidate.table(), column.name());
@@ -568,6 +897,19 @@ public class SensitivityScanService {
     }
 
     /**
+     * B 路线的自动落标：作业回调里只带库名与表名，没有 {@code ResolvedTable}。
+     *
+     * <p>与上面那条同一条路径（同一个 {@code tagWriter}、同一个「表级级别重算」），
+     * 只是不需要 schema —— 落标要的是列名与类型码，那些已经在 finding 上。
+     * {@code sample} 不传：那条路径里它本来就是空位（A 路线传进来是为了语义完整，
+     * 方法体从未读过它），这里补齐一个重载比让调用方去造一份假样本干净。
+     */
+    private void applyAutoTags(List<SensitivityFindingEntity> batch, String catalogName,
+                               String database, String table) {
+        applyAutoTags(batch, catalogName, new ResolvedTable(database, table, null), null);
+    }
+
+    /**
      * 这个 catalog 里仍生效的抑制项，键的形状与 finding 的去重键一致
      * （{@code typeCode|columnRefHash}）。
      */
@@ -590,7 +932,7 @@ public class SensitivityScanService {
      * ——「没采」与「采到空」是两件事，后者是一条真实的证据。
      */
     private SensitivityFindingEntity finding(SensitivityScanEntity scan, ResolvedTable table,
-                                             Column column, String referenceHash, Match match,
+                                             ScanColumn column, String referenceHash, Match match,
                                              SensitivitySampler.TableSample sample, long now) {
         SensitivityFindingEntity entity = new SensitivityFindingEntity();
         entity.setScanId(scan.getId());

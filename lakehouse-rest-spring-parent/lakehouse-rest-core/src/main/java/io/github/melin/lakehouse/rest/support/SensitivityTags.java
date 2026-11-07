@@ -1,6 +1,6 @@
 package io.github.melin.lakehouse.rest.support;
 
-import io.github.melin.lakehouse.rest.support.SensitivityEnums.SensitivityLevel;
+import io.github.melin.lakehouse.rest.scan.SensitivityEnums.SensitivityLevel;
 import java.util.Optional;
 
 /**

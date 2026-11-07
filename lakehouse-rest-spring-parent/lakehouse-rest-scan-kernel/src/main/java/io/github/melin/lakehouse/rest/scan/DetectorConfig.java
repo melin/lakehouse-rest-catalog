@@ -1,7 +1,6 @@
-package io.github.melin.lakehouse.rest.support;
+package io.github.melin.lakehouse.rest.scan;
 
-import io.github.melin.lakehouse.rest.support.SensitivityEnums.DetectorKind;
-import java.util.ArrayList;
+import io.github.melin.lakehouse.rest.scan.SensitivityEnums.DetectorKind;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -90,44 +89,46 @@ public final class DetectorConfig {
     }
 
     /**
-     * 解析 {@code detectors_json}。
+     * 从**线格式**（{@code {"name": {...}, "value": {...}}}，键是层名的小写）还原。
      *
-     * <p><b>认不出的层直接忽略，不抛异常。</b>同一份 JSON 由控制台编辑、
-     * 由 seed 生成、也可能被人手工改成写错的形状；把「某一层配坏了」升级成
-     * 「整个类型不可用」会让一次笔误把已跑通的识别能力整个关掉。忽略的层
-     * 表现为该层得 0 分——置信度会掉下来，但不会静默变成满分：
-     * **掉分比报错更安全，因为掉分只会让它进人审队列。**
+     * <p>扫描作业不解析 {@code detectors_json} 原文——那是服务端库里的一列，作业见不到它；
+     * 服务端解析好、按这个形状随执行清单下发。两个世界各有自己的 JSON 库（Spring Boot 4 是
+     * Jackson 3，Spark 3.5 是 Jackson 2），而**这个类一行 JSON 都不碰**，所以两边都能编。
+     * 认不出的层名忽略：与「某一层配坏了不该让整个类型不可用」同一口径。
      */
-    public static DetectorConfig parse(String json) {
-        if (json == null || json.isBlank()) {
-            return empty();
+    public static DetectorConfig ofWire(Map<String, LayerConfig> layers) {
+        Map<DetectorKind, LayerConfig> parsed = new LinkedHashMap<>();
+        if (layers != null) {
+            layers.forEach((name, config) -> {
+                if (name == null || config == null) {
+                    return;
+                }
+                // **不能用 DetectorKind.parse(name) 直接吃线格式的键**：那个 parse 只认大写
+                // 枚举名（存库口径），而线格式的键是小写（与 detectors_json 逐字一致）。
+                // 直接调它的结果是「所有层都被忽略、判定恒空」——不报错、不抛异常，
+                // 只是每个类型都扫不出东西，看起来像「这批数据真的不敏感」。
+                String wire = name.trim().toLowerCase(Locale.ROOT);
+                for (DetectorKind kind : DetectorKind.values()) {
+                    if (kind.name().toLowerCase(Locale.ROOT).equals(wire)) {
+                        parsed.put(kind, config);
+                        return;
+                    }
+                }
+            });
         }
-        Map<DetectorKind, LayerConfig> layers = new LinkedHashMap<>();
-        tools.jackson.databind.JsonNode root;
-        try {
-            root = Json.readTree(json);
-        } catch (RuntimeException e) {
-            return empty();
-        }
-        for (DetectorKind kind : DetectorKind.values()) {
-            tools.jackson.databind.JsonNode node = root.path(kind.name().toLowerCase(Locale.ROOT));
-            if (node.isMissingNode() || node.isNull() || !node.isObject()) {
-                continue;
-            }
-            LayerConfig config = new LayerConfig(
-                    strings(node.path("patterns")),
-                    strings(node.path("types")),
-                    ranges(node.path("lengths")),
-                    text(node.path("regex")),
-                    text(node.path("validator")),
-                    strings(node.path("values")),
-                    number(node.path("maxCardinalityRatio")),
-                    node.path("weight").asDouble(1.0));
-            if (!config.isEmpty()) {
-                layers.put(kind, config);
-            }
-        }
-        return new DetectorConfig(layers);
+        return of(parsed);
+    }
+
+    /**
+     * 线格式：层名小写 → 配置。用于随执行清单下发。
+     *
+     * <p>与 {@code detectors_json} 的键逐字一致（{@code name} / {@code type} / {@code value} / …），
+     * 因此服务端的解析与序列化只差一层「结构 vs 文本」，不会出现两套名字。
+     */
+    public Map<String, LayerConfig> wireLayers() {
+        Map<String, LayerConfig> out = new LinkedHashMap<>();
+        layers.forEach((kind, config) -> out.put(kind.name().toLowerCase(Locale.ROOT), config));
+        return out;
     }
 
     /** 某一层的配置；没配就是 {@link LayerConfig#empty()}。 */
@@ -138,40 +139,6 @@ public final class DetectorConfig {
     /** 该类型实际配了哪几层；控制台与测试用它回答「这个类型靠什么识别」。 */
     public List<DetectorKind> configuredLayers() {
         return List.copyOf(layers.keySet());
-    }
-
-    /** 把配置序列化回去（seed 与往返测试用）。 */
-    public String toJson() {
-        Map<String, Object> out = new LinkedHashMap<>();
-        layers.forEach((kind, config) -> {
-            Map<String, Object> body = new LinkedHashMap<>();
-            if (!config.patterns().isEmpty()) {
-                body.put("patterns", config.patterns());
-            }
-            if (!config.types().isEmpty()) {
-                body.put("types", config.types());
-            }
-            if (!config.lengths().isEmpty()) {
-                body.put("lengths", config.lengths());
-            }
-            if (config.regex() != null) {
-                body.put("regex", config.regex());
-            }
-            if (config.validator() != null) {
-                body.put("validator", config.validator());
-            }
-            if (!config.values().isEmpty()) {
-                body.put("values", config.values());
-            }
-            if (config.maxCardinalityRatio() != null) {
-                body.put("maxCardinalityRatio", config.maxCardinalityRatio());
-            }
-            if (config.weight() != 1.0) {
-                body.put("weight", config.weight());
-            }
-            out.put(kind.name().toLowerCase(Locale.ROOT), body);
-        });
-        return Json.write(out);
     }
 
     /**
@@ -234,41 +201,6 @@ public final class DetectorConfig {
             // 正则写错 = 这一层没有可用判据，与「没配」等价
             return Optional.empty();
         }
-    }
-
-    private static List<String> strings(tools.jackson.databind.JsonNode node) {
-        if (!node.isArray()) {
-            return List.of();
-        }
-        List<String> out = new ArrayList<>();
-        for (tools.jackson.databind.JsonNode item : node) {
-            if (item.isTextual() && !item.asText().isBlank()) {
-                out.add(item.asText());
-            }
-        }
-        return out;
-    }
-
-    private static List<List<Integer>> ranges(tools.jackson.databind.JsonNode node) {
-        if (!node.isArray()) {
-            return List.of();
-        }
-        List<List<Integer>> out = new ArrayList<>();
-        for (tools.jackson.databind.JsonNode item : node) {
-            if (!item.isArray() || item.size() < 2) {
-                continue;
-            }
-            out.add(List.of(item.get(0).asInt(), item.get(1).asInt()));
-        }
-        return out;
-    }
-
-    private static String text(tools.jackson.databind.JsonNode node) {
-        return node.isTextual() && !node.asText().isBlank() ? node.asText() : null;
-    }
-
-    private static Double number(tools.jackson.databind.JsonNode node) {
-        return node.isNumber() ? node.asDouble() : null;
     }
 
     private static String nz(String value) {

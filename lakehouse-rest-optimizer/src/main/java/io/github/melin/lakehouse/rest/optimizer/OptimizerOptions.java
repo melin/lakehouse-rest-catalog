@@ -1,8 +1,5 @@
 package io.github.melin.lakehouse.rest.optimizer;
 
-import java.util.ArrayList;
-import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
 
 /**
@@ -69,43 +66,20 @@ public final class OptimizerOptions {
     /**
      * 解析参数，缺必需项时抛出带提示的异常。
      *
-     * <p>不使用第三方 CLI 库：三个参数、两处可选，手写比引依赖划算，而且这里能给出
-     * 「谁负责传这个参数」的提示——看到这条错误的人通常是在改 k8s Job 定义，
-     * 告诉他参数由服务端生成，比给他一份用法更有用。
+     * <p>词法部分交给 {@link JobArgs}——扫描任务用的是同一份，「{@code --token=abc} 算不算
+     * 给了值」这类判断因此两个入口一致。
      */
     public static OptimizerOptions parse(String[] args) {
-        Map<String, String> values = new LinkedHashMap<>();
-        List<String> bare = new ArrayList<>();
-        for (int i = 0; i < args.length; i++) {
-            String arg = args[i];
-            if (!arg.startsWith("--")) {
-                bare.add(arg);
-                continue;
-            }
-            String name = arg.substring(2);
-            int equals = name.indexOf('=');
-            if (equals > 0) {
-                values.put(name.substring(0, equals), name.substring(equals + 1));
-                continue;
-            }
-            if (i + 1 >= args.length || args[i + 1].startsWith("--")) {
-                throw new IllegalArgumentException("missing value for " + arg);
-            }
-            values.put(name, args[++i]);
-        }
-        // 手工调试时最常忘的是 --，放行「第一个位置参数当 job id」但不宣导。
-        if (!values.containsKey("job-id") && !bare.isEmpty()) {
-            values.put("job-id", bare.get(0));
-        }
-        String jobId = require(values, "job-id");
-        String managementUrl = trimSlash(require(values, "management-url"));
-        String callbackToken = require(values, "token");
+        Map<String, String> values = JobArgs.parse(args, "job-id");
+        String jobId = JobArgs.require(values, "job-id", "KubernetesJobSubmitter");
+        String managementUrl = JobArgs.trimSlash(JobArgs.require(values, "management-url", "KubernetesJobSubmitter"));
+        String callbackToken = JobArgs.require(values, "token", "KubernetesJobSubmitter");
         String explicitCatalogUrl = values.get("catalog-url");
         String catalogUrl = explicitCatalogUrl == null || explicitCatalogUrl.isBlank()
                 ? deriveCatalogUrl(managementUrl)
-                : trimSlash(explicitCatalogUrl);
+                : JobArgs.trimSlash(explicitCatalogUrl);
         return new OptimizerOptions(jobId, managementUrl, callbackToken,
-                blankToNull(values.get("catalog-token")), catalogUrl);
+                JobArgs.blankToNull(values.get("catalog-token")), catalogUrl);
     }
 
     /**
@@ -118,28 +92,5 @@ public final class OptimizerOptions {
         return managementUrl.endsWith(MANAGEMENT_SUFFIX)
                 ? managementUrl.substring(0, managementUrl.length() - MANAGEMENT_SUFFIX.length())
                 : managementUrl;
-    }
-
-    private static String require(Map<String, String> values, String name) {
-        String value = values.get(name);
-        if (value == null || value.isBlank()) {
-            throw new IllegalArgumentException("missing required argument --" + name
-                    + "; the server passes it when creating the optimizer job"
-                    + " (see KubernetesJobSubmitter), so when running by hand copy the arguments"
-                    + " from the generated job definition");
-        }
-        return value.trim();
-    }
-
-    private static String trimSlash(String value) {
-        String trimmed = value == null ? "" : value.trim();
-        while (trimmed.endsWith("/")) {
-            trimmed = trimmed.substring(0, trimmed.length() - 1);
-        }
-        return trimmed;
-    }
-
-    private static String blankToNull(String value) {
-        return value == null || value.isBlank() ? null : value.trim();
     }
 }

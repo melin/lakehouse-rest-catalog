@@ -81,5 +81,17 @@
 		</plugins>
 	</build>
 
-	<!-- 依赖全部来自 lakehouse-rest-spring-parent 的 <dependencies>（webmvc / data-jpa / validation / lombok），此处无增量 -->
+	<!--
+		识别内核（lakehouse-rest-scan-kernel）：探测器 / 打分器 / 校验器 / 打码。
+
+		core 自己也要用它（Finding 的读模型、标签键、内置类型的探测器配置），而集群上的
+		扫描作业用的是**同一个 jar**——这正是这条依赖存在的理由：判定只有一份实现，
+		服务端进程内扫与下推 Spark 扫不会因为「两边各写一遍」而给出两个分数。
+	-->
+	<dependencies>
+		<dependency>
+			<groupId>io.github.melin</groupId>
+			<artifactId>lakehouse-rest-scan-kernel</artifactId>
+		</dependency>
+	</dependencies>
 </project>

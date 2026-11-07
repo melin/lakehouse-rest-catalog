@@ -98,9 +98,14 @@ test('默认值是「镜像级」那份，只出现在 placeholder 里', () => {
     'spark.driver.cores=4',
     'spark.sql.shuffle.partitions=200',
   ])
-  // 扫描那组多一行：按列分区读样本时定并行粒度
-  assert.equal(SPARK_CONF_IMAGE_DEFAULTS.scan.length, 4)
-  assert.ok(SPARK_CONF_IMAGE_DEFAULTS.scan.includes('spark.sql.files.maxPartitionBytes=134217728'))
+  // 扫描那组与优化那组**刻意不同**（§5.6.7）：扫描是「拉一批列的样本回来打分」，
+  // 峰值取决于列数 × 采样行上限而不是表多大，容器又就是 driver。因此 1g / 单核、
+  // 且**不预置 shuffle.partitions**（小数据量下 200 分区是纯开销）
+  assert.deepEqual(SPARK_CONF_IMAGE_DEFAULTS.scan, [
+    'spark.driver.memory=1g',
+    'spark.driver.cores=1',
+  ])
+  assert.ok(!SPARK_CONF_IMAGE_DEFAULTS.scan.some((line) => line.startsWith('spark.sql.shuffle.')))
   // executor.* 故意不配（容器即 driver，local 模式下是死配置）
   assert.ok(!SPARK_CONF_IMAGE_DEFAULTS.optimization.some((line) => line.startsWith('spark.executor.')))
 })

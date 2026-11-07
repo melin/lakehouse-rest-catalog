@@ -1,5 +1,6 @@
 package io.github.melin.lakehouse.rest.service;
 
+import io.github.melin.lakehouse.rest.support.DetectorConfigJson;
 import io.github.melin.lakehouse.rest.config.RequestContext;
 import io.github.melin.lakehouse.rest.domain.entity.SensitiveTypeEntity;
 import io.github.melin.lakehouse.rest.domain.repo.SensitiveTypeRepository;
@@ -7,14 +8,14 @@ import io.github.melin.lakehouse.rest.dto.SensitivityDtos.SensitiveType;
 import io.github.melin.lakehouse.rest.dto.SensitivityDtos.SensitiveTypeList;
 import io.github.melin.lakehouse.rest.dto.SensitivityDtos.SensitiveTypeUpsertRequest;
 import io.github.melin.lakehouse.rest.support.ApiException;
-import io.github.melin.lakehouse.rest.support.DetectorConfig;
+import io.github.melin.lakehouse.rest.scan.DetectorConfig;
 import io.github.melin.lakehouse.rest.support.Json;
 import io.github.melin.lakehouse.rest.support.Paging;
 import io.github.melin.lakehouse.rest.support.ResourceType;
-import io.github.melin.lakehouse.rest.support.SensitivityDetectors.CandidateType;
-import io.github.melin.lakehouse.rest.support.SensitivityEnums.DetectorKind;
-import io.github.melin.lakehouse.rest.support.SensitivityEnums.SensitiveCategory;
-import io.github.melin.lakehouse.rest.support.SensitivityEnums.SensitivityLevel;
+import io.github.melin.lakehouse.rest.scan.SensitivityDetectors.CandidateType;
+import io.github.melin.lakehouse.rest.scan.SensitivityEnums.DetectorKind;
+import io.github.melin.lakehouse.rest.scan.SensitivityEnums.SensitiveCategory;
+import io.github.melin.lakehouse.rest.scan.SensitivityEnums.SensitivityLevel;
 import java.time.Clock;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -99,7 +100,7 @@ public class SensitiveTypeService {
             }
             candidates.add(new CandidateType(entity.getTypeCode(), entity.getLevel(),
                     entity.getMinConfidence(), entity.isAutoApply(),
-                    DetectorConfig.parse(entity.getDetectorsJson())));
+                    DetectorConfigJson.parse(entity.getDetectorsJson())));
         }
         return candidates;
     }
@@ -282,12 +283,12 @@ public class SensitiveTypeService {
         } catch (RuntimeException e) {
             throw ApiException.badRequest("detectors must be a JSON object of layer -> layer config");
         }
-        DetectorConfig parsed = DetectorConfig.parse(json);
+        DetectorConfig parsed = DetectorConfigJson.parse(json);
         if (parsed.configuredLayers().isEmpty()) {
             log.info("sensitive type detectors have no recognizable layer; the type will not match"
                     + " any column until a layer is configured");
         }
-        return parsed.toJson();
+        return DetectorConfigJson.toJson(parsed);
     }
 
     /** 编码归一：只大写化不猜测，形状不对返回 {@code null} 由调用方报错。 */
@@ -319,7 +320,7 @@ public class SensitiveTypeService {
      * 而不必展开 JSON 自己数。
      */
     static SensitiveType toDto(SensitiveTypeEntity entity) {
-        DetectorConfig config = DetectorConfig.parse(entity.getDetectorsJson());
+        DetectorConfig config = DetectorConfigJson.parse(entity.getDetectorsJson());
         Map<String, Object> detectors = new LinkedHashMap<>();
         for (DetectorKind kind : config.configuredLayers()) {
             detectors.put(kind.name().toLowerCase(java.util.Locale.ROOT),
@@ -327,7 +328,7 @@ public class SensitiveTypeService {
         }
         return new SensitiveType(entity.getTypeCode(), entity.getTypeName(), entity.getCategory(),
                 entity.getLevel(), detectors, entity.isAutoApply(),
-                io.github.melin.lakehouse.rest.support.SensitivityEnums
+                io.github.melin.lakehouse.rest.scan.SensitivityEnums
                         .defaultAutoApply(entity.getTypeCode()),
                 entity.getMinConfidence(), entity.isBuiltin(), entity.isEnabled(),
                 config.configuredLayers().stream().map(DetectorKind::name).toList(),

@@ -1,7 +1,7 @@
 package io.github.melin.lakehouse.rest.domain.entity;
 
-import io.github.melin.lakehouse.rest.support.SensitivityEnums.SensitiveCategory;
-import io.github.melin.lakehouse.rest.support.SensitivityEnums.SensitivityLevel;
+import io.github.melin.lakehouse.rest.scan.SensitivityEnums.SensitiveCategory;
+import io.github.melin.lakehouse.rest.scan.SensitivityEnums.SensitivityLevel;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;

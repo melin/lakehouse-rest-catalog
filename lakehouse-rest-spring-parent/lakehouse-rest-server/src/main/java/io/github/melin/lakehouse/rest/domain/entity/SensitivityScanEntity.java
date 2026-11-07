@@ -1,10 +1,10 @@
 package io.github.melin.lakehouse.rest.domain.entity;
 
-import io.github.melin.lakehouse.rest.support.SensitivityEnums.ScanExecution;
-import io.github.melin.lakehouse.rest.support.SensitivityEnums.ScanMode;
-import io.github.melin.lakehouse.rest.support.SensitivityEnums.ScanScope;
-import io.github.melin.lakehouse.rest.support.SensitivityEnums.ScanStatus;
-import io.github.melin.lakehouse.rest.support.SensitivityEnums.ScanTrigger;
+import io.github.melin.lakehouse.rest.scan.SensitivityEnums.ScanExecution;
+import io.github.melin.lakehouse.rest.scan.SensitivityEnums.ScanMode;
+import io.github.melin.lakehouse.rest.scan.SensitivityEnums.ScanScope;
+import io.github.melin.lakehouse.rest.scan.SensitivityEnums.ScanStatus;
+import io.github.melin.lakehouse.rest.scan.SensitivityEnums.ScanTrigger;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;

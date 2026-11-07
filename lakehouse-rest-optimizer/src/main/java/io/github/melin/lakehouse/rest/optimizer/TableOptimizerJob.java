@@ -2,6 +2,7 @@ package io.github.melin.lakehouse.rest.optimizer;
 
 import io.github.melin.lakehouse.rest.optimizer.OptimizationApiClient.Plan;
 import io.github.melin.lakehouse.rest.optimizer.OptimizationApiClient.Table;
+import io.github.melin.lakehouse.rest.optimizer.SparkSessions.Format;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -39,76 +40,8 @@ public final class TableOptimizerJob {
     /** 回调超时。上报是幂等的小请求，超过这个时间基本是网络或服务端不健康。 */
     private static final Duration HTTP_TIMEOUT = Duration.ofSeconds(30);
 
-    /** Paimon 自己的 Spark 扩展。catalog 初始化会检查它，缺了连库都建不了。 */
-    private static final String PAIMON_EXTENSION =
-            "org.apache.paimon.spark.extensions.PaimonSparkSessionExtensions";
-
-    /**
-     * Iceberg 的扩展。{@code CALL} 在 Iceberg 里由这个扩展注册成 procedure，
-     * 只把 iceberg-spark-runtime 放进类路径是不够的。
-     */
-    private static final String ICEBERG_EXTENSION =
-            "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions";
-
-    /**
-     * Lance 的扩展。它做的是**语法扩展**（{@code OPTIMIZE} / {@code VACUUM} 是 parser 级命令，
-     * 不是 procedure），所以这个扩展比另两个更不可省：缺了它，语句会先落到 Spark 自己的
-     * {@code SqlBase} 解析器上，报的是 {@code PARSE_SYNTAX_ERROR}——一句话都不提 Lance。
-     */
-    private static final String LANCE_EXTENSION =
-            "org.lance.spark.extensions.LanceSparkSessionExtensions";
-
-    /**
-     * Lance 的 catalog 实现类。**对应 connector 0.4.0**：0.0.x 里它是
-     * {@code com.lancedb.lance.spark.LanceNamespaceSparkCatalog}，改过包名。
-     *
-     * <p>类名写错不会被编译发现（它是个字符串），只在建会话时炸，所以钉在这里并写清版本。
-     * 镜像里 {@code lance-spark-bundle-3.5_2.12.jar} 的版本必须在 pom 里跟着一起改。
-     */
-    private static final String LANCE_CATALOG = "org.lance.spark.LanceNamespaceSparkCatalog";
-
     /** Paimon 的「数据文件清单」系统表名，跟着表名用 {@code $} 相连（{@code tbl$files}）。 */
     private static final String PAIMON_FILES_TABLE = "files";
-
-    /**
-     * 批次所属 catalog 的格式。
-     *
-     * <p><b>为什么要有这个枚举，而不是继续用 {@code isIceberg(plan)} 这种布尔。</b>
-     * 二元判断对第三种格式返回 {@code false}，于是 Lance 批次会安静地走进 Paimon 分支：
-     * 会话被配成 {@code org.paimon.spark.SparkCatalog}，去 {@code /v1/{prefix}} 上找表，
-     * 而我们的 Lance catalog 在那个前缀下按设计回「表不存在」——失败信息把人指向权限或
-     * 元数据，表其实是有的。改成穷尽 {@code switch} 之后，加第四种格式时编译器会把
-     * 所有落点指出来。
-     *
-     * <p>取值与服务端 {@code CatalogFormat} 的 wire 名逐字一致，但**不共享那个类**：
-     * 本模块与服务端分属两个依赖世界（另一端是 Spring Boot），为一个三值枚举去引
-     * spring-parent 的 core 包，会把 Spring 的传递依赖带进 Spark 容器的类路径。
-     */
-    enum Format {
-
-        PAIMON, ICEBERG, LANCE;
-
-        /**
-         * 解析清单里的格式。
-         *
-         * <p><b>缺字段回落 Paimon，未知取值失败——这是两件事。</b>缺字段是本特性引入前的
-         * 唯一形状（老服务端没有 {@code format} 字段），回落是兼容；给了 {@code LANCE} 却
-         * 不认识，说明服务端比任务新，凭猜测挑一个分支只会把排查方向指错。
-         */
-        static Format parse(String value) {
-            if (value == null || value.isBlank()) {
-                return PAIMON;
-            }
-            for (Format format : values()) {
-                if (format.name().equalsIgnoreCase(value.trim())) {
-                    return format;
-                }
-            }
-            throw new IllegalArgumentException("unknown catalog format in the execution plan: " + value
-                    + "; this optimizer only knows " + java.util.Arrays.toString(values())
-                    + ", upgrade the optimizer image");
-        }
-    }
 
     private TableOptimizerJob() {
     }
@@ -530,132 +463,15 @@ public final class TableOptimizerJob {
     // ------------------------------------------------------------------ Spark 会话
 
     /**
-     * 建会话：把批次所属 catalog 配成 Spark 的一个 namespace，其余交给各格式自己的扩展。
+     * 建会话：**实现已抽到 {@link SparkSessions}**（下推扫描用同一份，见
+     * {@code docs/sensitive-data-design.md} §5.6.5）。
      *
-     * <p>{@code warehouse} 传的是 catalog 的 **prefix**（与端到端测试同一套配法）：
-     * 客户端会用它换取 catalog 的实际标识，后续所有 {@code /v1/...} 路径都以它开头。
-     *
-     * <p>{@code data-token.enabled=true} 不能省：catalog 的仓库可能落在对象存储上，
-     * 任务自己没有任何密钥——端点和凭据都由服务端下发，这正是 REST catalog 存在的意义。
-     * 对本地文件系统仓库无害（服务端仍回一份自包含令牌，本地 FileIO 不读它）。
-     *
-     * <p><b>三套配置互不通用，逐条都踩过或都会踩：</b>
-     *
-     * <ul>
-     *   <li>Paimon 用 {@code metastore=rest} + {@code warehouse=prefix}，令牌走
-     *       {@code token.provider=bear}；</li>
-     *   <li>Iceberg 用 {@code type=rest} + {@code warehouse=prefix}，令牌走
-     *       {@code token} 配 {@code rest.auth.type=oauth2}；</li>
-     *   <li>Lance 这三件都没有：它的 catalog 是 {@code LanceNamespaceSparkCatalog}，
-     *       用 {@code impl=rest} 说「namespace 后端是 REST」，用 {@code parent} 说
-     *       「第一级命名空间是 catalog」，令牌塞进 {@code headers.Authorization}
-     *       （见 {@link #lanceCatalog}）。</li>
-     * </ul>
+     * <p>留这个薄壳而不是让调用点直接调静态方法：{@code appName} 用哪个、{@code catalogUrl}
+     * 从哪来，是本任务的知识；「三种格式各配哪些键」不是。边界就在这一行。
      */
     private static SparkSession spark(Plan plan, OptimizerOptions options, Format format) {
-        String catalog = plan.catalog();
-        org.apache.spark.sql.SparkSession.Builder builder = SparkSession.builder()
-                .appName("lakehouse-rest-optimizer-" + options.jobId())
-                // Iceberg 的 older_than 是 TIMESTAMP 字面量，Spark 按会话时区把它折算成时刻，
-                // 所以这里钉 UTC，语句里也按 UTC 格式化。**Paimon 不看这个设置**：expire 走
-                // options 里的 snapshot.time-retained（时长，没有时区），orphan 的 older_than
-                // 按 JVM 默认时区解析（见 PaimonProcedures.windowStart），格式化也用同一时区。
-                // **Lance 也不用**：VACUUM 的 before_timestamp_millis 是 epoch 毫秒。
-                .config("spark.sql.session.timeZone", "UTC");
-        switch (format) {
-            case ICEBERG -> icebergCatalog(builder, catalog, options);
-            case PAIMON -> paimonCatalog(builder, catalog, options);
-            case LANCE -> lanceCatalog(builder, catalog, options);
-        }
-        SparkSession session = builder.getOrCreate();
-        session.sparkContext().setLogLevel("WARN");
-        log.info("spark session ready for catalog {} ({})", catalog, format);
-        return session;
-    }
-
-    private static void icebergCatalog(org.apache.spark.sql.SparkSession.Builder builder,
-                                       String catalog, OptimizerOptions options) {
-        builder.config("spark.sql.extensions", ICEBERG_EXTENSION)
-                .config("spark.sql.catalog." + catalog, "org.apache.iceberg.spark.SparkCatalog")
-                .config("spark.sql.catalog." + catalog + ".type", "rest")
-                .config("spark.sql.catalog." + catalog + ".uri", options.catalogUrl())
-                // warehouse 填 prefix（catalog 名），与服务端 /v1/config 的约定一致
-                .config("spark.sql.catalog." + catalog + ".warehouse", catalog)
-                // 批内同一张表会被反复读（procedure 会重新加载元数据），缓存反而会读到旧快照
-                .config("spark.sql.catalog." + catalog + ".cache-enabled", "false")
-                // 服务端的「不问不给」：带这个头才会在响应里回短期凭据。
-                // 无对象存储的部署上它只是一个没有被消费的响应字段。
-                .config("spark.sql.catalog." + catalog
-                        + ".header.X-Iceberg-Access-Delegation", "vended-credentials");
-        if (options.catalogToken() != null) {
-            builder.config("spark.sql.catalog." + catalog + ".token", options.catalogToken())
-                    // 显式声明认证方式：只给 token 时客户端会「猜」成 oauth2 并打一条警告
-                    .config("spark.sql.catalog." + catalog + ".rest.auth.type", "oauth2");
-        } else {
-            log.info("no catalog token provided: connecting to {} without data plane credentials,"
-                    + " which only works on deployments with authentication disabled", options.catalogUrl());
-        }
-    }
-
-    private static void paimonCatalog(org.apache.spark.sql.SparkSession.Builder builder,
-                                      String catalog, OptimizerOptions options) {
-        builder.config("spark.sql.extensions", PAIMON_EXTENSION)
-                .config("spark.sql.catalog." + catalog, "org.apache.paimon.spark.SparkCatalog")
-                .config("spark.sql.catalog." + catalog + ".metastore", "rest")
-                .config("spark.sql.catalog." + catalog + ".uri", options.catalogUrl())
-                .config("spark.sql.catalog." + catalog + ".warehouse", catalog)
-                .config("spark.sql.catalog." + catalog + ".data-token.enabled", "true");
-        if (options.catalogToken() != null) {
-            builder.config("spark.sql.catalog." + catalog + ".token.provider", "bear")
-                    .config("spark.sql.catalog." + catalog + ".token", options.catalogToken());
-        } else {
-            log.info("no catalog token provided: connecting to {} without data plane credentials,"
-                    + " which only works on deployments with authentication disabled", options.catalogUrl());
-        }
-    }
-
-    /**
-     * Lance catalog 的会话配置。
-     *
-     * <p>四件事各自对应的失败形态，写在这里是为了下次只需看这一处：
-     *
-     * <ol>
-     *   <li><b>{@code impl=rest}</b>：不给它，connector 退化成「纯路径模式」（没有 namespace），
-     *       于是 {@code OPTIMIZE demo.sales.orders} 会被当成「在名为 demo 的 catalog 里找
-     *       sales.orders」，而会话里唯一注册的 catalog 就是 {@code demo}；
-     *   <li><b>{@code parent=<catalog>}</b>：REST 面的 id 是 {@code [catalog, schema, table]}，
-     *       第一级就是 catalog 的名字。少了它 connector 会把 {@code sales} 当 catalog，
-     *       于是每张表都以「不存在」失败；
-     *   <li><b>{@code uri = <catalogUrl>/lance}</b>：我们挂的是 {@code /lance/v1/**}，
-     *       而 connector 自己拼 {@code /v1/...}。多写一段（{@code /lance/v1}）的表现是
-     *       每个请求 404，且 body 是我们自己的错误 JSON（路径没匹配到），很容易被读成
-     *       「端点没实现」；
-     *   <li><b>认证走 {@code headers.Authorization}</b>：Lance 没有 Iceberg 那种
-     *       {@code token}/{@code rest.auth.type} 三个配置键，令牌只能塞进请求头。
-     *       这个键名取自设计稿（{@code docs/lance-table-optimization-design.md} §5.2），
-     *       **属该稿 §8 R1 待抓包确认的一项**：若不生效，表现是全部请求 401，
-     *       而服务端日志里能看到没有 {@code Authorization} 头。
-     * </ol>
-     *
-     * <p>对象存储的静态凭据走 {@code spark.sql.catalog.<c>.storage.*}（connector 会把
-     * {@code storage.} 前缀剥掉当 FileIO 选项）——那是 vendor 凭据失效时的兜底，
-     * 默认不配：静态凭据是长命密钥，能不用就不用（设计稿 §6.4）。
-     */
-    private static void lanceCatalog(org.apache.spark.sql.SparkSession.Builder builder,
-                                     String catalog, OptimizerOptions options) {
-        builder.config("spark.sql.extensions", LANCE_EXTENSION)
-                .config("spark.sql.catalog." + catalog, LANCE_CATALOG)
-                .config("spark.sql.catalog." + catalog + ".impl", "rest")
-                .config("spark.sql.catalog." + catalog + ".uri", options.catalogUrl() + "/lance")
-                .config("spark.sql.catalog." + catalog + ".parent", catalog);
-        if (options.catalogToken() != null) {
-            builder.config("spark.sql.catalog." + catalog + ".headers.Authorization",
-                    "Bearer " + options.catalogToken());
-        } else {
-            log.info("no catalog token provided: connecting to {} without data plane credentials,"
-                    + " which only works on deployments with authentication disabled",
-                    options.catalogUrl() + "/lance");
-        }
+        return SparkSessions.open("lakehouse-rest-optimizer-" + options.jobId(),
+                plan.catalog(), format, options.catalogUrl(), options.catalogToken());
     }
 
     // ------------------------------------------------------------------ 取值辅助

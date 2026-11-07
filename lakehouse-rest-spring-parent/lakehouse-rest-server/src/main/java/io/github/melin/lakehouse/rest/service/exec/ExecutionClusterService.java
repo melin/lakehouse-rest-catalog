@@ -173,8 +173,21 @@ public class ExecutionClusterService {
                 revealQuietly(entity.getCatalogTokenSealed()), entity.getNamespace(), entity.getImage(),
                 entity.getImagePullPolicy(), splitSecrets(entity.getImagePullSecrets()),
                 entity.getServiceAccount(), entity.getCallbackBaseUrl(),
-                entity.getMaxTablesPerJob(), entity.getMaxConcurrentJobs(), entity.getJobTimeoutSeconds());
+                entity.getMaxTablesPerJob(), entity.getMaxConcurrentJobs(), entity.getJobTimeoutSeconds(),
+                // 扫描那一组：实体列可能是 0（V2 之前建的行、或有人手工改库），
+                // 回落值与列默认值取同一个数——两个数不一样时，「界面上显示 200、实际用 20」
+                // 只会在一次全量扫描跑到一半时被发现
+                entity.getMaxScanTablesPerJob() > 0 ? entity.getMaxScanTablesPerJob() : DEFAULT_MAX_SCAN_TABLES_PER_JOB,
+                entity.getScanJobTimeoutSeconds() > 0
+                        ? entity.getScanJobTimeoutSeconds() : DEFAULT_SCAN_JOB_TIMEOUT_SECONDS,
+                splitSparkConf(entity.getScanSparkConf()));
     }
+
+    /** 与 {@code CatalogExecutionClusterEntity#maxScanTablesPerJob} 的列默认值一致。 */
+    public static final int DEFAULT_MAX_SCAN_TABLES_PER_JOB = 200;
+
+    /** 与 {@code CatalogExecutionClusterEntity#scanJobTimeoutSeconds} 的列默认值一致。 */
+    public static final int DEFAULT_SCAN_JOB_TIMEOUT_SECONDS = 3600;
 
     /**
      * 取该 catalog 的 fabric8 客户端（按 {@code configHash} 缓存，配置改了自动换）。
@@ -226,6 +239,33 @@ public class ExecutionClusterService {
         CatalogExecutionClusterEntity entity = findEntity(catalogId);
         int configured = entity == null ? 0 : entity.getMaxTablesPerJob();
         return configured > 0 ? configured : 20;
+    }
+
+    /**
+     * 一次下推扫描最多带几张表。没配置时回落到实体列的默认值（200）。
+     *
+     * <p><b>与 {@code maxConcurrentJobs} 的分工别混。</b>这个数决定「一个扫描作业内部装多少张表」
+     * （超出就分批，见 §5.6.6）；那个数决定「这台集群同时跑几个作业」，且**扫描与优化共用**。
+     * 把两者合成一个数会让「调大并发」意外地把单个作业的表数也放大，反过来也一样。
+     */
+    @Transactional(readOnly = true)
+    public int maxScanTablesPerJob(String catalogId) {
+        CatalogExecutionClusterEntity entity = findEntity(catalogId);
+        int configured = entity == null ? 0 : entity.getMaxScanTablesPerJob();
+        return configured > 0 ? configured : DEFAULT_MAX_SCAN_TABLES_PER_JOB;
+    }
+
+    /**
+     * 扫描作业的超时（秒）。没配置时回落到 3600。
+     *
+     * <p>与 {@link #jobTimeoutSeconds} 分开：一次采样扫描与一次压缩批次的耗时差一个量级，
+     * 共用会让「把优化超时调到 30 分钟」把扫描也一并判超时（扫描到那时可能才刚暖完 JVM）。
+     */
+    @Transactional(readOnly = true)
+    public int scanJobTimeoutSeconds(String catalogId) {
+        CatalogExecutionClusterEntity entity = findEntity(catalogId);
+        int configured = entity == null ? 0 : entity.getScanJobTimeoutSeconds();
+        return configured > 0 ? configured : DEFAULT_SCAN_JOB_TIMEOUT_SECONDS;
     }
 
     /** 与实体列的默认值同一个数（{@code CatalogExecutionClusterEntity#jobTimeoutSeconds}）。 */
@@ -669,8 +709,14 @@ public class ExecutionClusterService {
         return builder.toString();
     }
 
-    /** 键是否落在白名单内：前缀匹配 + 一个精确键。 */
-    private static boolean allowedSparkConfKey(String key) {
+    /**
+     * 键是否落在白名单内：前缀匹配 + 一个精确键。
+     *
+     * <p><b>{@code public} 是有意的</b>：提交器在拼命令行时要用同一份判定再兜一次
+     * （手工改库能绕过写入口的过滤）。两处各写一份白名单，漏掉一个前缀的表现是
+     * 「API 拒绝、作业接受」，而这条旁路存在的意义正是防它。
+     */
+    public static boolean allowedSparkConfKey(String key) {
         if (SPARK_CONF_ALLOWED_KEYS.contains(key)) {
             return true;
         }
@@ -722,6 +768,32 @@ public class ExecutionClusterService {
             }
         }
         return names;
+    }
+
+    /**
+     * 把库里那份 {@code k=v\nk=v\n} 拆成命令行要用的 {@code k=v} 行。
+     *
+     * <p><b>这里不再做白名单过滤</b>：写入口（{@link #normalizeSparkConf}）已经把白名单外的键
+     * 丢掉了，读路径再滤一遍只会让「库里存着但没生效」变成两处判断。真正需要防的是
+     * 「有人手工改库塞了连接键」——那种情况由 {@code ScannerJob} 在拼命令行时**再兜一次**
+     * （它和白名单是同一份判定，见那条注释），因为手工改库绕过了 API。
+     *
+     * <p>空行与注释行跳过：{@code normalizeSparkConf} 落的是过滤后的文本，但手工改库的行
+     * 里可能带注释，一行 {@code # ...} 变成 {@code --conf "# ..."} 会让作业启动即失败。
+     */
+    static List<String> splitSparkConf(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return List.of();
+        }
+        List<String> entries = new ArrayList<>();
+        for (String line : raw.split("\\R")) {
+            String entry = line.trim();
+            if (entry.isEmpty() || entry.startsWith("#") || entry.indexOf('=') <= 0) {
+                continue;
+            }
+            entries.add(entry);
+        }
+        return List.copyOf(entries);
     }
 
     private static String keepOr(String incoming, String existing) {

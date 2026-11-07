@@ -42,7 +42,8 @@ Paimon 与 Iceberg 共用 `/v1/{prefix}` 靠这个字段分派；Lance 没有 `/
 
 ```
 paimon-rest/
-├── lakehouse-rest-spring-parent/        服务端：一份父 POM + 六个模块
+├── lakehouse-rest-spring-parent/        服务端：一份父 POM + 七个模块
+│   ├── lakehouse-rest-scan-kernel/      敏感识别的纯计算内核：探测器 / 打分器 / 校验器 / 打码 / 扫描协议（不引 Spring、不引 JSON 库）
 │   ├── lakehouse-rest-core/             与表格式无关的地基：鉴权、授权、实体与仓储、协议分派、共享 DTO
 │   ├── lakehouse-rest-storage/          FileIO 与数据目录访问（唯一允许依赖 paimon-core 的非协议模块）
 │   ├── lakehouse-rest-protocol-paimon/  Paimon 协议面：Catalog API 全部 60 个端点
@@ -66,7 +67,7 @@ paimon-rest/
 
 模块布局上只有一条硬约束：**两个父 POM ＝ 两个依赖世界**。根 `pom.xml` 是纯聚合器，刻意不继承
 `spring-boot-starter-parent`（否则 Spark 侧的 Jackson / netty / jersey 会被 Boot 抬到别的版本，
-出问题极难定位）；服务端六个模块挂在 `lakehouse-rest-spring-parent` 下，由它继承 Boot 父 POM。
+出问题极难定位）；服务端七个模块挂在 `lakehouse-rest-spring-parent` 下，由它继承 Boot 父 POM（例外是扫描内核：目录在里面、父 POM 是根，理由见 `docs/maven-module-design.md`）。
 四条依赖不变量（core 无格式依赖、三面互不依赖、`iceberg-core` 只在 protocol-iceberg、Lance 面不引
 格式库）由 `maven-enforcer-plugin` 在**构建期断言**——构建通过本身就是一次方向检查。
 **不要把 Boot 提为根聚合器的父 POM。** 依赖图、命名与类的落点见
@@ -148,7 +149,7 @@ H2 与测试两个 profile 里 **Flyway 是显式关闭的**（`spring.flyway.en
 ### 2.2 构建与运行
 
 ```bash
-# 全量构建（17 个模块；用 install 而不是 package，因为模块之间有内部依赖）
+# 全量构建（18 个模块；用 install 而不是 package，因为模块之间有内部依赖）
 JAVA_HOME=/path/to/jdk-21 mvn -o -DskipTests install
 
 # 只要服务端可执行 jar：-am 会一并构建它依赖的 core / storage / 三个协议面

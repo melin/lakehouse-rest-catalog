@@ -1,6 +1,6 @@
 # 敏感数据识别与分类 · 设计方案
 
-> **状态：P0 / P1 已实现，P2–P4 为设计**。已实现的落点：P0 = 五实体 + 内置类型 seed + 类型/探测器配置 + D1/D2 元数据扫描 + 手工打标 + 控制台六屏与表详情页签；P1 = D3 采样探测（走预览那条只读通道）+ 五个校验器 + 值层打分 + 自动应用闸门 + 人审 `decide` + 第 7 张表（抑制项，V4）+ 控制台 `#findings` 的闭环与「已否决」区块。代码里没有的部分会显式报错而不是静默降级（`execution=SPARK` → 400/501；`D4`/`D5` 层恒 0 分）。
+> **状态：P0–P4 均已实现**（P4 只差真集群 e2e；P3 的 `#bindings` 屏与引擎侧缓存主动失效仍未做）。已实现的落点：P0 = 五实体 + 内置类型 seed + 类型/探测器配置 + D1/D2 元数据扫描 + 手工打标 + 控制台六屏与表详情页签；P1 = D3 采样探测（走预览那条只读通道）+ 五个校验器 + 值层打分 + 自动应用闸门 + 人审 `decide` + 抑制项表（V4）+ `#findings` 闭环；P2 = 血缘三档传播 + 生命周期钩子；P3 = 标签 → mask 在 `resolve`/预览/试算三处同时展开 + `/tag-mask-bindings` 三条端点；P4 = 调度项 CRUD（第 7 张表，V5）+ `execution=SPARK` 下推（`lakehouse-rest-scan-kernel` 内核 + 两个回调端点 + 作业侧 `SensitivityScannerJob`）。代码里没有的部分仍然显式报错而不是静默降级：`METADATA_ONLY + SPARK` → 400（除非显式开 `allow-metadata-on-spark`）、不可派发的 catalog 建 SPARK 扫描 → 400、`D4`/`D5` 层恒 0 分。
 > **§13 的十一条已全部拍板，无未决项。** 本文描述的是**拍板后的目标形态**：其中「调度自建」（第 9 条）与「Spark 默认 `1g`/`local[1]`」（第 11 条）是更早一轮才定的，与更早版本的口径相反——读到 §5.6.2 / §5.6.3 / §5.6.7 / §9 / §11 时以本稿为准。
 > 配套交互原型：[`sensitive-data-mockup.html`](sensitive-data-mockup.html)（八画面；`#schedules` 已按自建 CRUD 呈现）。
 
@@ -89,7 +89,7 @@
 
 七张新表，全部沿用既有约定：`AuditedEntity` 审计列、`entity_version` 乐观并发、全名摘要列做唯一键（理由见 §4.8）。
 
-> **七张里已落库六张**：V3 建的五张（§4.1–§4.5）+ V4 建的抑制项表（§4.7）。第七张 `lakehouse_sensitivity_schedule`（§4.6）是拍板「调度自建」之后才进数据模型的，属 **P4**，还没建——`EXPECTED_TABLES` 因此是 **35**（29 + 5 + 1），**别再按 34 写**。
+> **七张全部已落库**：V3 建的五张（§4.1–§4.5）+ V4 建的抑制项表（§4.7）+ V5 建的调度项表（§4.6，P4 拍板「调度自建」之后才进数据模型）。`EXPECTED_TABLES` 因此是 **36**（29 + 6 + 1），**别再按 35 或 34 写**——35 是「调度项表还没建」那一版的口径。
 >
 > **抑制项为什么必须单独一张表（P1 新增 §4.7）**：它是「这列**不是**这个类型」的断言，键是 `(column_ref_hash, type_code)`；而 `lakehouse_column_tag` 记的是「这列**是**什么」，键是 `(column_ref_hash, tag_key)`。两者的生命周期也不同：标签删掉可以重建，而「谁在什么时候否掉、谁又在什么时候解禁」删掉就再也拼不出来。并进标签表会让一次驳回要么被标签的唯一键挡住，要么在删标签时被一起删掉。
 
@@ -479,7 +479,7 @@ confidence = clamp( 0.35·s_name + 0.10·s_type + 0.40·s_value + 0.10·s_dict +
 **三处不能照搬的语义**（这才是本节的重点）：
 
 1. **一个扫描 = 一个 Job，不要「组批」**。优化任务的批次是「N 张表的集合」，因为每张表的压缩独立且失败可分（`PARTIAL_SUCCESS` + 只重跑失败 item）。扫描没有这个对应物：§5.6.4 规定「同一张表同时只允许一个 `RUNNING` 扫描」，而组批会让两个调度周期各自抓走同一张表、落在两个 Job 里——互斥就被绕过了。表内并行由任务内部做（照优化任务那样逐表 `try/catch` + 逐表回调），不靠多开 Job。
-2. **「没结果」必须上报成结果**。优化任务里「k8s 已终态但某张表没上报」按失败处理，因为没跑完的 compaction 就是没做完。扫描里「没上报」有两种含义——**扫了但没命中** 与 **压根没跑**——而 §13 的「覆盖率」正是靠这个区分才成立。因此任务必须对**每张表**回一条 item，哪怕 `findings=0`、哪怕该表被跳过；否则「扫完了没发现」与「漏扫」在控制台上长得一模一样。
+2. **「没结果」必须上报成结果**。优化任务里「k8s 已终态但某张表没上报」按失败处理，因为没跑完的 compaction 就是没做完。扫描里「没上报」有两种含义——**扫了但没命中** 与 **压根没跑**——而 §13 的「覆盖率」正是靠这个区分才成立。因此任务必须对**每张表**回一条 item，哪怕 `findings=0`、哪怕该表读失败；否则「扫完了没发现」与「漏扫」在控制台上长得一模一样。回调协议因此只有 `SCANNED` / `FAILED` 两态，**不设 `SKIPPED`**：第三种终态在覆盖率上要么被算成「已覆盖」、要么被算成「故障」，两种说法都不对，「为什么没扫」该写在 `FAILED` 的 message 里。
 3. **明文的出网口只允许一条**。优化任务全程只搬文件、不读内容，所以它的威胁模型里没有「任务把数据发出去」。扫描任务的收口要强一档：原始行**不出 Pod**，回调只带打码样本与命中率——§5.4 第 4 条在 B 路线下的重述是「不出 Pod」而不是「不出服务端」；并且**任务侧禁止把样本值写进日志**（优化任务的日志里可以有语句和指标，扫描的日志里不能有值）。
 
 **三条由复用带来的、必须写清的推断**：
@@ -771,7 +771,7 @@ DQ 的规则可以按标签匹配：「所有 `L3+` 列必须有 completeness �
 > - **绑定写入只校验到语法层**（`PolicyExpressions.parseMaskTemplate`）：绑定不知道会落在什么类型的列上，所以「结果类型等于列类型」留到引擎编译时兜；但「fn 拼错」「表达式引用 `col`」必须写入即拒——绑定里写死列名，落到别的列上就是把那一列的值搬过来。
 > - **控制台的 `#bindings` 屏刻意还没建**（§5.5 那条「唯一刻意不建的一屏」在本阶段仍然成立），因此这三条端点**没有**加进 `scripts/verify-console.py` 的 `EXTENSION_ENDPOINTS`：那份白名单的第 2 组断言要求「每一条都在控制台里真的被调用」，提前登记会让守卫红。阶段 3 建屏时再一起加。
 
-> **P4 第一批实际落了什么**（本轮：**自建调度**的服务端 + 控制台 CRUD；`execution=SPARK` 下推**尚未落地**，见下面那条「未落」）：
+> **P4 第一批实际落了什么**（自建调度的服务端 + 控制台 CRUD；下推在第二批落地，见本节末尾）：
 >
 > - **第 6 张表 `lakehouse_sensitivity_schedule`**（§4.6）+ **V5 纯新增迁移**（MySQL / PostgreSQL 各一份），两份快照重新生成后是 **36 张表**；`EXPECTED_TABLES` 与 `FlywayBaselineTests` 的 `MIGRATIONS` 同步到 36 / 五条。
 > - **`/sensitivity-schedules` 五条端点**（`GET`/`POST` + `GET`/`PUT`/`DELETE /{id}`），判权按 §10：带 `catalog` 时读判 `DESCRIBE`、写判 `ALTER`，不带 `catalog` 的列表判服务管理员；`PUT` 要**新旧两个 catalog 各判一次**（请求体允许把调度项挪走）；路径 id 不是数字 → **400**（`@PathVariable Long` 会抛一个全局处理器没有 500 分支的异常）。
@@ -784,10 +784,19 @@ DQ 的规则可以按标签匹配：「所有 `L3+` 列必须有 completeness �
 > - **控制台 `#schedules` 从「生成一行 curl」的过渡态改成 CRUD**，五条端点同时登记进 `scripts/verify-console.py` 的 `EXTENSION_ENDPOINTS`（第 2 组要求白名单里每条都真被调用，两者必须同批）。四处刻意不在前端做：**不解析 cron / 不算「下次运行」**（服务端写事务里算好回传，两边各算一遍迟早分叉且不报错）、**不提供改名**（编辑态名称只读）、**停用不是删除**、**执行位置只给「跟随生效值」与 `IN_PROCESS`**（`SPARK` 那一项留着但禁用并写明链路未接）。另有一条容易漏的：`PUT` 是整份替换，`scope` / `mode` 缺省会落回 `CATALOG` / `METADATA_ONLY`，因此**启停也必须回传整份请求体**——只发 `{enabled}` 会把一条表级采样调度项悄悄改成 catalog 级元数据档，还回 200。
 > - **读模型补上 `scheduleName`，列表补上 `?scheduleName=` 过滤轴**。「停用后历史按 `schedule_name` 可查」这句话此前在 API 上不成立：列从 V1 就有，但 `ScanSummary` 没带它、列表也没有这个过滤轴——**存着但读不到**。补上之后控制台才能回答「我配的这条到底跑过没有」（`triggerType=SCHEDULE` 单独筛得到的是所有调度项的历史）。
 >
-> **两条「未落」要写清，免得按设计稿以为做了**：
-> 1. **`execution=SPARK` 下推**（§5.6.5 的提交 / 探活 / 跟踪 / 取消、`PENDING` / `SUBMITTING` 状态机、`/sensitivity-scans/{id}/submission` 与 `…/items` 两个回调端点、与优化批次共用的 `maxConcurrentJobs`、`scanSparkConf` 注入命令行）尚未实现，`POST /sensitivity-scans` 与调度项在该路径上仍是 **501 / 400**。因此**控制台暂时不给 `SPARK` 这个选项**（留一项禁用并注明「链路未接」）：建得出来的 SPARK 调度项到点会在发起扫描那一步拿到 501，而现象是「配好了、凌晨三点什么都没发生」。**同批要改的一处**：控制台 `SPARK_CONF_IMAGE_DEFAULTS`（`src/utils/executionCluster.js`，只做 placeholder 用）现在仍是 `4g` / `cores=4` / 显式 `200` 分区，与新默认段（`1g` / `cores=1`、不含 `shuffle.partitions`）相反——它得和「`--conf` 真的下发到命令行」一起改，否则界面会在服务端还没注入任何参数时就先宣告一组不存在的默认值。**落地前还有一个必须先定的结构问题**：作业侧要「跑同一份 Java 打分器」（§5.6.5「探测器不在 Spark 里重写」），而 `lakehouse-rest-optimizer` 今天不依赖 core——把 core（带 Spring）拖进作业镜像不可行，要么抽一个只含探测器 / 打分器 / 校验器的公共模块给两边用，要么接受第二份实现（那正是 §5.6.5 明确禁止的）。**这是要在写扫描作业之前拍板的一件事**，不是实现细节。
-> 2. **`GET /sensitivity-scans/{id}/submission` 与 `POST …/items`** 两条回调端点仍未建（属上面那一批），因此它们**没有**登记进 `EXTENSION_ENDPOINTS`：调用方是 k8s 里的任务而不是控制台，第 2 组会把它判成过期条目。
-
+> **P4 第二批：`execution=SPARK` 下推已落地**（上一批那两条「未落」现在都落了，原文的顾虑一并回应）：
+>
+> 1. **结构问题先有了答案**：新增 Maven 模块 **`lakehouse-rest-scan-kernel`**（仓库第 17 个模块），只装探测器 / 打分器 / 校验器 / 打码 / 列引用哈希 / 协议记录，**不引 Spring、JPA、Jackson、slf4j**——因为它要同时编进 Spring Boot 4（Jackson 3）与集群上的 Spark 3.5（Jackson 2）两个依赖世界。这条「不引什么」是**构建期会失败的断言**（`ScanKernelBoundaryTests` 扫源码查禁用前缀），不是注释。依赖方向 `core → kernel`，内核不反向依赖。服务端进程内扫描与集群作业因此跑**同一份字节码**，§5.6.5「不许第二份实现」由此成立。
+> 2. **服务端状态机**：`POST /sensitivity-scans` 在 `execution=SPARK` 时建 `PENDING` 并**立即 202**（提交、跟踪、回调都在别的节拍 / 别的进程）；`SensitivityScanDispatcher` 每 `dispatch-interval` 一拍：租约 → 按 catalog 数「扫描在跑的 + 优化在跑的」与 `maxConcurrentJobs` 比 → `claimForSubmission`（`PENDING → SUBMITTING`，代数 +1）→ 生成回调令牌 → `submitter.submit` → `markSubmitted`（`SUBMITTING → RUNNING`，写 Job 坐标 + 令牌哈希）；`pollRunning` 只处理 `execution=SPARK` 的行，`UNKNOWN` 不回写状态，超时用 `startedAt + scanJobTimeoutSeconds` **现算**（扫描表上没有 `deadline_at` 列，好处是调小超时会立刻对在跑的扫描生效）。
+> 3. **两个回调端点**：`GET /sensitivity-scans/{id}/submission`（分页，作业按 `hasMore` 一直拉）与 `POST …/items`（逐表回报，204）。头是 **`X-Sensitivity-Scan-Token`**，库里只存 **SHA-256**，比较用 `MessageDigest.isEqual`；令牌在**提交那一刻**生成、随 Job 命令行离开进程。**重投必须复用 Job 里那个令牌**（`Fabric8ScanJobSubmitter` 命中同名 Job 时从 `--token` 读回）——否则「作业在跑、回调永远 403」，而日志不指向原因。
+> 4. **作业侧 `SensitivityScannerJob`**：同一镜像、另一个 main class，用 k8s `command` 覆盖 ENTRYPOINT 起来（三格式运行时与 Lance 的 arrow 排序白拿）。一表一条 `SELECT <cols> FROM \`c\`.\`db\`.\`t\` LIMIT n`（**HEAD**，与进程内 `SensitivitySampler` 同一口径；标 `TABLESAMPLE` 会让两种执行位置给出不同置信度）；结构化列（`array` / `map` / `struct` / `list<…>`）**不进 SELECT**——值层对它们没有意义，而带进去的代价是「一列读不出来、整张表没采到样」。值只在 `SensitivityDetectors` 的内存里活一次，出 Pod 的是 `ScanFinding.of` 打码后的样本，**本类不打日志里的任何值**。
+> 5. **共用一把 `maxConcurrentJobs`**（扫描 + 优化一起数）已按 §5.6.6 落地；`scanSparkConf` 经白名单二次过滤后拼进命令行，默认段垫底 `spark.driver.memory=1g` / `spark.driver.cores=1`、**不含** `shuffle.partitions`。
+> 6. **控制台放开 `SPARK`**：`#schedules` 里那一项从「禁用并注明链路未接」改成可选；`SPARK_CONF_IMAGE_DEFAULTS.scan` 同步改成 `1g` / `cores=1` 且删掉 200 分区（它只做 placeholder，回填会让「留空」这个状态消失）。
+> 7. **三条「错了不报错、只是不动」的坑**（都是本轮实际踩到并修掉的，留在这里免得下次重犯）：
+>    - **`claim_attempt` 在新行上是 NULL**：`s.claimAttempt + 1` 得 NULL，抢占「成功」但代数永远为空，`markSubmitted` 的条件永不成立，扫描安静地卡在 `SUBMITTING`。修法是 `coalesce(s.claimAttempt, 0) + 1` 且建单时显式写 0。
+>    - **`countByCatalogIdAndStatusIn`**：扫描表上只有 `catalog_name`（优化批次表才是 `catalog_id`）。这条派生查询让 Spring Data 在**启动时**就抛 `No property 'catalogId' found`——整个服务起不来，而不是「这个计数恒为 0」。
+>    - **`ScannerJob` 覆盖 ENTRYPOINT 会丢掉镜像里的 `--conf spark.driver.extraClassPath`**：覆盖是整条命令的替换而不是追加，Lance 表扫描会以 `NoSuchMethodError` 失败（bundle 里那份未 relocate 的 arrow 没能排到 Spark 自带的前面）。因此扫描命令里把它重写了一遍。
+> 8. **仍未做**：真集群的 e2e（本轮的覆盖是内核单测 5 + 作业侧 `SensitivityScannerJobTests` 8 + 服务端 `SensitivityPushScanTests` 6，提交器是桩）；`SUBMISSION_PAGE_MAX`（200）与 `maxScanTablesPerJob` 是两个数，前者是**单次响应的上限**、后者是**一个作业装几张表**，页面大小由作业自己按 200 定，二者不一致时只影响往返次数。
 
 ## 13. 风险与未决
 

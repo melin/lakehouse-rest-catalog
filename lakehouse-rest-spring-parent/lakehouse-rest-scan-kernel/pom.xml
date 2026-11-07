@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+	<modelVersion>4.0.0</modelVersion>
+
+	<!--
+		父 POM 是**仓库根**，不是 lakehouse-rest-spring-parent（虽然本模块的目录在后者下面、
+		也是后者的一个 module）。
+
+		这不是笔误：spring-parent 的 <dependencies> 里有 spring-boot-starter-webmvc /
+		data-jpa / validation 与 lombok，那是给「最终进同一个 JVM 的四个服务端模块」准备的。
+		本模块的产物要同时进**两处**：服务端进程内，以及集群上跑扫描作业的那个 Spark 容器。
+		继承那份 <dependencies> 会把 Spring 与 JPA 拖进作业侧的编译契约里，而作业侧只有
+		Spark 发行版——编译期看着能用、运行期 NoClassDefFoundError 的那种错。
+
+		**聚合器与父 POM 是两件事**：spring-parent 仍然把本模块列在自己的 <modules> 里，
+		因此 `-f lakehouse-rest-spring-parent/pom.xml -pl :lakehouse-rest-server -am`
+		会在同一轮反应堆里先构建本模块，不会去 ~/.m2 拿一份可能过期的旧 jar。
+	-->
+	<parent>
+		<groupId>io.github.melin</groupId>
+		<artifactId>lakehouse-rest-parent</artifactId>
+		<version>1.0.0</version>
+		<relativePath>../../pom.xml</relativePath>
+	</parent>
+
+	<artifactId>lakehouse-rest-scan-kernel</artifactId>
+	<packaging>jar</packaging>
+	<name>lakehouse-rest-scan-kernel</name>
+	<description>敏感数据识别的纯计算内核：五层探测器、打分器、校验器、打码与列引用哈希，以及扫描作业的协议记录</description>
+
+	<!--
+		装什么、凭什么值得一个模块（设计见 docs/sensitive-data-design.md §5.6.5）：
+
+		这一层是「同一次判定只有一个实现」的落点。设计稿明确禁止「把正则与校验器翻译成
+		Spark SQL 表达式」——那会造出第二份打分实现，权重与公式立刻分叉。因此集群上的
+		扫描作业不重写任何判定逻辑，它只负责把抽样的行拉回来，然后调用这里的同一份 Java。
+
+		装什么：
+		- 探测器 D1/D2/D3 的判据与配置（SensitivityDetectors / DetectorConfig）
+		- 打分与决策带（SensitivityScorer）、校验器（SensitivityValidators）
+		- 打码（SensitivityMasking）——作业在**出 Pod 之前**就要打码，不能等服务端打
+		- 列引用哈希（ColumnRefs）、列模型（ScanColumn）、取值枚举（SensitivityEnums）
+		- 扫描作业的协议记录（ScanProtocol）——两端都按它读，避免各写一份同名字段
+
+		**不装什么**（这是本模块最重要的三条约定）：
+		- 不装 Spring、JPA、Jackson。**一次都不许**：本模块要同时编进 Spring Boot 4（Jackson 3，
+		  `tools.jackson`）与 Spark 3.5（Jackson 2，`com.fasterxml.jackson`）两个依赖世界。
+		  引了其中任何一个，另一个世界里就会少类或多一份旧版本——而这两件事都只在真机上炸。
+		- 不装 schema_doc 的解析。那是 `lakehouse_table` 的一列，只有服务端见得到；
+		  服务端解析完把归一化的列随执行清单下发（见 core 的 SchemaColumns）。
+		- 不装 HTTP / k8s / 数据库。这里只有纯函数与不可变记录，因此它可以被两端各自的
+		  测试直接调，不需要起容器。
+	-->
+
+	<dependencies>
+		<dependency>
+			<groupId>org.junit.jupiter</groupId>
+			<artifactId>junit-jupiter</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.junit.platform</groupId>
+			<artifactId>junit-platform-launcher</artifactId>
+			<scope>test</scope>
+		</dependency>
+	</dependencies>
+
+	<build>
+		<plugins>
+			<!--
+				「不引 Spring / Jackson」不能只写在注释里。这一条把 `src/main/java` 下的
+				源码当成文本读一遍，逐个文件查禁用前缀——它是构建期会失败的断言，不是文档。
+
+				为什么不是 maven-enforcer 的 bannedDependencies：那条规则查的是**解析后的
+				依赖树**，而本模块的风险恰恰是「某个 jar 顺手把 Jackson 带进来却不被使用」，
+				以及「有人写了一个 import 而依赖还没加」。源码级的检查两者都覆盖。
+			-->
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-surefire-plugin</artifactId>
+				<configuration>
+					<systemPropertyVariables>
+						<scan.kernel.main.sources>${project.basedir}/src/main/java</scan.kernel.main.sources>
+					</systemPropertyVariables>
+				</configuration>
+			</plugin>
+		</plugins>
+	</build>
+</project>

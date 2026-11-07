@@ -13,7 +13,7 @@ import io.github.melin.lakehouse.rest.support.ApiException;
 import io.github.melin.lakehouse.rest.support.ResourceType;
 import io.github.melin.lakehouse.rest.support.SensitivityCatalogSettings;
 import io.github.melin.lakehouse.rest.support.SensitivityCatalogSettings.Overrides;
-import io.github.melin.lakehouse.rest.support.SensitivityEnums.ScanExecution;
+import io.github.melin.lakehouse.rest.scan.SensitivityEnums.ScanExecution;
 import java.time.Clock;
 import java.util.LinkedHashMap;
 import java.util.Map;

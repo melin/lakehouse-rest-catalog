@@ -45,7 +45,7 @@
 
 ---
 
-## 1. Catalog 侧（12 张）
+## 1. Catalog 侧（13 张）
 
 | 表 | 对应资源 | 说明 |
 | --- | --- | --- |
@@ -61,6 +61,7 @@
 | `lakehouse_function` | function | 入参/出参/定义体/属性 |
 | `lakehouse_consumer` | consumer | 流式消费位点 |
 | `lakehouse_semantic_view` | semantic view | 格式 + 全文定义 |
+| `lakehouse_lance_table_version` | Lance 版本账 | 只有 `managed_versioning=true` 的表才有行；唯一约束 `(table_id, version)` 才是 `put_if_not_exists` 的保证（先查再插有窗口），见 [`lance-rest-catalog-design.md`](lance-rest-catalog-design.md) §4.4 |
 
 ### 1.1 Iceberg 协议面新增的 9 个列
 
@@ -261,6 +262,33 @@ STS 令牌、`AKS`→AAD 客户端凭据）。一行一 catalog（`catalog_id` �
 进程不告而别——锁会永久留在那里，租约到期即失效，代价只是空窗一个 TTL。
 正确性不依赖它（各处的条件更新才是裁判），所以这张表丢了、过期了、被手工清空了，
 最坏结果都是「多跑几拍」而不是「重复执行」。
+
+## 2.7 敏感数据识别（7 张）
+
+七张表分两处落：前三张在 `core`（与 catalog 元数据同库、同一次事务），后四张在 `server`
+（扫描的运行记录）。设计见 [`sensitive-data-design.md`](sensitive-data-design.md) §4。
+
+| 表 | 所属 | 说明 |
+| --- | --- | --- |
+| `lakehouse_sensitive_type` | core | 类型字典（内置 + 自定义）：层权重、匹配器的参数、允许的掩码。**内置类型只禁删（409）不禁改** |
+| `lakehouse_tag_mask_binding` | core | 类型 ↔ 标签 / 掩码的绑定，决定「落标之后数据长什么样」 |
+| `lakehouse_column_tag` | core | **当前状态**：某列（或整表）此刻挂在哪个级别上，`source` 只有 `MANUAL`，带 `entity_version` 乐观锁 |
+| `lakehouse_sensitivity_scan` | server | 一轮扫描：范围、模式（`METADATA_ONLY` / `SAMPLED` / `SPARK`）、进度计数、提交租约三列（`claim_owner` / `claim_expires_at` / `claim_attempt`） |
+| `lakehouse_sensitivity_finding` | server | **逐轮历史**：每条候选证据（层得分、样本摘录）都留一行，`PENDING` / 确认 / 拒绝各是一次状态迁移 |
+| `lakehouse_sensitivity_suppression` | server | 人工拒绝的落点：解禁是 `enabled=false` 而**不删行**，否则下一轮会重新提出同一个候选 |
+| `lakehouse_sensitivity_schedule` | server | 自建调度项：cron、范围、模式、`next_run_at`（抢占令牌，与 `entity_version` 这类人工乐观锁不是一件事） |
+
+两条形状上的约定，改动前先看清楚：
+
+- **`finding` 与 `column_tag` 不能合成一张表。** 合了之后只有两种下场：同一列出现 N 条
+  `PENDING`（历史被折成一格），或者重扫把人工拒绝的结果洗回待审。前者是数据错，后者是
+  人的判断被机器覆盖。
+- **表级标签用 `column_name` 空串表示**，不另开 `level` 列也不另建表级表。扫描自动落标时
+  一次会写两条（列级 + 表级），所以「只有一条标签」的断言基本都是错的。
+
+`lakehouse_sensitivity_scan` 只有 `catalog_name`，**没有 `catalog_id`**——它是运行记录，
+catalog 删了之后这行还要能被读、被清理。派生查询写成 `countByCatalogId...` 会让应用
+**启动即失败**（不是运行到才报错）。
 
 ## 3. 为什么有两个摘要列
 

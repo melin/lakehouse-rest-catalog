@@ -143,14 +143,14 @@ class TableOptimizerJobTests {
     @Test
     void formatParsingSeparatesMissingFromUnknown() {
         // 缺字段：老服务端，唯一可能的形状就是 Paimon
-        assertEquals(TableOptimizerJob.Format.PAIMON, TableOptimizerJob.Format.parse(null));
-        assertEquals(TableOptimizerJob.Format.PAIMON, TableOptimizerJob.Format.parse("  "));
+        assertEquals(SparkSessions.Format.PAIMON, SparkSessions.Format.parse(null));
+        assertEquals(SparkSessions.Format.PAIMON, SparkSessions.Format.parse("  "));
         // 大小写不敏感：wire 名由服务端枚举给出，但不该因为大小写差异就失败
-        assertEquals(TableOptimizerJob.Format.LANCE, TableOptimizerJob.Format.parse("lance"));
-        assertEquals(TableOptimizerJob.Format.ICEBERG, TableOptimizerJob.Format.parse("ICEBERG"));
+        assertEquals(SparkSessions.Format.LANCE, SparkSessions.Format.parse("lance"));
+        assertEquals(SparkSessions.Format.ICEBERG, SparkSessions.Format.parse("ICEBERG"));
 
         RuntimeException failure = assertThrows(IllegalArgumentException.class,
-                () -> TableOptimizerJob.Format.parse("HUDI"));
+                () -> SparkSessions.Format.parse("HUDI"));
         // 报错要指名取值与「升级镜像」这条出路
         assertTrue(failure.getMessage().contains("HUDI"), failure.getMessage());
         assertTrue(failure.getMessage().contains("upgrade the optimizer image"), failure.getMessage());

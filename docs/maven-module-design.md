@@ -172,7 +172,7 @@ Jackson 2.15.2 抬到 Boot 的版本）。拆成 5 个服务端模块后，这�
 | 场景 | 命令 |
 | --- | --- |
 | 全量构建 | 从仓库根 `mvn -o install -DskipTests`（行为不变） |
-| 只构建服务端世界 | `cd lakehouse-rest-spring-parent && mvn -o install`（reactor 里只有 5 个模块，Spark 不会进来） |
+| 只构建服务端世界 | `cd lakehouse-rest-spring-parent && mvn -o install`（reactor 里只有 7 个模块 + 它自己，Spark 不会进来） |
 | 起服务端 | `mvn -o -pl :lakehouse-rest-server -am spring-boot:run`（`-am` 会带上 core / storage / 两个面） |
 
 > 实现在磁盘上是**平铺**的（`spring-parent` 只是一个 POM，与它父的模块同级），
@@ -183,7 +183,8 @@ Jackson 2.15.2 抬到 Boot 的版本）。拆成 5 个服务端模块后，这�
 
 | 模块 | 装什么 | 凭什么值得一个模块 |
 | --- | --- | --- |
-| `-core` | 22 个实体的仓储（26 张表里 core 占 22 张，执行集群等 4 张在 server）、共享服务（catalog/database/table/快照、授权、凭据接口）、共享 DTO、共享 Web 组件（`/v1/config`、错误模型基类、两个认证拦截器、`CatalogAccessRules`、`RestServerProperties`）、协议面 SPI | 两个协议面都要用它，而它自己**一行格式代码都不该有**——这条约束只有在它是个模块时才守得住 |
+| `-scan-kernel` | 探测器（D1/D2/D3）、打分器、校验器、打码、列引用哈希、`ScanColumn`、扫描作业协议记录（`ScanJobSpec` / `ScanItemReport` / `ScanFinding`） | **它的产物要同时编进两个依赖世界**：服务端进程（Spring Boot 4 / Jackson 3）与集群上跑扫描作业的 Spark 容器（Spark 3.5 / Jackson 2）。所以要有一个「谁都不带」的模块——不引 Spring、JPA、Jackson、slf4j，连 `schema_doc` 的解析都不进来。它不是「顺便分出来的」：§5.6.5 禁止把正则翻译成 Spark SQL 表达式（那会造出第二份打分实现），因此集群侧必须能直接调这一份 Java，而能调它的前提是它没有服务端的依赖。<br>**目录在 `spring-parent/` 里面，父 POM 却是仓库根**——这是全仓唯一一处；理由同上（不能继承 spring-parent 的 `<dependencies>`），代价是 `-pl :lakehouse-rest-optimizer` **必须带 `-am`**（对齐见 §8.1） |
+| `-core` | 27 个实体的仓储（36 张表里 core 占 27 张，剩下 9 张在 server：执行集群、优化三张、调度租约、敏感扫描 / 结果 / 抑制项 / 调度项四张）、共享服务（catalog/database/table/快照、授权、凭据接口）、共享 DTO、共享 Web 组件（`/v1/config`、错误模型基类、两个认证拦截器、`CatalogAccessRules`、`RestServerProperties`）、协议面 SPI | 两个协议面都要用它，而它自己**一行格式代码都不该有**——这条约束只有在它是个模块时才守得住 |
 | `-storage` | `StorageFileIoFactory`、`CatalogFileService`、`Paths`、`StorageConfigs`、`FileIoType`、凭据管理器的实现与缓存 | 它是唯一需要「往仓库写文件」的模块（Paimon 的 `FileIO` 在这里承担的是**通用文件系统客户端**：s3 插件加载、凭据刷新、路径模板）。若 Iceberg 面另引一套 hadoop-aws 做同样的事，就会有两套 s3 凭据解析逻辑——设计文档 §5.5 要的「凭据统一」当场破功 |
 | `-protocol-paimon` | `paimon/web/` 下 9 个控制器、`paimon/dto/` 的 Paimon 契约、`TableMetadataService`（schema/snapshot 物化）、`TableKinds`、`SchemaChangeService`、`CredentialService` | 唯一允许 `import org.apache.paimon` 的服务端模块（`storage` 除外，且只用于 FileIO）；包名独占 `rest.paimon.*`（§11） |
 | `-protocol-iceberg` | 35 个端点、Iceberg DTO、元数据代数（update 应用 / requirements 校验 / CAS）、投影派生（`schemas[]`/`snapshots[]`/`refs` → 行）、Iceberg 错误模型、`iceberg/preview/`（数据预览的读取器与只读 `FileIO`） | 唯一允许 `import org.apache.iceberg` 的模块；`iceberg-core` / `iceberg-data` / `iceberg-parquet` 带来的 avro、parquet 等依赖被关在这里 |

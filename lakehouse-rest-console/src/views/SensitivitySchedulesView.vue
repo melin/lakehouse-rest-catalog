@@ -249,13 +249,15 @@
       </TipAlert>
 
       <TipAlert type="info" class="pc-sched-subtip">
-        <template #title>执行位置里只有进程内可选</template>
-        <code class="pc-mono">execution=SPARK</code> 的下推链路（作业提交 / 探活 / 回调）
-        还没接，因此这一屏只提供「跟随生效值」与 <code class="pc-mono">IN_PROCESS</code>。
-        服务端对「建 SPARK 调度项」本身有两条 fail-closed 校验
-        （元数据档 400、catalog 不可派发 400），但即便建得出来，触发时也会在
-        <strong>发起扫描那一步</strong>拿到 501——那正是「配好了、凌晨三点什么都没发生」。
-        下推落地之后再放开这个选项。
+        <template #title>执行位置决定「谁来扫」</template>
+        <code class="pc-mono">IN_PROCESS</code> 在服务端进程内读样本，守的是
+        <code class="pc-mono">maxConcurrentScans</code>；<code class="pc-mono">SPARK</code>
+        把「一个扫描 = 一个 Job」提交到 catalog 的执行集群，与优化批次共用同一把
+        <code class="pc-mono">maxConcurrentJobs</code>。两条路的判定逻辑是同一份字节码，
+        差别只在哪些机器读数据。
+        服务端对「建 SPARK 调度项」有两条 fail-closed 校验（元数据档 400、catalog 不可派发 400）；
+        通过之后，触发那一刻建出来的扫描是 <code class="pc-mono">PENDING</code>，
+        由调度节拍提交成 Job，作业逐表回调结果。
       </TipAlert>
     </PanelCard>
 
@@ -362,14 +364,13 @@
             <template #label>
               <FieldLabel
                 label="执行位置"
-                tip="留空 = 跟随生效值（catalog 的 defaultExecution > 全局），服务端把生效值落库。SPARK 的下推链路还没接，因此这里不提供"
+                tip="留空 = 跟随生效值（catalog 的 defaultExecution > 全局），服务端把生效值落库。选 SPARK 要求这个 catalog 的执行集群可派发，且模式不能是 METADATA_ONLY"
               />
             </template>
             <el-select v-model="dialog.execution">
               <el-option label="跟随生效值" value="" />
               <el-option label="进程内 IN_PROCESS" value="IN_PROCESS" />
-              <!-- 保留这一项但禁用：它说明了「为什么不能选」，比直接消失更容易被理解。 -->
-              <el-option label="下推 SPARK（链路未接）" value="SPARK" disabled />
+              <el-option label="下推 SPARK（一个扫描一个 Job）" value="SPARK" />
             </el-select>
           </el-form-item>
         </div>
@@ -617,10 +618,9 @@ function applyToDialog(detail, editing) {
   dialog.database = detail.database || ''
   dialog.table = detail.table || ''
   dialog.mode = detail.mode || 'METADATA_ONLY'
-  // SPARK 不在下拉的可选项里（链路未接）。库里若已有这样的行，原样带出来而不是
-  // 悄悄改成 IN_PROCESS：编辑一条 SPARK 调度项时把它改成别的执行位置，是一次
-  // 用户没要求的改动；要看它、就得看见它。
-  dialog.execution = detail.execution === 'SPARK' ? 'SPARK' : (detail.execution || '')
+  // 执行位置原样带出来，不在这里归一化成 IN_PROCESS：编辑一条调度项时顺手改掉它的
+  // 执行位置，是一次用户没要求的改动。空串仍然是「跟随生效值」，与 null 不同义。
+  dialog.execution = detail.execution || ''
   dialog.sampleSize = detail.sampleSize || 2000
   dialog.enabled = detail.enabled !== false
   dialog.entityVersion = detail.entityVersion || 0

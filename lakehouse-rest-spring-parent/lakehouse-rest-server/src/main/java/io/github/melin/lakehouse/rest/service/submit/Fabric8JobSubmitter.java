@@ -2,8 +2,6 @@ package io.github.melin.lakehouse.rest.service.submit;
 
 import io.fabric8.kubernetes.api.model.DeletionPropagation;
 import io.fabric8.kubernetes.api.model.batch.v1.Job;
-import io.fabric8.kubernetes.api.model.batch.v1.JobCondition;
-import io.fabric8.kubernetes.api.model.batch.v1.JobStatus;
 import io.fabric8.kubernetes.client.KubernetesClient;
 import io.fabric8.kubernetes.client.KubernetesClientException;
 import io.github.melin.lakehouse.rest.service.exec.ExecutionClientFactory;
@@ -96,7 +94,7 @@ public class Fabric8JobSubmitter implements OptimizationJobSubmitter {
         if (job == null) {
             return JobState.UNKNOWN;
         }
-        return stateOf(job);
+        return JobStates.stateOf(job);
     }
 
     @Override
@@ -118,56 +116,13 @@ public class Fabric8JobSubmitter implements OptimizationJobSubmitter {
 
     // ------------------------------------------------------------------ 状态折算
 
-    /**
-     * Job → 三态。
-     *
-     * <p>判据的顺序是刻意的：先看 {@code conditions}，再看计数。{@code backoffLimit=0} 时
-     * Pod 一失败 k8s 立刻给 {@code type=Failed} 的 condition，而 {@code status.failed}
-     * 计数可能还是空（对象是同一轮 patch 出来的，读到中间态完全可能）。
-     * 只看计数会漏掉「刚失败」的那一瞬间，而那一刻恰好是最常被轮询到的。
+    /*
+     * 判据已挪到 {@link JobStates}：扫描作业的提交器用同一份。
+     * 留这行注释是为了让「为什么这里只有一行调用」有一个可读的答案。
      */
-    static JobState stateOf(Job job) {
-        JobStatus status = job.getStatus();
-        if (status == null) {
-            // 刚创建、控制器还没处理：既没 condition 也没计数
-            return JobState.RUNNING;
-        }
-        boolean completed = conditionTrue(status, "Complete");
-        boolean failed = conditionTrue(status, "Failed");
-        if (completed) {
-            return JobState.SUCCEEDED;
-        }
-        if (failed) {
-            return JobState.FAILED;
-        }
-        if (status.getSucceeded() != null && status.getSucceeded() > 0) {
-            return JobState.SUCCEEDED;
-        }
-        // 有 active 计数、或三项都是空/零：都还在跑
-        return status.getFailed() != null && status.getFailed() > 0 ? JobState.FAILED : JobState.RUNNING;
-    }
-
-    private static boolean conditionTrue(JobStatus status, String type) {
-        if (status.getConditions() == null) {
-            return false;
-        }
-        for (JobCondition condition : status.getConditions()) {
-            if (type.equals(condition.getType()) && "True".equals(condition.getStatus())) {
-                return true;
-            }
-        }
-        return false;
-    }
 
     private static String phaseOf(Job job) {
-        JobStatus status = job.getStatus();
-        if (status == null) {
-            return "pending";
-        }
-        if (conditionTrue(status, "Complete")) {
-            return "complete";
-        }
-        return conditionTrue(status, "Failed") ? "failed" : "running";
+        return JobStates.phaseOf(job);
     }
 
     /**

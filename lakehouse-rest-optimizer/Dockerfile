@@ -13,7 +13,11 @@
 #
 # 用法（先在宿主机上打好包；镜像里不装 Maven，与根 Dockerfile 的理由相同）：
 #
-#   JAVA_HOME=/path/to/jdk-17 mvn -o -DskipTests -pl :lakehouse-rest-optimizer package
+#   JAVA_HOME=/path/to/jdk-17 mvn -o -DskipTests -pl :lakehouse-rest-optimizer -am package
+#
+# `-am` 不是可选的：本模块依赖 `lakehouse-rest-scan-kernel`（扫描作业的探测器/打分器），
+# 而它不在 ~/.m2 里时 `-pl` 单独跑会在依赖解析处失败——报的是「无法访问离线仓库」，
+# 与「忘了 package」长得一样。
 #   docker build -f lakehouse-rest-optimizer/Dockerfile -t lakehouse-rest-optimizer:1.0.0 .
 #   docker push <registry>/lakehouse-rest-optimizer:1.0.0
 #   # 再把 lakehouse.rest.optimization.image 指向推上去的地址
@@ -71,8 +75,19 @@ COPY lakehouse-rest-optimizer/target/jars/iceberg-spark-runtime-3.5_2.12.jar /op
 # 同名类按 jar 文件名排序加载，版本对不上时表现为 NoSuchMethodError）。
 COPY lakehouse-rest-optimizer/target/jars/lance-spark-bundle-3.5_2.12.jar /opt/spark/jars/
 
-# Lance 打开数据集时反射访问 sun.nio.ch（native IO 的一段缓冲区映射），JDK 17 默认关闭。
+# 敏感识别扫描的纯计算内核（探测器 / 打分器 / 校验器 / 打码 / 协议记录）。
 #
+# 放进 /opt/spark/jars 而不是 /opt/optimizer/lib：那个目录本来就在 spark-submit 拼出的
+# driver classpath 上，于是**两个入口都不用额外参数**——镜像 ENTRYPOINT 的优化任务，
+# 以及服务端用 k8s `command` 覆盖出来的扫描任务（ScannerJob）。覆盖 ENTRYPOINT 是整条
+# 命令的替换而不是追加，任何写在 ENTRYPOINT 里的 classpath 参数都不会继承，所以
+# 「拷到别的目录、再传 driver classpath」这条路的漏法有两个，而这个做法一个都没有。
+#
+# 两个入口都编在同一个 jar 里（优化任务不用内核，扫描任务用它），镜像因此只有一个 jar
+# 要维护：三种格式的运行时与 Lance 的 arrow 排序都是白拿的。
+COPY lakehouse-rest-optimizer/target/jars/lakehouse-rest-scan-kernel.jar /opt/spark/jars/
+
+# Lance 打开数据集时反射访问 sun.nio.ch（native IO 的一段缓冲区映射），JDK 17 默认关闭。#
 # **必须写在 ENV 里，不能靠 SparkSession.builder().config(...)**：
 # `--add-opens` 是 JVM 启动参数，进程起来之后再设没用；`spark.driver.extraJavaOptions`
 # 只对它自己 fork 的 driver 生效，而我们的入口是 spark-submit 在本进程里 local 模式跑，

@@ -1,6 +1,6 @@
 package io.github.melin.lakehouse.rest.support;
 
-import io.github.melin.lakehouse.rest.support.SchemaColumns.Column;
+import io.github.melin.lakehouse.rest.scan.ScanColumn;
 import java.util.List;
 
 /**
@@ -66,7 +66,7 @@ public final class CoverageTotals {
         int counted = schemaDocs.size();
         int columns = 0;
         for (String schemaDoc : schemaDocs) {
-            for (Column column : SchemaColumns.parse(schemaDoc)) {
+            for (ScanColumn column : SchemaColumns.parse(schemaDoc)) {
                 if (column.name() == null || column.name().isEmpty()) {
                     continue;
                 }

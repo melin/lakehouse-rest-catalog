@@ -1,9 +1,12 @@
 package io.github.melin.lakehouse.rest.support;
 
-import io.github.melin.lakehouse.rest.support.DetectorConfig.LayerConfig;
-import io.github.melin.lakehouse.rest.support.SensitivityEnums.DetectorKind;
-import io.github.melin.lakehouse.rest.support.SensitivityEnums.SensitiveCategory;
-import io.github.melin.lakehouse.rest.support.SensitivityEnums.SensitivityLevel;
+import io.github.melin.lakehouse.rest.support.DetectorConfigJson;
+import io.github.melin.lakehouse.rest.scan.DetectorConfig;
+import io.github.melin.lakehouse.rest.scan.DetectorConfig.LayerConfig;
+import io.github.melin.lakehouse.rest.scan.SensitivityEnums;
+import io.github.melin.lakehouse.rest.scan.SensitivityEnums.DetectorKind;
+import io.github.melin.lakehouse.rest.scan.SensitivityEnums.SensitiveCategory;
+import io.github.melin.lakehouse.rest.scan.SensitivityEnums.SensitivityLevel;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -49,7 +52,7 @@ public final class BuiltinSensitiveTypes {
 
         /** 序列化成 {@code detectors_json} 的文本。 */
         public String detectorsJson() {
-            return DetectorConfig.of(detectors).toJson();
+            return DetectorConfigJson.toJson(DetectorConfig.of(detectors));
         }
     }
 

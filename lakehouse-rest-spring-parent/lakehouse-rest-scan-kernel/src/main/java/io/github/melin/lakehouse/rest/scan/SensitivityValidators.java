@@ -1,4 +1,4 @@
-package io.github.melin.lakehouse.rest.support;
+package io.github.melin.lakehouse.rest.scan;
 
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;

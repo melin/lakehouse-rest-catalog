@@ -5,7 +5,7 @@ import io.github.melin.lakehouse.rest.config.RestServerProperties;
 import io.github.melin.lakehouse.rest.domain.entity.SensitivityScheduleEntity;
 import io.github.melin.lakehouse.rest.domain.repo.SensitivityScheduleRepository;
 import io.github.melin.lakehouse.rest.dto.SensitivityDtos.ScanRequest;
-import io.github.melin.lakehouse.rest.support.SensitivityEnums.ScanTrigger;
+import io.github.melin.lakehouse.rest.scan.SensitivityEnums.ScanTrigger;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import java.time.Clock;

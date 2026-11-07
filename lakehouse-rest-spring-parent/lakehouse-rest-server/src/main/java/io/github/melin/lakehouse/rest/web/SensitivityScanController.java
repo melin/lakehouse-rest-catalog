@@ -7,6 +7,8 @@ import io.github.melin.lakehouse.rest.dto.SensitivityDtos.ScanAccepted;
 import io.github.melin.lakehouse.rest.dto.SensitivityDtos.ScanList;
 import io.github.melin.lakehouse.rest.dto.SensitivityDtos.ScanRequest;
 import io.github.melin.lakehouse.rest.dto.SensitivityDtos.ScanSummary;
+import io.github.melin.lakehouse.rest.scan.ScanProtocol.ScanItemReport;
+import io.github.melin.lakehouse.rest.scan.ScanProtocol.ScanJobSpec;
 import io.github.melin.lakehouse.rest.service.AuthorizationService;
 import io.github.melin.lakehouse.rest.service.SensitivityScanService;
 import io.github.melin.lakehouse.rest.support.ApiException;
@@ -17,6 +19,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -45,6 +48,12 @@ import org.springframework.web.bind.annotation.RestController;
 @RequiredArgsConstructor
 public class SensitivityScanController {
 
+    /**
+     * 扫描回调令牌的请求头。与 {@code X-Optimization-Token} 分开：两个令牌的作用域不同，
+     * 共用一个头会让「拿优化批次令牌去调扫描回调」看起来像一次普通的认证失败。
+     */
+    public static final String TOKEN_HEADER = "X-Sensitivity-Scan-Token";
+
     private final SensitivityScanService scanService;
     private final AuthorizationService authorizationService;
 
@@ -56,13 +65,19 @@ public class SensitivityScanController {
      * （那时 {@code status} 是 {@code PENDING}）。客户端的处置方式不该随实现分期而变
      * ——按 {@code scanId} 轮询详情。
      *
-     * <p>失败的四种前置在此**没有**特殊处理，都由服务层抛：
-     * {@code execution=SPARK} 且 {@code mode=METADATA_ONLY} → 400（下推没有收益，
-     * 且不允许静默改走进程内）；{@code execution=SPARK} 且 catalog 不可派发 → 400
-     * （fail-closed，§5.6.5）；{@code execution=SPARK} 且 {@code mode=SAMPLED} → 501
-     * （下推链路属 P4，还没接）；同表已有在跑的扫描 → 409；超出 A 路线并发 → 429。
-     * <b>{@code mode=SAMPLED} 本身不再是错误</b>：P1 起它真的会去读样本（走预览那条只读通道）。
-     */
+ * <p>失败的四种前置在此**没有**特殊处理，都由服务层抛：
+ * {@code execution=SPARK} 且 {@code mode=METADATA_ONLY} → 400（下推没有收益，
+ * 且不允许静默改走进程内）；{@code execution=SPARK} 且 catalog 不可派发 → 400
+ * （fail-closed，§5.6.5）；{@code execution=SPARK} 且表数超过该 catalog 的
+ * {@code maxScanTablesPerJob} → 400（一个扫描 = 一个 Job，切不开）；同表已有在跑的扫描 → 409；
+ * 超出 A 路线并发 → 429。<b>{@code mode=SAMPLED} 本身不再是错误</b>：P1 起它真的会去读样本
+ * （走预览那条只读通道），P4 起 {@code execution=SPARK} 也真的会提交成 k8s 作业。
+ *
+ * <p><b>两个作业回调端点（{@code /submission} 与 {@code /items}）不在 RBAC 之内。</b>
+ * 调用方是 k8s 里的扫描作业，它没有主体身份，凭据是 {@code X-Sensitivity-Scan-Token}
+ * （作用域 = 这一次扫描，库里只存 SHA-256）。把作业令牌当成主体去查授权链，只会得到
+ * 「谁都不认识」——与优化批次的两个回调端点同一口径。
+ */
     @PostMapping
     public ResponseEntity<ScanAccepted> start(@RequestBody ScanRequest request) {
         String catalog = request == null ? null : request.catalog();
@@ -115,6 +130,55 @@ public class SensitivityScanController {
         SensitivityScanEntity scan = scanService.require(scanId);
         requireCatalog(scan.getCatalogName(), Access.DESCRIBE, "read a sensitivity scan");
         return scanService.get(scanId);
+    }
+
+    // ------------------------------------------------------------------ B 路线：作业协定
+
+    /**
+     * {@code GET /sensitivity-scans/{scanId}/submission}：扫描作业拉取执行清单（分页）。
+     *
+     * <p>令牌走 {@code X-Sensitivity-Scan-Token} 而不是 {@code Authorization}：
+     * 后者是**主体身份**的位置，而这个令牌只对这一次扫描有效、不代表任何主体
+     * （与 {@code OptimizationController#TOKEN_HEADER} 同一条理由）。
+     *
+     * <p>分页由作业驱动（{@code offset} / {@code limit}）：它逐表跑，跑完一页再拉下一页，
+     * 内存里永远只有一页的列清单。
+     */
+    @GetMapping("/{scanId}/submission")
+    public ScanJobSpec submission(@PathVariable String scanId,
+                                  @RequestHeader(name = TOKEN_HEADER, required = false) String token,
+                                  @RequestParam(name = "offset", required = false) Integer offset,
+                                  @RequestParam(name = "limit", required = false) Integer limit) {
+        scanService.requireCallbackToken(scanId, token);
+        return scanService.submission(scanId, offset, limit);
+    }
+
+    /**
+     * {@code POST /sensitivity-scans/{scanId}/items}：作业逐表回报。
+     *
+     * <p><b>回 204 而不是回计数。</b>作业不关心服务端累加到了多少——它只关心「这一条收到没」。
+     * 回一个读模型会诱使作业去判断「数字对不对」，而那是服务端的职责。
+     */
+    @PostMapping("/{scanId}/items")
+    public ResponseEntity<Void> reportItem(@PathVariable String scanId,
+                                           @RequestHeader(name = TOKEN_HEADER, required = false) String token,
+                                           @RequestBody ScanItemReport report) {
+        scanService.requireCallbackToken(scanId, token);
+        scanService.reportItem(scanId, report);
+        return ResponseEntity.noContent().build();
+    }
+
+    /**
+     * {@code POST /sensitivity-scans/{scanId}:cancel}：取消扫描（B 路线同时停作业）。
+     *
+     * <p>判权按扫描自己记着的 catalog（{@code ALTER}），与 {@link #get} 同一条理由：
+     * 调用方不能靠「声明一个有权限的 catalog」来取消别的 catalog 的扫描。
+     */
+    @PostMapping("/{scanId}:cancel")
+    public ScanSummary cancel(@PathVariable String scanId) {
+        SensitivityScanEntity scan = scanService.require(scanId);
+        requireCatalog(scan.getCatalogName(), Access.ALTER, "cancel a sensitivity scan");
+        return scanService.cancel(scanId);
     }
 
     private void requireCatalog(String catalogName, Access access, String action) {

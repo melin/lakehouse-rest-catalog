@@ -1,8 +1,7 @@
-package io.github.melin.lakehouse.rest.support;
+package io.github.melin.lakehouse.rest.scan;
 
-import io.github.melin.lakehouse.rest.support.DetectorConfig.LayerConfig;
-import io.github.melin.lakehouse.rest.support.SchemaColumns.Column;
-import io.github.melin.lakehouse.rest.support.SensitivityEnums.DetectorKind;
+import io.github.melin.lakehouse.rest.scan.DetectorConfig.LayerConfig;
+import io.github.melin.lakehouse.rest.scan.SensitivityEnums.DetectorKind;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.EnumMap;
@@ -108,7 +107,7 @@ public final class SensitivityDetectors {
      * @param types        候选类型：编码 + 分级 + 阈值 + 是否允许自动 + 探测器配置
      * @return 命中的类型，按置信度降序；空列表表示这列没被任何类型认出来
      */
-    public static List<Match> detect(String catalogName, String tableName, Column column,
+    public static List<Match> detect(String catalogName, String tableName, ScanColumn column,
                                      List<CandidateType> types) {
         return detect(catalogName, tableName, column, types, ColumnValues.none());
     }
@@ -123,7 +122,7 @@ public final class SensitivityDetectors {
      *
      * @param values 这一列的采样值（原值，只在内存里活一次，见 {@link ColumnValues}）
      */
-    public static List<Match> detect(String catalogName, String tableName, Column column,
+    public static List<Match> detect(String catalogName, String tableName, ScanColumn column,
                                      List<CandidateType> types, ColumnValues values) {
         ColumnValues samples = values == null ? ColumnValues.none() : values;
         List<Match> matches = new ArrayList<>();
@@ -146,7 +145,7 @@ public final class SensitivityDetectors {
                                 boolean autoApply, DetectorConfig detectors) {
     }
 
-    private static Optional<Match> detectOne(Column column, CandidateType type, ColumnValues values) {
+    private static Optional<Match> detectOne(ScanColumn column, CandidateType type, ColumnValues values) {
         DetectorConfig config = type.detectors();
         LayerConfig name = config.layer(DetectorKind.NAME);
         LayerConfig typeLayer = config.layer(DetectorKind.TYPE);

@@ -1,18 +1,19 @@
 package io.github.melin.lakehouse.rest;
 
+import io.github.melin.lakehouse.rest.support.DetectorConfigJson;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import io.github.melin.lakehouse.rest.support.DetectorConfig;
+import io.github.melin.lakehouse.rest.scan.DetectorConfig;
 import io.github.melin.lakehouse.rest.support.SchemaColumns;
-import io.github.melin.lakehouse.rest.support.SchemaColumns.Column;
-import io.github.melin.lakehouse.rest.support.SensitivityDetectors;
-import io.github.melin.lakehouse.rest.support.SensitivityDetectors.CandidateType;
-import io.github.melin.lakehouse.rest.support.SensitivityDetectors.Match;
-import io.github.melin.lakehouse.rest.support.SensitivityEnums.DetectorKind;
-import io.github.melin.lakehouse.rest.support.SensitivityEnums.FindingState;
-import io.github.melin.lakehouse.rest.support.SensitivityScorer;
+import io.github.melin.lakehouse.rest.scan.ScanColumn;
+import io.github.melin.lakehouse.rest.scan.SensitivityDetectors;
+import io.github.melin.lakehouse.rest.scan.SensitivityDetectors.CandidateType;
+import io.github.melin.lakehouse.rest.scan.SensitivityDetectors.Match;
+import io.github.melin.lakehouse.rest.scan.SensitivityEnums.DetectorKind;
+import io.github.melin.lakehouse.rest.scan.SensitivityEnums.FindingState;
+import io.github.melin.lakehouse.rest.scan.SensitivityScorer;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
@@ -47,7 +48,7 @@ class SensitivityDetectionTests {
                 + "\"description\":null}],"
                 + "\"partitionKeys\":[],\"primaryKeys\":[],\"options\":{}}";
 
-        List<Column> columns = SchemaColumns.parse(doc);
+        List<ScanColumn> columns = SchemaColumns.parse(doc);
 
         assertEquals(2, columns.size());
         assertEquals("id_card_no", columns.get(0).name());
@@ -56,7 +57,7 @@ class SensitivityDetectionTests {
         assertEquals("char", columns.get(0).normalizedType());
         assertEquals(18, columns.get(0).length(), "CHAR(18) 的长度应当是 18");
         // 嵌套类型形态：只取最外层 type 名。长度在 Paimon 侧由同级字段表达，
-        // 不在括号里，因此这里是 null——D2 的长度判据只对字符型有意义（见 Column#length()）
+        // 不在括号里，因此这里是 null——D2 的长度判据只对字符型有意义（见 ScanColumn#length()）
         assertEquals("decimal", columns.get(1).normalizedType());
         assertNull(columns.get(1).length(), "嵌套形态的类型名里没有括号，取不到长度");
         assertNull(columns.get(1).comment());
@@ -76,7 +77,7 @@ class SensitivityDetectionTests {
                 + "{\"id\":2,\"name\":\"tags\",\"required\":false,"
                 + "\"type\":{\"type\":\"list\",\"element-id\":3,\"element\":\"string\",\"element-required\":false}}]}";
 
-        List<Column> columns = SchemaColumns.parse(doc);
+        List<ScanColumn> columns = SchemaColumns.parse(doc);
 
         assertEquals(2, columns.size());
         assertEquals("手机号码", columns.get(0).comment(), "Iceberg 的列注释在 doc 键上");
@@ -238,7 +239,7 @@ class SensitivityDetectionTests {
         List<CandidateType> types = List.of(idCardType(true));
 
         List<Match> matches = SensitivityDetectors.detect("cat", "user_profile",
-                new Column("id_card_no", "CHAR(18)", "身份证号"), types);
+                new ScanColumn("id_card_no", "CHAR(18)", "身份证号"), types);
 
         assertEquals(1, matches.size());
         Match match = matches.get(0);
@@ -259,7 +260,7 @@ class SensitivityDetectionTests {
     @Test
     void unrelatedColumnProducesNoMatch() {
         List<Match> matches = SensitivityDetectors.detect("cat", "orders",
-                new Column("order_status", "INT", "订单状态"), List.of(idCardType(true)));
+                new ScanColumn("order_status", "INT", "订单状态"), List.of(idCardType(true)));
         assertTrue(matches.isEmpty(), "一层都没命中不该产出 finding");
     }
 
@@ -272,7 +273,7 @@ class SensitivityDetectionTests {
     @Test
     void nameOnlyHitStillProducesMatch() {
         List<Match> matches = SensitivityDetectors.detect("cat", "t",
-                new Column("id_card", "INT", null), List.of(idCardType(true)));
+                new ScanColumn("id_card", "INT", null), List.of(idCardType(true)));
 
         assertEquals(1, matches.size());
         assertEquals(0.35, matches.get(0).confidence(), 1e-9);
@@ -293,12 +294,12 @@ class SensitivityDetectionTests {
      */
     @Test
     void coreLevelIsDowngradedToPending() {
-        DetectorConfig config = DetectorConfig.parse("{\"name\":{\"patterns\":[\"id_card\"]},"
+        DetectorConfig config = DetectorConfigJson.parse("{\"name\":{\"patterns\":[\"id_card\"]},"
                 + "\"type\":{\"types\":[\"char\"],\"lengths\":[[15,18]]}}");
         // 阈值压到 0.40：0.45 的元数据判定本该自动落标，好让分级闸门成为唯一变量
         CandidateType core = new CandidateType("CN_ID_CARD", "CORE", 0.40, true, config);
         CandidateType l4 = new CandidateType("CN_ID_CARD", "L4", 0.40, true, config);
-        Column column = new Column("id_card_no", "CHAR(18)", null);
+        ScanColumn column = new ScanColumn("id_card_no", "CHAR(18)", null);
 
         Match l4Match = SensitivityDetectors.detect("cat", "t", column, List.of(l4)).get(0);
         Match coreMatch = SensitivityDetectors.detect("cat", "t", column, List.of(core)).get(0);
@@ -317,10 +318,10 @@ class SensitivityDetectionTests {
     void matchesAreSortedByConfidenceDescending() {
         CandidateType idCard = idCardType(true);
         CandidateType weaker = new CandidateType("SOME_TYPE", "L2", 0.85, false,
-                DetectorConfig.parse("{\"name\":{\"patterns\":[\"id_card\"]}}"));
+                DetectorConfigJson.parse("{\"name\":{\"patterns\":[\"id_card\"]}}"));
 
         List<Match> matches = SensitivityDetectors.detect("cat", "t",
-                new Column("id_card_no", "CHAR(18)", null), List.of(weaker, idCard));
+                new ScanColumn("id_card_no", "CHAR(18)", null), List.of(weaker, idCard));
 
         assertEquals(2, matches.size());
         assertEquals("CN_ID_CARD", matches.get(0).typeCode(), "0.45 应当排在 0.35 前面");
@@ -337,11 +338,11 @@ class SensitivityDetectionTests {
                 + "\"type\":{\"types\":[\"char\"],\"lengths\":[[15,18]]},"
                 + "\"value\":{\"regex\":\"^[1-9]\\\\d{5}$\",\"validator\":\"CN_ID_CARD\"}}";
 
-        DetectorConfig parsed = DetectorConfig.parse(json);
+        DetectorConfig parsed = DetectorConfigJson.parse(json);
         assertEquals(List.of(DetectorKind.NAME, DetectorKind.TYPE, DetectorKind.VALUE),
                 parsed.configuredLayers());
 
-        DetectorConfig again = DetectorConfig.parse(parsed.toJson());
+        DetectorConfig again = DetectorConfigJson.parse(DetectorConfigJson.toJson(parsed));
         assertEquals(parsed.configuredLayers(), again.configuredLayers());
         assertEquals(List.of("id_card", "身份证"), again.layer(DetectorKind.NAME).patterns());
         assertEquals(List.of("char"), again.layer(DetectorKind.TYPE).types());
@@ -352,11 +353,11 @@ class SensitivityDetectionTests {
     /** 配坏的形状被忽略（该层消失），而不是让整个类型不可用。 */
     @Test
     void malformedDetectorConfigIsIgnoredNotFatal() {
-        assertEquals(List.of(), DetectorConfig.parse("not json").configuredLayers());
-        assertEquals(List.of(), DetectorConfig.parse("{\"name\":\"not-an-object\"}").configuredLayers());
-        assertEquals(List.of(), DetectorConfig.parse("{}").configuredLayers());
+        assertEquals(List.of(), DetectorConfigJson.parse("not json").configuredLayers());
+        assertEquals(List.of(), DetectorConfigJson.parse("{\"name\":\"not-an-object\"}").configuredLayers());
+        assertEquals(List.of(), DetectorConfigJson.parse("{}").configuredLayers());
         // 空 patterns 的层等于没配
-        assertEquals(List.of(), DetectorConfig.parse("{\"name\":{\"patterns\":[]}}").configuredLayers());
+        assertEquals(List.of(), DetectorConfigJson.parse("{\"name\":{\"patterns\":[]}}").configuredLayers());
     }
 
     /** 名称层命中判定不看大小写，且列注释也算依据。 */
@@ -398,7 +399,7 @@ class SensitivityDetectionTests {
      */
     @Test
     void layerWeightScalesTheLayerScore() {
-        Column column = new Column("id_card_no", "CHAR(18)", null);
+        ScanColumn column = new ScanColumn("id_card_no", "CHAR(18)", null);
 
         // 默认 1.0：与 metadataOnlyNeverReachesAutoApply 里的 0.45 完全一致
         Match defaults = SensitivityDetectors.detect("cat", "t", column, List.of(idCardType(true))).get(0);
@@ -409,7 +410,7 @@ class SensitivityDetectionTests {
         // 挑 0.8 而不是 0.5 是因为 0.5 会把总分压到 0.275，**低于元数据档下界**，
         // 那样命中的是「被丢弃」这条另一路的逻辑，测不到「分数变了」（见下一条）。
         CandidateType softerName = new CandidateType("CN_ID_CARD", "L4", 0.85, true,
-                DetectorConfig.parse("{\"name\":{\"patterns\":[\"id_card\"],\"weight\":0.8},"
+                DetectorConfigJson.parse("{\"name\":{\"patterns\":[\"id_card\"],\"weight\":0.8},"
                         + "\"type\":{\"types\":[\"char\"],\"lengths\":[[15,18]]}}"));
         Match softened = SensitivityDetectors.detect("cat", "t", column, List.of(softerName)).get(0);
         assertEquals(0.38, softened.confidence(), 1e-9,
@@ -421,7 +422,7 @@ class SensitivityDetectionTests {
         // 这条断言把「权重参与打分」与「下界决定是否产出」两件事绑在一起——它们是两次
         // 独立的判定，只测其中一个会让另一个的回归静默通过（改动权重是否影响产出）。
         CandidateType halfName = new CandidateType("CN_ID_CARD", "L4", 0.85, true,
-                DetectorConfig.parse("{\"name\":{\"patterns\":[\"id_card\"],\"weight\":0.5},"
+                DetectorConfigJson.parse("{\"name\":{\"patterns\":[\"id_card\"],\"weight\":0.5},"
                         + "\"type\":{\"types\":[\"char\"],\"lengths\":[[15,18]]}}"));
         assertTrue(SensitivityDetectors.detect("cat", "t", column, List.of(halfName)).isEmpty(),
                 "名称层权重 0.5 → 0.275 < 0.35 下界，该列不再产出命中");
@@ -429,7 +430,7 @@ class SensitivityDetectionTests {
         // 权重压到 0 = 这一层被关掉。只剩类型层时总分 0.10，同样低于下界——
         // 这与「定长字符列满库都是，光凭形状提不出候选」是同一条规则（见 METADATA_FLOOR）。
         CandidateType zeroName = new CandidateType("CN_ID_CARD", "L4", 0.85, true,
-                DetectorConfig.parse("{\"name\":{\"patterns\":[\"id_card\"],\"weight\":0.0},"
+                DetectorConfigJson.parse("{\"name\":{\"patterns\":[\"id_card\"],\"weight\":0.0},"
                         + "\"type\":{\"types\":[\"char\"],\"lengths\":[[15,18]]}}"));
         assertTrue(SensitivityDetectors.detect("cat", "t", column, List.of(zeroName)).isEmpty(),
                 "名称层权重 0 后只剩类型层（0.10 < 0.35 下界），该列不再产出命中");
@@ -445,11 +446,11 @@ class SensitivityDetectionTests {
      */
     @Test
     void zeroWeightSurvivesRoundTrip() {
-        DetectorConfig parsed = DetectorConfig.parse(
+        DetectorConfig parsed = DetectorConfigJson.parse(
                 "{\"name\":{\"patterns\":[\"id_card\"],\"weight\":0.0}}");
         assertEquals(0.0, parsed.layer(DetectorKind.NAME).weight(), 1e-9);
 
-        DetectorConfig again = DetectorConfig.parse(parsed.toJson());
+        DetectorConfig again = DetectorConfigJson.parse(DetectorConfigJson.toJson(parsed));
         assertEquals(0.0, again.layer(DetectorKind.NAME).weight(), 1e-9,
                 "weight=0 必须能被存回来；被抹成 1.0 就是「关掉的一层自己复活了」");
     }
@@ -465,7 +466,7 @@ class SensitivityDetectionTests {
     /** 内置身份证类型：名字两条正则 + char(15–18) 形状 + 允许自动应用。 */
     private static CandidateType idCardType(boolean autoApply) {
         return new CandidateType("CN_ID_CARD", "L4", 0.85, autoApply,
-                DetectorConfig.parse("{\"name\":{\"patterns\":[\"id_card\",\"id_no\",\"身份证\"]},"
+                DetectorConfigJson.parse("{\"name\":{\"patterns\":[\"id_card\",\"id_no\",\"身份证\"]},"
                         + "\"type\":{\"types\":[\"char\",\"varchar\",\"string\"],\"lengths\":[[15,18]]}}"));
     }
 }

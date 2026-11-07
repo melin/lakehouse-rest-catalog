@@ -45,6 +45,23 @@
 	-->
 
 	<dependencies>
+		<!--
+			敏感数据识别的纯计算内核：探测器 / 打分器 / 校验器 / 打码 / 列引用哈希，
+			以及扫描作业与服务端共用的协议记录。
+
+			**它是 compile 而不是 test**：优化任务不用它，但同一个 jar 里的另一个入口
+			（SensitivityScannerJob）要用，而那个入口跑在集群上。
+
+			它是「同一次判定只有一个实现」的落点（§5.6.5）：扫描作业不把正则与校验器
+			翻译成 Spark SQL 表达式，而是把抽样的行拉回来、调这里的同一份 Java。
+			本模块因此对 Spring 一无所知——内核本身也不许引 Spring / Jackson / slf4j
+			（见它自己的 POM：有一条源码级的构建断言守着这件事）。
+		-->
+		<dependency>
+			<groupId>io.github.melin</groupId>
+			<artifactId>lakehouse-rest-scan-kernel</artifactId>
+			<version>${project.version}</version>
+		</dependency>
 		<dependency>
 			<groupId>org.scala-lang</groupId>
 			<artifactId>scala-library</artifactId>
@@ -162,7 +179,8 @@
 	<build>
 		<plugins>
 			<!--
-				把两种格式的运行时 jar（Paimon 两份 + Iceberg 一份）拷进 target/jars：
+				把三种格式的运行时 jar（Paimon 两份 + Iceberg 一份 + Lance 一份）与扫描内核
+				一起拷进 target/jars：
 				镜像的构建上下文是仓库根目录，而 Docker 的 COPY 既不能取构建上下文之外的文件，
 				也不展开 ~。在构建期把它们落进 target/，Dockerfile 就只需要 COPY 一个相对路径。
 
@@ -177,6 +195,21 @@
 				<groupId>org.apache.maven.plugins</groupId>
 				<artifactId>maven-dependency-plugin</artifactId>
 				<version>3.8.1</version>
+			<!--
+				扫描内核与三种格式的运行时一起拷进 target/jars，由 Dockerfile 搬进镜像。
+
+				**内核 jar 与那三份放在同一个目录（/opt/spark/jars）是有意的**：
+				那个目录本来就在 spark-submit 拼出的 driver classpath 上，因此两个入口
+				（镜像 ENTRYPOINT 的优化任务、k8s `command` 覆盖出来的扫描任务）都不需要
+				任何 classpath 参数。换成「拷到 /opt/optimizer/lib、再传 driver classpath」
+				就要在两个地方各写一次，而其中一处是 ScannerJob 里的 k8s 命令——覆盖
+				ENTRYPOINT 是整条命令的替换而不是追加，漏掉的表现是启动即
+				NoClassDefFoundError: ...scan.ScanProtocol。
+
+				不用 unpack 解进本模块的 target/classes：MDEP-98，同反应堆的兄弟模块在
+				本模块的 process-classes 阶段还没有打包，unpack 会直接失败。
+			-->
+
 				<executions>
 					<execution>
 						<id>copy-runtime-jars</id>
@@ -186,7 +219,7 @@
 						</goals>
 						<configuration>
 							<includeScope>test</includeScope>
-							<includeArtifactIds>paimon-spark-3.5_2.12,paimon-s3,iceberg-spark-runtime-3.5_2.12,lance-spark-bundle-3.5_2.12</includeArtifactIds>
+							<includeArtifactIds>lakehouse-rest-scan-kernel,paimon-spark-3.5_2.12,paimon-s3,iceberg-spark-runtime-3.5_2.12,lance-spark-bundle-3.5_2.12</includeArtifactIds>
 							<outputDirectory>${project.build.directory}/jars</outputDirectory>
 							<stripVersion>true</stripVersion>
 							<overWriteReleases>true</overWriteReleases>

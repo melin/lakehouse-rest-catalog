@@ -284,12 +284,14 @@ export const SPARK_CONF_IMAGE_DEFAULTS = {
     'spark.driver.cores=4',
     'spark.sql.shuffle.partitions=200',
   ],
-  scan: [
-    'spark.driver.memory=4g',
-    'spark.driver.cores=4',
-    'spark.sql.shuffle.partitions=200',
-    'spark.sql.files.maxPartitionBytes=134217728',
-  ],
+  // 扫描这一组与优化那一组**刻意不同**（§5.6.7）：扫描的负载特征是「拉一批列的样本回来
+  // 打分」，峰值取决于列数 × 采样行上限，不取决于表多大；而容器就是 driver。
+  // 因此 1g / local[1]：横向扩展的单位是 pod 数，单 pod 内串行——这样「这台集群上真正
+  // 并行跑着几个作业」的答案完全留在 maxConcurrentJobs 一处。
+  //
+  // 不预置 spark.sql.shuffle.partitions：小数据量下 200 个分区是纯开销，而扫描的
+  // shuffle 量比 compaction 更小；需要它的部署按 catalog 显式写（该键在白名单里）。
+  scan: ['spark.driver.memory=1g', 'spark.driver.cores=1'],
 }
 
 /** placeholder 的文本形态：多行默认值 + 一句「留空即用它」。 */

@@ -128,7 +128,7 @@ REST Management API**（RBAC 管理面）与一个 **Vue 3 管理控制台**；�
 
 ```bash
 # ---- 构建 / 测试（JDK 17 或 21）----
-JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn -o -DskipTests clean install   # 全量（11 个模块，含 enforcer 校验）
+JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn -o -DskipTests clean install   # 全量（18 个模块，含 enforcer 校验）
 JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn -o -DskipTests -pl :lakehouse-rest-server -am clean package
                                                 # 只要服务端 jar（-am 会连上游 core/storage/三个协议面一起构建）
 JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn -o test        # 全量测试
@@ -183,7 +183,18 @@ python3 scripts/verify-lance-endpoints.py                  # Lance 面：规格�
 ```
 pom.xml                      lakehouse-rest-parent：纯聚合器（spring-parent + spark + optimizer）
 lakehouse-rest-spring-parent/   服务端世界的父 POM（继承 Boot 4.1.2）
-  pom.xml                    只有 POM、无源码；<modules> 列出下面四个（相对本文件解析，不带 ../）
+  pom.xml                    只有 POM、无源码；<modules> 列出下面七个（相对本文件解析，不带 ../）
+
+  lakehouse-rest-scan-kernel/  敏感识别的纯计算内核（9 个主类 + 1 个边界测试）：探测器 / 打分器 / 校验器 /
+                        打码 / 列引用哈希 / 扫描作业协议记录
+    ↑ **目录在 spring-parent 里面，父 POM 却是仓库根**（`<relativePath>../../pom.xml</relativePath>`）：
+      spring-parent 的 `<dependencies>` 有 spring-boot-starter-webmvc / data-jpa / lombok，
+      而这个模块的产物要**同时进服务端进程与集群上跑扫描作业的 Spark 容器**，继承那份依赖
+      等于把 Spring 拖进 Spark 容器的类路径（编译期过、运行期 NoClassDefFoundError）。
+      它只是 spring-parent 的一个 `<module>`（同反应堆、不拿 ~/.m2 的旧 jar），
+      所以 `-f pom.xml -pl :lakehouse-rest-optimizer` **必须带 `-am`**，否则内核不在反应堆里
+    ↑ 不引 Spring / JPA / Jackson / slf4j：`ScanKernelBoundaryTests` 把源码当文本查禁用前缀，
+      是构建期会失败的断言。依赖方向 `core → kernel`，内核不反向依赖
 
   lakehouse-rest-core/     与表格式无关的地基（86 个类）——唯一不依赖任何格式库的服务端模块
     config/               RestServerProperties、Bearer 鉴权、授权拦截器、CatalogAccessRules、
