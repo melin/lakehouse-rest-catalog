@@ -38,7 +38,10 @@ trap 'rm -f "$GENERATED" "$TARGET"' EXIT
 
 echo "== 由实体元数据生成 PostgreSQL DDL =="
 cd "$ROOT" || exit 1
-"$MVN" -o -pl :lakehouse-rest-server test \
+# 两个参数的理由同 gen-mysql-ddl.sh：前端构建与本任务无关（沙箱里还会失败），
+# 而 -am 保证读到的是本轮的 core（实体不只在 server 模块里）。
+"$MVN" -o -pl :lakehouse-rest-server -am test \
+  -Dfrontend.skip=true \
   -Dtest=PostgresDdlGeneratorTests \
   -DfailIfNoTests=false \
   "-Dpostgres.ddl.output=$GENERATED" \

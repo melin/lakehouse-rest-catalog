@@ -1,5 +1,7 @@
 package io.github.melin.lakehouse.rest.optimizer;
 
+import org.apache.logging.log4j.Level;
+import org.apache.logging.log4j.core.config.Configurator;
 import org.apache.spark.sql.SparkSession;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -54,6 +56,12 @@ final class SparkSessions {
      * 镜像里 {@code lance-spark-bundle-3.5_2.12.jar} 的版本必须在 pom 里跟着一起改。
      */
     private static final String LANCE_CATALOG = "org.lance.spark.LanceNamespaceSparkCatalog";
+
+    /**
+     * 本模块（连同扫描内核）的包前缀，用于把日志级别从 {@code setLogLevel("WARN")} 里捞回来。
+     * 取的是公共前缀而不是本类所在包：扫描任务的日志来自 {@code io.github.melin.lakehouse.rest.scan}。
+     */
+    private static final String APPLICATION_PACKAGE = "io.github.melin.lakehouse.rest";
 
     private SparkSessions() {
     }
@@ -130,8 +138,34 @@ final class SparkSessions {
         }
         SparkSession session = builder.getOrCreate();
         session.sparkContext().setLogLevel("WARN");
+        restoreApplicationLogLevel();
         log.info("spark session ready for catalog {} ({})", catalog, format);
         return session;
+    }
+
+    /**
+     * 把**本模块**的日志级别从 {@code setLogLevel("WARN")} 里捞回来。
+     *
+     * <p>{@code SparkContext#setLogLevel} 改的是**根** logger 的级别（log4j2 的
+     * {@code Configurator.setRootLevel}），而我们的 logger 就挂在这棵树上。于是
+     * 「压掉 Spark 那段几十行的启动噪音」顺手把「扫了哪张表、每张表几条 finding、
+     * 批次最后成没成」也压掉了——**它不报错，只是安静**。
+     *
+     * <p>这是真集群 e2e 撞出来的：作业明明成功、逐表回报都到了，{@code kubectl logs}
+     * 里却只有 Spark 启动的那几十行，一行结果都没有。同样的沉默也发生在优化任务上：
+     * 批次日志从「会话就绪」之后整段消失，而排障最需要的正是那一段。
+     *
+     * <p><b>为什么带着 try/catch。</b>集群里（{@code spark-submit}）日志绑定是 log4j2，
+     * 所以用它的 API 把这个包单独设回 INFO；单测里绑定是 slf4j-simple、没有 log4j-core
+     * 的配置实现，此时类根本不在类路径上，跳过即可——所以这里接的是
+     * {@link LinkageError}（{@code NoClassDefFoundError} 的父类），不是 {@code Exception}。
+     */
+    static void restoreApplicationLogLevel() {
+        try {
+            Configurator.setLevel(APPLICATION_PACKAGE, Level.INFO);
+        } catch (LinkageError | RuntimeException ignored) {
+            // 没有 log4j2 的运行时（单测）不需要这一步；日志级别只是可观测性，不该阻断任务
+        }
     }
 
     private static void icebergCatalog(SparkSession.Builder builder, String catalog,

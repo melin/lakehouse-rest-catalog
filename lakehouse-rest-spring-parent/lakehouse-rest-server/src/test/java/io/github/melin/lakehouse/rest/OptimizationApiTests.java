@@ -866,6 +866,19 @@ class OptimizationApiTests {
         assertEquals(SchedulerLease.channels().size(), leaseRepository.count(),
                 "启动时要把所有通道的行补齐（少一行 = 那个通道没有单写者）");
 
+        // 先把这一行逼回「没人持有」。租约是**全局共享行**，而 H2 内存库
+        // （`jdbc:h2:mem:paimon;DB_CLOSE_DELAY=-1`）在同一个 JVM 的测试类之间共享：
+        // 另一个上下文里真开着的调度节拍跑过一拍 `optimization.scan` 之后**并不释放**，
+        // 靠 TTL 过期（= scan-interval，默认 1 分钟）。于是下面那条 assertTrue 会按
+        // 「谁先跑、跑了多久」偶发红——单跑这个类是绿的，全量跑二十多分钟才撞得上，
+        // 而且报的是「expected true but was false」，看不出是租约被别人举着。
+        // 本方法 @Transactional，这一改随用例回滚，不会影响别的用例。
+        leaseRepository.findById(SchedulerLease.CHANNEL_SCAN).ifPresent(row -> {
+            row.setExpiresAt(0L);
+            row.setLeaseOwner(null);
+            leaseRepository.saveAndFlush(row);
+        });
+
         assertTrue(lease.tryAcquire(SchedulerLease.CHANNEL_SCAN));
         long now = System.currentTimeMillis();
         assertEquals(0, leaseRepository.acquire(SchedulerLease.CHANNEL_SCAN, "other-instance/1",

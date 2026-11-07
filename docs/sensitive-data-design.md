@@ -1,6 +1,6 @@
 # 敏感数据识别与分类 · 设计方案
 
-> **状态：P0–P4 均已实现**（P4 只差真集群 e2e；P3 的 `#bindings` 屏与引擎侧缓存主动失效仍未做）。已实现的落点：P0 = 五实体 + 内置类型 seed + 类型/探测器配置 + D1/D2 元数据扫描 + 手工打标 + 控制台六屏与表详情页签；P1 = D3 采样探测（走预览那条只读通道）+ 五个校验器 + 值层打分 + 自动应用闸门 + 人审 `decide` + 抑制项表（V4）+ `#findings` 闭环；P2 = 血缘三档传播 + 生命周期钩子；P3 = 标签 → mask 在 `resolve`/预览/试算三处同时展开 + `/tag-mask-bindings` 三条端点；P4 = 调度项 CRUD（第 7 张表，V5）+ `execution=SPARK` 下推（`lakehouse-rest-scan-kernel` 内核 + 两个回调端点 + 作业侧 `SensitivityScannerJob`）。代码里没有的部分仍然显式报错而不是静默降级：`METADATA_ONLY + SPARK` → 400（除非显式开 `allow-metadata-on-spark`）、不可派发的 catalog 建 SPARK 扫描 → 400、`D4`/`D5` 层恒 0 分。
+> **状态：P0–P4 均已实现，含真集群 e2e**（P3 的 `#bindings` 屏与引擎侧缓存主动失效仍未做）。已实现的落点：P0 = 五实体 + 内置类型 seed + 类型/探测器配置 + D1/D2 元数据扫描 + 手工打标 + 控制台六屏与表详情页签；P1 = D3 采样探测（走预览那条只读通道）+ 五个校验器 + 值层打分 + 自动应用闸门 + 人审 `decide` + 抑制项表（V4）+ `#findings` 闭环；P2 = 血缘三档传播 + 生命周期钩子；P3 = 标签 → mask 在 `resolve`/预览/试算三处同时展开 + `/tag-mask-bindings` 三条端点；P4 = 调度项 CRUD（第 7 张表，V5）+ `execution=SPARK` 下推（`lakehouse-rest-scan-kernel` 内核 + 两个回调端点 + 作业侧 `SensitivityScannerJob`）。代码里没有的部分仍然显式报错而不是静默降级：`METADATA_ONLY + SPARK` → 400（除非显式开 `allow-metadata-on-spark`）、不可派发的 catalog 建 SPARK 扫描 → 400、`D4`/`D5` 层恒 0 分。
 > **§13 的十一条已全部拍板，无未决项。** 本文描述的是**拍板后的目标形态**：其中「调度自建」（第 9 条）与「Spark 默认 `1g`/`local[1]`」（第 11 条）是更早一轮才定的，与更早版本的口径相反——读到 §5.6.2 / §5.6.3 / §5.6.7 / §9 / §11 时以本稿为准。
 > 配套交互原型：[`sensitive-data-mockup.html`](sensitive-data-mockup.html)（八画面；`#schedules` 已按自建 CRUD 呈现）。
 
@@ -796,7 +796,13 @@ DQ 的规则可以按标签匹配：「所有 `L3+` 列必须有 completeness �
 >    - **`claim_attempt` 在新行上是 NULL**：`s.claimAttempt + 1` 得 NULL，抢占「成功」但代数永远为空，`markSubmitted` 的条件永不成立，扫描安静地卡在 `SUBMITTING`。修法是 `coalesce(s.claimAttempt, 0) + 1` 且建单时显式写 0。
 >    - **`countByCatalogIdAndStatusIn`**：扫描表上只有 `catalog_name`（优化批次表才是 `catalog_id`）。这条派生查询让 Spring Data 在**启动时**就抛 `No property 'catalogId' found`——整个服务起不来，而不是「这个计数恒为 0」。
 >    - **`ScannerJob` 覆盖 ENTRYPOINT 会丢掉镜像里的 `--conf spark.driver.extraClassPath`**：覆盖是整条命令的替换而不是追加，Lance 表扫描会以 `NoSuchMethodError` 失败（bundle 里那份未 relocate 的 arrow 没能排到 Spark 自带的前面）。因此扫描命令里把它重写了一遍。
-> 8. **仍未做**：真集群的 e2e（本轮的覆盖是内核单测 5 + 作业侧 `SensitivityScannerJobTests` 8 + 服务端 `SensitivityPushScanTests` 6，提交器是桩）；`SUBMISSION_PAGE_MAX`（200）与 `maxScanTablesPerJob` 是两个数，前者是**单次响应的上限**、后者是**一个作业装几张表**，页面大小由作业自己按 200 定，二者不一致时只影响往返次数。
+> 8. **真集群 e2e 已落地**（`scripts/e2e-sensitivity-scan-k8s.sh`，42 项）：「提交器在测试里是桩」覆盖不到的五件事各有一条断言——这份 kubeconfig 能不能建 Job、扫描镜像能不能被节点拉起来、**Pod → 服务端**这个反方向通不通、鉴权打开时回调会不会被拦、逐表回报的计数与 finding 落库对不对得上。组件摆放是被环境逼出来的：**服务端也部署进集群**，`callbackBaseUrl` 走 Service DNS——开发机到 Pod 的反方向在多数机器上被墙。为了让脚本不依赖对象存储，扫描用 `METADATA_ONLY` 并显式开 `allow-metadata-on-spark`（这个开关本身也是「默认拒绝元数据档下推」这条守卫还在的证据）。
+> 9. **e2e 暴露的四个真问题**（单测结构上看不见，已修）：
+>    - **鉴权打开时作业回调全被拦成 401**：`X-Sensitivity-Scan-Token` 在认证链里没有位置，`BearerAuthInterceptor` 先执行，于是作业只看到「一条结果都没回来」、服务端收尾成 FAILED。修法是在 `WebConfig` 的 `excludePathPatterns` 里对**四条回调端点**做路径级豁免（不是「看见某个头就跳过」），判权仍在控制器的 `requireCallbackToken`（不带令牌 → 403 而不是 401）。回归用例 `ScanCallbackAuthTests` 用 `auth.enabled=true` 钉住「只豁免了这四条」：同前缀下的非回调端点不带 `Authorization` 仍须 401。
+>    - **`setLogLevel("WARN")` 把本模块的日志一起吞掉**：`SparkContext#setLogLevel` 改的是**根** logger 的级别，作业日志于是只剩 Spark 启动那几十行——作业成功、回报也在，但排障时看不到「扫了哪张表、几条 finding」。修法是 `SparkSessions.restoreApplicationLogLevel()` 把 `io.github.melin.lakehouse.rest` 设回 INFO（`Configurator` 用 try/catch 兜住：单测绑的是 slf4j-simple，没有 log4j-core）。**优化任务的批次日志此前一直中招**，本轮一并修好；e2e 的两条日志断言就是它的回归守卫。
+>    - **同 tag 重推后节点继续用本地旧层**：`imagePullPolicy: IfNotPresent` 下 kubelet 不重拉，表现是「代码改了、行为没变」。e2e 的 Deployment 与执行集群配置都显式写 `Always`。
+>    - **finding 的粒度是「列 × 类型」，不是「列」**：`id_card_no` 同时命中 `CN_ID_CARD` 与 `BANK_CARD`（名字层两个正则都吃 `card` 词干），所以「一列一条」是错期望。断言改成按 `(column, typeCode)` 定位，并顺带钉住 `confidence = 0.35`（元数据档只有名字层命中）与 `columnRef` 三段。
+> 10. `SUBMISSION_PAGE_MAX`（200）与 `maxScanTablesPerJob` 仍是两个数：前者是**单次响应的上限**、后者是**一个作业装几张表**，页面大小由作业自己按 200 定，二者不一致时只影响往返次数。
 
 ## 13. 风险与未决
 

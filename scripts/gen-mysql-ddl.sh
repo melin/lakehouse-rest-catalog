@@ -36,7 +36,12 @@ trap 'rm -f "$GENERATED" "$TARGET"' EXIT
 
 echo "== 由实体元数据生成 MySQL DDL =="
 cd "$ROOT" || exit 1
-"$MVN" -o -pl :lakehouse-rest-server test \
+# -Dfrontend.skip=true：只为了跑一个测试类，没必要连前端一起构建；
+#   受限沙箱里 npm ci 还会因为「一次删 >100 个文件」被拒而直接失败（AGENTS.md 第 8 节陷阱 8）。
+# -am：实体分散在 core 与 server 两个模块。不带它，server 用的是本地仓库里上次 install
+#   的那份 core，改了 core 实体却忘了 install → 生成的 DDL 悄悄少列/少表。
+"$MVN" -o -pl :lakehouse-rest-server -am test \
+  -Dfrontend.skip=true \
   -Dtest=MysqlDdlGeneratorTests \
   -DfailIfNoTests=false \
   "-Dmysql.ddl.output=$GENERATED" \
